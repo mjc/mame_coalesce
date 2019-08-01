@@ -5,16 +5,19 @@ extern crate serde;
 extern crate serde_xml_rs;
 extern crate sha1;
 extern crate walkdir;
+extern crate zip;
 
 use rayon::prelude::*;
 
 use sha1::{Digest, Sha1};
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::{env, fs, io};
 
 use walkdir::{DirEntry, WalkDir};
+
+use zip::write::{FileOptions, ZipWriter};
 
 mod logiqx {
     #[derive(Debug, Deserialize)]
@@ -141,9 +144,6 @@ fn compute_all_sha1(files: &mut Vec<File>) {
 fn get_key(file: &File) -> String {
     file.sha1.as_ref().unwrap().to_string()
 }
-fn get_path(file: &File) -> String {
-    file.path.to_str().unwrap().to_string()
-}
 
 fn get_sha_and_destination_name(rom: &logiqx::Rom) -> (String, String) {
     (rom.sha1.to_string().to_lowercase(), rom.name.to_string())
@@ -186,10 +186,40 @@ fn add_matches_to_bundles(bundles: &mut Vec<Bundle>, files: &HashMap<String, Fil
     }
 }
 
+fn write_zip(bundle: &Bundle, zip_dest: &str) {
+    let output_file_name = format!("{}.zip", bundle.name);
+    println!("Writing {}", output_file_name);
+    let path: PathBuf = [zip_dest, output_file_name.as_str()].iter().collect();
+    let output = fs::File::create(path).unwrap();
+    let mut zip = ZipWriter::new(output);
+    bundle.files.iter().for_each(|(sha, _file)| {
+        match bundle
+            .matches
+            .iter()
+            .find(|(sha1, _dest, _src)| sha == sha1)
+        {
+            Some((_sha1, dest, src)) => {
+                let mut source = fs::File::open(Path::new(src)).unwrap();
+                zip.start_file(dest, FileOptions::default()).unwrap();
+                std::io::copy(&mut source, &mut zip).unwrap();
+            }
+            None => (),
+        }
+    });
+    zip.finish().unwrap();
+}
+
+fn write_all_zip(bundles: Vec<Bundle>, zip_dest: &str) {
+    bundles
+        .iter()
+        .for_each(|bundle| write_zip(bundle, zip_dest));
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     let datfile = &args[1];
     let path = &args[2];
+    let destination = &args[3];
     println!("Using datfile: {}", datfile);
     println!("Looking in path: {}", path);
 
@@ -201,8 +231,7 @@ fn main() {
 
     compute_all_sha1(&mut files);
 
-    let mut files_by_sha1 = HashMap::new();
-    files_by_sha1 = files
+    let files_by_sha1: HashMap<String, File> = files
         .iter()
         .map(|file| (get_key(file), file.clone()))
         .collect();
@@ -214,5 +243,5 @@ fn main() {
 
     add_matches_to_bundles(&mut bundles, &files_by_sha1);
 
-    println!("{:?}", bundles.first().unwrap());
+    write_all_zip(bundles, destination);
 }
