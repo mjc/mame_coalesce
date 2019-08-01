@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE datafile PUBLIC "-//Logiqx//DTD ROM Management Datafile//EN" "http://www.logiqx.com/Dats/datafile.dtd">
+
+<datafile build="" debug="no|yes">
+	<header>
+		<name>REQUIRED</name>
+		<description>REQUIRED</description>
+		<category></category>
+		<version>REQUIRED</version>
+		<date></date>
+		<author>REQUIRED</author>
+		<email></email>
+		<homepage></homepage>
+		<url></url>
+		<comment></comment>
+		<clrmamepro header="" forcemerging="split|none|full" forcenodump="obsolete|required|ignore" forcepacking="zip|unzip" />
+		<romcenter plugin="" rommode="split|merged|unmerged" biosmode="split|merged|unmerged" samplemode="merged|unmerged" lockrommode="no|yes" lockbiosmode="no|yes" locksamplemode="no|yes" />
+	</header>
+
+	<game name="REQUIRED, MULTIPLE game ALLOWED" sourcefile="" isbios="no|yes" cloneof="" romof="" sampleof="" board="" rebuildto="">
+		<comment>MULTIPLE ALLOWED</comment>
+		<description>REQUIRED</description>
+		<year></year>
+		<manufacturer></manufacturer>
+		<release name="REQUIRED, MULTIPLE release ALLOWED" region="REQUIRED" language="REQUIRED" date="REQUIRED" default="no|yes" />
+		<biosset name="REQUIRED, MULTIPLE biosset ALLOWED" description="REQUIRED" default="no|yes" />
+		<rom name="REQUIRED, MULTIPLE rom ALLOWED" size="REQUIRED" crc="" sha1="" md5="" merge="" status="good|baddump|nodump|verified" date="" />
+		<disk name="REQUIRED, MULTIPLE disk ALLOWED" sha1="" md5="" merge="" status="good|baddump|nodump|verified" />
+		<sample name="REQUIRED, MULTIPLE sample ALLOWED" />
+		<archive name="REQUIRED, MULTIPLE archive ALLOWED" />
+	</game>
+</datafile>
