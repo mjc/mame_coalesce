@@ -78,7 +78,7 @@ mod logiqx {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct File {
     path: PathBuf,
     sha1: Option<String>,
@@ -86,9 +86,9 @@ struct File {
 
 #[derive(Debug)]
 struct Bundle {
-    name: String,                 // 7z name
-    files: Vec<(String, String)>, // sha1 key, rom file name
-    matches: Vec<(String, File)>, // sha1, File for matching files
+    name: String,                            // 7z name
+    files: HashMap<String, String>,          // sha1 key, rom file name
+    matches: Vec<(String, String, PathBuf)>, // sha1, destination, File for matching files
 }
 
 fn load_datafile(name: &String) -> logiqx::Datafile {
@@ -144,31 +144,45 @@ fn get_key(file: &File) -> String {
 fn get_path(file: &File) -> String {
     file.path.to_str().unwrap().to_string()
 }
-fn files_by_sha1(files: Vec<File>) -> HashMap<String, String> {
-    let mut files_by_sha1 = HashMap::new();
-    files_by_sha1 = files
-        .iter()
-        .map(|file| (get_key(file), get_path(file)))
-        .collect();
-    files_by_sha1
-}
 
 fn get_sha_and_destination_name(rom: &logiqx::Rom) -> (String, String) {
-    (rom.sha1.to_string(), rom.name.to_string())
+    (rom.sha1.to_string().to_lowercase(), rom.name.to_string())
 }
 
-fn get_bundle_files(roms: &Vec<logiqx::Rom>) -> Vec::<(String, String)> {
-    roms
-    .iter()
-    .map(|rom| get_sha_and_destination_name(rom))
-    .collect()
+fn get_bundle_files(roms: &Vec<logiqx::Rom>) -> HashMap<String, String> {
+    roms.iter()
+        .map(|rom| get_sha_and_destination_name(rom))
+        .collect()
 }
 
 fn bundle_from_game(game: &logiqx::Game) -> Bundle {
     Bundle {
         name: game.name.to_string(),
         files: get_bundle_files(&game.roms),
-        matches: Vec::<(String, File)>::new(),
+        matches: Vec::<(String, String, PathBuf)>::new(),
+    }
+}
+
+fn game_bundles(datafile: &logiqx::Datafile) -> Vec<Bundle> {
+    datafile
+        .games
+        .iter()
+        .map(|game| bundle_from_game(game))
+        .collect()
+}
+
+fn add_matches_to_bundles(bundles: &mut Vec<Bundle>, files: &HashMap<String, File>) {
+    for bundle in bundles.iter_mut() {
+        for (sha, name) in bundle.files.iter() {
+            match files.get(sha) {
+                Some(file) => bundle.matches.push((
+                    sha.to_string(),
+                    name.to_string(),
+                    file.path.to_path_buf(),
+                )),
+                None => (),
+            }
+        }
     }
 }
 
@@ -180,17 +194,25 @@ fn main() {
     println!("Looking in path: {}", path);
 
     let data = load_datafile(datfile);
+    let mut bundles = game_bundles(&data);
 
     let mut files = list_files(path);
     println!("Files to check: {}", files.len());
 
     compute_all_sha1(&mut files);
 
+    let mut files_by_sha1 = HashMap::new();
+    files_by_sha1 = files
+        .iter()
+        .map(|file| (get_key(file), file.clone()))
+        .collect();
+
     println!(
         "sha1 of last file: {:?}",
         files.last().unwrap().sha1.as_ref().unwrap()
     );
 
-    let bundle_test = bundle_from_game(data.games.first().unwrap());
-    println!("{:?}", bundle_test);
+    add_matches_to_bundles(&mut bundles, &files_by_sha1);
+
+    println!("{:?}", bundles.first().unwrap());
 }
