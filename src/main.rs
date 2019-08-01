@@ -211,7 +211,7 @@ fn write_zip(bundle: &Bundle, zip_dest: &str) {
 
 fn write_all_zip(bundles: Vec<Bundle>, zip_dest: &str) {
     bundles
-        .iter()
+        .par_iter()
         .for_each(|bundle| write_zip(bundle, zip_dest));
 }
 
