@@ -10,6 +10,7 @@ use rayon::prelude::*;
 
 use sha1::{Digest, Sha1};
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::{env, fs, io};
 
@@ -19,61 +20,61 @@ mod logiqx {
     #[derive(Debug, Deserialize)]
     pub struct Datafile {
         #[serde(default)]
-        build: String,
+        pub build: String,
         #[serde(default)]
-        debug: String, // bool
-        header: Header,
+        pub debug: String, // bool
+        pub header: Header,
         #[serde(rename = "game", default)]
-        games: Vec<Game>,
+        pub games: Vec<Game>,
     }
     #[derive(Debug, Deserialize)]
     pub struct Header {
-        name: String,
-        description: String,
-        version: String,
-        author: String,
-        homepage: String,
-        url: String,
+        pub name: String,
+        pub description: String,
+        pub version: String,
+        pub author: String,
+        pub homepage: String,
+        pub url: String,
     }
     #[derive(Debug, Deserialize)]
     pub struct Game {
-        name: String,
+        pub name: String,
         #[serde(default)]
-        sourcefile: String,
+        pub sourcefile: String,
         #[serde(default)]
-        isbios: String, // bool
+        pub isbios: String, // bool
         #[serde(default)]
-        cloneof: String,
+        pub cloneof: String,
         #[serde(default)]
-        romof: String,
+        pub romof: String,
         #[serde(default)]
-        sampleof: String,
+        pub sampleof: String,
         #[serde(default)]
-        board: String,
+        pub board: String,
         #[serde(default)]
-        rebuildto: String,
+        pub rebuildto: String,
         #[serde(default)]
-        year: String, // should probably be a DateTime
+        pub year: String, // should probably be a DateTime
         #[serde(default)]
-        manufacturer: String,
+        pub manufacturer: String,
         #[serde(rename = "rom", default)]
-        roms: Vec<Rom>,
+        pub roms: Vec<Rom>,
     }
     #[derive(Debug, Deserialize)]
     pub struct Rom {
-        name: String,
-        size: String,
-        md5: String,
-        sha1: String,
-        crc: String,
+        pub name: String,
+        pub size: String,
+        pub md5: String,
+        pub sha1: String,
+        pub crc: String,
         #[serde(default)]
-        merge: String,
+        pub merge: String,
         #[serde(default)]
-        status: String, // baddump|nodump|good|verified
+        pub status: String, // baddump|nodump|good|verified
         #[serde(default)]
-        serial: String,
+        pub serial: String,
         #[serde(default)]
-        date: String, // should probably be DateTime
+        pub date: String, // should probably be DateTime
     }
 }
 
@@ -81,6 +82,13 @@ mod logiqx {
 struct File {
     path: PathBuf,
     sha1: Option<String>,
+}
+
+#[derive(Debug)]
+struct Bundle {
+    name: String,                 // 7z name
+    files: Vec<(String, String)>, // sha1 key, rom file name
+    matches: Vec<(String, File)>, // sha1, File for matching files
 }
 
 fn load_datafile(name: &String) -> logiqx::Datafile {
@@ -130,6 +138,40 @@ fn compute_all_sha1(files: &mut Vec<File>) {
         .for_each(|file| file.sha1 = compute_sha1(&file.path));
 }
 
+fn get_key(file: &File) -> String {
+    file.sha1.as_ref().unwrap().to_string()
+}
+fn get_path(file: &File) -> String {
+    file.path.to_str().unwrap().to_string()
+}
+fn files_by_sha1(files: Vec<File>) -> HashMap<String, String> {
+    let mut files_by_sha1 = HashMap::new();
+    files_by_sha1 = files
+        .iter()
+        .map(|file| (get_key(file), get_path(file)))
+        .collect();
+    files_by_sha1
+}
+
+fn get_sha_and_destination_name(rom: &logiqx::Rom) -> (String, String) {
+    (rom.sha1.to_string(), rom.name.to_string())
+}
+
+fn get_bundle_files(roms: &Vec<logiqx::Rom>) -> Vec::<(String, String)> {
+    roms
+    .iter()
+    .map(|rom| get_sha_and_destination_name(rom))
+    .collect()
+}
+
+fn bundle_from_game(game: &logiqx::Game) -> Bundle {
+    Bundle {
+        name: game.name.to_string(),
+        files: get_bundle_files(&game.roms),
+        matches: Vec::<(String, File)>::new(),
+    }
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     let datfile = &args[1];
@@ -148,4 +190,7 @@ fn main() {
         "sha1 of last file: {:?}",
         files.last().unwrap().sha1.as_ref().unwrap()
     );
+
+    let bundle_test = bundle_from_game(data.games.first().unwrap());
+    println!("{:?}", bundle_test);
 }
