@@ -39,19 +39,24 @@ fn compute_sha1(path: &PathBuf) -> Option<String> {
 }
 
 pub fn add_matches_to_bundles(bundles: &mut Vec<Bundle>, files: &Vec<File>) {
-    let files_by_sha1 = files_by_sha1(files);
-    for bundle in bundles.iter_mut() {
-        for (sha, name) in bundle.files.iter() {
-            match files_by_sha1.get(sha) {
-                Some(file) => bundle.matches.push((
-                    sha.to_string(),
-                    name.to_string(),
-                    file.path.to_path_buf(),
-                )),
-                None => (),
-            }
-        }
-    }
+    let file_map = files_by_sha1(files);
+    bundles.iter_mut().for_each(|bundle| {
+        bundle.matches = find_matches(bundle, &file_map);
+    });
+}
+
+fn find_matches(
+    bundle: &Bundle,
+    file_map: &HashMap<String, File>,
+) -> Vec<(String, String, PathBuf)> {
+    bundle
+        .files
+        .iter()
+        .filter_map(|(sha, name)| match file_map.get(sha) {
+            Some(file) => Some((sha.to_string(), name.to_string(), file.path.to_path_buf())),
+            None => None,
+        })
+        .collect()
 }
 
 fn files_by_sha1(files: &Vec<File>) -> HashMap<String, File> {
