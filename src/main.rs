@@ -59,9 +59,7 @@ fn main() {
         files.last().unwrap().sha1.as_ref().unwrap()
     );
 
-    let mut bundles = rom::Bundle::from_datafile(&data);
-
-    rom::add_matches_to_bundles(&mut bundles, &files);
+    let bundles = rom::Bundle::from_datafile(&data, &files);
 
     rom::zip::write_all_zip(bundles, &destination);
 }

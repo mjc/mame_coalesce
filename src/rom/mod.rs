@@ -38,28 +38,7 @@ fn compute_sha1(path: &PathBuf) -> Option<String> {
     Some(format!("{:x}", hasher.result()))
 }
 
-pub fn add_matches_to_bundles(bundles: &mut Vec<Bundle>, files: &Vec<File>) {
-    let file_map = files_by_sha1(files);
-    bundles.iter_mut().for_each(|bundle| {
-        bundle.matches = find_matches(bundle, &file_map);
-    });
-}
-
-fn find_matches(
-    bundle: &Bundle,
-    file_map: &HashMap<String, File>,
-) -> Vec<(String, String, PathBuf)> {
-    bundle
-        .files
-        .iter()
-        .filter_map(|(sha, name)| match file_map.get(sha) {
-            Some(file) => Some((sha.to_string(), name.to_string(), file.path.to_path_buf())),
-            None => None,
-        })
-        .collect()
-}
-
-fn files_by_sha1(files: &Vec<File>) -> HashMap<String, File> {
+pub fn files_by_sha1(files: &Vec<File>) -> HashMap<String, File> {
     files
         .iter()
         .map(|file| (file.sha1.as_ref().unwrap().to_string(), file.clone()))
@@ -96,19 +75,22 @@ pub struct Bundle {
 }
 
 impl Bundle {
-    pub fn new(game: &logiqx::Game) -> Self {
+    pub fn new(game: &logiqx::Game, match_map: &HashMap<String, File>) -> Self {
+        let files = Self::load_files_from_roms(&game.roms);
+        let matches = Self::get_matches(&files, match_map);
         Bundle {
             name: game.name.to_string(),
-            files: Self::load_files_from_roms(&game.roms),
-            matches: Vec::<(String, String, PathBuf)>::new(),
+            files: files,
+            matches: matches,
         }
     }
 
-    pub fn from_datafile(datafile: &logiqx::Datafile) -> Vec<Bundle> {
+    pub fn from_datafile(datafile: &logiqx::Datafile, files: &Vec<File>) -> Vec<Bundle> {
+        let file_map = files_by_sha1(&files);
         datafile
             .games
             .iter()
-            .map(|game| Bundle::new(game))
+            .map(|game| Bundle::new(game, &file_map))
             .collect()
     }
 
@@ -119,5 +101,18 @@ impl Bundle {
     }
     pub fn get_sha_and_destination_name(rom: &logiqx::Rom) -> (String, String) {
         (rom.sha1.to_string().to_lowercase(), rom.name.to_string())
+    }
+
+    fn get_matches(
+        files: &HashMap<String, String>,
+        match_map: &HashMap<String, File>,
+    ) -> Vec<(String, String, PathBuf)> {
+        files
+            .iter()
+            .filter_map(|(sha, name)| match match_map.get(sha) {
+                Some(file) => Some((sha.to_string(), name.to_string(), file.path.to_path_buf())),
+                None => None,
+            })
+            .collect()
     }
 }
