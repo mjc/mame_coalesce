@@ -4,6 +4,9 @@ extern crate serde_derive;
 extern crate serde;
 extern crate serde_xml_rs;
 extern crate sha1;
+
+extern crate structopt;
+
 extern crate walkdir;
 extern crate zip;
 
@@ -13,101 +16,15 @@ use sha1::{Digest, Sha1};
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::{env, fs, io};
+use std::{fs, io};
+
+use structopt::StructOpt;
 
 use walkdir::{DirEntry, WalkDir};
 
 use zip::write::{FileOptions, ZipWriter};
 
-mod logiqx {
-    #[derive(Debug, Deserialize)]
-    pub struct Datafile {
-        #[serde(default)]
-        pub build: String,
-        #[serde(default)]
-        pub debug: String, // bool
-        pub header: Header,
-        #[serde(rename = "game", default)]
-        pub games: Vec<Game>,
-    }
-    impl Datafile {
-        fn new() -> Self {
-            Datafile {
-                build: String::new(),
-                debug: String::new(),
-                header: Header::new(),
-                games: Vec::<Game>::new(),
-            }
-        }
-        pub fn from_str(contents: &str) -> Self {
-            serde_xml_rs::from_str(contents).expect("Can't read Logiqx datafile.")
-        }
-    }
-
-    #[derive(Debug, Deserialize)]
-    pub struct Header {
-        pub name: String,
-        pub description: String,
-        pub version: String,
-        pub author: String,
-        pub homepage: String,
-        pub url: String,
-    }
-
-    impl Header {
-        fn new() -> Self {
-            Header {
-                name: String::new(),
-                description: String::new(),
-                version: String::new(),
-                author: String::new(),
-                homepage: String::new(),
-                url: String::new(),
-            }
-        }
-    }
-
-    #[derive(Debug, Deserialize)]
-    pub struct Game {
-        pub name: String,
-        #[serde(default)]
-        pub sourcefile: String,
-        #[serde(default)]
-        pub isbios: String, // bool
-        #[serde(default)]
-        pub cloneof: String,
-        #[serde(default)]
-        pub romof: String,
-        #[serde(default)]
-        pub sampleof: String,
-        #[serde(default)]
-        pub board: String,
-        #[serde(default)]
-        pub rebuildto: String,
-        #[serde(default)]
-        pub year: String, // should probably be a DateTime
-        #[serde(default)]
-        pub manufacturer: String,
-        #[serde(rename = "rom", default)]
-        pub roms: Vec<Rom>,
-    }
-    #[derive(Debug, Deserialize)]
-    pub struct Rom {
-        pub name: String,
-        pub size: String,
-        pub md5: String,
-        pub sha1: String,
-        pub crc: String,
-        #[serde(default)]
-        pub merge: String,
-        #[serde(default)]
-        pub status: String, // baddump|nodump|good|verified
-        #[serde(default)]
-        pub serial: String,
-        #[serde(default)]
-        pub date: String, // should probably be DateTime
-    }
-}
+mod logiqx;
 
 #[derive(Debug, Clone)]
 struct File {
@@ -163,7 +80,7 @@ fn load_datafile(name: String) -> logiqx::Datafile {
     logiqx::Datafile::from_str(&datafile_contents)
 }
 
-fn list_files(dir: String) -> Vec<File> {
+fn list_files(dir: PathBuf) -> Vec<File> {
     WalkDir::new(dir)
         .into_iter()
         .filter_entry(|e| File::entry_is_relevant(e))
@@ -240,29 +157,44 @@ fn write_zip(bundle: &Bundle, zip_dest: PathBuf) {
     zip.finish().unwrap();
 }
 
-fn write_all_zip(bundles: Vec<Bundle>, zip_dest: PathBuf) {
+fn write_all_zip(bundles: Vec<Bundle>, zip_dest: &PathBuf) {
     bundles
         .par_iter()
         .for_each(|bundle| write_zip(bundle, zip_dest.to_path_buf()));
 }
 
+#[derive(Debug, StructOpt)]
+#[structopt(
+    name = "mame_coalesce",
+    about = "A commandline app for merging ROMs for emulators like mame."
+)]
+struct Opt {
+    datfile: String,
+    #[structopt(parse(from_os_str))]
+    path: PathBuf,
+    #[structopt(parse(from_os_str))]
+    destination: Option<PathBuf>,
+}
+
 fn main() {
-    let datfile = env::args().nth(1).expect("No datfile specified");
-    let path = env::args().nth(2).expect("No ROM path specified");
-    let default_destination: PathBuf = [&path, "merged"].iter().collect();
-    let destination = match env::args().nth(3) {
-        Some(ref x) if x.trim() == "" => default_destination,
-        Some(ref x) => Path::new(x).to_path_buf(),
+    let opt = Opt::from_args();
+    println!("{:?}", opt);
+    let default_destination: PathBuf =
+        [opt.path.to_str().expect("Path is fucked somehow"), "merged"]
+            .iter()
+            .collect();
+    let destination = match opt.destination {
+        Some(x) => x,
         None => default_destination,
     };
-    fs::create_dir_all(destination.as_path()).expect("Couldn't create destination directory");
-    println!("Using datfile: {}", datfile);
-    println!("Looking in path: {}", path);
+    fs::create_dir_all(&destination).expect("Couldn't create destination directory");
+    println!("Using datfile: {}", opt.datfile);
+    println!("Looking in path: {}", opt.path.to_str().unwrap());
 
-    let data = load_datafile(datfile);
+    let data = load_datafile(opt.datfile);
     let mut bundles = game_bundles(&data);
 
-    let mut files = list_files(path);
+    let mut files = list_files(opt.path);
     println!("Files to check: {}", files.len());
 
     compute_all_sha1(&mut files);
@@ -279,5 +211,5 @@ fn main() {
 
     add_matches_to_bundles(&mut bundles, &files_by_sha1);
 
-    write_all_zip(bundles, destination);
+    write_all_zip(bundles, &destination);
 }
