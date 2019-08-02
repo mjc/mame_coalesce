@@ -27,10 +27,12 @@ pub fn write_zip(bundle: &rom::Bundle, zip_dest: PathBuf) {
         })
         .collect();
     if !found.is_empty() {
+        // @TODO: don't create zip if exists
         let output =
             fs::File::create(&path).unwrap_or_else(|_| panic!("Couldn't create {:?}", &path));
         let mut zip = ZipWriter::new(output);
         found.iter().for_each(|(dest, src)| {
+            // @TODO: don't add file if already exists in zip
             let mut source =
                 fs::File::open(Path::new(src)).unwrap_or_else(|_| panic!("Couldn't open {:?}", src));
             zip.start_file(dest, FileOptions::default())
