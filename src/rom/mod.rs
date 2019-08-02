@@ -24,10 +24,7 @@ fn file_list(dir: &PathBuf) -> Vec<File> {
         .into_iter()
         .filter_entry(|e| File::entry_is_relevant(e))
         .filter_map(|v| v.ok())
-        .filter_map(|entry| match entry.file_type().is_file() {
-            true => Some(File::new(&entry)),
-            false => None,
-        })
+        .filter_map(|entry| if entry.file_type().is_file() { Some(File::new(&entry)) } else { None })
         .collect()
 }
 
@@ -38,7 +35,7 @@ fn compute_sha1(path: &PathBuf) -> Option<String> {
     Some(format!("{:x}", hasher.result()))
 }
 
-pub fn files_by_sha1(files: &Vec<File>) -> HashMap<String, File> {
+pub fn files_by_sha1(files: &[File]) -> HashMap<String, File> {
     files
         .iter()
         .map(|file| (file.sha1.as_ref().unwrap().to_string(), file.clone()))
@@ -62,7 +59,7 @@ impl File {
         entry
             .file_name()
             .to_str()
-            .map(|s| entry.depth() == 0 || !s.starts_with("."))
+            .map(|s| entry.depth() == 0 || !s.starts_with('.'))
             .unwrap_or(false)
     }
 }
@@ -80,12 +77,12 @@ impl Bundle {
         let matches = Self::get_matches(&files, match_map);
         Bundle {
             name: game.name.to_string(),
-            files: files,
-            matches: matches,
+            files,
+            matches,
         }
     }
 
-    pub fn from_datafile(datafile: &logiqx::Datafile, files: &Vec<File>) -> Vec<Bundle> {
+    pub fn from_datafile(datafile: &logiqx::Datafile, files: &[File]) -> Vec<Bundle> {
         let file_map = files_by_sha1(&files);
         datafile
             .games
@@ -94,7 +91,7 @@ impl Bundle {
             .collect()
     }
 
-    pub fn load_files_from_roms(roms: &Vec<logiqx::Rom>) -> HashMap<String, String> {
+    pub fn load_files_from_roms(roms: &[logiqx::Rom]) -> HashMap<String, String> {
         roms.iter()
             .map(|rom| Self::get_sha_and_destination_name(rom))
             .collect()
