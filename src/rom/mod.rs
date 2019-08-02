@@ -13,6 +13,7 @@ pub fn files(dir: PathBuf) -> Vec<File> {
         .par_iter()
         .map(|file| {
             let mut file = file.clone();
+            println!("Computing sha1: {}", file.path.to_str().unwrap());
             file.sha1 = compute_sha1(&file.path);
             file
         })
