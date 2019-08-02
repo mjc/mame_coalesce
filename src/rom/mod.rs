@@ -38,10 +38,11 @@ fn compute_sha1(path: &PathBuf) -> Option<String> {
     Some(format!("{:x}", hasher.result()))
 }
 
-pub fn add_matches_to_bundles(bundles: &mut Vec<Bundle>, files: &HashMap<String, File>) {
+pub fn add_matches_to_bundles(bundles: &mut Vec<Bundle>, files: &Vec<File>) {
+    let files_by_sha1 = files_by_sha1(files);
     for bundle in bundles.iter_mut() {
         for (sha, name) in bundle.files.iter() {
-            match files.get(sha) {
+            match files_by_sha1.get(sha) {
                 Some(file) => bundle.matches.push((
                     sha.to_string(),
                     name.to_string(),
@@ -53,14 +54,10 @@ pub fn add_matches_to_bundles(bundles: &mut Vec<Bundle>, files: &HashMap<String,
     }
 }
 
-fn get_key(file: &File) -> String {
-    file.sha1.as_ref().unwrap().to_string()
-}
-
-pub fn files_by_sha1(files: &Vec<File>) -> HashMap<String, File> {
+fn files_by_sha1(files: &Vec<File>) -> HashMap<String, File> {
     files
         .iter()
-        .map(|file| (get_key(file), file.clone()))
+        .map(|file| (file.sha1.as_ref().unwrap().to_string(), file.clone()))
         .collect()
 }
 

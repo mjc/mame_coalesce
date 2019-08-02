@@ -54,16 +54,14 @@ fn main() {
     let data = logiqx::load_datafile(opt.datafile).expect("Couldn't load datafile");
     let files = rom::files(opt.path);
 
-    let mut bundles = rom::Bundle::from_datafile(&data);
-
-    let files_by_sha1 = rom::files_by_sha1(&files);
-
     println!(
         "sha1 of last file: {:?}",
         files.last().unwrap().sha1.as_ref().unwrap()
     );
 
-    rom::add_matches_to_bundles(&mut bundles, &files_by_sha1);
+    let mut bundles = rom::Bundle::from_datafile(&data);
+
+    rom::add_matches_to_bundles(&mut bundles, &files);
 
     rom::zip::write_all_zip(bundles, &destination);
 }
