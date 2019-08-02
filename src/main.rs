@@ -10,8 +10,8 @@ extern crate structopt;
 extern crate walkdir;
 extern crate zip;
 
-use std::path::PathBuf;
 use std::fs;
+use std::path::PathBuf;
 use structopt::StructOpt;
 
 mod logiqx;
@@ -30,20 +30,26 @@ struct Opt {
     destination: Option<PathBuf>,
 }
 
+impl Opt {
+    pub fn default_destination(path: &PathBuf) -> PathBuf {
+        [path.to_str().expect("Path is fucked somehow"), "merged"]
+            .iter()
+            .collect()
+    }
+}
 fn main() {
     let opt = Opt::from_args();
-    println!("{:?}", opt);
-    let default_destination: PathBuf =
-        [opt.path.to_str().expect("Path is fucked somehow"), "merged"]
-            .iter()
-            .collect();
+
     let destination = match opt.destination {
+        None => Opt::default_destination(&opt.path),
         Some(x) => x,
-        None => default_destination,
     };
+
     fs::create_dir_all(&destination).expect("Couldn't create destination directory");
+
     println!("Using datafile: {}", opt.datafile);
     println!("Looking in path: {}", opt.path.to_str().unwrap());
+    println!("Saving zips to path: {}", destination.to_str().unwrap());
 
     let data = logiqx::load_datafile(opt.datafile).expect("Couldn't load datafile");
     let mut bundles = rom::Bundle::from_datafile(&data);
