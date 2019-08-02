@@ -51,15 +51,20 @@ fn main() {
     println!("Looking in path: {}", opt.path.to_str().unwrap());
     println!("Saving zips to path: {}", destination.to_str().unwrap());
 
-    let data = logiqx::load_datafile(opt.datafile).expect("Couldn't load datafile");
+    let datafile = logiqx::load_datafile(opt.datafile).expect("Couldn't load datafile");
     let files = rom::files(opt.path);
 
     println!(
         "sha1 of last file: {:?}",
-        files.last().unwrap().sha1.as_ref().unwrap()
+        files
+            .last()
+            .expect("Somehow there are no files")
+            .sha1
+            .as_ref()
+            .unwrap()
     );
 
-    let bundles = rom::Bundle::from_datafile(&data, &files);
+    let bundles = rom::Bundle::from_datafile(&datafile, &files);
 
     rom::zip::write_all_zip(bundles, &destination);
 }
