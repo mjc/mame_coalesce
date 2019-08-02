@@ -1,14 +1,25 @@
 use crate::logiqx;
+use crate::walkdir::{DirEntry, WalkDir};
 use rayon::prelude::*;
 use sha1::{Digest, Sha1};
 use std::collections::HashMap;
-use std::{fs, io};
 use std::path::PathBuf;
-use crate::walkdir::{WalkDir, DirEntry};
+use std::{fs, io};
 
 pub mod zip;
 
-pub fn list_files(dir: PathBuf) -> Vec<File> {
+pub fn files(dir: PathBuf) -> Vec<File> {
+    file_list(&dir)
+        .par_iter()
+        .map(|file| {
+            let mut file = file.clone();
+            file.sha1 = compute_sha1(&file.path);
+            file
+        })
+        .collect()
+}
+
+fn file_list(dir: &PathBuf) -> Vec<File> {
     WalkDir::new(dir)
         .into_iter()
         .filter_entry(|e| File::entry_is_relevant(e))
@@ -20,17 +31,11 @@ pub fn list_files(dir: PathBuf) -> Vec<File> {
         .collect()
 }
 
-pub fn compute_sha1(path: &PathBuf) -> Option<String> {
+fn compute_sha1(path: &PathBuf) -> Option<String> {
     let mut file = fs::File::open(path).unwrap();
     let mut hasher = Sha1::new();
     let _n = io::copy(&mut file, &mut hasher);
     Some(format!("{:x}", hasher.result()))
-}
-
-pub fn compute_all_sha1(files: &mut Vec<File>) {
-    files
-        .par_iter_mut()
-        .for_each(|file| file.sha1 = compute_sha1(&file.path));
 }
 
 pub fn add_matches_to_bundles(bundles: &mut Vec<Bundle>, files: &HashMap<String, File>) {
@@ -53,12 +58,11 @@ fn get_key(file: &File) -> String {
 }
 
 pub fn files_by_sha1(files: &Vec<File>) -> HashMap<String, File> {
-        files
+    files
         .iter()
         .map(|file| (get_key(file), file.clone()))
         .collect()
 }
-
 
 #[derive(Debug, Clone)]
 pub struct File {
@@ -92,9 +96,9 @@ pub struct Bundle {
 impl Bundle {
     pub fn new(game: &logiqx::Game) -> Self {
         Bundle {
-             name: game.name.to_string(),
-             files: Self::load_files_from_roms(&game.roms),
-             matches: Vec::<(String, String, PathBuf)>::new(),
+            name: game.name.to_string(),
+            files: Self::load_files_from_roms(&game.roms),
+            matches: Vec::<(String, String, PathBuf)>::new(),
         }
     }
 

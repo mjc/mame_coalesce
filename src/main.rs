@@ -52,12 +52,9 @@ fn main() {
     println!("Saving zips to path: {}", destination.to_str().unwrap());
 
     let data = logiqx::load_datafile(opt.datafile).expect("Couldn't load datafile");
+    let files = rom::files(opt.path);
+
     let mut bundles = rom::Bundle::from_datafile(&data);
-
-    let mut files = rom::list_files(opt.path);
-    println!("Files to check: {}", files.len());
-
-    rom::compute_all_sha1(&mut files);
 
     let files_by_sha1 = rom::files_by_sha1(&files);
 
