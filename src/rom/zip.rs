@@ -1,3 +1,4 @@
+use crate::indicatif::{ProgressBar, ProgressStyle};
 use crate::rayon::prelude::*;
 use crate::rom;
 use crate::zip::write::{FileOptions, ZipWriter};
@@ -7,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 pub fn write_zip(bundle: &rom::Bundle, zip_dest: PathBuf) {
     let output_file_name = format!("{}.zip", bundle.name);
-    println!("Writing {}", output_file_name);
+    //println!("Writing {}", output_file_name);
     let path: PathBuf = [zip_dest.to_str().unwrap(), output_file_name.as_str()]
         .iter()
         .collect();
@@ -27,14 +28,14 @@ pub fn write_zip(bundle: &rom::Bundle, zip_dest: PathBuf) {
         })
         .collect();
     if !found.is_empty() {
-        // @TODO: don't create zip if exists
+        // @TODO: don't create zip if
         let output =
             fs::File::create(&path).unwrap_or_else(|_| panic!("Couldn't create {:?}", &path));
         let mut zip = ZipWriter::new(output);
         found.iter().for_each(|(dest, src)| {
             // @TODO: don't add file if already exists in zip
-            let mut source =
-                fs::File::open(Path::new(src)).unwrap_or_else(|_| panic!("Couldn't open {:?}", src));
+            let mut source = fs::File::open(Path::new(src))
+                .unwrap_or_else(|_| panic!("Couldn't open {:?}", src));
             zip.start_file(dest, FileOptions::default())
                 .unwrap_or_else(|_| panic!("Couldn't start zip: {:?}", dest));
             std::io::copy(&mut source, &mut zip)
@@ -46,7 +47,15 @@ pub fn write_zip(bundle: &rom::Bundle, zip_dest: PathBuf) {
 }
 
 pub fn write_all_zip(bundles: Vec<rom::Bundle>, zip_dest: &PathBuf) {
-    bundles
-        .par_iter()
-        .for_each(|bundle| write_zip(bundle, zip_dest.to_path_buf()));
+    let bar = ProgressBar::new(bundles.len() as u64);
+    bar.set_style(
+        ProgressStyle::default_bar().template(
+            "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg} {eta_precise}",
+        ),
+    );
+    bundles.par_iter().for_each(|bundle| {
+        write_zip(bundle, zip_dest.to_path_buf());
+        bar.inc(1);
+    });
+    bar.finish();
 }

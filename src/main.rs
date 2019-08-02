@@ -1,3 +1,4 @@
+extern crate indicatif;
 extern crate rayon;
 #[macro_use]
 extern crate serde_derive;

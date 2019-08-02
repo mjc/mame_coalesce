@@ -1,3 +1,5 @@
+use crate::indicatif::{ProgressBar, ProgressStyle};
+
 use crate::logiqx;
 use crate::walkdir::{DirEntry, WalkDir};
 use rayon::prelude::*;
@@ -9,15 +11,25 @@ use std::{fs, io};
 pub mod zip;
 
 pub fn files(dir: PathBuf) -> Vec<File> {
-    file_list(&dir)
+    let list = file_list(&dir);
+    let bar = ProgressBar::new(list.len() as u64);
+    bar.set_style(
+        ProgressStyle::default_bar().template(
+            "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg} {eta_precise}",
+        ),
+    );
+    let result: Vec<File> = list
         .par_iter()
         .map(|file| {
             let mut file = file.clone();
-            println!("Computing sha1: {}", file.path.to_str().unwrap());
+            //println!("Computing sha1: {}", file.path.to_str().unwrap());
             file.sha1 = compute_sha1(&file.path);
+            bar.inc(1);
             file
         })
-        .collect()
+        .collect();
+    bar.finish();
+    result
 }
 
 fn file_list(dir: &PathBuf) -> Vec<File> {
@@ -25,7 +37,13 @@ fn file_list(dir: &PathBuf) -> Vec<File> {
         .into_iter()
         .filter_entry(|e| File::entry_is_relevant(e))
         .filter_map(|v| v.ok())
-        .filter_map(|entry| if entry.file_type().is_file() { Some(File::new(&entry)) } else { None })
+        .filter_map(|entry| {
+            if entry.file_type().is_file() {
+                Some(File::new(&entry))
+            } else {
+                None
+            }
+        })
         .collect()
 }
 
