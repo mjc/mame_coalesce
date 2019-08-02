@@ -30,6 +30,20 @@ mod logiqx {
         #[serde(rename = "game", default)]
         pub games: Vec<Game>,
     }
+    impl Datafile {
+        fn new() -> Self {
+            Datafile {
+                build: String::new(),
+                debug: String::new(),
+                header: Header::new(),
+                games: Vec::<Game>::new(),
+            }
+        }
+        pub fn from_str(contents: &str) -> Self {
+            serde_xml_rs::from_str(contents).expect("Can't read Logiqx datafile.")
+        }
+    }
+
     #[derive(Debug, Deserialize)]
     pub struct Header {
         pub name: String,
@@ -39,6 +53,20 @@ mod logiqx {
         pub homepage: String,
         pub url: String,
     }
+
+    impl Header {
+        fn new() -> Self {
+            Header {
+                name: String::new(),
+                description: String::new(),
+                version: String::new(),
+                author: String::new(),
+                homepage: String::new(),
+                url: String::new(),
+            }
+        }
+    }
+
     #[derive(Debug, Deserialize)]
     pub struct Game {
         pub name: String,
@@ -87,6 +115,22 @@ struct File {
     sha1: Option<String>,
 }
 
+impl File {
+    fn new(entry: &DirEntry) -> Self {
+        File {
+            sha1: None,
+            path: entry.path().to_path_buf(),
+        }
+    }
+    fn entry_is_relevant(entry: &DirEntry) -> bool {
+        entry
+            .file_name()
+            .to_str()
+            .map(|s| entry.depth() == 0 || !s.starts_with("."))
+            .unwrap_or(false)
+    }
+}
+
 #[derive(Debug)]
 struct Bundle {
     name: String,                            // 7z name
@@ -94,38 +138,41 @@ struct Bundle {
     matches: Vec<(String, String, PathBuf)>, // sha1, destination, File for matching files
 }
 
-fn load_datafile(name: &String) -> logiqx::Datafile {
-    let datafile_contents =
-        fs::read_to_string(name).expect("Something went wrong reading the datfile");
-    serde_xml_rs::from_str(&datafile_contents).unwrap()
-}
-
-fn is_relevant(entry: &DirEntry) -> bool {
-    entry
-        .file_name()
-        .to_str()
-        .map(|s| entry.depth() == 0 || !s.starts_with("."))
-        .unwrap_or(false)
-}
-
-fn list_files(dir: &String) -> Vec<File> {
-    let mut paths = vec![];
-    for entry in WalkDir::new(dir)
-        .into_iter()
-        .filter_entry(|e| is_relevant(e))
-        .filter_map(|v| v.ok())
-    {
-        if entry.file_type().is_file() {
-            let file = File {
-                // sha1: Some(compute_sha1(entry.path().to_path_buf())),
-                sha1: None,
-                path: entry.path().to_path_buf(),
-            };
-            paths.push(file);
+impl Bundle {
+    fn new(game: &logiqx::Game) -> Self {
+        Bundle {
+            name: game.name.to_string(),
+            files: Self::load_files_from_roms(&game.roms),
+            matches: Vec::<(String, String, PathBuf)>::new(),
         }
     }
 
-    paths
+    fn load_files_from_roms(roms: &Vec<logiqx::Rom>) -> HashMap<String, String> {
+        roms.iter()
+            .map(|rom| Self::get_sha_and_destination_name(rom))
+            .collect()
+    }
+    fn get_sha_and_destination_name(rom: &logiqx::Rom) -> (String, String) {
+        (rom.sha1.to_string().to_lowercase(), rom.name.to_string())
+    }
+}
+
+fn load_datafile(name: String) -> logiqx::Datafile {
+    let datafile_contents =
+        fs::read_to_string(name).expect("Something went wrong reading the datfile");
+    logiqx::Datafile::from_str(&datafile_contents)
+}
+
+fn list_files(dir: String) -> Vec<File> {
+    WalkDir::new(dir)
+        .into_iter()
+        .filter_entry(|e| File::entry_is_relevant(e))
+        .filter_map(|v| v.ok())
+        .filter_map(|entry| match entry.file_type().is_file() {
+            true => Some(File::new(&entry)),
+            false => None,
+        })
+        .collect()
 }
 
 fn compute_sha1(path: &PathBuf) -> Option<String> {
@@ -145,29 +192,11 @@ fn get_key(file: &File) -> String {
     file.sha1.as_ref().unwrap().to_string()
 }
 
-fn get_sha_and_destination_name(rom: &logiqx::Rom) -> (String, String) {
-    (rom.sha1.to_string().to_lowercase(), rom.name.to_string())
-}
-
-fn get_bundle_files(roms: &Vec<logiqx::Rom>) -> HashMap<String, String> {
-    roms.iter()
-        .map(|rom| get_sha_and_destination_name(rom))
-        .collect()
-}
-
-fn bundle_from_game(game: &logiqx::Game) -> Bundle {
-    Bundle {
-        name: game.name.to_string(),
-        files: get_bundle_files(&game.roms),
-        matches: Vec::<(String, String, PathBuf)>::new(),
-    }
-}
-
 fn game_bundles(datafile: &logiqx::Datafile) -> Vec<Bundle> {
     datafile
         .games
         .iter()
-        .map(|game| bundle_from_game(game))
+        .map(|game| Bundle::new(game))
         .collect()
 }
 
@@ -186,10 +215,12 @@ fn add_matches_to_bundles(bundles: &mut Vec<Bundle>, files: &HashMap<String, Fil
     }
 }
 
-fn write_zip(bundle: &Bundle, zip_dest: &str) {
+fn write_zip(bundle: &Bundle, zip_dest: PathBuf) {
     let output_file_name = format!("{}.zip", bundle.name);
     println!("Writing {}", output_file_name);
-    let path: PathBuf = [zip_dest, output_file_name.as_str()].iter().collect();
+    let path: PathBuf = [zip_dest.to_str().unwrap(), output_file_name.as_str()]
+        .iter()
+        .collect();
     let output = fs::File::create(path).unwrap();
     let mut zip = ZipWriter::new(output);
     bundle.files.iter().for_each(|(sha, _file)| {
@@ -209,17 +240,22 @@ fn write_zip(bundle: &Bundle, zip_dest: &str) {
     zip.finish().unwrap();
 }
 
-fn write_all_zip(bundles: Vec<Bundle>, zip_dest: &str) {
+fn write_all_zip(bundles: Vec<Bundle>, zip_dest: PathBuf) {
     bundles
         .par_iter()
-        .for_each(|bundle| write_zip(bundle, zip_dest));
+        .for_each(|bundle| write_zip(bundle, zip_dest.to_path_buf()));
 }
 
 fn main() {
-    let args: Vec<String> = env::args().collect();
-    let datfile = &args[1];
-    let path = &args[2];
-    let destination = &args[3];
+    let datfile = env::args().nth(1).expect("No datfile specified");
+    let path = env::args().nth(2).expect("No ROM path specified");
+    let default_destination: PathBuf = [&path, "merged"].iter().collect();
+    let destination = match env::args().nth(3) {
+        Some(ref x) if x.trim() == "" => default_destination,
+        Some(ref x) => Path::new(x).to_path_buf(),
+        None => default_destination,
+    };
+    fs::create_dir_all(destination.as_path()).expect("Couldn't create destination directory");
     println!("Using datfile: {}", datfile);
     println!("Looking in path: {}", path);
 
