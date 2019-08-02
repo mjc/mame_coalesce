@@ -20,33 +20,13 @@ use std::{fs, io};
 
 use structopt::StructOpt;
 
-use walkdir::{DirEntry, WalkDir};
+use walkdir::WalkDir;
 
 use zip::write::{FileOptions, ZipWriter};
 
 mod logiqx;
 
-#[derive(Debug, Clone)]
-struct File {
-    path: PathBuf,
-    sha1: Option<String>,
-}
-
-impl File {
-    fn new(entry: &DirEntry) -> Self {
-        File {
-            sha1: None,
-            path: entry.path().to_path_buf(),
-        }
-    }
-    fn entry_is_relevant(entry: &DirEntry) -> bool {
-        entry
-            .file_name()
-            .to_str()
-            .map(|s| entry.depth() == 0 || !s.starts_with("."))
-            .unwrap_or(false)
-    }
-}
+mod rom;
 
 #[derive(Debug)]
 struct Bundle {
@@ -74,19 +54,13 @@ impl Bundle {
     }
 }
 
-fn load_datafile(name: String) -> logiqx::Datafile {
-    let datafile_contents =
-        fs::read_to_string(name).expect("Something went wrong reading the datfile");
-    logiqx::Datafile::from_str(&datafile_contents)
-}
-
-fn list_files(dir: PathBuf) -> Vec<File> {
+fn list_files(dir: PathBuf) -> Vec<rom::File> {
     WalkDir::new(dir)
         .into_iter()
-        .filter_entry(|e| File::entry_is_relevant(e))
+        .filter_entry(|e| rom::File::entry_is_relevant(e))
         .filter_map(|v| v.ok())
         .filter_map(|entry| match entry.file_type().is_file() {
-            true => Some(File::new(&entry)),
+            true => Some(rom::File::new(&entry)),
             false => None,
         })
         .collect()
@@ -99,13 +73,13 @@ fn compute_sha1(path: &PathBuf) -> Option<String> {
     Some(format!("{:x}", hasher.result()))
 }
 
-fn compute_all_sha1(files: &mut Vec<File>) {
+fn compute_all_sha1(files: &mut Vec<rom::File>) {
     files
         .par_iter_mut()
         .for_each(|file| file.sha1 = compute_sha1(&file.path));
 }
 
-fn get_key(file: &File) -> String {
+fn get_key(file: &rom::File) -> String {
     file.sha1.as_ref().unwrap().to_string()
 }
 
@@ -117,7 +91,7 @@ fn game_bundles(datafile: &logiqx::Datafile) -> Vec<Bundle> {
         .collect()
 }
 
-fn add_matches_to_bundles(bundles: &mut Vec<Bundle>, files: &HashMap<String, File>) {
+fn add_matches_to_bundles(bundles: &mut Vec<Bundle>, files: &HashMap<String, rom::File>) {
     for bundle in bundles.iter_mut() {
         for (sha, name) in bundle.files.iter() {
             match files.get(sha) {
@@ -169,7 +143,7 @@ fn write_all_zip(bundles: Vec<Bundle>, zip_dest: &PathBuf) {
     about = "A commandline app for merging ROMs for emulators like mame."
 )]
 struct Opt {
-    datfile: String,
+    datafile: String,
     #[structopt(parse(from_os_str))]
     path: PathBuf,
     #[structopt(parse(from_os_str))]
@@ -188,10 +162,10 @@ fn main() {
         None => default_destination,
     };
     fs::create_dir_all(&destination).expect("Couldn't create destination directory");
-    println!("Using datfile: {}", opt.datfile);
+    println!("Using datafile: {}", opt.datafile);
     println!("Looking in path: {}", opt.path.to_str().unwrap());
 
-    let data = load_datafile(opt.datfile);
+    let data = logiqx::load_datafile(opt.datafile).expect("Couldn't load datafile");
     let mut bundles = game_bundles(&data);
 
     let mut files = list_files(opt.path);
@@ -199,7 +173,7 @@ fn main() {
 
     compute_all_sha1(&mut files);
 
-    let files_by_sha1: HashMap<String, File> = files
+    let files_by_sha1: HashMap<String, rom::File> = files
         .iter()
         .map(|file| (get_key(file), file.clone()))
         .collect();

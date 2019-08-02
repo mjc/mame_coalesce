@@ -1,3 +1,12 @@
+use crate::fs;
+
+pub fn load_datafile(name: String) -> Result<Datafile, &'static str> {
+    match fs::read_to_string(name) {
+        Ok(contents) => Ok(Datafile::from_str(&contents)),
+        Err(_) => Err("Unable to parse datafile"),
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct Datafile {
     #[serde(default)]
@@ -9,14 +18,6 @@ pub struct Datafile {
     pub games: Vec<Game>,
 }
 impl Datafile {
-    fn new() -> Self {
-        Datafile {
-            build: String::new(),
-            debug: String::new(),
-            header: Header::new(),
-            games: Vec::<Game>::new(),
-        }
-    }
     pub fn from_str(contents: &str) -> Self {
         serde_xml_rs::from_str(contents).expect("Can't read Logiqx datafile.")
     }
@@ -30,19 +31,6 @@ pub struct Header {
     pub author: String,
     pub homepage: String,
     pub url: String,
-}
-
-impl Header {
-    fn new() -> Self {
-        Header {
-            name: String::new(),
-            description: String::new(),
-            version: String::new(),
-            author: String::new(),
-            homepage: String::new(),
-            url: String::new(),
-        }
-    }
 }
 
 #[derive(Debug, Deserialize)]
