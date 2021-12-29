@@ -43,15 +43,15 @@ pub fn files_by_sha1(files: &[File]) -> HashMap<String, File> {
 pub struct File {
     path: PathBuf,
     sha1: String,
+    mime: String,
 }
 
 impl File {
     pub fn new(entry: &DirEntry) -> Self {
         let path: PathBuf = entry.path().into();
-        File {
-            sha1: compute_sha1(&path),
-            path: path,
-        }
+        let sha1 = compute_sha1(&path);
+        let mime = tree_magic::from_filepath(&path);
+        File { sha1, mime, path }
     }
     pub fn entry_is_relevant(entry: &DirEntry) -> bool {
         entry
@@ -64,6 +64,19 @@ impl File {
     /// Get a reference to the file's sha1.
     pub fn sha1(&self) -> &str {
         self.sha1.as_ref()
+    }
+
+    /// Get a reference to the file's mime.
+    pub fn mime(&self) -> &str {
+        self.mime.as_ref()
+    }
+
+    pub fn is_archive(&self) -> bool {
+        match self.mime.as_str() {
+            "application/zip" => true,
+            "application/x-7z-compressed" => true,
+            _ => false,
+        }
     }
 }
 
