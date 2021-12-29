@@ -1,3 +1,5 @@
+use indicatif::ParallelProgressIterator;
+
 use crate::indicatif::{ProgressBar, ProgressStyle};
 use crate::rayon::prelude::*;
 use crate::rom;
@@ -53,9 +55,7 @@ pub fn write_all_zip(bundles: Vec<rom::Bundle>, zip_dest: &PathBuf) {
             "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg} {eta_precise}",
         ),
     );
-    bundles.par_iter().for_each(|bundle| {
+    bundles.par_iter().progress_with(bar).for_each(|bundle| {
         write_zip(bundle, zip_dest.to_path_buf());
-        bar.inc(1);
     });
-    bar.finish();
 }
