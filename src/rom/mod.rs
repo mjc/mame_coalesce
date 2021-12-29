@@ -2,6 +2,7 @@ use crate::indicatif::{ProgressBar, ProgressStyle};
 
 use crate::logiqx;
 use crate::walkdir::{DirEntry, WalkDir};
+use dpc_pariter::IteratorExt;
 use rayon::prelude::*;
 use sha1::{Digest, Sha1};
 use std::collections::HashMap;
@@ -38,7 +39,7 @@ fn file_list(dir: &PathBuf) -> Vec<File> {
         .filter_entry(|e| File::entry_is_relevant(e))
         .filter_map(|v| v.ok())
         .filter(|entry| entry.file_type().is_file())
-        .map(|entry| File::new(&entry))
+        .parallel_map(|entry| File::new(&entry))
         .collect()
 }
 
