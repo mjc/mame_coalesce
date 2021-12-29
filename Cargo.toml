@@ -7,12 +7,12 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-indicatif = "^0.11"
-rayon =  "^1.1"
-serde_derive = "^1.0.98"
-serde = "^1.0.98"
-serde-xml-rs = "^0.3.1"
-sha-1 = "^0.8.1"
-structopt = { version = "^0.2.18", default-features = false }
+indicatif = "0.11"
+rayon =  "1.1"
+serde_derive = "1.0.98"
+serde = "1.0.98"
+serde-xml-rs = "0.3.1"
+sha-1 = "0.8.1"
+structopt = { version = "0.2.18", default-features = false }
 walkdir = "^2.2.9"
 zip = "^0.5.2"
