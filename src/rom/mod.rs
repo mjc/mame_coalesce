@@ -1,6 +1,8 @@
+use crate::indicatif::ProgressIterator;
 use crate::logiqx;
 use crate::walkdir::{DirEntry, WalkDir};
 use dpc_pariter::IteratorExt;
+use indicatif::{ProgressBar, ProgressStyle};
 use sha1::{Digest, Sha1};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -9,9 +11,14 @@ use std::{fs, io};
 pub mod zip;
 
 pub fn files(dir: PathBuf) -> Vec<File> {
+    let pb = ProgressBar::new(0);
+    pb.set_style(
+        ProgressStyle::default_bar().template("[{elapsed_precise}] {spinner} {msg} {eta_precise}"),
+    );
     WalkDir::new(dir)
         .into_iter()
         .filter_entry(|e| File::entry_is_relevant(e))
+        .progress_with(pb)
         .filter_map(|v| v.ok())
         .filter(|entry| entry.file_type().is_file())
         .parallel_map(|entry| File::new(&entry))
