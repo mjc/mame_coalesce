@@ -1,4 +1,4 @@
-use crate::indicatif::{ProgressBar, ProgressStyle};
+use crate::indicatif::ParallelProgressIterator;
 
 use crate::logiqx;
 use crate::walkdir::{DirEntry, WalkDir};
@@ -13,23 +13,15 @@ pub mod zip;
 
 pub fn files(dir: PathBuf) -> Vec<File> {
     let list = file_list(&dir);
-    let bar = ProgressBar::new(list.len() as u64);
-    bar.set_style(
-        ProgressStyle::default_bar().template(
-            "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg} {eta_precise}",
-        ),
-    );
     let result: Vec<File> = list
         .par_iter()
+        .progress_count(list.len() as u64)
         .map(|file| {
             let mut file = file.clone();
-            //println!("Computing sha1: {}", file.path.to_str().unwrap());
             file.sha1 = compute_sha1(&file.path);
-            bar.inc(1);
             file
         })
         .collect();
-    bar.finish();
     result
 }
 
@@ -81,11 +73,6 @@ impl File {
     /// Get a reference to the file's sha1.
     pub fn sha1(&self) -> Option<&String> {
         self.sha1.as_ref()
-    }
-
-    /// Get a reference to the file's path.
-    pub fn path(&self) -> &PathBuf {
-        &self.path
     }
 }
 
