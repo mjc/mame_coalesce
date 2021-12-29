@@ -60,8 +60,7 @@ fn main() {
         files
             .last()
             .expect("Somehow there are no files")
-            .sha1
-            .as_ref()
+            .sha1()
             .unwrap()
     );
 

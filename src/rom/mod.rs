@@ -63,8 +63,8 @@ pub fn files_by_sha1(files: &[File]) -> HashMap<String, File> {
 
 #[derive(Debug, Clone)]
 pub struct File {
-    pub path: PathBuf,
-    pub sha1: Option<String>,
+    path: PathBuf,
+    sha1: Option<String>,
 }
 
 impl File {
@@ -80,6 +80,16 @@ impl File {
             .to_str()
             .map(|s| entry.depth() == 0 || !s.starts_with('.'))
             .unwrap_or(false)
+    }
+
+    /// Get a reference to the file's sha1.
+    pub fn sha1(&self) -> Option<&String> {
+        self.sha1.as_ref()
+    }
+
+    /// Get a reference to the file's path.
+    pub fn path(&self) -> &PathBuf {
+        &self.path
     }
 }
 
