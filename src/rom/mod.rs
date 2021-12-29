@@ -4,8 +4,8 @@ use crate::walkdir::{DirEntry, WalkDir};
 use dpc_pariter::IteratorExt;
 use indicatif::{ProgressBar, ProgressStyle};
 use sha1::{Digest, Sha1};
-use std::collections::HashMap;
 use std::path::PathBuf;
+use std::{collections::HashMap, f32::consts::E};
 use std::{fs, io};
 
 pub mod zip;
@@ -45,7 +45,7 @@ pub struct File {
     path: PathBuf,
     sha1: String,
     mime: String,
-    contents: HashMap<String, String>,
+    contents: HashMap<String, Option<String>>,
 }
 
 impl File {
@@ -53,20 +53,24 @@ impl File {
         let path: PathBuf = entry.path().into();
         let sha1 = compute_sha1(&path);
         let mime = tree_magic::from_filepath(&path);
-        let contents = Self::archive_contents(&path, &mime);
+        let contents = HashMap::new();
         File {
             sha1,
             mime,
             path,
-            contents: contents,
+            contents,
         }
     }
 
-    fn archive_contents(path: &PathBuf, mime: &String) -> HashMap<String, String> {
-        if !Self::is_archive(mime) {
-            HashMap::new()
+    pub fn populate_archive_contents(&mut self) {
+        if !Self::is_archive(&self.mime) {
+            let file = std::fs::File::open(&self.path)
+                .expect(format!("can't open file: {:?}", &self.path).as_str());
+            let files = compress_tools::list_archive_files(file)
+                .expect(format!("can't parse: {:?}", &self.path).as_str());
+            self.contents = files.iter().map(|file| (file.to_owned(), None)).collect();
         } else {
-            HashMap::new()
+            ()
         }
     }
 
