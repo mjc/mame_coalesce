@@ -13,7 +13,8 @@ pub mod zip;
 pub fn files(dir: &PathBuf) -> Vec<File> {
     let pb = ProgressBar::new(0);
     pb.set_style(
-        ProgressStyle::default_bar().template("[{elapsed_precise}] {spinner} {msg} {eta_precise}"),
+        ProgressStyle::default_bar()
+            .template("{spinner} #{pos} at {per_sec} [{elapsed_precise}] {msg}"),
     );
     WalkDir::new(dir)
         .into_iter()
