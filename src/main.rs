@@ -53,7 +53,7 @@ fn main() {
     println!("Saving zips to path: {}", destination.to_str().unwrap());
 
     let datafile = logiqx::load_datafile(opt.datafile).expect("Couldn't load datafile");
-    let files = rom::files(opt.path);
+    let files = rom::files(&opt.path);
 
     println!(
         "sha1 of last file: {:?}",

@@ -10,7 +10,7 @@ use std::{fs, io};
 
 pub mod zip;
 
-pub fn files(dir: PathBuf) -> Vec<File> {
+pub fn files(dir: &PathBuf) -> Vec<File> {
     let pb = ProgressBar::new(0);
     pb.set_style(
         ProgressStyle::default_bar().template("[{elapsed_precise}] {spinner} {msg} {eta_precise}"),
