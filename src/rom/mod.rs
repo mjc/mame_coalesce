@@ -37,13 +37,8 @@ fn file_list(dir: &PathBuf) -> Vec<File> {
         .into_iter()
         .filter_entry(|e| File::entry_is_relevant(e))
         .filter_map(|v| v.ok())
-        .filter_map(|entry| {
-            if entry.file_type().is_file() {
-                Some(File::new(&entry))
-            } else {
-                None
-            }
-        })
+        .filter(|entry| entry.file_type().is_file())
+        .map(|entry| File::new(&entry))
         .collect()
 }
 
