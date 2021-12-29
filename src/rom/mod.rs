@@ -51,7 +51,7 @@ fn compute_sha1(path: &PathBuf) -> Option<String> {
     let mut file = fs::File::open(path).unwrap();
     let mut hasher = Sha1::new();
     let _n = io::copy(&mut file, &mut hasher);
-    Some(format!("{:x}", hasher.result()))
+    Some(format!("{:x}", hasher.finalize()))
 }
 
 pub fn files_by_sha1(files: &[File]) -> HashMap<String, File> {
