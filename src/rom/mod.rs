@@ -44,6 +44,7 @@ pub struct File {
     path: PathBuf,
     sha1: String,
     mime: String,
+    contents: HashMap<String, String>,
 }
 
 impl File {
@@ -51,8 +52,23 @@ impl File {
         let path: PathBuf = entry.path().into();
         let sha1 = compute_sha1(&path);
         let mime = tree_magic::from_filepath(&path);
-        File { sha1, mime, path }
+        let contents = Self::archive_contents(&path, &mime);
+        File {
+            sha1,
+            mime,
+            path,
+            contents: contents,
+        }
     }
+
+    fn archive_contents(path: &PathBuf, mime: &String) -> HashMap<String, String> {
+        if !Self::is_archive(mime) {
+            HashMap::new()
+        } else {
+            HashMap::new()
+        }
+    }
+
     pub fn entry_is_relevant(entry: &DirEntry) -> bool {
         entry
             .file_name()
@@ -71,8 +87,8 @@ impl File {
         self.mime.as_ref()
     }
 
-    pub fn is_archive(&self) -> bool {
-        match self.mime.as_str() {
+    pub fn is_archive(mime: &str) -> bool {
+        match mime {
             "application/zip" => true,
             "application/x-7z-compressed" => true,
             _ => false,
