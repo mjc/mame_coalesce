@@ -1,9 +1,6 @@
-use crate::indicatif::ParallelProgressIterator;
-
 use crate::logiqx;
 use crate::walkdir::{DirEntry, WalkDir};
 use dpc_pariter::IteratorExt;
-use rayon::prelude::*;
 use sha1::{Digest, Sha1};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -12,20 +9,6 @@ use std::{fs, io};
 pub mod zip;
 
 pub fn files(dir: PathBuf) -> Vec<File> {
-    let list = file_list(&dir);
-    let result: Vec<File> = list
-        .par_iter()
-        .progress_count(list.len() as u64)
-        .map(|file| {
-            let mut file = file.clone();
-            file.sha1 = compute_sha1(&file.path);
-            file
-        })
-        .collect();
-    result
-}
-
-fn file_list(dir: &PathBuf) -> Vec<File> {
     WalkDir::new(dir)
         .into_iter()
         .filter_entry(|e| File::entry_is_relevant(e))
