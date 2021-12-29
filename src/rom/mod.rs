@@ -35,31 +35,32 @@ fn file_list(dir: &PathBuf) -> Vec<File> {
         .collect()
 }
 
-fn compute_sha1(path: &PathBuf) -> Option<String> {
+fn compute_sha1(path: &PathBuf) -> String {
     let mut file = fs::File::open(path).unwrap();
     let mut hasher = Sha1::new();
     let _n = io::copy(&mut file, &mut hasher);
-    Some(format!("{:x}", hasher.finalize()))
+    format!("{:x}", hasher.finalize())
 }
 
 pub fn files_by_sha1(files: &[File]) -> HashMap<String, File> {
     files
         .iter()
-        .map(|file| (file.sha1.as_ref().unwrap().to_string(), file.clone()))
+        .map(|file| (file.sha1().to_string(), file.clone()))
         .collect()
 }
 
 #[derive(Debug, Clone)]
 pub struct File {
     path: PathBuf,
-    sha1: Option<String>,
+    sha1: String,
 }
 
 impl File {
     pub fn new(entry: &DirEntry) -> Self {
+        let path: PathBuf = entry.path().into();
         File {
-            sha1: None,
-            path: entry.path().to_path_buf(),
+            sha1: compute_sha1(&path),
+            path: path,
         }
     }
     pub fn entry_is_relevant(entry: &DirEntry) -> bool {
@@ -71,7 +72,7 @@ impl File {
     }
 
     /// Get a reference to the file's sha1.
-    pub fn sha1(&self) -> Option<&String> {
+    pub fn sha1(&self) -> &str {
         self.sha1.as_ref()
     }
 }

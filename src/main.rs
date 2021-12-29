@@ -57,11 +57,7 @@ fn main() {
 
     println!(
         "sha1 of last file: {:?}",
-        files
-            .last()
-            .expect("Somehow there are no files")
-            .sha1()
-            .unwrap()
+        files.last().expect("Somehow there are no files").sha1()
     );
 
     let bundles = rom::Bundle::from_datafile(&datafile, &files);
