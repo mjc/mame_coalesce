@@ -49,8 +49,4 @@ table! {
 joinable!(games -> data_files (data_file_id));
 joinable!(roms -> games (game_id));
 
-allow_tables_to_appear_in_same_query!(
-    data_files,
-    games,
-    roms,
-);
+allow_tables_to_appear_in_same_query!(data_files, games, roms,);
