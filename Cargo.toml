@@ -16,3 +16,13 @@ sha-1 = "0.10"
 structopt = { version = "0.3", default-features = false }
 walkdir = "^2.2.9"
 zip = "^0.5.2"
+
+[dependencies.sqlx]
+version = "0.5"
+features = [ "sqlite", "migrate", "time", "runtime-async-std-rustls" ]
+
+
+[dependencies.sea-orm]
+version = "0.4"
+features = [ "sqlx-sqlite", "runtime-async-std-rustls", "macros" ]
+default-features = false
