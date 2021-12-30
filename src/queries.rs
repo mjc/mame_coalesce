@@ -8,6 +8,8 @@ use crate::{logiqx, models};
 use crate::schema;
 use diesel::prelude::*;
 
+use indicatif::ProgressIterator;
+
 // this should definitely not be one giant file
 
 pub fn traverse_and_insert_data_file(
@@ -16,9 +18,9 @@ pub fn traverse_and_insert_data_file(
     file_name: &str,
 ) {
     let df_id = insert_data_file(&conn, &data_file, &file_name);
-    for game in data_file.games() {
+    for game in data_file.games().iter().progress() {
         // this should be a bulk insert with on_conflict but
-        // 1. I don't care
+        // 1. I don't care (15 seconds for just games isn't terrible)
         // 2. on_conflict for sqlite isn't in diesel 1.4
         let g_id = insert_game(&conn, game, &df_id);
     }
