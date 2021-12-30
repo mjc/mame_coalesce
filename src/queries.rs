@@ -1,18 +1,19 @@
-use std::path::Path;
+use std::{future::Future, path::Path};
 
-use sqlx::SqlitePool;
+use log::info;
+use sqlx::{Row, SqlitePool};
 
-use super::logiqx::DataFile;
+use super::logiqx;
 
 // this definitely should not be one giant file
 
-pub async fn insert_data_file(pool: SqlitePool, data_file: DataFile, path: &str) {
+pub async fn upsert_data_file(pool: &SqlitePool, data_file: &logiqx::DataFile, path: &str) -> i64 {
     // gross
     let mut conn = pool.acquire().await.unwrap();
     // gross
     let file_name = Path::new(path).file_name().unwrap().to_str().unwrap();
 
-    sqlx::query!(
+    let id = sqlx::query!(
         r#"
         INSERT INTO data_files (
             build,
@@ -49,17 +50,65 @@ pub async fn insert_data_file(pool: SqlitePool, data_file: DataFile, path: &str)
     )
     .execute(&mut conn)
     .await
-    .unwrap();
+    .unwrap() // gross
+    .last_insert_rowid();
+
+    // super gross
+    if id == 0 {
+        sqlx::query!(
+            "SELECT id FROM data_files WHERE name = ?",
+            data_file.header().name
+        )
+        .fetch_one(&mut conn)
+        .await
+        .unwrap()
+        .id
+    } else {
+        id
+    }
 }
 
-// build       STRING  NOT NULL,
-// debug       BOOLEAN,
-// file_name   STRING,
-// name        STRING,
-// description STRING,
-// category    STRING,
-// version     STRING,
-// author      STRING,
-// email       STRING,
-// homepage    STRING,
-// url         STRING
+pub async fn upsert_game(pool: &SqlitePool, game: &logiqx::Game, data_file_id: &i64) -> i64 {
+    // gross
+    let mut conn = pool.acquire().await.unwrap();
+    debug!("Game: {:?}, id: {:?}", &game, &data_file_id);
+    // TODO: clone_of, rom_of, sample_of, rebuild_to
+    let id: i64 = sqlx::query!(
+        r#"
+        INSERT INTO games (
+            name,
+            is_bios,
+            board,
+            year,
+            manufacturer,
+            data_file_id
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(name) DO UPDATE SET
+            is_bios = excluded.is_bios,
+            board = excluded.board,
+            year = excluded.year,
+            manufacturer = excluded.manufacturer,
+            data_file_id = excluded.data_file_id
+    "#,
+        game.name,
+        game.isbios,
+        game.board,
+        game.year,
+        game.manufacturer,
+        data_file_id
+    )
+    .execute(&mut conn)
+    .await
+    .unwrap()
+    .last_insert_rowid();
+    if id == 0 {
+        sqlx::query!("SELECT id FROM games WHERE name = ?", game.name)
+            .fetch_one(&mut conn)
+            .await
+            .unwrap()
+            .id
+    } else {
+        id
+    }
+}
