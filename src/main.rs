@@ -11,8 +11,9 @@ extern crate structopt;
 extern crate walkdir;
 extern crate zip;
 
-use std::fs;
+use sea_orm::{Database, DatabaseConnection};
 use std::path::PathBuf;
+use std::{env, fs};
 use structopt::StructOpt;
 
 mod logiqx;
@@ -38,7 +39,9 @@ impl Opt {
             .collect()
     }
 }
-fn main() {
+
+#[async_std::main]
+async fn main() {
     let opt = Opt::from_args();
 
     let destination = match opt.destination {
@@ -48,24 +51,14 @@ fn main() {
 
     fs::create_dir_all(&destination).expect("Couldn't create destination directory");
 
+    let db_url = match env::var("DATABASE_URL") {
+        Ok(url) => url,
+        Err(_) => "sqlite://coalesce.db".to_string(),
+    };
+
+    let db: DatabaseConnection = Database::connect(db_url).await.unwrap();
+
     println!("Using datafile: {}", opt.datafile);
     println!("Looking in path: {}", opt.path.to_str().unwrap());
     println!("Saving zips to path: {}", destination.to_str().unwrap());
-
-    let datafile = logiqx::load_datafile(opt.datafile).expect("Couldn't load datafile");
-    let files = rom::files(opt.path);
-
-    println!(
-        "sha1 of last file: {:?}",
-        files
-            .last()
-            .expect("Somehow there are no files")
-            .sha1
-            .as_ref()
-            .unwrap()
-    );
-
-    let bundles = rom::Bundle::from_datafile(&datafile, &files);
-
-    rom::zip::write_all_zip(bundles, &destination);
 }
