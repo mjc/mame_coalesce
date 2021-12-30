@@ -15,7 +15,13 @@ pub fn traverse_and_insert_data_file(
     data_file: logiqx::DataFile,
     file_name: &str,
 ) {
-    let data_file_id = insert_data_file(&conn, &data_file, &file_name);
+    let df_id = insert_data_file(&conn, &data_file, &file_name);
+    for game in data_file.games() {
+        // this should be a bulk insert with on_conflict but
+        // 1. I don't care
+        // 2. on_conflict for sqlite isn't in diesel 1.4
+        let g_id = insert_game(&conn, game, &df_id);
+    }
 }
 
 fn insert_data_file(conn: &SqliteConnection, data_file: &logiqx::DataFile, df_name: &str) -> usize {
