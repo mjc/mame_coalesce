@@ -1,0 +1,56 @@
+table! {
+    data_files (id) {
+        id -> Integer,
+        build -> Text,
+        debug -> Nullable<Bool>,
+        file_name -> Nullable<Text>,
+        name -> Nullable<Text>,
+        description -> Nullable<Text>,
+        category -> Nullable<Text>,
+        version -> Nullable<Text>,
+        author -> Nullable<Text>,
+        email -> Nullable<Text>,
+        homepage -> Nullable<Text>,
+        url -> Nullable<Text>,
+    }
+}
+
+table! {
+    games (id) {
+        id -> Integer,
+        name -> Text,
+        is_bios -> Nullable<Bool>,
+        clone_of -> Nullable<Integer>,
+        rom_of -> Nullable<Integer>,
+        sample_of -> Nullable<Integer>,
+        board -> Nullable<Text>,
+        rebuildto -> Nullable<Text>,
+        year -> Nullable<Date>,
+        manufacturer -> Nullable<Text>,
+        data_file_id -> Nullable<Binary>,
+    }
+}
+
+table! {
+    roms (id) {
+        id -> Integer,
+        name -> Text,
+        size -> Nullable<Integer>,
+        md5 -> Nullable<Binary>,
+        sha1 -> Nullable<Binary>,
+        crc -> Nullable<Binary>,
+        date -> Nullable<Date>,
+        updated_at -> Nullable<Timestamp>,
+        inserted_at -> Nullable<Timestamp>,
+        game_id -> Nullable<Binary>,
+    }
+}
+
+joinable!(games -> data_files (data_file_id));
+joinable!(roms -> games (game_id));
+
+allow_tables_to_appear_in_same_query!(
+    data_files,
+    games,
+    roms,
+);

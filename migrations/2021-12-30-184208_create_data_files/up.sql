@@ -1,15 +1,15 @@
 CREATE TABLE data_files (
     id          INTEGER PRIMARY KEY AUTOINCREMENT
                         NOT NULL,
-    build       STRING  NOT NULL,
+    build       TEXT  NOT NULL,
     debug       BOOLEAN,
-    file_name   STRING,
-    name        STRING  UNIQUE,
-    description STRING,
-    category    STRING,
-    version     STRING,
-    author      STRING,
-    email       STRING,
-    homepage    STRING,
-    url         STRING
+    file_name   TEXT,
+    name        TEXT  UNIQUE,
+    description TEXT,
+    category    TEXT,
+    version     TEXT,
+    author      TEXT,
+    email       TEXT,
+    homepage    TEXT,
+    url         TEXT
 );
