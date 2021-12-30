@@ -4,7 +4,7 @@ CREATE TABLE data_files (
     build       STRING  NOT NULL,
     debug       BOOLEAN,
     file_name   STRING,
-    name        STRING,
+    name        STRING  UNIQUE,
     description STRING,
     category    STRING,
     version     STRING,
