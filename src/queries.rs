@@ -8,7 +8,7 @@ use crate::{logiqx, models};
 use crate::schema;
 use diesel::prelude::*;
 
-use indicatif::ProgressIterator;
+use indicatif::{ProgressBar, ProgressIterator, ProgressStyle};
 
 // this should definitely not be one giant file
 
@@ -17,12 +17,20 @@ pub fn traverse_and_insert_data_file(
     data_file: logiqx::DataFile,
     file_name: &str,
 ) {
+    let progress_style = ProgressStyle::default_bar()
+        .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg} {eta_precise}");
+    let pb = ProgressBar::new(data_file.games().len() as u64).with_style(progress_style);
+
     let df_id = insert_data_file(&conn, &data_file, &file_name);
-    for game in data_file.games().iter().progress() {
+
+    for game in data_file.games().iter().progress_with(pb) {
         // this should be a bulk insert with on_conflict but
         // 1. I don't care (15 seconds for just games isn't terrible)
         // 2. on_conflict for sqlite isn't in diesel 1.4
         let g_id = insert_game(&conn, game, &df_id);
+        for rom in game.roms().iter() {
+            insert_rom(&conn, rom, &g_id);
+        }
     }
 }
 
