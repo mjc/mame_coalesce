@@ -86,3 +86,30 @@ fn insert_game(conn: &SqliteConnection, game: &logiqx::Game, df_id: &usize) -> u
             .expect("Error updating Game"),
     }
 }
+
+fn insert_rom(conn: &SqliteConnection, rom: &logiqx::Rom, g_id: &usize) -> usize {
+    use schema::{roms, roms::dsl::*};
+
+    let new_rom = (
+        name.eq(rom.name()),
+        size.eq(rom.size()),
+        md5.eq(rom.md5()),
+        sha1.eq(rom.sha1()),
+        crc.eq(rom.crc()),
+        game_id.eq(*g_id as i32),
+    );
+
+    let insert_id = diesel::insert_into(roms::table)
+        .values(&new_rom)
+        .execute(conn)
+        .optional()
+        .unwrap_or(None);
+
+    match insert_id {
+        Some(rom_id) => rom_id,
+        None => diesel::update(roms.filter(name.eq(rom.name())))
+            .set(new_rom)
+            .execute(conn)
+            .expect("Error updating Game"),
+    }
+}
