@@ -1,7 +1,7 @@
 CREATE TABLE games (
     id           INTEGER PRIMARY KEY AUTOINCREMENT
                          NOT NULL,
-    name         STRING  NOT NULL,
+    name         STRING  UNIQUE NOT NULL,
     is_bios      BOOLEAN,
     clone_of     INTEGER,
     rom_of       INTEGER,
