@@ -1,10 +1,10 @@
 CREATE TABLE data_files (
     id          INTEGER PRIMARY KEY AUTOINCREMENT
                         NOT NULL,
-    build       TEXT  NOT NULL,
-    debug       BOOLEAN,
+    build       TEXT,
+    debug       TEXT,
     file_name   TEXT,
-    name        TEXT  UNIQUE,
+    name        TEXT NOT NULL UNIQUE,
     description TEXT,
     category    TEXT,
     version     TEXT,

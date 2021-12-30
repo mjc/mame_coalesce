@@ -18,5 +18,5 @@ sha-1 = "0.10"
 structopt = { version = "0.3", default-features = false }
 walkdir = "^2.2.9"
 zip = "^0.5.2"
-diesel = { version = "1.4.4", features = ["sqlite"] }
+diesel = { version = "1.4", features = ["sqlite"] }
 dotenv = "0.15.0"

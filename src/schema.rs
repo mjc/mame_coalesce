@@ -1,10 +1,10 @@
 table! {
     data_files (id) {
         id -> Integer,
-        build -> Text,
-        debug -> Nullable<Bool>,
+        build -> Nullable<Text>,
+        debug -> Nullable<Text>,
         file_name -> Nullable<Text>,
-        name -> Nullable<Text>,
+        name -> Text,
         description -> Nullable<Text>,
         category -> Nullable<Text>,
         version -> Nullable<Text>,
@@ -19,7 +19,7 @@ table! {
     games (id) {
         id -> Integer,
         name -> Text,
-        is_bios -> Nullable<Bool>,
+        is_bios -> Nullable<Text>,
         clone_of -> Nullable<Integer>,
         rom_of -> Nullable<Integer>,
         sample_of -> Nullable<Integer>,
@@ -27,7 +27,7 @@ table! {
         rebuildto -> Nullable<Text>,
         year -> Nullable<Date>,
         manufacturer -> Nullable<Text>,
-        data_file_id -> Nullable<Binary>,
+        data_file_id -> Nullable<Integer>,
     }
 }
 
@@ -42,7 +42,7 @@ table! {
         date -> Nullable<Date>,
         updated_at -> Nullable<Timestamp>,
         inserted_at -> Nullable<Timestamp>,
-        game_id -> Nullable<Binary>,
+        game_id -> Nullable<Integer>,
     }
 }
 

@@ -26,4 +26,14 @@ impl DataFile {
     pub fn games(&self) -> &[Game] {
         self.games.as_ref()
     }
+
+    /// Get a reference to the data file's build.
+    pub fn build(&self) -> &str {
+        self.build.as_ref()
+    }
+
+    /// Get a reference to the data file's debug.
+    pub fn debug(&self) -> &str {
+        self.debug.as_ref()
+    }
 }

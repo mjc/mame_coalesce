@@ -10,5 +10,5 @@ CREATE TABLE roms (
     date        DATE,
     updated_at  DATETIME,
     inserted_at DATETIME,
-    game_id              REFERENCES games (id) 
+    game_id     INTEGER REFERENCES games (id) 
 );

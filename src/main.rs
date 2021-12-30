@@ -11,13 +11,23 @@ extern crate structopt;
 extern crate walkdir;
 extern crate zip;
 
-use indicatif::{ProgressBar, ProgressIterator, ProgressStyle};
-use log::LevelFilter;
-use std::path::PathBuf;
+#[macro_use]
+extern crate diesel;
+
+use diesel::{prelude::*, SqliteConnection};
+use dotenv::dotenv;
+
+use std::path::{Path, PathBuf};
 use std::{env, fs};
 use structopt::StructOpt;
 
-mod logiqx;
+pub mod logiqx;
+
+pub mod models;
+pub mod queries;
+pub mod schema;
+
+use queries::traverse_and_insert_data_file;
 
 #[derive(Debug, StructOpt)]
 #[structopt(
@@ -52,14 +62,27 @@ fn main() {
 
     fs::create_dir_all(&destination).expect("Couldn't create destination directory");
 
-    let _db_url = match env::var("DATABASE_URL") {
-        Ok(url) => url,
-        Err(_) => "sqlite://coalesce.db".to_string(),
-    };
-
     println!("Using datafile: {}", opt.datafile);
     println!("Looking in path: {}", opt.path.to_str().unwrap());
     println!("Saving zips to path: {}", destination.to_str().unwrap());
 
     let data_file = logiqx::load_datafile(&opt.datafile).expect("Couldn't load datafile");
+
+    let conn = establish_connection();
+
+    let file_name = Path::new(&opt.datafile)
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap();
+
+    traverse_and_insert_data_file(conn, data_file, file_name);
+}
+
+pub fn establish_connection() -> SqliteConnection {
+    dotenv().ok();
+
+    let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+    SqliteConnection::establish(&database_url)
+        .expect(&format!("Error connecting to {}", database_url))
 }
