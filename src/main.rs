@@ -41,6 +41,7 @@ impl Opt {
 }
 
 fn main() {
+    dotenv().ok();
     pretty_env_logger::init();
     let opt = Opt::from_args();
 
