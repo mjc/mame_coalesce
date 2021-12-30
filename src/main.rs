@@ -11,16 +11,12 @@ extern crate structopt;
 extern crate walkdir;
 extern crate zip;
 
-use sea_orm::{Database, DatabaseConnection};
-use sqlx::SqlitePool;
+use sqlx::{Pool, Sqlite, SqlitePool};
 use std::path::PathBuf;
 use std::{env, fs};
 use structopt::StructOpt;
 
 mod logiqx;
-mod rom;
-
-mod entities;
 
 #[derive(Debug, StructOpt)]
 #[structopt(
@@ -43,9 +39,8 @@ impl Opt {
     }
 }
 
-async fn run_migrations() {
-    let pool = SqlitePool::connect("mssql://").await.unwrap();
-    sqlx::migrate!().run(&pool).await.unwrap()
+async fn run_migrations(pool: &Pool<Sqlite>) {
+    sqlx::migrate!().run(pool).await.unwrap();
 }
 
 #[async_std::main]
@@ -64,10 +59,12 @@ async fn main() {
         Err(_) => "sqlite://coalesce.db".to_string(),
     };
 
-    run_migrations().await;
-    let db: DatabaseConnection = Database::connect(db_url).await.unwrap();
+    let pool = SqlitePool::connect("mssql://").await.unwrap();
+    run_migrations(&pool).await;
 
     println!("Using datafile: {}", opt.datafile);
     println!("Looking in path: {}", opt.path.to_str().unwrap());
     println!("Saving zips to path: {}", destination.to_str().unwrap());
+
+    let data_file = logiqx::load_datafile(opt.datafile).expect("Couldn't load datafile");
 }
