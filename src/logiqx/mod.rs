@@ -9,7 +9,7 @@ pub use data_file::DataFile;
 pub use game::Game;
 pub use rom::Rom;
 
-pub fn load_datafile(name: String) -> Result<DataFile, &'static str> {
+pub fn load_datafile(name: &str) -> Result<DataFile, &'static str> {
     match fs::read_to_string(name) {
         Ok(contents) => Ok(DataFile::from_str(&contents)),
         Err(_) => Err("Unable to parse datafile"),

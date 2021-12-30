@@ -16,7 +16,10 @@ use std::path::PathBuf;
 use std::{env, fs};
 use structopt::StructOpt;
 
+use crate::queries::insert_data_file;
+
 mod logiqx;
+mod queries;
 
 #[derive(Debug, StructOpt)]
 #[structopt(
@@ -59,12 +62,14 @@ async fn main() {
         Err(_) => "sqlite://coalesce.db".to_string(),
     };
 
-    let pool = SqlitePool::connect("mssql://").await.unwrap();
+    let pool = SqlitePool::connect(&db_url).await.unwrap();
     run_migrations(&pool).await;
 
     println!("Using datafile: {}", opt.datafile);
     println!("Looking in path: {}", opt.path.to_str().unwrap());
     println!("Saving zips to path: {}", destination.to_str().unwrap());
 
-    let data_file = logiqx::load_datafile(opt.datafile).expect("Couldn't load datafile");
+    let data_file = logiqx::load_datafile(&opt.datafile).expect("Couldn't load datafile");
+
+    queries::insert_data_file(pool, data_file, &opt.datafile).await;
 }
