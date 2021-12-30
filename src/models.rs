@@ -23,14 +23,14 @@ pub struct DataFile {
 pub struct Game {
     id: i32,
     name: String,
-    is_bios: bool,
-    clone_of: i32,  // should be a relation
-    rom_of: i32,    // should be a relation
-    sample_of: i32, // should be a relation
-    board: String,
-    rebuildto: String,
-    year: String,
-    manufacturer: String,
+    is_bios: Option<bool>,
+    clone_of: Option<i32>,
+    rom_of: Option<i32>,
+    sample_of: Option<i32>,
+    board: Option<String>,
+    rebuildto: Option<String>,
+    year: Option<String>,
+    manufacturer: Option<String>,
     data_file_id: i32,
 }
 

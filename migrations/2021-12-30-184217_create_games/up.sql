@@ -9,7 +9,7 @@ CREATE TABLE games (
     sample_of    TEXT,
     board        TEXT,
     rebuildto    TEXT,
-    year         DATE,
+    year         TEXT,
     manufacturer TEXT,
     data_file_id         INTEGER CONSTRAINT data_file_id_constraint REFERENCES data_files (id) 
 );

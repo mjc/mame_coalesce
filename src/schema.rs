@@ -25,7 +25,7 @@ table! {
         sample_of -> Nullable<Text>,
         board -> Nullable<Text>,
         rebuildto -> Nullable<Text>,
-        year -> Nullable<Date>,
+        year -> Nullable<Text>,
         manufacturer -> Nullable<Text>,
         data_file_id -> Nullable<Integer>,
     }
