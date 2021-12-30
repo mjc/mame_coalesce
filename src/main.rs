@@ -12,6 +12,7 @@ extern crate walkdir;
 extern crate zip;
 
 use sea_orm::{Database, DatabaseConnection};
+use sqlx::SqlitePool;
 use std::path::PathBuf;
 use std::{env, fs};
 use structopt::StructOpt;
@@ -42,6 +43,11 @@ impl Opt {
     }
 }
 
+async fn run_migrations() {
+    let pool = SqlitePool::connect("mssql://").await.unwrap();
+    sqlx::migrate!().run(&pool).await.unwrap()
+}
+
 #[async_std::main]
 async fn main() {
     let opt = Opt::from_args();
@@ -58,6 +64,7 @@ async fn main() {
         Err(_) => "sqlite://coalesce.db".to_string(),
     };
 
+    run_migrations().await;
     let db: DatabaseConnection = Database::connect(db_url).await.unwrap();
 
     println!("Using datafile: {}", opt.datafile);
