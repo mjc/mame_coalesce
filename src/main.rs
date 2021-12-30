@@ -11,16 +11,13 @@ extern crate structopt;
 extern crate walkdir;
 extern crate zip;
 
-use futures::future;
 use indicatif::{ProgressBar, ProgressIterator, ProgressStyle};
 use log::LevelFilter;
-use sqlx::{sqlite::SqliteConnectOptions, ConnectOptions, Pool, Sqlite, SqlitePool};
 use std::path::PathBuf;
 use std::{env, fs};
 use structopt::StructOpt;
 
 mod logiqx;
-mod queries;
 
 #[derive(Debug, StructOpt)]
 #[structopt(
@@ -43,12 +40,7 @@ impl Opt {
     }
 }
 
-async fn run_migrations(pool: &Pool<Sqlite>) {
-    sqlx::migrate!().run(pool).await.unwrap();
-}
-
-#[async_std::main]
-async fn main() {
+fn main() {
     pretty_env_logger::init();
     let opt = Opt::from_args();
 
@@ -64,34 +56,9 @@ async fn main() {
         Err(_) => "sqlite://coalesce.db".to_string(),
     };
 
-    // TODO: use env var
-    let connect_options = SqliteConnectOptions::new()
-        .filename("coalesce.db")
-        .log_statements(LevelFilter::Debug)
-        .to_owned();
-    let pool = SqlitePool::connect_with(connect_options).await.unwrap();
-    run_migrations(&pool).await;
-
     println!("Using datafile: {}", opt.datafile);
     println!("Looking in path: {}", opt.path.to_str().unwrap());
     println!("Saving zips to path: {}", destination.to_str().unwrap());
 
     let data_file = logiqx::load_datafile(&opt.datafile).expect("Couldn't load datafile");
-    upsert_entire_dat_file(pool, &data_file, &opt.datafile).await;
-}
-
-async fn upsert_entire_dat_file(pool: SqlitePool, data_file: &logiqx::DataFile, path: &str) {
-    let data_file_id = queries::upsert_data_file(&pool, &data_file, path).await;
-    let pb_style = ProgressStyle::default_bar()
-        .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg} {eta_precise}");
-    let game_bar = ProgressBar::new(data_file.games().len() as u64).with_style(pb_style.clone());
-
-    for game in data_file.games().iter().progress_with(game_bar) {
-        let game_id = queries::upsert_game(&pool, &game, &data_file_id).await;
-        let game_queries = game
-            .roms
-            .iter()
-            .map(|rom| queries::upsert_rom(&pool, rom, &game_id));
-        future::join_all(game_queries).await;
-    }
 }

@@ -7,6 +7,39 @@ use super::logiqx;
 
 // this definitely should not be one giant file
 
+pub async fn setup_sqlx(url: String) -> SqlitePool {
+        // TODO: use env var
+    let connect_options = SqliteConnectOptions::new()
+        .filename("coalesce.db")
+        .log_statements(LevelFilter::Debug)
+        .to_owned();
+    let pool = SqlitePool::connect_with(connect_options).await.unwrap();
+    run_migrations(&pool).await;
+    pool
+}
+
+
+async fn run_migrations(pool: &Pool<Sqlite>) {
+    sqlx::migrate!().run(pool).await.unwrap();
+}
+
+pub async fn upsert_entire_dat_file(pool: SqlitePool, data_file: &logiqx::DataFile, path: &str) {
+    let data_file_id = queries::upsert_data_file(&pool, &data_file, path).await;
+    let pb_style = ProgressStyle::default_bar()
+        .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg} {eta_precise}");
+    let game_bar = ProgressBar::new(data_file.games().len() as u64).with_style(pb_style.clone());
+
+    for game in data_file.games().iter().progress_with(game_bar) {
+        let game_id = queries::upsert_game(&pool, &game, &data_file_id).await;
+        let game_queries = game
+            .roms
+            .iter()
+            .map(|rom| queries::upsert_rom(&pool, rom, &game_id));
+        future::join_all(game_queries).await;
+    }
+}
+
+
 pub async fn upsert_data_file(pool: &SqlitePool, data_file: &logiqx::DataFile, path: &str) -> i64 {
     // gross
     let mut conn = pool.acquire().await.unwrap();
