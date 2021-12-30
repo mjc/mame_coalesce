@@ -13,7 +13,9 @@ extern crate zip;
 
 use async_std::stream;
 use async_std::stream::StreamExt;
+use futures::future;
 use log::LevelFilter;
+use rayon::iter::IntoParallelRefIterator;
 use sqlx::{sqlite::SqliteConnectOptions, ConnectOptions, Pool, Sqlite, SqlitePool};
 use std::path::PathBuf;
 use std::{env, fs};
@@ -82,9 +84,12 @@ async fn main() {
 
 async fn upsert_entire_dat_file(pool: SqlitePool, data_file: &logiqx::DataFile, path: &str) {
     let data_file_id = queries::upsert_data_file(&pool, &data_file, path).await;
-
     for game in data_file.games().iter() {
-        println!("id: {:?}", &data_file_id);
-        queries::upsert_game(&pool, &game, &data_file_id).await;
+        let game_id = queries::upsert_game(&pool, &game, &data_file_id).await;
+        let game_queries = game
+            .roms
+            .iter()
+            .map(|rom| queries::upsert_rom(&pool, rom, &game_id));
+        future::join_all(game_queries).await;
     }
 }
