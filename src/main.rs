@@ -19,6 +19,8 @@ use structopt::StructOpt;
 mod logiqx;
 mod rom;
 
+mod entities;
+
 #[derive(Debug, StructOpt)]
 #[structopt(
     name = "mame_coalesce",

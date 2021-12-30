@@ -8,7 +8,7 @@ CREATE TABLE roms (
     sha1        BLOB,
     crc         BLOB,
     date        DATE,
-    updated_at  DATETIME NOT NULL,
-    inserted_at DATETIME NOT NULL,
+    updated_at  DATETIME,
+    inserted_at DATETIME,
     game_id              REFERENCES games (id) 
 );
