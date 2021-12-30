@@ -13,6 +13,8 @@ extern crate zip;
 
 #[macro_use]
 extern crate diesel;
+#[macro_use]
+extern crate diesel_migrations;
 
 use diesel::{prelude::*, SqliteConnection};
 use dotenv::dotenv;
@@ -79,10 +81,13 @@ fn main() {
     traverse_and_insert_data_file(conn, data_file, file_name);
 }
 
+embed_migrations!("migrations");
 pub fn establish_connection() -> SqliteConnection {
     dotenv().ok();
 
     let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-    SqliteConnection::establish(&database_url)
-        .expect(&format!("Error connecting to {}", database_url))
+    let connection = SqliteConnection::establish(&database_url)
+        .expect(&format!("Error connecting to {}", database_url));
+    let _migration_result = embedded_migrations::run(&connection);
+    connection
 }

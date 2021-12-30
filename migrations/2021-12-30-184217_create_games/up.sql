@@ -4,9 +4,9 @@ CREATE TABLE games (
     name         TEXT  NOT NULL
                          CONSTRAINT unique_name UNIQUE,
     is_bios      TEXT,
-    clone_of     INTEGER,
-    rom_of       INTEGER,
-    sample_of    INTEGER,
+    clone_of     TEXT,
+    rom_of       TEXT,
+    sample_of    TEXT,
     board        TEXT,
     rebuildto    TEXT,
     year         DATE,
