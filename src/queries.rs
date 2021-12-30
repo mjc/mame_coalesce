@@ -1,7 +1,7 @@
-use std::{future::Future, path::Path};
+use std::path::Path;
 
-use log::{debug, info};
-use sqlx::{Row, SqlitePool};
+use log::debug;
+use sqlx::SqlitePool;
 
 use super::logiqx;
 
