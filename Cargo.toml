@@ -20,7 +20,7 @@ async-std = { version = "1.10", features = ["attributes"] }
 
 [dependencies.sqlx]
 version = "0.5"
-features = [ "sqlite", "migrate", "time", "runtime-async-std-rustls" ]
+features = [ "sqlite", "offline", "migrate", "time", "runtime-async-std-rustls" ]
 
 
 [dependencies.sea-orm]
