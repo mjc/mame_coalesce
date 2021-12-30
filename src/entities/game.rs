@@ -14,9 +14,31 @@ pub struct Model {
     pub rebuildto: String,
     pub year: i64,
     pub manufacturer: String,
+    pub data_file_id: i32,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {}
+pub enum Relation {
+    #[sea_orm(has_many = "super::rom::Entity")]
+    Rom,
+    #[sea_orm(
+        belongs_to = "super::data_file::Entity",
+        from = "Column::DataFileId",
+        to = "super::data_file::Column::Id"
+    )]
+    DataFile,
+}
+
+impl Related<super::rom::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Rom.def()
+    }
+}
+
+impl Related<super::data_file::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DataFile.def()
+    }
+}
 
 impl ActiveModelBehavior for ActiveModel {}
