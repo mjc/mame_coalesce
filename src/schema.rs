@@ -16,6 +16,19 @@ table! {
 }
 
 table! {
+    files (id) {
+        id -> Nullable<Integer>,
+        path -> Text,
+        name -> Text,
+        crc -> Binary,
+        sha1 -> Binary,
+        md5 -> Binary,
+        in_archive -> Bool,
+        rom_id -> Nullable<Binary>,
+    }
+}
+
+table! {
     games (id) {
         id -> Integer,
         name -> Text,
@@ -46,7 +59,8 @@ table! {
     }
 }
 
+joinable!(files -> roms (rom_id));
 joinable!(games -> data_files (data_file_id));
 joinable!(roms -> games (game_id));
 
-allow_tables_to_appear_in_same_query!(data_files, games, roms,);
+allow_tables_to_appear_in_same_query!(data_files, files, games, roms,);
