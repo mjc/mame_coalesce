@@ -3,6 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use log::{debug, info};
 use md5::Md5;
 use memmap2::MmapOptions;
 use sha1::{Digest, Sha1};
@@ -66,8 +67,12 @@ impl RomFile {
                 );
                 true
             }
+            "application/x-n64-rom" => false,
             mime => {
-                println!("{:?}", mime);
+                info!(
+                    "Unknown mime type, assuming that it isn't an archive {:?}",
+                    mime
+                );
                 false
             }
         }
