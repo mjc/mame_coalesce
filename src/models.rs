@@ -47,3 +47,15 @@ pub struct Rom {
     inserted_at: String, // utc datetime
     game_id: i32,
 }
+
+#[derive(Queryable)]
+pub struct File {
+    id: Option<i32>,
+    path: String,
+    name: String,
+    crc: Vec<u8>,
+    sha1: Vec<u8>,
+    md5: Vec<u8>,
+    in_archive: bool,
+    rom_id: Option<i32>,
+}
