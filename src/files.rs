@@ -1,19 +1,23 @@
-use std::{fs::File, path::Path};
+use std::{
+    fs::File,
+    path::{Path, PathBuf},
+};
 
 use md5::Md5;
 use memmap2::MmapOptions;
 use sha1::{Digest, Sha1};
 
-pub struct RomFile<'a> {
-    path: &'a Path,
+#[derive(Debug)]
+pub struct RomFile {
+    path: PathBuf,
     crc: u32,
     sha1: Vec<u8>,
     md5: Vec<u8>,
     in_archive: bool,
 }
 
-impl RomFile<'_> {
-    pub fn from_path(path: &Path, in_archive: bool) -> RomFile {
+impl RomFile {
+    pub fn from_path(path: PathBuf, in_archive: bool) -> RomFile {
         let (crc, sha1, md5) = Self::compute_hashes(&path);
         RomFile {
             path: path,
@@ -66,8 +70,6 @@ impl RomFile<'_> {
                 println!("{:?}", mime);
                 false
             }
-        };
-
-        false
+        }
     }
 }
