@@ -45,4 +45,9 @@ impl DataFile {
     pub fn debug(&self) -> &str {
         self.debug.as_ref()
     }
+
+    /// Get a reference to the data file's sha1.
+    pub fn sha1(&self) -> Option<&Vec<u8>> {
+        self.sha1.as_ref()
+    }
 }

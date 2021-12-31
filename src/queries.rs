@@ -47,6 +47,7 @@ fn insert_data_file(conn: &SqliteConnection, data_file: &logiqx::DataFile, df_na
         author.eq(data_file.header().author()),
         homepage.eq(data_file.header().homepage()),
         url.eq(data_file.header().url()),
+        sha1.eq(data_file.sha1()),
     );
 
     let insert_id = diesel::insert_into(data_files::table)

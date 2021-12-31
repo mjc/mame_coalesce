@@ -11,5 +11,6 @@ CREATE TABLE data_files (
     author      TEXT,
     email       TEXT,
     homepage    TEXT,
-    url         TEXT
+    url         TEXT,
+    sha1        BLOB
 );

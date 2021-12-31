@@ -18,6 +18,7 @@ pub struct DataFile {
     email: Option<String>,
     homepage: Option<String>,
     url: Option<String>,
+    sha1: Vec<u8>,
 }
 
 #[derive(Identifiable, Queryable, Associations, PartialEq)]

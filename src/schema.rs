@@ -12,6 +12,7 @@ table! {
         email -> Nullable<Text>,
         homepage -> Nullable<Text>,
         url -> Nullable<Text>,
+        sha1 -> Nullable<Binary>,
     }
 }
 
