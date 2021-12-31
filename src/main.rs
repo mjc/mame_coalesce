@@ -21,9 +21,10 @@ use diesel::{prelude::*, SqliteConnection};
 use diesel_logger::LoggingConnection;
 use dotenv::dotenv;
 use files::RomFile;
-use indicatif::ProgressIterator;
+use indicatif::{ProgressBar, ProgressIterator, ProgressStyle};
 use md5::Md5;
 use memmap2::MmapOptions;
+use rayon::prelude::*;
 use sha1::{Digest, Sha1};
 use tempdir::TempDir;
 use walkdir::{DirEntry, WalkDir};
@@ -97,21 +98,43 @@ fn main() {
 
     traverse_and_insert_data_file(conn, data_file, file_name);
     let file_list = file_list(&opt.path);
-    // this can probably be done during the walkdir
-    let rom_files = file_list.iter().progress().fold(
-        Vec::<RomFile>::new().as_mut(),
-        |rf_vec: &mut Vec<RomFile>, dir_entry| {
-            if RomFile::is_archive(dir_entry.path()) {
-                let mut archive_contents =
-                    get_rom_files_for_archive(dir_entry.path().to_path_buf());
-                rf_vec.append(&mut archive_contents);
-                rf_vec
-            } else {
-                rf_vec.push(RomFile::from_path(dir_entry.path().to_path_buf(), false));
-                rf_vec
-            }
-        },
+    let bar = ProgressBar::new(file_list.len() as u64);
+    bar.set_style(
+        ProgressStyle::default_bar().template(
+            "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg} {eta_precise}",
+        ),
     );
+    // this can probably be done during the walkdir
+    let rom_files = file_list
+        .par_iter()
+        .fold(
+            || Vec::<RomFile>::new(),
+            |mut v: Vec<RomFile>, e: &DirEntry| {
+                let path = e.path().to_path_buf();
+                bar.inc(1);
+
+                match RomFile::is_archive(e.path()) {
+                    false => {
+                        let r = RomFile::from_path(path, false);
+                        v.push(r);
+                        v
+                    }
+                    true => {
+                        let mut internal = get_rom_files_for_archive(path);
+                        v.append(&mut internal);
+                        v
+                    }
+                }
+            },
+        )
+        .reduce(
+            || Vec::<RomFile>::new(),
+            |mut dest: Vec<RomFile>, mut source: Vec<RomFile>| {
+                dest.append(&mut source);
+                dest
+            },
+        );
+    bar.finish();
 }
 
 fn get_rom_files_for_archive(path: PathBuf) -> Vec<RomFile> {
