@@ -1,3 +1,5 @@
+use std::path::{Path, PathBuf};
+
 use crate::diesel::{Insertable, Queryable};
 
 use crate::schema::{data_files, games, roms};
@@ -49,7 +51,7 @@ pub struct Rom {
 }
 
 #[derive(Queryable)]
-pub struct File {
+pub struct RomFile {
     id: Option<i32>,
     path: String,
     name: String,
@@ -58,4 +60,32 @@ pub struct File {
     md5: Vec<u8>,
     in_archive: bool,
     rom_id: Option<i32>,
+}
+
+fn rom_files_from_path(path: &PathBuf) -> Vec<RomFile> {
+    Vec::new()
+}
+
+pub fn is_archive(path: &Path) -> bool {
+    match tree_magic::from_filepath(&path).as_str() {
+        "application/zip" => true,
+        "application/x-7z-compressed" => true,
+        "text/plain" => {
+            println!("Found a text file: {:?}", path.file_name());
+            false
+        }
+        "application/x-cpio" => {
+            println!(
+                "Found an archive that calls itself cpio, this is weird: {:?}",
+                path.file_name()
+            );
+            true
+        }
+        mime => {
+            println!("{:?}", mime);
+            false
+        }
+    };
+
+    false
 }

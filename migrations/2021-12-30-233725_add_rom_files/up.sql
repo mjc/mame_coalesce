@@ -1,4 +1,4 @@
-CREATE TABLE files (
+CREATE TABLE rom_files (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     path       TEXT    CONSTRAINT file_path NOT NULL
                        CONSTRAINT file_path UNIQUE,

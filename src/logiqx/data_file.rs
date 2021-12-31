@@ -1,3 +1,5 @@
+use sha1::{Digest, Sha1};
+
 use super::game::Game;
 use super::header::Header;
 
@@ -9,12 +11,19 @@ pub struct DataFile {
     #[serde(default)]
     pub debug: String, // bool
     header: Header,
+    sha1: Option<Vec<u8>>,
     #[serde(rename = "game", default)]
     games: Vec<Game>,
 }
 impl DataFile {
     pub fn from_str(contents: &str) -> Self {
-        serde_xml_rs::from_str(contents).expect("Can't read Logiqx datafile.")
+        let mut hasher = Sha1::new();
+        hasher.update(contents);
+        let mut data_file: DataFile =
+            serde_xml_rs::from_str(contents).expect("Can't read Logiqx datafile.");
+        // this should probably happen before we bother parsing, at the call site for this
+        data_file.sha1 = hex::decode(hasher.finalize()).ok();
+        data_file
     }
 
     /// Get a reference to the data file's header.

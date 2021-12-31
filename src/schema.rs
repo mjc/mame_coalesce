@@ -16,19 +16,6 @@ table! {
 }
 
 table! {
-    files (id) {
-        id -> Nullable<Integer>,
-        path -> Text,
-        name -> Text,
-        crc -> Binary,
-        sha1 -> Binary,
-        md5 -> Binary,
-        in_archive -> Bool,
-        rom_id -> Nullable<Integer>,
-    }
-}
-
-table! {
     games (id) {
         id -> Integer,
         name -> Text,
@@ -41,6 +28,19 @@ table! {
         year -> Nullable<Text>,
         manufacturer -> Nullable<Text>,
         data_file_id -> Nullable<Integer>,
+    }
+}
+
+table! {
+    rom_files (id) {
+        id -> Nullable<Integer>,
+        path -> Text,
+        name -> Text,
+        crc -> Binary,
+        sha1 -> Binary,
+        md5 -> Binary,
+        in_archive -> Bool,
+        rom_id -> Nullable<Integer>,
     }
 }
 
@@ -59,8 +59,13 @@ table! {
     }
 }
 
-joinable!(files -> roms (rom_id));
 joinable!(games -> data_files (data_file_id));
+joinable!(rom_files -> roms (rom_id));
 joinable!(roms -> games (game_id));
 
-allow_tables_to_appear_in_same_query!(data_files, files, games, roms,);
+allow_tables_to_appear_in_same_query!(
+    data_files,
+    games,
+    rom_files,
+    roms,
+);

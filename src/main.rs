@@ -18,6 +18,7 @@ extern crate diesel_migrations;
 
 use diesel::{prelude::*, SqliteConnection};
 use dotenv::dotenv;
+use walkdir::{DirEntry, WalkDir};
 
 use std::path::{Path, PathBuf};
 use std::{env, fs};
@@ -25,6 +26,7 @@ use structopt::StructOpt;
 
 pub mod logiqx;
 
+pub mod files;
 pub mod models;
 pub mod queries;
 pub mod schema;
@@ -79,6 +81,7 @@ fn main() {
         .unwrap();
 
     traverse_and_insert_data_file(conn, data_file, file_name);
+    file_list(&opt.path);
 }
 
 embed_migrations!("migrations");
@@ -90,4 +93,27 @@ pub fn establish_connection() -> SqliteConnection {
         .expect(&format!("Error connecting to {}", database_url));
     let _migration_result = embedded_migrations::run(&connection);
     connection
+}
+
+fn file_list(dir: &PathBuf) -> Vec<bool> {
+    WalkDir::new(dir)
+        .into_iter()
+        .filter_entry(|e| entry_is_relevant(e))
+        .filter_map(|v| v.ok())
+        .filter_map(|entry| {
+            if entry.file_type().is_file() {
+                Some(models::is_archive(entry.path()))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn entry_is_relevant(entry: &DirEntry) -> bool {
+    entry
+        .file_name()
+        .to_str()
+        .map(|s| entry.depth() == 0 || !s.starts_with('.'))
+        .unwrap_or(false)
 }

@@ -121,3 +121,30 @@ fn insert_rom(conn: &SqliteConnection, rom: &logiqx::Rom, g_id: &usize) -> usize
             .expect("Error updating Game"),
     }
 }
+
+// fn insert_file(conn: &SqliteConnection, rom_file: &files::RomFile, df_name: &str) -> usize {
+//     use schema::{files, files::dsl::*};
+
+//     let new_file = (
+//         path.eq(rom_file.path()),
+//         name.eq(rom_file.name()),
+//         crc.eq(rom_file.crc()),
+//         sha1.eq(rom_file.sha1()),
+//         md5.eq(rom_file.md5()),
+//         in_archive.eq(rom_file.in_archive()),
+//     );
+
+//     let insert_id = diesel::insert_into(files::table)
+//         .values(&new_file)
+//         .execute(conn)
+//         .optional()
+//         .unwrap_or(None);
+
+//     match insert_id {
+//         Some(rom_file_id) => rom_file_id,
+//         None => diesel::update(files.filter(name.eq(rom_file.header().name())))
+//             .set(new_file)
+//             .execute(conn)
+//             .expect("Error updating DataFile"),
+//     }
+// }
