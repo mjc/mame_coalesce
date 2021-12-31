@@ -22,7 +22,7 @@ impl DataFile {
         let mut data_file: DataFile =
             serde_xml_rs::from_str(contents).expect("Can't read Logiqx datafile.");
         // this should probably happen before we bother parsing, at the call site for this
-        data_file.sha1 = hex::decode(hasher.finalize()).ok();
+        data_file.sha1 = Some(hasher.finalize().to_vec());
         data_file
     }
 

@@ -17,6 +17,7 @@ extern crate diesel;
 extern crate diesel_migrations;
 
 use diesel::{prelude::*, SqliteConnection};
+use diesel_logger::LoggingConnection;
 use dotenv::dotenv;
 use walkdir::{DirEntry, WalkDir};
 
@@ -85,11 +86,11 @@ fn main() {
 }
 
 embed_migrations!("migrations");
-pub fn establish_connection() -> SqliteConnection {
+pub fn establish_connection() -> LoggingConnection<SqliteConnection> {
     dotenv().ok();
 
     let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-    let connection = SqliteConnection::establish(&database_url)
+    let connection = LoggingConnection::<SqliteConnection>::establish(&database_url)
         .expect(&format!("Error connecting to {}", database_url));
     let _migration_result = embedded_migrations::run(&connection);
     connection

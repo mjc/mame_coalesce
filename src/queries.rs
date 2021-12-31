@@ -1,6 +1,6 @@
 use std::convert::TryInto;
 
-use diesel::SqliteConnection;
+use diesel_logger::LoggingConnection;
 
 use crate::models::*;
 use crate::{logiqx, models};
@@ -13,28 +13,46 @@ use indicatif::{ProgressBar, ProgressIterator, ProgressStyle};
 // this should definitely not be one giant file
 
 pub fn traverse_and_insert_data_file(
-    conn: SqliteConnection,
+    conn: LoggingConnection<SqliteConnection>,
     data_file: logiqx::DataFile,
-    file_name: &str,
+    data_file_name: &str,
 ) {
+    use schema::data_files::dsl::*;
+
     let progress_style = ProgressStyle::default_bar()
         .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg} {eta_precise}");
     let pb = ProgressBar::new(data_file.games().len() as u64).with_style(progress_style);
 
-    let df_id = insert_data_file(&conn, &data_file, &file_name);
+    println!("{:?}", data_file.sha1());
 
-    for game in data_file.games().iter().progress_with(pb) {
-        // this should be a bulk insert with on_conflict but
-        // 1. I don't care (15 seconds for just games isn't terrible)
-        // 2. on_conflict for sqlite isn't in diesel 1.4
-        let g_id = insert_game(&conn, game, &df_id);
-        for rom in game.roms().iter() {
-            insert_rom(&conn, rom, &g_id);
+    let already_current = diesel::select(diesel::dsl::exists(
+        data_files.filter(sha1.eq(data_file.sha1())),
+    ))
+    .get_result(&conn);
+
+    match already_current {
+        Ok(true) => (),
+        Ok(false) | Err(_) => {
+            let df_id = insert_data_file(&conn, &data_file, &data_file_name);
+
+            for game in data_file.games().iter().progress_with(pb) {
+                // this should be a bulk insert with on_conflict but
+                // 1. I don't care (15 seconds for just games isn't terrible)
+                // 2. on_conflict for sqlite isn't in diesel 1.4
+                let g_id = insert_game(&conn, game, &df_id);
+                for rom in game.roms().iter() {
+                    insert_rom(&conn, rom, &g_id);
+                }
+            }
         }
     }
 }
 
-fn insert_data_file(conn: &SqliteConnection, data_file: &logiqx::DataFile, df_name: &str) -> usize {
+fn insert_data_file(
+    conn: &LoggingConnection<SqliteConnection>,
+    data_file: &logiqx::DataFile,
+    df_name: &str,
+) -> usize {
     use schema::{data_files, data_files::dsl::*};
 
     let new_data_file = (
@@ -65,7 +83,11 @@ fn insert_data_file(conn: &SqliteConnection, data_file: &logiqx::DataFile, df_na
     }
 }
 
-fn insert_game(conn: &SqliteConnection, game: &logiqx::Game, df_id: &usize) -> usize {
+fn insert_game(
+    conn: &LoggingConnection<SqliteConnection>,
+    game: &logiqx::Game,
+    df_id: &usize,
+) -> usize {
     use schema::{games, games::dsl::*};
 
     let new_game = (
@@ -96,7 +118,11 @@ fn insert_game(conn: &SqliteConnection, game: &logiqx::Game, df_id: &usize) -> u
     }
 }
 
-fn insert_rom(conn: &SqliteConnection, rom: &logiqx::Rom, g_id: &usize) -> usize {
+fn insert_rom(
+    conn: &LoggingConnection<SqliteConnection>,
+    rom: &logiqx::Rom,
+    g_id: &usize,
+) -> usize {
     use schema::{roms, roms::dsl::*};
 
     let new_rom = (
@@ -123,7 +149,7 @@ fn insert_rom(conn: &SqliteConnection, rom: &logiqx::Rom, g_id: &usize) -> usize
     }
 }
 
-// fn insert_file(conn: &SqliteConnection, rom_file: &files::RomFile, df_name: &str) -> usize {
+// fn insert_file(conn: &LoggingConnection<SqliteConnection>, rom_file: &files::RomFile, df_name: &str) -> usize {
 //     use schema::{files, files::dsl::*};
 
 //     let new_file = (

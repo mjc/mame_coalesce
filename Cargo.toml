@@ -21,5 +21,6 @@ walkdir = "^2.2.9"
 zip = "^0.5.2"
 diesel = { version = "*", features = ["sqlite"] }
 diesel_migrations = "1.4"
+diesel_logger = "0.1.1"
 dotenv = "0.15.0"
 tree_magic = "0.2"
