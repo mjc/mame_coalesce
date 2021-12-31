@@ -148,7 +148,6 @@ fn insert_rom(
             .expect("Error updating Game"),
     }
 }
-
 fn insert_file(
     conn: &LoggingConnection<SqliteConnection>,
     rom_file: &RomFile,

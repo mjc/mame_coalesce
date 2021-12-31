@@ -16,6 +16,7 @@ extern crate diesel;
 #[macro_use]
 extern crate diesel_migrations;
 
+use compress_tools::{uncompress_archive, Ownership};
 use diesel::{prelude::*, SqliteConnection};
 use diesel_logger::LoggingConnection;
 use dotenv::dotenv;
@@ -24,9 +25,13 @@ use indicatif::ProgressIterator;
 use md5::Md5;
 use memmap2::MmapOptions;
 use sha1::{Digest, Sha1};
+use tempdir::TempDir;
 use walkdir::{DirEntry, WalkDir};
 
-use std::{env, fs, io::BufReader};
+use std::{
+    env, fs,
+    io::{self, BufReader},
+};
 use std::{
     fs::File,
     path::{Path, PathBuf},
@@ -96,9 +101,22 @@ fn main() {
         Vec::<RomFile>::new().as_mut(),
         |rf_vec: &mut Vec<RomFile>, dir_entry| {
             if RomFile::is_archive(dir_entry.path()) {
+                let mut source = File::open(dir_entry.path()).unwrap();
+                let dest = TempDir::new(file_name).unwrap();
+                uncompress_archive(source, &dest.path(), Ownership::Ignore);
+                let mut archive_contents: Vec<RomFile> = walkdir::WalkDir::new(dest.path())
+                    .into_iter()
+                    .filter_entry(|e| entry_is_relevant(e))
+                    .filter_map(|v| v.ok())
+                    .filter_map(|entry| match entry.file_type().is_file() {
+                        true => Some(RomFile::from_path(entry.path().to_path_buf(), true)),
+                        false => None,
+                    })
+                    .collect();
+                rf_vec.append(&mut archive_contents);
                 rf_vec
             } else {
-                rf_vec.push(RomFile::from_path(dir_entry.path(), false));
+                rf_vec.push(RomFile::from_path(dir_entry.path().to_path_buf(), false));
                 rf_vec
             }
         },
