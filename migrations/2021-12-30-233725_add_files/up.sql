@@ -7,5 +7,5 @@ CREATE TABLE files (
     sha1       BLOB    NOT NULL,
     md5        BLOB    NOT NULL,
     in_archive BOOLEAN NOT NULL,
-    rom_id             CONSTRAINT file_rom REFERENCES roms (id) 
+    rom_id             INTEGER CONSTRAINT file_rom REFERENCES roms (id)
 );

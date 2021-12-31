@@ -24,7 +24,7 @@ table! {
         sha1 -> Binary,
         md5 -> Binary,
         in_archive -> Bool,
-        rom_id -> Nullable<Binary>,
+        rom_id -> Nullable<Integer>,
     }
 }
 
