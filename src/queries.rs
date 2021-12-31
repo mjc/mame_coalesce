@@ -149,29 +149,33 @@ fn insert_rom(
     }
 }
 
-// fn insert_file(conn: &LoggingConnection<SqliteConnection>, rom_file: &files::RomFile, df_name: &str) -> usize {
-//     use schema::{files, files::dsl::*};
+fn insert_file(
+    conn: &LoggingConnection<SqliteConnection>,
+    rom_file: &RomFile,
+    df_name: &str,
+) -> usize {
+    use schema::{rom_files, rom_files::dsl::*};
 
-//     let new_file = (
-//         path.eq(rom_file.path()),
-//         name.eq(rom_file.name()),
-//         crc.eq(rom_file.crc()),
-//         sha1.eq(rom_file.sha1()),
-//         md5.eq(rom_file.md5()),
-//         in_archive.eq(rom_file.in_archive()),
-//     );
+    let new_file = (
+        path.eq(rom_file.path()),
+        name.eq(rom_file.name()),
+        crc.eq(rom_file.crc()),
+        sha1.eq(rom_file.sha1()),
+        md5.eq(rom_file.md5()),
+        in_archive.eq(rom_file.in_archive()),
+    );
 
-//     let insert_id = diesel::insert_into(files::table)
-//         .values(&new_file)
-//         .execute(conn)
-//         .optional()
-//         .unwrap_or(None);
+    let insert_id = diesel::insert_into(rom_files::table)
+        .values(&new_file)
+        .execute(conn)
+        .optional()
+        .unwrap_or(None);
 
-//     match insert_id {
-//         Some(rom_file_id) => rom_file_id,
-//         None => diesel::update(files.filter(name.eq(rom_file.header().name())))
-//             .set(new_file)
-//             .execute(conn)
-//             .expect("Error updating DataFile"),
-//     }
-// }
+    match insert_id {
+        Some(rom_file_id) => rom_file_id,
+        None => diesel::update(rom_files.filter(name.eq(rom_file.name())))
+            .set(new_file)
+            .execute(conn)
+            .expect("Error updating DataFile"),
+    }
+}

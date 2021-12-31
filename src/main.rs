@@ -19,10 +19,18 @@ extern crate diesel_migrations;
 use diesel::{prelude::*, SqliteConnection};
 use diesel_logger::LoggingConnection;
 use dotenv::dotenv;
+use files::RomFile;
+use indicatif::ProgressIterator;
+use md5::Md5;
+use memmap2::MmapOptions;
+use sha1::{Digest, Sha1};
 use walkdir::{DirEntry, WalkDir};
 
-use std::path::{Path, PathBuf};
-use std::{env, fs};
+use std::{env, fs, io::BufReader};
+use std::{
+    fs::File,
+    path::{Path, PathBuf},
+};
 use structopt::StructOpt;
 
 pub mod logiqx;
@@ -82,7 +90,19 @@ fn main() {
         .unwrap();
 
     traverse_and_insert_data_file(conn, data_file, file_name);
-    file_list(&opt.path);
+    let file_list = file_list(&opt.path);
+    // this can probably be done during the walkdir
+    let rom_files = file_list.iter().progress().fold(
+        Vec::<RomFile>::new().as_mut(),
+        |rf_vec: &mut Vec<RomFile>, dir_entry| {
+            if RomFile::is_archive(dir_entry.path()) {
+                rf_vec
+            } else {
+                rf_vec.push(RomFile::from_path(dir_entry.path(), false));
+                rf_vec
+            }
+        },
+    );
 }
 
 embed_migrations!("migrations");
@@ -96,19 +116,16 @@ pub fn establish_connection() -> LoggingConnection<SqliteConnection> {
     connection
 }
 
-fn file_list(dir: &PathBuf) -> Vec<bool> {
+fn file_list(dir: &PathBuf) -> Vec<DirEntry> {
     WalkDir::new(dir)
         .into_iter()
         .filter_entry(|e| entry_is_relevant(e))
         .filter_map(|v| v.ok())
-        .filter_map(|entry| {
-            if entry.file_type().is_file() {
-                Some(models::is_archive(entry.path()))
-            } else {
-                None
-            }
+        .filter_map(|entry| match entry.file_type().is_file() {
+            true => Some(entry),
+            false => None,
         })
-        .collect()
+        .collect::<Vec<DirEntry>>()
 }
 
 fn entry_is_relevant(entry: &DirEntry) -> bool {

@@ -63,30 +63,38 @@ pub struct RomFile {
     rom_id: Option<i32>,
 }
 
-fn rom_files_from_path(path: &PathBuf) -> Vec<RomFile> {
-    Vec::new()
-}
+impl RomFile {
+    /// Get a reference to the rom file's path.
+    pub fn path(&self) -> &str {
+        self.path.as_ref()
+    }
+    /// Get a reference to the rom file's name.
+    pub fn name(&self) -> &str {
+        self.name.as_ref()
+    }
 
-pub fn is_archive(path: &Path) -> bool {
-    match tree_magic::from_filepath(&path).as_str() {
-        "application/zip" => true,
-        "application/x-7z-compressed" => true,
-        "text/plain" => {
-            println!("Found a text file: {:?}", path.file_name());
-            false
-        }
-        "application/x-cpio" => {
-            println!(
-                "Found an archive that calls itself cpio, this is weird: {:?}",
-                path.file_name()
-            );
-            true
-        }
-        mime => {
-            println!("{:?}", mime);
-            false
-        }
-    };
+    /// Get a reference to the rom file's crc.
+    pub fn crc(&self) -> &[u8] {
+        self.crc.as_ref()
+    }
 
-    false
+    /// Get a reference to the rom file's sha1.
+    pub fn sha1(&self) -> &[u8] {
+        self.sha1.as_ref()
+    }
+
+    /// Get a reference to the rom file's md5.
+    pub fn md5(&self) -> &[u8] {
+        self.md5.as_ref()
+    }
+
+    /// Get a reference to the rom file's in archive.
+    pub fn in_archive(&self) -> bool {
+        self.in_archive
+    }
+
+    /// Get a reference to the rom file's rom id.
+    pub fn rom_id(&self) -> Option<i32> {
+        self.rom_id
+    }
 }

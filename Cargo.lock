@@ -424,6 +424,7 @@ dependencies = [
 name = "mame_coalesce"
 version = "0.1.0"
 dependencies = [
+ "crc32fast",
  "diesel",
  "diesel_logger",
  "diesel_migrations",
@@ -431,6 +432,8 @@ dependencies = [
  "hex",
  "indicatif",
  "log",
+ "md-5",
+ "memmap2",
  "pretty_env_logger",
  "rayon",
  "serde",
@@ -441,6 +444,15 @@ dependencies = [
  "tree_magic",
  "walkdir",
  "zip",
+]
+
+[[package]]
+name = "md-5"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e6a38fc55c8bbc10058782919516f88826e70320db6d206aebc49611d24216ae"
+dependencies = [
+ "digest",
 ]
 
 [[package]]
@@ -457,6 +469,15 @@ name = "memchr"
 version = "2.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "308cc39be01b73d0d18f82a0e7b2a3df85245f84af96fdddc5d202d27e47b86a"
+
+[[package]]
+name = "memmap2"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4647a11b578fead29cdbb34d4adef8dd3dc35b876c9c6d5240d83f205abfe96e"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "memoffset"
