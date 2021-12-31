@@ -29,6 +29,7 @@ use tempdir::TempDir;
 use walkdir::{DirEntry, WalkDir};
 
 use std::{
+    convert::TryInto,
     env, fs,
     io::{self, BufReader},
 };
@@ -101,18 +102,8 @@ fn main() {
         Vec::<RomFile>::new().as_mut(),
         |rf_vec: &mut Vec<RomFile>, dir_entry| {
             if RomFile::is_archive(dir_entry.path()) {
-                let mut source = File::open(dir_entry.path()).unwrap();
-                let dest = TempDir::new(file_name).unwrap();
-                uncompress_archive(source, &dest.path(), Ownership::Ignore);
-                let mut archive_contents: Vec<RomFile> = walkdir::WalkDir::new(dest.path())
-                    .into_iter()
-                    .filter_entry(|e| entry_is_relevant(e))
-                    .filter_map(|v| v.ok())
-                    .filter_map(|entry| match entry.file_type().is_file() {
-                        true => Some(RomFile::from_path(entry.path().to_path_buf(), true)),
-                        false => None,
-                    })
-                    .collect();
+                let mut archive_contents =
+                    get_rom_files_for_archive(dir_entry.path().to_path_buf());
                 rf_vec.append(&mut archive_contents);
                 rf_vec
             } else {
@@ -121,6 +112,22 @@ fn main() {
             }
         },
     );
+}
+
+fn get_rom_files_for_archive(path: PathBuf) -> Vec<RomFile> {
+    let source = File::open(&path).unwrap();
+    let file_name = path.file_name().unwrap().to_str().unwrap();
+    let dest = TempDir::new(file_name).unwrap();
+    uncompress_archive(source, &dest.path(), Ownership::Ignore).unwrap();
+    walkdir::WalkDir::new(dest.path())
+        .into_iter()
+        .filter_entry(|e| entry_is_relevant(e))
+        .filter_map(|v| v.ok())
+        .filter_map(|entry| match entry.file_type().is_file() {
+            true => Some(RomFile::from_path(entry.path().to_path_buf(), true)),
+            false => None,
+        })
+        .collect()
 }
 
 embed_migrations!("migrations");
