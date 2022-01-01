@@ -1,8 +1,9 @@
 use std::convert::TryInto;
 
 use diesel_logger::LoggingConnection;
+use log::info;
 
-use crate::models::*;
+use crate::{files, models::*};
 use crate::{logiqx, models};
 
 use crate::schema;
@@ -13,7 +14,7 @@ use indicatif::{ProgressBar, ProgressIterator, ProgressStyle};
 // this should definitely not be one giant file
 
 pub fn traverse_and_insert_data_file(
-    conn: LoggingConnection<SqliteConnection>,
+    conn: &LoggingConnection<SqliteConnection>,
     data_file: logiqx::DataFile,
     data_file_name: &str,
 ) {
@@ -23,12 +24,10 @@ pub fn traverse_and_insert_data_file(
         .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg} {eta_precise}");
     let pb = ProgressBar::new(data_file.games().len() as u64).with_style(progress_style);
 
-    println!("{:?}", data_file.sha1());
-
     let already_current = diesel::select(diesel::dsl::exists(
         data_files.filter(sha1.eq(data_file.sha1())),
     ))
-    .get_result(&conn);
+    .get_result(conn);
 
     match already_current {
         Ok(true) => (),
@@ -148,32 +147,68 @@ fn insert_rom(
             .expect("Error updating Game"),
     }
 }
-fn insert_file(
-    conn: &LoggingConnection<SqliteConnection>,
-    rom_file: &RomFile,
-    df_name: &str,
-) -> usize {
+
+// TODO: this should be one struct, not two, and not have to convert.
+pub fn import_rom_file(conn: &LoggingConnection<SqliteConnection>, rom_file: &files::RomFile) {
+    use schema::rom_files::dsl::*;
+
+    let already_current = diesel::select(diesel::dsl::exists(
+        rom_files.filter(sha1.eq(rom_file.sha1())),
+    ))
+    .get_result(conn);
+
+    match already_current {
+        Ok(true) => (),
+        Ok(false) | Err(_) => {
+            let rf_id = insert_rom_file(&conn, &rom_file);
+            info!("rom_file_id: {:?}", rf_id);
+        }
+    }
+}
+
+fn insert_rom_file(conn: &LoggingConnection<SqliteConnection>, rom_file: &files::RomFile) -> usize {
     use schema::{rom_files, rom_files::dsl::*};
 
-    let new_file = (
-        path.eq(rom_file.path()),
-        name.eq(rom_file.name()),
-        crc.eq(rom_file.crc()),
-        sha1.eq(rom_file.sha1()),
-        md5.eq(rom_file.md5()),
-        in_archive.eq(rom_file.in_archive()),
-    );
+    pub struct RomFile {
+        id: Option<i32>,
+        path: String,
+        name: String,
+        crc: Vec<u8>,
+        sha1: Vec<u8>,
+        md5: Vec<u8>,
+        in_archive: bool,
+        rom_id: Option<i32>,
+    }
+    let new_rom_file = models::RomFile {
+        id: None,
+        path: rom_file.path().to_str().unwrap().to_string(),
+        name: rom_file
+            .path()
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string(),
+        crc: rom_file.crc().to_vec(),
+        sha1: rom_file.sha1().to_vec(),
+        md5: rom_file.md5().to_vec(),
+        in_archive: rom_file.in_archive(),
+        rom_id: None, // should be looked up
+    };
 
     let insert_id = diesel::insert_into(rom_files::table)
-        .values(&new_file)
+        .values(&new_rom_file)
         .execute(conn)
         .optional()
-        .unwrap_or(None);
+        .unwrap();
 
+    // TODO: try and match as many hashes as possible? match sha1?
+    // TODO: investigate prevalence of crc, sha1, md5
+    // TODO: add blake3?
     match insert_id {
         Some(rom_file_id) => rom_file_id,
-        None => diesel::update(rom_files.filter(name.eq(rom_file.name())))
-            .set(new_file)
+        None => diesel::update(rom_files.filter(sha1.eq(rom_file.sha1())))
+            .set(new_rom_file)
             .execute(conn)
             .expect("Error updating DataFile"),
     }

@@ -48,6 +48,8 @@ pub mod schema;
 
 use queries::traverse_and_insert_data_file;
 
+use crate::queries::import_rom_file;
+
 #[derive(Debug, StructOpt)]
 #[structopt(
     name = "mame_coalesce",
@@ -95,7 +97,7 @@ fn main() {
         .to_str()
         .unwrap();
 
-    traverse_and_insert_data_file(conn, data_file, file_name);
+    traverse_and_insert_data_file(&conn, data_file, file_name);
     let file_list = file_list(&opt.path);
     let bar = ProgressBar::new(file_list.len() as u64);
     bar.set_style(
@@ -104,7 +106,12 @@ fn main() {
         ),
     );
     // this can probably be done during the walkdir
-    get_all_rom_files_parallel(&file_list, &bar);
+    let rom_files: Vec<RomFile> = get_all_rom_files_parallel(&file_list, &bar);
+    // this should happen during get_all_rom_files_parallel
+    // that way, we can skip extracting archives that we've already checked
+    for rom_file in rom_files {
+        import_rom_file(&conn, &rom_file);
+    }
 }
 
 fn get_all_rom_files_parallel(file_list: &Vec<DirEntry>, bar: &ProgressBar) -> Vec<RomFile> {
