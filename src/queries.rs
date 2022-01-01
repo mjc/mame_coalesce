@@ -1,10 +1,8 @@
-use std::convert::TryInto;
-
 use diesel_logger::LoggingConnection;
 use log::info;
 
-use crate::{files, models::*};
-use crate::{logiqx, models};
+use crate::logiqx;
+use crate::models::*;
 
 use crate::schema;
 use diesel::prelude::*;
@@ -149,11 +147,11 @@ fn insert_rom(
 }
 
 // TODO: this should be one struct, not two, and not have to convert.
-pub fn import_rom_file(conn: &LoggingConnection<SqliteConnection>, rom_file: &files::RomFile) {
+pub fn import_rom_file(conn: &LoggingConnection<SqliteConnection>, rom_file: &RomFile) {
     use schema::rom_files::dsl::*;
 
     let already_current = diesel::select(diesel::dsl::exists(
-        rom_files.filter(sha1.eq(rom_file.sha1())),
+        rom_files.filter(sha1.eq(&rom_file.sha1)),
     ))
     .get_result(conn);
 
@@ -166,28 +164,11 @@ pub fn import_rom_file(conn: &LoggingConnection<SqliteConnection>, rom_file: &fi
     }
 }
 
-fn insert_rom_file(conn: &LoggingConnection<SqliteConnection>, rom_file: &files::RomFile) -> usize {
+fn insert_rom_file(conn: &LoggingConnection<SqliteConnection>, rom_file: &RomFile) -> usize {
     use schema::{rom_files, rom_files::dsl::*};
 
-    let new_rom_file = models::RomFile {
-        id: None,
-        path: rom_file.path().to_str().unwrap().to_string(),
-        name: rom_file
-            .path()
-            .file_name()
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .to_string(),
-        crc: rom_file.crc().to_vec(),
-        sha1: rom_file.sha1().to_vec(),
-        md5: rom_file.md5().to_vec(),
-        in_archive: rom_file.in_archive(),
-        rom_id: None, // should be looked up
-    };
-
     let insert_id = diesel::insert_into(rom_files::table)
-        .values(&new_rom_file)
+        .values(rom_file)
         .execute(conn)
         .optional()
         .unwrap();
@@ -197,8 +178,8 @@ fn insert_rom_file(conn: &LoggingConnection<SqliteConnection>, rom_file: &files:
     // TODO: add blake3?
     match insert_id {
         Some(rom_file_id) => rom_file_id,
-        None => diesel::update(rom_files.filter(sha1.eq(rom_file.sha1())))
-            .set(new_rom_file)
+        None => diesel::update(rom_files.filter(sha1.eq(&rom_file.sha1)))
+            .set(rom_file)
             .execute(conn)
             .expect("Error updating DataFile"),
     }

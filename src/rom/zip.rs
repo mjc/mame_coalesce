@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 pub fn write_zip(bundle: &rom::Bundle, zip_dest: PathBuf) {
     let output_file_name = format!("{}.zip", bundle.name);
-    //println!("Writing {}", output_file_name);
+    info!("Writing {}", output_file_name);
     let path: PathBuf = [zip_dest.to_str().unwrap(), output_file_name.as_str()]
         .iter()
         .collect();
