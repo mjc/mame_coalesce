@@ -4,7 +4,6 @@ use std::{
 };
 
 use log::{debug, info};
-use md5::Md5;
 use memmap2::MmapOptions;
 use sha1::{Digest, Sha1};
 
@@ -32,7 +31,6 @@ impl RomFile {
     fn compute_hashes(path: &Path) -> (u32, Vec<u8>, Vec<u8>) {
         let mut crc32 = crc32fast::Hasher::new();
         let mut sha1 = Sha1::new();
-        let mut md5 = Md5::new();
 
         let f = File::open(path).unwrap();
         // takes forever on large files without mmap.
@@ -42,14 +40,9 @@ impl RomFile {
         for chunk in mmap.chunks(16_384) {
             crc32.update(chunk);
             sha1.update(chunk);
-            md5.update(chunk);
         }
 
-        (
-            crc32.finalize(),
-            sha1.finalize().to_vec(),
-            md5.finalize().to_vec(),
-        )
+        (crc32.finalize(), sha1.finalize().to_vec(), Vec::<u8>::new())
     }
 
     pub fn is_archive(path: &Path) -> bool {
