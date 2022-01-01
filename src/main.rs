@@ -22,7 +22,6 @@ use diesel_logger::LoggingConnection;
 use dotenv::dotenv;
 use files::RomFile;
 use indicatif::{ProgressBar, ProgressIterator, ProgressStyle};
-use md5::Md5;
 use memmap2::MmapOptions;
 use rayon::prelude::*;
 use sha1::{Digest, Sha1};

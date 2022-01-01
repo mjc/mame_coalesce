@@ -462,7 +462,6 @@ dependencies = [
  "hex",
  "indicatif",
  "log",
- "md-5",
  "memmap2",
  "pretty_env_logger",
  "rayon",
@@ -475,15 +474,6 @@ dependencies = [
  "tree_magic",
  "walkdir",
  "zip",
-]
-
-[[package]]
-name = "md-5"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6a38fc55c8bbc10058782919516f88826e70320db6d206aebc49611d24216ae"
-dependencies = [
- "digest",
 ]
 
 [[package]]
@@ -826,6 +816,16 @@ dependencies = [
  "cfg-if 1.0.0",
  "cpufeatures",
  "digest",
+ "sha1-asm",
+]
+
+[[package]]
+name = "sha1-asm"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "563d4f7100bc3fce234e5f37bbf63dc2752558964505ba6ac3f7204bdc59eaac"
+dependencies = [
+ "cc",
 ]
 
 [[package]]
