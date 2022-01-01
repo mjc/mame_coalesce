@@ -105,7 +105,12 @@ fn main() {
         ),
     );
     // this can probably be done during the walkdir
-    let rom_files = file_list
+    get_all_rom_files_parallel(&file_list, &bar);
+    bar.finish();
+}
+
+fn get_all_rom_files_parallel(file_list: &Vec<DirEntry>, bar: &ProgressBar) -> Vec<RomFile> {
+    file_list
         .par_iter()
         .fold(
             || Vec::<RomFile>::new(),
@@ -133,8 +138,7 @@ fn main() {
                 dest.append(&mut source);
                 dest
             },
-        );
-    bar.finish();
+        )
 }
 
 fn get_rom_files_for_archive(path: PathBuf) -> Vec<RomFile> {
