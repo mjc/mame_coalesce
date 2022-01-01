@@ -1,8 +1,8 @@
 use std::path::{Path, PathBuf};
 
-use crate::diesel::{Insertable, Queryable};
+use crate::diesel::{prelude::*, Insertable, Queryable};
 
-use crate::schema::{data_files, games, roms};
+use crate::schema::{data_files, games, rom_files, roms};
 
 #[derive(Identifiable, Queryable, Associations, PartialEq, Debug)]
 pub struct DataFile {
@@ -51,16 +51,17 @@ pub struct Rom {
     game_id: i32,
 }
 
-#[derive(Queryable)]
+#[derive(Queryable, Insertable, AsChangeset, PartialEq, Debug)]
+#[diesel(table_name = rom_files)]
 pub struct RomFile {
-    id: Option<i32>,
-    path: String,
-    name: String,
-    crc: Vec<u8>,
-    sha1: Vec<u8>,
-    md5: Vec<u8>,
-    in_archive: bool,
-    rom_id: Option<i32>,
+    pub id: Option<i32>,
+    pub path: String,
+    pub name: String,
+    pub crc: Vec<u8>,
+    pub sha1: Vec<u8>,
+    pub md5: Vec<u8>,
+    pub in_archive: bool,
+    pub rom_id: Option<i32>,
 }
 
 impl RomFile {

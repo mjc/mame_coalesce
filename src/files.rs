@@ -10,7 +10,7 @@ use sha1::{Digest, Sha1};
 #[derive(Debug)]
 pub struct RomFile {
     path: PathBuf,
-    crc: u32,
+    crc: Vec<u8>,
     sha1: Vec<u8>,
     md5: Vec<u8>,
     in_archive: bool,
@@ -28,7 +28,7 @@ impl RomFile {
         }
     }
 
-    fn compute_hashes(path: &Path) -> (u32, Vec<u8>, Vec<u8>) {
+    fn compute_hashes(path: &Path) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
         let mut crc32 = crc32fast::Hasher::new();
         let mut sha1 = Sha1::new();
 
@@ -42,7 +42,11 @@ impl RomFile {
             sha1.update(chunk);
         }
 
-        (crc32.finalize(), sha1.finalize().to_vec(), Vec::<u8>::new())
+        (
+            crc32.finalize().to_le_bytes().to_vec(), // check if LE is correct here
+            sha1.finalize().to_vec(),
+            Vec::<u8>::new(),
+        )
     }
 
     pub fn is_archive(path: &Path) -> bool {
@@ -69,5 +73,30 @@ impl RomFile {
                 false
             }
         }
+    }
+
+    /// Get a reference to the rom file's path.
+    pub fn path(&self) -> &PathBuf {
+        &self.path
+    }
+
+    /// Get a reference to the rom file's crc.
+    pub fn crc(&self) -> &[u8] {
+        self.crc.as_ref()
+    }
+
+    /// Get a reference to the rom file's sha1.
+    pub fn sha1(&self) -> &[u8] {
+        self.sha1.as_ref()
+    }
+
+    /// Get a reference to the rom file's md5.
+    pub fn md5(&self) -> &[u8] {
+        self.md5.as_ref()
+    }
+
+    /// Get a reference to the rom file's in archive.
+    pub fn in_archive(&self) -> bool {
+        self.in_archive
     }
 }
