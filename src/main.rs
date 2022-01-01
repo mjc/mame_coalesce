@@ -105,7 +105,21 @@ fn main() {
         ),
     );
     // this can probably be done during the walkdir
-    get_all_rom_files_parallel(&file_list, &bar);
+    // get_all_rom_files_parallel(&file_list, &bar);
+    let rom_files = file_list.iter().progress().fold(
+        Vec::<RomFile>::new().as_mut(),
+        |rf_vec: &mut Vec<RomFile>, dir_entry| {
+            if RomFile::is_archive(dir_entry.path()) {
+                let mut archive_contents =
+                    get_rom_files_for_archive(dir_entry.path().to_path_buf());
+                rf_vec.append(&mut archive_contents);
+                rf_vec
+            } else {
+                rf_vec.push(RomFile::from_path(dir_entry.path().to_path_buf(), false));
+                rf_vec
+            }
+        },
+    );
     bar.finish();
 }
 
