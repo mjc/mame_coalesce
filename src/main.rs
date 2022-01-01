@@ -20,19 +20,13 @@ use compress_tools::{uncompress_archive, Ownership};
 use diesel::{prelude::*, SqliteConnection};
 use diesel_logger::LoggingConnection;
 use dotenv::dotenv;
-use files::RomFile;
 use indicatif::{ProgressBar, ProgressIterator, ProgressStyle};
-use memmap2::MmapOptions;
+use models::RomFile;
 use rayon::prelude::*;
-use sha1::{Digest, Sha1};
 use tempdir::TempDir;
 use walkdir::{DirEntry, WalkDir};
 
-use std::{
-    convert::TryInto,
-    env, fs,
-    io::{self, BufReader},
-};
+use std::{env, fs};
 use std::{
     fs::File,
     path::{Path, PathBuf},
@@ -41,7 +35,6 @@ use structopt::StructOpt;
 
 pub mod logiqx;
 
-pub mod files;
 pub mod models;
 pub mod queries;
 pub mod schema;
