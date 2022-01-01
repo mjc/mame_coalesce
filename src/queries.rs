@@ -169,16 +169,6 @@ pub fn import_rom_file(conn: &LoggingConnection<SqliteConnection>, rom_file: &fi
 fn insert_rom_file(conn: &LoggingConnection<SqliteConnection>, rom_file: &files::RomFile) -> usize {
     use schema::{rom_files, rom_files::dsl::*};
 
-    pub struct RomFile {
-        id: Option<i32>,
-        path: String,
-        name: String,
-        crc: Vec<u8>,
-        sha1: Vec<u8>,
-        md5: Vec<u8>,
-        in_archive: bool,
-        rom_id: Option<i32>,
-    }
     let new_rom_file = models::RomFile {
         id: None,
         path: rom_file.path().to_str().unwrap().to_string(),
