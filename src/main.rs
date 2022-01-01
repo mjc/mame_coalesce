@@ -20,7 +20,7 @@ use compress_tools::{uncompress_archive, Ownership};
 use diesel::{prelude::*, SqliteConnection};
 use diesel_logger::LoggingConnection;
 use dotenv::dotenv;
-use indicatif::{ProgressBar, ProgressIterator, ProgressStyle};
+use indicatif::{ProgressBar, ProgressStyle};
 use models::RomFile;
 use rayon::prelude::*;
 use tempdir::TempDir;

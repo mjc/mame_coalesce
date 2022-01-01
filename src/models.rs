@@ -7,7 +7,7 @@ use log::info;
 use memmap2::MmapOptions;
 use sha1::{Digest, Sha1};
 
-use crate::diesel::{prelude::*, Insertable, Queryable};
+use crate::diesel::{Insertable, Queryable};
 
 use crate::schema::{data_files, games, rom_files, roms};
 
@@ -44,18 +44,18 @@ pub struct Game {
     data_file_id: i32,
 }
 
-#[derive(Queryable)]
+#[derive(Queryable, Insertable, AsChangeset, PartialEq, Debug)]
+#[diesel(table_name = roms)]
 pub struct Rom {
-    id: i32,
-
-    name: String,
-    md5: Vec<u8>,
-    sha1: Vec<u8>,
-    crc: Vec<u8>,
-    date: String,        // utc date
-    updated_at: String,  // utc datetime
-    inserted_at: String, // utc datetime
-    game_id: i32,
+    pub id: Option<i32>,
+    pub name: String,
+    pub md5: Vec<u8>,
+    pub sha1: Vec<u8>,
+    pub crc: Vec<u8>,
+    pub date: String,                // utc date
+    pub updated_at: Option<String>,  // utc datetime
+    pub inserted_at: Option<String>, // utc datetime
+    pub game_id: i32,
 }
 
 #[derive(Queryable, Insertable, AsChangeset, PartialEq, Debug)]

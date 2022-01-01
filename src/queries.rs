@@ -122,14 +122,17 @@ fn insert_rom(
 ) -> usize {
     use schema::{roms, roms::dsl::*};
 
-    let new_rom = (
-        name.eq(rom.name()),
-        size.eq(rom.size()),
-        md5.eq(rom.md5()),
-        sha1.eq(rom.sha1()),
-        crc.eq(rom.crc()),
-        game_id.eq(*g_id as i32),
-    );
+    let new_rom = Rom {
+        id: None,
+        name: rom.name().to_string(),
+        md5: rom.md5().to_vec(),
+        sha1: rom.sha1().to_vec(),
+        crc: rom.crc().to_vec(),
+        date: "".to_string(),
+        updated_at: None,
+        inserted_at: None,
+        game_id: *g_id as i32,
+    };
 
     let insert_id = diesel::insert_into(roms::table)
         .values(&new_rom)
@@ -140,7 +143,7 @@ fn insert_rom(
     match insert_id {
         Some(rom_id) => rom_id,
         None => diesel::update(roms.filter(name.eq(rom.name())))
-            .set(new_rom)
+            .set(&new_rom)
             .execute(conn)
             .expect("Error updating Game"),
     }
