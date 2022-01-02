@@ -31,7 +31,6 @@ use std::{
     fs::File,
     path::{Path, PathBuf},
 };
-use structopt::StructOpt;
 
 pub mod logiqx;
 
@@ -42,28 +41,9 @@ pub mod schema;
 
 use queries::traverse_and_insert_data_file;
 
+mod opts;
 use crate::queries::import_rom_file;
-
-#[derive(Debug, StructOpt)]
-#[structopt(
-    name = "mame_coalesce",
-    about = "A commandline app for merging ROMs for emulators like mame."
-)]
-struct Opt {
-    datafile: String,
-    #[structopt(parse(from_os_str))]
-    path: PathBuf,
-    #[structopt(parse(from_os_str))]
-    destination: Option<PathBuf>,
-}
-
-impl Opt {
-    pub fn default_destination(path: &PathBuf) -> PathBuf {
-        [path.to_str().expect("Path is fucked somehow"), "merged"]
-            .iter()
-            .collect()
-    }
-}
+use opts::{Opt, StructOpt};
 
 fn main() {
     dotenv().ok();
@@ -103,8 +83,8 @@ fn main() {
     let rom_files: Vec<RomFile> = get_all_rom_files_parallel(&file_list, &bar);
     // this should happen during get_all_rom_files_parallel
     // that way, we can skip extracting archives that we've already checked
-    for rom_file in rom_files {
-        import_rom_file(&conn, &rom_file);
+    for rom_file in rom_files.iter() {
+        import_rom_file(&conn, rom_file);
     }
 }
 
