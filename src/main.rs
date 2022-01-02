@@ -16,17 +16,17 @@ extern crate diesel;
 #[macro_use]
 extern crate diesel_migrations;
 
-use compress_tools::{uncompress_archive, Ownership};
+use compress_tools::*;
 use diesel::{prelude::*, SqliteConnection};
 use diesel_logger::LoggingConnection;
 use dotenv::dotenv;
 use indicatif::{ProgressBar, ProgressStyle};
 use models::RomFile;
 use rayon::prelude::*;
-use tempdir::TempDir;
+use sha1::{Digest, Sha1};
 use walkdir::{DirEntry, WalkDir};
 
-use std::{env, fs};
+use std::{env, fs, io::BufReader};
 use std::{
     fs::File,
     path::{Path, PathBuf},
@@ -124,7 +124,7 @@ fn get_all_rom_files_parallel(file_list: &Vec<DirEntry>, bar: &ProgressBar) -> V
                         v
                     }
                     true => {
-                        let mut internal = get_rom_files_for_archive(path);
+                        let mut internal = get_rom_files_for_archive(&path);
                         v.append(&mut internal);
                         v
                     }
@@ -140,20 +140,47 @@ fn get_all_rom_files_parallel(file_list: &Vec<DirEntry>, bar: &ProgressBar) -> V
         )
 }
 
-fn get_rom_files_for_archive(path: PathBuf) -> Vec<RomFile> {
-    let source = File::open(&path).unwrap();
-    let file_name = path.file_name().unwrap().to_str().unwrap();
-    let dest = TempDir::new(file_name).unwrap();
-    uncompress_archive(source, &dest.path(), Ownership::Ignore).unwrap();
-    walkdir::WalkDir::new(dest.path())
-        .into_iter()
-        .filter_entry(|e| entry_is_relevant(e))
-        .filter_map(|v| v.ok())
-        .filter_map(|entry| match entry.file_type().is_file() {
-            true => Some(RomFile::from_path(entry.path().to_path_buf(), true)),
-            false => None,
-        })
-        .collect()
+fn get_rom_files_for_archive(path: &PathBuf) -> Vec<RomFile> {
+    let f = File::open(path).unwrap();
+    let buf = BufReader::new(f); // TODO: mmap?
+    let mut name = String::default();
+    let mut iter = ArchiveIterator::from_read(buf).unwrap();
+    let mut sha1hasher = Sha1::default();
+
+    let mut rom_files: Vec<RomFile> = Vec::default();
+
+    for content in &mut iter {
+        match content {
+            ArchiveContents::StartOfEntry(s) => {
+                name = s;
+                sha1hasher.reset();
+            }
+            ArchiveContents::DataChunk(v) => {
+                sha1hasher.update(&v);
+            }
+            ArchiveContents::EndOfEntry => {
+                let sha1 = sha1hasher.finalize_reset().to_vec();
+                let crc = Vec::default();
+                let md5 = Vec::default();
+
+                rom_files.push(RomFile {
+                    id: None,
+                    path: path.to_str().unwrap().to_string(),
+                    name: name.clone(),
+                    crc,
+                    sha1,
+                    md5,
+                    in_archive: true,
+                    rom_id: None,
+                });
+            }
+            ArchiveContents::Err(e) => {
+                panic!("{:?}", e)
+            }
+        }
+    }
+
+    rom_files
 }
 
 embed_migrations!("migrations");
