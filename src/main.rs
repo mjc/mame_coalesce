@@ -17,7 +17,7 @@ extern crate diesel;
 extern crate diesel_migrations;
 
 use compress_tools::*;
-use diesel::{prelude::*, r2d2::ConnectionManager, SqliteConnection};
+use diesel::{r2d2::ConnectionManager, SqliteConnection};
 use dotenv::dotenv;
 use indicatif::{ProgressBar, ProgressStyle};
 use models::RomFile;
