@@ -1,5 +1,5 @@
 CREATE TABLE rom_files (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    id         INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
     path       TEXT    NOT NULL,
     name       TEXT    CONSTRAINT file_name NOT NULL,
     crc        BLOB    NOT NULL,

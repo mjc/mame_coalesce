@@ -129,17 +129,7 @@ fn insert_game(conn: &SqliteConnection, game: &logiqx::Game, df_id: &i32) -> usi
 fn insert_rom(conn: &SqliteConnection, rom: &logiqx::Rom, g_id: &usize) -> usize {
     use schema::{roms, roms::dsl::*};
 
-    let new_rom = Rom {
-        id: None,
-        name: rom.name().to_string(),
-        md5: rom.md5().to_vec(),
-        sha1: rom.sha1().to_vec(),
-        crc: rom.crc().to_vec(),
-        date: "".to_string(),
-        updated_at: None,
-        inserted_at: None,
-        game_id: *g_id as i32,
-    };
+    let new_rom = NewRom::from_logiqx(rom, g_id);
 
     let insert_id = diesel::insert_into(roms::table)
         .values(&new_rom)
