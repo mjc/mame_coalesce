@@ -5,7 +5,7 @@ mod game;
 pub use game::{Game, NewGame};
 
 mod rom;
-pub use rom::Rom;
+pub use rom::{NewRom, Rom};
 
 mod rom_file;
 pub use rom_file::RomFile;
