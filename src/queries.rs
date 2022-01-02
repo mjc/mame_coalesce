@@ -33,17 +33,15 @@ pub fn traverse_and_insert_data_file(
         Ok(false) | Err(_) => {
             let df_id = insert_data_file(&conn, &data_file, &data_file_name);
 
-            for game in data_file.games().iter() {
+            data_file.games().iter().progress_with(pb).for_each(|game| {
                 // this should be a bulk insert with on_conflict but
                 // 1. I don't care (15 seconds for just games isn't terrible)
                 // 2. on_conflict for sqlite isn't in diesel 1.4
-                let g_conn = pool.get().unwrap();
-                let g_id = insert_game(&g_conn, game, &df_id);
-                for rom in game.roms().iter() {
-                    let r_conn = pool.get().unwrap();
-                    insert_rom(&r_conn, rom, &g_id);
-                }
-            }
+                let g_id = insert_game(&conn, game, &df_id);
+                game.roms().iter().for_each(|rom| {
+                    insert_rom(&conn, rom, &g_id);
+                })
+            });
         }
     }
 }
