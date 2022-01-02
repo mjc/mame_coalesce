@@ -21,22 +21,6 @@ pub struct RomFile {
 }
 
 impl RomFile {
-    pub fn from_path(path: PathBuf, in_archive: bool) -> RomFile {
-        let (crc, sha1) = path.all_hashes();
-        let name = path.file_name().unwrap().to_str().unwrap().to_string();
-        let rom_file_path = path.to_str().unwrap().to_string();
-        RomFile {
-            id: None,
-            path: rom_file_path,
-            name: name,
-            crc: crc,
-            sha1: sha1,
-            md5: Vec::<u8>::new(),
-            in_archive: in_archive,
-            rom_id: None,
-        }
-    }
-
     pub fn is_archive(path: &Path) -> bool {
         match tree_magic::from_filepath(&path).as_str() {
             "application/zip" => true,
@@ -60,6 +44,53 @@ impl RomFile {
                 );
                 false
             }
+        }
+    }
+}
+
+#[derive(Insertable, AsChangeset)]
+#[table_name = "rom_files"]
+pub struct NewRomFile {
+    pub path: String,
+    pub name: String,
+    pub crc: Vec<u8>,
+    pub sha1: Vec<u8>,
+    pub md5: Vec<u8>,
+    pub in_archive: bool,
+    pub rom_id: Option<i32>,
+}
+
+impl NewRomFile {
+    pub fn from_path(path: PathBuf) -> NewRomFile {
+        let (crc, sha1) = path.all_hashes();
+        let name = path.file_name().unwrap().to_str().unwrap().to_string();
+        let rom_file_path = path.to_str().unwrap().to_string();
+        NewRomFile {
+            path: rom_file_path,
+            name: name,
+            crc: crc,
+            sha1: sha1,
+            md5: Vec::<u8>::new(),
+            in_archive: false,
+            rom_id: None,
+        }
+    }
+
+    pub fn from_archive(
+        path: &PathBuf,
+        name: &String,
+        crc: Vec<u8>,
+        sha1: Vec<u8>,
+        md5: Vec<u8>,
+    ) -> NewRomFile {
+        NewRomFile {
+            path: path.to_str().unwrap().to_string(),
+            name: name.clone(),
+            crc,
+            sha1,
+            md5,
+            in_archive: true,
+            rom_id: None,
         }
     }
 }
