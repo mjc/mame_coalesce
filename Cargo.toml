@@ -33,6 +33,6 @@ tempdir = "0.3"
 diesel = { version = "*", features = ["sqlite", "r2d2"] }
 r2d2 = "0.8"
 diesel_migrations = "1.4"
-diesel_logger = "0.1.1"
+# diesel_logger = "0.1.1"
 dotenv = "0.15.0"
-tree_magic = "0.2"                                        # bindet?
+tree_magic = "0.2" # bindet?

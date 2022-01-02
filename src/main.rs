@@ -18,7 +18,6 @@ extern crate diesel_migrations;
 
 use compress_tools::*;
 use diesel::{prelude::*, r2d2::ConnectionManager, SqliteConnection};
-use diesel_logger::LoggingConnection;
 use dotenv::dotenv;
 use indicatif::{ProgressBar, ProgressStyle};
 use models::RomFile;
@@ -166,11 +165,11 @@ fn get_rom_files_for_archive(path: &PathBuf) -> Vec<RomFile> {
 
 embed_migrations!("migrations");
 
-pub fn create_db_pool() -> r2d2::Pool<ConnectionManager<LoggingConnection<SqliteConnection>>> {
+pub fn create_db_pool() -> r2d2::Pool<ConnectionManager<SqliteConnection>> {
     dotenv().ok();
     let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
 
-    let manager = ConnectionManager::<LoggingConnection<SqliteConnection>>::new(database_url);
+    let manager = ConnectionManager::<SqliteConnection>::new(database_url);
     let pool = r2d2::Pool::builder()
         .build(manager)
         .expect("Failed to create pool.");
@@ -178,9 +177,9 @@ pub fn create_db_pool() -> r2d2::Pool<ConnectionManager<LoggingConnection<Sqlite
     pool
 }
 
-fn run_migrations(pool: &r2d2::Pool<ConnectionManager<LoggingConnection<SqliteConnection>>>) {
+fn run_migrations(pool: &r2d2::Pool<ConnectionManager<SqliteConnection>>) {
     let connection = pool.clone().get().unwrap();
-    embedded_migrations::run(&connection);
+    embedded_migrations::run(&connection).expect("failed to migrate database");
 }
 
 fn file_list(dir: &PathBuf) -> Vec<DirEntry> {
