@@ -83,9 +83,10 @@ fn main() {
     let rom_files: Vec<RomFile> = get_all_rom_files_parallel(&file_list, &bar);
     // this should happen during get_all_rom_files_parallel
     // that way, we can skip extracting archives that we've already checked
-    for rom_file in rom_files.iter() {
-        import_rom_file(&conn, rom_file);
-    }
+
+    rom_files
+        .iter()
+        .for_each(|rom_file| import_rom_file(&conn, rom_file));
 }
 
 fn get_all_rom_files_parallel(file_list: &Vec<DirEntry>, bar: &ProgressBar) -> Vec<RomFile> {
