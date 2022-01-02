@@ -1,18 +1,19 @@
 use diesel_logger::LoggingConnection;
 use log::info;
+use rayon::iter::IntoParallelRefIterator;
 
 use crate::logiqx;
 use crate::models::*;
 
 use crate::schema;
-use diesel::prelude::*;
+use diesel::{prelude::*, r2d2::ConnectionManager};
 
 use indicatif::{ProgressBar, ProgressIterator, ProgressStyle};
 
 // this should definitely not be one giant file
 
 pub fn traverse_and_insert_data_file(
-    conn: &LoggingConnection<SqliteConnection>,
+    pool: &r2d2::Pool<ConnectionManager<LoggingConnection<SqliteConnection>>>,
     data_file: logiqx::DataFile,
     data_file_name: &str,
 ) {
@@ -22,23 +23,26 @@ pub fn traverse_and_insert_data_file(
         .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg} {eta_precise}");
     let pb = ProgressBar::new(data_file.games().len() as u64).with_style(progress_style);
 
+    let conn = pool.get().unwrap();
     let already_current = diesel::select(diesel::dsl::exists(
         data_files.filter(sha1.eq(data_file.sha1())),
     ))
-    .get_result(conn);
+    .get_result(&conn);
 
     match already_current {
         Ok(true) => (),
         Ok(false) | Err(_) => {
             let df_id = insert_data_file(&conn, &data_file, &data_file_name);
 
-            for game in data_file.games().iter().progress_with(pb) {
+            for game in data_file.games().iter() {
                 // this should be a bulk insert with on_conflict but
                 // 1. I don't care (15 seconds for just games isn't terrible)
                 // 2. on_conflict for sqlite isn't in diesel 1.4
-                let g_id = insert_game(&conn, game, &df_id);
+                let g_conn = pool.get().unwrap();
+                let g_id = insert_game(&g_conn, game, &df_id);
                 for rom in game.roms().iter() {
-                    insert_rom(&conn, rom, &g_id);
+                    let r_conn = pool.get().unwrap();
+                    insert_rom(&r_conn, rom, &g_id);
                 }
             }
         }
