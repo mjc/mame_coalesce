@@ -3,7 +3,6 @@ use crate::indicatif::{ProgressBar, ProgressStyle};
 use crate::logiqx;
 use crate::walkdir::{DirEntry, WalkDir};
 use rayon::prelude::*;
-use sha1::{Digest, Sha1};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::{fs, io};

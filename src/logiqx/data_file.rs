@@ -1,7 +1,9 @@
-use sha1::{Digest, Sha1};
+use std::fs::File;
 
 use super::game::Game;
 use super::header::Header;
+
+use crate::hashes::MultiHash;
 
 #[derive(Debug, Deserialize)]
 pub struct DataFile {
@@ -16,13 +18,11 @@ pub struct DataFile {
     games: Vec<Game>,
 }
 impl DataFile {
-    pub fn from_str(contents: &str) -> Self {
-        let mut hasher = Sha1::new();
-        hasher.update(contents);
+    pub fn from_file(contents: &File) -> Self {
+        let (_crc, sha1) = contents.all_hashes();
         let mut data_file: DataFile =
-            serde_xml_rs::from_str(contents).expect("Can't read Logiqx datafile.");
-        // this should probably happen before we bother parsing, at the call site for this
-        data_file.sha1 = Some(hasher.finalize().to_vec());
+            serde_xml_rs::from_reader(contents).expect("Can't read Logiqx datafile.");
+        data_file.sha1 = Some(sha1);
         data_file
     }
 

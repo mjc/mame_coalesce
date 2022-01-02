@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use log::info;
 
-use crate::schema::rom_files;
+use crate::{hashes::MultiHash, schema::rom_files};
 
 use super::Rom;
 
@@ -22,7 +22,7 @@ pub struct RomFile {
 
 impl RomFile {
     pub fn from_path(path: PathBuf, in_archive: bool) -> RomFile {
-        let (crc, sha1) = crate::hashes::compute_all_hashes(&path);
+        let (crc, sha1) = path.all_hashes();
         let name = path.file_name().unwrap().to_str().unwrap().to_string();
         let rom_file_path = path.to_str().unwrap().to_string();
         RomFile {
