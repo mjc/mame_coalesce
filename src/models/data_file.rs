@@ -1,3 +1,5 @@
+use diesel::SqliteConnection;
+
 use crate::schema::data_files;
 
 #[derive(Identifiable, Queryable, Associations, PartialEq, Debug)]
@@ -14,5 +16,5 @@ pub struct DataFile {
     email: Option<String>,
     homepage: Option<String>,
     url: Option<String>,
-    sha1: Vec<u8>,
+    sha1: Option<Vec<u8>>,
 }
