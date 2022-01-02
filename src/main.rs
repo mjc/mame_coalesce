@@ -17,7 +17,7 @@ extern crate diesel;
 extern crate diesel_migrations;
 
 use compress_tools::*;
-use diesel::{prelude::*, SqliteConnection};
+use diesel::{prelude::*, r2d2::ConnectionManager, SqliteConnection};
 use diesel_logger::LoggingConnection;
 use dotenv::dotenv;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -63,7 +63,7 @@ fn main() {
 
     let data_file = logiqx::load_datafile(&opt.datafile).expect("Couldn't load datafile");
 
-    let conn = establish_connection();
+    let pool = create_db_pool();
 
     let file_name = Path::new(&opt.datafile)
         .file_name()
@@ -71,7 +71,7 @@ fn main() {
         .to_str()
         .unwrap();
 
-    traverse_and_insert_data_file(&conn, data_file, file_name);
+    traverse_and_insert_data_file(&pool, data_file, file_name);
     let file_list = file_list(&opt.path);
     let bar = ProgressBar::new(file_list.len() as u64);
     bar.set_style(
@@ -86,7 +86,7 @@ fn main() {
 
     rom_files
         .iter()
-        .for_each(|rom_file| import_rom_file(&conn, rom_file));
+        .for_each(|rom_file| import_rom_file(&pool.get().unwrap(), rom_file));
 }
 
 fn get_all_rom_files_parallel(file_list: &Vec<DirEntry>, bar: &ProgressBar) -> Vec<RomFile> {
@@ -165,14 +165,22 @@ fn get_rom_files_for_archive(path: &PathBuf) -> Vec<RomFile> {
 }
 
 embed_migrations!("migrations");
-pub fn establish_connection() -> LoggingConnection<SqliteConnection> {
-    dotenv().ok();
 
+pub fn create_db_pool() -> r2d2::Pool<ConnectionManager<LoggingConnection<SqliteConnection>>> {
+    dotenv().ok();
     let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-    let connection = LoggingConnection::<SqliteConnection>::establish(&database_url)
-        .expect(&format!("Error connecting to {}", database_url));
-    let _migration_result = embedded_migrations::run(&connection);
-    connection
+
+    let manager = ConnectionManager::<LoggingConnection<SqliteConnection>>::new(database_url);
+    let pool = r2d2::Pool::builder()
+        .build(manager)
+        .expect("Failed to create pool.");
+    run_migrations(&pool);
+    pool
+}
+
+fn run_migrations(pool: &r2d2::Pool<ConnectionManager<LoggingConnection<SqliteConnection>>>) {
+    let connection = pool.clone().get().unwrap();
+    embedded_migrations::run(&connection);
 }
 
 fn file_list(dir: &PathBuf) -> Vec<DirEntry> {

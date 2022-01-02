@@ -6,6 +6,7 @@ edition = "2018"
 
 [profile.release]
 debug = true
+panic = "abort"
 
 [dependencies]
 log = "0.4"
@@ -29,8 +30,9 @@ structopt = { version = "0.3", default-features = false }
 walkdir = "^2.2.9"
 tempdir = "0.3"
 
-diesel = { version = "*", features = ["sqlite"] }
+diesel = { version = "*", features = ["sqlite", "r2d2"] }
+r2d2 = "0.8"
 diesel_migrations = "1.4"
 diesel_logger = "0.1.1"
 dotenv = "0.15.0"
-tree_magic = "0.2"                                # bindet?
+tree_magic = "0.2"                                        # bindet?
