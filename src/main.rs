@@ -20,7 +20,7 @@ use compress_tools::*;
 use diesel::{r2d2::ConnectionManager, SqliteConnection};
 use dotenv::dotenv;
 use indicatif::{ProgressBar, ProgressStyle};
-use models::RomFile;
+use models::{NewRomFile, RomFile};
 use rayon::prelude::*;
 use sha1::{Digest, Sha1};
 use walkdir::{DirEntry, WalkDir};
@@ -79,7 +79,7 @@ fn main() {
         ),
     );
     // this can probably be done during the walkdir
-    let rom_files: Vec<RomFile> = get_all_rom_files_parallel(&file_list, &bar);
+    let rom_files = get_all_rom_files_parallel(&file_list, &bar);
     // this should happen during get_all_rom_files_parallel
     // that way, we can skip extracting archives that we've already checked
 
@@ -88,18 +88,18 @@ fn main() {
         .for_each(|rom_file| import_rom_file(&pool.get().unwrap(), rom_file));
 }
 
-fn get_all_rom_files_parallel(file_list: &Vec<DirEntry>, bar: &ProgressBar) -> Vec<RomFile> {
+fn get_all_rom_files_parallel(file_list: &Vec<DirEntry>, bar: &ProgressBar) -> Vec<NewRomFile> {
     file_list
         .par_iter()
         .fold(
-            || Vec::<RomFile>::new(),
-            |mut v: Vec<RomFile>, e: &DirEntry| {
+            || Vec::<NewRomFile>::new(),
+            |mut v: Vec<NewRomFile>, e: &DirEntry| {
                 let path = e.path().to_path_buf();
                 bar.inc(1);
 
                 match RomFile::is_archive(e.path()) {
                     false => {
-                        let r = RomFile::from_path(path, false);
+                        let r = NewRomFile::from_path(path);
                         v.push(r);
                         v
                     }
@@ -112,22 +112,22 @@ fn get_all_rom_files_parallel(file_list: &Vec<DirEntry>, bar: &ProgressBar) -> V
             },
         )
         .reduce(
-            || Vec::<RomFile>::new(),
-            |mut dest: Vec<RomFile>, mut source: Vec<RomFile>| {
+            || Vec::<NewRomFile>::default(),
+            |mut dest: Vec<NewRomFile>, mut source: Vec<NewRomFile>| {
                 dest.append(&mut source);
                 dest
             },
         )
 }
 
-fn get_rom_files_for_archive(path: &PathBuf) -> Vec<RomFile> {
+fn get_rom_files_for_archive(path: &PathBuf) -> Vec<NewRomFile> {
     let f = File::open(path).unwrap();
     let buf = BufReader::new(f); // TODO: mmap?
     let mut name = String::default();
     let mut iter = ArchiveIterator::from_read(buf).unwrap();
     let mut sha1hasher = Sha1::default();
 
-    let mut rom_files: Vec<RomFile> = Vec::default();
+    let mut rom_files: Vec<NewRomFile> = Vec::default();
 
     for content in &mut iter {
         match content {
@@ -143,16 +143,7 @@ fn get_rom_files_for_archive(path: &PathBuf) -> Vec<RomFile> {
                 let crc = Vec::default();
                 let md5 = Vec::default();
 
-                rom_files.push(RomFile {
-                    id: None,
-                    path: path.to_str().unwrap().to_string(),
-                    name: name.clone(),
-                    crc,
-                    sha1,
-                    md5,
-                    in_archive: true,
-                    rom_id: None,
-                });
+                rom_files.push(NewRomFile::from_archive(path, &name, crc, sha1, md5));
             }
             ArchiveContents::Err(e) => {
                 panic!("{:?}", e)

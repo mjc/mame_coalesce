@@ -57,18 +57,7 @@ fn insert_data_file(
 ) -> Option<DataFile> {
     use schema::{data_files, data_files::dsl::*};
 
-    let new_data_file = (
-        build.eq(data_file.build()),
-        debug.eq(data_file.debug()),
-        file_name.eq(df_name),
-        name.eq(data_file.header().name()),
-        description.eq(data_file.header().description()),
-        version.eq(data_file.header().version()),
-        author.eq(data_file.header().author()),
-        homepage.eq(data_file.header().homepage()),
-        url.eq(data_file.header().url()),
-        sha1.eq(data_file.sha1()),
-    );
+    let new_data_file = NewDataFile::from_logiqx(data_file, df_name);
 
     let insert_id = diesel::insert_into(data_files::table)
         .values(&new_data_file)
@@ -94,16 +83,6 @@ fn insert_data_file(
                 .ok()
         }
     }
-}
-
-fn lookup_logiqx_game(conn: &SqliteConnection, game: &logiqx::Game) -> Option<Game> {
-    use schema::games::dsl::*;
-
-    games
-        .filter(name.eq(&game.name))
-        .limit(1)
-        .first::<Game>(conn)
-        .ok()
 }
 
 fn insert_game(conn: &SqliteConnection, game: &logiqx::Game, df_id: &i32) -> usize {
@@ -147,7 +126,7 @@ fn insert_rom(conn: &SqliteConnection, rom: &logiqx::Rom, g_id: &usize) -> usize
 }
 
 // TODO: this should be one struct, not two, and not have to convert.
-pub fn import_rom_file(conn: &SqliteConnection, rom_file: &RomFile) {
+pub fn import_rom_file(conn: &SqliteConnection, rom_file: &NewRomFile) {
     use schema::rom_files::dsl::*;
 
     let already_current = diesel::select(diesel::dsl::exists(
@@ -164,14 +143,13 @@ pub fn import_rom_file(conn: &SqliteConnection, rom_file: &RomFile) {
     }
 }
 
-fn insert_rom_file(conn: &SqliteConnection, rom_file: &RomFile) -> usize {
+fn insert_rom_file(conn: &SqliteConnection, rom_file: &NewRomFile) -> usize {
     use schema::{rom_files, rom_files::dsl::*};
 
     let insert_id = diesel::insert_into(rom_files::table)
         .values(rom_file)
         .execute(conn)
-        .optional()
-        .unwrap();
+        .ok();
 
     // TODO: try and match as many hashes as possible? match sha1?
     // TODO: investigate prevalence of crc, sha1, md5
