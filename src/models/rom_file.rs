@@ -1,11 +1,6 @@
-use std::{
-    fs::File,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 use log::info;
-use memmap2::MmapOptions;
-use sha1::{Digest, Sha1};
 
 use crate::schema::rom_files;
 
@@ -27,7 +22,7 @@ pub struct RomFile {
 
 impl RomFile {
     pub fn from_path(path: PathBuf, in_archive: bool) -> RomFile {
-        let (crc, sha1, md5) = Self::compute_hashes(&path);
+        let (crc, sha1) = crate::hashes::compute_all_hashes(&path);
         let name = path.file_name().unwrap().to_str().unwrap().to_string();
         let rom_file_path = path.to_str().unwrap().to_string();
         RomFile {
@@ -36,31 +31,10 @@ impl RomFile {
             name: name,
             crc: crc,
             sha1: sha1,
-            md5: md5,
+            md5: Vec::<u8>::new(),
             in_archive: in_archive,
             rom_id: None,
         }
-    }
-
-    fn compute_hashes(path: &Path) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
-        let mut crc32 = crc32fast::Hasher::new();
-        let mut sha1 = Sha1::new();
-
-        let f = File::open(path).unwrap();
-        // takes forever on large files without mmap.
-        let mmap = unsafe { MmapOptions::new().map_copy_read_only(&f).unwrap() };
-
-        // iterate over 16KB chunks
-        for chunk in mmap.chunks(16_384) {
-            crc32.update(chunk);
-            sha1.update(chunk);
-        }
-
-        (
-            crc32.finalize().to_le_bytes().to_vec(), // check if LE is correct here
-            sha1.finalize().to_vec(),
-            Vec::<u8>::new(),
-        )
     }
 
     pub fn is_archive(path: &Path) -> bool {

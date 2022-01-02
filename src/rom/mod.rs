@@ -23,7 +23,8 @@ pub fn files(dir: PathBuf) -> Vec<File> {
         .map(|file| {
             let mut file = file.clone();
             //println!("Computing sha1: {}", file.path.to_str().unwrap());
-            file.sha1 = compute_sha1(&file.path);
+            let (crc32, sha1) = hashes::compute_all_hashes(&file.path);
+            file.sha1 = sha1;
             bar.inc(1);
             file
         })
@@ -46,14 +47,6 @@ fn file_list(dir: &PathBuf) -> Vec<File> {
         })
         .collect()
 }
-
-fn compute_sha1(path: &PathBuf) -> Option<String> {
-    let mut file = fs::File::open(path).unwrap();
-    let mut hasher = Sha1::new();
-    let _n = io::copy(&mut file, &mut hasher);
-    Some(format!("{:x}", hasher.result()))
-}
-
 pub fn files_by_sha1(files: &[File]) -> HashMap<String, File> {
     files
         .iter()

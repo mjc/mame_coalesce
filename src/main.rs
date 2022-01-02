@@ -35,6 +35,7 @@ use structopt::StructOpt;
 
 pub mod logiqx;
 
+mod hashes;
 pub mod models;
 pub mod queries;
 pub mod schema;
