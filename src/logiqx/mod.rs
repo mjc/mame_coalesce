@@ -1,4 +1,4 @@
-use crate::fs;
+use std::fs::File;
 
 mod data_file;
 mod game;
@@ -9,9 +9,8 @@ pub use data_file::DataFile;
 pub use game::Game;
 pub use rom::Rom;
 
-pub fn load_datafile(name: &str) -> Result<DataFile, &'static str> {
-    match fs::read_to_string(name) {
-        Ok(contents) => Ok(DataFile::from_str(&contents)),
-        Err(_) => Err("Unable to parse datafile"),
-    }
+// TODO: mmap this for shoots and ladders
+pub fn load_datafile(name: &str) -> Option<DataFile> {
+    let f = File::open(name).ok()?;
+    Some(DataFile::from_file(&f))
 }
