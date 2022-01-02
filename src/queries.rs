@@ -1,4 +1,3 @@
-use diesel_logger::LoggingConnection;
 use log::info;
 use rayon::iter::IntoParallelRefIterator;
 
@@ -13,7 +12,7 @@ use indicatif::{ProgressBar, ProgressIterator, ProgressStyle};
 // this should definitely not be one giant file
 
 pub fn traverse_and_insert_data_file(
-    pool: &r2d2::Pool<ConnectionManager<LoggingConnection<SqliteConnection>>>,
+    pool: &r2d2::Pool<ConnectionManager<SqliteConnection>>,
     data_file: logiqx::DataFile,
     data_file_name: &str,
 ) {
@@ -49,11 +48,7 @@ pub fn traverse_and_insert_data_file(
     }
 }
 
-fn insert_data_file(
-    conn: &LoggingConnection<SqliteConnection>,
-    data_file: &logiqx::DataFile,
-    df_name: &str,
-) -> usize {
+fn insert_data_file(conn: &SqliteConnection, data_file: &logiqx::DataFile, df_name: &str) -> usize {
     use schema::{data_files, data_files::dsl::*};
 
     let new_data_file = (
@@ -84,11 +79,7 @@ fn insert_data_file(
     }
 }
 
-fn insert_game(
-    conn: &LoggingConnection<SqliteConnection>,
-    game: &logiqx::Game,
-    df_id: &usize,
-) -> usize {
+fn insert_game(conn: &SqliteConnection, game: &logiqx::Game, df_id: &usize) -> usize {
     use schema::{games, games::dsl::*};
 
     let new_game = (
@@ -119,11 +110,7 @@ fn insert_game(
     }
 }
 
-fn insert_rom(
-    conn: &LoggingConnection<SqliteConnection>,
-    rom: &logiqx::Rom,
-    g_id: &usize,
-) -> usize {
+fn insert_rom(conn: &SqliteConnection, rom: &logiqx::Rom, g_id: &usize) -> usize {
     use schema::{roms, roms::dsl::*};
 
     let new_rom = Rom {
@@ -154,7 +141,7 @@ fn insert_rom(
 }
 
 // TODO: this should be one struct, not two, and not have to convert.
-pub fn import_rom_file(conn: &LoggingConnection<SqliteConnection>, rom_file: &RomFile) {
+pub fn import_rom_file(conn: &SqliteConnection, rom_file: &RomFile) {
     use schema::rom_files::dsl::*;
 
     let already_current = diesel::select(diesel::dsl::exists(
@@ -171,7 +158,7 @@ pub fn import_rom_file(conn: &LoggingConnection<SqliteConnection>, rom_file: &Ro
     }
 }
 
-fn insert_rom_file(conn: &LoggingConnection<SqliteConnection>, rom_file: &RomFile) -> usize {
+fn insert_rom_file(conn: &SqliteConnection, rom_file: &RomFile) -> usize {
     use schema::{rom_files, rom_files::dsl::*};
 
     let insert_id = diesel::insert_into(rom_files::table)
