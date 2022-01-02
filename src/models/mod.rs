@@ -2,7 +2,7 @@ mod data_file;
 pub use data_file::DataFile;
 
 mod game;
-pub use game::Game;
+pub use game::{Game, NewGame};
 
 mod rom;
 pub use rom::Rom;

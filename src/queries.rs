@@ -6,8 +6,6 @@ use crate::models::*;
 use crate::schema;
 use diesel::{prelude::*, r2d2::ConnectionManager};
 
-use indicatif::{ProgressBar, ProgressIterator, ProgressStyle};
-
 // this should definitely not be one giant file
 
 pub fn traverse_and_insert_data_file(
@@ -15,10 +13,6 @@ pub fn traverse_and_insert_data_file(
     data_file: logiqx::DataFile,
     data_file_name: &str,
 ) {
-    let progress_style = ProgressStyle::default_bar()
-        .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg} {eta_precise}");
-    let pb = ProgressBar::new(data_file.games().len() as u64).with_style(progress_style);
-
     let conn = pool.get().unwrap();
 
     match lookup_logiqx_data_file(&conn, &data_file) {
@@ -115,18 +109,7 @@ fn lookup_logiqx_game(conn: &SqliteConnection, game: &logiqx::Game) -> Option<Ga
 fn insert_game(conn: &SqliteConnection, game: &logiqx::Game, df_id: &i32) -> usize {
     use schema::{games, games::dsl::*};
 
-    let new_game = (
-        name.eq(game.name()),
-        is_bios.eq(game.isbios()),
-        clone_of.eq(game.cloneof()),
-        rom_of.eq(game.romof()),
-        sample_of.eq(game.sampleof()),
-        board.eq(game.board()),
-        rebuildto.eq(game.rebuildto()),
-        year.eq(game.year()),
-        manufacturer.eq(game.manufacturer()),
-        data_file_id.eq(*df_id as i32),
-    );
+    let new_game = NewGame::from_logiqx(game, df_id);
 
     let insert_id = diesel::insert_into(games::table)
         .values(&new_game)
@@ -137,7 +120,7 @@ fn insert_game(conn: &SqliteConnection, game: &logiqx::Game, df_id: &i32) -> usi
     match insert_id {
         Some(game_id) => game_id,
         None => diesel::update(games.filter(name.eq(game.name())))
-            .set(new_game)
+            .set(&new_game)
             .execute(conn)
             .expect("Error updating Game"),
     }
