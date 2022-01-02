@@ -102,6 +102,16 @@ fn insert_data_file(
     }
 }
 
+fn lookup_logiqx_game(conn: &SqliteConnection, game: &logiqx::Game) -> Option<Game> {
+    use schema::games::dsl::*;
+
+    games
+        .filter(name.eq(&game.name))
+        .limit(1)
+        .first::<Game>(conn)
+        .ok()
+}
+
 fn insert_game(conn: &SqliteConnection, game: &logiqx::Game, df_id: &i32) -> usize {
     use schema::{games, games::dsl::*};
 
