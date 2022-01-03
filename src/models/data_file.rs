@@ -49,4 +49,14 @@ impl NewDataFile<'_> {
             sha1: l_data_file.sha1(),
         }
     }
+
+    /// Get a reference to the new data file's sha1.
+    pub fn sha1(&self) -> Option<&Vec<u8>> {
+        self.sha1
+    }
+
+    /// Get a reference to the new data file's name.
+    pub fn name(&self) -> &str {
+        self.name.as_ref()
+    }
 }

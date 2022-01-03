@@ -1,6 +1,5 @@
 use std::{fs::File, path::Path};
 
-use crc32fast::Hasher;
 use memmap2::{Mmap, MmapOptions};
 use sha1::{Digest, Sha1};
 
@@ -24,18 +23,12 @@ impl MultiHash for File {
 
 impl MultiHash for Mmap {
     fn all_hashes(&self) -> (Vec<u8>, Vec<u8>) {
-        // let mut crc32 = Hasher::new();
         let mut sha1 = Sha1::new();
 
         for chunk in self.chunks(16_384) {
-            // crc32.update(chunk);
             sha1.update(chunk);
         }
 
-        (
-            // crc32.finalize().to_le_bytes().to_vec(), // TODO: check if LE is correct here
-            Vec::<u8>::default(),
-            sha1.finalize().to_vec(),
-        )
+        (Vec::<u8>::default(), sha1.finalize().to_vec())
     }
 }
