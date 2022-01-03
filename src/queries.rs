@@ -26,9 +26,6 @@ pub fn traverse_and_insert_data_file(
 
 fn iterate_logiqx_games(conn: &SqliteConnection, games: &[logiqx::Game], data_file_id: &i32) {
     games.iter().for_each(|game| {
-        // this should be a bulk insert with on_conflict but
-        // 1. I don't care (15 seconds for just games isn't terrible)
-        // 2. on_conflict for sqlite isn't in diesel 1.4
         let g_id = insert_game(&conn, game, data_file_id);
         game.roms().iter().for_each(|rom| {
             insert_rom(&conn, rom, &g_id);
@@ -85,6 +82,9 @@ fn insert_data_file(
     }
 }
 
+// this should be a bulk insert with on_conflict but
+// 1. I don't care (15 seconds for just games isn't terrible)
+// 2. on_conflict for sqlite isn't in diesel 1.4
 fn insert_game(conn: &SqliteConnection, game: &logiqx::Game, df_id: &i32) -> usize {
     use schema::{games, games::dsl::*};
 
