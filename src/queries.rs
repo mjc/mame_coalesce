@@ -1,7 +1,7 @@
 use log::info;
 
-use crate::logiqx;
 use crate::models::*;
+use crate::{logiqx, models};
 
 use crate::schema;
 use diesel::{prelude::*, r2d2::ConnectionManager};
@@ -10,16 +10,20 @@ use diesel::{prelude::*, r2d2::ConnectionManager};
 
 pub fn traverse_and_insert_data_file(
     pool: &r2d2::Pool<ConnectionManager<SqliteConnection>>,
-    data_file: logiqx::DataFile,
+    logiqx_data_file: logiqx::DataFile,
     data_file_name: &str,
 ) {
     let conn = pool.get().unwrap();
 
-    match lookup_logiqx_data_file(&conn, &data_file) {
+    let new_data_file = NewDataFile::from_logiqx(&logiqx_data_file, data_file_name);
+
+    // TODO: if sha1 doesn't match, don't skip games
+    match lookup_data_file(&conn, &new_data_file) {
         Some(_data_file) => (),
         None => {
-            let db_data_file = insert_data_file(&conn, &data_file, &data_file_name).unwrap();
-            iterate_logiqx_games(&conn, data_file.games(), db_data_file.id());
+            let games = &logiqx_data_file.games();
+            let db_data_file = insert_data_file(&conn, new_data_file).unwrap();
+            iterate_logiqx_games(&conn, games, db_data_file.id());
         }
     }
 }
@@ -27,21 +31,22 @@ pub fn traverse_and_insert_data_file(
 fn iterate_logiqx_games(conn: &SqliteConnection, games: &[logiqx::Game], data_file_id: &i32) {
     games.iter().for_each(|game| {
         let g_id = insert_game(&conn, game, data_file_id);
-        game.roms().iter().for_each(|rom| {
-            insert_rom(&conn, rom, &g_id);
+        game.roms().iter().for_each(|logiqx_rom: &logiqx::Rom| {
+            let new_rom = NewRom::from_logiqx(logiqx_rom, g_id);
+            insert_rom(&conn, new_rom);
         })
     });
 }
 
-fn lookup_logiqx_data_file(
+fn lookup_data_file(
     conn: &SqliteConnection,
-    data_file: &logiqx::DataFile,
+    new_data_file: &models::NewDataFile,
 ) -> Option<DataFile> {
     use schema::data_files::dsl::*;
 
     data_files
-        .filter(sha1.eq(&data_file.sha1()?))
-        .or_filter(name.eq(&data_file.header().name()))
+        .filter(sha1.eq(new_data_file.sha1()))
+        .or_filter(name.eq(new_data_file.name()))
         .limit(1)
         .first::<DataFile>(conn)
         .ok()
@@ -49,12 +54,9 @@ fn lookup_logiqx_data_file(
 
 fn insert_data_file(
     conn: &SqliteConnection,
-    data_file: &logiqx::DataFile,
-    df_name: &str,
+    new_data_file: models::NewDataFile,
 ) -> Option<DataFile> {
     use schema::{data_files, data_files::dsl::*};
-
-    let new_data_file = NewDataFile::from_logiqx(data_file, df_name);
 
     let insert_id = diesel::insert_into(data_files::table)
         .values(&new_data_file)
@@ -69,8 +71,8 @@ fn insert_data_file(
             .first::<DataFile>(conn)
             .ok(),
         None => {
-            let df_id = diesel::update(data_files.filter(name.eq(data_file.header().name())))
-                .set(new_data_file)
+            let df_id = diesel::update(data_files.filter(name.eq(new_data_file.name())))
+                .set(&new_data_file)
                 .execute(conn)
                 .expect("Error updating DataFile");
             data_files
@@ -105,10 +107,8 @@ fn insert_game(conn: &SqliteConnection, game: &logiqx::Game, df_id: &i32) -> usi
     }
 }
 
-fn insert_rom(conn: &SqliteConnection, rom: &logiqx::Rom, g_id: &usize) -> usize {
+fn insert_rom(conn: &SqliteConnection, new_rom: models::NewRom) -> usize {
     use schema::{roms, roms::dsl::*};
-
-    let new_rom = NewRom::from_logiqx(rom, g_id);
 
     let insert_id = diesel::insert_into(roms::table)
         .values(&new_rom)
@@ -118,7 +118,7 @@ fn insert_rom(conn: &SqliteConnection, rom: &logiqx::Rom, g_id: &usize) -> usize
 
     match insert_id {
         Some(rom_id) => rom_id,
-        None => diesel::update(roms.filter(name.eq(rom.name())))
+        None => diesel::update(roms.filter(name.eq(&new_rom.name)))
             .set(&new_rom)
             .execute(conn)
             .expect("Error updating Game"),
