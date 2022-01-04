@@ -86,7 +86,7 @@ fn main() {
 
     // this can probably be done during the walkdir
     let new_rom_files = get_all_rom_files_parallel(&file_list, &bar);
-
+    bar.finish();
     // this should happen during get_all_rom_files_parallel
     // that way, we can skip extracting archives that we've already checked
     // and not load things all over again
