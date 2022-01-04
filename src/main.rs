@@ -43,6 +43,8 @@ use queries::traverse_and_insert_data_file;
 mod opts;
 use opts::{Opt, StructOpt};
 
+use crate::queries::import_rom_files;
+
 fn main() {
     dotenv().ok();
     pretty_env_logger::init();
@@ -70,21 +72,22 @@ fn main() {
         .unwrap();
 
     traverse_and_insert_data_file(&pool, data_file, file_name);
-    let file_list = file_list(&opt.path);
+
+    let file_list = walk_for_files(&opt.path);
+
     let bar = ProgressBar::new(file_list.len() as u64);
     bar.set_style(
         ProgressStyle::default_bar().template(
             "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg} {eta_precise}",
         ),
     );
+
     // this can probably be done during the walkdir
-    let rom_files = get_all_rom_files_parallel(&file_list, &bar);
+    let new_rom_files = get_all_rom_files_parallel(&file_list, &bar);
+
     // this should happen during get_all_rom_files_parallel
     // that way, we can skip extracting archives that we've already checked
-
-    rom_files
-        .iter()
-        .for_each(|rom_file| import_rom_file(&pool.get().unwrap(), rom_file));
+    import_rom_files(&pool, &new_rom_files);
 }
 
 fn get_all_rom_files_parallel(file_list: &Vec<DirEntry>, bar: &ProgressBar) -> Vec<NewRomFile> {
@@ -172,7 +175,7 @@ fn run_migrations(pool: &r2d2::Pool<ConnectionManager<SqliteConnection>>) {
     embedded_migrations::run(&connection).expect("failed to migrate database");
 }
 
-fn file_list(dir: &PathBuf) -> Vec<DirEntry> {
+fn walk_for_files(dir: &PathBuf) -> Vec<DirEntry> {
     WalkDir::new(dir)
         .into_iter()
         .filter_entry(|e| entry_is_relevant(e))
