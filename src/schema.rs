@@ -42,7 +42,8 @@ table! {
 
 table! {
     rom_files (id) {
-        id -> Nullable<Integer>,
+        id -> Integer,
+        parent_path -> Text,
         path -> Text,
         name -> Text,
         crc -> Binary,

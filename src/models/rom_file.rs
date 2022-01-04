@@ -10,7 +10,8 @@ use super::Rom;
 #[diesel(table_name = rom_files)]
 #[belongs_to(Rom)]
 pub struct RomFile {
-    pub id: Option<i32>,
+    pub id: i32,
+    pub parent_path: String,
     pub path: String,
     pub name: String,
     pub crc: Vec<u8>,
@@ -58,6 +59,7 @@ impl RomFile {
 #[derive(Insertable, AsChangeset)]
 #[table_name = "rom_files"]
 pub struct NewRomFile {
+    pub parent_path: String,
     pub path: String,
     pub name: String,
     pub crc: Vec<u8>,
@@ -71,8 +73,10 @@ impl NewRomFile {
     pub fn from_path(path: PathBuf) -> NewRomFile {
         let (crc, sha1) = path.all_hashes();
         let name = path.file_name().unwrap().to_str().unwrap().to_string();
+        let parent = path.parent().unwrap().to_str().unwrap().to_string();
         let rom_file_path = path.to_str().unwrap().to_string();
         NewRomFile {
+            parent_path: parent,
             path: rom_file_path,
             name: name,
             crc: crc,
@@ -91,6 +95,7 @@ impl NewRomFile {
         md5: Vec<u8>,
     ) -> NewRomFile {
         NewRomFile {
+            parent_path: path.parent().unwrap().to_str().unwrap().to_string(),
             path: path.to_str().unwrap().to_string(),
             name: name.clone(),
             crc,

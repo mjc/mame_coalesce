@@ -1,6 +1,7 @@
 CREATE TABLE rom_files (
     id         INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
-    path       TEXT    NOT NULL,
+    parent_path TEXT   NOT NULL,
+    path       TEXT    NOT NULL CONSTRAINT unique_path UNIQUE,
     name       TEXT    CONSTRAINT file_name NOT NULL,
     crc        BLOB    NOT NULL,
     sha1       BLOB    NOT NULL,

@@ -92,7 +92,7 @@ fn main() {
     // and not load things all over again
     db::import_rom_files(&pool, &new_rom_files);
 
-    let rom_files = db::load_rom_files(&pool, data_file_id);
+    let rom_files = db::load_rom_files(&pool, data_file_id, &opt.path);
     info!("Processing {} roms...", &rom_files.len());
 }
 

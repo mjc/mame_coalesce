@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use crate::models::*;
 use crate::{db::*, logiqx};
 
@@ -66,10 +68,14 @@ pub fn import_rom_files(pool: &DbPool, new_rom_files: &[NewRomFile]) {
     .unwrap();
 }
 
-pub fn load_rom_files(pool: &DbPool, _df_id: i32) -> Vec<RomFile> {
+pub fn load_rom_files(pool: &DbPool, _df_id: i32, source_path: &PathBuf) -> Vec<RomFile> {
     use crate::schema::rom_files::dsl::*;
     let conn = pool.get().unwrap();
+    let p = source_path.to_str().unwrap().to_string();
 
     // TODO: this should be respecting the data_file_id
-    rom_files.order(id).get_results(&conn).unwrap()
+    rom_files
+        .filter(parent_path.eq(p))
+        .get_results(&conn)
+        .unwrap()
 }
