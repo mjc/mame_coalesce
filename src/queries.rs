@@ -50,6 +50,7 @@ pub fn import_rom_files(pool: &DbPool, new_rom_files: &[NewRomFile]) {
                 .unwrap();
         });
         // TODO: figure out how to do this with the dsl
+        // TODO: this is gonna do weird shit if you have things already inserted
         sql_query(
             "UPDATE rom_files SET rom_id = roms.id FROM roms WHERE rom_files.sha1 = roms.sha1",
         )
