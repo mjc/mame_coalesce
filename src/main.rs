@@ -95,9 +95,6 @@ fn main() {
     let games = db::load_games(&pool, &data_file_id);
     info!("Processing {} games with matching rom files", &games.len());
     debug!("{:?}", &games);
-
-    let rom_files = db::load_rom_files(&pool, &data_file_id, &opt.path);
-    info!("Processing {} roms...", &rom_files.len());
 }
 
 fn get_all_rom_files_parallel(file_list: &Vec<DirEntry>, bar: &ProgressBar) -> Vec<NewRomFile> {
