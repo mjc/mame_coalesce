@@ -17,7 +17,6 @@ extern crate diesel;
 extern crate diesel_migrations;
 
 use compress_tools::*;
-use diesel::{r2d2::ConnectionManager, SqliteConnection};
 use dotenv::dotenv;
 use indicatif::{ProgressBar, ProgressStyle};
 use models::{NewRomFile, RomFile};
@@ -33,19 +32,13 @@ use std::{
 
 pub mod logiqx;
 
+mod db;
 mod hashes;
 pub mod models;
-pub mod queries;
 pub mod schema;
-
-use queries::traverse_and_insert_data_file;
 
 mod opts;
 use opts::{Opt, StructOpt};
-
-pub type DbPool = r2d2::Pool<ConnectionManager<SqliteConnection>>;
-
-use crate::queries::import_rom_files;
 
 fn main() {
     dotenv().ok();
@@ -65,7 +58,9 @@ fn main() {
 
     let data_file = logiqx::load_datafile(&opt.datafile).expect("Couldn't load datafile");
 
-    let pool: DbPool = create_db_pool();
+    let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+
+    let pool: db::DbPool = db::create_db_pool(&database_url);
 
     let file_name = Path::new(&opt.datafile)
         .file_name()
@@ -73,7 +68,7 @@ fn main() {
         .to_str()
         .unwrap();
 
-    traverse_and_insert_data_file(&pool, data_file, file_name);
+    db::traverse_and_insert_data_file(&pool, data_file, file_name);
 
     let file_list = walk_for_files(&opt.path);
 
@@ -89,7 +84,7 @@ fn main() {
 
     // this should happen during get_all_rom_files_parallel
     // that way, we can skip extracting archives that we've already checked
-    import_rom_files(&pool, &new_rom_files);
+    db::import_rom_files(&pool, &new_rom_files);
 }
 
 fn get_all_rom_files_parallel(file_list: &Vec<DirEntry>, bar: &ProgressBar) -> Vec<NewRomFile> {
@@ -156,25 +151,6 @@ fn get_rom_files_for_archive(path: &PathBuf) -> Vec<NewRomFile> {
     }
 
     rom_files
-}
-
-embed_migrations!("migrations");
-
-pub fn create_db_pool() -> DbPool {
-    dotenv().ok();
-    let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-
-    let manager = ConnectionManager::<SqliteConnection>::new(database_url);
-    let pool = r2d2::Pool::builder()
-        .build(manager)
-        .expect("Failed to create pool.");
-    run_migrations(&pool);
-    pool
-}
-
-fn run_migrations(pool: &DbPool) {
-    let connection = pool.clone().get().unwrap();
-    embedded_migrations::run(&connection).expect("failed to migrate database");
 }
 
 fn walk_for_files(dir: &PathBuf) -> Vec<DirEntry> {

@@ -1,5 +1,5 @@
 use crate::models::*;
-use crate::{logiqx, DbPool};
+use crate::{db::*, logiqx};
 
 use diesel::{prelude::*, result::Error, sql_query};
 
