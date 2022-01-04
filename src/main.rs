@@ -41,7 +41,6 @@ pub mod schema;
 use queries::traverse_and_insert_data_file;
 
 mod opts;
-use crate::queries::import_rom_file;
 use opts::{Opt, StructOpt};
 
 fn main() {
