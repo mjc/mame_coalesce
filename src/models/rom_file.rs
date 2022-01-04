@@ -26,11 +26,11 @@ impl RomFile {
             "application/zip" => true,
             "application/x-7z-compressed" => true,
             "text/plain" => {
-                warn!("Found a text file: {:?}", path.file_name());
+                debug!("Found a text file: {:?}", path.file_name());
                 false
             }
             "application/x-cpio" => {
-                warn!(
+                debug!(
                     "Found an archive that calls itself cpio, this is weird: {:?}",
                     path.file_name()
                 );
@@ -38,14 +38,14 @@ impl RomFile {
             }
             "application/x-n64-rom" => false,
             "application/octet-stream" => {
-                warn!(
+                debug!(
                     "Only detected as a generic binary file: {:?}",
                     &path.file_name().unwrap()
                 );
                 false
             }
             mime => {
-                warn!(
+                debug!(
                     "Unknown mime type, assuming that it isn't an archive {:?}",
                     mime
                 );

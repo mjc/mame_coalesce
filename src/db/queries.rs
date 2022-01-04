@@ -9,7 +9,7 @@ pub fn traverse_and_insert_data_file(
     pool: &DbPool,
     logiqx_data_file: logiqx::DataFile,
     data_file_name: &str,
-) {
+) -> i32 {
     use crate::schema::{data_files::dsl::*, games::dsl::*, roms::dsl::*};
     use diesel::replace_into;
 
@@ -17,8 +17,11 @@ pub fn traverse_and_insert_data_file(
 
     let conn = &pool.get().unwrap();
 
+    // TODO: return from transaction?
+    let mut df_id = -1;
+
     conn.transaction::<_, Error, _>(|| {
-        let df_id = replace_into(data_files)
+        df_id = replace_into(data_files)
             .values(&new_data_file)
             .execute(conn)
             .unwrap() as i32;
@@ -34,6 +37,8 @@ pub fn traverse_and_insert_data_file(
         Ok(df_id)
     })
     .unwrap();
+
+    df_id
 }
 
 pub fn import_rom_files(pool: &DbPool, new_rom_files: &[NewRomFile]) {
@@ -59,4 +64,12 @@ pub fn import_rom_files(pool: &DbPool, new_rom_files: &[NewRomFile]) {
         Ok(true)
     })
     .unwrap();
+}
+
+pub fn load_rom_files(pool: &DbPool, _df_id: i32) -> Vec<RomFile> {
+    use crate::schema::rom_files::dsl::*;
+    let conn = pool.get().unwrap();
+
+    // TODO: this should be respecting the data_file_id
+    rom_files.order(id).get_results(&conn).unwrap()
 }

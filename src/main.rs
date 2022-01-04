@@ -73,7 +73,7 @@ fn main() {
         .unwrap();
 
     info!("Loading data file: {:?}", &file_name);
-    db::traverse_and_insert_data_file(&pool, data_file, file_name);
+    let data_file_id = db::traverse_and_insert_data_file(&pool, data_file, file_name);
 
     let file_list = walk_for_files(&opt.path);
 
@@ -89,7 +89,11 @@ fn main() {
 
     // this should happen during get_all_rom_files_parallel
     // that way, we can skip extracting archives that we've already checked
+    // and not load things all over again
     db::import_rom_files(&pool, &new_rom_files);
+
+    let rom_files = db::load_rom_files(&pool, data_file_id);
+    info!("Processing {} roms...", &rom_files.len());
 }
 
 fn get_all_rom_files_parallel(file_list: &Vec<DirEntry>, bar: &ProgressBar) -> Vec<NewRomFile> {
