@@ -19,7 +19,9 @@ extern crate diesel_migrations;
 use compress_tools::*;
 use dotenv::dotenv;
 use indicatif::{ProgressBar, ProgressStyle};
+use log::{info, LevelFilter};
 use models::{NewRomFile, RomFile};
+use pretty_env_logger::env_logger::Builder;
 use rayon::prelude::*;
 use sha1::{Digest, Sha1};
 use walkdir::{DirEntry, WalkDir};
@@ -42,7 +44,9 @@ use opts::{Opt, StructOpt};
 
 fn main() {
     dotenv().ok();
-    pretty_env_logger::init();
+    let mut builder = Builder::from_default_env();
+
+    builder.filter(None, LevelFilter::Info).init();
     let opt = Opt::from_args();
 
     let destination = match opt.destination {
@@ -68,6 +72,7 @@ fn main() {
         .to_str()
         .unwrap();
 
+    info!("Loading data file: {:?}", &file_name);
     db::traverse_and_insert_data_file(&pool, data_file, file_name);
 
     let file_list = walk_for_files(&opt.path);

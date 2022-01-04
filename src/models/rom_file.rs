@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use log::info;
+use log::{info, warn};
 
 use crate::{hashes::MultiHash, schema::rom_files};
 
@@ -26,19 +26,26 @@ impl RomFile {
             "application/zip" => true,
             "application/x-7z-compressed" => true,
             "text/plain" => {
-                info!("Found a text file: {:?}", path.file_name());
+                warn!("Found a text file: {:?}", path.file_name());
                 false
             }
             "application/x-cpio" => {
-                info!(
+                warn!(
                     "Found an archive that calls itself cpio, this is weird: {:?}",
                     path.file_name()
                 );
                 true
             }
             "application/x-n64-rom" => false,
+            "application/octet-stream" => {
+                warn!(
+                    "Only detected as a generic binary file: {:?}",
+                    &path.file_name().unwrap()
+                );
+                false
+            }
             mime => {
-                info!(
+                warn!(
                     "Unknown mime type, assuming that it isn't an archive {:?}",
                     mime
                 );
