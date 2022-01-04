@@ -1,7 +1,7 @@
 use crate::logiqx;
 use crate::models::*;
 
-use diesel::{prelude::*, r2d2::ConnectionManager};
+use diesel::{prelude::*, r2d2::ConnectionManager, result::Error};
 
 // this should definitely not be one giant file
 
@@ -21,17 +21,21 @@ pub fn traverse_and_insert_data_file(
 
     let conn = &pool.get().unwrap();
 
-    let df_id = replace_into(data_files)
-        .values(&new_data_file)
-        .execute(conn)
-        .unwrap() as i32;
+    conn.transaction::<_, Error, _>(|| {
+        let df_id = replace_into(data_files)
+            .values(&new_data_file)
+            .execute(conn)
+            .unwrap() as i32;
 
-    logiqx_data_file.games().iter().for_each(|game| {
-        let new_game = NewGame::from_logiqx(game, &df_id);
-        let g_id = replace_into(games).values(new_game).execute(conn).unwrap() as i32;
-        game.roms().iter().for_each(|rom| {
-            let new_rom = NewRom::from_logiqx(rom, &g_id);
-            replace_into(roms).values(new_rom).execute(conn).unwrap() as i32;
+        logiqx_data_file.games().iter().for_each(|game| {
+            let new_game = NewGame::from_logiqx(game, &df_id);
+            let g_id = replace_into(games).values(new_game).execute(conn).unwrap() as i32;
+            game.roms().iter().for_each(|rom| {
+                let new_rom = NewRom::from_logiqx(rom, &g_id);
+                replace_into(roms).values(new_rom).execute(conn).unwrap() as i32;
+            });
         });
-    });
+        Ok(df_id)
+    })
+    .unwrap();
 }
