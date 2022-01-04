@@ -29,14 +29,17 @@ crc32fast = "1.3"
 sha-1 = { version = "0.10", features = ["asm"] }
 memmap2 = "0.5"
 
+dotenv = "0.15.0"
 structopt = { version = "0.3", default-features = false }
 
 walkdir = "^2.2.9"
 tempdir = "0.3"
 
-diesel = { version = "*", features = ["sqlite", "r2d2"] }
+diesel = { version = "*", features = ["sqlite", "r2d2", "chrono"] }
 r2d2 = "0.8"
 diesel_migrations = "1.4"
 # diesel_logger = "0.1.1"
-dotenv = "0.15.0"
+chrono = "0.4"
+
+
 tree_magic = "0.2" # bindet?

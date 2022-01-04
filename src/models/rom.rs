@@ -1,3 +1,5 @@
+use chrono::{NaiveDate, NaiveDateTime};
+
 use super::Game;
 use crate::{logiqx, schema::roms};
 
@@ -7,13 +9,15 @@ use crate::{logiqx, schema::roms};
 pub struct Rom {
     pub id: i32,
     pub name: String,
+    pub size: i32,
     pub md5: Vec<u8>,
     pub sha1: Vec<u8>,
     pub crc: Vec<u8>,
-    pub date: String,                // utc date
-    pub updated_at: Option<String>,  // utc datetime
-    pub inserted_at: Option<String>, // utc datetime
-    pub game_id: i32,
+    pub date: Option<NaiveDate>, // utc date
+    pub updated_at: Option<NaiveDateTime>,
+    pub inserted_at: Option<NaiveDateTime>,
+    pub game_id: Option<i32>,
+    pub archive_file_id: Option<i32>,
 }
 
 #[derive(Insertable, AsChangeset)]

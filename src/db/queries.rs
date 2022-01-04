@@ -68,7 +68,7 @@ pub fn import_rom_files(pool: &DbPool, new_rom_files: &[NewRomFile]) {
     .unwrap();
 }
 
-pub fn load_rom_files(pool: &DbPool, _df_id: i32, source_path: &PathBuf) -> Vec<RomFile> {
+pub fn load_rom_files(pool: &DbPool, _df_id: &i32, source_path: &PathBuf) -> Vec<RomFile> {
     use crate::schema::rom_files::dsl::*;
     let conn = pool.get().unwrap();
     let p = source_path.to_str().unwrap().to_string();
@@ -78,4 +78,12 @@ pub fn load_rom_files(pool: &DbPool, _df_id: i32, source_path: &PathBuf) -> Vec<
         .filter(parent_path.eq(p))
         .get_results(&conn)
         .unwrap()
+}
+
+pub fn load_games(pool: &DbPool, df_id: &i32) -> Vec<Game> {
+    use crate::schema::games::dsl::*;
+    let conn = pool.get().unwrap();
+
+    // TODO: this should be Game::belonging_to.
+    games.filter(data_file_id.eq(df_id)).load(&conn).unwrap()
 }
