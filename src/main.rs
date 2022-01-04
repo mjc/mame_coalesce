@@ -43,6 +43,8 @@ use queries::traverse_and_insert_data_file;
 mod opts;
 use opts::{Opt, StructOpt};
 
+pub type DbPool = r2d2::Pool<ConnectionManager<SqliteConnection>>;
+
 use crate::queries::import_rom_files;
 
 fn main() {
@@ -63,7 +65,7 @@ fn main() {
 
     let data_file = logiqx::load_datafile(&opt.datafile).expect("Couldn't load datafile");
 
-    let pool = create_db_pool();
+    let pool: DbPool = create_db_pool();
 
     let file_name = Path::new(&opt.datafile)
         .file_name()
@@ -158,7 +160,7 @@ fn get_rom_files_for_archive(path: &PathBuf) -> Vec<NewRomFile> {
 
 embed_migrations!("migrations");
 
-pub fn create_db_pool() -> r2d2::Pool<ConnectionManager<SqliteConnection>> {
+pub fn create_db_pool() -> DbPool {
     dotenv().ok();
     let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
 
@@ -170,7 +172,7 @@ pub fn create_db_pool() -> r2d2::Pool<ConnectionManager<SqliteConnection>> {
     pool
 }
 
-fn run_migrations(pool: &r2d2::Pool<ConnectionManager<SqliteConnection>>) {
+fn run_migrations(pool: &DbPool) {
     let connection = pool.clone().get().unwrap();
     embedded_migrations::run(&connection).expect("failed to migrate database");
 }

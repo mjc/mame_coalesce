@@ -1,13 +1,12 @@
-use crate::logiqx;
 use crate::models::*;
+use crate::{logiqx, DbPool};
 
-use diesel::{prelude::*, r2d2::ConnectionManager, result::Error};
-use r2d2::Pool;
+use diesel::{prelude::*, result::Error};
 
 // this should definitely not be one giant file
 
 pub fn traverse_and_insert_data_file(
-    pool: &r2d2::Pool<ConnectionManager<SqliteConnection>>,
+    pool: &DbPool,
     logiqx_data_file: logiqx::DataFile,
     data_file_name: &str,
 ) {
@@ -37,10 +36,7 @@ pub fn traverse_and_insert_data_file(
     .unwrap();
 }
 
-pub fn import_rom_files(
-    pool: &Pool<ConnectionManager<SqliteConnection>>,
-    new_rom_files: &[NewRomFile],
-) {
+pub fn import_rom_files(pool: &DbPool, new_rom_files: &[NewRomFile]) {
     use crate::schema::rom_files::dsl::*;
     use diesel::replace_into;
 
