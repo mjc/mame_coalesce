@@ -19,16 +19,17 @@ extern crate diesel_migrations;
 use compress_tools::*;
 use dotenv::dotenv;
 use indicatif::{ProgressBar, ProgressStyle};
-use log::{debug, info, LevelFilter};
+use log::{info, LevelFilter};
 use models::{NewRomFile, RomFile};
 use pretty_env_logger::env_logger::Builder;
 use rayon::prelude::*;
 use sha1::{Digest, Sha1};
 use walkdir::{DirEntry, WalkDir};
 
-use std::{env, fs, io::BufReader};
 use std::{
-    fs::File,
+    env,
+    fs::{self, File},
+    io::BufReader,
     path::{Path, PathBuf},
 };
 
@@ -94,7 +95,6 @@ fn main() {
 
     let games = db::load_games(&pool, &data_file_id);
     info!("Processing {} games with matching rom files", &games.len());
-    debug!("{:?}", &games);
 }
 
 fn get_all_rom_files_parallel(file_list: &Vec<DirEntry>, bar: &ProgressBar) -> Vec<NewRomFile> {

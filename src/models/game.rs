@@ -1,7 +1,7 @@
 use super::DataFile;
 use crate::{logiqx, schema::games};
 
-#[derive(Identifiable, Queryable, AsChangeset, Associations, PartialEq, Debug)]
+#[derive(Identifiable, Queryable, AsChangeset, Associations, PartialEq, Debug, Eq, Hash)]
 #[diesel(table_name = games)]
 #[belongs_to(DataFile)]
 pub struct Game {

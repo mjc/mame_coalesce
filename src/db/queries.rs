@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::collections::HashMap;
 
 use crate::models::*;
 use crate::{db::*, logiqx};
@@ -77,14 +77,15 @@ pub fn import_rom_files(pool: &DbPool, new_rom_files: &[NewRomFile]) {
     .unwrap();
 }
 
-pub fn load_games(pool: &DbPool, df_id: &i32) -> Vec<(Game, (Rom, RomFile))> {
+pub fn load_games(pool: &DbPool, df_id: &i32) -> HashMap<Game, (Rom, RomFile)> {
     use crate::schema::{games::dsl::*, rom_files::dsl::rom_files, roms::dsl::roms};
     let conn = pool.get().unwrap();
 
-    // TODO: this should be Game::belonging_to.
     games
         .filter(data_file_id.eq(df_id))
         .inner_join(roms.inner_join(rom_files))
         .load(&conn)
         .unwrap()
+        .into_iter()
+        .collect()
 }
