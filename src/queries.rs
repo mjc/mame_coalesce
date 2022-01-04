@@ -2,6 +2,7 @@ use crate::logiqx;
 use crate::models::*;
 
 use diesel::{prelude::*, r2d2::ConnectionManager, result::Error};
+use r2d2::Pool;
 
 // this should definitely not be one giant file
 
@@ -14,10 +15,6 @@ pub fn traverse_and_insert_data_file(
     use diesel::replace_into;
 
     let new_data_file = NewDataFile::from_logiqx(&logiqx_data_file, data_file_name);
-
-    // TODO: investigate why this is slower
-    // TODO: parallelize
-    // TODO: transaction?
 
     let conn = &pool.get().unwrap();
 
@@ -36,6 +33,27 @@ pub fn traverse_and_insert_data_file(
             });
         });
         Ok(df_id)
+    })
+    .unwrap();
+}
+
+pub fn import_rom_files(
+    pool: &Pool<ConnectionManager<SqliteConnection>>,
+    new_rom_files: &[NewRomFile],
+) {
+    use crate::schema::rom_files::dsl::*;
+    use diesel::replace_into;
+
+    let conn = pool.get().unwrap();
+
+    conn.transaction::<_, Error, _>(|| {
+        new_rom_files.iter().for_each(|new_rom_file| {
+            replace_into(rom_files)
+                .values(new_rom_file)
+                .execute(&conn)
+                .unwrap();
+        });
+        Ok(true)
     })
     .unwrap();
 }
