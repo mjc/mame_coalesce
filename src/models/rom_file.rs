@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use log::warn;
+use log::debug;
 
 use crate::{hashes::MultiHash, schema::rom_files};
 
