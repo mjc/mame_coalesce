@@ -1,7 +1,7 @@
 use crate::models::*;
 use crate::{logiqx, DbPool};
 
-use diesel::{prelude::*, result::Error};
+use diesel::{prelude::*, result::Error, sql_query};
 
 // this should definitely not be one giant file
 
@@ -49,6 +49,12 @@ pub fn import_rom_files(pool: &DbPool, new_rom_files: &[NewRomFile]) {
                 .execute(&conn)
                 .unwrap();
         });
+        // TODO: figure out how to do this with the dsl
+        sql_query(
+            "UPDATE rom_files SET rom_id = roms.id FROM roms WHERE rom_files.sha1 = roms.sha1",
+        )
+        .execute(&conn)
+        .unwrap();
         Ok(true)
     })
     .unwrap();
