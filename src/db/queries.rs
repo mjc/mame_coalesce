@@ -5,8 +5,6 @@ use crate::{db::*, logiqx};
 
 use diesel::{prelude::*, result::Error, sql_query};
 
-// this should definitely not be one giant file
-
 pub fn traverse_and_insert_data_file(
     pool: &DbPool,
     logiqx_data_file: logiqx::DataFile,
@@ -23,17 +21,28 @@ pub fn traverse_and_insert_data_file(
     let mut df_id = -1;
 
     conn.transaction::<_, Error, _>(|| {
-        df_id = replace_into(data_files)
+        replace_into(data_files)
             .values(&new_data_file)
             .execute(conn)
-            .unwrap() as i32;
+            .unwrap();
+
+        df_id = data_files
+            .order(crate::schema::data_files::dsl::id.desc())
+            .select(crate::schema::data_files::dsl::id)
+            .first(conn)
+            .unwrap();
 
         logiqx_data_file.games().iter().for_each(|game| {
             let new_game = NewGame::from_logiqx(game, &df_id);
-            let g_id = replace_into(games).values(new_game).execute(conn).unwrap() as i32;
+            replace_into(games).values(new_game).execute(conn).unwrap();
+            let g_id = games
+                .order(crate::schema::games::dsl::id.desc())
+                .select(crate::schema::games::dsl::id)
+                .first(conn)
+                .unwrap();
             game.roms().iter().for_each(|rom| {
                 let new_rom = NewRom::from_logiqx(rom, &g_id);
-                replace_into(roms).values(new_rom).execute(conn).unwrap() as i32;
+                replace_into(roms).values(new_rom).execute(conn).unwrap();
             });
         });
         Ok(df_id)
@@ -80,10 +89,14 @@ pub fn load_rom_files(pool: &DbPool, _df_id: &i32, source_path: &PathBuf) -> Vec
         .unwrap()
 }
 
-pub fn load_games(pool: &DbPool, df_id: &i32) -> Vec<Game> {
-    use crate::schema::games::dsl::*;
+pub fn load_games(pool: &DbPool, df_id: &i32) -> Vec<(Game, (Rom, RomFile))> {
+    use crate::schema::{games::dsl::*, rom_files::dsl::rom_files, roms::dsl::roms};
     let conn = pool.get().unwrap();
 
     // TODO: this should be Game::belonging_to.
-    games.filter(data_file_id.eq(df_id)).load(&conn).unwrap()
+    games
+        .filter(data_file_id.eq(df_id))
+        .inner_join(roms.inner_join(rom_files))
+        .load(&conn)
+        .unwrap()
 }

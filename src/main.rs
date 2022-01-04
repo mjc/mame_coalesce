@@ -19,7 +19,7 @@ extern crate diesel_migrations;
 use compress_tools::*;
 use dotenv::dotenv;
 use indicatif::{ProgressBar, ProgressStyle};
-use log::{info, LevelFilter};
+use log::{debug, info, LevelFilter};
 use models::{NewRomFile, RomFile};
 use pretty_env_logger::env_logger::Builder;
 use rayon::prelude::*;
@@ -92,10 +92,11 @@ fn main() {
     // and not load things all over again
     db::import_rom_files(&pool, &new_rom_files);
 
-    let games = db::load_games(&pool, data_file_id);
-    info!("Processing {} games with matching rom files", games);
+    let games = db::load_games(&pool, &data_file_id);
+    info!("Processing {} games with matching rom files", &games.len());
+    debug!("{:?}", &games);
 
-    let rom_files = db::load_rom_files(&pool, data_file_id, &opt.path);
+    let rom_files = db::load_rom_files(&pool, &data_file_id, &opt.path);
     info!("Processing {} roms...", &rom_files.len());
 }
 

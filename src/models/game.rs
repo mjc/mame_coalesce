@@ -45,7 +45,7 @@ impl NewGame {
             rebuildto: Some(logiqx.rebuildto.clone()),
             year: Some(logiqx.year.clone()),
             manufacturer: Some(logiqx.manufacturer.clone()),
-            data_file_id: Some(*data_file_id as i32),
+            data_file_id: Some(*data_file_id),
         }
     }
 }
