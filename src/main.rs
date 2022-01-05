@@ -191,7 +191,6 @@ fn get_rom_files_for_archive(path: &PathBuf) -> Vec<NewRomFile> {
             }
         }
     }
-
     rom_files
 }
 

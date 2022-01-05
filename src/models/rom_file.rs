@@ -66,7 +66,7 @@ impl RomFile {
     }
 }
 
-#[derive(Insertable, AsChangeset)]
+#[derive(Insertable, AsChangeset, Debug)]
 #[table_name = "rom_files"]
 pub struct NewRomFile {
     pub parent_path: String,
@@ -114,5 +114,10 @@ impl NewRomFile {
             in_archive: true,
             rom_id: None,
         }
+    }
+
+    /// Get a reference to the new rom file's name.
+    pub fn name(&self) -> &str {
+        self.name.as_ref()
     }
 }
