@@ -1,9 +1,13 @@
 use super::DataFile;
 use crate::{logiqx, schema::games};
 
-#[derive(Identifiable, Queryable, AsChangeset, Associations, PartialEq, Debug, Eq, Hash)]
+#[derive(
+    Identifiable, Queryable, QueryableByName, AsChangeset, Associations, PartialEq, Debug, Eq, Hash,
+)]
 #[diesel(table_name = games)]
+#[table_name = "games"]
 #[belongs_to(DataFile)]
+#[belongs_to(Game, foreign_key = "parent_id")]
 pub struct Game {
     pub id: i32,
     pub name: String,
@@ -16,6 +20,7 @@ pub struct Game {
     pub year: Option<String>,
     pub manufacturer: Option<String>,
     pub data_file_id: Option<i32>,
+    pub parent_id: Option<i32>,
 }
 
 impl Game {

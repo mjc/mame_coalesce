@@ -37,6 +37,7 @@ table! {
         year -> Nullable<Text>,
         manufacturer -> Nullable<Text>,
         data_file_id -> Nullable<Integer>,
+        parent_id -> Nullable<Integer>,
     }
 }
 
@@ -44,6 +45,7 @@ table! {
     rom_files (id) {
         id -> Integer,
         parent_path -> Text,
+        parent_game_name -> Nullable<Text>,
         path -> Text,
         name -> Text,
         crc -> Binary,

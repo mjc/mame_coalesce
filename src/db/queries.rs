@@ -45,6 +45,14 @@ pub fn traverse_and_insert_data_file(
                 replace_into(roms).values(new_rom).execute(conn).unwrap();
             });
         });
+
+        // TODO: figure out how to do this with the dsl
+        sql_query(
+            "UPDATE games AS cloned SET parent_id = (select games.id from games WHERE cloned.clone_of = games.name)",
+        )
+        .execute(conn)
+        .unwrap();
+
         Ok(df_id)
     })
     .unwrap();
@@ -78,6 +86,21 @@ pub fn import_rom_files(pool: &DbPool, new_rom_files: &[NewRomFile]) {
 }
 
 pub fn load_unpacked_games(pool: &DbPool, df_id: &i32) -> HashMap<Game, (Rom, RomFile)> {
+    use crate::schema::{games::dsl::*, rom_files::dsl::rom_files, roms::dsl::roms};
+    let conn = pool.get().unwrap();
+
+    // TODO: remove is_archive check once we handle source archives correctly.
+    games
+        .filter(data_file_id.eq(df_id))
+        .inner_join(roms.inner_join(rom_files))
+        .filter(crate::schema::rom_files::in_archive.eq(false))
+        .load(&conn)
+        .unwrap()
+        .into_iter()
+        .collect()
+}
+
+pub fn load_packed_games(pool: &DbPool, df_id: &i32) -> HashMap<Game, (Rom, RomFile)> {
     use crate::schema::{games::dsl::*, rom_files::dsl::rom_files, roms::dsl::roms};
     let conn = pool.get().unwrap();
 

@@ -12,6 +12,7 @@ use super::Rom;
 pub struct RomFile {
     pub id: i32,
     pub parent_path: String,
+    pub parent_game_name: Option<String>,
     pub path: String,
     pub name: String,
     pub crc: Vec<u8>,

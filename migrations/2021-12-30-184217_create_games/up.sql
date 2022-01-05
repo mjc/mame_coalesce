@@ -11,5 +11,6 @@ CREATE TABLE games (
     rebuildto    TEXT,
     year         TEXT,
     manufacturer TEXT,
-    data_file_id         INTEGER CONSTRAINT data_file_id_constraint REFERENCES data_files (id) 
+    data_file_id         INTEGER CONSTRAINT data_file_id_constraint REFERENCES data_files (id),
+    parent_id   INTEGER CONSTRAINT parent_clone_constraint REFERENCES games (id)
 );
