@@ -121,7 +121,8 @@ fn main() {
         let infile = File::open(source_file_path).unwrap();
         let mut reader = BufReader::new(infile);
 
-        zip.start_file(rom.name(), FileOptions::default()).unwrap();
+        zip.start_file(rom_file.name(), FileOptions::default())
+            .unwrap();
         io::copy(&mut reader, &mut zip).unwrap();
 
         zip.finish().unwrap();

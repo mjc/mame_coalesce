@@ -59,6 +59,11 @@ impl RomFile {
     pub fn path(&self) -> &str {
         self.path.as_ref()
     }
+
+    /// Get a reference to the rom file's name.
+    pub fn name(&self) -> &str {
+        self.name.as_ref()
+    }
 }
 
 #[derive(Insertable, AsChangeset)]
