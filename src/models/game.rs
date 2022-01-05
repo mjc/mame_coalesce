@@ -42,6 +42,7 @@ pub struct NewGame {
 
 impl NewGame {
     pub fn from_logiqx(logiqx: &logiqx::Game, data_file_id: &i32) -> Self {
+        // TODO: don't clone, lol
         NewGame {
             name: logiqx.name.clone(),
             is_bios: Some(logiqx.isbios.clone()),
