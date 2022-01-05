@@ -18,6 +18,13 @@ pub struct Game {
     pub data_file_id: Option<i32>,
 }
 
+impl Game {
+    /// Get a reference to the game's name.
+    pub fn name(&self) -> &str {
+        self.name.as_ref()
+    }
+}
+
 #[derive(Insertable, AsChangeset)]
 #[table_name = "games"]
 pub struct NewGame {

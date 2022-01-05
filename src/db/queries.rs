@@ -81,9 +81,11 @@ pub fn load_games(pool: &DbPool, df_id: &i32) -> HashMap<Game, (Rom, RomFile)> {
     use crate::schema::{games::dsl::*, rom_files::dsl::rom_files, roms::dsl::roms};
     let conn = pool.get().unwrap();
 
+    // TODO: remove is_archive check once we handle source archives correctly.
     games
         .filter(data_file_id.eq(df_id))
         .inner_join(roms.inner_join(rom_files))
+        .filter(crate::schema::rom_files::in_archive.eq(false))
         .load(&conn)
         .unwrap()
         .into_iter()

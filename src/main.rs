@@ -95,6 +95,11 @@ fn main() {
 
     let games = db::load_games(&pool, &data_file_id);
     info!("Processing {} games with matching rom files", &games.len());
+
+    for (game, (rom, rom_file)) in games {
+        let output_file_name = format!("{}.zip", game.name());
+        let source_file = rom_file.full_path();
+    }
 }
 
 fn get_all_rom_files_parallel(file_list: &Vec<DirEntry>, bar: &ProgressBar) -> Vec<NewRomFile> {
