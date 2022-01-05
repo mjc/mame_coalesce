@@ -77,10 +77,4 @@ joinable!(rom_files -> roms (rom_id));
 joinable!(roms -> archive_files (archive_file_id));
 joinable!(roms -> games (game_id));
 
-allow_tables_to_appear_in_same_query!(
-    archive_files,
-    data_files,
-    games,
-    rom_files,
-    roms,
-);
+allow_tables_to_appear_in_same_query!(archive_files, data_files, games, rom_files, roms,);

@@ -40,6 +40,7 @@ pub fn traverse_and_insert_data_file(
                 .select(crate::schema::games::dsl::id)
                 .first(conn)
                 .unwrap();
+
             game.roms().iter().for_each(|rom| {
                 let new_rom = NewRom::from_logiqx(rom, &g_id);
                 replace_into(roms).values(new_rom).execute(conn).unwrap();
@@ -47,8 +48,13 @@ pub fn traverse_and_insert_data_file(
         });
 
         // TODO: figure out how to do this with the dsl
+        // it's an absurd job but somequery's gotta do it
         sql_query(
-            "UPDATE games AS cloned SET parent_id = (select games.id from games WHERE cloned.clone_of = games.name)",
+            r#"
+            UPDATE games AS cloned
+                SET parent_id = (
+                    select games.id from games WHERE cloned.clone_of = games.name
+                )"#,
         )
         .execute(conn)
         .unwrap();
