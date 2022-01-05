@@ -44,7 +44,7 @@ impl NewDataFile<'_> {
             description: Some(l_data_file.header().description().to_string()),
             version: Some(l_data_file.header().version().to_string()),
             author: Some(l_data_file.header().author().to_string()),
-            homepage: Some(l_data_file.header().homepage().to_string()),
+            homepage: l_data_file.header().homepage().map(|x| x.clone()),
             url: Some(l_data_file.header().url().to_string()),
             sha1: l_data_file.sha1(),
         }

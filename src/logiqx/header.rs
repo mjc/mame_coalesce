@@ -4,7 +4,7 @@ pub struct Header {
     pub description: String,
     pub version: String,
     pub author: String,
-    pub homepage: String,
+    pub homepage: Option<String>,
     pub url: String,
 }
 
@@ -29,13 +29,13 @@ impl Header {
         self.author.as_ref()
     }
 
-    /// Get a reference to the header's homepage.
-    pub fn homepage(&self) -> &str {
-        self.homepage.as_ref()
-    }
-
     /// Get a reference to the header's url.
     pub fn url(&self) -> &str {
         self.url.as_ref()
+    }
+
+    /// Get a reference to the header's homepage.
+    pub fn homepage(&self) -> Option<&String> {
+        self.homepage.as_ref()
     }
 }
