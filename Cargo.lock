@@ -128,6 +128,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cloudflare-zlib-sys"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2040b6d1edfee6d75f172d81e2d2a7807534f3f294ce18184c70e7bb0105cd6f"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "compress-tools"
 version = "0.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -323,6 +332,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e6988e897c1c9c485f43b47a529cef42fde0547f9d8d41a7062518f1d8fc53f"
 dependencies = [
  "cfg-if 1.0.0",
+ "cloudflare-zlib-sys",
  "crc32fast",
  "libc",
  "miniz_oxide",
@@ -482,6 +492,7 @@ dependencies = [
  "diesel",
  "diesel_migrations",
  "dotenv",
+ "flate2",
  "hex",
  "indicatif",
  "log",

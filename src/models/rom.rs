@@ -20,6 +20,13 @@ pub struct Rom {
     pub archive_file_id: Option<i32>,
 }
 
+impl Rom {
+    /// Get a reference to the rom's name.
+    pub fn name(&self) -> &str {
+        self.name.as_ref()
+    }
+}
+
 #[derive(Insertable, AsChangeset)]
 #[table_name = "roms"]
 pub struct NewRom {

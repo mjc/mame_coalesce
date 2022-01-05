@@ -19,17 +19,18 @@ extern crate diesel_migrations;
 use compress_tools::*;
 use dotenv::dotenv;
 use indicatif::{ProgressBar, ProgressStyle};
-use log::{info, LevelFilter};
+use log::{debug, info, LevelFilter};
 use models::{NewRomFile, RomFile};
 use pretty_env_logger::env_logger::Builder;
 use rayon::prelude::*;
 use sha1::{Digest, Sha1};
 use walkdir::{DirEntry, WalkDir};
+use zip::{write::FileOptions, ZipWriter};
 
 use std::{
     env,
-    fs::{self, File},
-    io::BufReader,
+    fs::{self, File, OpenOptions},
+    io::{self, BufReader, BufWriter},
     path::{Path, PathBuf},
 };
 
@@ -50,16 +51,11 @@ fn main() {
     builder.filter(None, LevelFilter::Info).init();
     let opt = Opt::from_args();
 
-    let destination = match opt.destination {
-        None => Opt::default_destination(&opt.path),
-        Some(x) => x,
-    };
-
-    fs::create_dir_all(&destination).expect("Couldn't create destination directory");
+    fs::create_dir_all(&opt.destination).expect("Couldn't create destination directory");
 
     println!("Using datafile: {}", opt.datafile);
     println!("Looking in path: {}", opt.path.to_str().unwrap());
-    println!("Saving zips to path: {}", destination.to_str().unwrap());
+    println!("Saving zips to path: {}", opt.destination.to_str().unwrap());
 
     let data_file = logiqx::load_datafile(&opt.datafile).expect("Couldn't load datafile");
 
@@ -96,10 +92,40 @@ fn main() {
     let games = db::load_games(&pool, &data_file_id);
     info!("Processing {} games with matching rom files", &games.len());
 
-    for (game, (rom, rom_file)) in games {
-        let output_file_name = format!("{}.zip", game.name());
-        let source_file = rom_file.full_path();
-    }
+    games.par_iter().for_each(|(game, (rom, rom_file))| {
+        let dest_file_name = format!("{}.zip", game.name());
+        let dest_file_path = &opt.destination.join(dest_file_name);
+
+        let source_file_path = rom_file.path();
+
+        /*
+        TODO: maybe begin writing to new zip as soon as we're done streaming sha1?
+        this is probably smart bc we have the file mmap'd already then.
+         */
+
+        // TODO: update existing file with new contents instead of just deleting
+        // TODO: as written, thise will delete roms you had if the zip file conflicts!
+        // TODO: currently only works for 1r1z
+
+        let outfile = OpenOptions::new()
+            .write(true)
+            .append(false)
+            .create(true)
+            .open(dest_file_path)
+            .unwrap();
+        let writer = BufWriter::new(outfile);
+        let mut zip = ZipWriter::new(writer);
+
+        // should be a loop over romfiles for each rom
+        debug!("source: {:?}", source_file_path);
+        let infile = File::open(source_file_path).unwrap();
+        let mut reader = BufReader::new(infile);
+
+        zip.start_file(rom.name(), FileOptions::default()).unwrap();
+        io::copy(&mut reader, &mut zip).unwrap();
+
+        zip.finish().unwrap();
+    });
 }
 
 fn get_all_rom_files_parallel(file_list: &Vec<DirEntry>, bar: &ProgressBar) -> Vec<NewRomFile> {

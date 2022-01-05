@@ -59,10 +59,6 @@ impl RomFile {
     pub fn path(&self) -> &str {
         self.path.as_ref()
     }
-
-    pub fn full_path(&self) -> PathBuf {
-        PathBuf::from(&self.path).join(&self.name)
-    }
 }
 
 #[derive(Insertable, AsChangeset)]

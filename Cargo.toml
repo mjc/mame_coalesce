@@ -24,6 +24,7 @@ serde = "1.0.98"
 serde-xml-rs = "0.5"
 
 zip = "0.5"
+
 compress-tools = "0.12"
 
 hex = { version = "0.4", features = ["serde"] }
@@ -46,3 +47,9 @@ chrono = "0.4"
 
 
 tree_magic = "0.2" # bindet?
+
+
+[dependencies.flate2]
+version = "1.0"
+default-features = false
+features = ["cloudflare_zlib"]

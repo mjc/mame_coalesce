@@ -11,12 +11,5 @@ pub(crate) struct Opt {
     #[structopt(parse(from_os_str))]
     pub(crate) path: PathBuf,
     #[structopt(parse(from_os_str))]
-    pub(crate) destination: Option<PathBuf>,
-}
-impl Opt {
-    pub fn default_destination(path: &PathBuf) -> PathBuf {
-        [path.to_str().expect("Path is fucked somehow"), "merged"]
-            .iter()
-            .collect()
-    }
+    pub(crate) destination: PathBuf,
 }
