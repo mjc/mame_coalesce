@@ -8,7 +8,7 @@ pub struct Game {
     #[serde(default)]
     pub isbios: String,
     #[serde(default)]
-    pub cloneof: String,
+    pub cloneof: Option<String>,
     #[serde(default)]
     pub romof: String,
     #[serde(default)]
@@ -39,11 +39,6 @@ impl Game {
     /// Get a reference to the game's isbios.
     pub fn isbios(&self) -> &str {
         self.isbios.as_ref()
-    }
-
-    /// Get a reference to the game's cloneof.
-    pub fn cloneof(&self) -> &str {
-        self.cloneof.as_ref()
     }
 
     /// Get a reference to the game's romof.
@@ -79,5 +74,10 @@ impl Game {
     /// Get a reference to the game's roms.
     pub fn roms(&self) -> &[Rom] {
         self.roms.as_ref()
+    }
+
+    /// Get a reference to the game's cloneof.
+    pub fn cloneof(&self) -> Option<&String> {
+        self.cloneof.as_ref()
     }
 }
