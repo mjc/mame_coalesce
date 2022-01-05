@@ -77,7 +77,7 @@ pub fn import_rom_files(pool: &DbPool, new_rom_files: &[NewRomFile]) {
     .unwrap();
 }
 
-pub fn load_games(pool: &DbPool, df_id: &i32) -> HashMap<Game, (Rom, RomFile)> {
+pub fn load_unpacked_games(pool: &DbPool, df_id: &i32) -> HashMap<Game, (Rom, RomFile)> {
     use crate::schema::{games::dsl::*, rom_files::dsl::rom_files, roms::dsl::roms};
     let conn = pool.get().unwrap();
 

@@ -89,7 +89,7 @@ fn main() {
     // and not load things all over again
     db::import_rom_files(&pool, &new_rom_files);
 
-    let games = db::load_games(&pool, &data_file_id);
+    let games = db::load_unpacked_games(&pool, &data_file_id);
     info!("Processing {} games with matching rom files", &games.len());
 
     games.par_iter().for_each(|(game, (rom, rom_file))| {
