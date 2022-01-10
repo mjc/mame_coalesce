@@ -89,44 +89,21 @@ fn main() {
     // and not load things all over again
     db::import_rom_files(&pool, &new_rom_files);
 
-    let games = db::load_unpacked_games(&pool, &data_file_id);
+    let games = db::load_packed_games(&pool, &data_file_id);
     info!("Processing {} games with matching rom files", &games.len());
 
-    games.par_iter().for_each(|(game, (rom, rom_file))| {
-        let dest_file_name = format!("{}.zip", game.name());
-        let dest_file_path = &opt.destination.join(dest_file_name);
+    // println!("{:?}", games);
 
-        let source_file_path = rom_file.path();
-
-        /*
-        TODO: maybe begin writing to new zip as soon as we're done streaming sha1?
-        this is probably smart bc we have the file mmap'd already then.
-         */
-
-        // TODO: update existing file with new contents instead of just deleting
-        // TODO: as written, thise will delete roms you had if the zip file conflicts!
-        // TODO: currently only works for 1r1z
-
-        let outfile = OpenOptions::new()
-            .write(true)
-            .append(false)
-            .create(true)
-            .open(dest_file_path)
-            .unwrap();
-        let writer = BufWriter::new(outfile);
-        let mut zip = ZipWriter::new(writer);
-
-        // should be a loop over romfiles for each rom
-        debug!("source: {:?}", source_file_path);
-        let infile = File::open(source_file_path).unwrap();
-        let mut reader = BufReader::new(infile);
-
-        zip.start_file(rom_file.name(), FileOptions::default())
-            .unwrap();
-        io::copy(&mut reader, &mut zip).unwrap();
-
-        zip.finish().unwrap();
-    });
+    for (game, romfiles_and_rom) in games {
+        println!(
+            "{:?}: files: {:?}",
+            game.name,
+            romfiles_and_rom
+                .iter()
+                .map(|(_rom, rf)| &rf.name)
+                .collect::<Vec<&String>>()
+        );
+    }
 }
 
 fn get_all_rom_files_parallel(file_list: &Vec<DirEntry>, bar: &ProgressBar) -> Vec<NewRomFile> {

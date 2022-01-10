@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashSet};
 
 use crate::models::*;
 use crate::{db::*, logiqx};
@@ -91,7 +91,7 @@ pub fn import_rom_files(pool: &DbPool, new_rom_files: &[NewRomFile]) {
     .unwrap();
 }
 
-pub fn load_unpacked_games(pool: &DbPool, df_id: &i32) -> HashMap<Game, (Rom, RomFile)> {
+pub fn load_unpacked_games(pool: &DbPool, df_id: &i32) -> BTreeMap<Game, (Rom, RomFile)> {
     use crate::schema::{games::dsl::*, rom_files::dsl::rom_files, roms::dsl::roms};
     let conn = pool.get().unwrap();
 
@@ -106,17 +106,33 @@ pub fn load_unpacked_games(pool: &DbPool, df_id: &i32) -> HashMap<Game, (Rom, Ro
         .collect()
 }
 
-pub fn load_packed_games(pool: &DbPool, df_id: &i32) -> HashMap<Game, (Rom, RomFile)> {
+pub fn load_packed_games(pool: &DbPool, df_id: &i32) -> BTreeMap<Game, HashSet<(Rom, RomFile)>> {
     use crate::schema::{games::dsl::*, rom_files::dsl::rom_files, roms::dsl::roms};
     let conn = pool.get().unwrap();
 
     // TODO: remove is_archive check once we handle source archives correctly.
-    games
+    let query_results: BTreeMap<Game, (Rom, RomFile)> = games
         .filter(data_file_id.eq(df_id))
         .inner_join(roms.inner_join(rom_files))
         .filter(crate::schema::rom_files::in_archive.eq(false))
         .load(&conn)
         .unwrap()
         .into_iter()
-        .collect()
+        .collect();
+
+    let (by_parent, _) = query_results.into_iter().fold(
+        (BTreeMap::default(), None),
+        |(mut grouped, mut parent), (game, (rom, rom_file))| {
+            if let None = game.parent_id {
+                parent = Some(game);
+            }
+            let entry = grouped
+                .entry(parent.as_ref().unwrap().clone())
+                .or_insert(HashSet::new());
+            (*entry).insert((rom, rom_file));
+            (grouped, parent)
+        },
+    );
+
+    by_parent
 }

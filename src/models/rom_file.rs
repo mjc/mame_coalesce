@@ -6,7 +6,10 @@ use crate::{hashes::MultiHash, schema::rom_files};
 
 use super::Rom;
 
-#[derive(Queryable, Insertable, AsChangeset, Associations, PartialEq, Debug)]
+#[derive(
+    Queryable, QueryableByName, Insertable, AsChangeset, Associations, PartialEq, Eq, Debug, Hash,
+)]
+#[table_name = "rom_files"]
 #[diesel(table_name = rom_files)]
 #[belongs_to(Rom)]
 pub struct RomFile {

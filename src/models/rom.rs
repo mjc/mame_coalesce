@@ -3,7 +3,7 @@ use chrono::{NaiveDate, NaiveDateTime};
 use super::Game;
 use crate::{logiqx, schema::roms};
 
-#[derive(Queryable, Insertable, AsChangeset, Associations, PartialEq, Debug)]
+#[derive(Queryable, Insertable, AsChangeset, Associations, PartialEq, Eq, Debug, Hash)]
 #[diesel(table_name = roms)]
 #[belongs_to(Game)]
 pub struct Rom {

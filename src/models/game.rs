@@ -2,7 +2,17 @@ use super::DataFile;
 use crate::{logiqx, schema::games};
 
 #[derive(
-    Identifiable, Queryable, QueryableByName, AsChangeset, Associations, PartialEq, Debug, Eq, Hash,
+    Identifiable,
+    Queryable,
+    QueryableByName,
+    AsChangeset,
+    Associations,
+    PartialEq,
+    Debug,
+    Eq,
+    Ord,
+    PartialOrd,
+    Clone,
 )]
 #[diesel(table_name = games)]
 #[table_name = "games"]
@@ -27,6 +37,22 @@ impl Game {
     /// Get a reference to the game's name.
     pub fn name(&self) -> &str {
         self.name.as_ref()
+    }
+    pub fn default() -> Game {
+        Game {
+            id: -1,
+            name: "".to_string(),
+            is_bios: None,
+            clone_of: None,
+            rom_of: None,
+            sample_of: None,
+            board: None,
+            rebuildto: None,
+            year: None,
+            manufacturer: None,
+            data_file_id: None,
+            parent_id: None,
+        }
     }
 }
 
