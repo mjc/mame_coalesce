@@ -21,7 +21,7 @@ pub fn files(dir: PathBuf) -> Vec<File> {
         .par_iter()
         .map(|file| {
             let mut file = file.clone();
-            //println!("Computing sha1: {}", file.path.to_str().unwrap());
+            debug!("Computing sha1: {}", file.path.to_str().unwrap());
             let (crc32, sha1) = hashes::compute_all_hashes(&file.path);
             file.sha1 = sha1;
             bar.inc(1);

@@ -68,6 +68,20 @@ impl RomFile {
     pub fn name(&self) -> &str {
         self.name.as_ref()
     }
+
+    /// Get the rom file's in archive.
+    pub fn in_archive(&self) -> bool {
+        self.in_archive
+    }
+
+    // I hate this
+    pub fn in_archive_str(&self) -> &str {
+        if self.in_archive {
+            "true"
+        } else {
+            "false"
+        }
+    }
 }
 
 #[derive(Insertable, AsChangeset, Debug)]
