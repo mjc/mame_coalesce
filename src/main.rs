@@ -147,6 +147,9 @@ fn main() {
             let source_name = *properties.get("source_name").unwrap();
             let in_archive = *properties.get("in_archive").unwrap();
 
+            // TODO: don't open the same file multiple times?
+            // maybe group sha's or something?
+
             let input_file = File::open(archive_path).unwrap();
             let input_reader = BufReader::new(input_file);
 
@@ -170,11 +173,7 @@ fn main() {
                             }
                         }
                         ArchiveContents::EndOfEntry => {
-                            if current_name == source_name {
-                                zip_writer
-                                    .add_directory(&current_name, zip_options)
-                                    .unwrap();
-                            }
+                            zip_writer.flush().unwrap();
                         }
                         ArchiveContents::Err(e) => {
                             panic!("{:?}", e)
