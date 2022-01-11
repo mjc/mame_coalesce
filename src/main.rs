@@ -18,7 +18,7 @@ extern crate diesel_migrations;
 
 use compress_tools::*;
 use dotenv::dotenv;
-use indicatif::{ProgressBar, ProgressIterator, ProgressStyle};
+use indicatif::{ProgressBar, ProgressStyle};
 use log::{debug, info, LevelFilter};
 use models::{NewRomFile, RomFile};
 use pretty_env_logger::env_logger::Builder;
@@ -108,7 +108,7 @@ fn main() {
     // this is by far the ugliest code I've ever written in any language
     // I'm sorry
     // TODO: major refactor
-    for (game, romfiles_and_rom) in games.iter().progress_with(zip_bar) {
+    games.par_iter().for_each(|(game, romfiles_and_rom)| {
         let rom_files_for_game: Vec<HashMap<&str, &str>> = romfiles_and_rom
             .iter()
             .map(|(rom, rom_file)| {
@@ -194,7 +194,8 @@ fn main() {
             }
         }
         zip_writer.finish().unwrap();
-    }
+        zip_bar.inc(1);
+    });
 }
 
 fn get_all_rom_files_parallel(file_list: &Vec<DirEntry>, bar: &ProgressBar) -> Vec<NewRomFile> {
