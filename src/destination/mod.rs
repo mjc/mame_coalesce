@@ -1,9 +1,11 @@
 use std::{
     fs::{File, OpenOptions},
-    io::BufWriter,
+    io::{BufReader, BufWriter, Read, Write},
     path::{Path, PathBuf},
 };
 
+use compress_tools::{ArchiveContents, ArchiveIterator};
+use log::debug;
 use zip::{write::FileOptions, ZipWriter};
 
 use crate::models::{Rom, RomFile};
@@ -29,6 +31,59 @@ impl DestinationBundle {
             source_name,
             in_archive,
             game_name,
+        }
+    }
+
+    pub fn copy_bare_file(
+        source_path: &str,
+        zip_writer: &mut ZipWriter<BufWriter<File>>,
+        destination_name: &str,
+        zip_options: FileOptions,
+    ) {
+        let input_file = File::open(source_path).unwrap();
+        let input_reader = BufReader::new(input_file);
+        zip_writer
+            .start_file(destination_name, zip_options)
+            .unwrap();
+        input_reader.bytes().for_each(|b| {
+            zip_writer.write_all(&[b.unwrap()]).unwrap();
+        });
+    }
+
+    pub fn copy_from_archive(
+        source_path: &str,
+        source_name: &str,
+        zip_writer: &mut ZipWriter<BufWriter<File>>,
+        destination_name: &str,
+        zip_options: FileOptions,
+    ) {
+        let input_file = File::open(source_path).unwrap();
+        let input_reader = BufReader::new(input_file);
+        let mut iter = ArchiveIterator::from_read(input_reader).unwrap();
+        let mut current_name = String::default();
+        for content in &mut iter {
+            match content {
+                ArchiveContents::StartOfEntry(name) => {
+                    current_name = name.to_string();
+                    if current_name == source_name {
+                        debug!("Found file: {:?}", current_name);
+                        zip_writer
+                            .start_file(destination_name, zip_options)
+                            .unwrap();
+                    }
+                }
+                ArchiveContents::DataChunk(chunk) => {
+                    if current_name == source_name {
+                        zip_writer.write_all(&chunk).unwrap();
+                    }
+                }
+                ArchiveContents::EndOfEntry => {
+                    zip_writer.flush().unwrap();
+                }
+                ArchiveContents::Err(e) => {
+                    panic!("{:?}", e)
+                }
+            }
         }
     }
 
@@ -74,5 +129,10 @@ impl DestinationBundle {
     /// Get the destination bundle's in archive.
     pub fn in_archive(&self) -> bool {
         self.in_archive
+    }
+
+    /// Get a reference to the destination bundle's game name.
+    pub fn game_name(&self) -> &str {
+        self.game_name.as_ref()
     }
 }

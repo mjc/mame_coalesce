@@ -25,13 +25,12 @@ use pretty_env_logger::env_logger::Builder;
 use rayon::prelude::*;
 use sha1::{Digest, Sha1};
 use walkdir::{DirEntry, WalkDir};
-use zip::{write::FileOptions, ZipWriter};
 
 use std::{
     env,
-    fs::{create_dir_all, File, OpenOptions},
-    io::{BufReader, BufWriter, Read, Write},
-    path::{Path, PathBuf},
+    fs::{create_dir_all, File},
+    io::BufReader,
+    path::Path,
 };
 
 pub mod logiqx;
@@ -144,7 +143,7 @@ fn write_all_zips(
                     bundle.source_name(),
                     bundle.archive_path()
                 );
-                copy_from_archive(
+                DestinationBundle::copy_from_archive(
                     bundle.archive_path(),
                     bundle.source_name(),
                     &mut zip_writer,
@@ -153,7 +152,7 @@ fn write_all_zips(
                 );
             } else {
                 debug!("Adding file not in archive: {:?}", bundle.source_name());
-                copy_bare_file(
+                DestinationBundle::copy_bare_file(
                     bundle.archive_path(),
                     &mut zip_writer,
                     bundle.destination_name(),
@@ -164,59 +163,6 @@ fn write_all_zips(
         zip_writer.finish().unwrap();
         zip_bar.inc(1);
     });
-}
-
-fn copy_bare_file(
-    source_path: &str,
-    zip_writer: &mut ZipWriter<BufWriter<File>>,
-    destination_name: &str,
-    zip_options: FileOptions,
-) {
-    let input_file = File::open(source_path).unwrap();
-    let input_reader = BufReader::new(input_file);
-    zip_writer
-        .start_file(destination_name, zip_options)
-        .unwrap();
-    input_reader.bytes().for_each(|b| {
-        zip_writer.write_all(&[b.unwrap()]).unwrap();
-    });
-}
-
-fn copy_from_archive(
-    source_path: &str,
-    source_name: &str,
-    zip_writer: &mut ZipWriter<BufWriter<File>>,
-    destination_name: &str,
-    zip_options: FileOptions,
-) {
-    let input_file = File::open(source_path).unwrap();
-    let input_reader = BufReader::new(input_file);
-    let mut iter = ArchiveIterator::from_read(input_reader).unwrap();
-    let mut current_name = String::default();
-    for content in &mut iter {
-        match content {
-            ArchiveContents::StartOfEntry(name) => {
-                current_name = name.to_string();
-                if current_name == source_name {
-                    debug!("Found file: {:?}", current_name);
-                    zip_writer
-                        .start_file(destination_name, zip_options)
-                        .unwrap();
-                }
-            }
-            ArchiveContents::DataChunk(chunk) => {
-                if current_name == source_name {
-                    zip_writer.write_all(&chunk).unwrap();
-                }
-            }
-            ArchiveContents::EndOfEntry => {
-                zip_writer.flush().unwrap();
-            }
-            ArchiveContents::Err(e) => {
-                panic!("{:?}", e)
-            }
-        }
-    }
 }
 
 fn get_all_rom_files_parallel(file_list: &[DirEntry], bar: &ProgressBar) -> Vec<NewRomFile> {
