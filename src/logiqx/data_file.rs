@@ -1,4 +1,4 @@
-use std::fs::File;
+use std::{fs::File, io::BufReader};
 
 use super::game::Game;
 use super::header::Header;
@@ -19,9 +19,11 @@ pub struct DataFile {
 }
 impl DataFile {
     pub fn from_file(contents: &File) -> Self {
+        let reader = BufReader::new(contents);
+        // this should be BufReader or reader should be mmap, idk
         let (_crc, sha1) = contents.all_hashes();
         let mut data_file: DataFile =
-            serde_xml_rs::from_reader(contents).expect("Can't read Logiqx datafile.");
+            serde_xml_rs::from_reader(reader).expect("Can't read Logiqx datafile.");
         data_file.sha1 = Some(sha1);
         data_file
     }
