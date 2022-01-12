@@ -1,5 +1,3 @@
-use zip::ZipWriter;
-
 use crate::models::{Rom, RomFile};
 
 pub struct DestinationBundle {

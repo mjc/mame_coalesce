@@ -28,7 +28,6 @@ use walkdir::{DirEntry, WalkDir};
 use zip::{write::FileOptions, ZipWriter};
 
 use std::{
-    collections::HashMap,
     env,
     fs::{create_dir_all, File, OpenOptions},
     io::{BufReader, BufWriter, Read, Write},
