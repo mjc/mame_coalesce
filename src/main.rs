@@ -132,9 +132,8 @@ fn write_all_zips(
         let zip_file_path = DestinationBundle::zip_file_path(destination, game.name());
         debug!("Creating zip file: {:?}", zip_file_path.to_str().unwrap());
 
-        let (mut zip_writer, zip_options) = DestinationBundle::open_destination_zip(zip_file_path);
+        let (mut zip_writer, zip_options) = destination::open_destination_zip(zip_file_path);
 
-        // TODO: zip_writer.raw_copy_file_rename/2 to skip recompressing for zip files
         bundles
             .iter()
             .for_each(|bundle| bundle.zip(&mut zip_writer, zip_options));
