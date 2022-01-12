@@ -123,9 +123,9 @@ fn write_all_zips(
     zip_bar: &ProgressBar,
 ) {
     games.par_iter().for_each(|(game, rom_and_romfile_pair)| {
-        let destination_bundles = rom_and_romfile_pair
-            .iter()
-            .map(|(rom, rom_file)| DestinationBundle::from_rom_and_rom_file(rom, rom_file));
+        let destination_bundles = rom_and_romfile_pair.iter().map(|(rom, rom_file)| {
+            DestinationBundle::from_rom_and_rom_file(rom, rom_file, game.name())
+        });
 
         let zip_file_path = PathBuf::new()
             .join(destination)

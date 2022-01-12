@@ -5,19 +5,22 @@ pub struct DestinationBundle {
     destination_name: String,
     source_name: String,
     in_archive: bool,
+    game_name: String,
 }
 
 impl DestinationBundle {
-    pub fn from_rom_and_rom_file(rom: &Rom, rom_file: &RomFile) -> Self {
+    pub fn from_rom_and_rom_file(rom: &Rom, rom_file: &RomFile, game_name: &str) -> Self {
         let destination_name = rom.name().to_string();
         let source_name = rom_file.name().to_string();
         let archive_path = rom_file.path().to_string();
+        let game_name = game_name.to_string();
         let in_archive = rom_file.in_archive();
         Self {
             archive_path,
             destination_name,
             source_name,
             in_archive,
+            game_name,
         }
     }
 
