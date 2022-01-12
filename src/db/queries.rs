@@ -95,7 +95,7 @@ pub fn load_parents(pool: &DbPool, df_id: &i32) -> BTreeMap<Game, HashSet<(Rom, 
     use crate::schema::{games::dsl::*, rom_files::dsl::rom_files, roms::dsl::roms};
     let conn = pool.get().unwrap();
 
-    // TODO: remove is_archive check once we handle source archives correctly.
+    // TODO: scope by commandline path!
     let query_results: BTreeMap<Game, (Rom, RomFile)> = games
         .filter(data_file_id.eq(df_id))
         .inner_join(roms.inner_join(rom_files))

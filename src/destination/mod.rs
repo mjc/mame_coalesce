@@ -6,7 +6,7 @@ use std::{
 
 use compress_tools::{ArchiveContents, ArchiveIterator};
 use indicatif::ProgressBar;
-use log::debug;
+use log::{debug, error};
 use rayon::prelude::*;
 use zip::{write::FileOptions, ZipWriter};
 
@@ -156,7 +156,7 @@ impl DestinationBundle {
                     zip_writer.flush().unwrap();
                 }
                 ArchiveContents::Err(e) => {
-                    panic!("{:?}", e)
+                    error!("{:?}", e)
                 }
             }
         }
