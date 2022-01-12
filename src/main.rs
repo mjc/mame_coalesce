@@ -142,7 +142,7 @@ fn main() {
         // TODO: zip_writer.raw_copy_file_rename/2 to skip recompressing for zip files
 
         for properties in rom_files_for_game {
-            let archive_path = *properties.get("archive_path").unwrap();
+            let source_path = *properties.get("archive_path").unwrap();
             let destination_name = *properties.get("destination_name").unwrap();
             let source_name = *properties.get("source_name").unwrap();
             let in_archive = *properties.get("in_archive").unwrap();
@@ -150,51 +150,76 @@ fn main() {
             // TODO: don't open the same file multiple times?
             // maybe group sha's or something?
 
-            let input_file = File::open(archive_path).unwrap();
-            let input_reader = BufReader::new(input_file);
-
             if in_archive == "true" {
-                let mut iter = ArchiveIterator::from_read(input_reader).unwrap();
-                let mut current_name = String::default();
-                for content in &mut iter {
-                    match content {
-                        ArchiveContents::StartOfEntry(name) => {
-                            current_name = name.to_string();
-                            if current_name == source_name {
-                                debug!("Found file: {:?}", current_name);
-                                zip_writer
-                                    .start_file(destination_name, zip_options)
-                                    .unwrap();
-                            }
-                        }
-                        ArchiveContents::DataChunk(chunk) => {
-                            if current_name == source_name {
-                                zip_writer.write(&chunk).unwrap();
-                            }
-                        }
-                        ArchiveContents::EndOfEntry => {
-                            zip_writer.flush().unwrap();
-                        }
-                        ArchiveContents::Err(e) => {
-                            panic!("{:?}", e)
-                        }
-                    }
-                }
+                debug!("Adding file {} from archive: {}", source_name, source_path);
+                copy_from_archive(
+                    source_path,
+                    source_name,
+                    &mut zip_writer,
+                    destination_name,
+                    zip_options,
+                );
             } else {
                 debug!("Adding file not in archive: {:?}", source_name);
-                zip_writer
-                    .start_file(destination_name, zip_options)
-                    .unwrap();
-                // TOOD: ew
-                input_reader.bytes().for_each(|b| {
-                    zip_writer.write(&[b.unwrap()]).unwrap();
-                });
-                ()
+                copy_bare_file(source_path, &mut zip_writer, destination_name, zip_options);
             }
         }
         zip_writer.finish().unwrap();
         zip_bar.inc(1);
     });
+}
+
+fn copy_bare_file(
+    source_path: &str,
+    zip_writer: &mut ZipWriter<BufWriter<File>>,
+    destination_name: &str,
+    zip_options: FileOptions,
+) {
+    let input_file = File::open(source_path).unwrap();
+    let input_reader = BufReader::new(input_file);
+    zip_writer
+        .start_file(destination_name, zip_options)
+        .unwrap();
+    input_reader.bytes().for_each(|b| {
+        zip_writer.write(&[b.unwrap()]).unwrap();
+    });
+}
+
+fn copy_from_archive(
+    source_path: &str,
+    source_name: &str,
+    zip_writer: &mut ZipWriter<BufWriter<File>>,
+    destination_name: &str,
+    zip_options: FileOptions,
+) {
+    let input_file = File::open(source_path).unwrap();
+    let input_reader = BufReader::new(input_file);
+    let mut iter = ArchiveIterator::from_read(input_reader).unwrap();
+    let mut current_name = String::default();
+    for content in &mut iter {
+        match content {
+            ArchiveContents::StartOfEntry(name) => {
+                current_name = name.to_string();
+                if current_name == source_name {
+                    debug!("Found file: {:?}", current_name);
+                    zip_writer
+                        .start_file(destination_name, zip_options)
+                        .unwrap();
+                }
+            }
+            ArchiveContents::DataChunk(chunk) => {
+                if current_name == source_name {
+                    zip_writer.write(&chunk).unwrap();
+                }
+            }
+            ArchiveContents::EndOfEntry => {
+                zip_writer.flush().unwrap();
+            }
+            ArchiveContents::Err(e) => {
+                panic!("{:?}", e)
+            }
+        }
+    }
 }
 
 fn get_all_rom_files_parallel(file_list: &Vec<DirEntry>, bar: &ProgressBar) -> Vec<NewRomFile> {
