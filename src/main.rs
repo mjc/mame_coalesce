@@ -140,7 +140,7 @@ fn write_all_zips(
             // TODO: don't open the same file multiple times?
             // maybe group sha's or something?
 
-            if bundle.in_archive() == true {
+            if bundle.in_archive() {
                 debug!(
                     "Adding file {} from archive: {}",
                     bundle.source_name(),
@@ -194,7 +194,7 @@ fn copy_bare_file(
         .start_file(destination_name, zip_options)
         .unwrap();
     input_reader.bytes().for_each(|b| {
-        zip_writer.write(&[b.unwrap()]).unwrap();
+        zip_writer.write_all(&[b.unwrap()]).unwrap();
     });
 }
 
@@ -222,7 +222,7 @@ fn copy_from_archive(
             }
             ArchiveContents::DataChunk(chunk) => {
                 if current_name == source_name {
-                    zip_writer.write(&chunk).unwrap();
+                    zip_writer.write_all(&chunk).unwrap();
                 }
             }
             ArchiveContents::EndOfEntry => {
@@ -235,11 +235,11 @@ fn copy_from_archive(
     }
 }
 
-fn get_all_rom_files_parallel(file_list: &Vec<DirEntry>, bar: &ProgressBar) -> Vec<NewRomFile> {
+fn get_all_rom_files_parallel(file_list: &[DirEntry], bar: &ProgressBar) -> Vec<NewRomFile> {
     file_list
         .par_iter()
         .fold(
-            || Vec::<NewRomFile>::new(),
+            Vec::<NewRomFile>::new,
             |mut v: Vec<NewRomFile>, e: &DirEntry| {
                 let path = e.path().to_path_buf();
                 bar.inc(1);
@@ -259,7 +259,7 @@ fn get_all_rom_files_parallel(file_list: &Vec<DirEntry>, bar: &ProgressBar) -> V
             },
         )
         .reduce(
-            || Vec::<NewRomFile>::default(),
+            Vec::<NewRomFile>::default,
             |mut dest: Vec<NewRomFile>, mut source: Vec<NewRomFile>| {
                 dest.append(&mut source);
                 dest
@@ -267,7 +267,7 @@ fn get_all_rom_files_parallel(file_list: &Vec<DirEntry>, bar: &ProgressBar) -> V
         )
 }
 
-fn get_rom_files_for_archive(path: &PathBuf) -> Vec<NewRomFile> {
+fn get_rom_files_for_archive(path: &Path) -> Vec<NewRomFile> {
     let f = File::open(path).unwrap();
     let buf = BufReader::new(f); // TODO: mmap?
     let mut name = String::default();
@@ -300,15 +300,12 @@ fn get_rom_files_for_archive(path: &PathBuf) -> Vec<NewRomFile> {
     rom_files
 }
 
-fn walk_for_files(dir: &PathBuf) -> Vec<DirEntry> {
+fn walk_for_files(dir: &Path) -> Vec<DirEntry> {
     WalkDir::new(dir)
         .into_iter()
-        .filter_entry(|e| entry_is_relevant(e))
+        .filter_entry(entry_is_relevant)
         .filter_map(|v| v.ok())
-        .filter_map(|entry| match entry.file_type().is_file() {
-            true => Some(entry),
-            false => None,
-        })
+        .filter(|entry| entry.file_type().is_file())
         .collect::<Vec<DirEntry>>()
 }
 

@@ -27,7 +27,7 @@ pub struct RomFile {
 
 impl RomFile {
     pub fn is_archive(path: &Path) -> bool {
-        match tree_magic::from_filepath(&path).as_str() {
+        match tree_magic::from_filepath(path).as_str() {
             "application/zip" => true,
             "application/x-7z-compressed" => true,
             "text/plain" => {
@@ -106,9 +106,9 @@ impl NewRomFile {
         NewRomFile {
             parent_path: parent,
             path: rom_file_path,
-            name: name,
-            crc: crc,
-            sha1: sha1,
+            name,
+            crc,
+            sha1,
             md5: Vec::<u8>::new(),
             in_archive: false,
             rom_id: None,
@@ -116,8 +116,8 @@ impl NewRomFile {
     }
 
     pub fn from_archive(
-        path: &PathBuf,
-        name: &String,
+        path: &Path,
+        name: &str,
         crc: Vec<u8>,
         sha1: Vec<u8>,
         md5: Vec<u8>,
@@ -125,7 +125,7 @@ impl NewRomFile {
         NewRomFile {
             parent_path: path.parent().unwrap().to_str().unwrap().to_string(),
             path: path.to_str().unwrap().to_string(),
-            name: name.clone(),
+            name: name.to_string(),
             crc,
             sha1,
             md5,

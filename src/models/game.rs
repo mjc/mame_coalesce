@@ -77,7 +77,7 @@ impl NewGame {
         NewGame {
             name: logiqx.name.clone(),
             is_bios: Some(logiqx.isbios.clone()),
-            clone_of: logiqx.cloneof().map(|x| x.clone()),
+            clone_of: logiqx.cloneof().cloned(),
             rom_of: Some(logiqx.romof.clone()),
             sample_of: Some(logiqx.sampleof.clone()),
             board: Some(logiqx.board.clone()),

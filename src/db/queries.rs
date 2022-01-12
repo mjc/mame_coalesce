@@ -107,12 +107,12 @@ pub fn load_parents(pool: &DbPool, df_id: &i32) -> BTreeMap<Game, HashSet<(Rom, 
     let (by_parent, _) = query_results.into_iter().fold(
         (BTreeMap::default(), None),
         |(mut grouped, mut parent), (game, (rom, rom_file))| {
-            if let None = game.parent_id {
+            if game.parent_id.is_none() {
                 parent = Some(game);
             }
             let entry = grouped
                 .entry(parent.as_ref().unwrap().clone())
-                .or_insert(HashSet::new());
+                .or_insert_with(HashSet::new);
             (*entry).insert((rom, rom_file));
             (grouped, parent)
         },
