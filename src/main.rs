@@ -137,28 +137,7 @@ fn write_all_zips(
             // TODO: don't open the same file multiple times?
             // maybe group sha's or something?
 
-            if bundle.in_archive() {
-                debug!(
-                    "Adding file {} from archive: {}",
-                    bundle.source_name(),
-                    bundle.archive_path()
-                );
-                DestinationBundle::copy_from_archive(
-                    bundle.archive_path(),
-                    bundle.source_name(),
-                    &mut zip_writer,
-                    bundle.destination_name(),
-                    zip_options,
-                );
-            } else {
-                debug!("Adding file not in archive: {:?}", bundle.source_name());
-                DestinationBundle::copy_bare_file(
-                    bundle.archive_path(),
-                    &mut zip_writer,
-                    bundle.destination_name(),
-                    zip_options,
-                );
-            }
+            bundle.zip(&mut zip_writer, zip_options);
         }
         zip_writer.finish().unwrap();
         zip_bar.inc(1);

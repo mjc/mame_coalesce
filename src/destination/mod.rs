@@ -34,6 +34,35 @@ impl DestinationBundle {
         }
     }
 
+    pub fn zip(
+        &self,
+        zip_writer: &mut zip::ZipWriter<std::io::BufWriter<File>>,
+        zip_options: zip::write::FileOptions,
+    ) {
+        if self.in_archive() {
+            debug!(
+                "Adding file {} from archive: {}",
+                self.source_name(),
+                self.archive_path()
+            );
+            Self::copy_from_archive(
+                self.archive_path(),
+                self.source_name(),
+                zip_writer,
+                self.destination_name(),
+                zip_options,
+            );
+        } else {
+            debug!("Adding file not in archive: {:?}", self.source_name());
+            Self::copy_bare_file(
+                self.archive_path(),
+                zip_writer,
+                self.destination_name(),
+                zip_options,
+            );
+        }
+    }
+
     pub fn copy_bare_file(
         source_path: &str,
         zip_writer: &mut ZipWriter<BufWriter<File>>,
