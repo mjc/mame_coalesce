@@ -122,9 +122,12 @@ fn write_all_zips(
     zip_bar: &ProgressBar,
 ) {
     games.par_iter().for_each(|(game, rom_and_romfile_pair)| {
-        let destination_bundles = rom_and_romfile_pair.iter().map(|(rom, rom_file)| {
-            DestinationBundle::from_rom_and_rom_file(rom, rom_file, game.name())
-        });
+        let bundles: Vec<DestinationBundle> = rom_and_romfile_pair
+            .iter()
+            .map(|(rom, rom_file)| {
+                DestinationBundle::from_rom_and_rom_file(rom, rom_file, game.name())
+            })
+            .collect();
 
         let zip_file_path = DestinationBundle::zip_file_path(destination, game.name());
         debug!("Creating zip file: {:?}", zip_file_path.to_str().unwrap());
@@ -132,13 +135,9 @@ fn write_all_zips(
         let (mut zip_writer, zip_options) = DestinationBundle::open_destination_zip(zip_file_path);
 
         // TODO: zip_writer.raw_copy_file_rename/2 to skip recompressing for zip files
-
-        for bundle in destination_bundles {
-            // TODO: don't open the same file multiple times?
-            // maybe group sha's or something?
-
-            bundle.zip(&mut zip_writer, zip_options);
-        }
+        bundles
+            .iter()
+            .for_each(|bundle| bundle.zip(&mut zip_writer, zip_options));
         zip_writer.finish().unwrap();
         zip_bar.inc(1);
     });
