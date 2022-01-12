@@ -5,12 +5,40 @@ use std::{
 };
 
 use compress_tools::{ArchiveContents, ArchiveIterator};
+use indicatif::ProgressBar;
 use log::debug;
+use rayon::prelude::*;
 use zip::{write::FileOptions, ZipWriter};
 
-use crate::models::{Rom, RomFile};
+use crate::models::{Game, Rom, RomFile};
 
-pub fn open_destination_zip(zip_file_path: PathBuf) -> (ZipWriter<BufWriter<File>>, FileOptions) {
+pub fn write_all_zips(
+    games: std::collections::BTreeMap<Game, std::collections::HashSet<(Rom, RomFile)>>,
+    destination: &Path,
+    zip_bar: &ProgressBar,
+) {
+    games.par_iter().for_each(|(game, rom_and_romfile_pair)| {
+        let bundles: Vec<DestinationBundle> = rom_and_romfile_pair
+            .iter()
+            .map(|(rom, rom_file)| {
+                DestinationBundle::from_rom_and_rom_file(rom, rom_file, game.name())
+            })
+            .collect();
+
+        let zip_file_path = DestinationBundle::zip_file_path(destination, game.name());
+        debug!("Creating zip file: {:?}", zip_file_path.to_str().unwrap());
+
+        let (mut zip_writer, zip_options) = open_destination_zip(zip_file_path);
+
+        bundles
+            .iter()
+            .for_each(|bundle| bundle.zip(&mut zip_writer, zip_options));
+        zip_writer.finish().unwrap();
+        zip_bar.inc(1);
+    });
+}
+
+fn open_destination_zip(zip_file_path: PathBuf) -> (ZipWriter<BufWriter<File>>, FileOptions) {
     let zip_file = OpenOptions::new()
         .create(true)
         .append(false)
@@ -24,7 +52,7 @@ pub fn open_destination_zip(zip_file_path: PathBuf) -> (ZipWriter<BufWriter<File
     (zip_writer, zip_options)
 }
 
-pub struct DestinationBundle {
+struct DestinationBundle {
     archive_path: String,
     destination_name: String,
     source_name: String,

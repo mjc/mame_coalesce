@@ -44,8 +44,6 @@ mod destination;
 mod opts;
 use opts::{Opt, StructOpt};
 
-use crate::destination::DestinationBundle;
-
 fn main() {
     dotenv().ok();
     let mut builder = Builder::from_default_env();
@@ -110,36 +108,7 @@ fn main() {
     // this is by far the ugliest code I've ever written in any language
     // I'm sorry
     // TODO: major refactor
-    write_all_zips(games, destination, &zip_bar);
-}
-
-fn write_all_zips(
-    games: std::collections::BTreeMap<
-        models::Game,
-        std::collections::HashSet<(models::Rom, RomFile)>,
-    >,
-    destination: &Path,
-    zip_bar: &ProgressBar,
-) {
-    games.par_iter().for_each(|(game, rom_and_romfile_pair)| {
-        let bundles: Vec<DestinationBundle> = rom_and_romfile_pair
-            .iter()
-            .map(|(rom, rom_file)| {
-                DestinationBundle::from_rom_and_rom_file(rom, rom_file, game.name())
-            })
-            .collect();
-
-        let zip_file_path = DestinationBundle::zip_file_path(destination, game.name());
-        debug!("Creating zip file: {:?}", zip_file_path.to_str().unwrap());
-
-        let (mut zip_writer, zip_options) = destination::open_destination_zip(zip_file_path);
-
-        bundles
-            .iter()
-            .for_each(|bundle| bundle.zip(&mut zip_writer, zip_options));
-        zip_writer.finish().unwrap();
-        zip_bar.inc(1);
-    });
+    destination::write_all_zips(games, destination, &zip_bar);
 }
 
 fn get_all_rom_files_parallel(file_list: &[DirEntry], bar: &ProgressBar) -> Vec<NewRomFile> {
