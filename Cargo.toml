@@ -23,7 +23,7 @@ serde_derive = "1.0.98"
 serde = "1.0.98"
 serde-xml-rs = "0.5"
 
-zip = "0.5"
+zip = { version = "0.5", features = ["deflate", "bzip2"]}
 
 compress-tools = "0.12"
 
