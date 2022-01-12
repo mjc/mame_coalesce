@@ -81,7 +81,11 @@ fn main() {
     bar.set_style(bar_style.clone());
 
     // this can probably be done during the walkdir
+    // need to experiment with SSD vs HDD
+    // HDD request ordering should help too
+    // detect ssd or hdd?
     let new_rom_files = get_all_rom_files_parallel(&file_list, &bar);
+    // let new_rom_files = get_all_rom_files(&file_list, &bar);
 
     info!(
         "rom files found (unpacked and packed both): {}",
@@ -116,22 +120,10 @@ fn get_all_rom_files_parallel(file_list: &[DirEntry], bar: &ProgressBar) -> Vec<
         .par_iter()
         .fold(
             Vec::<NewRomFile>::new,
-            |mut v: Vec<NewRomFile>, e: &DirEntry| {
-                let path = e.path().to_path_buf();
+            |v: Vec<NewRomFile>, e: &DirEntry| {
                 bar.inc(1);
 
-                match RomFile::is_archive(e.path()) {
-                    false => {
-                        let r = NewRomFile::from_path(path);
-                        v.push(r);
-                        v
-                    }
-                    true => {
-                        let mut internal = get_rom_files_for_archive(&path);
-                        v.append(&mut internal);
-                        v
-                    }
-                }
+                build_newrom_vec(e, v)
             },
         )
         .reduce(
@@ -141,6 +133,33 @@ fn get_all_rom_files_parallel(file_list: &[DirEntry], bar: &ProgressBar) -> Vec<
                 dest
             },
         )
+}
+
+fn get_all_rom_files(file_list: &[DirEntry], bar: &ProgressBar) -> Vec<NewRomFile> {
+    file_list.iter().fold(
+        Vec::<NewRomFile>::new(),
+        |v: Vec<NewRomFile>, e: &DirEntry| {
+            bar.inc(1);
+
+            build_newrom_vec(e, v)
+        },
+    )
+}
+
+fn build_newrom_vec(e: &DirEntry, mut v: Vec<NewRomFile>) -> Vec<NewRomFile> {
+    let path = e.path().to_path_buf();
+    match RomFile::is_archive(e.path()) {
+        false => {
+            let r = NewRomFile::from_path(path);
+            v.push(r);
+            v
+        }
+        true => {
+            let mut internal = get_rom_files_for_archive(&path);
+            v.append(&mut internal);
+            v
+        }
+    }
 }
 
 fn get_rom_files_for_archive(path: &Path) -> Vec<NewRomFile> {
@@ -169,7 +188,7 @@ fn get_rom_files_for_archive(path: &Path) -> Vec<NewRomFile> {
                 rom_files.push(NewRomFile::from_archive(path, &name, crc, sha1, md5));
             }
             ArchiveContents::Err(e) => {
-                panic!("{:?}", e)
+                panic!("couldn't read {} from {:?}: {:?}", name, path, e)
             }
         }
     }
