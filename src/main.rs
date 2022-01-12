@@ -19,7 +19,7 @@ extern crate diesel_migrations;
 use compress_tools::*;
 use dotenv::dotenv;
 use indicatif::{ProgressBar, ProgressStyle};
-use log::{debug, info, LevelFilter};
+use log::{info, LevelFilter};
 use models::{NewRomFile, RomFile};
 use pretty_env_logger::env_logger::Builder;
 use rayon::prelude::*;

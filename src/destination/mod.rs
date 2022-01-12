@@ -20,12 +20,10 @@ pub fn write_all_zips(
     games.par_iter().for_each(|(game, rom_and_romfile_pair)| {
         let bundles: Vec<DestinationBundle> = rom_and_romfile_pair
             .iter()
-            .map(|(rom, rom_file)| {
-                DestinationBundle::from_rom_and_rom_file(rom, rom_file, game.name())
-            })
+            .map(|(rom, rom_file)| DestinationBundle::from_rom_and_rom_file(rom, rom_file))
             .collect();
 
-        let zip_file_path = DestinationBundle::zip_file_path(destination, game.name());
+        let zip_file_path = zip_file_path(destination, game.name());
         debug!("Creating zip file: {:?}", zip_file_path.to_str().unwrap());
 
         let (mut zip_writer, zip_options) = open_destination_zip(zip_file_path);
@@ -52,27 +50,31 @@ fn open_destination_zip(zip_file_path: PathBuf) -> (ZipWriter<BufWriter<File>>, 
     (zip_writer, zip_options)
 }
 
+fn zip_file_path(destination: &Path, game_name: &str) -> PathBuf {
+    let zip_file_path = PathBuf::new()
+        .join(destination)
+        .join(format!("{}.zip", game_name));
+    zip_file_path
+}
+
 struct DestinationBundle {
     archive_path: String,
     destination_name: String,
     source_name: String,
     in_archive: bool,
-    game_name: String,
 }
 
 impl DestinationBundle {
-    pub fn from_rom_and_rom_file(rom: &Rom, rom_file: &RomFile, game_name: &str) -> Self {
+    pub fn from_rom_and_rom_file(rom: &Rom, rom_file: &RomFile) -> Self {
         let destination_name = rom.name().to_string();
         let source_name = rom_file.name().to_string();
         let archive_path = rom_file.path().to_string();
-        let game_name = game_name.to_string();
         let in_archive = rom_file.in_archive();
         Self {
             archive_path,
             destination_name,
             source_name,
             in_archive,
-            game_name,
         }
     }
 
@@ -160,13 +162,6 @@ impl DestinationBundle {
         }
     }
 
-    pub fn zip_file_path(destination: &Path, game_name: &str) -> PathBuf {
-        let zip_file_path = PathBuf::new()
-            .join(destination)
-            .join(format!("{}.zip", game_name));
-        zip_file_path
-    }
-
     /// Get a reference to the destination bundle's archive path.
     pub fn archive_path(&self) -> &str {
         self.archive_path.as_ref()
@@ -185,10 +180,5 @@ impl DestinationBundle {
     /// Get the destination bundle's in archive.
     pub fn in_archive(&self) -> bool {
         self.in_archive
-    }
-
-    /// Get a reference to the destination bundle's game name.
-    pub fn game_name(&self) -> &str {
-        self.game_name.as_ref()
     }
 }
