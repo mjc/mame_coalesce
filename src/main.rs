@@ -42,8 +42,11 @@ mod hashes;
 pub mod models;
 pub mod schema;
 
+mod destination;
 mod opts;
 use opts::{Opt, StructOpt};
+
+use crate::destination::DestinationBundle;
 
 fn main() {
     dotenv().ok();
@@ -120,8 +123,10 @@ fn write_all_zips(
     destination: &Path,
     zip_bar: &ProgressBar,
 ) {
-    games.par_iter().for_each(|(game, romfiles_and_rom)| {
-        let rom_files_for_game = rom_files_for_game(romfiles_and_rom);
+    games.par_iter().for_each(|(game, rom_and_romfile_pair)| {
+        let destination_bundles = rom_and_romfile_pair
+            .iter()
+            .map(|(rom, rom_file)| DestinationBundle::from_rom_and_rom_file(rom, rom_file));
 
         let zip_file_path = PathBuf::new()
             .join(destination)
@@ -132,50 +137,36 @@ fn write_all_zips(
 
         // TODO: zip_writer.raw_copy_file_rename/2 to skip recompressing for zip files
 
-        for properties in rom_files_for_game {
-            let source_path = *properties.get("archive_path").unwrap();
-            let destination_name = *properties.get("destination_name").unwrap();
-            let source_name = *properties.get("source_name").unwrap();
-            let in_archive = *properties.get("in_archive").unwrap();
-
+        for bundle in destination_bundles {
             // TODO: don't open the same file multiple times?
             // maybe group sha's or something?
 
-            if in_archive == "true" {
-                debug!("Adding file {} from archive: {}", source_name, source_path);
+            if bundle.in_archive() == true {
+                debug!(
+                    "Adding file {} from archive: {}",
+                    bundle.source_name(),
+                    bundle.archive_path()
+                );
                 copy_from_archive(
-                    source_path,
-                    source_name,
+                    bundle.archive_path(),
+                    bundle.source_name(),
                     &mut zip_writer,
-                    destination_name,
+                    bundle.destination_name(),
                     zip_options,
                 );
             } else {
-                debug!("Adding file not in archive: {:?}", source_name);
-                copy_bare_file(source_path, &mut zip_writer, destination_name, zip_options);
+                debug!("Adding file not in archive: {:?}", bundle.source_name());
+                copy_bare_file(
+                    bundle.archive_path(),
+                    &mut zip_writer,
+                    bundle.destination_name(),
+                    zip_options,
+                );
             }
         }
         zip_writer.finish().unwrap();
         zip_bar.inc(1);
     });
-}
-
-fn rom_files_for_game(
-    romfiles_and_rom: &std::collections::HashSet<(models::Rom, RomFile)>,
-) -> Vec<HashMap<&str, &str>> {
-    let rom_files_for_game: Vec<HashMap<&str, &str>> = romfiles_and_rom
-        .iter()
-        .map(|(rom, rom_file)| {
-            let mut romfile_properties = HashMap::new();
-            romfile_properties.insert("archive_path", rom_file.path());
-            romfile_properties.insert("destination_name", rom.name());
-            romfile_properties.insert("source_name", rom_file.name());
-            // I hate doing this string conversion
-            romfile_properties.insert("in_archive", rom_file.in_archive_str());
-            romfile_properties
-        })
-        .collect();
-    rom_files_for_game
 }
 
 fn open_destination_zip(zip_file_path: PathBuf) -> (ZipWriter<BufWriter<File>>, FileOptions) {
