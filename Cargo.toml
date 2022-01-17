@@ -34,7 +34,7 @@ sha-1 = { version = "0.10", features = ["asm"] }
 memmap2 = "0.5"
 
 dotenv = "0.15.0"
-structopt = { version = "0.3", default-features = false }
+clap = { version = "3.0", features = ["derive", "env", "color", "suggestions" ]}
 
 walkdir = "^2.2.9"
 tempdir = "0.3"

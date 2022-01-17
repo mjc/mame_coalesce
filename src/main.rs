@@ -6,7 +6,6 @@ extern crate serde;
 extern crate serde_xml_rs;
 extern crate sha1;
 
-extern crate structopt;
 
 extern crate walkdir;
 extern crate zip;
@@ -16,6 +15,7 @@ extern crate diesel;
 #[macro_use]
 extern crate diesel_migrations;
 
+use clap::StructOpt;
 use compress_tools::*;
 use dotenv::dotenv;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -42,14 +42,14 @@ pub mod schema;
 
 mod destination;
 mod opts;
-use opts::{Opt, StructOpt};
+use opts::Opt;
 
 fn main() {
     dotenv().ok();
     let mut builder = Builder::from_default_env();
 
     builder.filter(None, LevelFilter::Info).init();
-    let opt = Opt::from_args();
+    let opt = Opt::parse();
 
     create_dir_all(&opt.destination).expect("Couldn't create destination directory");
 
