@@ -163,14 +163,13 @@ fn build_newrom_vec(e: &DirEntry, mut v: Vec<NewRomFile>) -> Vec<NewRomFile> {
         false => {
             let r = NewRomFile::from_path(path);
             v.push(r);
-            v
         }
         true => {
             let mut internal = get_rom_files_for_archive(path);
             v.append(&mut internal);
-            v
         }
     }
+    v
 }
 
 fn get_rom_files_for_archive(path: &Utf8Path) -> Vec<NewRomFile> {
