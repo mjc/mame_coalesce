@@ -12,9 +12,18 @@ debug = true
 # might as well turn this off too for now
 # codegen-units = 1
 
+[profile.performance]
+inherits = "release"
+opt-level = "s"
+debug = false
+panic = "abort"
+lto = true
+codegen-units = 1
+
+
 [dependencies]
 log = "0.4"
-femme = "2.1"
+simplelog = "0.11"
 indicatif = "0.16"
 
 rayon = "1.1"

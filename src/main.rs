@@ -18,10 +18,11 @@ use camino::Utf8Path;
 use clap::StructOpt;
 use compress_tools::*;
 use indicatif::{ProgressBar, ProgressStyle};
-use log::{error, info};
+use log::{error, info, LevelFilter};
 use models::{NewRomFile, RomFile};
 use rayon::prelude::*;
 use sha1::{Digest, Sha1};
+use simplelog::{ColorChoice, CombinedLogger, Config, TermLogger, TerminalMode};
 use walkdir::{DirEntry, WalkDir};
 
 use std::{
@@ -41,7 +42,13 @@ mod opts;
 use opts::{Cli, Command};
 
 fn main() {
-    femme::with_level(femme::LevelFilter::Trace);
+    CombinedLogger::init(vec![TermLogger::new(
+        LevelFilter::Info,
+        Config::default(),
+        TerminalMode::Mixed,
+        ColorChoice::Auto,
+    )])
+    .unwrap();
     let cli = Cli::parse();
 
     let pool: db::DbPool = db::create_db_pool(&cli.database_path);

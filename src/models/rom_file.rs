@@ -1,5 +1,5 @@
 use camino::Utf8Path;
-use log::debug;
+use log::{debug, warn};
 
 use crate::{hashes::MultiHash, schema::rom_files};
 
@@ -26,37 +26,46 @@ pub struct RomFile {
 
 impl RomFile {
     pub fn is_archive(path: &Utf8Path) -> bool {
-        let kind = infer::get_from_path(&path)
-            .expect("File read successfully")
-            .expect("File type is known");
-        match kind.mime_type() {
-            "application/zip" => true,
-            "application/x-7z-compressed" => true,
-            "text/plain" => {
-                debug!("Found a text file: {:?}", path.file_name());
+        match infer::get_from_path(&path) {
+            Ok(Some(kind)) => match kind.mime_type() {
+                "application/zip" => true,
+                "application/x-7z-compressed" => true,
+                "text/plain" => {
+                    debug!("Found a text file: {:?}", path.file_name());
+                    false
+                }
+                "application/x-cpio" => {
+                    debug!(
+                        "Found an archive that calls itself cpio, this is weird: {:?}",
+                        path.file_name()
+                    );
+                    true
+                }
+                "application/x-n64-rom" => false,
+                "application/octet-stream" => {
+                    debug!(
+                        "Only detected as a generic binary file: {:?}",
+                        &path.file_name().unwrap()
+                    );
+                    false
+                }
+                mime => {
+                    warn!(
+                        "Unknown mime type. assuming that it isn't an archive {:?}",
+                        mime
+                    );
+                    false
+                }
+            },
+            Ok(None) => {
+                warn!(
+                    "Unable to detect file type. Assuming it isn't an archive. {:?}",
+                    &path
+                );
                 false
             }
-            "application/x-cpio" => {
-                debug!(
-                    "Found an archive that calls itself cpio, this is weird: {:?}",
-                    path.file_name()
-                );
-                true
-            }
-            "application/x-n64-rom" => false,
-            "application/octet-stream" => {
-                debug!(
-                    "Only detected as a generic binary file: {:?}",
-                    &path.file_name().unwrap()
-                );
-                false
-            }
-            mime => {
-                debug!(
-                    "Unknown mime type, assuming that it isn't an archive {:?}",
-                    mime
-                );
-                false
+            Error(e) => {
+                warn!("Unable to read file: {:?}", &path)
             }
         }
     }
