@@ -1,17 +1,18 @@
 use std::collections::{BTreeMap, HashSet};
+use std::path::Path;
 
 use crate::models::*;
 use crate::{db::*, logiqx};
 
-use diesel::{prelude::*, result::Error, sql_query};
+use diesel::result::Error;
+use diesel::{prelude::*, sql_query};
 
-pub fn traverse_and_insert_data_file(
-    pool: &DbPool,
-    logiqx_data_file: logiqx::DataFile,
-    data_file_name: &str,
-) -> i32 {
+// TODO: return Result
+pub fn traverse_and_insert_data_file(pool: &DbPool, logiqx_data_file: logiqx::DataFile) -> i32 {
     use crate::schema::{data_files::dsl::*, games::dsl::*, roms::dsl::*};
     use diesel::replace_into;
+
+    let data_file_name = logiqx_data_file.file_name().unwrap();
 
     let new_data_file = NewDataFile::from_logiqx(&logiqx_data_file, data_file_name);
 
@@ -91,13 +92,23 @@ pub fn import_rom_files(pool: &DbPool, new_rom_files: &[NewRomFile]) {
     .unwrap();
 }
 
-pub fn load_parents(pool: &DbPool, df_id: &i32) -> BTreeMap<Game, HashSet<(Rom, RomFile)>> {
-    use crate::schema::{games::dsl::*, rom_files::dsl::rom_files, roms::dsl::roms};
+pub fn load_parents(
+    pool: &DbPool,
+    data_file_path: &Path,
+) -> BTreeMap<Game, HashSet<(Rom, RomFile)>> {
+    use crate::schema::{self, games::dsl::*, rom_files::dsl::rom_files, roms::dsl::roms};
     let conn = pool.get().unwrap();
+
+    let data_file_name = data_file_path.file_name().unwrap().to_str().unwrap();
+    // TODO: This is fucking horrible
+    let df = schema::data_files::dsl::data_files
+        .filter(schema::data_files::dsl::file_name.eq(data_file_name))
+        .first::<DataFile>(&conn)
+        .unwrap();
 
     // TODO: scope by commandline path!
     let query_results: BTreeMap<Game, (Rom, RomFile)> = games
-        .filter(data_file_id.eq(df_id))
+        .filter(data_file_id.eq(df.id()))
         .inner_join(roms.inner_join(rom_files))
         .load(&conn)
         .unwrap()

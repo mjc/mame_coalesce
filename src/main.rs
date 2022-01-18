@@ -6,7 +6,6 @@ extern crate serde;
 extern crate serde_xml_rs;
 extern crate sha1;
 
-
 extern crate walkdir;
 extern crate zip;
 
@@ -19,7 +18,7 @@ use clap::StructOpt;
 use compress_tools::*;
 use dotenv::dotenv;
 use indicatif::{ProgressBar, ProgressStyle};
-use log::{info, LevelFilter};
+use log::{error, info, LevelFilter};
 use models::{NewRomFile, RomFile};
 use pretty_env_logger::env_logger::Builder;
 use rayon::prelude::*;
@@ -27,7 +26,6 @@ use sha1::{Digest, Sha1};
 use walkdir::{DirEntry, WalkDir};
 
 use std::{
-    env,
     fs::{create_dir_all, File},
     io::BufReader,
     path::Path,
@@ -42,77 +40,95 @@ pub mod schema;
 
 mod destination;
 mod opts;
-use opts::Opt;
+use opts::{Cli, Command};
 
 fn main() {
     dotenv().ok();
     let mut builder = Builder::from_default_env();
 
     builder.filter(None, LevelFilter::Info).init();
-    let opt = Opt::parse();
+    let cli = Cli::parse();
 
-    create_dir_all(&opt.destination).expect("Couldn't create destination directory");
+    let pool: db::DbPool = db::create_db_pool(&cli.database_path);
 
-    info!("Using datafile: {}", opt.datafile);
-    info!("Looking in path: {}", opt.path.to_str().unwrap());
-    info!("Saving zips to path: {}", opt.destination.to_str().unwrap());
-
-    let data_file = logiqx::load_datafile(&opt.datafile).expect("Couldn't load datafile");
-    let destination = &opt.destination;
-
-    let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-
-    let pool: db::DbPool = db::create_db_pool(&database_url);
-
-    let file_name = Path::new(&opt.datafile)
-        .file_name()
-        .unwrap()
-        .to_str()
-        .unwrap();
-
-    info!("Loading data file: {:?}", &file_name);
-    let data_file_id = db::traverse_and_insert_data_file(&pool, data_file, file_name);
-
-    let file_list = walk_for_files(&opt.path);
-
-    let bar = ProgressBar::new(file_list.len() as u64);
     let bar_style = ProgressStyle::default_bar()
         .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg} {eta_precise}");
-    bar.set_style(bar_style.clone());
 
-    // this can probably be done during the walkdir
-    // need to experiment with SSD vs HDD
-    // HDD request ordering should help too
-    // detect ssd or hdd?
-    let new_rom_files = get_all_rom_files_parallel(&file_list, &bar);
-    // let new_rom_files = get_all_rom_files(&file_list, &bar);
+    match cli.command {
+        Command::AddDataFile { path } =>
+        // TODO: this should be a wrapper that returns a Result
+        {
+            info!("Using datafile: {}", &path.to_str().unwrap());
 
-    info!(
-        "rom files found (unpacked and packed both): {}",
-        new_rom_files.len()
-    );
-    // this should happen during get_all_rom_files_parallel
-    // that way, we can skip extracting archives that we've already checked
-    // and not load things all over again
-    db::import_rom_files(&pool, &new_rom_files);
+            match logiqx::load_datafile(&path) {
+                Ok(data_file) => {
+                    db::traverse_and_insert_data_file(&pool, data_file);
+                }
+                Err(e) => {
+                    error!("Unable to load data file: {:#?}, error: {}", path, e);
+                }
+            }
+        }
+        Command::ScanSource { parallel, path } => {
+            info!("Looking in path: {}", &path.to_str().unwrap());
 
-    let games = db::load_parents(&pool, &data_file_id);
-    info!(
-        "Processing {} games with {} matching rom files",
-        games.len(),
-        games
-            .iter()
-            .map(|(_rom, rom_files)| { rom_files.len() as i32 })
-            .sum::<i32>()
-    );
+            // TODO: spinner for file walking
+            let file_list = walk_for_files(&path);
 
-    let zip_bar = ProgressBar::new(games.len() as u64);
-    zip_bar.set_style(bar_style);
+            let bar = ProgressBar::new(file_list.len() as u64);
+            bar.set_style(bar_style);
 
-    // this is by far the ugliest code I've ever written in any language
-    // I'm sorry
-    // TODO: major refactor
-    destination::write_all_zips(games, destination, &zip_bar);
+            // this can probably be done during the walkdir
+            // need to experiment with SSD vs HDD
+            // HDD request ordering should help too
+            // detect ssd or hdd?
+            let new_rom_files = if parallel {
+                get_all_rom_files_parallel(&file_list, &bar)
+            } else {
+                get_all_rom_files(&file_list, &bar)
+            };
+
+            info!(
+                "rom files found (unpacked and packed both): {}",
+                new_rom_files.len()
+            );
+
+            // this should happen while loading files
+            // that way, we can skip extracting archives that we've already checked
+            // and not load things all over again
+            db::import_rom_files(&pool, &new_rom_files);
+            // TODO: warning if nothing associated
+            // TODO: pick datafile to scan for
+        }
+        Command::Rename {
+            dry_run,
+            data_file,
+            source: _,
+            destination,
+        } => {
+            // TODO: respect source argument
+            let games = db::load_parents(&pool, &data_file);
+            info!(
+                "Processing {} games with {} matching rom files",
+                games.len(),
+                games
+                    .iter()
+                    .map(|(_rom, rom_files)| { rom_files.len() as i32 })
+                    .sum::<i32>()
+            );
+
+            let zip_bar = ProgressBar::new(games.len() as u64);
+            zip_bar.set_style(bar_style);
+            if dry_run {
+                info!("Dry run enabled, not writing zips!");
+            } else {
+                info!("Saving zips to path: {}", &destination.to_str().unwrap());
+
+                create_dir_all(&destination).expect("Couldn't create destination directory");
+                destination::write_all_zips(games, &destination, &zip_bar);
+            }
+        }
+    }
 }
 
 fn get_all_rom_files_parallel(file_list: &[DirEntry], bar: &ProgressBar) -> Vec<NewRomFile> {

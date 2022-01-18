@@ -18,14 +18,13 @@ pub struct DataFile {
     games: Vec<Game>,
 }
 impl DataFile {
-    pub fn from_file(contents: &File) -> Self {
+    pub fn from_file(contents: &File) -> Result<Self, serde_xml_rs::Error> {
         let reader = BufReader::new(contents);
         // this should be BufReader or reader should be mmap, idk
         let (_crc, sha1) = contents.all_hashes();
-        let mut data_file: DataFile =
-            serde_xml_rs::from_reader(reader).expect("Can't read Logiqx datafile.");
+        let mut data_file: DataFile = serde_xml_rs::from_reader(reader)?;
         data_file.sha1 = Some(sha1);
-        data_file
+        Ok(data_file)
     }
 
     /// Get a reference to the data file's header.
@@ -51,5 +50,15 @@ impl DataFile {
     /// Get a reference to the data file's sha1.
     pub fn sha1(&self) -> Option<&Vec<u8>> {
         self.sha1.as_ref()
+    }
+
+    /// Get a reference to the data file's file name.
+    pub fn file_name(&self) -> Option<&String> {
+        self.file_name.as_ref()
+    }
+
+    /// Set the data file's file name.
+    pub fn set_file_name(&mut self, file_name: Option<String>) {
+        self.file_name = file_name;
     }
 }

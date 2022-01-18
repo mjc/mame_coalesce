@@ -17,6 +17,9 @@ pub fn write_all_zips(
     destination: &Path,
     zip_bar: &ProgressBar,
 ) {
+    // this is by far the ugliest code I've ever written in any language
+    // I'm sorry
+    // TODO: major refactor
     games.par_iter().for_each(|(game, rom_and_romfile_pair)| {
         let bundles: Vec<DestinationBundle> = rom_and_romfile_pair
             .iter()

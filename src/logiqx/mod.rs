@@ -1,4 +1,4 @@
-use std::fs::File;
+use std::{fs::File, path::Path};
 
 mod data_file;
 mod game;
@@ -10,7 +10,12 @@ pub use game::Game;
 pub use rom::Rom;
 
 // TODO: mmap this for shoots and ladders
-pub fn load_datafile(name: &str) -> Option<DataFile> {
-    let f = File::open(name).ok()?;
-    Some(DataFile::from_file(&f))
+// TODO: investigate why Err() is unreachable
+pub fn load_datafile(name: &Path) -> Result<DataFile, serde_xml_rs::Error> {
+    let f = File::open(name)?;
+    DataFile::from_file(&f).map(|mut df| {
+        // TODO: ugly
+        df.set_file_name(name.to_str().map(|s| s.to_string()));
+        df
+    })
 }
