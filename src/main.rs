@@ -56,7 +56,7 @@ fn main() {
     let pool: db::DbPool = db::create_db_pool(&cli.database_path);
 
     let bar_style = ProgressStyle::default_bar()
-        .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg} {eta_precise}");
+        .template("[{elapsed}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg} ETA: {eta}");
 
     match cli.command {
         Command::AddDataFile { path } => parse_and_insert_datfile(&path, &pool),
