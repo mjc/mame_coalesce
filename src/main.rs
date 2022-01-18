@@ -17,6 +17,7 @@ extern crate diesel_migrations;
 use camino::Utf8Path;
 use clap::StructOpt;
 use compress_tools::*;
+use db::DbPool;
 use indicatif::{ParallelProgressIterator, ProgressBar, ProgressIterator, ProgressStyle};
 use log::{error, info, LevelFilter};
 use models::{NewRomFile, RomFile};
@@ -57,51 +58,9 @@ fn main() {
         .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg} {eta_precise}");
 
     match cli.command {
-        Command::AddDataFile { path } =>
-        // TODO: this should be a wrapper that returns a Result
-        {
-            info!("Using datafile: {}", &path);
+        Command::AddDataFile { path } => parse_and_insert_datfile(&path, &pool),
+        Command::ScanSource { parallel, path } => scan_source(&path, &bar_style, parallel, &pool),
 
-            match logiqx::load_datafile(&path) {
-                Ok(data_file) => {
-                    db::traverse_and_insert_data_file(&pool, data_file);
-                }
-                Err(e) => {
-                    error!("Unable to load data file: {:#?}, error: {}", path, e);
-                }
-            }
-        }
-        Command::ScanSource { parallel, path } => {
-            info!("Looking in path: {}", &path);
-
-            // TODO: spinner for file walking
-            let file_list = walk_for_files(&path);
-
-            let bar = ProgressBar::new(file_list.len() as u64);
-            bar.set_style(bar_style);
-
-            // this can probably be done during the walkdir
-            // need to experiment with SSD vs HDD
-            // HDD request ordering should help too
-            // detect ssd or hdd?
-            let new_rom_files = if parallel {
-                get_all_rom_files_parallel(&file_list, bar)
-            } else {
-                get_all_rom_files(&file_list, bar)
-            };
-
-            info!(
-                "rom files found (unpacked and packed both): {}",
-                new_rom_files.len()
-            );
-
-            // this should happen while loading files
-            // that way, we can skip extracting archives that we've already checked
-            // and not load things all over again
-            db::import_rom_files(&pool, &new_rom_files);
-            // TODO: warning if nothing associated
-            // TODO: pick datafile to scan for
-        }
         Command::Rename {
             dry_run,
             data_file,
@@ -109,26 +68,68 @@ fn main() {
             destination,
         } => {
             // TODO: respect source argument
-            let games = db::load_parents(&pool, &data_file);
-            info!(
-                "Processing {} games with {} matching rom files",
-                games.len(),
-                games
-                    .iter()
-                    .map(|(_rom, rom_files)| { rom_files.len() as i32 })
-                    .sum::<i32>()
-            );
+            rename_roms(&pool, &data_file, &bar_style, dry_run, &destination);
+        }
+    }
+}
 
-            let zip_bar = ProgressBar::new(games.len() as u64);
-            zip_bar.set_style(bar_style);
-            if dry_run {
-                info!("Dry run enabled, not writing zips!");
-            } else {
-                info!("Saving zips to path: {}", &destination);
+fn rename_roms(
+    pool: &DbPool,
+    data_file: &Utf8Path,
+    bar_style: &ProgressStyle,
+    dry_run: bool,
+    destination: &Utf8Path,
+) {
+    let games = db::load_parents(&pool, &data_file);
+    info!(
+        "Processing {} games with {} matching rom files",
+        games.len(),
+        games
+            .iter()
+            .map(|(_rom, rom_files)| { rom_files.len() as i32 })
+            .sum::<i32>()
+    );
+    let zip_bar = ProgressBar::new(games.len() as u64);
+    zip_bar.set_style(bar_style.clone());
+    if dry_run {
+        info!("Dry run enabled, not writing zips!");
+    } else {
+        info!("Saving zips to path: {}", &destination);
 
-                create_dir_all(&destination).expect("Couldn't create destination directory");
-                destination::write_all_zips(games, &destination, &zip_bar);
-            }
+        create_dir_all(&destination).expect("Couldn't create destination directory");
+        destination::write_all_zips(games, &destination, &zip_bar);
+    }
+}
+
+// TODO: this should return a Result
+fn scan_source(path: &Utf8Path, bar_style: &ProgressStyle, parallel: bool, pool: &DbPool) {
+    info!("Looking in path: {}", path);
+    let file_list = walk_for_files(&path);
+    let bar = ProgressBar::new(file_list.len() as u64);
+    bar.set_style(bar_style.clone());
+    let new_rom_files = if parallel {
+        get_all_rom_files_parallel(&file_list, bar)
+    } else {
+        get_all_rom_files(&file_list, bar)
+    };
+    info!(
+        "rom files found (unpacked and packed both): {}",
+        new_rom_files.len()
+    );
+    db::import_rom_files(pool, &new_rom_files);
+    // TODO: warning if nothing associated
+    // TODO: pick datafile to scan for
+}
+
+// TODO: this should return a Result
+fn parse_and_insert_datfile(path: &Utf8Path, pool: &DbPool) {
+    info!("Using datafile: {}", &path);
+    match logiqx::load_datafile(&path) {
+        Ok(data_file) => {
+            db::traverse_and_insert_data_file(pool, data_file);
+        }
+        Err(e) => {
+            error!("Unable to load data file: {:#?}, error: {}", path, e);
         }
     }
 }
