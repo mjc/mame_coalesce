@@ -29,6 +29,7 @@ use walkdir::{DirEntry, WalkDir};
 use std::{
     fs::{create_dir_all, File},
     io::BufReader,
+    os::linux::fs::MetadataExt,
 };
 
 pub mod logiqx;
@@ -207,12 +208,29 @@ fn get_rom_files_for_archive(path: &Utf8Path) -> Vec<NewRomFile> {
 }
 
 fn walk_for_files(dir: &Utf8Path) -> Vec<DirEntry> {
-    WalkDir::new(dir)
+    let v: Vec<DirEntry> = WalkDir::new(dir)
         .into_iter()
         .filter_entry(entry_is_relevant)
         .filter_map(|v| v.ok())
         .filter(|entry| entry.file_type().is_file())
-        .collect::<Vec<DirEntry>>()
+        .collect();
+    optimize_file_order(v)
+}
+
+#[cfg(target_os = "linux")]
+fn optimize_file_order(mut dirs: Vec<DirEntry>) -> Vec<DirEntry> {
+    // TODO: figure out fiemap
+    dirs.sort_by(|a, b| {
+        let a_inode = a.metadata().unwrap().st_ino();
+        let b_inode = b.metadata().unwrap().st_ino();
+        a_inode.cmp(&b_inode)
+    });
+    dirs
+}
+
+#[cfg(not(target_os = "linux"))]
+fn optimize_file_order(mut dirs: Vec<DirEntry>) -> Vec<DirEntry> {
+    dirs
 }
 
 fn entry_is_relevant(entry: &DirEntry) -> bool {
