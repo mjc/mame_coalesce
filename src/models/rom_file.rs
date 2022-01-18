@@ -26,7 +26,10 @@ pub struct RomFile {
 
 impl RomFile {
     pub fn is_archive(path: &Utf8Path) -> bool {
-        match tree_magic::from_filepath(path.as_std_path()).as_str() {
+        let kind = infer::get_from_path(&path)
+            .expect("File read successfully")
+            .expect("File type is known");
+        match kind.mime_type() {
             "application/zip" => true,
             "application/x-7z-compressed" => true,
             "text/plain" => {
