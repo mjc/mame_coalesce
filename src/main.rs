@@ -17,7 +17,7 @@ extern crate diesel_migrations;
 use camino::Utf8Path;
 use clap::StructOpt;
 use compress_tools::*;
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::{ParallelProgressIterator, ProgressBar, ProgressIterator, ProgressStyle};
 use log::{error, info, LevelFilter};
 use models::{NewRomFile, RomFile};
 use rayon::prelude::*;
@@ -85,9 +85,9 @@ fn main() {
             // HDD request ordering should help too
             // detect ssd or hdd?
             let new_rom_files = if parallel {
-                get_all_rom_files_parallel(&file_list, &bar)
+                get_all_rom_files_parallel(&file_list, bar)
             } else {
-                get_all_rom_files(&file_list, &bar)
+                get_all_rom_files(&file_list, bar)
             };
 
             info!(
@@ -133,16 +133,13 @@ fn main() {
     }
 }
 
-fn get_all_rom_files_parallel(file_list: &[DirEntry], bar: &ProgressBar) -> Vec<NewRomFile> {
+fn get_all_rom_files_parallel(file_list: &[DirEntry], bar: ProgressBar) -> Vec<NewRomFile> {
     file_list
         .par_iter()
+        .progress_with(bar)
         .fold(
             Vec::<NewRomFile>::new,
-            |v: Vec<NewRomFile>, e: &DirEntry| {
-                bar.inc(1);
-
-                build_newrom_vec(e, v)
-            },
+            |v: Vec<NewRomFile>, e: &DirEntry| build_newrom_vec(e, v),
         )
         .reduce(
             Vec::<NewRomFile>::default,
@@ -153,14 +150,10 @@ fn get_all_rom_files_parallel(file_list: &[DirEntry], bar: &ProgressBar) -> Vec<
         )
 }
 
-fn get_all_rom_files(file_list: &[DirEntry], bar: &ProgressBar) -> Vec<NewRomFile> {
-    file_list.iter().fold(
+fn get_all_rom_files(file_list: &[DirEntry], bar: ProgressBar) -> Vec<NewRomFile> {
+    file_list.iter().progress_with(bar).fold(
         Vec::<NewRomFile>::new(),
-        |v: Vec<NewRomFile>, e: &DirEntry| {
-            bar.inc(1);
-
-            build_newrom_vec(e, v)
-        },
+        |v: Vec<NewRomFile>, e: &DirEntry| build_newrom_vec(e, v),
     )
 }
 
