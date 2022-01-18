@@ -16,7 +16,6 @@ extern crate diesel_migrations;
 
 use clap::StructOpt;
 use compress_tools::*;
-use dotenv::dotenv;
 use indicatif::{ProgressBar, ProgressStyle};
 use log::{error, info, LevelFilter};
 use models::{NewRomFile, RomFile};
@@ -43,7 +42,6 @@ mod opts;
 use opts::{Cli, Command};
 
 fn main() {
-    dotenv().ok();
     let mut builder = Builder::from_default_env();
 
     builder.filter(None, LevelFilter::Info).init();

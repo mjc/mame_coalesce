@@ -5,7 +5,6 @@ use std::path::Path;
 use crate::models::*;
 use crate::{db::*, logiqx};
 
-use diesel::dsl::sql;
 use diesel::result::Error;
 use diesel::{prelude::*, sql_query};
 
@@ -115,7 +114,7 @@ pub fn load_parents(
     let query_results: BTreeMap<Game, (Rom, RomFile)> = games
         .filter(data_file_id.eq(df.id()))
         .inner_join(roms.inner_join(rom_files))
-        .filter(sql("DISTINCT rom_files.sha1"))
+        .group_by(schema::rom_files::dsl::sha1)
         .load(&conn)
         .unwrap()
         .into_iter()

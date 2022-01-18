@@ -287,6 +287,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "diesel_logger"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1793935ad14586bf2aa51574a7157932640c345205ccfb2db431846d846e3db7"
+dependencies = [
+ "diesel",
+ "log",
+]
+
+[[package]]
 name = "diesel_migrations"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -306,12 +316,6 @@ dependencies = [
  "crypto-common",
  "generic-array",
 ]
-
-[[package]]
-name = "dotenv"
-version = "0.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77c90badedccf4105eca100756a0b1289e191f6fcbdadd3cee1d2f614f97da8f"
 
 [[package]]
 name = "either"
@@ -507,8 +511,8 @@ dependencies = [
  "compress-tools",
  "crc32fast",
  "diesel",
+ "diesel_logger",
  "diesel_migrations",
- "dotenv",
  "flate2",
  "hex",
  "indicatif",
