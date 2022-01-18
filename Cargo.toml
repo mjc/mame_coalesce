@@ -14,7 +14,7 @@ debug = true
 
 [dependencies]
 log = "0.4"
-pretty_env_logger = "0.4"
+femme = "2.1"
 indicatif = "0.16"
 
 rayon = "1.1"

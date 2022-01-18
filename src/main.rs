@@ -18,9 +18,8 @@ use camino::Utf8Path;
 use clap::StructOpt;
 use compress_tools::*;
 use indicatif::{ProgressBar, ProgressStyle};
-use log::{error, info, LevelFilter};
+use log::{error, info};
 use models::{NewRomFile, RomFile};
-use pretty_env_logger::env_logger::Builder;
 use rayon::prelude::*;
 use sha1::{Digest, Sha1};
 use walkdir::{DirEntry, WalkDir};
@@ -42,9 +41,7 @@ mod opts;
 use opts::{Cli, Command};
 
 fn main() {
-    let mut builder = Builder::from_default_env();
-
-    builder.filter(None, LevelFilter::Info).init();
+    femme::with_level(femme::LevelFilter::Trace);
     let cli = Cli::parse();
 
     let pool: db::DbPool = db::create_db_pool(&cli.database_path);
