@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashSet};
+use std::fs;
 use std::path::Path;
 
 use crate::models::*;
@@ -99,10 +100,12 @@ pub fn load_parents(
     use crate::schema::{self, games::dsl::*, rom_files::dsl::rom_files, roms::dsl::roms};
     let conn = pool.get().unwrap();
 
-    let data_file_name = data_file_path.file_name().unwrap().to_str().unwrap();
+    let full_path = fs::canonicalize(data_file_path).unwrap();
+    let df_path = full_path.to_str().unwrap();
+
     // TODO: This is fucking horrible
     let df = schema::data_files::dsl::data_files
-        .filter(schema::data_files::dsl::file_name.eq(data_file_name))
+        .filter(schema::data_files::dsl::file_name.eq(df_path))
         .first::<DataFile>(&conn)
         .unwrap();
 
