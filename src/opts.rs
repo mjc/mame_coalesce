@@ -14,24 +14,17 @@ pub(crate) struct Cli {
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
     #[clap(setting(AppSettings::ArgRequiredElseHelp))]
-    AddDataFile {
-        #[clap(required = true)]
-        path: PathBuf,
-    },
+    AddDataFile { path: PathBuf },
     ScanSource {
         #[clap(short, long, parse(try_from_str), default_value_t = true)]
         parallel: bool,
-        #[clap(required = true)]
         path: PathBuf,
     },
     Rename {
-        #[clap(short, long, parse(try_from_str), default_value_t = true)]
+        #[clap(short, long, parse(try_from_str), default_value_t = false)]
         dry_run: bool,
-        #[clap(required = true)]
         data_file: PathBuf,
-        #[clap(required = true)]
         source: PathBuf,
-        #[clap(required = true)]
         destination: PathBuf,
     },
 }
