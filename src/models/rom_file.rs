@@ -28,44 +28,39 @@ impl RomFile {
     pub fn is_archive(path: &Utf8Path) -> bool {
         match infer::get_from_path(&path) {
             Ok(Some(kind)) => match kind.mime_type() {
-                "application/zip" => true,
-                "application/x-7z-compressed" => true,
-                "text/plain" => {
-                    debug!("Found a text file: {:?}", path.file_name());
-                    false
-                }
-                "application/x-cpio" => {
-                    debug!(
-                        "Found an archive that calls itself cpio, this is weird: {:?}",
-                        path.file_name()
-                    );
-                    true
-                }
-                "application/x-n64-rom" => false,
-                "application/octet-stream" => {
-                    debug!(
-                        "Only detected as a generic binary file: {:?}",
-                        &path.file_name().unwrap()
-                    );
+                "application/zip" | "application/x-7z-compressed" => true,
+                "application/x-shockwave-flash"
+                | "audio/x-wav"
+                | "application/vnd.microsoft.portable-executable"
+                | "audio/mpeg"
+                | "video/x-flv"
+                | "video/mp4"
+                | "image/png"
+                | "text/xml"
+                | "image/vnd.microsoft.icon"
+                | "application/x-ole-storage" => false,
+                "application/vnd.rar" => {
+                    warn!("We don't support rar files yet, but found one: {}", &path);
                     false
                 }
                 mime => {
                     warn!(
-                        "Unknown mime type. assuming that it isn't an archive {:?}",
-                        mime
+                        "Unknown mime type. assuming that it isn't an archive {:?}, path: {}",
+                        mime, &path
                     );
                     false
                 }
             },
             Ok(None) => {
-                warn!(
+                debug!(
                     "Unable to detect file type. Assuming it isn't an archive. {:?}",
                     &path
                 );
                 false
             }
-            Error(e) => {
-                warn!("Unable to read file: {:?}", &path)
+            Err(e) => {
+                warn!("Unable to read file: {:?}, reason: {:?}", &path, e);
+                false
             }
         }
     }
