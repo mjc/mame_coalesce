@@ -1,5 +1,4 @@
-use std::path::{Path, PathBuf};
-
+use camino::Utf8Path;
 use log::debug;
 
 use crate::{hashes::MultiHash, schema::rom_files};
@@ -26,8 +25,8 @@ pub struct RomFile {
 }
 
 impl RomFile {
-    pub fn is_archive(path: &Path) -> bool {
-        match tree_magic::from_filepath(path).as_str() {
+    pub fn is_archive(path: &Utf8Path) -> bool {
+        match tree_magic::from_filepath(path.as_std_path()).as_str() {
             "application/zip" => true,
             "application/x-7z-compressed" => true,
             "text/plain" => {
@@ -98,14 +97,14 @@ pub struct NewRomFile {
 }
 
 impl NewRomFile {
-    pub fn from_path(path: PathBuf) -> NewRomFile {
-        let (crc, sha1) = path.all_hashes();
-        let name = path.file_name().unwrap().to_str().unwrap().to_string();
-        let parent = path.parent().unwrap().to_str().unwrap().to_string();
-        let rom_file_path = path.to_str().unwrap().to_string();
+    pub fn from_path(rom_file_path: &Utf8Path) -> NewRomFile {
+        let (crc, sha1) = rom_file_path.all_hashes();
+        let name = rom_file_path.file_name().unwrap().to_string();
+        let parent = rom_file_path.parent().unwrap().to_string();
+        let path = rom_file_path.to_string();
         NewRomFile {
             parent_path: parent,
-            path: rom_file_path,
+            path,
             name,
             crc,
             sha1,
@@ -116,15 +115,15 @@ impl NewRomFile {
     }
 
     pub fn from_archive(
-        path: &Path,
+        path: &Utf8Path,
         name: &str,
         crc: Vec<u8>,
         sha1: Vec<u8>,
         md5: Vec<u8>,
     ) -> NewRomFile {
         NewRomFile {
-            parent_path: path.parent().unwrap().to_str().unwrap().to_string(),
-            path: path.to_str().unwrap().to_string(),
+            parent_path: path.parent().unwrap().to_string(),
+            path: path.to_string(),
             name: name.to_string(),
             crc,
             sha1,

@@ -1,9 +1,9 @@
 use std::{
     fs::{File, OpenOptions},
     io::{BufReader, BufWriter, Read, Write},
-    path::{Path, PathBuf},
 };
 
+use camino::{Utf8Path, Utf8PathBuf};
 use compress_tools::{ArchiveContents, ArchiveIterator};
 use indicatif::ProgressBar;
 use log::{debug, error};
@@ -14,7 +14,7 @@ use crate::models::{Game, Rom, RomFile};
 
 pub fn write_all_zips(
     games: std::collections::BTreeMap<Game, std::collections::HashSet<(Rom, RomFile)>>,
-    destination: &Path,
+    destination: &Utf8Path,
     zip_bar: &ProgressBar,
 ) {
     // this is by far the ugliest code I've ever written in any language
@@ -27,9 +27,9 @@ pub fn write_all_zips(
             .collect();
 
         let zip_file_path = zip_file_path(destination, game.name());
-        debug!("Creating zip file: {:?}", zip_file_path.to_str().unwrap());
+        debug!("Creating zip file: {:?}", zip_file_path);
 
-        let (mut zip_writer, zip_options) = open_destination_zip(zip_file_path);
+        let (mut zip_writer, zip_options) = open_destination_zip(&zip_file_path);
 
         bundles
             .iter()
@@ -39,7 +39,7 @@ pub fn write_all_zips(
     });
 }
 
-fn open_destination_zip(zip_file_path: PathBuf) -> (ZipWriter<BufWriter<File>>, FileOptions) {
+fn open_destination_zip(zip_file_path: &Utf8Path) -> (ZipWriter<BufWriter<File>>, FileOptions) {
     let zip_file = OpenOptions::new()
         .create(true)
         .append(false)
@@ -53,8 +53,8 @@ fn open_destination_zip(zip_file_path: PathBuf) -> (ZipWriter<BufWriter<File>>, 
     (zip_writer, zip_options)
 }
 
-fn zip_file_path(destination: &Path, game_name: &str) -> PathBuf {
-    let zip_file_path = PathBuf::new()
+fn zip_file_path(destination: &Utf8Path, game_name: &str) -> Utf8PathBuf {
+    let zip_file_path = Utf8PathBuf::new()
         .join(destination)
         .join(format!("{}.zip", game_name));
     zip_file_path

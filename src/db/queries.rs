@@ -1,10 +1,10 @@
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
-use std::path::Path;
 
 use crate::models::*;
 use crate::{db::*, logiqx};
 
+use camino::{Utf8Path, Utf8PathBuf};
 use diesel::result::Error;
 use diesel::{prelude::*, sql_query};
 
@@ -95,13 +95,13 @@ pub fn import_rom_files(pool: &DbPool, new_rom_files: &[NewRomFile]) {
 
 pub fn load_parents(
     pool: &DbPool,
-    data_file_path: &Path,
+    data_file_path: &Utf8Path,
 ) -> BTreeMap<Game, HashSet<(Rom, RomFile)>> {
     use crate::schema::{self, games::dsl::*, rom_files::dsl::rom_files, roms::dsl::roms};
     let conn = pool.get().unwrap();
 
-    let full_path = fs::canonicalize(data_file_path).unwrap();
-    let df_path = full_path.to_str().unwrap();
+    let full_path = Utf8PathBuf::from_path_buf(fs::canonicalize(data_file_path).unwrap()).unwrap();
+    let df_path = full_path.to_string();
 
     // TODO: This is fucking horrible
     // TODO:: .filter(sql("..."))

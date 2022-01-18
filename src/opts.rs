@@ -1,5 +1,5 @@
+use camino::Utf8PathBuf;
 use clap::{AppSettings, Parser, Subcommand};
-use std::path::PathBuf;
 
 #[derive(Parser)]
 #[clap(name = "mame_coalesce")]
@@ -14,17 +14,17 @@ pub(crate) struct Cli {
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
     #[clap(setting(AppSettings::ArgRequiredElseHelp))]
-    AddDataFile { path: PathBuf },
+    AddDataFile { path: Utf8PathBuf },
     ScanSource {
         #[clap(short, long, parse(try_from_str), default_value_t = true)]
         parallel: bool,
-        path: PathBuf,
+        path: Utf8PathBuf,
     },
     Rename {
         #[clap(short, long, parse(try_from_str), default_value_t = false)]
         dry_run: bool,
-        data_file: PathBuf,
-        source: PathBuf,
-        destination: PathBuf,
+        data_file: Utf8PathBuf,
+        source: Utf8PathBuf,
+        destination: Utf8PathBuf,
     },
 }

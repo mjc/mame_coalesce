@@ -14,6 +14,7 @@ extern crate diesel;
 #[macro_use]
 extern crate diesel_migrations;
 
+use camino::Utf8Path;
 use clap::StructOpt;
 use compress_tools::*;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -27,7 +28,6 @@ use walkdir::{DirEntry, WalkDir};
 use std::{
     fs::{create_dir_all, File},
     io::BufReader,
-    path::Path,
 };
 
 pub mod logiqx;
@@ -56,7 +56,7 @@ fn main() {
         Command::AddDataFile { path } =>
         // TODO: this should be a wrapper that returns a Result
         {
-            info!("Using datafile: {}", &path.to_str().unwrap());
+            info!("Using datafile: {}", &path);
 
             match logiqx::load_datafile(&path) {
                 Ok(data_file) => {
@@ -68,7 +68,7 @@ fn main() {
             }
         }
         Command::ScanSource { parallel, path } => {
-            info!("Looking in path: {}", &path.to_str().unwrap());
+            info!("Looking in path: {}", &path);
 
             // TODO: spinner for file walking
             let file_list = walk_for_files(&path);
@@ -120,7 +120,7 @@ fn main() {
             if dry_run {
                 info!("Dry run enabled, not writing zips!");
             } else {
-                info!("Saving zips to path: {}", &destination.to_str().unwrap());
+                info!("Saving zips to path: {}", &destination);
 
                 create_dir_all(&destination).expect("Couldn't create destination directory");
                 destination::write_all_zips(games, &destination, &zip_bar);
@@ -161,22 +161,22 @@ fn get_all_rom_files(file_list: &[DirEntry], bar: &ProgressBar) -> Vec<NewRomFil
 }
 
 fn build_newrom_vec(e: &DirEntry, mut v: Vec<NewRomFile>) -> Vec<NewRomFile> {
-    let path = e.path().to_path_buf();
-    match RomFile::is_archive(e.path()) {
+    let path = Utf8Path::from_path(e.path()).unwrap();
+    match RomFile::is_archive(Utf8Path::from_path(e.path()).unwrap()) {
         false => {
             let r = NewRomFile::from_path(path);
             v.push(r);
             v
         }
         true => {
-            let mut internal = get_rom_files_for_archive(&path);
+            let mut internal = get_rom_files_for_archive(path);
             v.append(&mut internal);
             v
         }
     }
 }
 
-fn get_rom_files_for_archive(path: &Path) -> Vec<NewRomFile> {
+fn get_rom_files_for_archive(path: &Utf8Path) -> Vec<NewRomFile> {
     let f = File::open(path).unwrap();
     let buf = BufReader::new(f); // TODO: mmap?
     let mut name = String::default();
@@ -209,7 +209,7 @@ fn get_rom_files_for_archive(path: &Path) -> Vec<NewRomFile> {
     rom_files
 }
 
-fn walk_for_files(dir: &Path) -> Vec<DirEntry> {
+fn walk_for_files(dir: &Utf8Path) -> Vec<DirEntry> {
     WalkDir::new(dir)
         .into_iter()
         .filter_entry(entry_is_relevant)

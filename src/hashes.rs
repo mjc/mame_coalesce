@@ -1,5 +1,6 @@
-use std::{fs::File, path::Path};
+use std::fs::File;
 
+use camino::Utf8Path;
 use memmap2::{Mmap, MmapOptions};
 use sha1::{Digest, Sha1};
 
@@ -7,7 +8,7 @@ pub trait MultiHash {
     fn all_hashes(&self) -> (Vec<u8>, Vec<u8>);
 }
 
-impl MultiHash for Path {
+impl MultiHash for Utf8Path {
     fn all_hashes(&self) -> (Vec<u8>, Vec<u8>) {
         File::open(self).unwrap().all_hashes()
     }
