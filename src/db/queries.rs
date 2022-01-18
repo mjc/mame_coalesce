@@ -5,6 +5,7 @@ use std::path::Path;
 use crate::models::*;
 use crate::{db::*, logiqx};
 
+use diesel::dsl::sql;
 use diesel::result::Error;
 use diesel::{prelude::*, sql_query};
 
@@ -104,6 +105,7 @@ pub fn load_parents(
     let df_path = full_path.to_str().unwrap();
 
     // TODO: This is fucking horrible
+    // TODO:: .filter(sql("..."))
     let df = schema::data_files::dsl::data_files
         .filter(schema::data_files::dsl::file_name.eq(df_path))
         .first::<DataFile>(&conn)
@@ -113,6 +115,7 @@ pub fn load_parents(
     let query_results: BTreeMap<Game, (Rom, RomFile)> = games
         .filter(data_file_id.eq(df.id()))
         .inner_join(roms.inner_join(rom_files))
+        .filter(sql("DISTINCT rom_files.sha1"))
         .load(&conn)
         .unwrap()
         .into_iter()
