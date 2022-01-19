@@ -141,7 +141,9 @@ fn get_all_rom_files_parallel(file_list: &[DirEntry], bar: ProgressBar) -> Vec<N
         .progress_with(bar)
         .fold(
             Vec::<NewRomFile>::new,
-            |v: Vec<NewRomFile>, e: &DirEntry| build_newrom_vec(e, v),
+            |v: Vec<NewRomFile>, e: &DirEntry| {
+                build_newrom_vec(Utf8Path::from_path(e.path()).unwrap(), v)
+            },
         )
         .reduce(
             Vec::<NewRomFile>::default,
@@ -155,13 +157,14 @@ fn get_all_rom_files_parallel(file_list: &[DirEntry], bar: ProgressBar) -> Vec<N
 fn get_all_rom_files(file_list: &[DirEntry], bar: ProgressBar) -> Vec<NewRomFile> {
     file_list.iter().progress_with(bar).fold(
         Vec::<NewRomFile>::new(),
-        |v: Vec<NewRomFile>, e: &DirEntry| build_newrom_vec(e, v),
+        |v: Vec<NewRomFile>, e: &DirEntry| {
+            build_newrom_vec(Utf8Path::from_path(e.path()).unwrap(), v)
+        },
     )
 }
 
-fn build_newrom_vec(e: &DirEntry, mut v: Vec<NewRomFile>) -> Vec<NewRomFile> {
-    let path = Utf8Path::from_path(e.path()).unwrap();
-    match RomFile::is_archive(Utf8Path::from_path(e.path()).unwrap()) {
+fn build_newrom_vec(path: &Utf8Path, mut v: Vec<NewRomFile>) -> Vec<NewRomFile> {
+    match RomFile::is_archive(path) {
         false => {
             let r = NewRomFile::from_path(path);
             v.push(r);
