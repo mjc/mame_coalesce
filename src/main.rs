@@ -19,11 +19,11 @@ use clap::StructOpt;
 use compress_tools::*;
 use db::DbPool;
 use indicatif::{ParallelProgressIterator, ProgressBar, ProgressIterator, ProgressStyle};
-use log::{error, info, warn, LevelFilter};
+use log::{info, warn, LevelFilter};
 use models::NewRomFile;
 use rayon::prelude::*;
 use sha1::{Digest, Sha1};
-use simplelog::{ColorChoice, CombinedLogger, Config, TermLogger, TerminalMode};
+use simplelog::{CombinedLogger, TermLogger};
 use walkdir::{DirEntry, WalkDir};
 
 use std::{
@@ -50,9 +50,9 @@ type MameResult<T> = Result<T, Box<dyn Error>>;
 fn main() {
     CombinedLogger::init(vec![TermLogger::new(
         LevelFilter::Info,
-        Config::default(),
-        TerminalMode::Mixed,
-        ColorChoice::Auto,
+        simplelog::Config::default(),
+        simplelog::TerminalMode::Mixed,
+        simplelog::ColorChoice::Never,
     )])
     .unwrap();
     let cli = Cli::parse();
@@ -63,7 +63,10 @@ fn main() {
         .template("[{elapsed}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg} ETA: {eta}");
 
     match cli.command {
-        Command::AddDataFile { path } => parse_and_insert_datfile(&path, &pool),
+        Command::AddDataFile { path } => {
+            parse_and_insert_datfile(&path, &pool);
+            ()
+        }
         Command::ScanSource { parallel, path } => {
             scan_source(&path, &bar_style, parallel, &pool);
             ()
@@ -136,16 +139,10 @@ fn scan_source(
 }
 
 // TODO: this should return a Result
-fn parse_and_insert_datfile(path: &Utf8Path, pool: &DbPool) {
+fn parse_and_insert_datfile(path: &Utf8Path, pool: &DbPool) -> Result<i32, serde_xml_rs::Error> {
     info!("Using datafile: {}", &path);
-    match logiqx::load_datafile(&path) {
-        Ok(data_file) => {
-            db::traverse_and_insert_data_file(pool, data_file);
-        }
-        Err(e) => {
-            error!("Unable to load data file: {:#?}, error: {}", path, e);
-        }
-    }
+    logiqx::DataFile::from_path(&path)
+        .map(|datafile| db::traverse_and_insert_data_file(pool, datafile))
 }
 
 fn get_all_rom_files_par(file_list: &[DirEntry], bar: ProgressBar) -> MameResult<Vec<NewRomFile>> {

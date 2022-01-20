@@ -6,11 +6,7 @@ edition = "2018"
 
 [profile.release]
 debug = true
-# panic = "abort"
-# lto takes forever
-# lto = true
-# might as well turn this off too for now
-# codegen-units = 1
+lto = "thin"
 
 [profile.performance]
 inherits = "release"

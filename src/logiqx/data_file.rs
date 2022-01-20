@@ -1,4 +1,9 @@
-use std::{fs::File, io::BufReader};
+use std::{
+    fs::File,
+    io::{BufReader, Read},
+};
+
+use camino::Utf8Path;
 
 use super::game::Game;
 use super::header::Header;
@@ -18,11 +23,17 @@ pub struct DataFile {
     games: Vec<Game>,
 }
 impl DataFile {
-    pub fn from_file(contents: &File) -> Result<Self, serde_xml_rs::Error> {
-        let reader = BufReader::new(contents);
-        // this should be BufReader or reader should be mmap, idk
-        let (_crc, sha1) = contents.all_hashes();
-        let mut data_file: DataFile = serde_xml_rs::from_reader(reader)?;
+    pub fn from_path(path: &Utf8Path) -> Result<Self, serde_xml_rs::Error> {
+        let f = File::open(path)?;
+        let mut reader = BufReader::new(&f);
+        let mut content = String::new();
+        reader.read_to_string(&mut content)?;
+        let (_crc, sha1) = f.all_hashes();
+        let mut data_file: DataFile = serde_xml_rs::from_str(&content)?;
+        {
+            let full_path = path.canonicalize().ok();
+            data_file.file_name = full_path.map(|p| p.to_string_lossy().into_owned());
+        }
         data_file.sha1 = Some(sha1);
         Ok(data_file)
     }
