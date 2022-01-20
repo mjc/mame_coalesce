@@ -150,9 +150,11 @@ fn get_all_rom_files_parallel(file_list: &[DirEntry], bar: ProgressBar) -> Resul
         .progress_with(bar)
         .fold(
             Vec::<NewRomFile>::new,
-            |v: Vec<NewRomFile>, e: &DirEntry| {
-                let path = Utf8Path::from_path(e.path());
-                build_newrom_vec(path.expect("invalid path"), v)
+            |mut v: Vec<NewRomFile>, e: &DirEntry| {
+                if let Some(path) = Utf8Path::from_path(e.path()) {
+                    v.append(&mut build_newrom_vec(path));
+                }
+                v
             },
         )
         .reduce(
@@ -168,58 +170,60 @@ fn get_all_rom_files_parallel(file_list: &[DirEntry], bar: ProgressBar) -> Resul
 fn get_all_rom_files(file_list: &[DirEntry], bar: ProgressBar) -> Result<Vec<NewRomFile>> {
     let new_rom_files = file_list.iter().progress_with(bar).fold(
         Vec::<NewRomFile>::new(),
-        |v: Vec<NewRomFile>, e: &DirEntry| {
-            let path = Utf8Path::from_path(e.path());
-            build_newrom_vec(path.expect("invalid path"), v)
+        |mut v: Vec<NewRomFile>, e: &DirEntry| {
+            let path = Utf8Path::from_path(e.path()).expect("invalid path");
+            v.append(&mut build_newrom_vec(path));
+            v
         },
     );
     Ok(new_rom_files)
 }
 
-fn build_newrom_vec(path: &Utf8Path, mut v: Vec<NewRomFile>) -> Vec<NewRomFile> {
+fn build_newrom_vec(path: &Utf8Path) -> Vec<NewRomFile> {
     match RomFile::is_archive(path) {
         false => {
-            let r = NewRomFile::from_path(path);
-            v.push(r);
+            if let Some(nrf) = NewRomFile::from_path(path) {
+                vec![nrf]
+            } else {
+                Vec::new()
+            }
         }
-        true => {
-            let mut internal = get_rom_files_for_archive(path);
-            v.append(&mut internal);
-        }
+        true => get_rom_files_for_archive(path),
     }
-    v
 }
 
 fn get_rom_files_for_archive(path: &Utf8Path) -> Vec<NewRomFile> {
     let f = File::open(path).unwrap();
     let buf = BufReader::new(f); // TODO: mmap?
-    let mut name = String::default();
-    let mut iter = ArchiveIterator::from_read(buf).unwrap();
-    let mut sha1hasher = Sha1::default();
+    let mut rom_files: Vec<NewRomFile> = Vec::new();
+    if let Ok(mut iter) = ArchiveIterator::from_read(buf) {
+        let mut name = String::new();
+        let mut sha1hasher = Sha1::new();
 
-    let mut rom_files: Vec<NewRomFile> = Vec::default();
-
-    for content in &mut iter {
-        match content {
-            ArchiveContents::StartOfEntry(s) => {
-                name = s;
-                sha1hasher.reset();
-            }
-            ArchiveContents::DataChunk(v) => {
-                sha1hasher.update(&v);
-            }
-            ArchiveContents::EndOfEntry => {
-                let sha1 = sha1hasher.finalize_reset().to_vec();
-                let crc = Vec::default();
-                let md5 = Vec::default();
-
-                rom_files.push(NewRomFile::from_archive(path, &name, crc, sha1, md5));
-            }
-            ArchiveContents::Err(e) => {
-                warn!("couldn't read {} from {:?}: {:?}", name, path, e)
+        for content in &mut iter {
+            match content {
+                ArchiveContents::StartOfEntry(s) => {
+                    name = s;
+                    sha1hasher.reset();
+                }
+                ArchiveContents::DataChunk(v) => {
+                    sha1hasher.update(&v);
+                }
+                ArchiveContents::EndOfEntry => {
+                    let sha1 = sha1hasher.finalize_reset().to_vec();
+                    let crc = Vec::new();
+                    let md5 = Vec::new();
+                    if let Some(rom_file) = NewRomFile::from_archive(path, &name, crc, sha1, md5) {
+                        rom_files.push(rom_file);
+                    }
+                }
+                ArchiveContents::Err(e) => {
+                    warn!("couldn't read {} from {:?}: {:?}", name, path, e)
+                }
             }
         }
     }
+
     rom_files
 }
 

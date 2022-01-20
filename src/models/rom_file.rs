@@ -104,13 +104,14 @@ pub struct NewRomFile {
 }
 
 impl NewRomFile {
-    pub fn from_path(rom_file_path: &Utf8Path) -> NewRomFile {
+    // TODO: should go away
+    pub fn from_path(rom_file_path: &Utf8Path) -> Option<NewRomFile> {
         let (crc, sha1) = rom_file_path.all_hashes();
-        let name = rom_file_path.file_name().unwrap().to_string();
-        let parent = rom_file_path.parent().unwrap().to_string();
+        let name = rom_file_path.file_name()?.to_string();
+        let parent_path = rom_file_path.parent()?.to_string();
         let path = rom_file_path.to_string();
-        NewRomFile {
-            parent_path: parent,
+        Some(NewRomFile {
+            parent_path,
             path,
             name,
             crc,
@@ -118,7 +119,7 @@ impl NewRomFile {
             md5: Vec::<u8>::new(),
             in_archive: false,
             rom_id: None,
-        }
+        })
     }
 
     pub fn from_archive(
@@ -127,17 +128,20 @@ impl NewRomFile {
         crc: Vec<u8>,
         sha1: Vec<u8>,
         md5: Vec<u8>,
-    ) -> NewRomFile {
-        NewRomFile {
-            parent_path: path.parent().unwrap().to_string(),
-            path: path.to_string(),
-            name: name.to_string(),
+    ) -> Option<NewRomFile> {
+        let parent_path = path.parent()?.to_string();
+        let path = path.to_string();
+        let name = name.to_string();
+        Some(NewRomFile {
+            parent_path,
+            path,
+            name,
             crc,
             sha1,
             md5,
             in_archive: true,
             rom_id: None,
-        }
+        })
     }
 
     /// Get a reference to the new rom file's name.

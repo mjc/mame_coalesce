@@ -68,29 +68,24 @@ pub fn traverse_and_insert_data_file(pool: &DbPool, logiqx_data_file: logiqx::Da
     df_id
 }
 
-pub fn import_rom_files(pool: &DbPool, new_rom_files: &[NewRomFile]) {
+pub fn import_rom_files(pool: &DbPool, new_rom_files: &[NewRomFile]) -> QueryResult<usize> {
     use crate::schema::rom_files::dsl::*;
     use diesel::replace_into;
 
     let conn = pool.get().unwrap();
 
     conn.transaction::<_, Error, _>(|| {
-        new_rom_files.iter().for_each(|new_rom_file| {
-            replace_into(rom_files)
-                .values(new_rom_file)
-                .execute(&conn)
-                .unwrap();
-        });
+        new_rom_files
+            .iter()
+            .map(|new_rom_file| replace_into(rom_files).values(new_rom_file).execute(&conn))
+            .collect::<QueryResult<Vec<usize>>>()?;
         // TODO: figure out how to do this with the dsl
         // TODO: this is gonna do weird shit if you have things already inserted
         sql_query(
             "UPDATE rom_files SET rom_id = roms.id FROM roms WHERE rom_files.sha1 = roms.sha1",
         )
         .execute(&conn)
-        .unwrap();
-        Ok(true)
     })
-    .unwrap();
 }
 
 pub fn load_parents(
