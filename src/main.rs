@@ -44,6 +44,8 @@ mod destination;
 mod opts;
 use opts::{Cli, Command};
 
+type MameResult<T> = Result<T, Box<dyn Error>>;
+
 fn main() {
     CombinedLogger::init(vec![TermLogger::new(
         LevelFilter::Info,
@@ -148,7 +150,7 @@ fn parse_and_insert_datfile(path: &Utf8Path, pool: &DbPool) {
 fn get_all_rom_files_parallel(
     file_list: &[DirEntry],
     bar: ProgressBar,
-) -> Result<Vec<NewRomFile>, Box<dyn Error>> {
+) -> MameResult<Vec<NewRomFile>> {
     let new_rom_files = file_list
         .par_iter()
         .progress_with(bar)
@@ -171,10 +173,7 @@ fn get_all_rom_files_parallel(
     Ok(new_rom_files)
 }
 
-fn get_all_rom_files(
-    file_list: &[DirEntry],
-    bar: ProgressBar,
-) -> Result<Vec<NewRomFile>, Box<dyn Error>> {
+fn get_all_rom_files(file_list: &[DirEntry], bar: ProgressBar) -> MameResult<Vec<NewRomFile>> {
     let new_rom_files = file_list.iter().progress_with(bar).fold(
         Vec::<NewRomFile>::new(),
         |mut v: Vec<NewRomFile>, e: &DirEntry| {
@@ -194,7 +193,7 @@ fn build_newrom_vec(path: &Utf8Path) -> Vec<NewRomFile> {
     }
 }
 
-fn get_rom_files_for_archive(path: &Utf8Path) -> Result<Vec<NewRomFile>, Box<dyn Error>> {
+fn get_rom_files_for_archive(path: &Utf8Path) -> MameResult<Vec<NewRomFile>> {
     let f = File::open(path).unwrap();
     let buf = BufReader::new(f); // TODO: mmap?
     let mut rom_files: Vec<NewRomFile> = Vec::new();
