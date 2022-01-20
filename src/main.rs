@@ -190,37 +190,37 @@ fn get_all_rom_files(
 fn build_newrom_vec(path: &Utf8Path) -> Vec<NewRomFile> {
     match RomFile::is_archive(path) {
         None => NewRomFile::from_path(path).map_or_else(|| vec![], |nrf| vec![nrf]),
-        Some(_) => get_rom_files_for_archive(path),
+        Some(_) => get_rom_files_for_archive(path).unwrap(),
     }
 }
 
-fn get_rom_files_for_archive(path: &Utf8Path) -> Vec<NewRomFile> {
+fn get_rom_files_for_archive(path: &Utf8Path) -> Result<Vec<NewRomFile>, Box<dyn Error>> {
     let f = File::open(path).unwrap();
     let buf = BufReader::new(f); // TODO: mmap?
     let mut rom_files: Vec<NewRomFile> = Vec::new();
-    if let Ok(iter) = ArchiveIterator::from_read(buf) {
-        let mut name = String::new();
-        let mut sha1hasher = Sha1::new();
+    let iter = ArchiveIterator::from_read(buf)?;
 
-        iter.for_each(|content| match content {
-            ArchiveContents::StartOfEntry(s) => {
-                name = s;
-                sha1hasher.reset();
-            }
-            ArchiveContents::DataChunk(v) => {
-                sha1hasher.update(&v);
-            }
-            ArchiveContents::EndOfEntry => {
-                let sha1 = sha1hasher.finalize_reset().to_vec();
-                NewRomFile::from_archive(path, &name, sha1).map(|nrf| rom_files.push(nrf));
-            }
-            ArchiveContents::Err(e) => {
-                warn!("couldn't read {} from {:?}: {:?}", name, path, e)
-            }
-        })
-    }
+    let mut name = String::new();
+    let mut sha1hasher = Sha1::new();
 
-    rom_files
+    iter.for_each(|content| match content {
+        ArchiveContents::StartOfEntry(s) => {
+            name = s;
+            sha1hasher.reset();
+        }
+        ArchiveContents::DataChunk(v) => {
+            sha1hasher.update(&v);
+        }
+        ArchiveContents::EndOfEntry => {
+            let sha1 = sha1hasher.finalize_reset().to_vec();
+            NewRomFile::from_archive(path, &name, sha1).map(|nrf| rom_files.push(nrf));
+        }
+        ArchiveContents::Err(e) => {
+            warn!("couldn't read {} from {:?}: {:?}", name, path, e)
+        }
+    });
+
+    Ok(rom_files)
 }
 
 fn walk_for_files(dir: &Utf8Path) -> Result<Vec<DirEntry>, Box<dyn Error>> {
