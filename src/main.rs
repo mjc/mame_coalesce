@@ -121,7 +121,7 @@ fn scan_source(
     let bar = ProgressBar::new(file_list.len() as u64);
     bar.set_style(bar_style.clone());
     let new_rom_files = if parallel {
-        get_all_rom_files_parallel(&file_list, bar)?
+        get_all_rom_files_par(&file_list, bar)?
     } else {
         get_all_rom_files(&file_list, bar)?
     };
@@ -148,47 +148,28 @@ fn parse_and_insert_datfile(path: &Utf8Path, pool: &DbPool) {
     }
 }
 
-fn get_all_rom_files_parallel(
-    file_list: &[DirEntry],
-    bar: ProgressBar,
-) -> MameResult<Vec<NewRomFile>> {
-    let new_rom_files = file_list
+fn get_all_rom_files_par(file_list: &[DirEntry], bar: ProgressBar) -> MameResult<Vec<NewRomFile>> {
+    Ok(file_list
         .par_iter()
         .progress_with(bar)
-        .fold(
-            Vec::<NewRomFile>::new,
-            |mut v: Vec<NewRomFile>, e: &DirEntry| {
-                if let Some(path) = Utf8Path::from_path(e.path()) {
-                    v.append(&mut build_newrom_vec(path));
-                }
-                v
-            },
-        )
-        .reduce(
-            Vec::<NewRomFile>::new,
-            |mut dest: Vec<NewRomFile>, mut source: Vec<NewRomFile>| {
-                dest.append(&mut source);
-                dest
-            },
-        );
-    Ok(new_rom_files)
+        .filter_map(|e| build_newrom_vec(e.path().try_into().ok()?))
+        .flatten_iter()
+        .collect())
 }
 
 fn get_all_rom_files(file_list: &[DirEntry], bar: ProgressBar) -> MameResult<Vec<NewRomFile>> {
     Ok(file_list
         .iter()
         .progress_with(bar)
-        .filter_map(|e| -> Option<Vec<NewRomFile>> {
-            Some(build_newrom_vec(e.path().try_into().ok()?))
-        })
+        .filter_map(|e| build_newrom_vec(e.path().try_into().ok()?))
         .flatten()
         .collect())
 }
 
-fn build_newrom_vec(path: &Utf8Path) -> Vec<NewRomFile> {
+fn build_newrom_vec(path: &Utf8Path) -> Option<Vec<NewRomFile>> {
     match RomFile::is_archive(path) {
-        None => NewRomFile::from_path(path).map_or_else(|| vec![], |nrf| vec![nrf]),
-        Some(_) => get_rom_files_for_archive(path).unwrap(),
+        None => NewRomFile::from_path(path).map(|nrf| vec![nrf]),
+        Some(_) => get_rom_files_for_archive(path).ok(),
     }
 }
 
