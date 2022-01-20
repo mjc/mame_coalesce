@@ -158,7 +158,7 @@ fn get_all_rom_files_parallel(file_list: &[DirEntry], bar: ProgressBar) -> Resul
             },
         )
         .reduce(
-            Vec::<NewRomFile>::default,
+            Vec::<NewRomFile>::new,
             |mut dest: Vec<NewRomFile>, mut source: Vec<NewRomFile>| {
                 dest.append(&mut source);
                 dest
@@ -171,8 +171,9 @@ fn get_all_rom_files(file_list: &[DirEntry], bar: ProgressBar) -> Result<Vec<New
     let new_rom_files = file_list.iter().progress_with(bar).fold(
         Vec::<NewRomFile>::new(),
         |mut v: Vec<NewRomFile>, e: &DirEntry| {
-            let path = Utf8Path::from_path(e.path()).expect("invalid path");
-            v.append(&mut build_newrom_vec(path));
+            if let Some(path) = Utf8Path::from_path(e.path()) {
+                v.append(&mut build_newrom_vec(path));
+            }
             v
         },
     );
