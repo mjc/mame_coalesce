@@ -166,12 +166,14 @@ fn get_all_rom_files(file_list: &[DirEntry], bar: ProgressBar) -> MameResult<Vec
 }
 
 fn build_newrom_vec(path: &Utf8Path) -> Option<Vec<NewRomFile>> {
+    let single_rom = || NewRomFile::from_path(path).map(|nrf| vec![nrf]);
+
     infer::get_from_path(path)
         .ok()
         .flatten()
-        .and_then(|t| match t.mime_type() {
+        .map_or_else(single_rom, |t| match t.mime_type() {
             "application/zip" | "application/x-7z-compressed" => scan_archive(path).ok(),
-            _ => NewRomFile::from_path(path).map(|nrf| vec![nrf]),
+            _ => single_rom(),
         })
 }
 
