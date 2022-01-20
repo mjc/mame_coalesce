@@ -90,7 +90,7 @@ fn rename_roms(
     bar_style: &ProgressStyle,
     dry_run: bool,
     destination: &Utf8Path,
-) {
+) -> MameResult<Vec<Utf8PathBuf>> {
     let games = db::load_parents(&pool, &data_file);
     info!(
         "Processing {} games with {} matching rom files",
@@ -104,11 +104,12 @@ fn rename_roms(
     zip_bar.set_style(bar_style.clone());
     if dry_run {
         info!("Dry run enabled, not writing zips!");
+        Ok(Vec::new())
     } else {
         info!("Saving zips to path: {}", &destination);
 
-        create_dir_all(&destination).expect("Couldn't create destination directory");
-        destination::write_all_zips(games, &destination, &zip_bar);
+        create_dir_all(&destination)?;
+        destination::write_all_zips(games, &destination, &zip_bar)
     }
 }
 

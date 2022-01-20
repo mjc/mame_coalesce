@@ -10,35 +10,42 @@ use log::{debug, error};
 use rayon::prelude::*;
 use zip::{write::FileOptions, ZipWriter};
 
-use crate::models::{Game, Rom, RomFile};
+use crate::{
+    models::{Game, Rom, RomFile},
+    MameResult,
+};
 
 pub fn write_all_zips(
     games: std::collections::BTreeMap<Game, std::collections::HashSet<(Rom, RomFile)>>,
     destination: &Utf8Path,
     zip_bar: &ProgressBar,
-) {
+) -> MameResult<Vec<Utf8PathBuf>> {
     // this is by far the ugliest code I've ever written in any language
     // I'm sorry
     // TODO: major refactor
-    games.par_iter().for_each(|(game, rom_and_romfile_pair)| {
-        let bundles: Vec<DestinationBundle> = rom_and_romfile_pair
-            .iter()
-            .map(|(rom, rom_file)| DestinationBundle::from_rom_and_rom_file(rom, rom_file))
-            .collect();
+    Ok(games
+        .par_iter()
+        .filter_map(|(game, rom_and_romfile_pair)| {
+            let bundles: Vec<DestinationBundle> = rom_and_romfile_pair
+                .iter()
+                .map(|(rom, rom_file)| DestinationBundle::from_rom_and_rom_file(rom, rom_file))
+                .collect();
 
-        let zip_file_path = zip_file_path(destination, game.name());
-        debug!("Creating zip file: {:?}", zip_file_path);
+            let zip_file_path = zip_file_path(destination, game.name());
+            debug!("Creating zip file: {:?}", zip_file_path);
 
-        let (mut zip_writer, zip_options) = open_destination_zip(&zip_file_path);
-
-        bundles
-            .iter()
-            .for_each(|bundle| bundle.zip(&mut zip_writer, zip_options));
-        zip_writer.finish().unwrap();
-        zip_bar.inc(1);
-    });
+            let (mut zip_writer, zip_options) = open_destination_zip(&zip_file_path);
+            for bundle in bundles {
+                bundle.zip(&mut zip_writer, zip_options).unwrap();
+            }
+            zip_writer.finish().unwrap();
+            zip_bar.inc(1);
+            Some(zip_file_path)
+        })
+        .collect())
 }
 
+// definitely should return a Result
 fn open_destination_zip(zip_file_path: &Utf8Path) -> (ZipWriter<BufWriter<File>>, FileOptions) {
     let zip_file = OpenOptions::new()
         .create(true)
@@ -85,7 +92,7 @@ impl DestinationBundle {
         &self,
         zip_writer: &mut zip::ZipWriter<std::io::BufWriter<File>>,
         zip_options: zip::write::FileOptions,
-    ) {
+    ) -> MameResult<String> {
         // TODO: zip_writer.raw_copy_file_rename/2 to skip recompressing for zip files
 
         if self.in_archive() {
@@ -100,7 +107,7 @@ impl DestinationBundle {
                 zip_writer,
                 self.destination_name(),
                 zip_options,
-            );
+            )
         } else {
             debug!("Adding file not in archive: {:?}", self.source_name());
             Self::copy_bare_file(
@@ -108,7 +115,7 @@ impl DestinationBundle {
                 zip_writer,
                 self.destination_name(),
                 zip_options,
-            );
+            )
         }
     }
 
@@ -117,15 +124,14 @@ impl DestinationBundle {
         zip_writer: &mut ZipWriter<BufWriter<File>>,
         destination_name: &str,
         zip_options: FileOptions,
-    ) {
-        let input_file = File::open(source_path).unwrap();
+    ) -> MameResult<String> {
+        let input_file = File::open(source_path)?;
         let input_reader = BufReader::new(input_file);
-        zip_writer
-            .start_file(destination_name, zip_options)
-            .unwrap();
-        input_reader.bytes().for_each(|b| {
-            zip_writer.write_all(&[b.unwrap()]).unwrap();
-        });
+        zip_writer.start_file(destination_name, zip_options)?;
+        for byte in input_reader.bytes() {
+            zip_writer.write_all(&[byte?])?;
+        }
+        Ok(destination_name.to_string())
     }
 
     pub fn copy_from_archive(
@@ -134,35 +140,34 @@ impl DestinationBundle {
         zip_writer: &mut ZipWriter<BufWriter<File>>,
         destination_name: &str,
         zip_options: FileOptions,
-    ) {
-        let input_file = File::open(source_path).unwrap();
+    ) -> MameResult<String> {
+        let input_file = File::open(source_path)?;
         let input_reader = BufReader::new(input_file);
-        let mut iter = ArchiveIterator::from_read(input_reader).unwrap();
-        let mut current_name = String::default();
+        let mut iter = ArchiveIterator::from_read(input_reader)?;
+        let mut current_name = String::new();
         for content in &mut iter {
             match content {
                 ArchiveContents::StartOfEntry(name) => {
                     current_name = name.to_string();
                     if current_name == source_name {
                         debug!("Found file: {:?}", current_name);
-                        zip_writer
-                            .start_file(destination_name, zip_options)
-                            .unwrap();
+                        zip_writer.start_file(destination_name, zip_options)?;
                     }
                 }
                 ArchiveContents::DataChunk(chunk) => {
                     if current_name == source_name {
-                        zip_writer.write_all(&chunk).unwrap();
+                        zip_writer.write_all(&chunk)?;
                     }
                 }
                 ArchiveContents::EndOfEntry => {
-                    zip_writer.flush().unwrap();
+                    zip_writer.flush()?;
                 }
                 ArchiveContents::Err(e) => {
                     error!("{:?}", e)
                 }
             }
         }
+        Ok(destination_name.to_string())
     }
 
     /// Get a reference to the destination bundle's archive path.
