@@ -30,7 +30,6 @@ use std::{
     error::Error,
     fs::{create_dir_all, File},
     io::BufReader,
-    os::linux::fs::MetadataExt,
     result::Result,
 };
 
@@ -190,14 +189,8 @@ fn get_all_rom_files(
 
 fn build_newrom_vec(path: &Utf8Path) -> Vec<NewRomFile> {
     match RomFile::is_archive(path) {
-        false => {
-            if let Some(nrf) = NewRomFile::from_path(path) {
-                vec![nrf]
-            } else {
-                Vec::new()
-            }
-        }
-        true => get_rom_files_for_archive(path),
+        None => NewRomFile::from_path(path).map_or_else(|| vec![], |nrf| vec![nrf]),
+        Some(_) => get_rom_files_for_archive(path),
     }
 }
 

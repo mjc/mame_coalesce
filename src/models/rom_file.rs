@@ -1,5 +1,4 @@
 use camino::Utf8Path;
-use log::{debug, warn};
 
 use crate::{hashes::MultiHash, schema::rom_files};
 
@@ -25,44 +24,14 @@ pub struct RomFile {
 }
 
 impl RomFile {
-    pub fn is_archive(path: &Utf8Path) -> bool {
-        match infer::get_from_path(&path) {
-            Ok(Some(kind)) => match kind.mime_type() {
+    pub fn is_archive(path: &Utf8Path) -> Option<infer::Type> {
+        infer::get_from_path(path)
+            .ok()
+            .flatten()
+            .filter(|t| match t.mime_type() {
                 "application/zip" | "application/x-7z-compressed" => true,
-                "application/x-shockwave-flash"
-                | "audio/x-wav"
-                | "application/vnd.microsoft.portable-executable"
-                | "audio/mpeg"
-                | "video/x-flv"
-                | "video/mp4"
-                | "image/png"
-                | "text/xml"
-                | "image/vnd.microsoft.icon"
-                | "application/x-ole-storage" => false,
-                "application/vnd.rar" => {
-                    warn!("We don't support rar files yet, but found one: {}", &path);
-                    false
-                }
-                mime => {
-                    warn!(
-                        "Unknown mime type. assuming that it isn't an archive {:?}, path: {}",
-                        mime, &path
-                    );
-                    false
-                }
-            },
-            Ok(None) => {
-                debug!(
-                    "Unable to detect file type. Assuming it isn't an archive. {:?}",
-                    &path
-                );
-                false
-            }
-            Err(e) => {
-                warn!("Unable to read file: {:?}, reason: {:?}", &path, e);
-                false
-            }
-        }
+                _ => false,
+            })
     }
 
     /// Get a reference to the rom file's path.
