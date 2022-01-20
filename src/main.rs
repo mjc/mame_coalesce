@@ -115,7 +115,7 @@ fn scan_source(
     bar_style: &ProgressStyle,
     parallel: bool,
     pool: &DbPool,
-) -> Result<Utf8PathBuf, Box<dyn Error>> {
+) -> MameResult<Utf8PathBuf> {
     info!("Looking in path: {}", path);
     let file_list = walk_for_files(&path)?;
     let bar = ProgressBar::new(file_list.len() as u64);
@@ -202,7 +202,7 @@ fn get_rom_files_for_archive(path: &Utf8Path) -> MameResult<Vec<NewRomFile>> {
     Ok(rom_files)
 }
 
-fn walk_for_files(dir: &Utf8Path) -> Result<Vec<DirEntry>, Box<dyn Error>> {
+fn walk_for_files(dir: &Utf8Path) -> MameResult<Vec<DirEntry>> {
     let v: Vec<DirEntry> = WalkDir::new(dir)
         .into_iter()
         .filter_entry(entry_is_relevant)
