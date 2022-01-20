@@ -27,6 +27,7 @@ use simplelog::{ColorChoice, CombinedLogger, Config, TermLogger, TerminalMode};
 use walkdir::{DirEntry, WalkDir};
 
 use std::{
+    convert::TryInto,
     error::Error,
     fs::{create_dir_all, File},
     io::BufReader,
@@ -174,16 +175,14 @@ fn get_all_rom_files_parallel(
 }
 
 fn get_all_rom_files(file_list: &[DirEntry], bar: ProgressBar) -> MameResult<Vec<NewRomFile>> {
-    let new_rom_files = file_list.iter().progress_with(bar).fold(
-        Vec::<NewRomFile>::new(),
-        |mut v: Vec<NewRomFile>, e: &DirEntry| {
-            if let Some(path) = Utf8Path::from_path(e.path()) {
-                v.append(&mut build_newrom_vec(path));
-            }
-            v
-        },
-    );
-    Ok(new_rom_files)
+    Ok(file_list
+        .iter()
+        .progress_with(bar)
+        .filter_map(|e| -> Option<Vec<NewRomFile>> {
+            Some(build_newrom_vec(e.path().try_into().ok()?))
+        })
+        .flatten()
+        .collect())
 }
 
 fn build_newrom_vec(path: &Utf8Path) -> Vec<NewRomFile> {
