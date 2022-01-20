@@ -24,16 +24,6 @@ pub struct RomFile {
 }
 
 impl RomFile {
-    pub fn is_archive(path: &Utf8Path) -> Option<infer::Type> {
-        infer::get_from_path(path)
-            .ok()
-            .flatten()
-            .filter(|t| match t.mime_type() {
-                "application/zip" | "application/x-7z-compressed" => true,
-                _ => false,
-            })
-    }
-
     /// Get a reference to the rom file's path.
     pub fn path(&self) -> &str {
         self.path.as_ref()

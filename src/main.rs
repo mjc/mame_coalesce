@@ -20,7 +20,7 @@ use compress_tools::*;
 use db::DbPool;
 use indicatif::{ParallelProgressIterator, ProgressBar, ProgressIterator, ProgressStyle};
 use log::{error, info, warn, LevelFilter};
-use models::{NewRomFile, RomFile};
+use models::NewRomFile;
 use rayon::prelude::*;
 use sha1::{Digest, Sha1};
 use simplelog::{ColorChoice, CombinedLogger, Config, TermLogger, TerminalMode};
@@ -167,13 +167,16 @@ fn get_all_rom_files(file_list: &[DirEntry], bar: ProgressBar) -> MameResult<Vec
 }
 
 fn build_newrom_vec(path: &Utf8Path) -> Option<Vec<NewRomFile>> {
-    match RomFile::is_archive(path) {
-        None => NewRomFile::from_path(path).map(|nrf| vec![nrf]),
-        Some(_) => get_rom_files_for_archive(path).ok(),
-    }
+    infer::get_from_path(path)
+        .ok()
+        .flatten()
+        .and_then(|t| match t.mime_type() {
+            "application/zip" | "application/x-7z-compressed" => scan_archive(path).ok(),
+            _ => NewRomFile::from_path(path).map(|nrf| vec![nrf]),
+        })
 }
 
-fn get_rom_files_for_archive(path: &Utf8Path) -> MameResult<Vec<NewRomFile>> {
+fn scan_archive(path: &Utf8Path) -> MameResult<Vec<NewRomFile>> {
     let f = File::open(path).unwrap();
     let buf = BufReader::new(f); // TODO: mmap?
     let mut rom_files: Vec<NewRomFile> = Vec::new();
