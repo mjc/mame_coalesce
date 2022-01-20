@@ -16,9 +16,9 @@ pub struct RomFile {
     pub parent_game_name: Option<String>,
     pub path: String,
     pub name: String,
-    pub crc: Vec<u8>,
+    pub crc: Option<Vec<u8>>,
     pub sha1: Vec<u8>,
-    pub md5: Vec<u8>,
+    pub md5: Option<Vec<u8>>,
     pub in_archive: bool,
     pub rom_id: Option<i32>,
 }
@@ -65,9 +65,7 @@ pub struct NewRomFile {
     pub parent_path: String,
     pub path: String,
     pub name: String,
-    pub crc: Vec<u8>,
     pub sha1: Vec<u8>,
-    pub md5: Vec<u8>,
     pub in_archive: bool,
     pub rom_id: Option<i32>,
 }
@@ -75,7 +73,7 @@ pub struct NewRomFile {
 impl NewRomFile {
     // TODO: should go away
     pub fn from_path(rom_file_path: &Utf8Path) -> Option<NewRomFile> {
-        let (crc, sha1) = rom_file_path.all_hashes();
+        let (_crc, sha1) = rom_file_path.all_hashes();
         let name = rom_file_path.file_name()?.to_string();
         let parent_path = rom_file_path.parent()?.to_string();
         let path = rom_file_path.to_string();
@@ -83,21 +81,13 @@ impl NewRomFile {
             parent_path,
             path,
             name,
-            crc,
             sha1,
-            md5: Vec::<u8>::new(),
             in_archive: false,
             rom_id: None,
         })
     }
 
-    pub fn from_archive(
-        path: &Utf8Path,
-        name: &str,
-        crc: Vec<u8>,
-        sha1: Vec<u8>,
-        md5: Vec<u8>,
-    ) -> Option<NewRomFile> {
+    pub fn from_archive(path: &Utf8Path, name: &str, sha1: Vec<u8>) -> Option<NewRomFile> {
         let parent_path = path.parent()?.to_string();
         let path = path.to_string();
         let name = name.to_string();
@@ -105,9 +95,7 @@ impl NewRomFile {
             parent_path,
             path,
             name,
-            crc,
             sha1,
-            md5,
             in_archive: true,
             rom_id: None,
         })

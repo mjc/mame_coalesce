@@ -198,32 +198,26 @@ fn get_rom_files_for_archive(path: &Utf8Path) -> Vec<NewRomFile> {
     let f = File::open(path).unwrap();
     let buf = BufReader::new(f); // TODO: mmap?
     let mut rom_files: Vec<NewRomFile> = Vec::new();
-    if let Ok(mut iter) = ArchiveIterator::from_read(buf) {
+    if let Ok(iter) = ArchiveIterator::from_read(buf) {
         let mut name = String::new();
         let mut sha1hasher = Sha1::new();
 
-        for content in &mut iter {
-            match content {
-                ArchiveContents::StartOfEntry(s) => {
-                    name = s;
-                    sha1hasher.reset();
-                }
-                ArchiveContents::DataChunk(v) => {
-                    sha1hasher.update(&v);
-                }
-                ArchiveContents::EndOfEntry => {
-                    let sha1 = sha1hasher.finalize_reset().to_vec();
-                    let crc = Vec::new();
-                    let md5 = Vec::new();
-                    if let Some(rom_file) = NewRomFile::from_archive(path, &name, crc, sha1, md5) {
-                        rom_files.push(rom_file);
-                    }
-                }
-                ArchiveContents::Err(e) => {
-                    warn!("couldn't read {} from {:?}: {:?}", name, path, e)
-                }
+        iter.for_each(|content| match content {
+            ArchiveContents::StartOfEntry(s) => {
+                name = s;
+                sha1hasher.reset();
             }
-        }
+            ArchiveContents::DataChunk(v) => {
+                sha1hasher.update(&v);
+            }
+            ArchiveContents::EndOfEntry => {
+                let sha1 = sha1hasher.finalize_reset().to_vec();
+                NewRomFile::from_archive(path, &name, sha1).map(|nrf| rom_files.push(nrf));
+            }
+            ArchiveContents::Err(e) => {
+                warn!("couldn't read {} from {:?}: {:?}", name, path, e)
+            }
+        })
     }
 
     rom_files
