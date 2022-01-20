@@ -64,12 +64,10 @@ fn main() {
 
     match cli.command {
         Command::AddDataFile { path } => {
-            parse_and_insert_datfile(&path, &pool);
-            ()
+            parse_and_insert_datfile(&path, &pool).unwrap();
         }
         Command::ScanSource { parallel, path } => {
-            scan_source(&path, &bar_style, parallel, &pool);
-            ()
+            scan_source(&path, &bar_style, parallel, &pool).unwrap();
         }
 
         Command::Rename {
@@ -79,8 +77,7 @@ fn main() {
             destination,
         } => {
             // TODO: respect source argument
-            rename_roms(&pool, &data_file, &bar_style, dry_run, &destination);
-            ()
+            rename_roms(&pool, &data_file, &bar_style, dry_run, &destination).unwrap();
         }
     }
 }
