@@ -27,9 +27,11 @@ use simplelog::{ColorChoice, CombinedLogger, Config, TermLogger, TerminalMode};
 use walkdir::{DirEntry, WalkDir};
 
 use std::{
+    error::Error,
     fs::{create_dir_all, File},
     io::BufReader,
     os::linux::fs::MetadataExt,
+    result::Result,
 };
 
 pub mod logiqx;
@@ -111,7 +113,7 @@ fn scan_source(
     bar_style: &ProgressStyle,
     parallel: bool,
     pool: &DbPool,
-) -> Result<Utf8PathBuf> {
+) -> Result<Utf8PathBuf, Box<dyn Error>> {
     info!("Looking in path: {}", path);
     let file_list = walk_for_files(&path)?;
     let bar = ProgressBar::new(file_list.len() as u64);
@@ -125,7 +127,7 @@ fn scan_source(
         "rom files found (unpacked and packed both): {}",
         new_rom_files.len()
     );
-    db::import_rom_files(pool, &new_rom_files);
+    db::import_rom_files(pool, &new_rom_files)?;
     // TODO: warning if nothing associated
     // TODO: pick datafile to scan for
     Ok(path.to_path_buf())
@@ -144,7 +146,10 @@ fn parse_and_insert_datfile(path: &Utf8Path, pool: &DbPool) {
     }
 }
 
-fn get_all_rom_files_parallel(file_list: &[DirEntry], bar: ProgressBar) -> Result<Vec<NewRomFile>> {
+fn get_all_rom_files_parallel(
+    file_list: &[DirEntry],
+    bar: ProgressBar,
+) -> Result<Vec<NewRomFile>, Box<dyn Error>> {
     let new_rom_files = file_list
         .par_iter()
         .progress_with(bar)
@@ -167,7 +172,10 @@ fn get_all_rom_files_parallel(file_list: &[DirEntry], bar: ProgressBar) -> Resul
     Ok(new_rom_files)
 }
 
-fn get_all_rom_files(file_list: &[DirEntry], bar: ProgressBar) -> Result<Vec<NewRomFile>> {
+fn get_all_rom_files(
+    file_list: &[DirEntry],
+    bar: ProgressBar,
+) -> Result<Vec<NewRomFile>, Box<dyn Error>> {
     let new_rom_files = file_list.iter().progress_with(bar).fold(
         Vec::<NewRomFile>::new(),
         |mut v: Vec<NewRomFile>, e: &DirEntry| {
@@ -228,7 +236,7 @@ fn get_rom_files_for_archive(path: &Utf8Path) -> Vec<NewRomFile> {
     rom_files
 }
 
-fn walk_for_files(dir: &Utf8Path) -> Result<Vec<DirEntry>> {
+fn walk_for_files(dir: &Utf8Path) -> Result<Vec<DirEntry>, Box<dyn Error>> {
     let v: Vec<DirEntry> = WalkDir::new(dir)
         .into_iter()
         .filter_entry(entry_is_relevant)
