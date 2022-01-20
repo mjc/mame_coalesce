@@ -206,7 +206,7 @@ fn walk_for_files(dir: &Utf8Path) -> MameResult<Vec<DirEntry>> {
     let v: Vec<DirEntry> = WalkDir::new(dir)
         .into_iter()
         .filter_entry(entry_is_relevant)
-        .filter_map(|v| v.ok())
+        .flatten()
         .filter(|entry| entry.file_type().is_file())
         .collect();
     Ok(optimize_file_order(v))
