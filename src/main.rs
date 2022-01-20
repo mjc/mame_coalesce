@@ -249,9 +249,11 @@ fn walk_for_files(dir: &Utf8Path) -> Result<Vec<DirEntry>, Box<dyn Error>> {
 #[cfg(target_os = "linux")]
 fn optimize_file_order(mut dirs: Vec<DirEntry>) -> Vec<DirEntry> {
     // TODO: figure out fiemap
+
+    use walkdir::DirEntryExt;
     dirs.sort_by(|a, b| {
-        let a_inode = a.metadata().unwrap().st_ino();
-        let b_inode = b.metadata().unwrap().st_ino();
+        let a_inode = a.ino();
+        let b_inode = b.ino();
         a_inode.cmp(&b_inode)
     });
     dirs
