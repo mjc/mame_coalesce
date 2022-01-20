@@ -80,6 +80,7 @@ fn main() {
         } => {
             // TODO: respect source argument
             rename_roms(&pool, &data_file, &bar_style, dry_run, &destination);
+            ()
         }
     }
 }
@@ -140,10 +141,10 @@ fn scan_source(
 }
 
 // TODO: this should return a Result
-fn parse_and_insert_datfile(path: &Utf8Path, pool: &DbPool) -> Result<i32, serde_xml_rs::Error> {
+fn parse_and_insert_datfile(path: &Utf8Path, pool: &DbPool) -> MameResult<i32> {
     info!("Using datafile: {}", &path);
     logiqx::DataFile::from_path(&path)
-        .map(|datafile| db::traverse_and_insert_data_file(pool, datafile).unwrap())
+        .and_then(|datafile| db::traverse_and_insert_data_file(pool, datafile))
 }
 
 fn get_all_rom_files_par(file_list: &[DirEntry], bar: ProgressBar) -> MameResult<Vec<NewRomFile>> {

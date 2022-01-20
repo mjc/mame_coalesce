@@ -8,7 +8,7 @@ use camino::Utf8Path;
 use super::game::Game;
 use super::header::Header;
 
-use crate::hashes::MultiHash;
+use crate::{hashes::MultiHash, MameResult};
 
 #[derive(Debug, Deserialize)]
 pub struct DataFile {
@@ -23,7 +23,7 @@ pub struct DataFile {
     games: Vec<Game>,
 }
 impl DataFile {
-    pub fn from_path(path: &Utf8Path) -> Result<Self, serde_xml_rs::Error> {
+    pub fn from_path(path: &Utf8Path) -> MameResult<Self> {
         let f = File::open(path)?;
         let mut reader = BufReader::new(&f);
         let mut content = String::new();
