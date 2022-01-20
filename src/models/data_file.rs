@@ -35,17 +35,17 @@ pub struct NewDataFile<'a> {
 }
 
 impl NewDataFile<'_> {
-    pub fn from_logiqx<'a>(l_data_file: &'a logiqx::DataFile, name: &'a str) -> NewDataFile<'a> {
+    pub fn from_logiqx<'a>(l_data_file: &'a logiqx::DataFile) -> NewDataFile<'a> {
         NewDataFile {
-            build: Some(l_data_file.build().to_string()),
-            debug: Some(l_data_file.debug().to_string()),
-            file_name: Some(name.to_string()),
-            name: l_data_file.header().name().to_string(),
-            description: Some(l_data_file.header().description().to_string()),
-            version: Some(l_data_file.header().version().to_string()),
-            author: Some(l_data_file.header().author().to_string()),
+            build: Some(l_data_file.build().to_owned()),
+            debug: Some(l_data_file.debug().to_owned()),
+            file_name: l_data_file.file_name().map(|f| f.to_owned()),
+            name: l_data_file.header().name().to_owned(),
+            description: Some(l_data_file.header().description().to_owned()),
+            version: Some(l_data_file.header().version().to_owned()),
+            author: Some(l_data_file.header().author().to_owned()),
             homepage: l_data_file.header().homepage().cloned(),
-            url: Some(l_data_file.header().url().to_string()),
+            url: Some(l_data_file.header().url().to_owned()),
             sha1: l_data_file.sha1(),
         }
     }

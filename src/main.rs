@@ -28,7 +28,7 @@ use walkdir::{DirEntry, WalkDir};
 
 use std::{
     convert::TryInto,
-    error::Error,
+    error,
     fs::{create_dir_all, File},
     io::BufReader,
     result::Result,
@@ -45,7 +45,7 @@ mod destination;
 mod opts;
 use opts::{Cli, Command};
 
-type MameResult<T> = Result<T, Box<dyn Error>>;
+type MameResult<T> = Result<T, Box<dyn error::Error>>;
 
 fn main() {
     CombinedLogger::init(vec![TermLogger::new(
@@ -142,7 +142,7 @@ fn scan_source(
 fn parse_and_insert_datfile(path: &Utf8Path, pool: &DbPool) -> Result<i32, serde_xml_rs::Error> {
     info!("Using datafile: {}", &path);
     logiqx::DataFile::from_path(&path)
-        .map(|datafile| db::traverse_and_insert_data_file(pool, datafile))
+        .map(|datafile| db::traverse_and_insert_data_file(pool, datafile).unwrap())
 }
 
 fn get_all_rom_files_par(file_list: &[DirEntry], bar: ProgressBar) -> MameResult<Vec<NewRomFile>> {

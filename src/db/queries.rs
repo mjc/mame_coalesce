@@ -1,38 +1,37 @@
 use std::collections::{BTreeMap, HashSet};
-use std::fs;
+use std::{error, fs};
 
-use crate::models::*;
 use crate::{db::*, logiqx};
+use crate::{models::*, MameResult};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use diesel::result::Error;
 use diesel::{prelude::*, sql_query};
 
 // TODO: return Result
-pub fn traverse_and_insert_data_file(pool: &DbPool, logiqx_data_file: logiqx::DataFile) -> i32 {
+pub fn traverse_and_insert_data_file(
+    pool: &DbPool,
+    logiqx_data_file: logiqx::DataFile,
+) -> MameResult<i32> {
     use crate::schema::{data_files::dsl::*, games::dsl::*, roms::dsl::*};
     use diesel::replace_into;
 
-    let data_file_name = logiqx_data_file.file_name().unwrap();
+    let new_data_file = NewDataFile::from_logiqx(&logiqx_data_file);
 
-    let new_data_file = NewDataFile::from_logiqx(&logiqx_data_file, data_file_name);
-
-    let conn = &pool.get().unwrap();
+    let conn = &pool.get()?;
 
     // TODO: return from transaction?
     let mut df_id = -1;
 
-    conn.transaction::<_, Error, _>(|| {
+    conn.transaction::<_, Box<dyn error::Error>, _>(|| {
         replace_into(data_files)
             .values(&new_data_file)
-            .execute(conn)
-            .unwrap();
+            .execute(conn)?;
 
         df_id = data_files
             .order(crate::schema::data_files::dsl::id.desc())
             .select(crate::schema::data_files::dsl::id)
-            .first(conn)
-            .unwrap();
+            .first(conn)?;
 
         logiqx_data_file.games().iter().for_each(|game| {
             let new_game = NewGame::from_logiqx(game, &df_id);
@@ -58,14 +57,10 @@ pub fn traverse_and_insert_data_file(pool: &DbPool, logiqx_data_file: logiqx::Da
                     select games.id from games WHERE cloned.clone_of = games.name
                 )"#,
         )
-        .execute(conn)
-        .unwrap();
+        .execute(conn)?;
 
         Ok(df_id)
     })
-    .unwrap();
-
-    df_id
 }
 
 pub fn import_rom_files(pool: &DbPool, new_rom_files: &[NewRomFile]) -> QueryResult<usize> {
