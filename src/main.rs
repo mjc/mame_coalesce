@@ -19,7 +19,7 @@ use clap::StructOpt;
 use compress_tools::*;
 use db::DbPool;
 use indicatif::{ParallelProgressIterator, ProgressBar, ProgressIterator, ProgressStyle};
-use log::{error, info, LevelFilter};
+use log::{error, info, warn, LevelFilter};
 use models::{NewRomFile, RomFile};
 use rayon::prelude::*;
 use sha1::{Digest, Sha1};
@@ -216,7 +216,7 @@ fn get_rom_files_for_archive(path: &Utf8Path) -> Vec<NewRomFile> {
                 rom_files.push(NewRomFile::from_archive(path, &name, crc, sha1, md5));
             }
             ArchiveContents::Err(e) => {
-                panic!("couldn't read {} from {:?}: {:?}", name, path, e)
+                warn!("couldn't read {} from {:?}: {:?}", name, path, e)
             }
         }
     }
