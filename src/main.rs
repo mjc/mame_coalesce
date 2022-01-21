@@ -21,7 +21,7 @@ use clap::StructOpt;
 use compress_tools::*;
 use db::DbPool;
 
-use fmmap::MmapFileExt;
+use fmmap::{MmapFile, MmapFileExt};
 use indicatif::{ParallelProgressIterator, ProgressBar, ProgressIterator, ProgressStyle};
 use log::{info, warn, LevelFilter};
 use models::NewRomFile;
@@ -172,21 +172,19 @@ fn get_all_rom_files(file_list: Vec<Utf8PathBuf>, bar: ProgressBar) -> MameResul
 
 fn build_newrom_vec(path: &Utf8Path) -> Option<Vec<NewRomFile>> {
     let single_rom = || NewRomFile::from_path(path).map(|nrf| vec![nrf]);
-
+    let mmap = hashes::mmap_path(path).ok()?;
     infer::get_from_path(path)
         .ok()
         .flatten()
         .map_or_else(single_rom, |t| match t.mime_type() {
-            "application/zip" => scan_zip(path).ok(),
+            "application/zip" => scan_zip(mmap).ok(),
             "application/x-7z-compressed" => scan_7z(path).ok(),
             _ => single_rom(),
         })
 }
 
-fn scan_zip(path: &Utf8Path) -> MameResult<Vec<NewRomFile>> {
-    // let f = File::open(path)?;
-    // let reader = BufReader::new(f);
-    let mmap = hashes::mmap_path(path)?;
+fn scan_zip(mmap: MmapFile) -> MameResult<Vec<NewRomFile>> {
+    let path = Utf8Path::from_path(mmap.path()).unwrap();
     let reader = mmap.reader(0)?;
     let mut zip = zip::ZipArchive::new(reader)?;
 
