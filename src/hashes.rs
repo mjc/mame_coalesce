@@ -1,4 +1,4 @@
-use std::fs::File;
+use std::{fs::File, io};
 
 use camino::Utf8Path;
 use memmap2::{Mmap, MmapOptions};
@@ -32,4 +32,14 @@ impl MultiHash for Mmap {
 
         (Vec::<u8>::default(), sha1.finalize().to_vec())
     }
+}
+
+pub fn stream_sha1(reader: &mut impl io::Read) -> [u8; 20] {
+    let mut sha1 = Sha1::new();
+    let mut buf: [u8; 16_384] = [0; 16_384];
+    while let Ok(size) = reader.read(&mut buf) {
+        sha1.update(buf);
+    }
+
+    sha1.finalize().into()
 }

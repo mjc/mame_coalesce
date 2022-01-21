@@ -144,7 +144,10 @@ fn parse_and_insert_datfile(path: &Utf8Path, pool: &DbPool) -> MameResult<i32> {
         .and_then(|datafile| db::traverse_and_insert_data_file(pool, datafile))
 }
 
-fn get_all_rom_files_par(file_list: Vec<Utf8PathBuf>, bar: ProgressBar) -> MameResult<Vec<NewRomFile>> {
+fn get_all_rom_files_par(
+    file_list: Vec<Utf8PathBuf>,
+    bar: ProgressBar,
+) -> MameResult<Vec<NewRomFile>> {
     Ok(file_list
         .par_iter()
         .progress_with(bar)
@@ -193,7 +196,9 @@ fn scan_archive(path: &Utf8Path) -> MameResult<Vec<NewRomFile>> {
         }
         ArchiveContents::EndOfEntry => {
             let sha1 = sha1hasher.finalize_reset().to_vec();
-            if let Some(nrf) = NewRomFile::from_archive(path, &name, sha1) { rom_files.push(nrf) }
+            if let Some(nrf) = NewRomFile::from_archive(path, &name, sha1) {
+                rom_files.push(nrf)
+            }
         }
         ArchiveContents::Err(e) => {
             warn!("couldn't read {} from {:?}: {:?}", name, path, e)
@@ -212,9 +217,9 @@ fn walk_for_files(dir: &Utf8Path) -> MameResult<Vec<Utf8PathBuf>> {
         .collect();
     let optimized = optimize_file_order(v);
     Ok(optimized
-    .iter()
-    .filter_map(|direntry| Utf8PathBuf::from_path_buf(direntry.path().to_path_buf()).ok() )
-    .collect())
+        .iter()
+        .filter_map(|direntry| Utf8PathBuf::from_path_buf(direntry.path().to_path_buf()).ok())
+        .collect())
 }
 
 #[cfg(target_os = "linux")]
