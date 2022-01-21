@@ -62,6 +62,7 @@ fn main() {
     let bar_style = ProgressStyle::default_bar()
         .template("[{elapsed}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg} ETA: {eta}");
 
+    // TODO: these .unwrap()s need to actually handle errors
     match cli.command {
         Command::AddDataFile { path } => {
             parse_and_insert_datfile(&path, &pool).unwrap();
@@ -89,7 +90,7 @@ fn rename_roms(
     dry_run: bool,
     destination: &Utf8Path,
 ) -> MameResult<Vec<Utf8PathBuf>> {
-    let games = db::load_parents(&pool, &data_file);
+    let games = db::load_parents(pool, data_file);
     info!(
         "Processing {} games with {} matching rom files",
         games.len(),
@@ -107,7 +108,7 @@ fn rename_roms(
         info!("Saving zips to path: {}", &destination);
 
         create_dir_all(&destination)?;
-        destination::write_all_zips(games, &destination, &zip_bar)
+        destination::write_all_zips(games, destination, &zip_bar)
     }
 }
 
@@ -119,7 +120,7 @@ fn scan_source(
     pool: &DbPool,
 ) -> MameResult<Utf8PathBuf> {
     info!("Looking in path: {}", path);
-    let file_list = walk_for_files(&path)?;
+    let file_list = walk_for_files(path)?;
     let bar = ProgressBar::new(file_list.len() as u64);
     bar.set_style(bar_style.clone());
     let new_rom_files = if parallel {
@@ -140,7 +141,7 @@ fn scan_source(
 // TODO: this should return a Result
 fn parse_and_insert_datfile(path: &Utf8Path, pool: &DbPool) -> MameResult<i32> {
     info!("Using datafile: {}", &path);
-    logiqx::DataFile::from_path(&path)
+    logiqx::DataFile::from_path(path)
         .and_then(|datafile| db::traverse_and_insert_data_file(pool, datafile))
 }
 
@@ -193,7 +194,7 @@ fn scan_archive(path: &Utf8Path) -> MameResult<Vec<NewRomFile>> {
         }
         ArchiveContents::EndOfEntry => {
             let sha1 = sha1hasher.finalize_reset().to_vec();
-            NewRomFile::from_archive(path, &name, sha1).map(|nrf| rom_files.push(nrf));
+            if let Some(nrf) = NewRomFile::from_archive(path, &name, sha1) { rom_files.push(nrf) }
         }
         ArchiveContents::Err(e) => {
             warn!("couldn't read {} from {:?}: {:?}", name, path, e)
