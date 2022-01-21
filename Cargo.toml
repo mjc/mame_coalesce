@@ -56,4 +56,4 @@ infer = { version = "0.6" }
 [dependencies.flate2]
 version = "1.0"
 default-features = false
-features = ["cloudflare_zlib"]
+features = ["zlib-ng-compat"]
