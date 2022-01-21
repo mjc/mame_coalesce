@@ -169,22 +169,24 @@ fn get_all_rom_files(file_list: Vec<Utf8PathBuf>, bar: ProgressBar) -> MameResul
 }
 
 fn build_newrom_vec(path: &Utf8Path) -> Option<Vec<NewRomFile>> {
-    let single_rom = || NewRomFile::from_path(path).map(|nrf| vec![nrf]);
+    let single_rom = ||NewRomFile::from_path(path).map(|nrf| vec![nrf]);
 
     infer::get_from_path(path)
         .ok()
         .flatten()
         .map_or_else(single_rom, |t| match t.mime_type() {
-            "application/zip" | "application/x-7z-compressed" => scan_archive(path).ok(),
+            "application/zip" | "application/x-7z-compressed" => {
+                File::open(path).and_then(|f|
+                    Ok(BufReader::new(f))
+                ).and_then(|reader| Ok(scan_archive(path, reader).unwrap())).ok()
+                },
             _ => single_rom(),
         })
 }
 
-fn scan_archive(path: &Utf8Path) -> MameResult<Vec<NewRomFile>> {
-    let f = File::open(path).unwrap();
-    let buf = BufReader::new(f); // TODO: mmap?
+fn scan_archive(path: &Utf8Path, reader: (impl std::io::Read + std::io::Seek + 'static)) -> MameResult<Vec<NewRomFile>> {
     let mut rom_files: Vec<NewRomFile> = Vec::new();
-    let iter = ArchiveIterator::from_read(buf)?;
+    let iter = ArchiveIterator::from_read(reader)?;
 
     let mut name = String::new();
     let mut sha1hasher = Sha1::new();
