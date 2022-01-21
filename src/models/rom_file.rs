@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use camino::Utf8Path;
 
 use crate::{hashes, schema::rom_files};
@@ -63,8 +65,8 @@ pub struct NewRomFile {
 impl NewRomFile {
     // TODO: should go away
     pub fn from_path(path: &Utf8Path) -> Option<NewRomFile> {
-        let mut mmap = hashes::mmap_path(path).ok()?;
-        let sha1 = hashes::stream_sha1(&mut mmap).ok()?;
+        let mmap = hashes::mmap_path(path).ok()?;
+        let sha1 = hashes::stream_sha1(&mmap).ok()?;
 
         let name = path.file_name()?.to_string();
         let parent_path = path.parent()?.to_string();
@@ -79,10 +81,10 @@ impl NewRomFile {
         })
     }
 
-    pub fn from_archive(path: &Utf8Path, name: &str, sha1: Vec<u8>) -> Option<NewRomFile> {
+    pub fn from_archive(path: &Utf8Path, name: &Path, sha1: Vec<u8>) -> Option<NewRomFile> {
         let parent_path = path.parent()?.to_string();
         let path = path.to_string();
-        let name = name.to_string();
+        let name = name.to_str()?.to_string();
         Some(NewRomFile {
             parent_path,
             path,
@@ -96,5 +98,10 @@ impl NewRomFile {
     /// Get a reference to the new rom file's name.
     pub fn name(&self) -> &str {
         self.name.as_ref()
+    }
+
+    /// Set the new rom file's sha1.
+    pub fn set_sha1(&mut self, sha1: Vec<u8>) {
+        self.sha1 = sha1;
     }
 }

@@ -1,6 +1,5 @@
 #![deny(elided_lifetimes_in_paths)]
 
-
 extern crate indicatif;
 extern crate rayon;
 #[macro_use]
@@ -22,6 +21,7 @@ use clap::StructOpt;
 use compress_tools::*;
 use db::DbPool;
 
+use fmmap::MmapFileExt;
 use indicatif::{ParallelProgressIterator, ProgressBar, ProgressIterator, ProgressStyle};
 use log::{info, warn, LevelFilter};
 use models::NewRomFile;
@@ -34,6 +34,7 @@ use std::{
     error,
     fs::{create_dir_all, File},
     io::BufReader,
+    path::Path,
     result::Result,
 };
 
@@ -170,20 +171,44 @@ fn get_all_rom_files(file_list: Vec<Utf8PathBuf>, bar: ProgressBar) -> MameResul
 }
 
 fn build_newrom_vec(path: &Utf8Path) -> Option<Vec<NewRomFile>> {
-    let single_rom = ||NewRomFile::from_path(path).map(|nrf| vec![nrf]);
+    let single_rom = || NewRomFile::from_path(path).map(|nrf| vec![nrf]);
 
     infer::get_from_path(path)
         .ok()
         .flatten()
         .map_or_else(single_rom, |t| match t.mime_type() {
-            "application/zip" | "application/x-7z-compressed" => {
-               scan_archive(path).ok()
-                },
+            "application/zip" => scan_zip(path).ok(),
+            "application/x-7z-compressed" => scan_7z(path).ok(),
             _ => single_rom(),
         })
 }
 
-fn scan_archive(path: &Utf8Path) -> MameResult<Vec<NewRomFile>> {
+fn scan_zip(path: &Utf8Path) -> MameResult<Vec<NewRomFile>> {
+    // let f = File::open(path)?;
+    // let reader = BufReader::new(f);
+    let mmap = hashes::mmap_path(path)?;
+    let reader = mmap.reader(0)?;
+    let mut zip = zip::ZipArchive::new(reader)?;
+
+    let mut rom_files = Vec::new();
+
+    let mut sha1hasher = Sha1::new();
+
+    for i in 0..zip.len() {
+        let mut file = zip.by_index(i)?;
+        let name = file.enclosed_name().unwrap();
+        let mut nrf = NewRomFile::from_archive(path, name, Vec::new()).unwrap();
+
+        std::io::copy(&mut file, &mut sha1hasher)?;
+        let sha1 = sha1hasher.finalize_reset().to_vec();
+        nrf.set_sha1(sha1);
+        rom_files.push(nrf);
+    }
+
+    Ok(rom_files)
+}
+
+fn scan_7z(path: &Utf8Path) -> MameResult<Vec<NewRomFile>> {
     let f = File::open(path)?;
     let reader = BufReader::new(f);
     // let mmap = mmap_path(path)?;
@@ -204,7 +229,8 @@ fn scan_archive(path: &Utf8Path) -> MameResult<Vec<NewRomFile>> {
         }
         ArchiveContents::EndOfEntry => {
             let sha1 = sha1hasher.finalize_reset().to_vec();
-            if let Some(nrf) = NewRomFile::from_archive(path, &name, sha1) {
+            let filename = Path::new(&name);
+            if let Some(nrf) = NewRomFile::from_archive(path, filename, sha1) {
                 rom_files.push(nrf)
             }
         }
