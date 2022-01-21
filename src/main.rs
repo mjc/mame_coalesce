@@ -1,3 +1,6 @@
+#![deny(elided_lifetimes_in_paths)]
+
+
 extern crate indicatif;
 extern crate rayon;
 #[macro_use]

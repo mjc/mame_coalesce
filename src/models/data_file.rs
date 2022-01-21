@@ -35,7 +35,7 @@ pub struct NewDataFile<'a> {
 }
 
 impl NewDataFile<'_> {
-    pub fn from_logiqx(l_data_file: &logiqx::DataFile) -> NewDataFile {
+    pub fn from_logiqx(l_data_file: &logiqx::DataFile) -> NewDataFile<'_> {
         NewDataFile {
             build: Some(l_data_file.build().to_owned()),
             debug: Some(l_data_file.debug().to_owned()),

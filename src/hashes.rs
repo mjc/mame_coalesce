@@ -34,10 +34,10 @@ impl MultiHash for Mmap {
     }
 }
 
-pub fn stream_sha1(reader: &mut impl io::Read) -> [u8; 20] {
+pub fn stream_sha1(reader: &mut (impl io::Read + io::Seek)) -> [u8; 20] {
     let mut sha1 = Sha1::new();
     let mut buf: [u8; 16_384] = [0; 16_384];
-    while let Ok(size) = reader.read(&mut buf) {
+    while let Ok(_size) = reader.read(&mut buf) {
         sha1.update(buf);
     }
 
