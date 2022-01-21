@@ -1,14 +1,10 @@
-use std::{
-    fs::File,
-    io::{BufReader, Read},
-};
-
 use camino::Utf8Path;
+use fmmap::MmapFileExt;
 
 use super::game::Game;
 use super::header::Header;
 
-use crate::{hashes::MultiHash, MameResult};
+use crate::{hashes, MameResult};
 
 #[derive(Debug, Deserialize)]
 pub struct DataFile {
@@ -24,12 +20,10 @@ pub struct DataFile {
 }
 impl DataFile {
     pub fn from_path(path: &Utf8Path) -> MameResult<Self> {
-        let f = File::open(path)?;
-        let mut reader = BufReader::new(&f);
-        let mut content = String::new();
-        reader.read_to_string(&mut content)?;
-        let (_crc, sha1) = f.all_hashes();
-        let mut data_file: DataFile = serde_xml_rs::from_str(&content)?;
+        let mut mmap = hashes::mmap_path(path)?;
+        let sha1 = hashes::stream_sha1(&mut mmap)?;
+
+        let mut data_file: DataFile = serde_xml_rs::from_reader(mmap.reader(0)?)?;
         {
             let full_path = path.canonicalize().ok();
             data_file.file_name = full_path.map(|p| p.to_string_lossy().into_owned());

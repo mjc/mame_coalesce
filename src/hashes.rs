@@ -1,4 +1,4 @@
-use std::{fs::File, io::Read};
+use std::fs::File;
 
 use camino::Utf8Path;
 use fmmap::{MmapFile, MmapFileExt};
@@ -39,11 +39,10 @@ impl MultiHash for Mmap {
 
 pub fn stream_sha1(mmap: &MmapFile) -> MameResult<Vec<u8>> {
     let mut sha1 = Sha1::new();
-    let mut buf: [u8; 16_384] = [0; 16_384];
-    let mut reader = mmap.reader(0)?;
-    while let Ok(_length) = reader.read(&mut buf) {
-        sha1.update(buf);
-    }
+
+    mmap.as_slice()
+        .chunks(16_384)
+        .for_each(|chunk| sha1.update(chunk));
 
     Ok(sha1.finalize().to_vec())
 }

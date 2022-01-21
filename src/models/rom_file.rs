@@ -1,6 +1,6 @@
 use camino::Utf8Path;
 
-use crate::{hashes::MultiHash, schema::rom_files};
+use crate::{hashes, schema::rom_files};
 
 use super::Rom;
 
@@ -62,11 +62,13 @@ pub struct NewRomFile {
 
 impl NewRomFile {
     // TODO: should go away
-    pub fn from_path(rom_file_path: &Utf8Path) -> Option<NewRomFile> {
-        let (_crc, sha1) = rom_file_path.all_hashes();
-        let name = rom_file_path.file_name()?.to_string();
-        let parent_path = rom_file_path.parent()?.to_string();
-        let path = rom_file_path.to_string();
+    pub fn from_path(path: &Utf8Path) -> Option<NewRomFile> {
+        let mut mmap = hashes::mmap_path(path).ok()?;
+        let sha1 = hashes::stream_sha1(&mut mmap).ok()?;
+
+        let name = path.file_name()?.to_string();
+        let parent_path = path.parent()?.to_string();
+        let path = path.to_string();
         Some(NewRomFile {
             parent_path,
             path,
