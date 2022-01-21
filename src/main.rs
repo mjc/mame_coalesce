@@ -27,7 +27,6 @@ use simplelog::{CombinedLogger, TermLogger};
 use walkdir::{DirEntry, WalkDir};
 
 use std::{
-    convert::TryInto,
     error,
     fs::{create_dir_all, File},
     io::BufReader,
@@ -124,9 +123,9 @@ fn scan_source(
     let bar = ProgressBar::new(file_list.len() as u64);
     bar.set_style(bar_style.clone());
     let new_rom_files = if parallel {
-        get_all_rom_files_par(&file_list, bar)?
+        get_all_rom_files_par(file_list, bar)?
     } else {
-        get_all_rom_files(&file_list, bar)?
+        get_all_rom_files(file_list, bar)?
     };
     info!(
         "rom files found (unpacked and packed both): {}",
@@ -145,20 +144,20 @@ fn parse_and_insert_datfile(path: &Utf8Path, pool: &DbPool) -> MameResult<i32> {
         .and_then(|datafile| db::traverse_and_insert_data_file(pool, datafile))
 }
 
-fn get_all_rom_files_par(file_list: &[DirEntry], bar: ProgressBar) -> MameResult<Vec<NewRomFile>> {
+fn get_all_rom_files_par(file_list: Vec<Utf8PathBuf>, bar: ProgressBar) -> MameResult<Vec<NewRomFile>> {
     Ok(file_list
         .par_iter()
         .progress_with(bar)
-        .filter_map(|e| build_newrom_vec(e.path().try_into().ok()?))
+        .filter_map(|p| build_newrom_vec(p))
         .flatten_iter()
         .collect())
 }
 
-fn get_all_rom_files(file_list: &[DirEntry], bar: ProgressBar) -> MameResult<Vec<NewRomFile>> {
+fn get_all_rom_files(file_list: Vec<Utf8PathBuf>, bar: ProgressBar) -> MameResult<Vec<NewRomFile>> {
     Ok(file_list
         .iter()
         .progress_with(bar)
-        .filter_map(|e| build_newrom_vec(e.path().try_into().ok()?))
+        .filter_map(|p| build_newrom_vec(p))
         .flatten()
         .collect())
 }
@@ -204,14 +203,18 @@ fn scan_archive(path: &Utf8Path) -> MameResult<Vec<NewRomFile>> {
     Ok(rom_files)
 }
 
-fn walk_for_files(dir: &Utf8Path) -> MameResult<Vec<DirEntry>> {
+fn walk_for_files(dir: &Utf8Path) -> MameResult<Vec<Utf8PathBuf>> {
     let v = WalkDir::new(dir)
         .into_iter()
         .filter_entry(entry_is_relevant)
         .flatten()
         .filter(|entry| entry.file_type().is_file())
         .collect();
-    Ok(optimize_file_order(v))
+    let optimized = optimize_file_order(v);
+    Ok(optimized
+    .iter()
+    .filter_map(|direntry| Utf8PathBuf::from_path_buf(direntry.path().to_path_buf()).ok() )
+    .collect())
 }
 
 #[cfg(target_os = "linux")]
