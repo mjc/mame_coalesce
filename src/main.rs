@@ -21,6 +21,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use clap::StructOpt;
 use compress_tools::*;
 use db::DbPool;
+
 use indicatif::{ParallelProgressIterator, ProgressBar, ProgressIterator, ProgressStyle};
 use log::{info, warn, LevelFilter};
 use models::NewRomFile;
@@ -176,15 +177,17 @@ fn build_newrom_vec(path: &Utf8Path) -> Option<Vec<NewRomFile>> {
         .flatten()
         .map_or_else(single_rom, |t| match t.mime_type() {
             "application/zip" | "application/x-7z-compressed" => {
-                File::open(path).and_then(|f|
-                    Ok(BufReader::new(f))
-                ).and_then(|reader| Ok(scan_archive(path, reader).unwrap())).ok()
+               scan_archive(path).ok()
                 },
             _ => single_rom(),
         })
 }
 
-fn scan_archive(path: &Utf8Path, reader: (impl std::io::Read + std::io::Seek + 'static)) -> MameResult<Vec<NewRomFile>> {
+fn scan_archive(path: &Utf8Path) -> MameResult<Vec<NewRomFile>> {
+    let f = File::open(path)?;
+    let reader = BufReader::new(f);
+    // let mmap = mmap_path(path)?;
+    // let chunks = mmap.chunks(16_384);
     let mut rom_files: Vec<NewRomFile> = Vec::new();
     let iter = ArchiveIterator::from_read(reader)?;
 

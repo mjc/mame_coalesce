@@ -1,8 +1,11 @@
-use std::{fs::File, io};
+use std::{fs::File, io::Read};
 
 use camino::Utf8Path;
+use fmmap::{MmapFile, MmapFileExt};
 use memmap2::{Mmap, MmapOptions};
 use sha1::{Digest, Sha1};
+
+use crate::MameResult;
 
 pub trait MultiHash {
     fn all_hashes(&self) -> (Vec<u8>, Vec<u8>);
@@ -34,12 +37,18 @@ impl MultiHash for Mmap {
     }
 }
 
-pub fn stream_sha1(reader: &mut (impl io::Read + io::Seek)) -> [u8; 20] {
+pub fn stream_sha1(mmap: &MmapFile) -> MameResult<Vec<u8>> {
     let mut sha1 = Sha1::new();
     let mut buf: [u8; 16_384] = [0; 16_384];
-    while let Ok(_size) = reader.read(&mut buf) {
+    let mut reader = mmap.reader(0)?;
+    while let Ok(_length) = reader.read(&mut buf) {
         sha1.update(buf);
     }
 
-    sha1.finalize().into()
+    Ok(sha1.finalize().to_vec())
+}
+
+pub fn mmap_path(path: &Utf8Path) -> MameResult<MmapFile> {
+    let mmap = MmapFile::open(path)?;
+    Ok(mmap)
 }
