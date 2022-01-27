@@ -10,9 +10,9 @@ use crate::{hashes, MameResult};
 pub struct DataFile {
     file_name: Option<String>,
     #[serde(default)]
-    build: String,
+    build: Option<String>,
     #[serde(default)]
-    debug: String, // bool
+    debug: Option<String>, // bool
     header: Header,
     sha1: Option<Vec<u8>>,
     #[serde(rename = "game", default)]
@@ -42,16 +42,6 @@ impl DataFile {
         self.games.as_ref()
     }
 
-    /// Get a reference to the data file's build.
-    pub fn build(&self) -> &str {
-        self.build.as_ref()
-    }
-
-    /// Get a reference to the data file's debug.
-    pub fn debug(&self) -> &str {
-        self.debug.as_ref()
-    }
-
     /// Get a reference to the data file's sha1.
     pub fn sha1(&self) -> Option<&Vec<u8>> {
         self.sha1.as_ref()
@@ -65,5 +55,15 @@ impl DataFile {
     /// Set the data file's file name.
     pub fn set_file_name(&mut self, file_name: Option<String>) {
         self.file_name = file_name;
+    }
+
+    /// Get a reference to the data file's build.
+    pub fn build(&self) -> Option<&String> {
+        self.build.as_ref()
+    }
+
+    /// Get a reference to the data file's debug.
+    pub fn debug(&self) -> Option<&String> {
+        self.debug.as_ref()
     }
 }

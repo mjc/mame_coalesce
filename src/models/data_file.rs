@@ -37,15 +37,15 @@ pub struct NewDataFile<'a> {
 impl NewDataFile<'_> {
     pub fn from_logiqx(l_data_file: &logiqx::DataFile) -> NewDataFile<'_> {
         NewDataFile {
-            build: Some(l_data_file.build().to_owned()),
-            debug: Some(l_data_file.debug().to_owned()),
-            file_name: l_data_file.file_name().map(|f| f.to_owned()),
+            build: l_data_file.build().cloned(),
+            debug: l_data_file.debug().cloned(),
+            file_name: l_data_file.file_name().cloned(),
             name: l_data_file.header().name().to_owned(),
-            description: Some(l_data_file.header().description().to_owned()),
-            version: Some(l_data_file.header().version().to_owned()),
-            author: Some(l_data_file.header().author().to_owned()),
+            description: l_data_file.header().description().cloned(),
+            version: l_data_file.header().version().cloned(),
+            author: l_data_file.header().author().cloned(),
             homepage: l_data_file.header().homepage().cloned(),
-            url: Some(l_data_file.header().url().to_owned()),
+            url: l_data_file.header().url().cloned(),
             sha1: l_data_file.sha1(),
         }
     }
