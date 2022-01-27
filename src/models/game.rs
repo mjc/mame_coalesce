@@ -75,15 +75,15 @@ impl NewGame {
     pub fn from_logiqx(logiqx: &logiqx::Game, data_file_id: &i32) -> Self {
         // TODO: don't clone, lol
         NewGame {
-            name: logiqx.name.clone(),
-            is_bios: Some(logiqx.isbios.clone()),
-            clone_of: logiqx.cloneof().cloned(),
-            rom_of: Some(logiqx.romof.clone()),
-            sample_of: Some(logiqx.sampleof.clone()),
-            board: Some(logiqx.board.clone()),
-            rebuildto: Some(logiqx.rebuildto.clone()),
-            year: Some(logiqx.year.clone()),
-            manufacturer: Some(logiqx.manufacturer.clone()),
+            name: logiqx.name().to_string(),
+            is_bios: Some(logiqx.isbios().to_string()),
+            clone_of: logiqx.cloneof().map(|c| c.to_string()),
+            rom_of: Some(logiqx.romof().to_string()),
+            sample_of: Some(logiqx.sampleof().to_string()),
+            board: Some(logiqx.board().to_string()),
+            rebuildto: Some(logiqx.rebuildto().to_string()),
+            year: Some(logiqx.year().to_string()),
+            manufacturer: Some(logiqx.manufacturer().to_string()),
             data_file_id: Some(*data_file_id),
         }
     }

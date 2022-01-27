@@ -2,27 +2,27 @@ use super::Rom;
 
 #[derive(Debug, Deserialize)]
 pub struct Game {
-    pub name: String,
+    name: String,
     #[serde(default)]
-    pub sourcefile: String,
+    sourcefile: String,
     #[serde(default)]
-    pub isbios: String,
+    isbios: String,
     #[serde(default)]
-    pub cloneof: Option<String>,
+    cloneof: Option<String>,
     #[serde(default)]
-    pub romof: String,
+    romof: String,
     #[serde(default)]
-    pub sampleof: String,
+    sampleof: String,
     #[serde(default)]
-    pub board: String,
+    board: String,
     #[serde(default)]
-    pub rebuildto: String,
+    rebuildto: String,
     #[serde(default)]
-    pub year: String, // should probably be a DateTime
+    year: String, // should probably be a DateTime
     #[serde(default)]
-    pub manufacturer: String,
+    manufacturer: String,
     #[serde(rename = "rom", default)]
-    pub roms: Vec<Rom>,
+    roms: Vec<Rom>,
 }
 
 impl Game {

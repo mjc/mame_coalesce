@@ -8,11 +8,11 @@ use crate::{hashes, MameResult};
 
 #[derive(Debug, Deserialize)]
 pub struct DataFile {
-    pub file_name: Option<String>,
+    file_name: Option<String>,
     #[serde(default)]
-    pub build: String,
+    build: String,
     #[serde(default)]
-    pub debug: String, // bool
+    debug: String, // bool
     header: Header,
     sha1: Option<Vec<u8>>,
     #[serde(rename = "game", default)]

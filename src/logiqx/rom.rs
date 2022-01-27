@@ -1,21 +1,21 @@
 #[derive(Debug, Deserialize)]
 pub struct Rom {
-    pub name: String,
-    pub size: i32,
+    name: String,
+    size: i32,
     #[serde(with = "hex")]
-    pub md5: Vec<u8>,
+    md5: Vec<u8>,
     #[serde(with = "hex")]
-    pub sha1: Vec<u8>,
+    sha1: Vec<u8>,
     #[serde(with = "hex")]
-    pub crc: Vec<u8>,
+    crc: Vec<u8>,
     #[serde(default)]
-    pub merge: String,
+    merge: String,
     #[serde(default)]
-    pub status: String,
+    status: String,
     #[serde(default)]
-    pub serial: String,
+    serial: String,
     #[serde(default)]
-    pub date: String,
+    date: String,
 }
 
 impl Rom {
@@ -42,5 +42,25 @@ impl Rom {
     /// Get a reference to the rom's crc.
     pub fn crc(&self) -> &Vec<u8> {
         self.crc.as_ref()
+    }
+
+    /// Get a reference to the rom's merge.
+    pub fn merge(&self) -> &str {
+        self.merge.as_ref()
+    }
+
+    /// Get a reference to the rom's status.
+    pub fn status(&self) -> &str {
+        self.status.as_ref()
+    }
+
+    /// Get a reference to the rom's serial.
+    pub fn serial(&self) -> &str {
+        self.serial.as_ref()
+    }
+
+    /// Get a reference to the rom's date.
+    pub fn date(&self) -> &str {
+        self.date.as_ref()
     }
 }

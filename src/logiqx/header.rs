@@ -1,11 +1,11 @@
 #[derive(Debug, Deserialize)]
 pub struct Header {
-    pub name: String,
-    pub description: String,
-    pub version: String,
-    pub author: String,
-    pub homepage: Option<String>,
-    pub url: String,
+    name: String,
+    description: String,
+    version: String,
+    author: String,
+    homepage: Option<String>,
+    url: String,
 }
 
 impl Header {
