@@ -30,22 +30,16 @@ use sha1::{Digest, Sha1};
 use simplelog::{CombinedLogger, TermLogger};
 use walkdir::{DirEntry, WalkDir};
 
-use std::{
-    error,
-    fs::{create_dir_all, File},
-    io::BufReader,
-    path::Path,
-    result::Result,
-};
+use std::{error, fs::File, io::BufReader, path::Path, result::Result};
 
-pub mod logiqx;
+mod logiqx;
 
 mod db;
 mod hashes;
-pub mod models;
-pub mod schema;
+mod models;
+mod operations;
+mod schema;
 
-mod destination;
 mod opts;
 use opts::{Cli, Command};
 
@@ -82,37 +76,8 @@ fn main() {
             destination,
         } => {
             // TODO: respect source argument
-            rename_roms(&pool, &data_file, &bar_style, dry_run, &destination).unwrap();
+            operations::rename_roms(&pool, &data_file, &bar_style, dry_run, &destination).unwrap();
         }
-    }
-}
-
-fn rename_roms(
-    pool: &DbPool,
-    data_file: &Utf8Path,
-    bar_style: &ProgressStyle,
-    dry_run: bool,
-    destination: &Utf8Path,
-) -> MameResult<Vec<Utf8PathBuf>> {
-    let games = db::load_parents(pool, data_file);
-    info!(
-        "Processing {} games with {} matching rom files",
-        games.len(),
-        games
-            .iter()
-            .map(|(_rom, rom_files)| { rom_files.len() as i32 })
-            .sum::<i32>()
-    );
-    let zip_bar = ProgressBar::new(games.len() as u64);
-    zip_bar.set_style(bar_style.clone());
-    if dry_run {
-        info!("Dry run enabled, not writing zips!");
-        Ok(Vec::new())
-    } else {
-        info!("Saving zips to path: {}", &destination);
-
-        create_dir_all(&destination)?;
-        destination::write_all_zips(games, destination, &zip_bar)
     }
 }
 
