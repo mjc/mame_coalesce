@@ -7,6 +7,7 @@ CREATE TABLE rom_files (
     crc        BLOB    ,
     sha1       BLOB    NOT NULL,
     md5        BLOB    ,
+    xxhash3 BLOB NOT NULL,
     in_archive BOOLEAN NOT NULL,
     rom_id             INTEGER CONSTRAINT file_rom REFERENCES roms (id)
 );

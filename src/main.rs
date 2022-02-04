@@ -29,6 +29,7 @@ use rayon::prelude::*;
 use sha1::{Digest, Sha1};
 use simplelog::{CombinedLogger, TermLogger};
 use walkdir::{DirEntry, WalkDir};
+use xxhash_rust::xxh3::Xxh3;
 
 use std::{error, fs::File, io::BufReader, path::Path, result::Result};
 
@@ -149,15 +150,18 @@ fn scan_zip(mmap: MmapFile) -> MameResult<Vec<NewRomFile>> {
     let mut rom_files = Vec::new();
 
     let mut sha1hasher = Sha1::new();
+    let xxhash3 = Xxh3::new();
 
     for i in 0..zip.len() {
         let mut file = zip.by_index(i)?;
         let name = file.enclosed_name().unwrap();
-        let mut nrf = NewRomFile::from_archive(path, name, Vec::new()).unwrap();
+        let mut nrf = NewRomFile::from_archive(path, name, Vec::new(), Vec::new()).unwrap();
 
         std::io::copy(&mut file, &mut sha1hasher)?;
         let sha1 = sha1hasher.finalize_reset().to_vec();
         nrf.set_sha1(sha1);
+        let xxh = xxhash3.digest().to_be_bytes().to_vec();
+        nrf.set_xxhash3(xxh);
         rom_files.push(nrf);
     }
 
@@ -174,19 +178,23 @@ fn scan_7z(path: &Utf8Path) -> MameResult<Vec<NewRomFile>> {
 
     let mut name = String::new();
     let mut sha1hasher = Sha1::new();
+    let mut xxhash3 = Xxh3::new();
 
     iter.for_each(|content| match content {
         ArchiveContents::StartOfEntry(s) => {
             name = s;
             sha1hasher.reset();
+            xxhash3.reset();
         }
         ArchiveContents::DataChunk(v) => {
             sha1hasher.update(&v);
+            xxhash3.update(&v);
         }
         ArchiveContents::EndOfEntry => {
             let sha1 = sha1hasher.finalize_reset().to_vec();
+            let xxh3 = xxhash3.digest().to_be_bytes().to_vec();
             let filename = Path::new(&name);
-            if let Some(nrf) = NewRomFile::from_archive(path, filename, sha1) {
+            if let Some(nrf) = NewRomFile::from_archive(path, filename, sha1, xxh3) {
                 rom_files.push(nrf)
             }
         }

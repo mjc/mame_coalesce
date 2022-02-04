@@ -33,8 +33,8 @@ zip = { version = "0.5", features = ["deflate", "bzip2"] }
 compress-tools = "0.12"
 
 hex = { version = "0.4", features = ["serde"] }
-crc32fast = "1.3"
 sha-1 = { version = "0.10", features = ["asm"] }
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
 
 memmap2 = "0.5"
 fmmap = "0.2"

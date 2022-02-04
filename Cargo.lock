@@ -536,7 +536,6 @@ dependencies = [
  "chrono",
  "clap",
  "compress-tools",
- "crc32fast",
  "diesel",
  "diesel_logger",
  "diesel_migrations",
@@ -555,6 +554,7 @@ dependencies = [
  "sha-1",
  "simplelog",
  "walkdir",
+ "xxhash-rust",
  "zip",
 ]
 
@@ -1097,6 +1097,12 @@ name = "xml-rs"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d2d7d3948613f75c98fd9328cfdcc45acc4d360655289d0a7d4ec931392200a3"
+
+[[package]]
+name = "xxhash-rust"
+version = "0.8.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e575e15bedf6e57b5c2d763ffc6c3c760143466cbd09d762d539680ab5992ded"
 
 [[package]]
 name = "zip"
