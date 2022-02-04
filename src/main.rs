@@ -22,7 +22,7 @@ use compress_tools::*;
 use db::DbPool;
 
 use fmmap::{MmapFile, MmapFileExt};
-use indicatif::{ParallelProgressIterator, ProgressBar, ProgressIterator, ProgressStyle};
+use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
 use log::{info, warn, LevelFilter};
 use models::NewRomFile;
 use rayon::prelude::*;
@@ -65,8 +65,8 @@ fn main() {
         Command::AddDataFile { path } => {
             parse_and_insert_datfile(&path, &pool).unwrap();
         }
-        Command::ScanSource { parallel, path } => {
-            scan_source(&path, &bar_style, parallel, &pool).unwrap();
+        Command::ScanSource { jobs, path } => {
+            scan_source(&path, &bar_style, jobs, &pool).unwrap();
         }
 
         Command::Rename {
@@ -85,18 +85,15 @@ fn main() {
 fn scan_source(
     path: &Utf8Path,
     bar_style: &ProgressStyle,
-    parallel: bool,
+    jobs: usize,
     pool: &DbPool,
 ) -> MameResult<Utf8PathBuf> {
     info!("Looking in path: {}", path);
     let file_list = walk_for_files(path)?;
     let bar = ProgressBar::new(file_list.len() as u64);
     bar.set_style(bar_style.clone());
-    let new_rom_files = if parallel {
-        get_all_rom_files_par(file_list, bar)?
-    } else {
-        get_all_rom_files(file_list, bar)?
-    };
+    let new_rom_files = get_all_rom_files_par(file_list, jobs, bar)?;
+
     info!(
         "rom files found (unpacked and packed both): {}",
         new_rom_files.len()
@@ -116,22 +113,18 @@ fn parse_and_insert_datfile(path: &Utf8Path, pool: &DbPool) -> MameResult<i32> {
 
 fn get_all_rom_files_par(
     file_list: Vec<Utf8PathBuf>,
+    jobs: usize,
     bar: ProgressBar,
 ) -> MameResult<Vec<NewRomFile>> {
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(jobs)
+        .build_global()
+        .unwrap();
     Ok(file_list
         .par_iter()
         .progress_with(bar)
         .filter_map(|p| build_newrom_vec(p))
         .flatten_iter()
-        .collect())
-}
-
-fn get_all_rom_files(file_list: Vec<Utf8PathBuf>, bar: ProgressBar) -> MameResult<Vec<NewRomFile>> {
-    Ok(file_list
-        .iter()
-        .progress_with(bar)
-        .filter_map(|p| build_newrom_vec(p))
-        .flatten()
         .collect())
 }
 

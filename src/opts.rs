@@ -16,8 +16,8 @@ pub(crate) enum Command {
     #[clap(setting(AppSettings::ArgRequiredElseHelp))]
     AddDataFile { path: Utf8PathBuf },
     ScanSource {
-        #[clap(short, long, parse(try_from_str), default_value_t = true)]
-        parallel: bool,
+        #[clap(short, long, parse(try_from_str), default_value_t = 0)]
+        jobs: usize,
         path: Utf8PathBuf,
     },
     Rename {
