@@ -137,8 +137,8 @@ fn build_newrom_vec(path: &Utf8Path) -> Option<Vec<NewRomFile>> {
         .flatten()
         .map_or_else(single_rom, |t| match t.mime_type() {
             "application/zip" => scan_zip(mmap).ok(),
-            "application/x-7z-compressed" => scan_7z(path).ok(),
-            _ => single_rom(),
+            "application/x-7z-compressed" | "application/vnd.rar" => scan_libarchive(path).ok(),
+            _mime_type => single_rom(),
         })
 }
 
@@ -168,7 +168,7 @@ fn scan_zip(mmap: MmapFile) -> MameResult<Vec<NewRomFile>> {
     Ok(rom_files)
 }
 
-fn scan_7z(path: &Utf8Path) -> MameResult<Vec<NewRomFile>> {
+fn scan_libarchive(path: &Utf8Path) -> MameResult<Vec<NewRomFile>> {
     let f = File::open(path)?;
     let reader = BufReader::new(f);
     // let mmap = mmap_path(path)?;

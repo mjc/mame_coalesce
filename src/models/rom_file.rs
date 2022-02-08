@@ -1,7 +1,6 @@
 use std::path::Path;
 
 use camino::Utf8Path;
-use diesel::deserialize::QueryableByName;
 
 use crate::{hashes, schema::rom_files};
 
