@@ -2,7 +2,7 @@
 name = "mame_coalesce"
 version = "0.1.0"
 authors = ["Michael J. Cohen <mjc@kernel.org>"]
-edition = "2018"
+edition = "2021"
 
 [profile.release]
 debug = true
