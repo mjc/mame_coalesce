@@ -33,6 +33,6 @@ pub fn rename_roms(
         info!("Saving zips to path: {}", &destination);
 
         create_dir_all(&destination)?;
-        write_all_zips(games, destination, &zip_bar)
+        Ok(write_all_zips(&games, destination, &zip_bar))
     }
 }

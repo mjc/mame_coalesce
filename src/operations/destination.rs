@@ -1,4 +1,5 @@
 use std::{
+    collections::{BTreeMap, HashSet},
     fs::{File, OpenOptions},
     io::{BufReader, BufWriter, Read, Write},
 };
@@ -16,14 +17,14 @@ use crate::{
 };
 
 pub fn write_all_zips(
-    games: std::collections::BTreeMap<Game, std::collections::HashSet<(Rom, RomFile)>>,
+    games: &BTreeMap<Game, HashSet<(Rom, RomFile)>>,
     destination: &Utf8Path,
     zip_bar: &ProgressBar,
-) -> MameResult<Vec<Utf8PathBuf>> {
+) -> Vec<Utf8PathBuf> {
     // this is by far the ugliest code I've ever written in any language
     // I'm sorry
     // TODO: major refactor
-    Ok(games
+    let paths = games
         .par_iter()
         .filter_map(|(game, rom_and_romfile_pair)| {
             let bundles: Vec<DestinationBundle> = rom_and_romfile_pair
@@ -38,11 +39,12 @@ pub fn write_all_zips(
             for bundle in bundles {
                 bundle.zip(&mut zip_writer, zip_options).ok()?;
             }
-            zip_writer.finish().unwrap();
+            zip_writer.finish().ok()?;
             zip_bar.inc(1);
             Some(zip_file_path)
         })
-        .collect())
+        .collect();
+    paths
 }
 
 // definitely should return a Result
