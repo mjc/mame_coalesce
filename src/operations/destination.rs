@@ -78,9 +78,9 @@ struct DestinationBundle {
 
 impl DestinationBundle {
     pub fn from_rom_and_rom_file(rom: &Rom, rom_file: &RomFile) -> Self {
-        let destination_name = rom.name().to_string();
-        let source_name = rom_file.name().to_string();
-        let archive_path = rom_file.path().to_string();
+        let destination_name = rom.name().to_owned();
+        let source_name = rom_file.name().to_owned();
+        let archive_path = rom_file.path().to_owned();
         let in_archive = rom_file.in_archive();
         Self {
             archive_path,
@@ -133,7 +133,7 @@ impl DestinationBundle {
         for byte in input_reader.bytes() {
             zip_writer.write_all(&[byte?])?;
         }
-        Ok(destination_name.to_string())
+        Ok(destination_name.to_owned())
     }
 
     pub fn copy_from_archive(
@@ -169,7 +169,7 @@ impl DestinationBundle {
                 }
             }
         }
-        Ok(destination_name.to_string())
+        Ok(destination_name.to_owned())
     }
 
     /// Get a reference to the destination bundle's archive path.

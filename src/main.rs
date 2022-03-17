@@ -4,7 +4,8 @@
     clippy::nursery,
     clippy::decimal_literal_representation,
     clippy::expect_used,
-    clippy::filetype_is_file
+    clippy::filetype_is_file,
+    clippy::str_to_string
 )]
 
 extern crate indicatif;

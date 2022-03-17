@@ -44,7 +44,7 @@ pub struct New {
 impl New {
     pub fn from_logiqx(rom: &logiqx::Rom, game_id: i32) -> Self {
         Self {
-            name: rom.name().to_string(),
+            name: rom.name().to_owned(),
             size: *rom.size(),
             md5: rom.md5().clone(),
             sha1: rom.sha1().clone(),

@@ -41,7 +41,7 @@ impl Game {
     pub fn default() -> Self {
         Self {
             id: -1,
-            name: "".to_string(),
+            name: "".to_owned(),
             is_bios: None,
             clone_of: None,
             rom_of: None,
@@ -75,15 +75,15 @@ impl New {
     pub fn from_logiqx(logiqx: &logiqx::Game, data_file_id: i32) -> Self {
         // TODO: don't clone, lol
         Self {
-            name: logiqx.name().to_string(),
-            is_bios: Some(logiqx.isbios().to_string()),
+            name: logiqx.name().to_owned(),
+            is_bios: Some(logiqx.isbios().to_owned()),
             clone_of: logiqx.cloneof().map(std::string::ToString::to_string),
-            rom_of: Some(logiqx.romof().to_string()),
-            sample_of: Some(logiqx.sampleof().to_string()),
-            board: Some(logiqx.board().to_string()),
-            rebuildto: Some(logiqx.rebuildto().to_string()),
-            year: Some(logiqx.year().to_string()),
-            manufacturer: Some(logiqx.manufacturer().to_string()),
+            rom_of: Some(logiqx.romof().to_owned()),
+            sample_of: Some(logiqx.sampleof().to_owned()),
+            board: Some(logiqx.board().to_owned()),
+            rebuildto: Some(logiqx.rebuildto().to_owned()),
+            year: Some(logiqx.year().to_owned()),
+            manufacturer: Some(logiqx.manufacturer().to_owned()),
             data_file_id: Some(data_file_id),
         }
     }

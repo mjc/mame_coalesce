@@ -71,7 +71,7 @@ impl New {
         let sha1 = hashes::stream_sha1(&mmap);
         let xxhash3 = hashes::stream_xxhash3(&mmap);
 
-        let name = path.file_name()?.to_string();
+        let name = path.file_name()?.to_owned();
         let parent_path = path.parent()?.to_string();
         let path = path.to_string();
         Some(Self {
@@ -93,7 +93,7 @@ impl New {
     ) -> Option<Self> {
         let parent_path = path.parent()?.to_string();
         let path = path.to_string();
-        let name = name.to_str()?.to_string();
+        let name = name.to_str()?.to_owned();
         Some(Self {
             parent_path,
             path,
