@@ -1,6 +1,6 @@
 #![deny(elided_lifetimes_in_paths, clippy::all)]
 #![warn(clippy::pedantic)]
-#![warn(clippy::nursery)]
+#![warn(clippy::nursery, clippy::decimal_literal_representation)]
 
 extern crate indicatif;
 extern crate rayon;
