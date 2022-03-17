@@ -242,6 +242,5 @@ fn entry_is_relevant(entry: &DirEntry) -> bool {
     entry
         .file_name()
         .to_str()
-        .map(|s| entry.depth() == 0 || !s.starts_with('.'))
-        .unwrap_or(false)
+        .map_or(false, |s| entry.depth() == 0 || !s.starts_with('.'))
 }
