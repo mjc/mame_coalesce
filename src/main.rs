@@ -3,7 +3,8 @@
 #![warn(
     clippy::nursery,
     clippy::decimal_literal_representation,
-    clippy::expect_used
+    clippy::expect_used,
+    clippy::filetype_is_file
 )]
 
 extern crate indicatif;
@@ -225,7 +226,7 @@ fn walk_for_files(dir: &Utf8Path) -> Vec<Utf8PathBuf> {
         .into_iter()
         .filter_entry(entry_is_relevant)
         .flatten()
-        .filter(|entry| entry.file_type().is_file())
+        .filter(|entry| !entry.file_type().is_dir())
         .collect();
     let optimized = optimize_file_order(v);
     optimized
