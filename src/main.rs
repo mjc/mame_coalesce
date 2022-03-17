@@ -1,4 +1,5 @@
-#![deny(elided_lifetimes_in_paths)]
+#![deny(elided_lifetimes_in_paths, clippy::all)]
+#![warn(clippy::pedantic)]
 
 extern crate indicatif;
 extern crate rayon;
