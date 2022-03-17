@@ -93,7 +93,7 @@ fn scan_source(
     let file_list = walk_for_files(path);
     let bar = ProgressBar::new(file_list.len() as u64);
     bar.set_style(bar_style.clone());
-    let new_rom_files = get_all_rom_files_par(&file_list, jobs, bar)?;
+    let new_rom_files = get_all_rom_files_par(&file_list, jobs, bar);
 
     info!(
         "rom files found (unpacked and packed both): {}",
@@ -116,17 +116,17 @@ fn get_all_rom_files_par(
     file_list: &Vec<Utf8PathBuf>,
     jobs: usize,
     bar: ProgressBar,
-) -> MameResult<Vec<NewRomFile>> {
+) -> Vec<NewRomFile> {
     rayon::ThreadPoolBuilder::new()
         .num_threads(jobs)
         .build_global()
         .unwrap();
-    Ok(file_list
+    file_list
         .par_iter()
         .progress_with(bar)
         .filter_map(|p| build_newrom_vec(p))
         .flatten_iter()
-        .collect())
+        .collect()
 }
 
 fn build_newrom_vec(path: &Utf8Path) -> Option<Vec<NewRomFile>> {
