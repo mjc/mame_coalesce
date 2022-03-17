@@ -72,7 +72,7 @@ pub struct New {
 }
 
 impl New {
-    pub fn from_logiqx(logiqx: &logiqx::Game, data_file_id: &i32) -> Self {
+    pub fn from_logiqx(logiqx: &logiqx::Game, data_file_id: i32) -> Self {
         // TODO: don't clone, lol
         New {
             name: logiqx.name().to_string(),
@@ -84,7 +84,7 @@ impl New {
             rebuildto: Some(logiqx.rebuildto().to_string()),
             year: Some(logiqx.year().to_string()),
             manufacturer: Some(logiqx.manufacturer().to_string()),
-            data_file_id: Some(*data_file_id),
+            data_file_id: Some(data_file_id),
         }
     }
 }

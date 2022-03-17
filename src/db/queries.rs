@@ -34,7 +34,7 @@ pub fn traverse_and_insert_data_file(
             .first(conn)?;
 
         logiqx_data_file.games().iter().for_each(|game| {
-            let new_game = NewGame::from_logiqx(game, &df_id);
+            let new_game = NewGame::from_logiqx(game, df_id);
             replace_into(games).values(new_game).execute(conn).unwrap();
             let g_id = games
                 .order(crate::schema::games::dsl::id.desc())
