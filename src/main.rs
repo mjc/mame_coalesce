@@ -1,6 +1,10 @@
 #![deny(elided_lifetimes_in_paths, clippy::all)]
 #![warn(clippy::pedantic)]
-#![warn(clippy::nursery, clippy::decimal_literal_representation)]
+#![warn(
+    clippy::nursery,
+    clippy::decimal_literal_representation,
+    clippy::expect_used
+)]
 
 extern crate indicatif;
 extern crate rayon;
@@ -58,7 +62,10 @@ fn main() {
     .unwrap();
     let cli = Cli::parse();
 
-    let pool: Pool = db::create_db_pool(cli.database_path());
+    let pool = match db::create_db_pool(cli.database_path()) {
+        Ok(pool) => pool,
+        Err(err) => panic!("Couldn't create db pool: {err:?}"),
+    };
 
     let bar_style = ProgressStyle::default_bar()
         .template("[{elapsed}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg} ETA: {eta}");
@@ -79,8 +86,12 @@ fn main() {
             destination,
         } => {
             // TODO: respect source argument
-            operations::rename_roms(&pool, data_file, &bar_style, *dry_run, destination)
-                .expect("couldn't rename roms");
+            let result =
+                operations::rename_roms(&pool, data_file, &bar_style, *dry_run, destination);
+
+            if let Err(e) = result {
+                panic!("Unable to rename roms: {e:?}")
+            }
         }
     }
 }
