@@ -163,7 +163,7 @@ impl DestinationBundle {
                     zip_writer.flush()?;
                 }
                 ArchiveContents::Err(e) => {
-                    error!("{:?}", e)
+                    error!("{:?}", e);
                 }
             }
         }
