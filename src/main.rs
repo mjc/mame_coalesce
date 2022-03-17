@@ -93,7 +93,7 @@ fn scan_source(
     let file_list = walk_for_files(path);
     let bar = ProgressBar::new(file_list.len() as u64);
     bar.set_style(bar_style.clone());
-    let new_rom_files = get_all_rom_files_par(file_list, jobs, bar)?;
+    let new_rom_files = get_all_rom_files_par(&file_list, jobs, bar)?;
 
     info!(
         "rom files found (unpacked and packed both): {}",
@@ -113,7 +113,7 @@ fn parse_and_insert_datfile(path: &Utf8Path, pool: &DbPool) -> MameResult<i32> {
 }
 
 fn get_all_rom_files_par(
-    file_list: Vec<Utf8PathBuf>,
+    file_list: &Vec<Utf8PathBuf>,
     jobs: usize,
     bar: ProgressBar,
 ) -> MameResult<Vec<NewRomFile>> {
@@ -136,13 +136,13 @@ fn build_newrom_vec(path: &Utf8Path) -> Option<Vec<NewRomFile>> {
         .ok()
         .flatten()
         .map_or_else(single_rom, |t| match t.mime_type() {
-            "application/zip" => scan_zip(mmap).ok(),
+            "application/zip" => scan_zip(&mmap).ok(),
             "application/x-7z-compressed" | "application/vnd.rar" => scan_libarchive(path).ok(),
             _mime_type => single_rom(),
         })
 }
 
-fn scan_zip(mmap: MmapFile) -> MameResult<Vec<NewRomFile>> {
+fn scan_zip(mmap: &MmapFile) -> MameResult<Vec<NewRomFile>> {
     let path = Utf8Path::from_path(mmap.path()).unwrap();
     let reader = mmap.reader(0)?;
     let mut zip = zip::ZipArchive::new(reader)?;
