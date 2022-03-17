@@ -6,7 +6,8 @@
     clippy::expect_used,
     clippy::filetype_is_file,
     clippy::str_to_string,
-    clippy::string_to_string
+    clippy::string_to_string,
+    clippy::unneeded_field_pattern
 )]
 
 extern crate indicatif;
@@ -85,8 +86,8 @@ fn main() {
         Command::Rename {
             dry_run,
             data_file,
-            source: _,
             destination,
+            ..
         } => {
             // TODO: respect source argument
             let result =
