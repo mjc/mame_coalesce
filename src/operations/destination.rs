@@ -150,7 +150,7 @@ impl DestinationBundle {
         for content in &mut iter {
             match content {
                 ArchiveContents::StartOfEntry(name) => {
-                    current_name = name.to_string();
+                    current_name = name;
                     if current_name == source_name {
                         debug!("Found file: {:?}", current_name);
                         zip_writer.start_file(destination_name, zip_options)?;
