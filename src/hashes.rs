@@ -22,8 +22,7 @@ pub fn stream_xxhash3(mmap: &MmapFile) -> Vec<u8> {
     mmap.as_slice()
         .chunks(16_384)
         .for_each(|chunk| xxhash3.update(chunk));
-    let hash = xxhash3.digest().to_be_bytes().to_vec();
-    hash
+    xxhash3.digest().to_be_bytes().to_vec()
 }
 
 pub fn mmap_path(path: &Utf8Path) -> MameResult<MmapFile> {
