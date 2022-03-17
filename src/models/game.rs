@@ -38,8 +38,8 @@ impl Game {
     pub fn name(&self) -> &str {
         self.name.as_ref()
     }
-    pub fn default() -> Game {
-        Game {
+    pub fn default() -> Self {
+        Self {
             id: -1,
             name: "".to_string(),
             is_bios: None,
@@ -74,7 +74,7 @@ pub struct New {
 impl New {
     pub fn from_logiqx(logiqx: &logiqx::Game, data_file_id: i32) -> Self {
         // TODO: don't clone, lol
-        New {
+        Self {
             name: logiqx.name().to_string(),
             is_bios: Some(logiqx.isbios().to_string()),
             clone_of: logiqx.cloneof().map(std::string::ToString::to_string),

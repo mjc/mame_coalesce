@@ -66,7 +66,7 @@ pub struct New {
 
 impl New {
     // TODO: should go away
-    pub fn from_path(path: &Utf8Path) -> Option<New> {
+    pub fn from_path(path: &Utf8Path) -> Option<Self> {
         let mmap = hashes::mmap_path(path).ok()?;
         let sha1 = hashes::stream_sha1(&mmap);
         let xxhash3 = hashes::stream_xxhash3(&mmap);
@@ -74,7 +74,7 @@ impl New {
         let name = path.file_name()?.to_string();
         let parent_path = path.parent()?.to_string();
         let path = path.to_string();
-        Some(New {
+        Some(Self {
             parent_path,
             path,
             name,
@@ -90,11 +90,11 @@ impl New {
         name: &Path,
         sha1: Vec<u8>,
         xxhash3: Vec<u8>,
-    ) -> Option<New> {
+    ) -> Option<Self> {
         let parent_path = path.parent()?.to_string();
         let path = path.to_string();
         let name = name.to_str()?.to_string();
-        Some(New {
+        Some(Self {
             parent_path,
             path,
             name,

@@ -23,7 +23,7 @@ impl DataFile {
         let mmap = hashes::mmap_path(path)?;
         let sha1 = hashes::stream_sha1(&mmap);
 
-        let mut data_file: DataFile = serde_xml_rs::from_reader(mmap.reader(0)?)?;
+        let mut data_file: Self = serde_xml_rs::from_reader(mmap.reader(0)?)?;
         {
             let full_path = path.canonicalize().ok();
             data_file.file_name = full_path.map(|p| p.to_string_lossy().into_owned());
