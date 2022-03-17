@@ -19,7 +19,7 @@ extern crate diesel_migrations;
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::StructOpt;
 use compress_tools::{ArchiveContents, ArchiveIterator};
-use db::DbPool;
+use db::Pool;
 
 use fmmap::{MmapFile, MmapFileExt};
 use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
@@ -56,7 +56,7 @@ fn main() {
     .unwrap();
     let cli = Cli::parse();
 
-    let pool: db::DbPool = db::create_db_pool(&cli.database_path);
+    let pool: Pool = db::create_db_pool(&cli.database_path);
 
     let bar_style = ProgressStyle::default_bar()
         .template("[{elapsed}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg} ETA: {eta}");
@@ -87,7 +87,7 @@ fn scan_source(
     path: &Utf8Path,
     bar_style: &ProgressStyle,
     jobs: usize,
-    pool: &DbPool,
+    pool: &Pool,
 ) -> MameResult<Utf8PathBuf> {
     info!("Looking in path: {}", path);
     let file_list = walk_for_files(path);
@@ -106,7 +106,7 @@ fn scan_source(
 }
 
 // TODO: this should return a Result
-fn parse_and_insert_datfile(path: &Utf8Path, pool: &DbPool) -> MameResult<i32> {
+fn parse_and_insert_datfile(path: &Utf8Path, pool: &Pool) -> MameResult<i32> {
     info!("Using datafile: {}", &path);
     logiqx::DataFile::from_path(path)
         .and_then(|datafile| db::traverse_and_insert_data_file(pool, &datafile))

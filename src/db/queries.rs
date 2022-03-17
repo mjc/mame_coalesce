@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::{error, fs};
 
-use crate::{db::DbPool, logiqx};
+use crate::{db::Pool as DbPool, logiqx};
 use crate::{
     models::{DataFile, Game, NewDataFile, NewGame, NewRom, NewRomFile, Rom, RomFile},
     MameResult,

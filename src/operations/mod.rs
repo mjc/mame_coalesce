@@ -4,12 +4,12 @@ use camino::{Utf8Path, Utf8PathBuf};
 use indicatif::{ProgressBar, ProgressStyle};
 use log::info;
 
-use crate::{db::DbPool, operations::destination::write_all_zips, MameResult};
+use crate::{db::Pool, operations::destination::write_all_zips, MameResult};
 
 mod destination;
 
 pub fn rename_roms(
-    pool: &DbPool,
+    pool: &Pool,
     data_file: &Utf8Path,
     bar_style: &ProgressStyle,
     dry_run: bool,
