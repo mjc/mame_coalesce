@@ -68,8 +68,8 @@ impl NewRomFile {
     // TODO: should go away
     pub fn from_path(path: &Utf8Path) -> Option<NewRomFile> {
         let mmap = hashes::mmap_path(path).ok()?;
-        let sha1 = hashes::stream_sha1(&mmap).ok()?;
-        let xxhash3 = hashes::stream_xxhash3(&mmap).ok()?;
+        let sha1 = hashes::stream_sha1(&mmap);
+        let xxhash3 = hashes::stream_xxhash3(&mmap);
 
         let name = path.file_name()?.to_string();
         let parent_path = path.parent()?.to_string();

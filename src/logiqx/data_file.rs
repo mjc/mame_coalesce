@@ -21,7 +21,7 @@ pub struct DataFile {
 impl DataFile {
     pub fn from_path(path: &Utf8Path) -> MameResult<Self> {
         let mmap = hashes::mmap_path(path)?;
-        let sha1 = hashes::stream_sha1(&mmap)?;
+        let sha1 = hashes::stream_sha1(&mmap);
 
         let mut data_file: DataFile = serde_xml_rs::from_reader(mmap.reader(0)?)?;
         {
