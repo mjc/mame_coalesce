@@ -195,11 +195,11 @@ fn scan_libarchive(path: &Utf8Path) -> MameResult<Vec<NewRomFile>> {
             let xxh3 = xxhash3.digest().to_be_bytes().to_vec();
             let filename = Path::new(&name);
             if let Some(nrf) = NewRomFile::from_archive(path, filename, sha1, xxh3) {
-                rom_files.push(nrf)
+                rom_files.push(nrf);
             }
         }
         ArchiveContents::Err(e) => {
-            warn!("couldn't read {} from {:?}: {:?}", name, path, e)
+            warn!("couldn't read {} from {:?}: {:?}", name, path, e);
         }
     });
 
