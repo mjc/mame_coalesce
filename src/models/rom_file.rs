@@ -38,12 +38,12 @@ impl RomFile {
     }
 
     /// Get the rom file's in archive.
-    pub fn in_archive(&self) -> bool {
+    pub const fn in_archive(&self) -> bool {
         self.in_archive
     }
 
     // I hate this
-    pub fn in_archive_str(&self) -> &str {
+    pub const fn in_archive_str(&self) -> &str {
         if self.in_archive {
             "true"
         } else {

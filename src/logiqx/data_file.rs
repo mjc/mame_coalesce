@@ -33,7 +33,7 @@ impl DataFile {
     }
 
     /// Get a reference to the data file's header.
-    pub fn header(&self) -> &Header {
+    pub const fn header(&self) -> &Header {
         &self.header
     }
 
@@ -43,12 +43,12 @@ impl DataFile {
     }
 
     /// Get a reference to the data file's sha1.
-    pub fn sha1(&self) -> Option<&Vec<u8>> {
+    pub const fn sha1(&self) -> Option<&Vec<u8>> {
         self.sha1.as_ref()
     }
 
     /// Get a reference to the data file's file name.
-    pub fn file_name(&self) -> Option<&String> {
+    pub const fn file_name(&self) -> Option<&String> {
         self.file_name.as_ref()
     }
 
@@ -58,12 +58,12 @@ impl DataFile {
     }
 
     /// Get a reference to the data file's build.
-    pub fn build(&self) -> Option<&String> {
+    pub const fn build(&self) -> Option<&String> {
         self.build.as_ref()
     }
 
     /// Get a reference to the data file's debug.
-    pub fn debug(&self) -> Option<&String> {
+    pub const fn debug(&self) -> Option<&String> {
         self.debug.as_ref()
     }
 }

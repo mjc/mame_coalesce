@@ -51,7 +51,7 @@ impl New<'_> {
     }
 
     /// Get a reference to the new data file's sha1.
-    pub fn sha1(&self) -> Option<&Vec<u8>> {
+    pub const fn sha1(&self) -> Option<&Vec<u8>> {
         self.sha1
     }
 

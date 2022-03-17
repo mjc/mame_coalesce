@@ -188,7 +188,7 @@ impl DestinationBundle {
     }
 
     /// Get the destination bundle's in archive.
-    pub fn in_archive(&self) -> bool {
+    pub const fn in_archive(&self) -> bool {
         self.in_archive
     }
 }

@@ -25,7 +25,7 @@ impl Rom {
     }
 
     /// Get a reference to the rom's size.
-    pub fn size(&self) -> &i32 {
+    pub const fn size(&self) -> &i32 {
         &self.size
     }
 

@@ -77,7 +77,7 @@ impl Game {
     }
 
     /// Get a reference to the game's cloneof.
-    pub fn cloneof(&self) -> Option<&String> {
+    pub const fn cloneof(&self) -> Option<&String> {
         self.cloneof.as_ref()
     }
 }

@@ -15,27 +15,27 @@ impl Header {
     }
 
     /// Get a reference to the header's homepage.
-    pub fn homepage(&self) -> Option<&String> {
+    pub const fn homepage(&self) -> Option<&String> {
         self.homepage.as_ref()
     }
 
     /// Get a reference to the header's description.
-    pub fn description(&self) -> Option<&String> {
+    pub const fn description(&self) -> Option<&String> {
         self.description.as_ref()
     }
 
     /// Get a reference to the header's version.
-    pub fn version(&self) -> Option<&String> {
+    pub const fn version(&self) -> Option<&String> {
         self.version.as_ref()
     }
 
     /// Get a reference to the header's author.
-    pub fn author(&self) -> Option<&String> {
+    pub const fn author(&self) -> Option<&String> {
         self.author.as_ref()
     }
 
     /// Get a reference to the header's url.
-    pub fn url(&self) -> Option<&String> {
+    pub const fn url(&self) -> Option<&String> {
         self.url.as_ref()
     }
 }
