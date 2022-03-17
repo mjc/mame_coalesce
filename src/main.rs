@@ -7,7 +7,8 @@
     clippy::filetype_is_file,
     clippy::str_to_string,
     clippy::string_to_string,
-    clippy::unneeded_field_pattern
+    clippy::unneeded_field_pattern,
+    clippy::unwrap_used
 )]
 
 extern crate indicatif;
@@ -57,13 +58,17 @@ use opts::{Cli, Command};
 type MameResult<T> = Result<T, Box<dyn error::Error>>;
 
 fn main() {
-    CombinedLogger::init(vec![TermLogger::new(
+    let logger_result = CombinedLogger::init(vec![TermLogger::new(
         LevelFilter::Info,
         simplelog::Config::default(),
         simplelog::TerminalMode::Mixed,
         simplelog::ColorChoice::Never,
-    )])
-    .unwrap();
+    )]);
+
+    if let Err(e) = logger_result {
+        panic!("Unable to start logger: {e:?}");
+    }
+
     let cli = Cli::parse();
 
     let pool = match db::create_db_pool(cli.database_path()) {
@@ -77,10 +82,14 @@ fn main() {
     // TODO: these .unwrap()s need to actually handle errors
     match cli.command() {
         Command::AddDataFile { path } => {
-            parse_and_insert_datfile(path, &pool).unwrap();
+            if let Err(e) = parse_and_insert_datfile(path, &pool) {
+                panic!("Couldn't insert data file: {e:?}");
+            }
         }
         Command::ScanSource { jobs, path } => {
-            scan_source(path, &bar_style, *jobs, &pool).unwrap();
+            if let Err(e) = scan_source(path, &bar_style, *jobs, &pool) {
+                panic!("Couldn't scan source: {e:?}");
+            }
         }
 
         Command::Rename {
@@ -111,7 +120,7 @@ fn scan_source(
     let file_list = walk_for_files(path);
     let bar = ProgressBar::new(file_list.len() as u64);
     bar.set_style(bar_style.clone());
-    let new_rom_files = get_all_rom_files_par(&file_list, jobs, bar);
+    let new_rom_files = get_all_rom_files_par(&file_list, jobs, bar)?;
 
     info!(
         "rom files found (unpacked and packed both): {}",
@@ -134,17 +143,16 @@ fn get_all_rom_files_par(
     file_list: &Vec<Utf8PathBuf>,
     jobs: usize,
     bar: ProgressBar,
-) -> Vec<NewRomFile> {
+) -> MameResult<Vec<NewRomFile>> {
     rayon::ThreadPoolBuilder::new()
         .num_threads(jobs)
-        .build_global()
-        .unwrap();
-    file_list
+        .build_global()?;
+    Ok(file_list
         .par_iter()
         .progress_with(bar)
         .filter_map(|p| build_newrom_vec(p))
         .flatten_iter()
-        .collect()
+        .collect())
 }
 
 fn build_newrom_vec(path: &Utf8Path) -> Option<Vec<NewRomFile>> {
@@ -161,7 +169,7 @@ fn build_newrom_vec(path: &Utf8Path) -> Option<Vec<NewRomFile>> {
 }
 
 fn scan_zip(mmap: &MmapFile) -> MameResult<Vec<NewRomFile>> {
-    let path = Utf8Path::from_path(mmap.path()).unwrap();
+    let path = Utf8Path::from_path(mmap.path()).ok_or("invalid path")?;
     let reader = mmap.reader(0)?;
     let mut zip = zip::ZipArchive::new(reader)?;
 
@@ -172,8 +180,11 @@ fn scan_zip(mmap: &MmapFile) -> MameResult<Vec<NewRomFile>> {
 
     for i in 0..zip.len() {
         let mut file = zip.by_index(i)?;
-        let name = file.enclosed_name().unwrap();
-        let mut nrf = NewRomFile::from_archive(path, name, Vec::new(), Vec::new()).unwrap();
+        let name = file
+            .enclosed_name()
+            .ok_or("invalid name inside zip: {path:?}")?;
+        let mut nrf = NewRomFile::from_archive(path, name, Vec::new(), Vec::new())
+            .ok_or("couldn't make database entry for file: {path:?}")?;
 
         std::io::copy(&mut file, &mut sha1hasher)?;
         let sha1 = sha1hasher.finalize_reset().to_vec();
