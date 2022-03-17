@@ -1,5 +1,5 @@
 use camino::Utf8PathBuf;
-use clap::{AppSettings, Parser, Subcommand};
+use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
 #[clap(name = "mame_coalesce")]
@@ -25,7 +25,7 @@ impl Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    #[clap(setting(AppSettings::ArgRequiredElseHelp))]
+    #[clap(arg_required_else_help = true)]
     AddDataFile { path: Utf8PathBuf },
     ScanSource {
         #[clap(short, long, parse(try_from_str), default_value_t = 0)]

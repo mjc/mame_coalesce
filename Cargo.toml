@@ -39,7 +39,7 @@ xxhash-rust = { version = "0.8", features = ["xxh3"] }
 memmap2 = "0.5"
 fmmap = "0.2"
 
-clap = { version = "3.0", features = ["derive", "env", "suggestions"] }
+clap = { version = "3.0.14", features = ["derive", "env", "suggestions"] }
 
 camino = { version = "1.0", features = ["serde1"] }
 walkdir = "^2.2.9"
