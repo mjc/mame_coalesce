@@ -36,7 +36,7 @@ pub fn write_all_zips(
 
             let (mut zip_writer, zip_options) = open_destination_zip(&zip_file_path);
             for bundle in bundles {
-                bundle.zip(&mut zip_writer, zip_options).unwrap();
+                bundle.zip(&mut zip_writer, zip_options).ok()?;
             }
             zip_writer.finish().unwrap();
             zip_bar.inc(1);
