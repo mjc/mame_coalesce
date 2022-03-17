@@ -77,7 +77,7 @@ impl New {
         New {
             name: logiqx.name().to_string(),
             is_bios: Some(logiqx.isbios().to_string()),
-            clone_of: logiqx.cloneof().map(|c| c.to_string()),
+            clone_of: logiqx.cloneof().map(std::string::ToString::to_string),
             rom_of: Some(logiqx.romof().to_string()),
             sample_of: Some(logiqx.sampleof().to_string()),
             board: Some(logiqx.board().to_string()),
