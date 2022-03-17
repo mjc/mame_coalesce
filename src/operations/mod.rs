@@ -21,8 +21,8 @@ pub fn rename_roms(
         games.len(),
         games
             .iter()
-            .map(|(_rom, rom_files)| { rom_files.len() as i64 })
-            .sum::<i64>()
+            .map(|(_rom, rom_files)| { rom_files.len() as u64 })
+            .sum::<u64>()
     );
     let zip_bar = ProgressBar::new(games.len() as u64);
     zip_bar.set_style(bar_style.clone());
