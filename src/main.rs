@@ -18,7 +18,7 @@ extern crate diesel_migrations;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::StructOpt;
-use compress_tools::*;
+use compress_tools::{ArchiveContents, ArchiveIterator};
 use db::DbPool;
 
 use fmmap::{MmapFile, MmapFileExt};
