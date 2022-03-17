@@ -1,8 +1,11 @@
 use std::collections::{BTreeMap, HashSet};
 use std::{error, fs};
 
-use crate::{db::*, logiqx};
-use crate::{models::*, MameResult};
+use crate::{db::DbPool, logiqx};
+use crate::{
+    models::{DataFile, Game, NewDataFile, NewGame, NewRom, NewRomFile, Rom, RomFile},
+    MameResult,
+};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use diesel::result::Error;
@@ -13,7 +16,7 @@ pub fn traverse_and_insert_data_file(
     pool: &DbPool,
     logiqx_data_file: logiqx::DataFile,
 ) -> MameResult<i32> {
-    use crate::schema::{data_files::dsl::*, games::dsl::*, roms::dsl::*};
+    use crate::schema::{data_files::dsl::data_files, games::dsl::games, roms::dsl::roms};
     use diesel::replace_into;
 
     let new_data_file = NewDataFile::from_logiqx(&logiqx_data_file);
@@ -64,7 +67,7 @@ pub fn traverse_and_insert_data_file(
 }
 
 pub fn import_rom_files(pool: &DbPool, new_rom_files: &[NewRomFile]) -> QueryResult<usize> {
-    use crate::schema::rom_files::dsl::*;
+    use crate::schema::rom_files::dsl::rom_files;
     use diesel::replace_into;
 
     let conn = pool.get().unwrap();
@@ -87,7 +90,12 @@ pub fn load_parents(
     pool: &DbPool,
     data_file_path: &Utf8Path,
 ) -> BTreeMap<Game, HashSet<(Rom, RomFile)>> {
-    use crate::schema::{self, games::dsl::*, rom_files::dsl::rom_files, roms::dsl::roms};
+    use crate::schema::{
+        self,
+        games::dsl::{data_file_id, games},
+        rom_files::dsl::rom_files,
+        roms::dsl::roms,
+    };
     let conn = pool.get().unwrap();
 
     let full_path = Utf8PathBuf::from_path_buf(fs::canonicalize(data_file_path).unwrap()).unwrap();
