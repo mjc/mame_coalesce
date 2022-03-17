@@ -4,15 +4,27 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[clap(name = "mame_coalesce")]
 #[clap(about = "A tool to merge your mame roms into 1 game 1 zip format")]
-pub(crate) struct Cli {
+pub struct Cli {
     #[clap(subcommand)]
-    pub(crate) command: Command,
+    command: Command,
     #[clap(short, long, default_value = "coalesce.db")]
-    pub(crate) database_path: String,
+    database_path: String,
+}
+
+impl Cli {
+    /// Get a reference to the cli's database path.
+    pub fn database_path(&self) -> &str {
+        self.database_path.as_ref()
+    }
+
+    /// Get a reference to the cli's command.
+    pub const fn command(&self) -> &Command {
+        &self.command
+    }
 }
 
 #[derive(Debug, Subcommand)]
-pub(crate) enum Command {
+pub enum Command {
     #[clap(arg_required_else_help = true)]
     AddDataFile { path: Utf8PathBuf },
     ScanSource {

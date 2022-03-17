@@ -1,5 +1,6 @@
 #![deny(elided_lifetimes_in_paths, clippy::all)]
 #![warn(clippy::pedantic)]
+#![warn(clippy::nursery)]
 
 extern crate indicatif;
 extern crate rayon;
@@ -57,18 +58,18 @@ fn main() {
     .unwrap();
     let cli = Cli::parse();
 
-    let pool: Pool = db::create_db_pool(&cli.database_path);
+    let pool: Pool = db::create_db_pool(cli.database_path());
 
     let bar_style = ProgressStyle::default_bar()
         .template("[{elapsed}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg} ETA: {eta}");
 
     // TODO: these .unwrap()s need to actually handle errors
-    match cli.command {
+    match cli.command() {
         Command::AddDataFile { path } => {
-            parse_and_insert_datfile(&path, &pool).unwrap();
+            parse_and_insert_datfile(path, &pool).unwrap();
         }
         Command::ScanSource { jobs, path } => {
-            scan_source(&path, &bar_style, jobs, &pool).unwrap();
+            scan_source(path, &bar_style, *jobs, &pool).unwrap();
         }
 
         Command::Rename {
@@ -78,7 +79,8 @@ fn main() {
             destination,
         } => {
             // TODO: respect source argument
-            operations::rename_roms(&pool, &data_file, &bar_style, dry_run, &destination).unwrap();
+            operations::rename_roms(&pool, data_file, &bar_style, *dry_run, destination)
+                .expect("couldn't rename roms");
         }
     }
 }
