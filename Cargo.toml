@@ -53,6 +53,9 @@ chrono = "0.4"
 
 infer = { version = "0.6" }
 
+# I don't know why but 1.1.5 segfaults if you don't include this, instead of letting flat2 pull it in.
+libz-sys = {version = "1.1", features = ["zlib-ng"]}
+
 [dependencies.flate2]
 version = "1.0"
 default-features = false
