@@ -109,7 +109,7 @@ fn scan_source(
 fn parse_and_insert_datfile(path: &Utf8Path, pool: &DbPool) -> MameResult<i32> {
     info!("Using datafile: {}", &path);
     logiqx::DataFile::from_path(path)
-        .and_then(|datafile| db::traverse_and_insert_data_file(pool, datafile))
+        .and_then(|datafile| db::traverse_and_insert_data_file(pool, &datafile))
 }
 
 fn get_all_rom_files_par(

@@ -14,12 +14,12 @@ use diesel::{prelude::*, sql_query};
 // TODO: return Result
 pub fn traverse_and_insert_data_file(
     pool: &DbPool,
-    logiqx_data_file: logiqx::DataFile,
+    logiqx_data_file: &logiqx::DataFile,
 ) -> MameResult<i32> {
     use crate::schema::{data_files::dsl::data_files, games::dsl::games, roms::dsl::roms};
     use diesel::replace_into;
 
-    let new_data_file = NewDataFile::from_logiqx(&logiqx_data_file);
+    let new_data_file = NewDataFile::from_logiqx(logiqx_data_file);
 
     let conn = &pool.get()?;
 
