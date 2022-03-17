@@ -42,7 +42,7 @@ pub struct NewRom {
 }
 
 impl NewRom {
-    pub fn from_logiqx(rom: &logiqx::Rom, game_id: &i32) -> NewRom {
+    pub fn from_logiqx(rom: &logiqx::Rom, game_id: i32) -> NewRom {
         NewRom {
             name: rom.name().to_string(),
             size: *rom.size(),
@@ -52,7 +52,7 @@ impl NewRom {
             date: None,
             updated_at: None,
             inserted_at: None,
-            game_id: *game_id,
+            game_id,
         }
     }
 }

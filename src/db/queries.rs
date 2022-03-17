@@ -43,7 +43,7 @@ pub fn traverse_and_insert_data_file(
                 .unwrap();
 
             game.roms().iter().for_each(|rom| {
-                let new_rom = NewRom::from_logiqx(rom, &g_id);
+                let new_rom = NewRom::from_logiqx(rom, g_id);
                 replace_into(roms).values(new_rom).execute(conn).unwrap();
             });
         });
