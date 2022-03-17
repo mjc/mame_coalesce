@@ -54,7 +54,7 @@ impl RomFile {
 
 #[derive(Insertable, AsChangeset, Debug)]
 #[table_name = "rom_files"]
-pub struct NewRomFile {
+pub struct New {
     pub parent_path: String,
     pub path: String,
     pub name: String,
@@ -64,9 +64,9 @@ pub struct NewRomFile {
     pub rom_id: Option<i32>,
 }
 
-impl NewRomFile {
+impl New {
     // TODO: should go away
-    pub fn from_path(path: &Utf8Path) -> Option<NewRomFile> {
+    pub fn from_path(path: &Utf8Path) -> Option<New> {
         let mmap = hashes::mmap_path(path).ok()?;
         let sha1 = hashes::stream_sha1(&mmap);
         let xxhash3 = hashes::stream_xxhash3(&mmap);
@@ -74,7 +74,7 @@ impl NewRomFile {
         let name = path.file_name()?.to_string();
         let parent_path = path.parent()?.to_string();
         let path = path.to_string();
-        Some(NewRomFile {
+        Some(New {
             parent_path,
             path,
             name,
@@ -90,11 +90,11 @@ impl NewRomFile {
         name: &Path,
         sha1: Vec<u8>,
         xxhash3: Vec<u8>,
-    ) -> Option<NewRomFile> {
+    ) -> Option<New> {
         let parent_path = path.parent()?.to_string();
         let path = path.to_string();
         let name = name.to_str()?.to_string();
-        Some(NewRomFile {
+        Some(New {
             parent_path,
             path,
             name,

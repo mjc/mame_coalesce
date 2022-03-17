@@ -58,7 +58,7 @@ impl Game {
 
 #[derive(Insertable, AsChangeset)]
 #[table_name = "games"]
-pub struct NewGame {
+pub struct New {
     pub name: String,
     pub is_bios: Option<String>,
     pub clone_of: Option<String>,
@@ -71,10 +71,10 @@ pub struct NewGame {
     pub data_file_id: Option<i32>,
 }
 
-impl NewGame {
+impl New {
     pub fn from_logiqx(logiqx: &logiqx::Game, data_file_id: &i32) -> Self {
         // TODO: don't clone, lol
-        NewGame {
+        New {
             name: logiqx.name().to_string(),
             is_bios: Some(logiqx.isbios().to_string()),
             clone_of: logiqx.cloneof().map(|c| c.to_string()),

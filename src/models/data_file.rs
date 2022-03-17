@@ -21,7 +21,7 @@ pub struct DataFile {
 
 #[derive(Insertable, AsChangeset)]
 #[table_name = "data_files"]
-pub struct NewDataFile<'a> {
+pub struct New<'a> {
     build: Option<String>,
     debug: Option<String>,
     file_name: Option<String>,
@@ -34,9 +34,9 @@ pub struct NewDataFile<'a> {
     sha1: Option<&'a Vec<u8>>,
 }
 
-impl NewDataFile<'_> {
-    pub fn from_logiqx(l_data_file: &logiqx::DataFile) -> NewDataFile<'_> {
-        NewDataFile {
+impl New<'_> {
+    pub fn from_logiqx(l_data_file: &logiqx::DataFile) -> New<'_> {
+        New {
             build: l_data_file.build().cloned(),
             debug: l_data_file.debug().cloned(),
             file_name: l_data_file.file_name().cloned(),

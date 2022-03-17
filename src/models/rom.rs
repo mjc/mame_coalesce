@@ -29,7 +29,7 @@ impl Rom {
 
 #[derive(Insertable, AsChangeset)]
 #[table_name = "roms"]
-pub struct NewRom {
+pub struct New {
     pub name: String,
     pub size: i32,
     pub md5: Vec<u8>,
@@ -41,9 +41,9 @@ pub struct NewRom {
     pub game_id: i32,
 }
 
-impl NewRom {
-    pub fn from_logiqx(rom: &logiqx::Rom, game_id: i32) -> NewRom {
-        NewRom {
+impl New {
+    pub fn from_logiqx(rom: &logiqx::Rom, game_id: i32) -> New {
+        New {
             name: rom.name().to_string(),
             size: *rom.size(),
             md5: rom.md5().clone(),
