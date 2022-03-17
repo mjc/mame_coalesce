@@ -90,7 +90,7 @@ fn scan_source(
     pool: &DbPool,
 ) -> MameResult<Utf8PathBuf> {
     info!("Looking in path: {}", path);
-    let file_list = walk_for_files(path)?;
+    let file_list = walk_for_files(path);
     let bar = ProgressBar::new(file_list.len() as u64);
     bar.set_style(bar_style.clone());
     let new_rom_files = get_all_rom_files_par(file_list, jobs, bar)?;
@@ -206,7 +206,7 @@ fn scan_libarchive(path: &Utf8Path) -> MameResult<Vec<NewRomFile>> {
     Ok(rom_files)
 }
 
-fn walk_for_files(dir: &Utf8Path) -> MameResult<Vec<Utf8PathBuf>> {
+fn walk_for_files(dir: &Utf8Path) -> Vec<Utf8PathBuf> {
     let v = WalkDir::new(dir)
         .into_iter()
         .filter_entry(entry_is_relevant)
@@ -214,10 +214,10 @@ fn walk_for_files(dir: &Utf8Path) -> MameResult<Vec<Utf8PathBuf>> {
         .filter(|entry| entry.file_type().is_file())
         .collect();
     let optimized = optimize_file_order(v);
-    Ok(optimized
+    optimized
         .iter()
         .filter_map(|direntry| Utf8PathBuf::from_path_buf(direntry.path().to_path_buf()).ok())
-        .collect())
+        .collect()
 }
 
 #[cfg(target_os = "linux")]
