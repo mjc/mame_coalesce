@@ -10,6 +10,8 @@ use crate::{
 use camino::{Utf8Path, Utf8PathBuf};
 use diesel::result::Error;
 use diesel::{prelude::*, sql_query};
+use log::warn;
+use Error::NotFound;
 
 // TODO: return Result
 pub fn traverse_and_insert_data_file(
@@ -38,17 +40,24 @@ pub fn traverse_and_insert_data_file(
 
         logiqx_data_file.games().iter().for_each(|game| {
             let new_game = NewGame::from_logiqx(game, df_id);
-            replace_into(games).values(new_game).execute(conn).unwrap();
-            let g_id = games
+            if let Err(e) = replace_into(games).values(new_game).execute(conn) {
+                warn!("Couldn't update record for game: {game:?}, error: {e}");
+                return;
+            };
+
+            let g_id_result = games
                 .order(crate::schema::games::dsl::id.desc())
                 .select(crate::schema::games::dsl::id)
-                .first(conn)
-                .unwrap();
+                .first(conn);
 
-            game.roms().iter().for_each(|rom| {
-                let new_rom = NewRom::from_logiqx(rom, g_id);
-                replace_into(roms).values(new_rom).execute(conn).unwrap();
-            });
+            if let Ok(g_id) = g_id_result {
+                game.roms().iter().for_each(|rom| {
+                    let new_rom = NewRom::from_logiqx(rom, g_id);
+                    if let Err(e) = replace_into(roms).values(new_rom).execute(conn) {
+                        warn!("Couldn't update record for {rom:?}, error: {e}");
+                    };
+                });
+            }
         });
 
         // TODO: figure out how to do this with the dsl
@@ -70,7 +79,7 @@ pub fn import_rom_files(pool: &DbPool, new_rom_files: &[NewRomFile]) -> QueryRes
     use crate::schema::rom_files::dsl::rom_files;
     use diesel::replace_into;
 
-    let conn = pool.get().unwrap();
+    let conn = pool.get().map_err(|_| NotFound)?;
 
     conn.transaction::<_, Error, _>(|| {
         new_rom_files
@@ -89,32 +98,31 @@ pub fn import_rom_files(pool: &DbPool, new_rom_files: &[NewRomFile]) -> QueryRes
 pub fn load_parents(
     pool: &DbPool,
     data_file_path: &Utf8Path,
-) -> BTreeMap<Game, HashSet<(Rom, RomFile)>> {
+) -> MameResult<BTreeMap<Game, HashSet<(Rom, RomFile)>>> {
     use crate::schema::{
         self,
         games::dsl::{data_file_id, games},
         rom_files::dsl::rom_files,
         roms::dsl::roms,
     };
-    let conn = pool.get().unwrap();
+    let conn = pool.get()?;
 
-    let full_path = Utf8PathBuf::from_path_buf(fs::canonicalize(data_file_path).unwrap()).unwrap();
-    let df_path = full_path.to_string();
+    let canonicalized = fs::canonicalize(data_file_path)?;
+    let full_path = Utf8PathBuf::from_path_buf(canonicalized)
+        .map_err(|_| "couldn't parse path to data file as unicode.")?;
 
     // TODO: This is fucking horrible
     // TODO:: .filter(sql("..."))
     let df = schema::data_files::dsl::data_files
-        .filter(schema::data_files::dsl::file_name.eq(df_path))
-        .first::<DataFile>(&conn)
-        .unwrap();
+        .filter(schema::data_files::dsl::file_name.eq(full_path.as_str()))
+        .first::<DataFile>(&conn)?;
 
     // TODO: scope by commandline path!
     let query_results: BTreeMap<Game, (Rom, RomFile)> = games
         .filter(data_file_id.eq(df.id()))
         .inner_join(roms.inner_join(rom_files))
         .group_by(schema::rom_files::dsl::sha1)
-        .load(&conn)
-        .unwrap()
+        .load(&conn)?
         .into_iter()
         .collect();
 
@@ -124,13 +132,13 @@ pub fn load_parents(
             if game.parent_id.is_none() {
                 parent = Some(game);
             }
-            let entry = grouped
-                .entry(parent.as_ref().unwrap().clone())
-                .or_insert_with(HashSet::new);
-            (*entry).insert((rom, rom_file));
+            if let Some(key) = parent.clone() {
+                let entry = grouped.entry(key).or_insert_with(HashSet::new);
+                (*entry).insert((rom, rom_file));
+            }
             (grouped, parent)
         },
     );
 
-    by_parent
+    Ok(by_parent)
 }

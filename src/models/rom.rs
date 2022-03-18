@@ -27,7 +27,7 @@ impl Rom {
     }
 }
 
-#[derive(Insertable, AsChangeset)]
+#[derive(Insertable, AsChangeset, Debug)]
 #[table_name = "roms"]
 pub struct New {
     pub name: String,

@@ -56,7 +56,7 @@ impl Game {
     }
 }
 
-#[derive(Insertable, AsChangeset)]
+#[derive(Insertable, AsChangeset, Debug)]
 #[table_name = "games"]
 pub struct New {
     pub name: String,
