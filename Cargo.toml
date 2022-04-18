@@ -28,7 +28,7 @@ serde_derive = "1.0.98"
 serde = "1.0.98"
 serde-xml-rs = "0.5"
 
-zip = { version = "0.5", features = ["deflate", "bzip2"] }
+zip = { version = "0.6", features = ["deflate", "bzip2", "zstd"] }
 
 compress-tools = "0.12"
 
@@ -53,7 +53,7 @@ chrono = "0.4"
 
 infer = { version = "0.7" }
 
-# I don't know why but 1.1.5 segfaults if you don't include this, instead of letting flat2 pull it in.
+# I don't know why but 1.1.5 segfaults if you don't include this, instead of letting flate2 pull it in.
 libz-sys = {version = "1.1", features = ["zlib-ng"]}
 
 [dependencies.flate2]
