@@ -1,0 +1,39 @@
+{
+	"folders": [
+		{
+			"path": "."
+		}
+	],
+	"settings": {
+		"workbench.colorCustomizations": {
+			"activityBar.activeBackground": "#f6bab9",
+			"activityBar.activeBorder": "#128d14",
+			"activityBar.background": "#f6bab9",
+			"activityBar.foreground": "#15202b",
+			"activityBar.inactiveForeground": "#15202b99",
+			"activityBarBadge.background": "#128d14",
+			"activityBarBadge.foreground": "#e7e7e7",
+			"sash.hoverBorder": "#f6bab9",
+			"statusBar.background": "#f08d8c",
+			"statusBar.foreground": "#15202b",
+			"statusBarItem.hoverBackground": "#ea605f",
+			"statusBarItem.remoteBackground": "#f08d8c",
+			"statusBarItem.remoteForeground": "#15202b",
+			"titleBar.activeBackground": "#f08d8c",
+			"titleBar.activeForeground": "#15202b",
+			"titleBar.inactiveBackground": "#f08d8c99",
+			"titleBar.inactiveForeground": "#15202b99"
+		},
+		"peacock.remoteColor": "#f08d8c"
+	},
+	"extensions": {
+		"recommendations": [
+			"bungcip.better-toml",
+			"panicbit.cargo",
+			"rust-lang.rust-analyzer",
+			"serayuzgur.crates",
+			"aaron-bond.better-comments",
+			"usernamehw.errorlens"
+		]
+	}
+}
