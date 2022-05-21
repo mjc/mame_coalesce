@@ -19,7 +19,7 @@ pub struct DataFile {
     sha1: Option<Vec<u8>>,
 }
 
-#[derive(Insertable, AsChangeset)]
+#[derive(Insertable)]
 #[table_name = "data_files"]
 pub struct New<'a> {
     build: Option<String>,

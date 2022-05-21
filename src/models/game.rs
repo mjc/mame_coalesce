@@ -5,7 +5,6 @@ use crate::{logiqx, schema::games};
     Identifiable,
     Queryable,
     QueryableByName,
-    AsChangeset,
     Associations,
     PartialEq,
     Debug,
@@ -56,7 +55,7 @@ impl Game {
     }
 }
 
-#[derive(Insertable, AsChangeset, Debug)]
+#[derive(Insertable, Debug)]
 #[table_name = "games"]
 pub struct New {
     pub name: String,
