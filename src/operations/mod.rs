@@ -1,17 +1,15 @@
 use std::fs::create_dir_all;
 
 use camino::{Utf8Path, Utf8PathBuf};
-use indicatif::{ProgressBar, ProgressStyle};
 use log::info;
 
-use crate::{db::Pool, operations::destination::write_all_zips, MameResult};
+use crate::{db::Pool, operations::destination::write_all_zips, progress, MameResult};
 
 mod destination;
 
 pub fn rename_roms(
     pool: &Pool,
     data_file: &Utf8Path,
-    bar_style: &ProgressStyle,
     dry_run: bool,
     destination: &Utf8Path,
 ) -> MameResult<Vec<Utf8PathBuf>> {
@@ -24,8 +22,7 @@ pub fn rename_roms(
             .map(|(_rom, rom_files)| { rom_files.len() as u64 })
             .sum::<u64>()
     );
-    let zip_bar = ProgressBar::new(games.len() as u64);
-    zip_bar.set_style(bar_style.clone());
+    let zip_bar = progress::bar();
     if dry_run {
         info!("Dry run enabled, not writing zips!");
         Ok(Vec::new())

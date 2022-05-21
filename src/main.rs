@@ -33,12 +33,11 @@ use compress_tools::{ArchiveContents, ArchiveIterator};
 use db::Pool;
 
 use fmmap::{MmapFile, MmapFileExt};
-use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
-use log::{info, warn, LevelFilter};
+use indicatif::{ParallelProgressIterator, ProgressBar};
+use log::{info, warn};
 use models::NewRomFile;
 use rayon::prelude::*;
 use sha1::{Digest, Sha1};
-use simplelog::{CombinedLogger, TermLogger};
 use walkdir::{DirEntry, WalkDir};
 use xxhash_rust::xxh3::Xxh3;
 
@@ -48,8 +47,10 @@ mod logiqx;
 
 mod db;
 mod hashes;
+mod logger;
 mod models;
 mod operations;
+mod progress;
 mod schema;
 
 mod opts;
@@ -58,16 +59,7 @@ use opts::{Cli, Command};
 type MameResult<T> = Result<T, Box<dyn error::Error>>;
 
 fn main() {
-    let logger_result = CombinedLogger::init(vec![TermLogger::new(
-        LevelFilter::Info,
-        simplelog::Config::default(),
-        simplelog::TerminalMode::Mixed,
-        simplelog::ColorChoice::Never,
-    )]);
-
-    if let Err(e) = logger_result {
-        panic!("Unable to start logger: {e:?}");
-    }
+    logger::setup_logger();
 
     let cli = Cli::parse();
 
@@ -76,10 +68,6 @@ fn main() {
         Err(err) => panic!("Couldn't create db pool: {err:?}"),
     };
 
-    let bar_style = ProgressStyle::default_bar()
-        .template("[{elapsed}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg} ETA: {eta}");
-
-    // TODO: these .unwrap()s need to actually handle errors
     match cli.command() {
         Command::AddDataFile { path } => {
             if let Err(e) = parse_and_insert_datfile(path, &pool) {
@@ -87,7 +75,7 @@ fn main() {
             }
         }
         Command::ScanSource { jobs, path } => {
-            if let Err(e) = scan_source(path, &bar_style, *jobs, &pool) {
+            if let Err(e) = scan_source(path, *jobs, &pool) {
                 panic!("Couldn't scan source: {e:?}");
             }
         }
@@ -99,8 +87,7 @@ fn main() {
             ..
         } => {
             // TODO: respect source argument
-            let result =
-                operations::rename_roms(&pool, data_file, &bar_style, *dry_run, destination);
+            let result = operations::rename_roms(&pool, data_file, *dry_run, destination);
 
             if let Err(e) = result {
                 panic!("Unable to rename roms: {e:?}")
@@ -109,17 +96,11 @@ fn main() {
     }
 }
 
-// TODO: this should return a Result
-fn scan_source(
-    path: &Utf8Path,
-    bar_style: &ProgressStyle,
-    jobs: usize,
-    pool: &Pool,
-) -> MameResult<Utf8PathBuf> {
+fn scan_source(path: &Utf8Path, jobs: usize, pool: &Pool) -> MameResult<Utf8PathBuf> {
     info!("Looking in path: {}", path);
     let file_list = walk_for_files(path);
-    let bar = ProgressBar::new(file_list.len() as u64);
-    bar.set_style(bar_style.clone());
+    let bar = progress::bar();
+    bar.set_length(file_list.len() as u64);
     let new_rom_files = get_all_rom_files_par(&file_list, jobs, bar)?;
 
     info!(
