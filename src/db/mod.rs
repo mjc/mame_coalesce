@@ -7,6 +7,6 @@ use diesel_logger::LoggingConnection;
 pub use queries::*;
 pub use setup::*;
 
-pub type Pool = r2d2::Pool<ConnectionManager<LoggingConnection<SqliteConnection>>>;
-pub type PooledConnection =
+pub type SyncPool = r2d2::Pool<ConnectionManager<LoggingConnection<SqliteConnection>>>;
+pub type SyncPooledConnection =
     r2d2::PooledConnection<ConnectionManager<LoggingConnection<SqliteConnection>>>;

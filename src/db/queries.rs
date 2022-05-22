@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::{error, fs};
 
 use crate::{
-    db::PooledConnection,
+    db::SyncPooledConnection,
     logiqx,
     models::{DataFile, Game, NewDataFile, NewGame, NewRom, NewRomFile, Rom, RomFile},
     MameResult,
@@ -15,7 +15,7 @@ use log::warn;
 
 // TODO: return Result
 pub fn traverse_and_insert_data_file(
-    conn: PooledConnection,
+    conn: SyncPooledConnection,
     logiqx_data_file: &logiqx::DataFile,
 ) -> MameResult<i32> {
     use crate::schema::{data_files::dsl::data_files, games::dsl::games, roms::dsl::roms};
@@ -74,7 +74,7 @@ pub fn traverse_and_insert_data_file(
 }
 
 pub fn import_rom_files(
-    conn: PooledConnection,
+    conn: SyncPooledConnection,
     new_rom_files: &[NewRomFile],
 ) -> QueryResult<usize> {
     use crate::schema::rom_files::dsl::rom_files;
@@ -95,7 +95,7 @@ pub fn import_rom_files(
 }
 
 pub fn load_parents(
-    conn: PooledConnection,
+    conn: SyncPooledConnection,
     data_file_path: &Utf8Path,
 ) -> MameResult<BTreeMap<Game, HashSet<(Rom, RomFile)>>> {
     use crate::schema::{

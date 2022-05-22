@@ -4,7 +4,7 @@ mod options;
 use options::{Cli, Command};
 
 use mame_coalesce::{
-    db::{create_db_pool, Pool},
+    db::{create_db_pool, SyncPool},
     logger, operations,
 };
 
@@ -43,7 +43,7 @@ fn main() {
     }
 }
 
-pub fn get_pool(cli: &Cli) -> Pool {
+pub fn get_pool(cli: &Cli) -> SyncPool {
     let pool = match create_db_pool(cli.database_path()) {
         Ok(pool) => pool,
         Err(err) => panic!("Couldn't create db pool: {err:?}"),

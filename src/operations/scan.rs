@@ -14,12 +14,12 @@ use walkdir::{DirEntry, WalkDir};
 use xxhash_rust::xxh3::Xxh3;
 
 use crate::{
-    db::{self, Pool},
+    db::{self, SyncPool},
     models::NewRomFile,
     progress, MameResult,
 };
 
-pub fn scan_source(path: &Utf8Path, jobs: usize, pool: &Pool) -> MameResult<Utf8PathBuf> {
+pub fn scan_source(path: &Utf8Path, jobs: usize, pool: &SyncPool) -> MameResult<Utf8PathBuf> {
     info!("Looking in path: {}", path);
     let file_list = walk_for_files(path);
     let new_rom_files = get_all_rom_files(&file_list, jobs)?;

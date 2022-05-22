@@ -2,7 +2,7 @@ use camino::Utf8Path;
 use log::info;
 
 use crate::{
-    db::{self, Pool},
+    db::{self, SyncPool},
     logiqx, MameResult,
 };
 
@@ -15,7 +15,7 @@ pub use rename::rename_roms;
 pub use scan::scan_source;
 
 // TODO: this should return a Result
-pub fn parse_and_insert_datfile(path: &Utf8Path, pool: &Pool) -> MameResult<i32> {
+pub fn parse_and_insert_datfile(path: &Utf8Path, pool: &SyncPool) -> MameResult<i32> {
     info!("Using datafile: {}", &path);
 
     logiqx::DataFile::from_path(path)

@@ -3,10 +3,10 @@ use std::fs::create_dir_all;
 use camino::{Utf8Path, Utf8PathBuf};
 use log::info;
 
-use crate::{db::Pool, operations::destination::write_all_zips, MameResult};
+use crate::{db::SyncPool, operations::destination::write_all_zips, MameResult};
 
 pub fn rename_roms(
-    pool: &Pool,
+    pool: &SyncPool,
     data_file: &Utf8Path,
     dry_run: bool,
     destination: &Utf8Path,
