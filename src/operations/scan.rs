@@ -28,7 +28,7 @@ pub fn scan_source(path: &Utf8Path, jobs: usize, pool: &Pool) -> MameResult<Utf8
         "rom files found (unpacked and packed both): {}",
         new_rom_files.len()
     );
-    db::import_rom_files(pool, &new_rom_files)?;
+    db::import_rom_files(pool.get()?, &new_rom_files)?;
     // TODO: warning if nothing associated
     // TODO: pick datafile to scan for
     Ok(path.to_path_buf())

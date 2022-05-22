@@ -11,7 +11,7 @@ pub fn rename_roms(
     dry_run: bool,
     destination: &Utf8Path,
 ) -> MameResult<Vec<Utf8PathBuf>> {
-    let games = crate::db::load_parents(pool, data_file)?;
+    let games = crate::db::load_parents(pool.get()?, data_file)?;
     info!(
         "Processing {} games with {} matching rom files",
         games.len(),

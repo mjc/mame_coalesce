@@ -1,8 +1,9 @@
 use std::collections::{BTreeMap, HashSet};
 use std::{error, fs};
 
-use crate::{db::Pool as DbPool, logiqx};
 use crate::{
+    db::PooledConnection,
+    logiqx,
     models::{DataFile, Game, NewDataFile, NewGame, NewRom, NewRomFile, Rom, RomFile},
     MameResult,
 };
@@ -11,11 +12,10 @@ use camino::{Utf8Path, Utf8PathBuf};
 use diesel::result::Error;
 use diesel::{prelude::*, sql_query};
 use log::warn;
-use Error::NotFound;
 
 // TODO: return Result
 pub fn traverse_and_insert_data_file(
-    pool: &DbPool,
+    conn: PooledConnection,
     logiqx_data_file: &logiqx::DataFile,
 ) -> MameResult<i32> {
     use crate::schema::{data_files::dsl::data_files, games::dsl::games, roms::dsl::roms};
@@ -23,24 +23,22 @@ pub fn traverse_and_insert_data_file(
 
     let new_data_file = NewDataFile::from_logiqx(logiqx_data_file);
 
-    let conn = &pool.get()?;
-
     // TODO: return from transaction?
     let mut df_id = -1;
 
     conn.transaction::<_, Box<dyn error::Error>, _>(|| {
         replace_into(data_files)
             .values(&new_data_file)
-            .execute(conn)?;
+            .execute(&conn)?;
 
         df_id = data_files
             .order(crate::schema::data_files::dsl::id.desc())
             .select(crate::schema::data_files::dsl::id)
-            .first(conn)?;
+            .first(&conn)?;
 
         logiqx_data_file.games().iter().for_each(|game| {
             let new_game = NewGame::from_logiqx(game, df_id);
-            if let Err(e) = replace_into(games).values(new_game).execute(conn) {
+            if let Err(e) = replace_into(games).values(new_game).execute(&conn) {
                 warn!("Couldn't update record for game: {game:?}, error: {e}");
                 return;
             };
@@ -48,12 +46,12 @@ pub fn traverse_and_insert_data_file(
             let g_id_result = games
                 .order(crate::schema::games::dsl::id.desc())
                 .select(crate::schema::games::dsl::id)
-                .first(conn);
+                .first(&conn);
 
             if let Ok(g_id) = g_id_result {
                 game.roms().iter().for_each(|rom| {
                     let new_rom = NewRom::from_logiqx(rom, g_id);
-                    if let Err(e) = replace_into(roms).values(new_rom).execute(conn) {
+                    if let Err(e) = replace_into(roms).values(new_rom).execute(&conn) {
                         warn!("Couldn't update record for {rom:?}, error: {e}");
                     };
                 });
@@ -69,17 +67,18 @@ pub fn traverse_and_insert_data_file(
                     select games.id from games WHERE cloned.clone_of = games.name
                 )"#,
         )
-        .execute(conn)?;
+        .execute(&conn)?;
 
         Ok(df_id)
     })
 }
 
-pub fn import_rom_files(pool: &DbPool, new_rom_files: &[NewRomFile]) -> QueryResult<usize> {
+pub fn import_rom_files(
+    conn: PooledConnection,
+    new_rom_files: &[NewRomFile],
+) -> QueryResult<usize> {
     use crate::schema::rom_files::dsl::rom_files;
     use diesel::replace_into;
-
-    let conn = pool.get().map_err(|_| NotFound)?;
 
     conn.transaction::<_, Error, _>(|| {
         new_rom_files
@@ -96,7 +95,7 @@ pub fn import_rom_files(pool: &DbPool, new_rom_files: &[NewRomFile]) -> QueryRes
 }
 
 pub fn load_parents(
-    pool: &DbPool,
+    conn: PooledConnection,
     data_file_path: &Utf8Path,
 ) -> MameResult<BTreeMap<Game, HashSet<(Rom, RomFile)>>> {
     use crate::schema::{
@@ -105,7 +104,6 @@ pub fn load_parents(
         rom_files::dsl::rom_files,
         roms::dsl::roms,
     };
-    let conn = pool.get()?;
 
     let canonicalized = fs::canonicalize(data_file_path)?;
     let full_path = Utf8PathBuf::from_path_buf(canonicalized)

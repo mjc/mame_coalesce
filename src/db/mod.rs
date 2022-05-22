@@ -8,3 +8,5 @@ pub use queries::*;
 pub use setup::*;
 
 pub type Pool = r2d2::Pool<ConnectionManager<LoggingConnection<SqliteConnection>>>;
+pub type PooledConnection =
+    r2d2::PooledConnection<ConnectionManager<LoggingConnection<SqliteConnection>>>;
