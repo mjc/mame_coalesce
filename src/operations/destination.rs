@@ -6,21 +6,21 @@ use std::{
 
 use camino::{Utf8Path, Utf8PathBuf};
 use compress_tools::{ArchiveContents, ArchiveIterator};
-use indicatif::ProgressBar;
+
 use log::{debug, error};
 use rayon::prelude::*;
 use zip::{write::FileOptions, ZipWriter};
 
 use crate::{
     models::{Game, Rom, RomFile},
-    MameResult,
+    progress, MameResult,
 };
 
 pub fn write_all_zips(
     games: &BTreeMap<Game, HashSet<(Rom, RomFile)>>,
     destination: &Utf8Path,
-    zip_bar: &ProgressBar,
 ) -> Vec<Utf8PathBuf> {
+    let bar = progress::bar(games.len() as u64);
     // this is by far the ugliest code I've ever written in any language
     // I'm sorry
     // TODO: major refactor
@@ -40,7 +40,7 @@ pub fn write_all_zips(
                 bundle.zip(&mut zip_writer, zip_options).ok()?;
             }
             zip_writer.finish().ok()?;
-            zip_bar.inc(1);
+            bar.inc(1);
             Some(zip_file_path)
         })
         .collect();
