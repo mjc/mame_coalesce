@@ -1,17 +1,13 @@
 use axum::{extract::Extension, response::Html, routing::post, Router};
-use deadpool_diesel::sqlite::{Manager, Pool, Runtime};
 
 use mame_coalesce::{db, logiqx, MameResult};
 use std::net::SocketAddr;
 
-type AsyncPool = deadpool::managed::Pool<deadpool_diesel::Manager<diesel::SqliteConnection>>;
-
 #[tokio::main]
 async fn main() -> MameResult<()> {
-    // build our application with a route
-    let manager = Manager::new("coalesce.db", Runtime::Tokio1);
-    let pool: AsyncPool = Pool::builder(manager).max_size(8).build().unwrap();
+    let pool = db::create_async_pool();
 
+    // build our application with a route
     let app = Router::new()
         .route("/datfile", post(handler))
         .layer(Extension(pool));
@@ -26,7 +22,7 @@ async fn main() -> MameResult<()> {
     Ok(())
 }
 
-async fn handler(body: String, Extension(pool): Extension<AsyncPool>) -> Html<&'static str> {
+async fn handler(body: String, Extension(pool): Extension<db::AsyncPool>) -> Html<&'static str> {
     let datfile = logiqx::DataFile::from_string(&body).expect("Couldn't parse datfile");
     let managed_conn = pool.get().await.expect("Couldn't check out db connection");
     let _id = managed_conn
