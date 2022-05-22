@@ -5,7 +5,7 @@ use std::net::SocketAddr;
 
 #[tokio::main]
 async fn main() -> MameResult<()> {
-    let pool = db::create_async_pool();
+    let pool = db::create_async_pool().await;
 
     // build our application with a route
     let app = Router::new()

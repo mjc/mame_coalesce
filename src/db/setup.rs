@@ -16,9 +16,16 @@ pub fn create_sync_pool(database_url: &str) -> MameResult<SyncPool> {
     Ok(pool)
 }
 
-pub fn create_async_pool(
+pub async fn create_async_pool(
 ) -> deadpool_diesel::Pool<deadpool_diesel::Manager<diesel::SqliteConnection>> {
     let manager = Manager::new("coalesce.db", Runtime::Tokio1);
     let pool: AsyncPool = Pool::builder(manager).max_size(8).build().unwrap();
+    let managed_conn = pool.get().await.unwrap();
+    managed_conn
+        .interact(|conn| {
+            embedded_migrations::run(conn).unwrap();
+        })
+        .await
+        .unwrap();
     pool
 }
