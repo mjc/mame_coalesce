@@ -1,52 +1,9 @@
-#![deny(elided_lifetimes_in_paths, clippy::all)]
-#![warn(clippy::pedantic)]
-#![warn(
-    clippy::nursery,
-    clippy::decimal_literal_representation,
-    clippy::expect_used,
-    clippy::filetype_is_file,
-    clippy::str_to_string,
-    clippy::string_to_string,
-    clippy::unneeded_field_pattern,
-    clippy::unwrap_used
-)]
-
-extern crate indicatif;
-extern crate rayon;
-#[macro_use]
-extern crate serde_derive;
-extern crate serde;
-extern crate serde_xml_rs;
-extern crate sha1;
-
-extern crate walkdir;
-extern crate zip;
-
-#[macro_use]
-extern crate diesel;
-#[macro_use]
-extern crate diesel_migrations;
-
 use clap::StructOpt;
 
-use log::warn;
-
-use std::{error, result::Result};
-
-mod logiqx;
-
-mod db;
-mod hashes;
-mod logger;
-mod models;
-mod operations;
-mod progress;
-mod schema;
-
-mod options;
-use options::{Cli, Command};
-
-type MameResult<T> = Result<T, Box<dyn error::Error>>;
+use mame_coalesce::{
+    db, logger, operations,
+    options::{Cli, Command},
+};
 
 fn main() {
     logger::setup_logger();
