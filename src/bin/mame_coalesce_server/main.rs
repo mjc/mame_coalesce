@@ -1,11 +1,20 @@
-use axum::{response::Html, routing::get, Router};
-use mame_coalesce::MameResult;
+use axum::{extract::Extension, response::Html, routing::post, Router};
+use deadpool_diesel::sqlite::{Manager, Pool, Runtime};
+
+use mame_coalesce::{db, logiqx, MameResult};
 use std::net::SocketAddr;
+
+type AsyncPool = deadpool::managed::Pool<deadpool_diesel::Manager<diesel::SqliteConnection>>;
 
 #[tokio::main]
 async fn main() -> MameResult<()> {
     // build our application with a route
-    let app = Router::new().route("/", get(handler));
+    let manager = Manager::new("coalesce.db", Runtime::Tokio1);
+    let pool: AsyncPool = Pool::builder(manager).max_size(8).build().unwrap();
+
+    let app = Router::new()
+        .route("/datfile", post(handler))
+        .layer(Extension(pool));
 
     // run it
     let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
@@ -17,6 +26,14 @@ async fn main() -> MameResult<()> {
     Ok(())
 }
 
-async fn handler() -> Html<&'static str> {
-    Html("<h1>Hello, World!</h1>")
+async fn handler(body: String, Extension(pool): Extension<AsyncPool>) -> Html<&'static str> {
+    let datfile = logiqx::DataFile::from_string(&body).expect("Couldn't parse datfile");
+    let managed_conn = pool.get().await.expect("Couldn't check out db connection");
+    let _id = managed_conn
+        .interact(move |conn| {
+            db::traverse_and_insert_data_file(conn, &datfile).expect("Couldn't insert datfile")
+        })
+        .await;
+
+    Html("moo")
 }

@@ -2,7 +2,6 @@ use std::collections::{BTreeMap, HashSet};
 use std::{error, fs};
 
 use crate::{
-    db::SyncPooledConnection,
     logiqx,
     models::{DataFile, Game, NewDataFile, NewGame, NewRom, NewRomFile, Rom, RomFile},
     MameResult,
@@ -15,7 +14,7 @@ use log::warn;
 
 // TODO: return Result
 pub fn traverse_and_insert_data_file(
-    conn: impl Connection<Backend = diesel::sqlite::Sqlite>,
+    conn: &mut impl Connection<Backend = diesel::sqlite::Sqlite>,
     logiqx_data_file: &logiqx::DataFile,
 ) -> MameResult<i32> {
     use crate::schema::{data_files::dsl::data_files, games::dsl::games, roms::dsl::roms};
@@ -29,16 +28,16 @@ pub fn traverse_and_insert_data_file(
     conn.transaction::<_, Box<dyn error::Error>, _>(|| {
         replace_into(data_files)
             .values(&new_data_file)
-            .execute(&conn)?;
+            .execute(conn)?;
 
         df_id = data_files
             .order(crate::schema::data_files::dsl::id.desc())
             .select(crate::schema::data_files::dsl::id)
-            .first(&conn)?;
+            .first(conn)?;
 
         logiqx_data_file.games().iter().for_each(|game| {
             let new_game = NewGame::from_logiqx(game, df_id);
-            if let Err(e) = replace_into(games).values(new_game).execute(&conn) {
+            if let Err(e) = replace_into(games).values(new_game).execute(conn) {
                 warn!("Couldn't update record for game: {game:?}, error: {e}");
                 return;
             };
@@ -46,12 +45,12 @@ pub fn traverse_and_insert_data_file(
             let g_id_result = games
                 .order(crate::schema::games::dsl::id.desc())
                 .select(crate::schema::games::dsl::id)
-                .first(&conn);
+                .first(conn);
 
             if let Ok(g_id) = g_id_result {
                 game.roms().iter().for_each(|rom| {
                     let new_rom = NewRom::from_logiqx(rom, g_id);
-                    if let Err(e) = replace_into(roms).values(new_rom).execute(&conn) {
+                    if let Err(e) = replace_into(roms).values(new_rom).execute(conn) {
                         warn!("Couldn't update record for {rom:?}, error: {e}");
                     };
                 });
@@ -67,7 +66,7 @@ pub fn traverse_and_insert_data_file(
                     select games.id from games WHERE cloned.clone_of = games.name
                 )"#,
         )
-        .execute(&conn)?;
+        .execute(conn)?;
 
         Ok(df_id)
     })

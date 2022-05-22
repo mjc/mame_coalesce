@@ -19,5 +19,5 @@ pub fn parse_and_insert_datfile(path: &Utf8Path, pool: &SyncPool) -> MameResult<
     info!("Using datafile: {}", &path);
 
     logiqx::DataFile::from_path(path)
-        .and_then(|datafile| db::traverse_and_insert_data_file(pool.get()?, &datafile))
+        .and_then(|datafile| db::traverse_and_insert_data_file(&mut pool.get()?, &datafile))
 }
