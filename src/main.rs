@@ -43,8 +43,8 @@ mod operations;
 mod progress;
 mod schema;
 
-mod opts;
-use opts::{Cli, Command};
+mod options;
+use options::{Cli, Command};
 
 type MameResult<T> = Result<T, Box<dyn error::Error>>;
 
@@ -53,10 +53,7 @@ fn main() {
 
     let cli = Cli::parse();
 
-    let pool = match db::create_db_pool(cli.database_path()) {
-        Ok(pool) => pool,
-        Err(err) => panic!("Couldn't create db pool: {err:?}"),
-    };
+    let pool = db::get_pool(&cli);
 
     match cli.command() {
         Command::AddDataFile { path } => {
