@@ -15,7 +15,7 @@ use log::warn;
 
 // TODO: return Result
 pub fn traverse_and_insert_data_file(
-    conn: SyncPooledConnection,
+    conn: impl Connection<Backend = diesel::sqlite::Sqlite>,
     logiqx_data_file: &logiqx::DataFile,
 ) -> MameResult<i32> {
     use crate::schema::{data_files::dsl::data_files, games::dsl::games, roms::dsl::roms};
@@ -74,7 +74,7 @@ pub fn traverse_and_insert_data_file(
 }
 
 pub fn import_rom_files(
-    conn: SyncPooledConnection,
+    conn: impl Connection<Backend = diesel::sqlite::Sqlite>,
     new_rom_files: &[NewRomFile],
 ) -> QueryResult<usize> {
     use crate::schema::rom_files::dsl::rom_files;
@@ -95,7 +95,7 @@ pub fn import_rom_files(
 }
 
 pub fn load_parents(
-    conn: SyncPooledConnection,
+    conn: impl Connection<Backend = diesel::sqlite::Sqlite>,
     data_file_path: &Utf8Path,
 ) -> MameResult<BTreeMap<Game, HashSet<(Rom, RomFile)>>> {
     use crate::schema::{
