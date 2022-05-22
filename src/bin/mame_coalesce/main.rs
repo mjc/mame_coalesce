@@ -5,10 +5,10 @@ use options::{Cli, Command};
 
 use mame_coalesce::{
     db::{create_db_pool, SyncPool},
-    logger, operations,
+    logger, operations, MameResult,
 };
 
-fn main() {
+fn main() -> MameResult<()> {
     logger::setup_logger();
 
     let cli = Cli::parse();
@@ -41,6 +41,7 @@ fn main() {
             }
         }
     }
+    Ok(())
 }
 
 pub fn get_pool(cli: &Cli) -> SyncPool {

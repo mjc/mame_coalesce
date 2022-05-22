@@ -1,8 +1,9 @@
 use axum::{response::Html, routing::get, Router};
+use mame_coalesce::MameResult;
 use std::net::SocketAddr;
 
 #[tokio::main]
-async fn main() {
+async fn main() -> MameResult<()> {
     // build our application with a route
     let app = Router::new().route("/", get(handler));
 
@@ -13,6 +14,7 @@ async fn main() {
         .serve(app.into_make_service())
         .await
         .unwrap();
+    Ok(())
 }
 
 async fn handler() -> Html<&'static str> {

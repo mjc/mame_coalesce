@@ -40,4 +40,4 @@ pub mod operations;
 pub mod progress;
 pub mod schema;
 
-type MameResult<T> = Result<T, Box<dyn error::Error>>;
+pub type MameResult<T> = Result<T, Box<dyn error::Error>>;
