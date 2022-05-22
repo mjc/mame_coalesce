@@ -40,7 +40,6 @@ hex = { version = "0.4.3", features = ["serde"] }
 sha-1 = { version = "0.10.0", features = ["asm"] }
 xxhash-rust = { version = "0.8.5", features = ["xxh3"] }
 
-memmap2 = "0.5.3"
 fmmap = "0.2.4"
 
 clap = { version = "3.1.18", features = ["derive", "env", "suggestions"] }

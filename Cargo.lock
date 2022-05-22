@@ -625,7 +625,6 @@ dependencies = [
  "infer",
  "libz-sys",
  "log",
- "memmap2",
  "r2d2",
  "rayon",
  "serde",
