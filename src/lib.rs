@@ -37,7 +37,6 @@ pub mod logger;
 pub mod logiqx;
 pub mod models;
 pub mod operations;
-pub mod options;
 pub mod progress;
 pub mod schema;
 

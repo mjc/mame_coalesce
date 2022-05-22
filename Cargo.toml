@@ -4,6 +4,10 @@ version = "0.1.0"
 authors = ["Michael J. Cohen <mjc@kernel.org>"]
 edition = "2021"
 
+[[bin]]
+name = "mame_coalesce"
+default_run = true
+
 [profile.release]
 debug = true
 lto = "thin"

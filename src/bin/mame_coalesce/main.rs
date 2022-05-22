@@ -1,8 +1,11 @@
 use clap::StructOpt;
 
+mod options;
+use options::{Cli, Command};
+
 use mame_coalesce::{
-    db, logger, operations,
-    options::{Cli, Command},
+    db::{create_db_pool, Pool},
+    logger, operations,
 };
 
 fn main() {
@@ -10,7 +13,7 @@ fn main() {
 
     let cli = Cli::parse();
 
-    let pool = db::get_pool(&cli);
+    let pool = get_pool(&cli);
 
     match cli.command() {
         Command::AddDataFile { path } => {
@@ -38,4 +41,12 @@ fn main() {
             }
         }
     }
+}
+
+pub fn get_pool(cli: &Cli) -> Pool {
+    let pool = match create_db_pool(cli.database_path()) {
+        Ok(pool) => pool,
+        Err(err) => panic!("Couldn't create db pool: {err:?}"),
+    };
+    pool
 }
