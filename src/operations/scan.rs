@@ -22,7 +22,7 @@ use crate::{
 pub fn scan_source(path: &Utf8Path, jobs: usize, pool: &Pool) -> MameResult<Utf8PathBuf> {
     info!("Looking in path: {}", path);
     let file_list = walk_for_files(path);
-    let new_rom_files = get_all_rom_files_par(&file_list, jobs)?;
+    let new_rom_files = get_all_rom_files(&file_list, jobs)?;
 
     info!(
         "rom files found (unpacked and packed both): {}",
@@ -34,7 +34,7 @@ pub fn scan_source(path: &Utf8Path, jobs: usize, pool: &Pool) -> MameResult<Utf8
     Ok(path.to_path_buf())
 }
 
-fn get_all_rom_files_par(file_list: &Vec<Utf8PathBuf>, jobs: usize) -> MameResult<Vec<NewRomFile>> {
+fn get_all_rom_files(file_list: &Vec<Utf8PathBuf>, jobs: usize) -> MameResult<Vec<NewRomFile>> {
     let bar = progress::bar(file_list.len() as u64);
     rayon::ThreadPoolBuilder::new()
         .num_threads(jobs)
@@ -42,12 +42,12 @@ fn get_all_rom_files_par(file_list: &Vec<Utf8PathBuf>, jobs: usize) -> MameResul
     Ok(file_list
         .par_iter()
         .progress_with(bar)
-        .filter_map(|p| build_newrom_vec(p))
+        .filter_map(|p| build_new_rom_files(p))
         .flatten_iter()
         .collect())
 }
 
-fn build_newrom_vec(path: &Utf8Path) -> Option<Vec<NewRomFile>> {
+fn build_new_rom_files(path: &Utf8Path) -> Option<Vec<NewRomFile>> {
     let single_rom = || NewRomFile::from_path(path).map(|nrf| vec![nrf]);
     let mmap = crate::hashes::mmap_path(path).ok()?;
     infer::get_from_path(path)
