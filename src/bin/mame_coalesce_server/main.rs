@@ -1,15 +1,16 @@
-use axum::{extract::Extension, response::Html, routing::post, Router};
+use axum::{extract::Extension, response::Html, routing::post, Json, Router};
 
+use hyper::StatusCode;
 use mame_coalesce::{db, logiqx, MameResult};
 use std::net::SocketAddr;
 
 #[tokio::main]
 async fn main() -> MameResult<()> {
-    let pool = db::create_async_pool().await?;
+    let pool = db::create_sync_pool("coalesce.db")?;
 
     // build our application with a route
     let app = Router::new()
-        .route("/datfile", post(handler))
+        .route("/datfile", post(add_datfile))
         .layer(Extension(pool));
 
     // run it
@@ -22,14 +23,18 @@ async fn main() -> MameResult<()> {
     Ok(())
 }
 
-async fn handler(body: String, Extension(pool): Extension<db::AsyncPool>) -> Html<&'static str> {
-    let datfile = logiqx::DataFile::from_string(&body).expect("Couldn't parse datfile");
-    let managed_conn = pool.get().await.expect("Couldn't check out db connection");
-    let _id = managed_conn
-        .interact(move |conn| {
-            db::traverse_and_insert_data_file(conn, &datfile).expect("Couldn't insert datfile")
-        })
-        .await;
-
-    Html("moo")
+async fn add_datfile(
+    body: String,
+    Extension(pool): Extension<db::SyncPool>,
+) -> Result<Json<&'static str>, hyper::StatusCode> {
+    let datfile =
+        logiqx::DataFile::from_string(&body).or_else(|_| Err(StatusCode::UNPROCESSABLE_ENTITY))?;
+    db::traverse_and_insert_data_file(
+        &mut pool
+            .get()
+            .or_else(|_| Err(StatusCode::INTERNAL_SERVER_ERROR))?,
+        &datfile,
+    )
+    .expect("Couldn't insert datfile");
+    Ok(Json("moo"))
 }
