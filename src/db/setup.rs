@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use deadpool_diesel::sqlite::{Manager, Pool, Runtime};
 use diesel::{r2d2::ConnectionManager, SqliteConnection};
 
@@ -16,16 +18,17 @@ pub fn create_sync_pool(database_url: &str) -> MameResult<SyncPool> {
     Ok(pool)
 }
 
-pub async fn create_async_pool(
-) -> deadpool_diesel::Pool<deadpool_diesel::Manager<diesel::SqliteConnection>> {
+pub async fn create_async_pool() -> MameResult<AsyncPool> {
     let manager = Manager::new("coalesce.db", Runtime::Tokio1);
-    let pool: AsyncPool = Pool::builder(manager).max_size(8).build().unwrap();
-    let managed_conn = pool.get().await.unwrap();
+    let pool: AsyncPool = Pool::builder(manager)
+        // TODO set wal mode in a post-create hook. Without this, the db is single threaded
+        .max_size(1)
+        .wait_timeout(Some(Duration::new(5, 0)))
+        .runtime(Runtime::Tokio1)
+        .build()?;
+    let managed_conn = pool.get().await?;
     managed_conn
-        .interact(|conn| {
-            embedded_migrations::run(conn).unwrap();
-        })
-        .await
-        .unwrap();
-    pool
+        .interact(|conn| embedded_migrations::run(conn).unwrap())
+        .await?;
+    Ok(pool)
 }
