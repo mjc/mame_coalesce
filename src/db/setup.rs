@@ -10,7 +10,7 @@ embed_migrations!("migrations");
 
 pub fn create_sync_pool(database_url: &str) -> MameResult<SyncPool> {
     let manager = ConnectionManager::<LoggingConnection<SqliteConnection>>::new(database_url);
-    let pool: SyncPool = r2d2::Pool::builder().build(manager)?;
+    let pool: SyncPool = r2d2::Pool::builder().max_size(8).build(manager)?;
     embedded_migrations::run(&pool.get()?)?;
 
     Ok(pool)

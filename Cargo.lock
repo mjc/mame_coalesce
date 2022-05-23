@@ -857,6 +857,7 @@ dependencies = [
  "hyper",
  "indicatif",
  "infer",
+ "libsqlite3-sys",
  "libz-sys",
  "log",
  "r2d2",

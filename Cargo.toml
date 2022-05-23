@@ -62,10 +62,11 @@ fmmap = "0.2.4"
 camino = { version = "1.0.9", features = ["serde1"] }
 walkdir = "2.3.2"
 
+libsqlite3-sys = { version = "0.22.2", features = ["unlock_notify", "min_sqlite_version_3_7_16"] }
 diesel = { version = "1.4.8", features = ["sqlite", "r2d2", "chrono"] }
 r2d2 = "0.8.9"
-deadpool = "*"
-deadpool-diesel = { version = "0.3.1", features = ["sqlite"] }
+deadpool = { version = "0.9.5", features = ["rt_tokio_1"] }
+deadpool-diesel = { version = "0.3.1", features = ["sqlite", "rt_tokio_1"] }
 diesel_migrations = "1.4.0"
 diesel_logger = "0.1.1"
 chrono = "0.4.19"
