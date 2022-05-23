@@ -4,6 +4,7 @@ mod options;
 use options::{Cli, Command};
 
 use mame_coalesce::{
+    build_rayon_pool,
     db::{create_sync_pool, SyncPool},
     logger, operations, MameResult,
 };
@@ -15,6 +16,8 @@ fn main() -> MameResult<()> {
 
     let pool = get_pool(&cli);
 
+    build_rayon_pool()?;
+
     match cli.command() {
         Command::AddDataFile { path } => {
             if let Err(e) = operations::parse_and_insert_datfile(path, &pool) {
@@ -22,7 +25,7 @@ fn main() -> MameResult<()> {
             }
         }
         Command::ScanSource { jobs, path } => {
-            if let Err(e) = operations::scan_source(path, *jobs, &pool) {
+            if let Err(e) = operations::scan_source(path, &pool) {
                 panic!("Couldn't scan source: {e:?}");
             }
         }

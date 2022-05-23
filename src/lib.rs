@@ -41,3 +41,8 @@ pub mod progress;
 pub mod schema;
 
 pub type MameResult<T> = Result<T, Box<dyn error::Error>>;
+
+pub fn build_rayon_pool() -> MameResult<()> {
+    rayon::ThreadPoolBuilder::new().build_global()?;
+    Ok(())
+}

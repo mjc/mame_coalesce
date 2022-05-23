@@ -19,10 +19,10 @@ use crate::{
     progress, MameResult,
 };
 
-pub fn scan_source(path: &Utf8Path, jobs: usize, pool: &SyncPool) -> MameResult<Utf8PathBuf> {
+pub fn scan_source(path: &Utf8Path, pool: &SyncPool) -> MameResult<Utf8PathBuf> {
     info!("Looking in path: {}", path);
     let file_list = walk_for_files(path);
-    let new_rom_files = get_all_rom_files(&file_list, jobs)?;
+    let new_rom_files = get_all_rom_files(&file_list)?;
 
     info!(
         "rom files found (unpacked and packed both): {}",
@@ -34,11 +34,9 @@ pub fn scan_source(path: &Utf8Path, jobs: usize, pool: &SyncPool) -> MameResult<
     Ok(path.to_path_buf())
 }
 
-pub fn get_all_rom_files(file_list: &Vec<Utf8PathBuf>, jobs: usize) -> MameResult<Vec<NewRomFile>> {
+pub fn get_all_rom_files(file_list: &Vec<Utf8PathBuf>) -> MameResult<Vec<NewRomFile>> {
     let bar = progress::bar(file_list.len() as u64);
-    rayon::ThreadPoolBuilder::new()
-        .num_threads(jobs)
-        .build_global()?;
+
     Ok(file_list
         .par_iter()
         .progress_with(bar)
