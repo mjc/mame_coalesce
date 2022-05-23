@@ -1,7 +1,8 @@
-use axum::{extract::Extension, response::Html, routing::post, Json, Router};
+use axum::{extract::Extension, routing::post, Json, Router};
 
 use hyper::StatusCode;
-use mame_coalesce::{db, logiqx, MameResult};
+use log::info;
+use mame_coalesce::{db, logiqx, operations::scan, MameResult};
 use std::net::SocketAddr;
 
 #[tokio::main]
@@ -11,6 +12,7 @@ async fn main() -> MameResult<()> {
     // build our application with a route
     let app = Router::new()
         .route("/datfile", post(add_datfile))
+        .route("/scan_source", post(scan_source))
         .layer(Extension(pool));
 
     // run it
@@ -27,14 +29,32 @@ async fn add_datfile(
     body: String,
     Extension(pool): Extension<db::SyncPool>,
 ) -> Result<Json<&'static str>, hyper::StatusCode> {
+    let conn = &mut pool
+        .get()
+        .or_else(|_| Err(StatusCode::INTERNAL_SERVER_ERROR))?;
     let datfile =
         logiqx::DataFile::from_string(&body).or_else(|_| Err(StatusCode::UNPROCESSABLE_ENTITY))?;
-    db::traverse_and_insert_data_file(
-        &mut pool
-            .get()
-            .or_else(|_| Err(StatusCode::INTERNAL_SERVER_ERROR))?,
-        &datfile,
-    )
-    .expect("Couldn't insert datfile");
+    db::traverse_and_insert_data_file(conn, &datfile).expect("Couldn't insert datfile");
+    Ok(Json("moo"))
+}
+
+async fn scan_source(
+    path: String,
+    Extension(pool): Extension<db::SyncPool>,
+) -> Result<Json<&'static str>, hyper::StatusCode> {
+    let conn = &mut pool
+        .get()
+        .or_else(|_| Err(StatusCode::INTERNAL_SERVER_ERROR))?;
+    let file_list = scan::walk_for_files(camino::Utf8Path::new(path.as_str()));
+    let new_rom_files = scan::get_all_rom_files(&file_list, 16)
+        .or_else(|_| Err(StatusCode::INTERNAL_SERVER_ERROR))?;
+
+    info!(
+        "rom files found (unpacked and packed both): {}",
+        new_rom_files.len()
+    );
+    db::import_rom_files(conn, &new_rom_files)
+        .or_else(|_| Err(StatusCode::INTERNAL_SERVER_ERROR))?;
+
     Ok(Json("moo"))
 }

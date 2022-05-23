@@ -9,7 +9,7 @@ use crate::{
 mod destination;
 
 mod rename;
-mod scan;
+pub mod scan;
 
 pub use rename::rename_roms;
 pub use scan::scan_source;

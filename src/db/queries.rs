@@ -73,7 +73,7 @@ pub fn traverse_and_insert_data_file(
 }
 
 pub fn import_rom_files(
-    conn: impl Connection<Backend = diesel::sqlite::Sqlite>,
+    conn: &mut impl Connection<Backend = diesel::sqlite::Sqlite>,
     new_rom_files: &[NewRomFile],
 ) -> QueryResult<usize> {
     use crate::schema::rom_files::dsl::rom_files;
@@ -82,14 +82,14 @@ pub fn import_rom_files(
     conn.transaction::<_, Error, _>(|| {
         new_rom_files
             .iter()
-            .map(|new_rom_file| replace_into(rom_files).values(new_rom_file).execute(&conn))
+            .map(|new_rom_file| replace_into(rom_files).values(new_rom_file).execute(conn))
             .collect::<QueryResult<Vec<usize>>>()?;
         // TODO: figure out how to do this with the dsl
         // TODO: this is gonna do weird shit if you have things already inserted
         sql_query(
             "UPDATE rom_files SET rom_id = roms.id FROM roms WHERE rom_files.sha1 = roms.sha1",
         )
-        .execute(&conn)
+        .execute(conn)
     })
 }
 
