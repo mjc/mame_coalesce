@@ -6,7 +6,7 @@ use crate::{
     logiqx, MameResult,
 };
 
-mod destination;
+pub mod destination;
 
 mod rename;
 pub mod scan;

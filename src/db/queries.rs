@@ -94,7 +94,7 @@ pub fn import_rom_files(
 }
 
 pub fn load_parents(
-    conn: impl Connection<Backend = diesel::sqlite::Sqlite>,
+    conn: &mut impl Connection<Backend = diesel::sqlite::Sqlite>,
     data_file_path: &Utf8Path,
 ) -> MameResult<BTreeMap<Game, HashSet<(Rom, RomFile)>>> {
     use crate::schema::{
@@ -112,14 +112,14 @@ pub fn load_parents(
     // TODO:: .filter(sql("..."))
     let df = schema::data_files::dsl::data_files
         .filter(schema::data_files::dsl::file_name.eq(full_path.as_str()))
-        .first::<DataFile>(&conn)?;
+        .first::<DataFile>(conn)?;
 
     // TODO: scope by commandline path!
     let query_results: BTreeMap<Game, (Rom, RomFile)> = games
         .filter(data_file_id.eq(df.id()))
         .inner_join(roms.inner_join(rom_files))
         .group_by(schema::rom_files::dsl::sha1)
-        .load(&conn)?
+        .load(conn)?
         .into_iter()
         .collect();
 

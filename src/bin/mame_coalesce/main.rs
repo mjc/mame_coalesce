@@ -37,7 +37,8 @@ fn main() -> MameResult<()> {
             ..
         } => {
             // TODO: respect source argument
-            let result = operations::rename_roms(&pool, data_file, *dry_run, destination);
+            let result =
+                operations::rename_roms(&mut pool.get()?, data_file, *dry_run, destination);
 
             if let Err(e) = result {
                 panic!("Unable to rename roms: {e:?}")

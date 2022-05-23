@@ -1,17 +1,18 @@
 use std::fs::create_dir_all;
 
 use camino::{Utf8Path, Utf8PathBuf};
+use diesel::Connection;
 use log::info;
 
-use crate::{db::SyncPool, operations::destination::write_all_zips, MameResult};
+use crate::{operations::destination::write_all_zips, MameResult};
 
 pub fn rename_roms(
-    pool: &SyncPool,
+    conn: &mut impl Connection<Backend = diesel::sqlite::Sqlite>,
     data_file: &Utf8Path,
     dry_run: bool,
     destination: &Utf8Path,
 ) -> MameResult<Vec<Utf8PathBuf>> {
-    let games = crate::db::load_parents(pool.get()?, data_file)?;
+    let games = crate::db::load_parents(conn, data_file)?;
     info!(
         "Processing {} games with {} matching rom files",
         games.len(),
