@@ -14,31 +14,29 @@ use walkdir::{DirEntry, WalkDir};
 use xxhash_rust::xxh3::Xxh3;
 
 use crate::{
-    db::{self, Pool},
+    db::{self, SyncPool},
     models::NewRomFile,
     progress, MameResult,
 };
 
-pub fn scan_source(path: &Utf8Path, jobs: usize, pool: &Pool) -> MameResult<Utf8PathBuf> {
+pub fn scan(path: &Utf8Path, pool: &SyncPool) -> MameResult<Utf8PathBuf> {
     info!("Looking in path: {}", path);
     let file_list = walk_for_files(path);
-    let new_rom_files = get_all_rom_files(&file_list, jobs)?;
+    let new_rom_files = get_all_rom_files(&file_list)?;
 
     info!(
         "rom files found (unpacked and packed both): {}",
         new_rom_files.len()
     );
-    db::import_rom_files(pool, &new_rom_files)?;
+    db::import_rom_files(&mut pool.get()?, &new_rom_files)?;
     // TODO: warning if nothing associated
     // TODO: pick datafile to scan for
     Ok(path.to_path_buf())
 }
 
-fn get_all_rom_files(file_list: &Vec<Utf8PathBuf>, jobs: usize) -> MameResult<Vec<NewRomFile>> {
+pub fn get_all_rom_files(file_list: &Vec<Utf8PathBuf>) -> MameResult<Vec<NewRomFile>> {
     let bar = progress::bar(file_list.len() as u64);
-    rayon::ThreadPoolBuilder::new()
-        .num_threads(jobs)
-        .build_global()?;
+
     Ok(file_list
         .par_iter()
         .progress_with(bar)
@@ -127,7 +125,7 @@ fn scan_libarchive(path: &Utf8Path) -> MameResult<Vec<NewRomFile>> {
     Ok(rom_files)
 }
 
-fn walk_for_files(dir: &Utf8Path) -> Vec<Utf8PathBuf> {
+pub fn walk_for_files(dir: &Utf8Path) -> Vec<Utf8PathBuf> {
     let v = WalkDir::new(dir)
         .into_iter()
         .filter_entry(entry_is_relevant)

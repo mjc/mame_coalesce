@@ -1,5 +1,6 @@
 use camino::Utf8Path;
 use fmmap::MmapFileExt;
+use sha1::{Digest, Sha1};
 
 use super::game::Game;
 use super::header::Header;
@@ -29,6 +30,13 @@ impl DataFile {
             data_file.file_name = full_path.map(|p| p.to_string_lossy().into_owned());
         }
         data_file.sha1 = Some(sha1);
+        Ok(data_file)
+    }
+
+    pub fn from_string(xml: &str) -> MameResult<Self> {
+        let mut data_file: Self = serde_xml_rs::from_str(xml)?;
+        data_file.file_name = Some("".to_owned());
+        data_file.sha1 = Some(Sha1::digest(xml).to_vec());
         Ok(data_file)
     }
 

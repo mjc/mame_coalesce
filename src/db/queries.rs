@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, HashSet};
 use std::{error, fs};
 
-use crate::{db::Pool as DbPool, logiqx};
 use crate::{
+    logiqx,
     models::{DataFile, Game, NewDataFile, NewGame, NewRom, NewRomFile, Rom, RomFile},
     MameResult,
 };
@@ -11,19 +11,16 @@ use camino::{Utf8Path, Utf8PathBuf};
 use diesel::result::Error;
 use diesel::{prelude::*, sql_query};
 use log::warn;
-use Error::NotFound;
 
 // TODO: return Result
 pub fn traverse_and_insert_data_file(
-    pool: &DbPool,
+    conn: &mut impl Connection<Backend = diesel::sqlite::Sqlite>,
     logiqx_data_file: &logiqx::DataFile,
 ) -> MameResult<i32> {
     use crate::schema::{data_files::dsl::data_files, games::dsl::games, roms::dsl::roms};
     use diesel::replace_into;
 
     let new_data_file = NewDataFile::from_logiqx(logiqx_data_file);
-
-    let conn = &pool.get()?;
 
     // TODO: return from transaction?
     let mut df_id = -1;
@@ -75,28 +72,29 @@ pub fn traverse_and_insert_data_file(
     })
 }
 
-pub fn import_rom_files(pool: &DbPool, new_rom_files: &[NewRomFile]) -> QueryResult<usize> {
+pub fn import_rom_files(
+    conn: &mut impl Connection<Backend = diesel::sqlite::Sqlite>,
+    new_rom_files: &[NewRomFile],
+) -> QueryResult<usize> {
     use crate::schema::rom_files::dsl::rom_files;
     use diesel::replace_into;
-
-    let conn = pool.get().map_err(|_| NotFound)?;
 
     conn.transaction::<_, Error, _>(|| {
         new_rom_files
             .iter()
-            .map(|new_rom_file| replace_into(rom_files).values(new_rom_file).execute(&conn))
+            .map(|new_rom_file| replace_into(rom_files).values(new_rom_file).execute(conn))
             .collect::<QueryResult<Vec<usize>>>()?;
         // TODO: figure out how to do this with the dsl
         // TODO: this is gonna do weird shit if you have things already inserted
         sql_query(
             "UPDATE rom_files SET rom_id = roms.id FROM roms WHERE rom_files.sha1 = roms.sha1",
         )
-        .execute(&conn)
+        .execute(conn)
     })
 }
 
 pub fn load_parents(
-    pool: &DbPool,
+    conn: &mut impl Connection<Backend = diesel::sqlite::Sqlite>,
     data_file_path: &Utf8Path,
 ) -> MameResult<BTreeMap<Game, HashSet<(Rom, RomFile)>>> {
     use crate::schema::{
@@ -105,7 +103,6 @@ pub fn load_parents(
         rom_files::dsl::rom_files,
         roms::dsl::roms,
     };
-    let conn = pool.get()?;
 
     let canonicalized = fs::canonicalize(data_file_path)?;
     let full_path = Utf8PathBuf::from_path_buf(canonicalized)
@@ -115,14 +112,14 @@ pub fn load_parents(
     // TODO:: .filter(sql("..."))
     let df = schema::data_files::dsl::data_files
         .filter(schema::data_files::dsl::file_name.eq(full_path.as_str()))
-        .first::<DataFile>(&conn)?;
+        .first::<DataFile>(conn)?;
 
     // TODO: scope by commandline path!
     let query_results: BTreeMap<Game, (Rom, RomFile)> = games
         .filter(data_file_id.eq(df.id()))
         .inner_join(roms.inner_join(rom_files))
         .group_by(schema::rom_files::dsl::sha1)
-        .load(&conn)?
+        .load(conn)?
         .into_iter()
         .collect();
 

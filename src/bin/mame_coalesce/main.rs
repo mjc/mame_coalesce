@@ -4,16 +4,19 @@ mod options;
 use options::{Cli, Command};
 
 use mame_coalesce::{
-    db::{create_db_pool, Pool},
-    logger, operations,
+    build_rayon_pool,
+    db::{create_sync_pool, SyncPool},
+    logger, operations, MameResult,
 };
 
-fn main() {
-    logger::setup_logger();
+fn main() -> MameResult<()> {
+    logger::setup();
 
     let cli = Cli::parse();
 
     let pool = get_pool(&cli);
+
+    build_rayon_pool()?;
 
     match cli.command() {
         Command::AddDataFile { path } => {
@@ -21,8 +24,8 @@ fn main() {
                 panic!("Couldn't insert data file: {e:?}");
             }
         }
-        Command::ScanSource { jobs, path } => {
-            if let Err(e) = operations::scan_source(path, *jobs, &pool) {
+        Command::ScanSource { jobs: _, path } => {
+            if let Err(e) = operations::scan(path, &pool) {
                 panic!("Couldn't scan source: {e:?}");
             }
         }
@@ -34,17 +37,18 @@ fn main() {
             ..
         } => {
             // TODO: respect source argument
-            let result = operations::rename_roms(&pool, data_file, *dry_run, destination);
+            let result = operations::rename(&mut pool.get()?, data_file, *dry_run, destination);
 
             if let Err(e) = result {
                 panic!("Unable to rename roms: {e:?}")
             }
         }
     }
+    Ok(())
 }
 
-pub fn get_pool(cli: &Cli) -> Pool {
-    let pool = match create_db_pool(cli.database_path()) {
+pub fn get_pool(cli: &Cli) -> SyncPool {
+    let pool = match create_sync_pool(cli.database_path()) {
         Ok(pool) => pool,
         Err(err) => panic!("Couldn't create db pool: {err:?}"),
     };
