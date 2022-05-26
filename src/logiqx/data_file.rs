@@ -34,8 +34,8 @@ impl DataFile {
     }
 
     pub fn from_string(xml: &str) -> MameResult<Self> {
-        let mut data_file: Self = serde_xml_rs::from_str(&xml)?;
-        data_file.file_name = Some("".to_string());
+        let mut data_file: Self = serde_xml_rs::from_str(xml)?;
+        data_file.file_name = Some("".to_owned());
         data_file.sha1 = Some(Sha1::digest(xml).to_vec());
         Ok(data_file)
     }

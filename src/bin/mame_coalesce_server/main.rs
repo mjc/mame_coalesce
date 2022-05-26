@@ -11,7 +11,7 @@ use std::{fs::create_dir_all, net::SocketAddr};
 
 #[tokio::main]
 async fn main() -> MameResult<()> {
-    logger::setup_logger();
+    logger::setup();
 
     let pool = db::create_sync_pool("coalesce.db")?;
 
@@ -38,11 +38,9 @@ async fn add_datfile(
     body: String,
     Extension(pool): Extension<db::SyncPool>,
 ) -> Result<Json<&'static str>, hyper::StatusCode> {
-    let conn = &mut pool
-        .get()
-        .or_else(|_| Err(StatusCode::INTERNAL_SERVER_ERROR))?;
+    let conn = &mut pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let datfile =
-        logiqx::DataFile::from_string(&body).or_else(|_| Err(StatusCode::UNPROCESSABLE_ENTITY))?;
+        logiqx::DataFile::from_string(&body).map_err(|_| StatusCode::UNPROCESSABLE_ENTITY)?;
     db::traverse_and_insert_data_file(conn, &datfile).expect("Couldn't insert datfile");
     Ok(Json("moo"))
 }
@@ -51,23 +49,23 @@ async fn scan_source(
     path: String,
     Extension(pool): Extension<db::SyncPool>,
 ) -> Result<Json<&'static str>, hyper::StatusCode> {
-    let conn = &mut pool.get().or_else(|err| {
+    let conn = &mut pool.get().map_err(|err| {
         log::error!("database connection error: {:?}", err);
-        Err(StatusCode::INTERNAL_SERVER_ERROR)
+        StatusCode::INTERNAL_SERVER_ERROR
     })?;
     let file_list = scan::walk_for_files(camino::Utf8Path::new(path.as_str()));
-    let new_rom_files = scan::get_all_rom_files(&file_list).or_else(|err| {
+    let new_rom_files = scan::get_all_rom_files(&file_list).map_err(|err| {
         log::error!("failed to get all rom files: {:?}", err);
-        Err(StatusCode::INTERNAL_SERVER_ERROR)
+        StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
     info!(
         "rom files found (unpacked and packed both): {}",
         new_rom_files.len()
     );
-    db::import_rom_files(conn, &new_rom_files).or_else(|err| {
+    db::import_rom_files(conn, &new_rom_files).map_err(|err| {
         log::error!("failed to import rom files: {:?}", err);
-        Err(StatusCode::INTERNAL_SERVER_ERROR)
+        StatusCode::INTERNAL_SERVER_ERROR
     })?;
     Ok(Json("moo"))
 }
@@ -76,18 +74,16 @@ async fn rename_roms(
     destination: String,
     Extension(pool): Extension<db::SyncPool>,
 ) -> Result<Json<&'static str>, hyper::StatusCode> {
-    let conn = &mut pool
-        .get()
-        .or_else(|_| Err(StatusCode::INTERNAL_SERVER_ERROR))?;
+    let conn = &mut pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let games = crate::db::load_parents(conn, camino::Utf8Path::new("")).or_else(|err| {
+    let games = crate::db::load_parents(conn, camino::Utf8Path::new("")).map_err(|err| {
         log::error!("Couldn't load parents: {:?}", err);
-        Err(StatusCode::INTERNAL_SERVER_ERROR)
+        StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    create_dir_all(&destination).or_else(|err| {
+    create_dir_all(&destination).map_err(|err| {
         log::error!("couldn't make destination directory: {:?}", err);
-        Err(StatusCode::INTERNAL_SERVER_ERROR)
+        StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
     operations::destination::write_all_zips(&games, camino::Utf8Path::new(&destination));

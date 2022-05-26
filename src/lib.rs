@@ -1,5 +1,11 @@
 #![deny(elided_lifetimes_in_paths, clippy::all)]
 #![warn(clippy::pedantic)]
+#![allow(
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
+    clippy::must_use_candidate,
+    clippy::implicit_hasher
+)]
 #![warn(
     clippy::nursery,
     clippy::decimal_literal_representation,

@@ -11,8 +11,8 @@ pub mod destination;
 mod rename;
 pub mod scan;
 
-pub use rename::rename_roms;
-pub use scan::scan_source;
+pub use rename::rename;
+pub use scan::scan;
 
 // TODO: this should return a Result
 pub fn parse_and_insert_datfile(path: &Utf8Path, pool: &SyncPool) -> MameResult<i32> {

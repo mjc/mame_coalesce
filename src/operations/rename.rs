@@ -6,7 +6,7 @@ use log::info;
 
 use crate::{operations::destination::write_all_zips, MameResult};
 
-pub fn rename_roms(
+pub fn rename(
     conn: &mut impl Connection<Backend = diesel::sqlite::Sqlite>,
     data_file: &Utf8Path,
     dry_run: bool,
