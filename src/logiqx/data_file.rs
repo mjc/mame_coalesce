@@ -1,5 +1,6 @@
+use std::fs;
+
 use camino::Utf8Path;
-use fmmap::MmapFileExt;
 
 use super::game::Game;
 use super::header::Header;
@@ -23,7 +24,9 @@ impl DataFile {
         let mmap = hashes::mmap_path(path)?;
         let sha1 = hashes::stream_sha1(&mmap);
 
-        let mut data_file: Self = serde_xml_rs::from_reader(mmap.reader(0)?)?;
+        let contents = fs::read_to_string(path)?;
+
+        let mut data_file: Self = quick_xml::de::from_str(&contents)?;
         {
             let full_path = path.canonicalize().ok();
             data_file.file_name = full_path.map(|p| p.to_string_lossy().into_owned());

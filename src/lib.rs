@@ -20,8 +20,7 @@ extern crate indicatif;
 extern crate rayon;
 #[macro_use]
 extern crate serde_derive;
-extern crate serde;
-extern crate serde_xml_rs;
+extern crate quick_xml;
 extern crate sha1;
 
 extern crate walkdir;
