@@ -9,7 +9,7 @@ use mame_coalesce::{
 };
 
 fn main() {
-    logger::setup_logger();
+    logger::setup();
 
     let cli = Cli::parse();
 
@@ -22,7 +22,7 @@ fn main() {
             }
         }
         Command::ScanSource { jobs, path } => {
-            if let Err(e) = operations::scan_source(path, *jobs, &pool) {
+            if let Err(e) = operations::scan(path, *jobs, &pool) {
                 panic!("Couldn't scan source: {e:?}");
             }
         }
@@ -34,7 +34,7 @@ fn main() {
             ..
         } => {
             // TODO: respect source argument
-            let result = operations::rename_roms(&pool, data_file, *dry_run, destination);
+            let result = operations::rename(&pool, data_file, *dry_run, destination);
 
             if let Err(e) = result {
                 panic!("Unable to rename roms: {e:?}")

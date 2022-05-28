@@ -19,7 +19,7 @@ use crate::{
     progress, MameResult,
 };
 
-pub fn scan_source(path: &Utf8Path, jobs: usize, pool: &Pool) -> MameResult<Utf8PathBuf> {
+pub fn scan(path: &Utf8Path, jobs: usize, pool: &Pool) -> MameResult<Utf8PathBuf> {
     info!("Looking in path: {}", path);
     let file_list = walk_for_files(path);
     let new_rom_files = get_all_rom_files(&file_list, jobs)?;

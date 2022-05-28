@@ -5,7 +5,7 @@ use log::info;
 
 use crate::{db::Pool, operations::destination::write_all_zips, MameResult};
 
-pub fn rename_roms(
+pub fn rename(
     pool: &Pool,
     data_file: &Utf8Path,
     dry_run: bool,
