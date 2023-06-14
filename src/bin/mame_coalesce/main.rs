@@ -9,7 +9,7 @@ use mame_coalesce::{
 };
 
 fn main() {
-    logger::setup_logger();
+    logger::setup();
 
     let cli = Cli::parse();
 
@@ -22,7 +22,7 @@ fn main() {
             }
         }
         Command::ScanSource { jobs, path } => {
-            if let Err(e) = operations::scan_source(path, *jobs, &pool) {
+            if let Err(e) = operations::source(path, *jobs, &pool) {
                 panic!("Couldn't scan source: {e:?}");
             }
         }

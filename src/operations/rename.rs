@@ -5,7 +5,7 @@ use log::info;
 
 use crate::{db::Pool, operations::destination::write_all_zips, MameResult};
 
-pub fn rename_roms(
+pub fn roms(
     pool: &Pool,
     data_file: &Utf8Path,
     dry_run: bool,
@@ -16,8 +16,8 @@ pub fn rename_roms(
         "Processing {} games with {} matching rom files",
         games.len(),
         games
-            .iter()
-            .map(|(_rom, rom_files)| { rom_files.len() as u64 })
+            .values()
+            .map(|rom_files| { rom_files.len() as u64 })
             .sum::<u64>()
     );
 
@@ -27,7 +27,7 @@ pub fn rename_roms(
     } else {
         info!("Saving zips to path: {}", &destination);
 
-        create_dir_all(&destination)?;
+        create_dir_all(destination)?;
         Ok(write_all_zips(&games, destination))
     }
 }

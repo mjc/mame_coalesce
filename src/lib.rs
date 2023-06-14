@@ -1,6 +1,6 @@
 #![deny(elided_lifetimes_in_paths, clippy::all)]
-#![warn(clippy::pedantic)]
 #![warn(
+    clippy::all,
     clippy::nursery,
     clippy::decimal_literal_representation,
     clippy::expect_used,

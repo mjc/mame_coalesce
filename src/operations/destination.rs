@@ -64,10 +64,9 @@ fn open_destination_zip(
 }
 
 fn zip_file_path(destination: &Utf8Path, game_name: &str) -> Utf8PathBuf {
-    let zip_file_path = Utf8PathBuf::new()
+    Utf8PathBuf::new()
         .join(destination)
-        .join(format!("{}.zip", game_name));
-    zip_file_path
+        .join(format!("{game_name}.zip"))
 }
 
 struct DestinationBundle {

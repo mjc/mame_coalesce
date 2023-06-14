@@ -2,7 +2,7 @@ use diesel::Insertable;
 
 use crate::{logiqx, schema::data_files};
 
-#[derive(Identifiable, Queryable, Associations, PartialEq, Debug)]
+#[derive(Identifiable, Queryable, Associations, PartialEq, Eq, Debug)]
 pub struct DataFile {
     id: i32,
     build: Option<String>,

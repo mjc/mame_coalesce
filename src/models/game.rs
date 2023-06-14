@@ -37,10 +37,10 @@ impl Game {
     pub fn name(&self) -> &str {
         self.name.as_ref()
     }
-    pub fn default() -> Self {
+    pub const fn empty() -> Self {
         Self {
             id: -1,
-            name: "".to_owned(),
+            name: String::new(),
             is_bios: None,
             clone_of: None,
             rom_of: None,
