@@ -61,7 +61,7 @@ pub fn traverse_and_insert_data_file(
         });
 
         // TODO: figure out how to do this with the dsl
-        // it's an absurd job but somequery's gotta do it
+        // it's an absurd job but some query's gotta do it
         sql_query(
             r#"
             UPDATE games AS cloned
@@ -117,7 +117,7 @@ pub fn load_parents(
         .filter(schema::data_files::dsl::file_name.eq(full_path.as_str()))
         .first::<DataFile>(&conn)?;
 
-    // TODO: scope by commandline path!
+    // TODO: scope by command-line path!
     let query_results: BTreeMap<Game, (Rom, RomFile)> = games
         .filter(data_file_id.eq(df.id()))
         .inner_join(roms.inner_join(rom_files))

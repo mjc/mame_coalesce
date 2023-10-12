@@ -25,7 +25,25 @@
 			"titleBar.inactiveForeground": "#15202b99",
 			"commandCenter.border": "#15202b99"
 		},
-		"peacock.remoteColor": "#f08d8c"
+		"peacock.remoteColor": "#f08d8c",
+		"cSpell.words": [
+			"camino",
+			"canonicalize",
+			"canonicalized",
+			"chrono",
+			"cli's",
+			"cloneof",
+			"datfile",
+			"fmmap",
+			"Insertable",
+			"isbios",
+			"logiqx",
+			"Mame",
+			"mmap",
+			"rebuildto",
+			"romof",
+			"sampleof"
+		]
 	},
 	"extensions": {
 		"recommendations": [

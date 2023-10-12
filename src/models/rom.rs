@@ -36,8 +36,8 @@ pub struct New {
     pub sha1: Vec<u8>,
     pub crc: Vec<u8>,
     pub date: Option<String>,        // utc date
-    pub updated_at: Option<String>,  // utc datetime
-    pub inserted_at: Option<String>, // utc datetime
+    pub updated_at: Option<String>,  // utc date time
+    pub inserted_at: Option<String>, // utc date time
     pub game_id: i32,
 }
 
