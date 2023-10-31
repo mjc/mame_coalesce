@@ -30,7 +30,7 @@ rayon = "1.7.0"
 
 serde_derive = "1.0.188"
 serde = "1.0.188"
-serde-xml-rs = "0.5.1"
+serde-xml-rs = "0.6.0"
 
 zip = { version = "0.6.6", features = ["deflate", "bzip2", "zstd"] }
 
