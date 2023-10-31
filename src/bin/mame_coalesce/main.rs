@@ -43,7 +43,7 @@ fn main() {
     }
 }
 
-pub fn get_pool(cli: &Cli) -> Pool {
+fn get_pool(cli: &Cli) -> Pool {
     let pool = match create_db_pool(cli.database_path()) {
         Ok(pool) => pool,
         Err(err) => panic!("Couldn't create db pool: {err:?}"),

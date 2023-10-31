@@ -8,7 +8,5 @@ pub fn setup() {
         simplelog::TerminalMode::Mixed,
         simplelog::ColorChoice::Never,
     )]);
-    if let Err(e) = logger_result {
-        panic!("Unable to start logger: {e:?}");
-    }
+    assert!(logger_result.is_ok(), "Unable to start logger");
 }
