@@ -24,7 +24,7 @@ codegen-units = 1
 [dependencies]
 log = "0.4.20"
 simplelog = "0.12.1"
-indicatif = { version = "0.16.2", features = ["rayon"] }
+indicatif = { version = "0.17.7", features = ["rayon"] }
 
 rayon = "1.7.0"
 
