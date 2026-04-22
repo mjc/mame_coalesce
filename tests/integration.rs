@@ -295,6 +295,56 @@ fn run_workflow_writes_parent_bundle_zip() -> Result<(), Box<dyn std::error::Err
 }
 
 #[test]
+fn build_workflow_accepts_imported_dat_name() -> Result<(), Box<dyn std::error::Error>> {
+    let pool = in_memory_pool()?;
+    let work_dir = tempfile::tempdir()?;
+    let source_dir = tempfile::tempdir()?;
+    let output_dir = tempfile::tempdir()?;
+    let dat_path = write_clone_dat(work_dir.path())?;
+    let source_path = write_present_clone_roms(source_dir.path())?;
+    let output_path = utf8_path(output_dir.path())?.to_path_buf();
+
+    app::import_dat(&pool, &DatImportRequest { dat_path })?;
+    app::scan_source(
+        &pool,
+        &SourceScanRequest {
+            source_path: source_path.clone(),
+            jobs: 1,
+        },
+    )?;
+
+    let report = app::build(
+        &pool,
+        &BuildWorkflowRequest {
+            dat_path: camino::Utf8PathBuf::from("Clone Test"),
+            source_path,
+            destination_path: output_path.clone(),
+            mode: BuildMode::ParentBundles,
+            dry_run: false,
+            strict: false,
+        },
+    )?;
+
+    assert_eq!(report.exit_code, 0);
+    assert_eq!(report.build_report.matched_roms, 2);
+    assert_eq!(report.build_report.missing_roms.len(), 1);
+    assert_eq!(report.build_report.missing_roms[0].rom_name, "clone1.rom");
+    assert_eq!(report.written_paths, vec![output_path.join("parent.zip")]);
+
+    let entries = zip_entries(&output_path.join("parent.zip"))?;
+    assert_eq!(entries.len(), 2);
+    assert_eq!(
+        entries.get("parent.rom").map(Vec::as_slice),
+        Some(b"abc" as &[u8])
+    );
+    assert_eq!(
+        entries.get("clone2.rom").map(Vec::as_slice),
+        Some(b"" as &[u8])
+    );
+    Ok(())
+}
+
+#[test]
 fn strict_run_workflow_writes_nothing_when_roms_are_missing()
 -> Result<(), Box<dyn std::error::Error>> {
     let pool = in_memory_pool()?;

@@ -6,7 +6,7 @@ use crate::{
     db::Pool,
     domain::{BuildMode, BuildReport, BuildRequest},
     operations,
-    storage::repositories::{BuildRepository, SourceRepository},
+    storage::repositories::{BuildRepository, DataFileSelector, SourceRepository},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -72,15 +72,15 @@ pub fn scan_source(pool: &Pool, request: &SourceScanRequest) -> crate::Result<So
 }
 
 pub fn build(pool: &Pool, request: &BuildWorkflowRequest) -> crate::Result<BuildWorkflowReport> {
-    let dat_path = request.dat_path.canonicalize_utf8()?;
+    let dat_selector = resolve_dat_selector(&request.dat_path);
     let source_root = request.source_path.canonicalize_utf8()?;
-    let dat_roms = BuildRepository::new(pool).load_dat_roms(&dat_path)?;
+    let dat_roms = BuildRepository::new(pool).load_dat_roms(dat_selector.repository_selector())?;
     let source_files = SourceRepository::new(pool).load_source_files()?;
     let plan = plan_build(
         &dat_roms,
         &source_files,
         &BuildRequest {
-            dat_name: dat_path.to_string(),
+            dat_name: dat_selector.value().to_owned(),
             source_root: source_root.to_string(),
             mode: request.mode,
             dry_run: request.dry_run,
@@ -126,6 +126,34 @@ pub fn run(pool: &Pool, request: &RunWorkflowRequest) -> crate::Result<BuildWork
             dry_run: request.dry_run,
             strict: request.strict,
         },
+    )
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum BuildDatSelector {
+    FileName(String),
+    Name(String),
+}
+
+impl BuildDatSelector {
+    fn repository_selector(&self) -> DataFileSelector<'_> {
+        match self {
+            Self::FileName(value) => DataFileSelector::FileName(value),
+            Self::Name(value) => DataFileSelector::Name(value),
+        }
+    }
+
+    fn value(&self) -> &str {
+        match self {
+            Self::FileName(value) | Self::Name(value) => value,
+        }
+    }
+}
+
+fn resolve_dat_selector(dat_path: &Utf8PathBuf) -> BuildDatSelector {
+    dat_path.canonicalize_utf8().map_or_else(
+        |_| BuildDatSelector::Name(dat_path.to_string()),
+        |path| BuildDatSelector::FileName(path.to_string()),
     )
 }
 

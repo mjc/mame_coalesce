@@ -1,4 +1,3 @@
-use camino::Utf8Path;
 use diesel::prelude::*;
 
 use crate::{
@@ -54,17 +53,38 @@ pub struct BuildRepository<'pool> {
     pool: &'pool Pool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DataFileSelector<'a> {
+    FileName(&'a str),
+    Name(&'a str),
+}
+
+impl<'a> DataFileSelector<'a> {
+    #[must_use]
+    const fn value(self) -> &'a str {
+        match self {
+            Self::FileName(value) | Self::Name(value) => value,
+        }
+    }
+}
+
 impl<'pool> BuildRepository<'pool> {
     #[must_use]
     pub const fn new(pool: &'pool Pool) -> Self {
         Self { pool }
     }
 
-    pub fn load_dat_roms(&self, data_file_path: &Utf8Path) -> crate::Result<Vec<DatRom>> {
+    pub fn load_dat_roms(&self, selector: DataFileSelector<'_>) -> crate::Result<Vec<DatRom>> {
         let mut conn = self.pool.get()?;
-        let data_file = schema::data_files::dsl::data_files
-            .filter(schema::data_files::dsl::file_name.eq(data_file_path.as_str()))
-            .first::<DataFile>(&mut conn)?;
+        let data_file = match selector {
+            DataFileSelector::FileName(value) => schema::data_files::dsl::data_files
+                .filter(schema::data_files::dsl::file_name.eq(value))
+                .first::<DataFile>(&mut conn)?,
+            DataFileSelector::Name(value) => schema::data_files::dsl::data_files
+                .filter(schema::data_files::dsl::name.eq(value))
+                .first::<DataFile>(&mut conn)?,
+        };
+        let dat_name = selector.value().to_owned();
 
         let rows = schema::games::dsl::games
             .filter(schema::games::dsl::data_file_id.eq(data_file.id))
@@ -74,7 +94,7 @@ impl<'pool> BuildRepository<'pool> {
         Ok(rows
             .into_iter()
             .map(|(game, rom)| DatRom {
-                dat_name: data_file_path.to_string(),
+                dat_name: dat_name.clone(),
                 game_name: game.name,
                 parent_name: game.clone_of,
                 rom_name: rom.name,

@@ -10,6 +10,8 @@ nix develop -c cargo run -- source scan /path/to/roms --jobs 8
 nix develop -c cargo run -- build --dat fixtures/test.dat --source /path/to/roms --out /path/to/out
 ```
 
+After import, `build --dat` accepts either the imported DAT file path or the DAT header name.
+
 The one-shot pipeline is:
 
 ```sh
