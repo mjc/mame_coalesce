@@ -1,4 +1,6 @@
+pub mod build;
 pub mod db;
+pub mod domain;
 pub mod error;
 pub mod hashes;
 pub mod logger;
