@@ -21,7 +21,7 @@ pub fn traverse_and_insert_data_file(
             .execute(conn)?;
 
         df_id = data_files
-            .order(crate::schema::data_files::dsl::id.desc())
+            .filter(crate::schema::data_files::dsl::name.eq(new_data_file.name()))
             .select(crate::schema::data_files::dsl::id)
             .first(conn)?;
 
@@ -30,7 +30,8 @@ pub fn traverse_and_insert_data_file(
             replace_into(games).values(new_game).execute(conn)?;
 
             let g_id = games
-                .order(crate::schema::games::dsl::id.desc())
+                .filter(crate::schema::games::dsl::data_file_id.eq(df_id))
+                .filter(crate::schema::games::dsl::name.eq(game.name()))
                 .select(crate::schema::games::dsl::id)
                 .first(conn)?;
 
