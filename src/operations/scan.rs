@@ -44,27 +44,28 @@ pub fn source(path: &Utf8Path, jobs: usize, pool: &Pool) -> crate::Result<Utf8Pa
 fn get_all_rom_files(file_list: &[Utf8PathBuf], jobs: usize) -> crate::Result<Vec<NewRomFile>> {
     let bar = progress::bar(file_list.len() as u64);
     let pool = rayon::ThreadPoolBuilder::new().num_threads(jobs).build()?;
-    Ok(pool.install(|| {
-        file_list
+    pool.install(|| {
+        let rom_files = file_list
             .par_iter()
             .progress_with(bar)
-            .filter_map(|p| build_new_rom_files(p))
-            .flatten_iter()
-            .collect()
-    }))
+            .map(|path| build_new_rom_files(path))
+            .collect::<crate::Result<Vec<_>>>()?;
+        Ok(rom_files.into_iter().flatten().collect())
+    })
 }
 
-fn build_new_rom_files(path: &Utf8Path) -> Option<Vec<NewRomFile>> {
-    let single_rom = || NewRomFile::from_path(path).map(|nrf| vec![nrf]);
-    let mmap = crate::hashes::mmap_path(path).ok()?;
-    infer::get_from_path(path)
-        .ok()
-        .flatten()
-        .map_or_else(single_rom, |t| match t.mime_type() {
-            "application/zip" => scan_zip(&mmap).ok(),
-            "application/x-7z-compressed" | "application/vnd.rar" => scan_libarchive(path).ok(),
-            _mime_type => single_rom(),
-        })
+fn build_new_rom_files(path: &Utf8Path) -> crate::Result<Vec<NewRomFile>> {
+    let single_rom = || {
+        NewRomFile::from_path(path)
+            .map(|nrf| vec![nrf])
+            .ok_or_else(|| Error::InvalidPath(format!("couldn't scan file: {path}")))
+    };
+    let mmap = crate::hashes::mmap_path(path)?;
+    infer::get_from_path(path)?.map_or_else(single_rom, |t| match t.mime_type() {
+        "application/zip" => scan_zip(&mmap),
+        "application/x-7z-compressed" | "application/vnd.rar" => scan_libarchive(path),
+        _mime_type => single_rom(),
+    })
 }
 
 fn scan_zip(mmap: &MmapFile) -> crate::Result<Vec<NewRomFile>> {
@@ -268,6 +269,21 @@ mod tests {
 
         assert_eq!(rom_files.len(), 1);
         assert_eq!(rom_files[0].name, "nested/game.rom");
+        Ok(())
+    }
+
+    #[test]
+    fn build_new_rom_files_reports_corrupt_zip() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::NamedTempFile::new()?;
+        std::fs::write(tmp.path(), b"PK\x03\x04not a valid zip")?;
+        let utf8_path = camino::Utf8Path::from_path(tmp.path())
+            .ok_or_else(|| io::Error::other("temp path is not UTF-8"))?;
+
+        let Err(error) = build_new_rom_files(utf8_path) else {
+            return Err("expected corrupt zip scan to fail".into());
+        };
+
+        assert!(error.to_string().contains("Zip error"));
         Ok(())
     }
 
