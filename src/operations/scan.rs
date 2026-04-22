@@ -119,28 +119,28 @@ fn scan_libarchive(path: &Utf8Path) -> crate::Result<Vec<NewRomFile>> {
     let mut sha1hasher = Sha1::new();
     let mut xxhash3 = Xxh3::new();
 
-    iter.for_each(|content| match content {
-        ArchiveContents::StartOfEntry(s, _) => {
-            name = s;
-            sha1hasher.reset();
-            xxhash3.reset();
-        }
-        ArchiveContents::DataChunk(v) => {
-            sha1hasher.update(&v);
-            xxhash3.update(&v);
-        }
-        ArchiveContents::EndOfEntry => {
-            let sha1 = sha1hasher.finalize_reset().to_vec();
-            let xxh3 = xxhash3.digest().to_be_bytes().to_vec();
-            let filename = Path::new(&name);
-            if let Some(nrf) = NewRomFile::from_archive(path, filename, sha1, xxh3) {
-                rom_files.push(nrf);
+    for content in iter {
+        match content {
+            ArchiveContents::StartOfEntry(s, _) => {
+                name = s;
+                sha1hasher.reset();
+                xxhash3.reset();
             }
+            ArchiveContents::DataChunk(v) => {
+                sha1hasher.update(&v);
+                xxhash3.update(&v);
+            }
+            ArchiveContents::EndOfEntry => {
+                let sha1 = sha1hasher.finalize_reset().to_vec();
+                let xxh3 = xxhash3.digest().to_be_bytes().to_vec();
+                let filename = Path::new(&name);
+                if let Some(nrf) = NewRomFile::from_archive(path, filename, sha1, xxh3) {
+                    rom_files.push(nrf);
+                }
+            }
+            ArchiveContents::Err(error) => return Err(error.into()),
         }
-        ArchiveContents::Err(e) => {
-            warn!("couldn't read {name} from {path:?}: {e:?}");
-        }
-    });
+    }
 
     Ok(rom_files)
 }
@@ -284,6 +284,22 @@ mod tests {
         };
 
         assert!(error.to_string().contains("Zip error"));
+        Ok(())
+    }
+
+    #[test]
+    fn build_new_rom_files_reports_corrupt_libarchive_file()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::NamedTempFile::new()?;
+        std::fs::write(tmp.path(), b"7z\xBC\xAF\x27\x1Cnot a valid 7z")?;
+        let utf8_path = camino::Utf8Path::from_path(tmp.path())
+            .ok_or_else(|| io::Error::other("temp path is not UTF-8"))?;
+
+        let Err(error) = build_new_rom_files(utf8_path) else {
+            return Err("expected corrupt archive scan to fail".into());
+        };
+
+        assert!(error.to_string().contains("Archive error"));
         Ok(())
     }
 
