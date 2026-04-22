@@ -4,7 +4,7 @@ use mame_coalesce::{
     domain::BuildMode,
     logiqx::DataFile,
     operations,
-    schema::rom_files::dsl::{rom_files, sha1},
+    schema::rom_files::dsl::{rom_files, rom_id, sha1},
 };
 use std::{
     collections::BTreeMap,
@@ -339,6 +339,43 @@ fn scan_zip_inserts_entries() -> Result<(), Box<dyn std::error::Error>> {
     let mut conn = pool.get()?;
     let count: i64 = rom_files.count().get_result(&mut conn)?;
     assert_eq!(count, 2);
+    Ok(())
+}
+
+#[test]
+fn importing_dat_links_previously_scanned_rom_files() -> Result<(), Box<dyn std::error::Error>> {
+    let pool = in_memory_pool()?;
+    let work_dir = tempfile::tempdir()?;
+    let source_dir = tempfile::tempdir()?;
+    let dat_path = write_clone_dat(work_dir.path())?;
+    let source_path = write_present_clone_roms(source_dir.path())?;
+
+    app::scan_source(
+        &pool,
+        &SourceScanRequest {
+            source_path,
+            jobs: 1,
+        },
+    )?;
+    let linked_before_import = {
+        let mut conn = pool.get()?;
+        rom_files
+            .filter(rom_id.is_not_null())
+            .count()
+            .get_result::<i64>(&mut conn)?
+    };
+    assert_eq!(linked_before_import, 0);
+
+    app::import_dat(&pool, &DatImportRequest { dat_path })?;
+
+    let linked_after_import = {
+        let mut conn = pool.get()?;
+        rom_files
+            .filter(rom_id.is_not_null())
+            .count()
+            .get_result::<i64>(&mut conn)?
+    };
+    assert_eq!(linked_after_import, 2);
     Ok(())
 }
 

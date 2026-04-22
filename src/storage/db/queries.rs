@@ -65,6 +65,8 @@ pub fn traverse_and_insert_data_file(
         .bind::<diesel::sql_types::Integer, _>(df_id)
         .execute(conn)?;
 
+        associate_rom_files(conn)?;
+
         Ok(df_id)
     })
 }
@@ -110,9 +112,11 @@ pub fn import_rom_files(pool: &DbPool, new_rom_files: &[NewRomFile]) -> crate::R
             .iter()
             .map(|new_rom_file| replace_into(rom_files).values(new_rom_file).execute(conn))
             .collect::<QueryResult<Vec<usize>>>()?;
-        sql_query(
-            "UPDATE rom_files SET rom_id = roms.id FROM roms WHERE rom_files.sha1 = roms.sha1",
-        )
-        .execute(conn)
+        associate_rom_files(conn)
     })?)
+}
+
+fn associate_rom_files(conn: &mut SqliteConnection) -> QueryResult<usize> {
+    sql_query("UPDATE rom_files SET rom_id = roms.id FROM roms WHERE rom_files.sha1 = roms.sha1")
+        .execute(conn)
 }
