@@ -1,24 +1,80 @@
-name: Rust
+name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
-
+  rust:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v2
-    - name: Install dependencies
-      run: sudo apt-get update -y && sudo apt-get install -y libarchive-dev libsqlite3-dev zlib1g-dev liblz4-dev
-    - name: Build
-      run: cargo build --verbose
-    - name: Run tests
-      run: cargo test --verbose
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            cmake \
+            libarchive-dev \
+            liblz4-dev \
+            libsqlite3-dev \
+            pkg-config \
+            shellcheck \
+            zlib1g-dev
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Run tests
+        run: cargo test
+
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Verify package
+        run: cargo package --locked
+
+      - name: Check scripts
+        run: shellcheck scripts/fetch_public_domain_test_data.sh
+
+  maintenance:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            cmake \
+            libarchive-dev \
+            liblz4-dev \
+            libsqlite3-dev \
+            pkg-config \
+            zlib1g-dev
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install maintenance tools
+        run: |
+          cargo install --locked cargo-audit
+          cargo install --locked cargo-deny
+
+      - name: Audit dependencies
+        run: cargo audit
+
+      - name: Check dependency policy
+        run: cargo deny check
