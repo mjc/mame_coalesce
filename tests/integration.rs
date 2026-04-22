@@ -1,10 +1,16 @@
 use mame_coalesce::{
+    app::{self, RunWorkflowRequest},
     db::{self, create_db_pool},
+    domain::BuildMode,
     logiqx::DataFile,
     operations,
     schema::rom_files::dsl::{rom_files, sha1},
 };
-use std::io;
+use std::{
+    collections::BTreeMap,
+    fs,
+    io::{self, Read},
+};
 
 use diesel::prelude::*;
 
@@ -64,6 +70,39 @@ const CLONE_DAT: &str = r#"<?xml version="1.0"?>
 
 fn in_memory_pool() -> mame_coalesce::Result<mame_coalesce::db::Pool> {
     create_db_pool(":memory:")
+}
+
+fn utf8_path(path: &std::path::Path) -> Result<&camino::Utf8Path, io::Error> {
+    camino::Utf8Path::from_path(path).ok_or_else(|| io::Error::other("path is not UTF-8"))
+}
+
+fn write_clone_dat(dir: &std::path::Path) -> Result<camino::Utf8PathBuf, io::Error> {
+    let dat_path = dir.join("clone.dat");
+    fs::write(&dat_path, CLONE_DAT)?;
+    Ok(utf8_path(&dat_path)?.to_path_buf())
+}
+
+fn write_present_clone_roms(dir: &std::path::Path) -> Result<camino::Utf8PathBuf, io::Error> {
+    fs::write(dir.join("parent.rom"), b"abc")?;
+    fs::write(dir.join("clone2.rom"), b"")?;
+    Ok(utf8_path(dir)?.to_path_buf())
+}
+
+fn zip_entries(
+    path: &camino::Utf8Path,
+) -> Result<BTreeMap<String, Vec<u8>>, Box<dyn std::error::Error>> {
+    let file = fs::File::open(path)?;
+    let mut archive = zip::ZipArchive::new(file)?;
+    let mut entries = BTreeMap::new();
+
+    for index in 0..archive.len() {
+        let mut file = archive.by_index(index)?;
+        let mut contents = Vec::new();
+        file.read_to_end(&mut contents)?;
+        entries.insert(file.name().to_owned(), contents);
+    }
+
+    Ok(entries)
 }
 
 // =====================================================================
@@ -174,5 +213,74 @@ fn scan_zip_inserts_entries() -> Result<(), Box<dyn std::error::Error>> {
     let mut conn = pool.get()?;
     let count: i64 = rom_files.count().get_result(&mut conn)?;
     assert_eq!(count, 2);
+    Ok(())
+}
+
+#[test]
+fn run_workflow_writes_parent_bundle_zip() -> Result<(), Box<dyn std::error::Error>> {
+    let pool = in_memory_pool()?;
+    let work_dir = tempfile::tempdir()?;
+    let source_dir = tempfile::tempdir()?;
+    let output_dir = tempfile::tempdir()?;
+    let dat_path = write_clone_dat(work_dir.path())?;
+    let source_path = write_present_clone_roms(source_dir.path())?;
+    let output_path = utf8_path(output_dir.path())?.to_path_buf();
+
+    let report = app::run(
+        &pool,
+        &RunWorkflowRequest {
+            dat_path,
+            source_path,
+            destination_path: output_path.clone(),
+            mode: BuildMode::ParentBundles,
+            jobs: 1,
+            dry_run: false,
+            strict: false,
+        },
+    )?;
+
+    assert_eq!(report.exit_code, 0);
+    assert_eq!(report.written_paths, vec![output_path.join("parent.zip")]);
+
+    let entries = zip_entries(&output_path.join("parent.zip"))?;
+    assert_eq!(entries.len(), 2);
+    assert_eq!(
+        entries.get("parent.rom").map(Vec::as_slice),
+        Some(b"abc" as &[u8])
+    );
+    assert_eq!(
+        entries.get("clone2.rom").map(Vec::as_slice),
+        Some(b"" as &[u8])
+    );
+    Ok(())
+}
+
+#[test]
+fn strict_run_workflow_writes_nothing_when_roms_are_missing()
+-> Result<(), Box<dyn std::error::Error>> {
+    let pool = in_memory_pool()?;
+    let work_dir = tempfile::tempdir()?;
+    let source_dir = tempfile::tempdir()?;
+    let output_dir = tempfile::tempdir()?;
+    let dat_path = write_clone_dat(work_dir.path())?;
+    let source_path = write_present_clone_roms(source_dir.path())?;
+    let output_path = utf8_path(output_dir.path())?.join("strict-output");
+
+    let report = app::run(
+        &pool,
+        &RunWorkflowRequest {
+            dat_path,
+            source_path,
+            destination_path: output_path.clone(),
+            mode: BuildMode::ParentBundles,
+            jobs: 1,
+            dry_run: false,
+            strict: true,
+        },
+    )?;
+
+    assert_eq!(report.exit_code, 2);
+    assert!(report.written_paths.is_empty());
+    assert!(!output_path.exists());
     Ok(())
 }
