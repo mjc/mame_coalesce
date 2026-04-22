@@ -32,6 +32,23 @@ Defaults:
 - `--strict` exits `2` and writes nothing when required ROMs are missing
 - duplicate source matches are resolved deterministically
 
+## External smoke test
+
+To test against downloaded public-domain ROM bundles:
+
+```sh
+nix develop -c bash scripts/fetch_public_domain_test_data.sh
+```
+
+The script downloads only archive.org items whose metadata is Public Domain Mark
+or CC0 by default when `--catalog-tier metadata` is used. Its default curated
+catalog also includes archive.org items whose title, description, or upstream
+source explicitly describes the ROMs as public-domain/PD ROMs. It generates a
+focused Logiqx DAT from the downloaded bytes and runs the one-shot workflow with
+`--strict`. It writes all temporary data under `tmp/public-domain-rom-test/`.
+
+Use `--max-roms 0` to include every collected ROM entry.
+
 ## Maintenance
 
 Use the Nix shell as the development environment. Plain `cargo test` may fail on systems without `pkg-config`, `libarchive`, and SQLite development libraries.

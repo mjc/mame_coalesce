@@ -1,5 +1,6 @@
 /target
 /result
+/tmp
 .direnv/
 **/*.rs.bk
 coalesce.db*
