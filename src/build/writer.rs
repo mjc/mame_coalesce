@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     fs::{File, OpenOptions, create_dir_all},
     io::{BufReader, BufWriter, Write},
 };
@@ -31,10 +32,25 @@ pub fn write_plan(plan: &BuildPlan, destination: &Utf8Path) -> crate::Result<Vec
 }
 
 fn validate_plan_paths(plan: &BuildPlan) -> crate::Result<()> {
+    let mut output_file_names = BTreeSet::new();
     for zip_spec in &plan.zips {
         validate_output_file_name(&zip_spec.file_name)?;
+        if !output_file_names.insert(zip_spec.file_name.as_str()) {
+            return Err(crate::Error::InvalidPath(format!(
+                "duplicate output zip file name: {}",
+                zip_spec.file_name
+            )));
+        }
+
+        let mut entry_names = BTreeSet::new();
         for entry in &zip_spec.entries {
             validate_zip_entry_name(&entry.output_name)?;
+            if !entry_names.insert(entry.output_name.as_str()) {
+                return Err(crate::Error::InvalidPath(format!(
+                    "duplicate zip entry name in {}: {}",
+                    zip_spec.file_name, entry.output_name
+                )));
+            }
         }
     }
     Ok(())
@@ -241,6 +257,64 @@ mod tests {
         let message = error_message(write_plan(&plan, &destination))?;
 
         assert!(message.contains("unsafe zip entry name"));
+        assert!(!destination.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn write_plan_rejects_duplicate_output_zip_file_name() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let temp_dir = tempfile::tempdir()?;
+        let destination = utf8_path(temp_dir.path())?.join("output");
+        let plan = BuildPlan {
+            zips: vec![
+                ZipSpec {
+                    file_name: "safe.zip".to_owned(),
+                    entries: Vec::new(),
+                },
+                ZipSpec {
+                    file_name: "safe.zip".to_owned(),
+                    entries: Vec::new(),
+                },
+            ],
+            report: BuildReport::default(),
+            dry_run: false,
+        };
+
+        let message = error_message(write_plan(&plan, &destination))?;
+
+        assert!(message.contains("duplicate output zip file name"));
+        assert!(!destination.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn write_plan_rejects_duplicate_zip_entry_name() -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let source_path = utf8_path(temp_dir.path())?.join("source.rom");
+        std::fs::write(&source_path, b"rom")?;
+        let destination = utf8_path(temp_dir.path())?.join("output");
+        let plan = BuildPlan {
+            zips: vec![ZipSpec {
+                file_name: "safe.zip".to_owned(),
+                entries: vec![
+                    ZipEntrySpec {
+                        output_name: "same.rom".to_owned(),
+                        source: source_file(&source_path),
+                    },
+                    ZipEntrySpec {
+                        output_name: "same.rom".to_owned(),
+                        source: source_file(&source_path),
+                    },
+                ],
+            }],
+            report: BuildReport::default(),
+            dry_run: false,
+        };
+
+        let message = error_message(write_plan(&plan, &destination))?;
+
+        assert!(message.contains("duplicate zip entry name"));
         assert!(!destination.exists());
         Ok(())
     }
