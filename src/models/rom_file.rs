@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use camino::Utf8Path;
+use diesel::{Associations, Insertable, Queryable};
 
 use crate::{hashes, schema::rom_files};
 
@@ -22,14 +23,17 @@ pub struct RomFile {
 }
 
 impl RomFile {
+    #[must_use]
     pub fn path(&self) -> &str {
         self.path.as_ref()
     }
 
+    #[must_use]
     pub fn name(&self) -> &str {
         self.name.as_ref()
     }
 
+    #[must_use]
     pub const fn in_archive(&self) -> bool {
         self.in_archive
     }
@@ -48,6 +52,7 @@ pub struct New {
 }
 
 impl New {
+    #[must_use]
     pub fn from_path(path: &Utf8Path) -> Option<Self> {
         let mmap = hashes::mmap_path(path).ok()?;
         let sha1 = hashes::stream_sha1(&mmap);
@@ -67,6 +72,7 @@ impl New {
         })
     }
 
+    #[must_use]
     pub fn from_archive(
         path: &Utf8Path,
         name: &Path,
@@ -87,6 +93,7 @@ impl New {
         })
     }
 
+    #[must_use]
     pub fn name(&self) -> &str {
         self.name.as_ref()
     }

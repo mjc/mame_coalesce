@@ -1,4 +1,5 @@
 use chrono::{NaiveDate, NaiveDateTime};
+use diesel::{Associations, Insertable, Queryable};
 
 use super::Game;
 use crate::{logiqx, schema::roms};
@@ -21,6 +22,7 @@ pub struct Rom {
 }
 
 impl Rom {
+    #[must_use]
     pub fn name(&self) -> &str {
         self.name.as_ref()
     }
@@ -41,6 +43,7 @@ pub struct New {
 }
 
 impl New {
+    #[must_use]
     pub fn from_logiqx(rom: &logiqx::Rom, game_id: i32) -> Self {
         Self {
             name: rom.name().to_owned(),

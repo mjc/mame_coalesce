@@ -44,21 +44,25 @@ impl DataFile {
     }
 
     /// Get a reference to the data file's header.
+    #[must_use]
     pub const fn header(&self) -> &Header {
         &self.header
     }
 
     /// Get a reference to the data file's games.
+    #[must_use]
     pub fn games(&self) -> &[Game] {
         self.games.as_ref()
     }
 
     /// Get a reference to the data file's sha1.
+    #[must_use]
     pub const fn sha1(&self) -> Option<&Vec<u8>> {
         self.sha1.as_ref()
     }
 
     /// Get a reference to the data file's file name.
+    #[must_use]
     pub const fn file_name(&self) -> Option<&String> {
         self.file_name.as_ref()
     }
@@ -69,11 +73,13 @@ impl DataFile {
     }
 
     /// Get a reference to the data file's build.
+    #[must_use]
     pub const fn build(&self) -> Option<&String> {
         self.build.as_ref()
     }
 
     /// Get a reference to the data file's debug.
+    #[must_use]
     pub const fn debug(&self) -> Option<&String> {
         self.debug.as_ref()
     }
@@ -127,11 +133,17 @@ mod tests {
         let df = DataFile::from_reader(SIMPLE_DAT.as_bytes())?;
         assert_eq!(df.header().name(), "Test Set");
         assert_eq!(
-            df.header().description().map(|s| s.as_str()),
+            df.header().description().map(std::string::String::as_str),
             Some("Test Description")
         );
-        assert_eq!(df.header().version().map(|s| s.as_str()), Some("1.0"));
-        assert_eq!(df.header().author().map(|s| s.as_str()), Some("Tester"));
+        assert_eq!(
+            df.header().version().map(std::string::String::as_str),
+            Some("1.0")
+        );
+        assert_eq!(
+            df.header().author().map(std::string::String::as_str),
+            Some("Tester")
+        );
         assert_eq!(df.games().len(), 1);
         Ok(())
     }
@@ -188,7 +200,10 @@ mod tests {
             .find(|g| g.name() == "clone1")
             .ok_or_else(|| io::Error::other("missing clone"))?;
         assert!(parent.cloneof().is_none());
-        assert_eq!(clone.cloneof().map(|s| s.as_str()), Some("parent"));
+        assert_eq!(
+            clone.cloneof().map(std::string::String::as_str),
+            Some("parent")
+        );
         Ok(())
     }
 

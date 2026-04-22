@@ -1,4 +1,4 @@
-use diesel::Insertable;
+use diesel::{Identifiable, Insertable, Queryable};
 
 use crate::{logiqx, schema::data_files};
 
@@ -36,6 +36,7 @@ pub struct New<'a> {
 }
 
 impl New<'_> {
+    #[must_use]
     pub fn from_logiqx(l_data_file: &logiqx::DataFile) -> New<'_> {
         New {
             build: l_data_file.build().cloned(),
@@ -51,10 +52,12 @@ impl New<'_> {
         }
     }
 
+    #[must_use]
     pub const fn sha1(&self) -> Option<&Vec<u8>> {
         self.sha1
     }
 
+    #[must_use]
     pub fn name(&self) -> &str {
         self.name.as_ref()
     }

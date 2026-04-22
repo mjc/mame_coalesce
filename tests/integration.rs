@@ -2,8 +2,11 @@ use mame_coalesce::{
     db::{self, create_db_pool},
     logiqx::DataFile,
     operations,
+    schema::rom_files::dsl::{rom_files, sha1},
 };
 use std::io;
+
+use diesel::prelude::*;
 
 // =====================================================================
 // DAT Parsing → DB Insert
@@ -102,7 +105,10 @@ fn parse_and_insert_clone_dat() -> Result<(), Box<dyn std::error::Error>> {
         .find(|g| g.name() == "clone1")
         .ok_or_else(|| io::Error::other("missing clone game"))?;
     assert!(parent.cloneof().is_none());
-    assert_eq!(clone1.cloneof().map(|s| s.as_str()), Some("parent"));
+    assert_eq!(
+        clone1.cloneof().map(std::string::String::as_str),
+        Some("parent")
+    );
     db::traverse_and_insert_data_file(&pool, &df)?;
     Ok(())
 }
@@ -127,17 +133,13 @@ fn scan_bare_files_inserts_rom_files() -> Result<(), Box<dyn std::error::Error>>
         .ok_or_else(|| io::Error::other("temp path is not UTF-8"))?;
     operations::source(utf8_dir, 1, &pool)?;
 
-    // Verify something was inserted — query rom_files table
-    use diesel::prelude::*;
-    use mame_coalesce::schema::rom_files::dsl::rom_files;
+    // Verify something was inserted in the `rom_files` table.
     let mut conn = pool.get()?;
     let count: i64 = rom_files.count().get_result(&mut conn)?;
     assert_eq!(count, 1);
 
     // Verify the sha1 matches
-    let sha1s: Vec<Vec<u8>> = rom_files
-        .select(mame_coalesce::schema::rom_files::dsl::sha1)
-        .load(&mut conn)?;
+    let sha1s: Vec<Vec<u8>> = rom_files.select(sha1).load(&mut conn)?;
     assert_eq!(sha1s[0], expected_sha1);
     Ok(())
 }
@@ -169,8 +171,6 @@ fn scan_zip_inserts_entries() -> Result<(), Box<dyn std::error::Error>> {
         .ok_or_else(|| io::Error::other("temp path is not UTF-8"))?;
     operations::source(utf8_dir, 1, &pool)?;
 
-    use diesel::prelude::*;
-    use mame_coalesce::schema::rom_files::dsl::rom_files;
     let mut conn = pool.get()?;
     let count: i64 = rom_files.count().get_result(&mut conn)?;
     assert_eq!(count, 2);

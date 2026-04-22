@@ -9,7 +9,7 @@ use compress_tools::{ArchiveContents, ArchiveIterator};
 
 use log::{debug, error};
 use rayon::prelude::*;
-use zip::{write::SimpleFileOptions, ZipWriter};
+use zip::{ZipWriter, write::SimpleFileOptions};
 
 use crate::{
     models::{Game, Rom, RomFile},
@@ -22,7 +22,7 @@ pub fn write_all_zips(
 ) -> Vec<Utf8PathBuf> {
     let bar = progress::bar(games.len() as u64);
     // TODO: major refactor
-    let paths = games
+    games
         .par_iter()
         .filter_map(|(game, rom_and_romfile_pair)| {
             let bundles: Vec<DestinationBundle> = rom_and_romfile_pair
@@ -31,7 +31,7 @@ pub fn write_all_zips(
                 .collect();
 
             let zip_file_path = zip_file_path(destination, game.name());
-            debug!("Creating zip file: {:?}", zip_file_path);
+            debug!("Creating zip file: {zip_file_path:?}");
 
             let (mut zip_writer, zip_options) = open_destination_zip(&zip_file_path).ok()?;
             for bundle in bundles {
@@ -41,8 +41,7 @@ pub fn write_all_zips(
             bar.inc(1);
             Some(zip_file_path)
         })
-        .collect();
-    paths
+        .collect()
 }
 
 fn open_destination_zip(
@@ -147,7 +146,7 @@ impl DestinationBundle {
                 ArchiveContents::StartOfEntry(name) => {
                     current_name = name;
                     if current_name == source_name {
-                        debug!("Found file: {:?}", current_name);
+                        debug!("Found file: {current_name:?}");
                         zip_writer.start_file(destination_name, zip_options)?;
                     }
                 }
@@ -160,25 +159,29 @@ impl DestinationBundle {
                     zip_writer.flush()?;
                 }
                 ArchiveContents::Err(e) => {
-                    error!("{:?}", e);
+                    error!("{e:?}");
                 }
             }
         }
         Ok(destination_name.to_owned())
     }
 
+    #[must_use]
     pub fn archive_path(&self) -> &str {
         self.archive_path.as_ref()
     }
 
+    #[must_use]
     pub fn destination_name(&self) -> &str {
         self.destination_name.as_ref()
     }
 
+    #[must_use]
     pub fn source_name(&self) -> &str {
         self.source_name.as_ref()
     }
 
+    #[must_use]
     pub const fn in_archive(&self) -> bool {
         self.in_archive
     }

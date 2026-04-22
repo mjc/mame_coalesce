@@ -14,15 +14,16 @@ use walkdir::{DirEntry, WalkDir};
 use xxhash_rust::xxh3::Xxh3;
 
 use crate::{
+    Error,
     db::{self, Pool},
     models::NewRomFile,
-    progress, Error,
+    progress,
 };
 
 pub fn source(path: &Utf8Path, jobs: usize, pool: &Pool) -> crate::Result<Utf8PathBuf> {
-    info!("Looking in path: {}", path);
+    info!("Looking in path: {path}");
     let file_list = walk_for_files(path);
-    let new_rom_files = get_all_rom_files(&file_list, jobs)?;
+    let new_rom_files = get_all_rom_files(&file_list, jobs);
 
     info!(
         "rom files found (unpacked and packed both): {}",
@@ -34,18 +35,18 @@ pub fn source(path: &Utf8Path, jobs: usize, pool: &Pool) -> crate::Result<Utf8Pa
     Ok(path.to_path_buf())
 }
 
-fn get_all_rom_files(file_list: &Vec<Utf8PathBuf>, jobs: usize) -> crate::Result<Vec<NewRomFile>> {
+fn get_all_rom_files(file_list: &[Utf8PathBuf], jobs: usize) -> Vec<NewRomFile> {
     let bar = progress::bar(file_list.len() as u64);
     // Ignore "already initialized" error — the global pool is reused across calls.
     let _ = rayon::ThreadPoolBuilder::new()
         .num_threads(jobs)
         .build_global();
-    Ok(file_list
+    file_list
         .par_iter()
         .progress_with(bar)
         .filter_map(|p| build_new_rom_files(p))
         .flatten_iter()
-        .collect())
+        .collect()
 }
 
 fn build_new_rom_files(path: &Utf8Path) -> Option<Vec<NewRomFile>> {
@@ -75,7 +76,7 @@ fn scan_zip(mmap: &MmapFile) -> crate::Result<Vec<NewRomFile>> {
         let name = file
             .enclosed_name()
             .ok_or_else(|| Error::InvalidPath(format!("invalid name inside zip: {path:?}")))?
-            .to_owned();
+            .clone();
         let mut nrf =
             NewRomFile::from_archive(path, &name, Vec::new(), Vec::new()).ok_or_else(|| {
                 Error::InvalidPath(format!("couldn't make database entry for file: {path:?}"))
@@ -126,7 +127,7 @@ fn scan_libarchive(path: &Utf8Path) -> crate::Result<Vec<NewRomFile>> {
             }
         }
         ArchiveContents::Err(e) => {
-            warn!("couldn't read {} from {:?}: {:?}", name, path, e);
+            warn!("couldn't read {name} from {path:?}: {e:?}");
         }
     });
 

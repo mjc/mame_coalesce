@@ -2,7 +2,8 @@
 name = "mame_coalesce"
 version = "0.1.0"
 authors = ["Michael J. Cohen <mjc@kernel.org>"]
-edition = "2021"
+edition = "2024"
+rust-version = "1.85"
 default-run = "mame_coalesce"
 
 [[bin]]
@@ -19,6 +20,23 @@ debug = false
 panic = "abort"
 lto = true
 codegen-units = 1
+
+[lints.rust]
+unsafe_code = "forbid"
+elided_lifetimes_in_paths = "deny"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
 
 
 [dependencies]

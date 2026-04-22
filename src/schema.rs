@@ -1,4 +1,4 @@
-table! {
+diesel::table! {
     archive_files (id) {
         id -> Integer,
         path -> Text,
@@ -6,7 +6,7 @@ table! {
     }
 }
 
-table! {
+diesel::table! {
     data_files (id) {
         id -> Integer,
         build -> Nullable<Text>,
@@ -24,7 +24,7 @@ table! {
     }
 }
 
-table! {
+diesel::table! {
     games (id) {
         id -> Integer,
         name -> Text,
@@ -41,7 +41,7 @@ table! {
     }
 }
 
-table! {
+diesel::table! {
     rom_files (id) {
         id -> Integer,
         parent_path -> Text,
@@ -57,7 +57,7 @@ table! {
     }
 }
 
-table! {
+diesel::table! {
     roms (id) {
         id -> Integer,
         name -> Text,
@@ -73,9 +73,9 @@ table! {
     }
 }
 
-joinable!(games -> data_files (data_file_id));
-joinable!(rom_files -> roms (rom_id));
-joinable!(roms -> archive_files (archive_file_id));
-joinable!(roms -> games (game_id));
+diesel::joinable!(games -> data_files (data_file_id));
+diesel::joinable!(rom_files -> roms (rom_id));
+diesel::joinable!(roms -> archive_files (archive_file_id));
+diesel::joinable!(roms -> games (game_id));
 
-allow_tables_to_appear_in_same_query!(archive_files, data_files, games, rom_files, roms,);
+diesel::allow_tables_to_appear_in_same_query!(archive_files, data_files, games, rom_files, roms,);

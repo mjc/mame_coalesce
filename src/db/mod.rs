@@ -1,7 +1,7 @@
 mod queries;
 mod setup;
 
-use diesel::{r2d2::ConnectionManager, SqliteConnection};
+use diesel::{SqliteConnection, r2d2::ConnectionManager};
 
 pub use queries::*;
 pub use setup::*;

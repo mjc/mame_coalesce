@@ -1,17 +1,17 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 
-use crate::{db::Pool as DbPool, logiqx};
 use crate::{
-    models::{DataFile, Game, NewDataFile, NewGame, NewRom, NewRomFile, Rom, RomFile},
     Error,
+    models::{DataFile, Game, NewDataFile, NewGame, NewRom, NewRomFile, Rom, RomFile},
 };
+use crate::{db::Pool as DbPool, logiqx};
 
+use DieselError::NotFound;
 use camino::{Utf8Path, Utf8PathBuf};
 use diesel::result::Error as DieselError;
 use diesel::{prelude::*, sql_query};
 use log::warn;
-use DieselError::NotFound;
 
 pub fn traverse_and_insert_data_file(
     pool: &DbPool,
@@ -39,7 +39,7 @@ pub fn traverse_and_insert_data_file(
             if let Err(e) = replace_into(games).values(new_game).execute(conn) {
                 warn!("Couldn't update record for game: {game:?}, error: {e}");
                 return;
-            };
+            }
 
             let g_id_result = games
                 .order(crate::schema::games::dsl::id.desc())
@@ -51,17 +51,17 @@ pub fn traverse_and_insert_data_file(
                     let new_rom = NewRom::from_logiqx(rom, g_id);
                     if let Err(e) = replace_into(roms).values(new_rom).execute(conn) {
                         warn!("Couldn't update record for {rom:?}, error: {e}");
-                    };
+                    }
                 });
             }
         });
 
         sql_query(
-            r#"
+            r"
             UPDATE games AS cloned
                 SET parent_id = (
                     select games.id from games WHERE cloned.clone_of = games.name
-                )"#,
+                )",
         )
         .execute(conn)?;
 

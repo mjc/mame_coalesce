@@ -1,4 +1,5 @@
 use crate::{logiqx, schema::games};
+use diesel::{Associations, Identifiable, Insertable, Queryable};
 
 use super::DataFile;
 
@@ -22,6 +23,7 @@ pub struct Game {
 }
 
 impl Game {
+    #[must_use]
     pub fn name(&self) -> &str {
         self.name.as_ref()
     }
@@ -43,6 +45,7 @@ pub struct New {
 }
 
 impl New {
+    #[must_use]
     pub fn from_logiqx(logiqx: &logiqx::Game, data_file_id: i32) -> Self {
         Self {
             name: logiqx.name().to_owned(),

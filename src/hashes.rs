@@ -23,12 +23,14 @@ pub fn stream_xxhash3(mmap: &MmapFile) -> Vec<u8> {
     xxhash3.digest().to_be_bytes().to_vec()
 }
 
+#[must_use]
 pub fn sha1_bytes(data: &[u8]) -> Vec<u8> {
     let mut sha1 = Sha1::new();
     sha1.update(data);
     sha1.finalize().to_vec()
 }
 
+#[must_use]
 pub fn xxhash3_bytes(data: &[u8]) -> Vec<u8> {
     let mut xxhash3 = Xxh3::new();
     xxhash3.update(data);
