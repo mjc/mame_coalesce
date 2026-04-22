@@ -3,7 +3,6 @@ use crate::{db::Pool as DbPool, logiqx};
 
 use diesel::result::Error as DieselError;
 use diesel::{prelude::*, sql_query};
-use log::warn;
 
 pub fn traverse_and_insert_data_file(
     pool: &DbPool,
@@ -26,27 +25,20 @@ pub fn traverse_and_insert_data_file(
             .select(crate::schema::data_files::dsl::id)
             .first(conn)?;
 
-        logiqx_data_file.games().iter().for_each(|game| {
+        for game in logiqx_data_file.games() {
             let new_game = NewGame::from_logiqx(game, df_id);
-            if let Err(e) = replace_into(games).values(new_game).execute(conn) {
-                warn!("Couldn't update record for game: {game:?}, error: {e}");
-                return;
-            }
+            replace_into(games).values(new_game).execute(conn)?;
 
-            let g_id_result = games
+            let g_id = games
                 .order(crate::schema::games::dsl::id.desc())
                 .select(crate::schema::games::dsl::id)
-                .first(conn);
+                .first(conn)?;
 
-            if let Ok(g_id) = g_id_result {
-                game.roms().iter().for_each(|rom| {
-                    let new_rom = NewRom::from_logiqx(rom, g_id);
-                    if let Err(e) = replace_into(roms).values(new_rom).execute(conn) {
-                        warn!("Couldn't update record for {rom:?}, error: {e}");
-                    }
-                });
+            for rom in game.roms() {
+                let new_rom = NewRom::from_logiqx(rom, g_id);
+                replace_into(roms).values(new_rom).execute(conn)?;
             }
-        });
+        }
 
         sql_query(
             r"
