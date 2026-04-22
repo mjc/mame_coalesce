@@ -51,7 +51,7 @@ nix develop -c cargo update
 nix develop -c cargo tree -d
 nix develop -c cargo audit
 nix develop -c cargo deny check
-nix develop -c cargo-udeps udeps
+nix develop -c cargo-udeps udeps --all-targets
 ```
 
 Current dependency majors include crates that declare MSRVs newer than Rust `1.85`; the Nix shell currently builds with Rust `1.92`.
