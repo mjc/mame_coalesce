@@ -43,25 +43,38 @@ Options:
 USAGE
 }
 
+require_option_value() {
+  if (($# < 2)); then
+    printf '%s requires a value\n' "$1" >&2
+    usage >&2
+    exit 2
+  fi
+}
+
 while (($#)); do
   case "$1" in
     --work-dir)
+      require_option_value "$@"
       work_dir="$2"
       shift 2
       ;;
     --max-roms)
+      require_option_value "$@"
       max_roms="$2"
       shift 2
       ;;
     --catalog-tier)
+      require_option_value "$@"
       catalog_tier="$2"
       shift 2
       ;;
     --jobs)
+      require_option_value "$@"
       jobs="$2"
       shift 2
       ;;
     --mode)
+      require_option_value "$@"
       mode="$2"
       shift 2
       ;;
@@ -78,6 +91,7 @@ while (($#)); do
       shift
       ;;
     --tool-cmd)
+      require_option_value "$@"
       tool_cmd="$2"
       shift 2
       ;;
@@ -92,6 +106,16 @@ while (($#)); do
       ;;
   esac
 done
+
+if [[ ! "$max_roms" =~ ^[0-9]+$ ]]; then
+  printf 'max ROM count must be a non-negative integer\n' >&2
+  exit 2
+fi
+
+if [[ ! "$jobs" =~ ^[0-9]+$ ]]; then
+  printf 'jobs must be a non-negative integer\n' >&2
+  exit 2
+fi
 
 if [[ "$catalog_tier" != metadata && "$catalog_tier" != curated ]]; then
   printf 'catalog tier must be "metadata" or "curated"\n' >&2
