@@ -58,6 +58,8 @@
           cargo-udeps-wrapped
 
           # Utilities
+          curl
+          jq
           tokei
           gh
 
