@@ -8,6 +8,20 @@ repository = "https://github.com/mjc/mame_coalesce"
 edition = "2024"
 rust-version = "1.85"
 default-run = "mame_coalesce"
+exclude = [
+    ".env",
+    ".envrc",
+    ".github/",
+    ".gitignore",
+    ".vscode/",
+    "deny.toml",
+    "diesel.toml",
+    "flake.lock",
+    "flake.nix",
+    "mame_coalesce.code-workspace",
+    "mempalace.yaml",
+    "profile.sh",
+]
 
 [[bin]]
 name = "mame_coalesce"
