@@ -23,7 +23,8 @@ use crate::{
 pub fn source(path: &Utf8Path, jobs: usize, pool: &Pool) -> crate::Result<Utf8PathBuf> {
     let source_root = path.canonicalize_utf8()?;
     info!("Looking in path: {source_root}");
-    let file_list = walk_for_files(&source_root);
+    let excluded_paths = db::database_file_paths(pool)?;
+    let file_list = walk_for_files(&source_root, &excluded_paths);
     let new_rom_files = get_all_rom_files(&file_list, jobs)?;
 
     info!(
@@ -147,7 +148,7 @@ const fn archive_entry_is_directory(stat: &libc::stat) -> bool {
     stat.st_mode & libc::S_IFMT == libc::S_IFDIR
 }
 
-fn walk_for_files(dir: &Utf8Path) -> Vec<Utf8PathBuf> {
+fn walk_for_files(dir: &Utf8Path, excluded_paths: &[Utf8PathBuf]) -> Vec<Utf8PathBuf> {
     let v = WalkDir::new(dir)
         .into_iter()
         .filter_entry(entry_is_relevant)
@@ -158,6 +159,11 @@ fn walk_for_files(dir: &Utf8Path) -> Vec<Utf8PathBuf> {
     optimized
         .iter()
         .filter_map(|direntry| Utf8PathBuf::from_path_buf(direntry.path().to_path_buf()).ok())
+        .filter(|path| {
+            !excluded_paths
+                .iter()
+                .any(|excluded_path| path == excluded_path)
+        })
         .collect()
 }
 

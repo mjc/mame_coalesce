@@ -310,6 +310,26 @@ fn scan_bare_files_inserts_rom_files() -> Result<(), Box<dyn std::error::Error>>
 }
 
 #[test]
+fn scan_source_skips_database_file_inside_source_root() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let utf8_dir = utf8_path(dir.path())?;
+    let database_path = utf8_dir.join("coalesce.db");
+    let pool = create_db_pool(database_path.as_str())?;
+
+    std::fs::write(dir.path().join("game.rom"), b"rom content here")?;
+    std::fs::write(format!("{}-wal", database_path.as_str()), b"wal")?;
+    std::fs::write(format!("{}-shm", database_path.as_str()), b"shm")?;
+    std::fs::write(format!("{}-journal", database_path.as_str()), b"journal")?;
+
+    operations::source(utf8_dir, 0, &pool)?;
+
+    let mut conn = pool.get()?;
+    let count: i64 = rom_files.count().get_result(&mut conn)?;
+    assert_eq!(count, 1);
+    Ok(())
+}
+
+#[test]
 fn scan_zip_inserts_entries() -> Result<(), Box<dyn std::error::Error>> {
     use std::io::Write;
     use zip::write::SimpleFileOptions;

@@ -1,9 +1,16 @@
 use crate::models::{NewDataFile, NewGame, NewRom, NewRomFile};
 use crate::{db::Pool as DbPool, logiqx};
 
+use camino::Utf8PathBuf;
 use diesel::result::Error as DieselError;
-use diesel::{QueryResult, SqliteConnection};
+use diesel::{QueryResult, QueryableByName, SqliteConnection};
 use diesel::{prelude::*, sql_query};
+
+#[derive(QueryableByName)]
+struct DatabasePathRow {
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    file: String,
+}
 
 pub fn traverse_and_insert_data_file(
     pool: &DbPool,
@@ -114,6 +121,24 @@ pub fn import_rom_files(pool: &DbPool, new_rom_files: &[NewRomFile]) -> crate::R
             .collect::<QueryResult<Vec<usize>>>()?;
         associate_rom_files(conn)
     })?)
+}
+
+pub fn database_file_paths(pool: &DbPool) -> crate::Result<Vec<Utf8PathBuf>> {
+    let mut conn = pool.get()?;
+    let rows = sql_query("SELECT file FROM pragma_database_list WHERE file != ''")
+        .load::<DatabasePathRow>(&mut conn)?;
+
+    let mut paths = Vec::new();
+    for row in rows {
+        if let Ok(path) = Utf8PathBuf::from(row.file).canonicalize_utf8() {
+            paths.push(path.clone());
+            for suffix in ["-wal", "-shm", "-journal"] {
+                paths.push(Utf8PathBuf::from(format!("{}{suffix}", path.as_str())));
+            }
+        }
+    }
+
+    Ok(paths)
 }
 
 fn associate_rom_files(conn: &mut SqliteConnection) -> QueryResult<usize> {
