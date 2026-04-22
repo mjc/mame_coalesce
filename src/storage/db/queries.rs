@@ -2,6 +2,7 @@ use crate::models::{NewDataFile, NewGame, NewRom, NewRomFile};
 use crate::{db::Pool as DbPool, logiqx};
 
 use diesel::result::Error as DieselError;
+use diesel::{QueryResult, SqliteConnection};
 use diesel::{prelude::*, sql_query};
 
 pub fn traverse_and_insert_data_file(
@@ -16,6 +17,15 @@ pub fn traverse_and_insert_data_file(
     let mut df_id = -1;
 
     conn.transaction::<_, crate::Error, _>(|conn| {
+        if let Some(existing_data_file_id) = data_files
+            .filter(crate::schema::data_files::dsl::name.eq(new_data_file.name()))
+            .select(crate::schema::data_files::dsl::id)
+            .first::<i32>(conn)
+            .optional()?
+        {
+            delete_data_file_children(conn, existing_data_file_id)?;
+        }
+
         replace_into(data_files)
             .values(&new_data_file)
             .execute(conn)?;
@@ -57,6 +67,36 @@ pub fn traverse_and_insert_data_file(
 
         Ok(df_id)
     })
+}
+
+fn delete_data_file_children(conn: &mut SqliteConnection, data_file_id: i32) -> QueryResult<()> {
+    use crate::schema::{
+        games::dsl as games_dsl, rom_files::dsl as rom_files_dsl, roms::dsl as roms_dsl,
+    };
+
+    let game_ids = games_dsl::games
+        .filter(games_dsl::data_file_id.eq(data_file_id))
+        .select(games_dsl::id)
+        .load::<i32>(conn)?;
+    let rom_ids = roms_dsl::roms
+        .filter(roms_dsl::game_id.eq_any(&game_ids))
+        .select(roms_dsl::id)
+        .load::<i32>(conn)?;
+
+    if !rom_ids.is_empty() {
+        diesel::update(rom_files_dsl::rom_files.filter(rom_files_dsl::rom_id.eq_any(&rom_ids)))
+            .set(rom_files_dsl::rom_id.eq::<Option<i32>>(None))
+            .execute(conn)?;
+    }
+
+    if !game_ids.is_empty() {
+        diesel::delete(roms_dsl::roms.filter(roms_dsl::game_id.eq_any(game_ids))).execute(conn)?;
+    }
+
+    diesel::delete(games_dsl::games.filter(games_dsl::data_file_id.eq(data_file_id)))
+        .execute(conn)?;
+
+    Ok(())
 }
 
 pub fn import_rom_files(pool: &DbPool, new_rom_files: &[NewRomFile]) -> crate::Result<usize> {

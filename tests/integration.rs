@@ -116,6 +116,34 @@ fn write_shared_dat(
     Ok(utf8_path(&dat_path)?.to_path_buf())
 }
 
+fn write_single_game_dat(
+    path: &std::path::Path,
+    set_name: &str,
+    game_name: &str,
+    rom_name: &str,
+    rom_sha1: &str,
+) -> Result<camino::Utf8PathBuf, io::Error> {
+    let dat = format!(
+        r#"<?xml version="1.0"?>
+<datafile>
+  <header>
+    <name>{set_name}</name>
+    <description>Reimport Test</description>
+    <version>1.0</version>
+    <author>Test</author>
+  </header>
+  <game name="{game_name}" sourcefile="reimport.c">
+    <description>{game_name}</description>
+    <year>1980</year>
+    <manufacturer>Acme</manufacturer>
+    <rom name="{rom_name}" size="4096" sha1="{rom_sha1}" md5="900150983cd24fb0d6963f7d28e17f72" crc="12345678"/>
+  </game>
+</datafile>"#
+    );
+    fs::write(path, dat)?;
+    Ok(utf8_path(path)?.to_path_buf())
+}
+
 fn write_single_rom_source(
     dir: &std::path::Path,
     contents: &[u8],
@@ -185,6 +213,47 @@ fn parse_and_insert_clone_dat() -> Result<(), Box<dyn std::error::Error>> {
         Some("parent")
     );
     db::traverse_and_insert_data_file(&pool, &df)?;
+    Ok(())
+}
+
+#[test]
+fn reimport_dat_replaces_previous_games_and_roms() -> Result<(), Box<dyn std::error::Error>> {
+    use mame_coalesce::schema::{
+        data_files::dsl::data_files,
+        games::dsl::{games, name as game_name},
+        roms::dsl::{name as rom_name, roms},
+    };
+
+    let pool = in_memory_pool()?;
+    let dat_dir = tempfile::tempdir()?;
+    let dat_file = dat_dir.path().join("mutable.dat");
+    let dat_path = write_single_game_dat(
+        &dat_file,
+        "Mutable Set",
+        "old-game",
+        "old.rom",
+        "a9993e364706816aba3e25717850c26c9cd0d89d",
+    )?;
+
+    operations::parse_and_insert_datfile(&dat_path, &pool)?;
+    write_single_game_dat(
+        &dat_file,
+        "Mutable Set",
+        "new-game",
+        "new.rom",
+        "da39a3ee5e6b4b0d3255bfef95601890afd80709",
+    )?;
+    operations::parse_and_insert_datfile(&dat_path, &pool)?;
+
+    let mut conn = pool.get()?;
+    assert_eq!(data_files.count().get_result::<i64>(&mut conn)?, 1);
+    assert_eq!(games.count().get_result::<i64>(&mut conn)?, 1);
+    assert_eq!(roms.count().get_result::<i64>(&mut conn)?, 1);
+
+    let game_names = games.select(game_name).load::<String>(&mut conn)?;
+    let rom_names = roms.select(rom_name).load::<String>(&mut conn)?;
+    assert_eq!(game_names, vec!["new-game"]);
+    assert_eq!(rom_names, vec!["new.rom"]);
     Ok(())
 }
 
