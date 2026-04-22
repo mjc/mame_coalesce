@@ -53,9 +53,14 @@ pub fn traverse_and_insert_data_file(
             r"
             UPDATE games AS cloned
                 SET parent_id = (
-                    select games.id from games WHERE cloned.clone_of = games.name
-                )",
+                    SELECT parent.id
+                    FROM games AS parent
+                    WHERE parent.name = cloned.clone_of
+                        AND parent.data_file_id = cloned.data_file_id
+                )
+                WHERE cloned.data_file_id = ?",
         )
+        .bind::<diesel::sql_types::Integer, _>(df_id)
         .execute(conn)?;
 
         Ok(df_id)

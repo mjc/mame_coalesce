@@ -1,5 +1,5 @@
 use mame_coalesce::{
-    app::{self, RunWorkflowRequest},
+    app::{self, BuildWorkflowRequest, DatImportRequest, RunWorkflowRequest, SourceScanRequest},
     db::{self, create_db_pool},
     domain::BuildMode,
     logiqx::DataFile,
@@ -85,6 +85,42 @@ fn write_clone_dat(dir: &std::path::Path) -> Result<camino::Utf8PathBuf, io::Err
 fn write_present_clone_roms(dir: &std::path::Path) -> Result<camino::Utf8PathBuf, io::Error> {
     fs::write(dir.join("parent.rom"), b"abc")?;
     fs::write(dir.join("clone2.rom"), b"")?;
+    Ok(utf8_path(dir)?.to_path_buf())
+}
+
+fn write_shared_dat(
+    dir: &std::path::Path,
+    file_name: &str,
+    set_name: &str,
+    rom_sha1: &str,
+) -> Result<camino::Utf8PathBuf, io::Error> {
+    let dat_path = dir.join(file_name);
+    let dat = format!(
+        r#"<?xml version="1.0"?>
+<datafile>
+  <header>
+    <name>{set_name}</name>
+    <description>Overlapping DAT Test</description>
+    <version>1.0</version>
+    <author>Test</author>
+  </header>
+  <game name="shared" sourcefile="shared.c">
+    <description>Shared Game</description>
+    <year>1980</year>
+    <manufacturer>Acme</manufacturer>
+    <rom name="shared.rom" size="4096" sha1="{rom_sha1}" md5="900150983cd24fb0d6963f7d28e17f72" crc="12345678"/>
+  </game>
+</datafile>"#
+    );
+    fs::write(&dat_path, dat)?;
+    Ok(utf8_path(&dat_path)?.to_path_buf())
+}
+
+fn write_single_rom_source(
+    dir: &std::path::Path,
+    contents: &[u8],
+) -> Result<camino::Utf8PathBuf, io::Error> {
+    fs::write(dir.join("shared.rom"), contents)?;
     Ok(utf8_path(dir)?.to_path_buf())
 }
 
@@ -288,5 +324,100 @@ fn strict_run_workflow_writes_nothing_when_roms_are_missing()
     assert_eq!(report.build_report.missing_roms[0].rom_name, "clone1.rom");
     assert!(report.written_paths.is_empty());
     assert!(!output_path.exists());
+    Ok(())
+}
+
+#[test]
+fn overlapping_dats_with_same_game_and_rom_names_build_independently()
+-> Result<(), Box<dyn std::error::Error>> {
+    let pool = in_memory_pool()?;
+    let dat_dir = tempfile::tempdir()?;
+    let abc_source_dir = tempfile::tempdir()?;
+    let empty_source_dir = tempfile::tempdir()?;
+    let abc_output_dir = tempfile::tempdir()?;
+    let empty_output_dir = tempfile::tempdir()?;
+    let dat_a = write_shared_dat(
+        dat_dir.path(),
+        "set-a.dat",
+        "Set A",
+        "a9993e364706816aba3e25717850c26c9cd0d89d",
+    )?;
+    let dat_b = write_shared_dat(
+        dat_dir.path(),
+        "set-b.dat",
+        "Set B",
+        "da39a3ee5e6b4b0d3255bfef95601890afd80709",
+    )?;
+    let source_a = write_single_rom_source(abc_source_dir.path(), b"abc")?;
+    let source_b = write_single_rom_source(empty_source_dir.path(), b"")?;
+    let output_a = utf8_path(abc_output_dir.path())?.to_path_buf();
+    let output_b = utf8_path(empty_output_dir.path())?.to_path_buf();
+
+    app::import_dat(
+        &pool,
+        &DatImportRequest {
+            dat_path: dat_a.clone(),
+        },
+    )?;
+    app::import_dat(
+        &pool,
+        &DatImportRequest {
+            dat_path: dat_b.clone(),
+        },
+    )?;
+    app::scan_source(
+        &pool,
+        &SourceScanRequest {
+            source_path: source_a.clone(),
+            jobs: 1,
+        },
+    )?;
+    app::scan_source(
+        &pool,
+        &SourceScanRequest {
+            source_path: source_b.clone(),
+            jobs: 1,
+        },
+    )?;
+
+    let report_a = app::build(
+        &pool,
+        &BuildWorkflowRequest {
+            dat_path: dat_a,
+            source_path: source_a,
+            destination_path: output_a.clone(),
+            mode: BuildMode::ParentBundles,
+            dry_run: false,
+            strict: true,
+        },
+    )?;
+    let report_b = app::build(
+        &pool,
+        &BuildWorkflowRequest {
+            dat_path: dat_b,
+            source_path: source_b,
+            destination_path: output_b.clone(),
+            mode: BuildMode::ParentBundles,
+            dry_run: false,
+            strict: true,
+        },
+    )?;
+
+    assert_eq!(report_a.exit_code, 0);
+    assert_eq!(report_b.exit_code, 0);
+    assert_eq!(report_a.build_report.matched_roms, 1);
+    assert_eq!(report_b.build_report.matched_roms, 1);
+    assert_eq!(
+        zip_entries(&output_a.join("shared.zip"))?
+            .get("shared.rom")
+            .map(Vec::as_slice),
+        Some(b"abc" as &[u8])
+    );
+    assert_eq!(
+        zip_entries(&output_b.join("shared.zip"))?
+            .get("shared.rom")
+            .map(Vec::as_slice),
+        Some(b"" as &[u8])
+    );
     Ok(())
 }
