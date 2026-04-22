@@ -14,6 +14,7 @@ pub fn write_plan(plan: &BuildPlan, destination: &Utf8Path) -> crate::Result<Vec
         return Ok(Vec::new());
     }
 
+    validate_plan_paths(plan)?;
     create_dir_all(destination)?;
     plan.zips
         .iter()
@@ -27,6 +28,51 @@ pub fn write_plan(plan: &BuildPlan, destination: &Utf8Path) -> crate::Result<Vec
             Ok(zip_path)
         })
         .collect()
+}
+
+fn validate_plan_paths(plan: &BuildPlan) -> crate::Result<()> {
+    for zip_spec in &plan.zips {
+        validate_output_file_name(&zip_spec.file_name)?;
+        for entry in &zip_spec.entries {
+            validate_zip_entry_name(&entry.output_name)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_output_file_name(name: &str) -> crate::Result<()> {
+    if is_normal_relative_component(name) {
+        Ok(())
+    } else {
+        Err(crate::Error::InvalidPath(format!(
+            "unsafe output zip file name: {name}"
+        )))
+    }
+}
+
+fn validate_zip_entry_name(name: &str) -> crate::Result<()> {
+    if name.split('/').all(is_normal_relative_component) {
+        Ok(())
+    } else {
+        Err(crate::Error::InvalidPath(format!(
+            "unsafe zip entry name: {name}"
+        )))
+    }
+}
+
+fn is_normal_relative_component(component: &str) -> bool {
+    !component.is_empty()
+        && component != "."
+        && component != ".."
+        && !component.contains('/')
+        && !component.contains('\\')
+        && !component.contains('\0')
+        && !has_windows_drive_prefix(component)
+}
+
+fn has_windows_drive_prefix(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
 }
 
 fn open_destination_zip(
@@ -120,5 +166,112 @@ fn copy_from_archive(
             "archive entry not found: {}",
             source.display_name()
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{self, Read};
+
+    use crate::domain::{BuildReport, ZipSpec};
+
+    use super::*;
+
+    fn utf8_path(path: &std::path::Path) -> Result<&Utf8Path, io::Error> {
+        Utf8Path::from_path(path).ok_or_else(|| io::Error::other("path is not UTF-8"))
+    }
+
+    fn source_file(path: &Utf8Path) -> SourceFile {
+        SourceFile {
+            source_root: path
+                .parent()
+                .map_or_else(String::new, |parent| parent.as_str().to_owned()),
+            canonical_path: path.as_str().to_owned(),
+            entry_name: None,
+            sha1: "sha1".to_owned(),
+            kind: SourceKind::BareFile,
+        }
+    }
+
+    fn error_message(result: crate::Result<Vec<Utf8PathBuf>>) -> Result<String, &'static str> {
+        match result {
+            Ok(_) => Err("expected write plan to fail"),
+            Err(error) => Ok(error.to_string()),
+        }
+    }
+
+    #[test]
+    fn write_plan_rejects_unsafe_output_zip_file_name() -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let destination = utf8_path(temp_dir.path())?.join("output");
+        let plan = BuildPlan {
+            zips: vec![ZipSpec {
+                file_name: "../escape.zip".to_owned(),
+                entries: Vec::new(),
+            }],
+            report: BuildReport::default(),
+            dry_run: false,
+        };
+
+        let message = error_message(write_plan(&plan, &destination))?;
+
+        assert!(message.contains("unsafe output zip file name"));
+        assert!(!destination.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn write_plan_rejects_unsafe_zip_entry_name() -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let source_path = utf8_path(temp_dir.path())?.join("source.rom");
+        std::fs::write(&source_path, b"rom")?;
+        let destination = utf8_path(temp_dir.path())?.join("output");
+        let plan = BuildPlan {
+            zips: vec![ZipSpec {
+                file_name: "safe.zip".to_owned(),
+                entries: vec![ZipEntrySpec {
+                    output_name: "../evil.rom".to_owned(),
+                    source: source_file(&source_path),
+                }],
+            }],
+            report: BuildReport::default(),
+            dry_run: false,
+        };
+
+        let message = error_message(write_plan(&plan, &destination))?;
+
+        assert!(message.contains("unsafe zip entry name"));
+        assert!(!destination.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn write_plan_allows_nested_zip_entry_name() -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let source_path = utf8_path(temp_dir.path())?.join("source.rom");
+        std::fs::write(&source_path, b"rom")?;
+        let destination = utf8_path(temp_dir.path())?.join("output");
+        let plan = BuildPlan {
+            zips: vec![ZipSpec {
+                file_name: "safe.zip".to_owned(),
+                entries: vec![ZipEntrySpec {
+                    output_name: "nested/game.rom".to_owned(),
+                    source: source_file(&source_path),
+                }],
+            }],
+            report: BuildReport::default(),
+            dry_run: false,
+        };
+
+        let mut written_paths = write_plan(&plan, &destination)?;
+        assert_eq!(written_paths.len(), 1);
+        let zip_path = written_paths.pop().ok_or("expected written zip")?;
+        let mut zip = zip::ZipArchive::new(File::open(zip_path)?)?;
+        let mut entry = zip.by_name("nested/game.rom")?;
+        let mut contents = Vec::new();
+        entry.read_to_end(&mut contents)?;
+
+        assert_eq!(contents, b"rom");
+        Ok(())
     }
 }
