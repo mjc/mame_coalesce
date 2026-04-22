@@ -206,7 +206,7 @@ fn scan_bare_files_inserts_rom_files() -> Result<(), Box<dyn std::error::Error>>
 
     let utf8_dir = camino::Utf8Path::from_path(dir.path())
         .ok_or_else(|| io::Error::other("temp path is not UTF-8"))?;
-    operations::source(utf8_dir, 1, &pool)?;
+    operations::source(utf8_dir, 0, &pool)?;
 
     // Verify something was inserted in the `rom_files` table.
     let mut conn = pool.get()?;

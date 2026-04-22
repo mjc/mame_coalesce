@@ -23,7 +23,7 @@ use crate::{
 pub fn source(path: &Utf8Path, jobs: usize, pool: &Pool) -> crate::Result<Utf8PathBuf> {
     info!("Looking in path: {path}");
     let file_list = walk_for_files(path);
-    let new_rom_files = get_all_rom_files(&file_list, jobs);
+    let new_rom_files = get_all_rom_files(&file_list, jobs)?;
 
     info!(
         "rom files found (unpacked and packed both): {}",
@@ -39,18 +39,17 @@ pub fn source(path: &Utf8Path, jobs: usize, pool: &Pool) -> crate::Result<Utf8Pa
     Ok(path.to_path_buf())
 }
 
-fn get_all_rom_files(file_list: &[Utf8PathBuf], jobs: usize) -> Vec<NewRomFile> {
+fn get_all_rom_files(file_list: &[Utf8PathBuf], jobs: usize) -> crate::Result<Vec<NewRomFile>> {
     let bar = progress::bar(file_list.len() as u64);
-    // Ignore "already initialized" error — the global pool is reused across calls.
-    let _ = rayon::ThreadPoolBuilder::new()
-        .num_threads(jobs)
-        .build_global();
-    file_list
-        .par_iter()
-        .progress_with(bar)
-        .filter_map(|p| build_new_rom_files(p))
-        .flatten_iter()
-        .collect()
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(jobs).build()?;
+    Ok(pool.install(|| {
+        file_list
+            .par_iter()
+            .progress_with(bar)
+            .filter_map(|p| build_new_rom_files(p))
+            .flatten_iter()
+            .collect()
+    }))
 }
 
 fn build_new_rom_files(path: &Utf8Path) -> Option<Vec<NewRomFile>> {
