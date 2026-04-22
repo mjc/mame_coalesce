@@ -76,6 +76,9 @@ fn scan_zip(mmap: &MmapFile) -> crate::Result<Vec<NewRomFile>> {
 
     for i in 0..zip.len() {
         let mut file = zip.by_index(i)?;
+        if file.is_dir() {
+            continue;
+        }
         // enclosed_name() returns &Path in zip 2.x
         let name = file
             .enclosed_name()
@@ -230,6 +233,29 @@ mod tests {
         assert_eq!(rom_files.len(), 2);
         // Verify hashes differ between entries
         assert_ne!(rom_files[0].sha1, rom_files[1].sha1);
+        Ok(())
+    }
+
+    #[test]
+    fn scan_zip_skips_directory_entries() -> Result<(), Box<dyn std::error::Error>> {
+        let cursor = std::io::Cursor::new(Vec::new());
+        let mut zip = zip::ZipWriter::new(cursor);
+        let options = SimpleFileOptions::default();
+        zip.add_directory("nested/", options)?;
+        zip.start_file("nested/game.rom", options)?;
+        zip.write_all(b"rom")?;
+        let zip_data = zip.finish()?.into_inner();
+
+        let tmp = tempfile::NamedTempFile::new()?;
+        std::fs::write(tmp.path(), &zip_data)?;
+
+        let utf8_path = camino::Utf8Path::from_path(tmp.path())
+            .ok_or_else(|| io::Error::other("temp path is not UTF-8"))?;
+        let mmap = crate::hashes::mmap_path(utf8_path)?;
+        let rom_files = scan_zip(&mmap)?;
+
+        assert_eq!(rom_files.len(), 1);
+        assert_eq!(rom_files[0].name, "nested/game.rom");
         Ok(())
     }
 }
