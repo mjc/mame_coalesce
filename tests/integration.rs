@@ -385,6 +385,38 @@ fn run_workflow_writes_parent_bundle_zip() -> Result<(), Box<dyn std::error::Err
 }
 
 #[test]
+fn dry_run_workflow_reports_plan_without_writing_files() -> Result<(), Box<dyn std::error::Error>> {
+    let pool = in_memory_pool()?;
+    let work_dir = tempfile::tempdir()?;
+    let source_dir = tempfile::tempdir()?;
+    let output_dir = tempfile::tempdir()?;
+    let dat_path = write_clone_dat(work_dir.path())?;
+    let source_path = write_present_clone_roms(source_dir.path())?;
+    let output_path = utf8_path(output_dir.path())?.join("dry-run-output");
+
+    let report = app::run(
+        &pool,
+        &RunWorkflowRequest {
+            dat_path,
+            source_path,
+            destination_path: output_path.clone(),
+            mode: BuildMode::ParentBundles,
+            jobs: 1,
+            dry_run: true,
+            strict: false,
+        },
+    )?;
+
+    assert_eq!(report.exit_code, 0);
+    assert!(report.dry_run);
+    assert_eq!(report.build_report.matched_roms, 2);
+    assert_eq!(report.build_report.missing_roms.len(), 1);
+    assert!(report.written_paths.is_empty());
+    assert!(!output_path.exists());
+    Ok(())
+}
+
+#[test]
 fn build_workflow_accepts_imported_dat_name() -> Result<(), Box<dyn std::error::Error>> {
     let pool = in_memory_pool()?;
     let work_dir = tempfile::tempdir()?;
