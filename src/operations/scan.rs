@@ -29,8 +29,13 @@ pub fn source(path: &Utf8Path, jobs: usize, pool: &Pool) -> crate::Result<Utf8Pa
         "rom files found (unpacked and packed both): {}",
         new_rom_files.len()
     );
-    db::import_rom_files(pool, &new_rom_files)?;
-    // TODO: warning if nothing associated
+    let associated_roms = db::import_rom_files(pool, &new_rom_files)?;
+    if associated_roms == 0 && !new_rom_files.is_empty() {
+        warn!(
+            "scanned {} ROM files, but none matched imported DAT ROMs",
+            new_rom_files.len()
+        );
+    }
     // TODO: pick datafile to scan for
     Ok(path.to_path_buf())
 }
