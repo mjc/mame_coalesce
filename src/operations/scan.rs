@@ -36,7 +36,6 @@ pub fn source(path: &Utf8Path, jobs: usize, pool: &Pool) -> crate::Result<Utf8Pa
             new_rom_files.len()
         );
     }
-    // TODO: pick datafile to scan for
     Ok(path.to_path_buf())
 }
 
@@ -162,8 +161,6 @@ fn entry_is_relevant(entry: &DirEntry) -> bool {
 
 #[cfg(target_os = "linux")]
 fn optimize_file_order(mut dirs: Vec<DirEntry>) -> Vec<DirEntry> {
-    // TODO: figure out fiemap
-
     use walkdir::DirEntryExt;
     dirs.sort_by(|a, b| {
         let a_inode = a.ino();
