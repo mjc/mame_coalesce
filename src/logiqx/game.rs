@@ -1,3 +1,5 @@
+use serde::Deserialize;
+
 use super::Rom;
 
 #[derive(Debug, Deserialize)]

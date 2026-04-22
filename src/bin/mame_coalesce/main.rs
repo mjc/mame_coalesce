@@ -1,32 +1,23 @@
-use clap::StructOpt;
+use clap::Parser;
 
 mod options;
 use options::{Cli, Command};
 
-use mame_coalesce::{
-    db::{create_db_pool, Pool},
-    logger, operations,
-};
+use mame_coalesce::{db::create_db_pool, logger, operations};
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     logger::setup();
 
     let cli = Cli::parse();
-
-    let pool = get_pool(&cli);
+    let pool = create_db_pool(cli.database_path())?;
 
     match cli.command() {
         Command::AddDataFile { path } => {
-            if let Err(e) = operations::parse_and_insert_datfile(path, &pool) {
-                panic!("Couldn't insert data file: {e:?}");
-            }
+            operations::parse_and_insert_datfile(path.as_path(), &pool)?;
         }
         Command::ScanSource { jobs, path } => {
-            if let Err(e) = operations::source(path, *jobs, &pool) {
-                panic!("Couldn't scan source: {e:?}");
-            }
+            operations::source(path.as_path(), *jobs, &pool)?;
         }
-
         Command::Rename {
             dry_run,
             data_file,
@@ -34,19 +25,8 @@ fn main() {
             ..
         } => {
             // TODO: respect source argument
-            let result = operations::rename_roms(&pool, data_file, *dry_run, destination);
-
-            if let Err(e) = result {
-                panic!("Unable to rename roms: {e:?}")
-            }
+            operations::rename_roms(&pool, data_file.as_path(), *dry_run, destination.as_path())?;
         }
     }
-}
-
-fn get_pool(cli: &Cli) -> Pool {
-    let pool = match create_db_pool(cli.database_path()) {
-        Ok(pool) => pool,
-        Err(err) => panic!("Couldn't create db pool: {err:?}"),
-    };
-    pool
+    Ok(())
 }

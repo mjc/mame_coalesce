@@ -16,10 +16,10 @@ use xxhash_rust::xxh3::Xxh3;
 use crate::{
     db::{self, Pool},
     models::NewRomFile,
-    progress, MameResult,
+    progress, Error,
 };
 
-pub fn source(path: &Utf8Path, jobs: usize, pool: &Pool) -> MameResult<Utf8PathBuf> {
+pub fn source(path: &Utf8Path, jobs: usize, pool: &Pool) -> crate::Result<Utf8PathBuf> {
     info!("Looking in path: {}", path);
     let file_list = walk_for_files(path);
     let new_rom_files = get_all_rom_files(&file_list, jobs)?;
@@ -34,11 +34,12 @@ pub fn source(path: &Utf8Path, jobs: usize, pool: &Pool) -> MameResult<Utf8PathB
     Ok(path.to_path_buf())
 }
 
-fn get_all_rom_files(file_list: &Vec<Utf8PathBuf>, jobs: usize) -> MameResult<Vec<NewRomFile>> {
+fn get_all_rom_files(file_list: &Vec<Utf8PathBuf>, jobs: usize) -> crate::Result<Vec<NewRomFile>> {
     let bar = progress::bar(file_list.len() as u64);
-    rayon::ThreadPoolBuilder::new()
+    // Ignore "already initialized" error — the global pool is reused across calls.
+    let _ = rayon::ThreadPoolBuilder::new()
         .num_threads(jobs)
-        .build_global()?;
+        .build_global();
     Ok(file_list
         .par_iter()
         .progress_with(bar)
@@ -60,28 +61,33 @@ fn build_new_rom_files(path: &Utf8Path) -> Option<Vec<NewRomFile>> {
         })
 }
 
-fn scan_zip(mmap: &MmapFile) -> MameResult<Vec<NewRomFile>> {
-    let path = Utf8Path::from_path(mmap.path()).ok_or("invalid path")?;
-    let reader = mmap.reader(0)?;
+fn scan_zip(mmap: &MmapFile) -> crate::Result<Vec<NewRomFile>> {
+    let path = Utf8Path::from_path(mmap.path())
+        .ok_or_else(|| Error::InvalidPath("invalid path".to_owned()))?;
+    let reader = mmap.reader(0).map_err(|e| Error::Mmap(e.to_string()))?;
     let mut zip = zip::ZipArchive::new(reader)?;
 
     let mut rom_files = Vec::new();
 
-    let mut sha1hasher = Sha1::new();
-    let xxhash3 = Xxh3::new();
-
     for i in 0..zip.len() {
         let mut file = zip.by_index(i)?;
+        // enclosed_name() returns &Path in zip 2.x
         let name = file
             .enclosed_name()
-            .ok_or("invalid name inside zip: {path:?}")?;
-        let mut nrf = NewRomFile::from_archive(path, name, Vec::new(), Vec::new())
-            .ok_or("couldn't make database entry for file: {path:?}")?;
+            .ok_or_else(|| Error::InvalidPath(format!("invalid name inside zip: {path:?}")))?
+            .to_owned();
+        let mut nrf =
+            NewRomFile::from_archive(path, &name, Vec::new(), Vec::new()).ok_or_else(|| {
+                Error::InvalidPath(format!("couldn't make database entry for file: {path:?}"))
+            })?;
 
-        std::io::copy(&mut file, &mut sha1hasher)?;
-        let sha1 = sha1hasher.finalize_reset().to_vec();
+        // Read entry into buffer so both hashers can see the data
+        let mut buf = Vec::new();
+        std::io::copy(&mut file, &mut buf)?;
+
+        let sha1 = crate::hashes::sha1_bytes(&buf);
+        let xxh = crate::hashes::xxhash3_bytes(&buf);
         nrf.set_sha1(sha1);
-        let xxh = xxhash3.digest().to_be_bytes().to_vec();
         nrf.set_xxhash3(xxh);
         rom_files.push(nrf);
     }
@@ -89,7 +95,7 @@ fn scan_zip(mmap: &MmapFile) -> MameResult<Vec<NewRomFile>> {
     Ok(rom_files)
 }
 
-fn scan_libarchive(path: &Utf8Path) -> MameResult<Vec<NewRomFile>> {
+fn scan_libarchive(path: &Utf8Path) -> crate::Result<Vec<NewRomFile>> {
     let f = File::open(path)?;
     let reader = BufReader::new(f);
     // let mmap = mmap_path(path)?;
@@ -145,7 +151,7 @@ fn entry_is_relevant(entry: &DirEntry) -> bool {
     entry
         .file_name()
         .to_str()
-        .map_or(false, |s| entry.depth() == 0 || !s.starts_with('.'))
+        .is_some_and(|s| entry.depth() == 0 || !s.starts_with('.'))
 }
 
 #[cfg(target_os = "linux")]
@@ -164,4 +170,63 @@ fn optimize_file_order(mut dirs: Vec<DirEntry>) -> Vec<DirEntry> {
 #[cfg(not(target_os = "linux"))]
 fn optimize_file_order(mut dirs: Vec<DirEntry>) -> Vec<DirEntry> {
     dirs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{self, Write};
+    use zip::write::SimpleFileOptions;
+
+    fn make_test_zip(entries: &[(&str, &[u8])]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let cursor = std::io::Cursor::new(Vec::new());
+        let mut zip = zip::ZipWriter::new(cursor);
+        let options = SimpleFileOptions::default();
+        for (name, data) in entries {
+            zip.start_file(*name, options)?;
+            zip.write_all(data)?;
+        }
+        Ok(zip.finish()?.into_inner())
+    }
+
+    #[test]
+    fn scan_zip_computes_correct_hashes() -> Result<(), Box<dyn std::error::Error>> {
+        let content = b"hello rom";
+        let zip_data = make_test_zip(&[("test.rom", content)])?;
+
+        let expected_sha1 = crate::hashes::sha1_bytes(content);
+        let expected_xxh = crate::hashes::xxhash3_bytes(content);
+
+        let tmp = tempfile::NamedTempFile::new()?;
+        std::fs::write(tmp.path(), &zip_data)?;
+
+        let utf8_path = camino::Utf8Path::from_path(tmp.path())
+            .ok_or_else(|| io::Error::other("temp path is not UTF-8"))?;
+        let mmap = crate::hashes::mmap_path(utf8_path)?;
+        let rom_files = scan_zip(&mmap)?;
+
+        assert_eq!(rom_files.len(), 1);
+        assert_eq!(rom_files[0].sha1, expected_sha1);
+        assert_eq!(rom_files[0].xxhash3, expected_xxh);
+        Ok(())
+    }
+
+    #[test]
+    fn scan_zip_multiple_entries() -> Result<(), Box<dyn std::error::Error>> {
+        let entries = [("a.rom", b"aaaa" as &[u8]), ("b.rom", b"bbbb" as &[u8])];
+        let zip_data = make_test_zip(&entries)?;
+
+        let tmp = tempfile::NamedTempFile::new()?;
+        std::fs::write(tmp.path(), &zip_data)?;
+
+        let utf8_path = camino::Utf8Path::from_path(tmp.path())
+            .ok_or_else(|| io::Error::other("temp path is not UTF-8"))?;
+        let mmap = crate::hashes::mmap_path(utf8_path)?;
+        let rom_files = scan_zip(&mmap)?;
+
+        assert_eq!(rom_files.len(), 2);
+        // Verify hashes differ between entries
+        assert_ne!(rom_files[0].sha1, rom_files[1].sha1);
+        Ok(())
+    }
 }

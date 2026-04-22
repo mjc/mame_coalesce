@@ -1,34 +1,30 @@
-use std::collections::{BTreeMap, HashSet};
-use std::{error, fs};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fs;
 
 use crate::{db::Pool as DbPool, logiqx};
 use crate::{
     models::{DataFile, Game, NewDataFile, NewGame, NewRom, NewRomFile, Rom, RomFile},
-    MameResult,
+    Error,
 };
 
 use camino::{Utf8Path, Utf8PathBuf};
-use diesel::result::Error;
+use diesel::result::Error as DieselError;
 use diesel::{prelude::*, sql_query};
 use log::warn;
-use Error::NotFound;
+use DieselError::NotFound;
 
-// TODO: return Result
 pub fn traverse_and_insert_data_file(
     pool: &DbPool,
     logiqx_data_file: &logiqx::DataFile,
-) -> MameResult<i32> {
+) -> crate::Result<i32> {
     use crate::schema::{data_files::dsl::data_files, games::dsl::games, roms::dsl::roms};
     use diesel::replace_into;
 
     let new_data_file = NewDataFile::from_logiqx(logiqx_data_file);
-
-    let conn = &pool.get()?;
-
-    // TODO: return from transaction?
+    let mut conn = pool.get()?;
     let mut df_id = -1;
 
-    conn.transaction::<_, Box<dyn error::Error>, _>(|| {
+    conn.transaction::<_, crate::Error, _>(|conn| {
         replace_into(data_files)
             .values(&new_data_file)
             .execute(conn)?;
@@ -60,8 +56,6 @@ pub fn traverse_and_insert_data_file(
             }
         });
 
-        // TODO: figure out how to do this with the dsl
-        // it's an absurd job but some query's gotta do it
         sql_query(
             r#"
             UPDATE games AS cloned
@@ -79,66 +73,71 @@ pub fn import_rom_files(pool: &DbPool, new_rom_files: &[NewRomFile]) -> QueryRes
     use crate::schema::rom_files::dsl::rom_files;
     use diesel::replace_into;
 
-    let conn = pool.get().map_err(|_| NotFound)?;
+    let mut conn = pool.get().map_err(|_| NotFound)?;
 
-    conn.transaction::<_, Error, _>(|| {
+    conn.transaction::<_, DieselError, _>(|conn| {
         new_rom_files
             .iter()
-            .map(|new_rom_file| replace_into(rom_files).values(new_rom_file).execute(&conn))
+            .map(|new_rom_file| replace_into(rom_files).values(new_rom_file).execute(conn))
             .collect::<QueryResult<Vec<usize>>>()?;
-        // TODO: figure out how to do this with the dsl
-        // TODO: this is gonna do weird shit if you have things already inserted
         sql_query(
             "UPDATE rom_files SET rom_id = roms.id FROM roms WHERE rom_files.sha1 = roms.sha1",
         )
-        .execute(&conn)
+        .execute(conn)
     })
 }
 
 pub fn load_parents(
     pool: &DbPool,
     data_file_path: &Utf8Path,
-) -> MameResult<BTreeMap<Game, HashSet<(Rom, RomFile)>>> {
+) -> crate::Result<BTreeMap<Game, HashSet<(Rom, RomFile)>>> {
     use crate::schema::{
         self,
         games::dsl::{data_file_id, games},
         rom_files::dsl::rom_files,
         roms::dsl::roms,
     };
-    let conn = pool.get()?;
+    let mut conn = pool.get()?;
 
     let canonicalized = fs::canonicalize(data_file_path)?;
-    let full_path = Utf8PathBuf::from_path_buf(canonicalized)
-        .map_err(|_| "couldn't parse path to data file as unicode.")?;
+    let full_path = Utf8PathBuf::from_path_buf(canonicalized).map_err(|_| {
+        Error::InvalidPath("couldn't parse path to data file as unicode.".to_owned())
+    })?;
 
-    // TODO: This is fucking horrible
-    // TODO:: .filter(sql("..."))
     let df = schema::data_files::dsl::data_files
         .filter(schema::data_files::dsl::file_name.eq(full_path.as_str()))
-        .first::<DataFile>(&conn)?;
+        .first::<DataFile>(&mut conn)?;
 
-    // TODO: scope by command-line path!
-    let query_results: BTreeMap<Game, (Rom, RomFile)> = games
-        .filter(data_file_id.eq(df.id()))
+    // Two-pass approach: first collect all parents by name, then group ROMs under their parent.
+    // This avoids the ordering assumption that parents appear before clones in query results.
+    let query_results: Vec<(Game, (Rom, RomFile))> = games
+        .filter(data_file_id.eq(df.id))
         .inner_join(roms.inner_join(rom_files))
-        .group_by(schema::rom_files::dsl::sha1)
-        .load(&conn)?
-        .into_iter()
+        .load(&mut conn)?;
+
+    // First pass: collect all parent games (those with no parent_id)
+    let parent_by_name: HashMap<String, Game> = query_results
+        .iter()
+        .filter(|(game, _)| game.parent_id.is_none())
+        .map(|(game, _)| (game.name.clone(), game.clone()))
         .collect();
 
-    let (by_parent, _) = query_results.into_iter().fold(
-        (BTreeMap::default(), None),
-        |(mut grouped, mut parent), (game, (rom, rom_file))| {
-            if game.parent_id.is_none() {
-                parent = Some(game);
-            }
-            if let Some(key) = parent.clone() {
-                let entry = grouped.entry(key).or_insert_with(HashSet::new);
-                (*entry).insert((rom, rom_file));
-            }
-            (grouped, parent)
-        },
-    );
+    // Second pass: group each row under its parent game
+    let mut by_parent: BTreeMap<Game, HashSet<(Rom, RomFile)>> = BTreeMap::new();
+    for (game, (rom, rom_file)) in query_results {
+        let parent_key = if game.parent_id.is_none() {
+            Some(game.clone())
+        } else {
+            game.clone_of
+                .as_deref()
+                .and_then(|parent_name| parent_by_name.get(parent_name))
+                .cloned()
+        };
+
+        if let Some(parent) = parent_key {
+            by_parent.entry(parent).or_default().insert((rom, rom_file));
+        }
+    }
 
     Ok(by_parent)
 }

@@ -2,9 +2,10 @@ use diesel::Insertable;
 
 use crate::{logiqx, schema::data_files};
 
-#[derive(Identifiable, Queryable, Associations, PartialEq, Eq, Debug)]
+#[derive(Identifiable, Queryable, PartialEq, Eq, Debug)]
+#[diesel(table_name = data_files)]
 pub struct DataFile {
-    id: i32,
+    pub id: i32,
     build: Option<String>,
     debug: Option<String>,
     file_name: Option<String>,
@@ -20,7 +21,7 @@ pub struct DataFile {
 }
 
 #[derive(Insertable)]
-#[table_name = "data_files"]
+#[diesel(table_name = data_files)]
 pub struct New<'a> {
     build: Option<String>,
     debug: Option<String>,
@@ -50,12 +51,10 @@ impl New<'_> {
         }
     }
 
-    /// Get a reference to the new data file's sha1.
     pub const fn sha1(&self) -> Option<&Vec<u8>> {
         self.sha1
     }
 
-    /// Get a reference to the new data file's name.
     pub fn name(&self) -> &str {
         self.name.as_ref()
     }

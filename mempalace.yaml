@@ -1,0 +1,80 @@
+wing: mame_coalesce
+rooms:
+- name: project_profile
+  description: Stable project identity, purpose, and high-level workflow
+  keywords:
+  - mame_coalesce
+  - 1g1z
+  - workflow
+  - project
+- name: cli_surface
+  description: Command-line interface, arguments, defaults, and known CLI gaps
+  keywords:
+  - clap
+  - add-data-file
+  - scan-source
+  - rename
+  - database
+- name: build_and_config
+  description: Cargo, Nix, dev shell, dependencies, lint policy, and toolchain behavior
+  keywords:
+  - cargo
+  - nix
+  - flake
+  - diesel
+  - sqlite
+  - zlib-ng
+- name: rom_processing
+  description: Core logic for combining and organizing MAME data
+  keywords:
+  - mame
+  - rom
+  - coalesce
+  - processing
+- name: logiqx_format
+  description: Logiqx XML datafile parsing and conversion into domain models
+  keywords:
+  - logiqx
+  - dat
+  - xml
+  - datafile
+  - parent-clone
+- name: operations
+  description: Scan, hash, archive handling, rename, and destination ZIP writing behavior
+  keywords:
+  - scan
+  - hash
+  - archive
+  - zip
+  - rename
+- name: database_and_migrations
+  description: Schema and migration behavior
+  keywords:
+  - database
+  - migrations
+  - schema
+  - sqlite
+  - diesel
+- name: fixtures
+  description: Sample data and fixtures used for development
+  keywords:
+  - fixtures
+  - samples
+  - data
+- name: testing
+  description: Tests covering transformation and migration behavior
+  keywords:
+  - test
+  - integration
+  - validation
+- name: risks_and_todos
+  description: Known hazards, README warnings, TODOs, and implementation risks
+  keywords:
+  - dangerous
+  - todo
+  - risk
+  - bug
+  - limitation
+- name: general
+  description: Supporting files that do not fit a core room
+  keywords: []

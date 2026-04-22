@@ -5,7 +5,7 @@ use crate::{logiqx, schema::roms};
 
 #[derive(Queryable, Insertable, Associations, PartialEq, Eq, Debug, Hash)]
 #[diesel(table_name = roms)]
-#[belongs_to(Game)]
+#[diesel(belongs_to(Game))]
 pub struct Rom {
     pub id: i32,
     pub name: String,
@@ -13,7 +13,7 @@ pub struct Rom {
     pub md5: Vec<u8>,
     pub sha1: Vec<u8>,
     pub crc: Vec<u8>,
-    pub date: Option<NaiveDate>, // utc date
+    pub date: Option<NaiveDate>,
     pub updated_at: Option<NaiveDateTime>,
     pub inserted_at: Option<NaiveDateTime>,
     pub game_id: Option<i32>,
@@ -21,23 +21,22 @@ pub struct Rom {
 }
 
 impl Rom {
-    /// Get a reference to the rom's name.
     pub fn name(&self) -> &str {
         self.name.as_ref()
     }
 }
 
 #[derive(Insertable, Debug)]
-#[table_name = "roms"]
+#[diesel(table_name = roms)]
 pub struct New {
     pub name: String,
     pub size: i32,
     pub md5: Vec<u8>,
     pub sha1: Vec<u8>,
     pub crc: Vec<u8>,
-    pub date: Option<String>,        // utc date
-    pub updated_at: Option<String>,  // utc date time
-    pub inserted_at: Option<String>, // utc date time
+    pub date: Option<String>,
+    pub updated_at: Option<String>,
+    pub inserted_at: Option<String>,
     pub game_id: i32,
 }
 

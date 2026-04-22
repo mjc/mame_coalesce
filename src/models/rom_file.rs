@@ -4,12 +4,9 @@ use camino::Utf8Path;
 
 use crate::{hashes, schema::rom_files};
 
-use super::Rom;
-
-#[derive(Queryable, QueryableByName, Insertable, Associations, PartialEq, Eq, Debug, Hash)]
-#[table_name = "rom_files"]
+#[derive(Queryable, Associations, PartialEq, Eq, Debug, Hash)]
 #[diesel(table_name = rom_files)]
-#[belongs_to(Rom)]
+#[diesel(belongs_to(crate::models::Rom))]
 pub struct RomFile {
     pub id: i32,
     pub parent_path: String,
@@ -25,33 +22,21 @@ pub struct RomFile {
 }
 
 impl RomFile {
-    /// Get a reference to the rom file's path.
     pub fn path(&self) -> &str {
         self.path.as_ref()
     }
 
-    /// Get a reference to the rom file's name.
     pub fn name(&self) -> &str {
         self.name.as_ref()
     }
 
-    /// Get the rom file's in archive.
     pub const fn in_archive(&self) -> bool {
         self.in_archive
-    }
-
-    // I hate this
-    pub const fn in_archive_str(&self) -> &str {
-        if self.in_archive {
-            "true"
-        } else {
-            "false"
-        }
     }
 }
 
 #[derive(Insertable, Debug)]
-#[table_name = "rom_files"]
+#[diesel(table_name = rom_files)]
 pub struct New {
     pub parent_path: String,
     pub path: String,
@@ -63,7 +48,6 @@ pub struct New {
 }
 
 impl New {
-    // TODO: should go away
     pub fn from_path(path: &Utf8Path) -> Option<Self> {
         let mmap = hashes::mmap_path(path).ok()?;
         let sha1 = hashes::stream_sha1(&mmap);
@@ -103,17 +87,14 @@ impl New {
         })
     }
 
-    /// Get a reference to the new rom file's name.
     pub fn name(&self) -> &str {
         self.name.as_ref()
     }
 
-    /// Set the new rom file's sha1.
     pub fn set_sha1(&mut self, sha1: Vec<u8>) {
         self.sha1 = sha1;
     }
 
-    /// Set the new rom file's xxhash3.
     pub fn set_xxhash3(&mut self, xxhash3: Vec<u8>) {
         self.xxhash3 = xxhash3;
     }

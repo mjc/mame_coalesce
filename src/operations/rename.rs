@@ -3,14 +3,14 @@ use std::fs::create_dir_all;
 use camino::{Utf8Path, Utf8PathBuf};
 use log::info;
 
-use crate::{db::Pool, operations::destination::write_all_zips, MameResult};
+use crate::{db::Pool, operations::destination::write_all_zips};
 
 pub fn roms(
     pool: &Pool,
     data_file: &Utf8Path,
     dry_run: bool,
     destination: &Utf8Path,
-) -> MameResult<Vec<Utf8PathBuf>> {
+) -> crate::Result<Vec<Utf8PathBuf>> {
     let games = crate::db::load_parents(pool, data_file)?;
     info!(
         "Processing {} games with {} matching rom files",

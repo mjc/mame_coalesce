@@ -1,21 +1,17 @@
 use diesel::{r2d2::ConnectionManager, SqliteConnection};
-use diesel_logger::LoggingConnection;
-
-use crate::MameResult;
+use diesel_migrations::{embed_migrations, EmbeddedMigrations, MigrationHarness};
 
 use super::Pool;
 
-embed_migrations!("migrations");
+pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
 
-pub fn create_db_pool(database_url: &str) -> MameResult<Pool> {
-    let manager = ConnectionManager::<LoggingConnection<SqliteConnection>>::new(database_url);
-    let pool: Pool = r2d2::Pool::builder().build(manager)?;
-    run_migrations(&pool)?;
+pub fn create_db_pool(database_url: &str) -> crate::Result<Pool> {
+    let manager = ConnectionManager::<SqliteConnection>::new(database_url);
+    let pool = Pool::builder().build(manager)?;
+    {
+        let mut conn = pool.get()?;
+        conn.run_pending_migrations(MIGRATIONS)
+            .map_err(|e| crate::Error::Migration(e.to_string()))?;
+    }
     Ok(pool)
-}
-
-fn run_migrations(pool: &Pool) -> MameResult<bool> {
-    let connection = pool.clone().get()?;
-    embedded_migrations::run(&connection)?;
-    Ok(true)
 }

@@ -22,45 +22,46 @@ codegen-units = 1
 
 
 [dependencies]
-log = "0.4.20"
-simplelog = "0.12.1"
-indicatif = { version = "0.17.7", features = ["rayon"] }
+log = "0.4"
+simplelog = "0.12"
+indicatif = { version = "0.17", features = ["rayon"] }
 
-rayon = "1.7.0"
+rayon = "1"
 
-serde_derive = "1.0.188"
-serde = "1.0.188"
-serde-xml-rs = "0.6.0"
+serde = { version = "1", features = ["derive"] }
+serde-xml-rs = "0.6"
 
-zip = { version = "0.6.6", features = ["deflate", "bzip2", "zstd"] }
+zip = { version = "2", features = ["deflate", "bzip2", "zstd"] }
 
-compress-tools = "0.12.4"
+compress-tools = "0.12"
 
-hex = { version = "0.4.3", features = ["serde"] }
-sha-1 = { version = "0.10.1", features = ["asm"] }
-xxhash-rust = { version = "0.8.6", features = ["xxh3"] }
+hex = { version = "0.4", features = ["serde"] }
+sha-1 = { version = "0.10", features = ["asm"] }
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
 
-memmap2 = "0.9.0"
-fmmap = "0.3.3"
+fmmap = "0.3"
 
-clap = { version = "3.2.25", features = ["derive", "env", "suggestions"] }
+clap = { version = "4", features = ["derive", "env", "suggestions"] }
 
-camino = { version = "1.1.6", features = ["serde1"] }
-walkdir = "2.3.3"
+camino = { version = "1", features = ["serde1"] }
+walkdir = "2"
 
-diesel = { version = "1.4.8", features = ["sqlite", "r2d2", "chrono"] }
-r2d2 = "0.8.10"
-diesel_migrations = "1.4.0"
-diesel_logger = "0.1.1"
-chrono = "0.4.28"
+diesel = { version = "2.2", features = ["sqlite", "r2d2", "chrono"] }
+diesel_migrations = "2.2"
+chrono = "0.4"
 
+infer = "0.15"
 
-infer = "0.15.0"
+thiserror = "1"
 
 # I don't know why but 1.1.5 segfaults if you don't include this, instead of letting flate2 pull it in.
-libz-sys = { version = "1.1.12", features = ["zlib-ng"] }
+libz-sys = { version = "1.1", features = ["zlib-ng"] }
 
 [dependencies.flate2]
-version = "1.0.27"
+version = "1.0"
 default-features = false
 features = ["zlib-ng-compat"]
+
+[dev-dependencies]
+tempfile = "3"
+assert_matches = "1.5"
