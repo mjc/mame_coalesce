@@ -84,7 +84,7 @@ fn sources_for_root(
     let mut source_by_sha1 = BTreeMap::<String, Vec<SourceFile>>::new();
     for source in source_files
         .iter()
-        .filter(|source| source.source_root == source_root)
+        .filter(|source| source_in_root(source, source_root))
     {
         source_by_sha1
             .entry(source.sha1.clone())
@@ -103,6 +103,10 @@ fn sources_for_root(
     }
 
     source_by_sha1
+}
+
+fn source_in_root(source: &SourceFile, source_root: &str) -> bool {
+    source.source_root == source_root || source.canonical_path.starts_with(source_root)
 }
 
 #[cfg(test)]

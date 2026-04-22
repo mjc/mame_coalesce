@@ -1,6 +1,12 @@
 use camino::Utf8PathBuf;
 
-use crate::{db::Pool, domain::BuildMode, operations};
+use crate::{
+    build::{planner::plan_build, writer::write_plan},
+    db::Pool,
+    domain::{BuildMode, BuildRequest},
+    operations,
+    storage::repositories::{BuildRepository, SourceRepository},
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DatImportRequest {
@@ -53,16 +59,27 @@ pub fn scan_source(pool: &Pool, request: &SourceScanRequest) -> crate::Result<So
 }
 
 pub fn build(pool: &Pool, request: &BuildWorkflowRequest) -> crate::Result<BuildWorkflowReport> {
-    let written_paths = operations::rename_roms(
-        pool,
-        &request.dat_path,
-        request.dry_run,
-        &request.destination_path,
-    )?;
+    let dat_path = request.dat_path.canonicalize_utf8()?;
+    let source_root = request.source_path.canonicalize_utf8()?;
+    let dat_roms = BuildRepository::new(pool).load_dat_roms(&dat_path)?;
+    let source_files = SourceRepository::new(pool).load_source_files()?;
+    let plan = plan_build(
+        &dat_roms,
+        &source_files,
+        &BuildRequest {
+            dat_name: dat_path.to_string(),
+            source_root: source_root.to_string(),
+            mode: request.mode,
+            dry_run: request.dry_run,
+            strict: request.strict,
+        },
+    );
+    let exit_code = plan.report.exit_code;
+    let written_paths = write_plan(&plan, &request.destination_path)?;
 
     Ok(BuildWorkflowReport {
         written_paths,
-        exit_code: 0,
+        exit_code,
         mode: request.mode,
         dry_run: request.dry_run,
         strict: request.strict,
