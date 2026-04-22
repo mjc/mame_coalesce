@@ -1,15 +1,15 @@
 pub mod app;
 pub mod build;
-pub mod db;
 pub mod domain;
 pub mod error;
 pub mod hashes;
 pub mod logger;
 pub mod logiqx;
-pub mod models;
 pub mod operations;
 pub mod progress;
-pub mod schema;
+pub mod storage;
+
+pub use storage::{db, models, schema};
 
 pub use error::Error;
 pub type Result<T> = std::result::Result<T, Error>;
