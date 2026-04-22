@@ -48,6 +48,17 @@ pub struct BuildWorkflowReport {
     pub strict: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunWorkflowRequest {
+    pub dat_path: Utf8PathBuf,
+    pub source_path: Utf8PathBuf,
+    pub destination_path: Utf8PathBuf,
+    pub mode: BuildMode,
+    pub jobs: usize,
+    pub dry_run: bool,
+    pub strict: bool,
+}
+
 pub fn import_dat(pool: &Pool, request: &DatImportRequest) -> crate::Result<DatImportReport> {
     operations::parse_and_insert_datfile(&request.dat_path, pool)
         .map(|data_file_id| DatImportReport { data_file_id })
@@ -84,4 +95,31 @@ pub fn build(pool: &Pool, request: &BuildWorkflowRequest) -> crate::Result<Build
         dry_run: request.dry_run,
         strict: request.strict,
     })
+}
+
+pub fn run(pool: &Pool, request: &RunWorkflowRequest) -> crate::Result<BuildWorkflowReport> {
+    import_dat(
+        pool,
+        &DatImportRequest {
+            dat_path: request.dat_path.clone(),
+        },
+    )?;
+    scan_source(
+        pool,
+        &SourceScanRequest {
+            source_path: request.source_path.clone(),
+            jobs: request.jobs,
+        },
+    )?;
+    build(
+        pool,
+        &BuildWorkflowRequest {
+            dat_path: request.dat_path.clone(),
+            source_path: request.source_path.clone(),
+            destination_path: request.destination_path.clone(),
+            mode: request.mode,
+            dry_run: request.dry_run,
+            strict: request.strict,
+        },
+    )
 }
