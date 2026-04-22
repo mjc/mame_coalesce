@@ -240,6 +240,9 @@ fn run_workflow_writes_parent_bundle_zip() -> Result<(), Box<dyn std::error::Err
     )?;
 
     assert_eq!(report.exit_code, 0);
+    assert_eq!(report.build_report.matched_roms, 2);
+    assert_eq!(report.build_report.missing_roms.len(), 1);
+    assert_eq!(report.build_report.missing_roms[0].rom_name, "clone1.rom");
     assert_eq!(report.written_paths, vec![output_path.join("parent.zip")]);
 
     let entries = zip_entries(&output_path.join("parent.zip"))?;
@@ -280,6 +283,9 @@ fn strict_run_workflow_writes_nothing_when_roms_are_missing()
     )?;
 
     assert_eq!(report.exit_code, 2);
+    assert_eq!(report.build_report.matched_roms, 2);
+    assert_eq!(report.build_report.missing_roms.len(), 1);
+    assert_eq!(report.build_report.missing_roms[0].rom_name, "clone1.rom");
     assert!(report.written_paths.is_empty());
     assert!(!output_path.exists());
     Ok(())

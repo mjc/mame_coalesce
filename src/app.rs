@@ -1,9 +1,10 @@
 use camino::Utf8PathBuf;
+use log::{info, warn};
 
 use crate::{
     build::{planner::plan_build, writer::write_plan},
     db::Pool,
-    domain::{BuildMode, BuildRequest},
+    domain::{BuildMode, BuildReport, BuildRequest},
     operations,
     storage::repositories::{BuildRepository, SourceRepository},
 };
@@ -42,6 +43,7 @@ pub struct BuildWorkflowRequest {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BuildWorkflowReport {
     pub written_paths: Vec<Utf8PathBuf>,
+    pub build_report: BuildReport,
     pub exit_code: i32,
     pub mode: BuildMode,
     pub dry_run: bool,
@@ -85,11 +87,14 @@ pub fn build(pool: &Pool, request: &BuildWorkflowRequest) -> crate::Result<Build
             strict: request.strict,
         },
     );
+    report_build_outcome(&plan.report);
     let exit_code = plan.report.exit_code;
+    let build_report = plan.report.clone();
     let written_paths = write_plan(&plan, &request.destination_path)?;
 
     Ok(BuildWorkflowReport {
         written_paths,
+        build_report,
         exit_code,
         mode: request.mode,
         dry_run: request.dry_run,
@@ -122,4 +127,33 @@ pub fn run(pool: &Pool, request: &RunWorkflowRequest) -> crate::Result<BuildWork
             strict: request.strict,
         },
     )
+}
+
+fn report_build_outcome(report: &BuildReport) {
+    info!("matched {} ROMs", report.matched_roms);
+
+    if !report.missing_roms.is_empty() {
+        warn!("{} ROMs are missing", report.missing_roms.len());
+        for missing in &report.missing_roms {
+            warn!(
+                "missing ROM: game={} rom={} sha1={}",
+                missing.game_name, missing.rom_name, missing.sha1
+            );
+        }
+    }
+
+    if !report.duplicate_matches.is_empty() {
+        warn!(
+            "{} ROMs had duplicate source matches",
+            report.duplicate_matches.len()
+        );
+        for duplicate in &report.duplicate_matches {
+            warn!(
+                "duplicate ROM match: rom={} selected={} candidates={}",
+                duplicate.rom_name,
+                duplicate.selected.display_name(),
+                duplicate.candidates.len()
+            );
+        }
+    }
 }
