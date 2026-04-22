@@ -6,12 +6,8 @@ use crate::{
     logiqx,
 };
 
-mod destination;
-
-mod rename;
 mod scan;
 
-pub use rename::roms as rename_roms;
 pub use scan::source;
 
 pub fn parse_and_insert_datfile(path: &Utf8Path, pool: &Pool) -> crate::Result<i32> {
