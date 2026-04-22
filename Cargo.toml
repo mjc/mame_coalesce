@@ -87,6 +87,7 @@ chrono = "0.4.44"
 
 infer = "0.19"
 
+libc = "0.2"
 thiserror = "2"
 
 # I don't know why but 1.1.5 segfaults if you don't include this, instead of letting flate2 pull it in.

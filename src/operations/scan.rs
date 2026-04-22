@@ -1,7 +1,7 @@
 use std::{fs::File, io::BufReader, path::Path};
 
 use camino::{Utf8Path, Utf8PathBuf};
-use compress_tools::{ArchiveContents, ArchiveIterator};
+use compress_tools::{ArchiveContents, ArchiveIteratorBuilder};
 use fmmap::{MmapFile, MmapFileExt};
 
 use indicatif::ParallelProgressIterator;
@@ -109,7 +109,9 @@ fn scan_libarchive(path: &Utf8Path) -> crate::Result<Vec<NewRomFile>> {
     // let mmap = mmap_path(path)?;
     // let chunks = mmap.chunks(16_384);
     let mut rom_files: Vec<NewRomFile> = Vec::new();
-    let iter = ArchiveIterator::from_read(reader)?;
+    let iter = ArchiveIteratorBuilder::new(reader)
+        .filter(|_name, stat| !archive_entry_is_directory(stat))
+        .build()?;
 
     let mut name = String::new();
     let mut sha1hasher = Sha1::new();
@@ -139,6 +141,10 @@ fn scan_libarchive(path: &Utf8Path) -> crate::Result<Vec<NewRomFile>> {
     });
 
     Ok(rom_files)
+}
+
+const fn archive_entry_is_directory(stat: &libc::stat) -> bool {
+    stat.st_mode & libc::S_IFMT == libc::S_IFDIR
 }
 
 fn walk_for_files(dir: &Utf8Path) -> Vec<Utf8PathBuf> {
@@ -253,6 +259,28 @@ mod tests {
             .ok_or_else(|| io::Error::other("temp path is not UTF-8"))?;
         let mmap = crate::hashes::mmap_path(utf8_path)?;
         let rom_files = scan_zip(&mmap)?;
+
+        assert_eq!(rom_files.len(), 1);
+        assert_eq!(rom_files[0].name, "nested/game.rom");
+        Ok(())
+    }
+
+    #[test]
+    fn scan_libarchive_skips_directory_entries() -> Result<(), Box<dyn std::error::Error>> {
+        let cursor = std::io::Cursor::new(Vec::new());
+        let mut zip = zip::ZipWriter::new(cursor);
+        let options = SimpleFileOptions::default();
+        zip.add_directory("nested/", options)?;
+        zip.start_file("nested/game.rom", options)?;
+        zip.write_all(b"rom")?;
+        let zip_data = zip.finish()?.into_inner();
+
+        let tmp = tempfile::NamedTempFile::new()?;
+        std::fs::write(tmp.path(), &zip_data)?;
+
+        let utf8_path = camino::Utf8Path::from_path(tmp.path())
+            .ok_or_else(|| io::Error::other("temp path is not UTF-8"))?;
+        let rom_files = scan_libarchive(utf8_path)?;
 
         assert_eq!(rom_files.len(), 1);
         assert_eq!(rom_files[0].name, "nested/game.rom");

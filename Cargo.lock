@@ -881,6 +881,7 @@ dependencies = [
  "hex",
  "indicatif",
  "infer",
+ "libc",
  "libz-sys",
  "log",
  "rayon",
