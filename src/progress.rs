@@ -1,10 +1,9 @@
 use indicatif::{ProgressBar, ProgressStyle};
 
 fn bar_style() -> ProgressStyle {
-    #[allow(clippy::unwrap_used)] // static template string, cannot fail
     ProgressStyle::default_bar()
         .template("[{elapsed}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg} ETA: {eta}")
-        .unwrap()
+        .unwrap_or_else(|_| ProgressStyle::default_bar())
 }
 
 #[must_use]
