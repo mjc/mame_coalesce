@@ -45,6 +45,7 @@
           # Code quality & linting
           cargo-deny
           cargo-audit
+          shellcheck
 
           # Testing & coverage
           cargo-nextest
