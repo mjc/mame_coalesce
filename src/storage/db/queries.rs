@@ -1,7 +1,6 @@
 use crate::models::{NewDataFile, NewGame, NewRom, NewRomFile};
 use crate::{db::Pool as DbPool, logiqx};
 
-use DieselError::NotFound;
 use diesel::result::Error as DieselError;
 use diesel::{prelude::*, sql_query};
 use log::warn;
@@ -67,13 +66,13 @@ pub fn traverse_and_insert_data_file(
     })
 }
 
-pub fn import_rom_files(pool: &DbPool, new_rom_files: &[NewRomFile]) -> QueryResult<usize> {
+pub fn import_rom_files(pool: &DbPool, new_rom_files: &[NewRomFile]) -> crate::Result<usize> {
     use crate::schema::rom_files::dsl::rom_files;
     use diesel::replace_into;
 
-    let mut conn = pool.get().map_err(|_| NotFound)?;
+    let mut conn = pool.get()?;
 
-    conn.transaction::<_, DieselError, _>(|conn| {
+    Ok(conn.transaction::<_, DieselError, _>(|conn| {
         new_rom_files
             .iter()
             .map(|new_rom_file| replace_into(rom_files).values(new_rom_file).execute(conn))
@@ -82,5 +81,5 @@ pub fn import_rom_files(pool: &DbPool, new_rom_files: &[NewRomFile]) -> QueryRes
             "UPDATE rom_files SET rom_id = roms.id FROM roms WHERE rom_files.sha1 = roms.sha1",
         )
         .execute(conn)
-    })
+    })?)
 }

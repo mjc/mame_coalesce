@@ -35,7 +35,7 @@ impl<'pool> SourceRepository<'pool> {
         Self { pool }
     }
 
-    pub fn import_rom_files(&self, rom_files: &[NewRomFile]) -> diesel::QueryResult<usize> {
+    pub fn import_rom_files(&self, rom_files: &[NewRomFile]) -> crate::Result<usize> {
         db::import_rom_files(self.pool, rom_files)
     }
 
