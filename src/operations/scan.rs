@@ -109,7 +109,7 @@ fn scan_libarchive(path: &Utf8Path) -> crate::Result<Vec<NewRomFile>> {
     let mut xxhash3 = Xxh3::new();
 
     iter.for_each(|content| match content {
-        ArchiveContents::StartOfEntry(s) => {
+        ArchiveContents::StartOfEntry(s, _) => {
             name = s;
             sha1hasher.reset();
             xxhash3.reset();

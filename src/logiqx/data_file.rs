@@ -12,9 +12,9 @@ use crate::hashes;
 #[derive(Debug, Deserialize)]
 pub struct DataFile {
     file_name: Option<String>,
-    #[serde(default)]
+    #[serde(rename = "@build", default)]
     build: Option<String>,
-    #[serde(default)]
+    #[serde(rename = "@debug", default)]
     debug: Option<String>, // bool
     header: Header,
     sha1: Option<Vec<u8>>,

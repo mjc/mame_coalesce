@@ -2,6 +2,7 @@
 name = "mame_coalesce"
 version = "0.1.0"
 authors = ["Michael J. Cohen <mjc@kernel.org>"]
+license = "MIT"
 edition = "2024"
 rust-version = "1.85"
 default-run = "mame_coalesce"
@@ -42,44 +43,44 @@ missing_panics_doc = "allow"
 [dependencies]
 log = "0.4"
 simplelog = "0.12"
-indicatif = { version = "0.17", features = ["rayon"] }
+indicatif = { version = "0.18", features = ["rayon"] }
 
-rayon = "1"
+rayon = "1.12"
 
 serde = { version = "1", features = ["derive"] }
-serde-xml-rs = "0.6"
+serde-xml-rs = "0.8"
 
-zip = { version = "2", features = ["deflate", "bzip2", "zstd"] }
+zip = { version = "8.5", features = ["deflate", "bzip2", "zstd"] }
 
-compress-tools = "0.12"
+compress-tools = "0.15"
 
 hex = { version = "0.4", features = ["serde"] }
 sha-1 = { version = "0.10", features = ["asm"] }
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 
-fmmap = "0.3"
+fmmap = "0.4"
 
-clap = { version = "4", features = ["derive", "env", "suggestions"] }
+clap = { version = "4.6", features = ["derive", "env", "suggestions"] }
 
-camino = { version = "1", features = ["serde1"] }
-walkdir = "2"
+camino = { version = "1.2", features = ["serde1"] }
+walkdir = "2.5"
 
-diesel = { version = "2.2", features = ["sqlite", "r2d2", "chrono"] }
-diesel_migrations = "2.2"
-chrono = "0.4"
+diesel = { version = "2.3", features = ["sqlite", "r2d2", "chrono"] }
+diesel_migrations = "2.3"
+chrono = "0.4.44"
 
-infer = "0.15"
+infer = "0.19"
 
-thiserror = "1"
+thiserror = "2"
 
 # I don't know why but 1.1.5 segfaults if you don't include this, instead of letting flate2 pull it in.
 libz-sys = { version = "1.1", features = ["zlib-ng"] }
 
 [dependencies.flate2]
-version = "1.0"
+version = "1.1"
 default-features = false
 features = ["zlib-ng-compat"]
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = "3.27"
 assert_matches = "1.5"

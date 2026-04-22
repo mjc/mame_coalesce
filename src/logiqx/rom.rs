@@ -2,21 +2,23 @@ use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
 pub struct Rom {
+    #[serde(rename = "@name")]
     name: String,
+    #[serde(rename = "@size")]
     size: i32,
-    #[serde(with = "hex")]
+    #[serde(rename = "@md5", with = "hex")]
     md5: Vec<u8>,
-    #[serde(with = "hex")]
+    #[serde(rename = "@sha1", with = "hex")]
     sha1: Vec<u8>,
-    #[serde(with = "hex")]
+    #[serde(rename = "@crc", with = "hex")]
     crc: Vec<u8>,
-    #[serde(default)]
+    #[serde(rename = "@merge", default)]
     merge: String,
-    #[serde(default)]
+    #[serde(rename = "@status", default)]
     status: String,
-    #[serde(default)]
+    #[serde(rename = "@serial", default)]
     serial: String,
-    #[serde(default)]
+    #[serde(rename = "@date", default)]
     date: String,
 }
 

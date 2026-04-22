@@ -4,20 +4,21 @@ use super::Rom;
 
 #[derive(Debug, Deserialize)]
 pub struct Game {
+    #[serde(rename = "@name")]
     name: String,
-    #[serde(default)]
+    #[serde(rename = "@sourcefile", default)]
     sourcefile: String,
-    #[serde(default)]
+    #[serde(rename = "@isbios", default)]
     isbios: String,
-    #[serde(default)]
+    #[serde(rename = "@cloneof", default)]
     cloneof: Option<String>,
-    #[serde(default)]
+    #[serde(rename = "@romof", default)]
     romof: String,
-    #[serde(default)]
+    #[serde(rename = "@sampleof", default)]
     sampleof: String,
-    #[serde(default)]
+    #[serde(rename = "@board", default)]
     board: String,
-    #[serde(default)]
+    #[serde(rename = "@rebuildto", default)]
     rebuildto: String,
     #[serde(default)]
     year: String, // should probably be a DateTime
