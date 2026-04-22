@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 
+use camino::Utf8Path;
+
 use crate::domain::{
     BuildPlan, BuildReport, BuildRequest, DatRom, DuplicateMatch, MissingRom, SourceFile,
     ZipEntrySpec, ZipSpec,
@@ -106,7 +108,9 @@ fn sources_for_root(
 }
 
 fn source_in_root(source: &SourceFile, source_root: &str) -> bool {
-    source.source_root == source_root || source.canonical_path.starts_with(source_root)
+    let source_root = Utf8Path::new(source_root);
+    Utf8Path::new(&source.source_root) == source_root
+        || Utf8Path::new(&source.canonical_path).starts_with(source_root)
 }
 
 #[cfg(test)]
@@ -235,6 +239,24 @@ mod tests {
             "/src-b/scoped.rom",
             None,
             "sha1-scoped",
+            SourceKind::BareFile,
+        )];
+
+        let plan = plan_build(&dat_roms, &source_files, &request(BuildMode::ParentBundles));
+
+        assert_eq!(plan.report.matched_roms, 0);
+        assert_eq!(plan.report.missing_roms.len(), 1);
+        assert!(plan.zips.is_empty());
+    }
+
+    #[test]
+    fn source_root_matching_respects_path_boundaries() {
+        let dat_roms = [rom("parent", None, "prefix.rom", "sha1-prefix")];
+        let source_files = [source(
+            "/src-a-other",
+            "/src-a-other/prefix.rom",
+            None,
+            "sha1-prefix",
             SourceKind::BareFile,
         )];
 
