@@ -88,6 +88,27 @@ fn write_present_clone_roms(dir: &std::path::Path) -> Result<camino::Utf8PathBuf
     Ok(utf8_path(dir)?.to_path_buf())
 }
 
+fn path_with_parent_component(path: &camino::Utf8Path) -> Result<camino::Utf8PathBuf, io::Error> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::other("path has no parent"))?;
+    let grandparent = parent
+        .parent()
+        .ok_or_else(|| io::Error::other("path parent has no parent"))?;
+    let parent_name = parent
+        .file_name()
+        .ok_or_else(|| io::Error::other("path parent has no file name"))?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| io::Error::other("path has no file name"))?;
+
+    Ok(grandparent
+        .join(parent_name)
+        .join("..")
+        .join(parent_name)
+        .join(name))
+}
+
 fn write_shared_dat(
     dir: &std::path::Path,
     file_name: &str,
@@ -410,6 +431,52 @@ fn build_workflow_accepts_imported_dat_name() -> Result<(), Box<dyn std::error::
         entries.get("clone2.rom").map(Vec::as_slice),
         Some(b"" as &[u8])
     );
+    Ok(())
+}
+
+#[test]
+fn build_matches_sources_scanned_from_noncanonical_path() -> Result<(), Box<dyn std::error::Error>>
+{
+    let pool = in_memory_pool()?;
+    let work_dir = tempfile::tempdir()?;
+    let source_dir = tempfile::tempdir()?;
+    let output_dir = tempfile::tempdir()?;
+    let dat_path = write_clone_dat(work_dir.path())?;
+    let source_path = write_present_clone_roms(source_dir.path())?;
+    let scanned_source_path = path_with_parent_component(&source_path)?;
+    let output_path = utf8_path(output_dir.path())?.to_path_buf();
+
+    app::import_dat(
+        &pool,
+        &DatImportRequest {
+            dat_path: dat_path.clone(),
+        },
+    )?;
+    let scan_report = app::scan_source(
+        &pool,
+        &SourceScanRequest {
+            source_path: scanned_source_path,
+            jobs: 1,
+        },
+    )?;
+
+    assert_eq!(scan_report.source_path, source_path.canonicalize_utf8()?);
+
+    let report = app::build(
+        &pool,
+        &BuildWorkflowRequest {
+            dat_path,
+            source_path,
+            destination_path: output_path.clone(),
+            mode: BuildMode::ParentBundles,
+            dry_run: false,
+            strict: false,
+        },
+    )?;
+
+    assert_eq!(report.exit_code, 0);
+    assert_eq!(report.build_report.matched_roms, 2);
+    assert_eq!(report.written_paths, vec![output_path.join("parent.zip")]);
     Ok(())
 }
 

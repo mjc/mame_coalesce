@@ -21,8 +21,9 @@ use crate::{
 };
 
 pub fn source(path: &Utf8Path, jobs: usize, pool: &Pool) -> crate::Result<Utf8PathBuf> {
-    info!("Looking in path: {path}");
-    let file_list = walk_for_files(path);
+    let source_root = path.canonicalize_utf8()?;
+    info!("Looking in path: {source_root}");
+    let file_list = walk_for_files(&source_root);
     let new_rom_files = get_all_rom_files(&file_list, jobs)?;
 
     info!(
@@ -36,7 +37,7 @@ pub fn source(path: &Utf8Path, jobs: usize, pool: &Pool) -> crate::Result<Utf8Pa
             new_rom_files.len()
         );
     }
-    Ok(path.to_path_buf())
+    Ok(source_root)
 }
 
 fn get_all_rom_files(file_list: &[Utf8PathBuf], jobs: usize) -> crate::Result<Vec<NewRomFile>> {
