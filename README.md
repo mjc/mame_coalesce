@@ -2,6 +2,15 @@
 
 `mame_coalesce` imports Logiqx DAT files, scans ROM sources, plans deterministic builds, and writes merged ZIP outputs.
 
+## Status
+
+This project is pre-1.0. The primary verified development and handoff path is
+the Nix shell provided by this repository.
+
+The crate is not currently being treated as a crates.io publishing artifact.
+Release readiness here means a reviewed GitHub handoff with reproducible local
+checks, CI coverage, and explicit release notes.
+
 ## Workflow
 
 ```sh
@@ -53,12 +62,16 @@ Use `--max-roms 0` to include every collected ROM entry.
 
 Use the Nix shell as the development environment. Plain `cargo test` may fail on systems without `pkg-config`, `libarchive`, and SQLite development libraries.
 
-Required green checkpoint:
+## Verification
+
+Required local gate:
 
 ```sh
+nix develop -c shellcheck scripts/fetch_public_domain_test_data.sh
 nix develop -c cargo fmt --check
 nix develop -c cargo test
 nix develop -c cargo clippy --all-targets --all-features -- -D warnings
+nix develop -c cargo package
 ```
 
 Dependency and maintenance checks:
@@ -71,4 +84,13 @@ nix develop -c cargo deny check
 nix develop -c cargo-udeps udeps --all-targets
 ```
 
-Current dependency majors include crates that declare MSRVs newer than Rust `1.85`; the Nix shell currently builds with Rust `1.92`.
+## Known Operational Constraints
+
+- Running outside Nix requires system `pkg-config`, `libarchive`, SQLite, zlib,
+  and related development libraries.
+- Current dependency majors include crates that declare MSRVs newer than Rust
+  `1.85`; the Nix shell currently builds with Rust `1.92`.
+- `Cargo.toml` still declares `rust-version = "1.85"` until the MSRV policy is
+  intentionally revised.
+- `cargo deny check` may report duplicate dependency warnings under the current
+  policy, but the check exits successfully.
