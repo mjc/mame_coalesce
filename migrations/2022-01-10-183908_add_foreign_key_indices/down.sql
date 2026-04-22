@@ -1,1 +1,6 @@
--- This file should undo anything in `up.sql`
+DROP INDEX rom_file_xxhash3_index;
+DROP INDEX rom_file_sha1_index;
+DROP INDEX games_data_file_id_relation_index;
+DROP INDEX games_parent_id_relation_index;
+DROP INDEX roms_game_id_relation_index;
+DROP INDEX rom_file_rom_id_relation_index;
