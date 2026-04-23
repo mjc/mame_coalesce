@@ -4,7 +4,7 @@
 
 `fetch_public_domain_test_data.sh` downloads small public-domain ROM bundles
 from archive.org, extracts archives where needed, generates a focused Logiqx DAT
-from the downloaded bytes, and runs the one-shot `mame_coalesce run` workflow in
+from the downloaded bytes, and runs the one-shot `mame_coalesce build` workflow in
 an isolated temp directory.
 
 ```sh
@@ -36,7 +36,7 @@ commercial game properties.
 
 ## CPU flamegraphs
 
-Generate a symbol-rich flamegraph for the full `run` workflow:
+Generate a symbol-rich flamegraph for the full `build` workflow:
 
 ```sh
 nix develop -c bash scripts/profile_flamegraph.sh \
@@ -66,7 +66,7 @@ nix develop -c bash scripts/parse_flamegraph target/profiling/flamegraphs/run-jo
 ## Run benchmarks
 
 Use `benchmark_run.sh` to capture repeated wall-clock samples for the full
-`run` workflow. The script cleans only the selected database and output
+`build` workflow. The script cleans only the selected cache database and output
 directory under `target/profiling` before each measured run and writes a
 Markdown plus JSON report under `target/profiling/reports/`.
 It prebuilds `target/profiling/mame_coalesce` and runs that binary directly by

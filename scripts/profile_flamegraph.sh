@@ -7,17 +7,17 @@ Usage: scripts/profile_flamegraph.sh --dat <path> --source <path> --out <path> [
 
 Options:
   --jobs <N>                  Worker count to pass to mame_coalesce (default: 1)
-  --mode <parent-bundles|per-game>
-                              Build mode (default: parent-bundles)
+  --layout <parent-bundles|per-game>
+                              Output layout (default: parent-bundles)
   --compression <deflate|store>
                               ZIP compression (default: deflate)
   --frequency <Hz>            perf sampling frequency (default: 997)
   --db <path>                 Database path (default: target/profiling/flamegraph-run-jobs-<N>.db)
   --svg <path>                SVG output path (default: target/profiling/flamegraphs/run-jobs-<N>.svg)
   --root                      Forward --root to cargo flamegraph
-  --title <text>              SVG title (default: mame_coalesce run jobs=<N>)
+  --title <text>              SVG title (default: mame_coalesce build jobs=<N>)
   --dry-run                   Forward --dry-run to mame_coalesce
-  --no-strict                 Do not pass --strict (strict is enabled by default)
+  --missing <warn|fail>       Missing ROM policy (default: fail)
   -h, --help                  Show this help
 
 Run through Nix:
@@ -29,13 +29,13 @@ dat_path=
 source_path=
 out_path=
 jobs=1
-mode=parent-bundles
+layout=parent-bundles
 compression=deflate
 frequency=997
 root_flag=()
 title=
 dry_run_flag=()
-strict_flag=(--strict)
+missing=fail
 db_path=
 svg_path=
 
@@ -71,9 +71,9 @@ while [[ $# -gt 0 ]]; do
             jobs=$2
             shift 2
             ;;
-        --mode)
+        --layout)
             require_value "$1" "${2:-}"
-            mode=$2
+            layout=$2
             shift 2
             ;;
         --compression)
@@ -109,9 +109,10 @@ while [[ $# -gt 0 ]]; do
             dry_run_flag=(--dry-run)
             shift
             ;;
-        --no-strict)
-            strict_flag=()
-            shift
+        --missing)
+            require_value "$1" "${2:-}"
+            missing=$2
+            shift 2
             ;;
         -h|--help)
             usage
@@ -139,10 +140,18 @@ MSG
     exit 127
 fi
 
-case "$mode" in
+case "$layout" in
     parent-bundles|per-game) ;;
     *)
-        echo "invalid --mode: ${mode}" >&2
+        echo "invalid --layout: ${layout}" >&2
+        exit 2
+        ;;
+esac
+
+case "$missing" in
+    warn|fail) ;;
+    *)
+        echo "invalid --missing: ${missing}" >&2
         exit 2
         ;;
 esac
@@ -156,7 +165,7 @@ case "$compression" in
 esac
 
 if [[ -z "$title" ]]; then
-    title="mame_coalesce run jobs=${jobs}"
+    title="mame_coalesce build jobs=${jobs}"
 fi
 
 flamegraph_dir=target/profiling/flamegraphs
@@ -183,15 +192,15 @@ cargo flamegraph \
     --title "$title" \
     "${root_flag[@]}" \
     -- \
-    --database-path "$db_path" \
-    run \
-    --dat "$dat_path" \
-    --source "$source_path" \
-    --out "$out_path" \
+    --cache "$db_path" \
+    build \
+    "$dat_path" \
+    "$source_path" \
+    "$out_path" \
     --jobs "$jobs" \
-    --mode "$mode" \
+    --layout "$layout" \
     --compression "$compression" \
-    "${strict_flag[@]}" \
+    --missing "$missing" \
     "${dry_run_flag[@]}"
 status=$?
 set -e

@@ -4,6 +4,13 @@
 
 - Modernized the crate for Rust 2024 and tightened linting around unsafe code,
   unwrap/expect usage, TODOs, and clippy warnings.
+- Redesigned the CLI around `build <dat> <source> <out>` as the primary
+  one-shot workflow, moved explicit database operations under `cache`, replaced
+  `--strict` with `--missing fail`, replaced `--mode` with `--layout`, and
+  replaced `--database-path` with `--cache`.
+- Narrowed the public Rust library API around app workflows, a database facade,
+  domain types, Logiqx parsing, hashes, and errors; storage, Diesel schema,
+  build internals, scan internals, logging, and progress UI are now private.
 - Added the app-level DAT import, source scan, build, and one-shot run workflow
   exposed through the current CLI.
 - Cleaned DAT reimport behavior so old games and ROMs are removed before new

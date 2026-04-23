@@ -6,14 +6,14 @@ readonly ARCHIVE_DOWNLOAD_URL='https://archive.org/download'
 readonly DEFAULT_WORK_DIR='tmp/public-domain-rom-test'
 readonly DEFAULT_MAX_ROMS=128
 readonly DEFAULT_CATALOG_TIER='curated'
-readonly DEFAULT_MODE='parent-bundles'
+readonly DEFAULT_LAYOUT='parent-bundles'
 readonly DEFAULT_TOOL_CMD='cargo run --quiet --'
 
 work_dir="$DEFAULT_WORK_DIR"
 max_roms="$DEFAULT_MAX_ROMS"
 catalog_tier="$DEFAULT_CATALOG_TIER"
 jobs="$(nproc 2>/dev/null || printf '1')"
-mode="$DEFAULT_MODE"
+layout="$DEFAULT_LAYOUT"
 dry_run=0
 skip_run=0
 refresh=0
@@ -34,7 +34,7 @@ Options:
   --max-roms N           Maximum ROM entries in the generated DAT. Use 0 for no cap.
   --catalog-tier TIER    metadata or curated. Default: curated.
   --jobs N               Scan worker count passed to mame_coalesce.
-  --mode MODE            parent-bundles or per-game.
+  --layout LAYOUT        parent-bundles or per-game.
   --dry-run              Pass --dry-run to mame_coalesce.
   --skip-run             Download and generate the DAT without running mame_coalesce.
   --refresh              Redownload and re-extract sources.
@@ -73,9 +73,9 @@ while (($#)); do
       jobs="$2"
       shift 2
       ;;
-    --mode)
+    --layout)
       require_option_value "$@"
-      mode="$2"
+      layout="$2"
       shift 2
       ;;
     --dry-run)
@@ -122,8 +122,8 @@ if [[ "$catalog_tier" != metadata && "$catalog_tier" != curated ]]; then
   exit 2
 fi
 
-if [[ "$mode" != parent-bundles && "$mode" != per-game ]]; then
-  printf 'mode must be "parent-bundles" or "per-game"\n' >&2
+if [[ "$layout" != parent-bundles && "$layout" != per-game ]]; then
+  printf 'layout must be "parent-bundles" or "per-game"\n' >&2
   exit 2
 fi
 
@@ -612,7 +612,7 @@ fi
 rm -f "$db_path"
 
 read -r -a tool_cmd_parts <<<"$tool_cmd"
-cmd=("${tool_cmd_parts[@]}" --database-path "$db_path" run --dat "$dat_path" --source "$source_dir" --out "$output_dir" --jobs "$jobs" --mode "$mode" --strict)
+cmd=("${tool_cmd_parts[@]}" --cache "$db_path" build "$dat_path" "$source_dir" "$output_dir" --jobs "$jobs" --layout "$layout" --missing fail)
 if [[ "$dry_run" -eq 1 ]]; then
   cmd+=(--dry-run)
 fi

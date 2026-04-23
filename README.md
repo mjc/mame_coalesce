@@ -13,25 +13,30 @@ checks, CI coverage, and explicit release notes.
 
 ## Workflow
 
+The primary workflow is one-shot:
+
 ```sh
-nix develop -c cargo run -- dat import fixtures/test.dat
-nix develop -c cargo run -- source scan /path/to/roms --jobs 8
-nix develop -c cargo run -- build --dat fixtures/test.dat --source /path/to/roms --out /path/to/out
+nix develop -c cargo run -- build fixtures/test.dat /path/to/roms /path/to/out --jobs 8
 ```
 
-After import, `build --dat` accepts either the imported DAT file path or the DAT header name.
-
-The one-shot pipeline is:
+Common options:
 
 ```sh
-nix develop -c cargo run -- run --dat fixtures/test.dat --source /path/to/roms --out /path/to/out --jobs 8
+--layout parent-bundles
+--layout per-game
+--compression deflate
+--compression store
+--missing warn
+--missing fail
+--dry-run
 ```
 
-Build modes:
+Explicit cache maintenance commands are available for advanced workflows:
 
 ```sh
---mode parent-bundles
---mode per-game
+mame_coalesce --cache /tmp/coalesce.db cache import fixtures/test.dat
+mame_coalesce --cache /tmp/coalesce.db cache scan /path/to/roms --jobs 8
+mame_coalesce --cache /tmp/coalesce.db cache build "DAT Header Name" /path/to/roms /path/to/out
 ```
 
 ZIP compression defaults to deflate for compatibility. Use `--compression store`
@@ -39,10 +44,10 @@ when profiling or when faster, larger ZIP output is preferred.
 
 Defaults:
 
-- `--mode parent-bundles`
+- `--layout parent-bundles`
 - `--compression deflate`
 - missing ROMs are reported without failing
-- `--strict` exits `2` and writes nothing when required ROMs are missing
+- `--missing fail` exits `2` and writes nothing when required ROMs are missing
 - duplicate source matches are resolved deterministically
 
 ## External smoke test
@@ -58,7 +63,7 @@ or CC0 by default when `--catalog-tier metadata` is used. Its default curated
 catalog also includes archive.org items whose title, description, or upstream
 source explicitly describes the ROMs as public-domain/PD ROMs. It generates a
 focused Logiqx DAT from the downloaded bytes and runs the one-shot workflow with
-`--strict`. It writes all temporary data under `tmp/public-domain-rom-test/`.
+`--missing fail`. It writes all temporary data under `tmp/public-domain-rom-test/`.
 
 Use `--max-roms 0` to include every collected ROM entry.
 
@@ -112,7 +117,7 @@ nix develop -c bash scripts/parse_flamegraph target/profiling/flamegraphs/run-jo
 nix develop -c bash scripts/parse_flamegraph target/profiling/flamegraphs/run-jobs-1.svg diff target/profiling/flamegraphs/run-jobs-8.svg
 ```
 
-Benchmark the full `run` workflow with repeated wall-clock samples:
+Benchmark the full `build` workflow with repeated wall-clock samples:
 
 ```sh
 nix develop -c bash scripts/benchmark_run.sh \

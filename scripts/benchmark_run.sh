@@ -7,14 +7,13 @@ Usage: scripts/benchmark_run.sh --dat <path> --source <path> --out-root <path> -
 
 Options:
   --runs <N>                  Number of hyperfine runs (default: 5)
-  --mode <parent-bundles|per-game>
-                              Build mode (default: parent-bundles)
+  --layout <parent-bundles|per-game>
+                              Output layout (default: parent-bundles)
   --compression <deflate|store>
                               ZIP compression (default: deflate)
   --runner <binary|cargo>     Command runner after prebuild (default: binary)
   --binary <path>             Profiling binary path (default: target/profiling/mame_coalesce)
-  --strict                    Pass --strict (default)
-  --no-strict                 Do not pass --strict
+  --missing <warn|fail>       Missing ROM policy (default: fail)
   --db <path>                 Database path (default: target/profiling/<out-root-basename>.db)
   --report <path>             Markdown report path (default: target/profiling/reports/run-jobs-<N>.md)
   --json <path>               hyperfine JSON path (default: target/profiling/reports/run-jobs-<N>.json)
@@ -30,11 +29,11 @@ source_path=
 out_root=
 jobs=
 runs=5
-mode=parent-bundles
+layout=parent-bundles
 compression=deflate
 runner=binary
 binary_path=target/profiling/mame_coalesce
-strict_flag=(--strict)
+missing=fail
 db_path=
 report_path=
 json_path=
@@ -76,9 +75,9 @@ while [[ $# -gt 0 ]]; do
       runs=$2
       shift 2
       ;;
-    --mode)
+    --layout)
       require_value "$1" "${2:-}"
-      mode=$2
+      layout=$2
       shift 2
       ;;
     --compression)
@@ -96,13 +95,10 @@ while [[ $# -gt 0 ]]; do
       binary_path=$2
       shift 2
       ;;
-    --strict)
-      strict_flag=(--strict)
-      shift
-      ;;
-    --no-strict)
-      strict_flag=()
-      shift
+    --missing)
+      require_value "$1" "${2:-}"
+      missing=$2
+      shift 2
       ;;
     --db)
       require_value "$1" "${2:-}"
@@ -147,10 +143,18 @@ if [[ ! "$runs" =~ ^[1-9][0-9]*$ ]]; then
   exit 2
 fi
 
-case "$mode" in
+case "$layout" in
   parent-bundles|per-game) ;;
   *)
-    echo "invalid --mode: ${mode}" >&2
+    echo "invalid --layout: ${layout}" >&2
+    exit 2
+    ;;
+esac
+
+case "$missing" in
+  warn|fail) ;;
+  *)
+    echo "invalid --missing: ${missing}" >&2
     exit 2
     ;;
 esac
@@ -213,21 +217,16 @@ fi
 
 mkdir -p "$(dirname "$report_path")" "$(dirname "$json_path")"
 
-strict_display=0
-if [[ ${#strict_flag[@]} -gt 0 ]]; then
-  strict_display=1
-fi
-
 app_args=(
-  --database-path "$db_path"
-  run
-  --dat "$dat_path"
-  --source "$source_path"
-  --out "$out_root"
+  --cache "$db_path"
+  build
+  "$dat_path"
+  "$source_path"
+  "$out_root"
   --jobs "$jobs"
-  --mode "$mode"
+  --layout "$layout"
   --compression "$compression"
-  "${strict_flag[@]}"
+  --missing "$missing"
 )
 
 case "$runner" in
@@ -275,7 +274,7 @@ if ! git diff --quiet --ignore-submodules -- 2>/dev/null || ! git diff --cached 
 fi
 
 cat >"$report_path" <<REPORT
-# mame_coalesce run benchmark
+# mame_coalesce build benchmark
 
 - DAT: \`$dat_path\`
 - Source: \`$source_path\`
@@ -283,11 +282,11 @@ cat >"$report_path" <<REPORT
 - Database: \`$db_path\`
 - Jobs: \`$jobs\`
 - Runs: \`$runs\`
-- Mode: \`$mode\`
+- Layout: \`$layout\`
 - Compression: \`$compression\`
 - Runner: \`$runner\`
 - Binary: \`$binary_path\`
-- Strict: \`$strict_display\`
+- Missing policy: \`$missing\`
 - Git: \`${git_ref} (${dirty})\`
 - CPU cores: \`$(nproc)\`
 - JSON: \`$json_path\`
