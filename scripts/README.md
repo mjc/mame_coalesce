@@ -69,6 +69,8 @@ Use `benchmark_run.sh` to capture repeated wall-clock samples for the full
 `run` workflow. The script cleans only the selected database and output
 directory under `target/profiling` before each measured run and writes a
 Markdown plus JSON report under `target/profiling/reports/`.
+It prebuilds `target/profiling/mame_coalesce` and runs that binary directly by
+default so samples do not include `cargo run` overhead.
 
 ```sh
 nix develop -c bash scripts/benchmark_run.sh \
@@ -81,3 +83,5 @@ nix develop -c bash scripts/benchmark_run.sh \
 
 Pass `--compression store` to benchmark the opt-in stored-ZIP output path. The
 default CLI path remains `--compression deflate`.
+Pass `--runner cargo` if you need to compare against the older cargo-driven
+benchmark command.

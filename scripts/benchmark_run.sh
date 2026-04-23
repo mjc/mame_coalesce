@@ -11,6 +11,8 @@ Options:
                               Build mode (default: parent-bundles)
   --compression <deflate|store>
                               ZIP compression (default: deflate)
+  --runner <binary|cargo>     Command runner after prebuild (default: binary)
+  --binary <path>             Profiling binary path (default: target/profiling/mame_coalesce)
   --strict                    Pass --strict (default)
   --no-strict                 Do not pass --strict
   --db <path>                 Database path (default: target/profiling/<out-root-basename>.db)
@@ -30,6 +32,8 @@ jobs=
 runs=5
 mode=parent-bundles
 compression=deflate
+runner=binary
+binary_path=target/profiling/mame_coalesce
 strict_flag=(--strict)
 db_path=
 report_path=
@@ -80,6 +84,16 @@ while [[ $# -gt 0 ]]; do
     --compression)
       require_value "$1" "${2:-}"
       compression=$2
+      shift 2
+      ;;
+    --runner)
+      require_value "$1" "${2:-}"
+      runner=$2
+      shift 2
+      ;;
+    --binary)
+      require_value "$1" "${2:-}"
+      binary_path=$2
       shift 2
       ;;
     --strict)
@@ -149,6 +163,14 @@ case "$compression" in
     ;;
 esac
 
+case "$runner" in
+  binary|cargo) ;;
+  *)
+    echo "invalid --runner: ${runner}" >&2
+    exit 2
+    ;;
+esac
+
 for command in cargo git hyperfine jq nproc; do
   if ! command -v "$command" >/dev/null 2>&1; then
     echo "missing required command: ${command}" >&2
@@ -196,8 +218,7 @@ if [[ ${#strict_flag[@]} -gt 0 ]]; then
   strict_display=1
 fi
 
-run_command=(
-  cargo run --quiet --profile profiling --
+app_args=(
   --database-path "$db_path"
   run
   --dat "$dat_path"
@@ -208,6 +229,15 @@ run_command=(
   --compression "$compression"
   "${strict_flag[@]}"
 )
+
+case "$runner" in
+  binary)
+    run_command=("$binary_path" "${app_args[@]}")
+    ;;
+  cargo)
+    run_command=(cargo run --quiet --profile profiling -- "${app_args[@]}")
+    ;;
+esac
 
 command_string="$(printf '%q ' "${run_command[@]}")"
 command_string="${command_string% }"
@@ -223,6 +253,10 @@ echo "Benchmarking: ${command_string}" >&2
 echo "Preparing each run with: ${prepare_command}" >&2
 echo "Prebuilding profiling binary" >&2
 cargo build --quiet --profile profiling --bin mame_coalesce
+if [[ "$runner" == binary && ! -x "$binary_path" ]]; then
+  echo "profiling binary is not executable: ${binary_path}" >&2
+  exit 1
+fi
 
 hyperfine \
   --runs "$runs" \
@@ -251,6 +285,8 @@ cat >"$report_path" <<REPORT
 - Runs: \`$runs\`
 - Mode: \`$mode\`
 - Compression: \`$compression\`
+- Runner: \`$runner\`
+- Binary: \`$binary_path\`
 - Strict: \`$strict_display\`
 - Git: \`${git_ref} (${dirty})\`
 - CPU cores: \`$(nproc)\`

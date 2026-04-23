@@ -125,6 +125,8 @@ nix develop -c bash scripts/benchmark_run.sh \
 
 Add `--compression store` to measure the opt-in stored-ZIP write path while
 keeping default CLI behavior unchanged.
+The benchmark helper prebuilds the profiling binary and runs it directly by
+default; pass `--runner cargo` only when measuring the older `cargo run` path.
 
 Optional raw perf-data analysis, if `perf.data` is retained or captured
 manually:

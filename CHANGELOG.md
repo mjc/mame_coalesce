@@ -27,6 +27,8 @@
 - Added profiling and benchmark helpers, plus an opt-in `--compression store`
   ZIP write mode after public-domain end-to-end profiling showed deflate as the
   dominant measured hotspot; default output remains deflated.
+- Updated the benchmark helper to run the prebuilt profiling binary directly by
+  default so measurements do not include `cargo run` overhead.
 - Aligned the GitHub CI gate with the local release-readiness checks.
 - Verified the current handoff with formatting, tests, clippy, package,
   shellcheck, audit, deny, and udeps checks.
