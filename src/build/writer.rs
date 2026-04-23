@@ -915,6 +915,64 @@ mod tests {
     }
 
     #[test]
+    fn missing_rar_archive_entry_errors_clearly() -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let archive_path = utf8_path(temp_dir.path())?.join("source.rar");
+        write_version_rar(&archive_path)?;
+        let destination = utf8_path(temp_dir.path())?.join("output");
+        let plan = single_zip_entry_plan(
+            &archive_path,
+            "missing.rom",
+            "game.rom",
+            SourceKind::ArchiveEntry,
+        );
+
+        let message = error_message(write_plan(&plan, &destination))?;
+
+        assert!(message.contains("archive entry not found"));
+        assert!(message.contains("missing.rom"));
+        Ok(())
+    }
+
+    #[test]
+    fn corrupt_rar_archive_entry_errors() -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let archive_path = utf8_path(temp_dir.path())?.join("source.rar");
+        std::fs::write(&archive_path, b"Rar!\x1A\x07\x00not a valid rar")?;
+        let destination = utf8_path(temp_dir.path())?.join("output");
+        let plan = single_zip_entry_plan(
+            &archive_path,
+            "game.rom",
+            "game.rom",
+            SourceKind::ArchiveEntry,
+        );
+
+        let message = error_message(write_plan(&plan, &destination))?;
+
+        assert!(message.contains("RAR error"));
+        Ok(())
+    }
+
+    #[test]
+    fn rar_entry_name_validation_rejects_unsafe_components()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for entry_name in [
+            "",
+            ".",
+            "..",
+            "../game.rom",
+            "nested\\game.rom",
+            "nul\0.rom",
+        ] {
+            let Err(error) = safe_rar_entry_path(entry_name) else {
+                return Err(format!("expected unsafe RAR entry to fail: {entry_name:?}").into());
+            };
+            assert!(error.to_string().contains("unsafe RAR entry name"));
+        }
+        Ok(())
+    }
+
+    #[test]
     fn missing_archive_entry_errors_clearly() -> Result<(), Box<dyn std::error::Error>> {
         let temp_dir = tempfile::tempdir()?;
         let archive_path = utf8_path(temp_dir.path())?.join("source.7z");

@@ -480,6 +480,21 @@ mod tests {
     }
 
     #[test]
+    fn scan_path_reports_corrupt_rar_file() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::NamedTempFile::new()?;
+        std::fs::write(tmp.path(), b"Rar!\x1A\x07\x00not a valid rar")?;
+        let utf8_path = camino::Utf8Path::from_path(tmp.path())
+            .ok_or_else(|| io::Error::other("temp path is not UTF-8"))?;
+
+        let Err(error) = scan_path(utf8_path) else {
+            return Err("expected corrupt RAR scan to fail".into());
+        };
+
+        assert!(error.to_string().contains("RAR error"));
+        Ok(())
+    }
+
+    #[test]
     fn scan_rar_reads_file_entries() -> Result<(), Box<dyn std::error::Error>> {
         let tmp = tempfile::NamedTempFile::new()?;
         let utf8_path = camino::Utf8Path::from_path(tmp.path())
