@@ -372,26 +372,12 @@ fn categorize(name: &str) -> &'static str {
     if contains_any(
         &lower,
         &[
-            "zip",
-            "compress_tools",
-            "libarchive",
-            "inflate",
-            "deflate",
-            "zstd",
-            "bzip",
-            "decompress",
-        ],
-    ) {
-        return "Archive/Compression";
-    }
-    if contains_any(
-        &lower,
-        &[
             "operations::scan",
             "walkdir",
             "infer",
-            "scan_zip_into",
-            "scan_libarchive_into",
+            "scan_zip",
+            "scan_7z",
+            "scan_rar",
             "walk_for_files",
         ],
     ) {
@@ -415,10 +401,32 @@ fn categorize(name: &str) -> &'static str {
             "build::writer",
             "zipwriter",
             "copy_from_archive",
+            "copy_from_archive_entry",
+            "copy_from_zip_entry",
+            "copy_from_7z_archive",
+            "copy_from_rar_archive",
             "copy_bare_file",
         ],
     ) {
         return "Writer";
+    }
+    if contains_any(
+        &lower,
+        &[
+            "zip",
+            "r7z",
+            "unrar",
+            "compress_tools",
+            "libarchive",
+            "inflate",
+            "deflate",
+            "zstd",
+            "bzip",
+            "lzma",
+            "decompress",
+        ],
+    ) {
+        return "Archive/Compression";
     }
     if contains_any(
         &lower,
@@ -475,5 +483,46 @@ fn truncate_name(name: &str, max_len: usize) -> String {
         name.to_owned()
     } else {
         format!("{}...", &name[..max_len - 3])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::categorize;
+
+    #[test]
+    fn categorizes_current_archive_libraries() {
+        assert_eq!(
+            categorize("r7z::Archive::stream_files"),
+            "Archive/Compression"
+        );
+        assert_eq!(
+            categorize("unrar::archive::OpenArchive::read_header"),
+            "Archive/Compression"
+        );
+        assert_eq!(
+            categorize("zip::read::read_zipfile_from_stream"),
+            "Archive/Compression"
+        );
+    }
+
+    #[test]
+    fn categorizes_app_scan_and_writer_before_archive_libraries() {
+        assert_eq!(
+            categorize("mame_coalesce::operations::scan::scan_zip"),
+            "Scan/Walk"
+        );
+        assert_eq!(
+            categorize("mame_coalesce::operations::scan::scan_rar"),
+            "Scan/Walk"
+        );
+        assert_eq!(
+            categorize("mame_coalesce::build::writer::copy_from_zip_entry"),
+            "Writer"
+        );
+        assert_eq!(
+            categorize("mame_coalesce::build::writer::copy_from_rar_archive"),
+            "Writer"
+        );
     }
 }

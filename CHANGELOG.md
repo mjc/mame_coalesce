@@ -29,6 +29,8 @@
   dominant measured hotspot; default output remains deflated.
 - Updated the benchmark helper to run the prebuilt profiling binary directly by
   default so measurements do not include `cargo run` overhead.
+- Updated profiling parser categories for the current ZIP, 7z, and RAR archive
+  implementation.
 - Aligned the GitHub CI gate with the local release-readiness checks.
 - Verified the current handoff with formatting, tests, clippy, package,
   shellcheck, audit, deny, and udeps checks.
