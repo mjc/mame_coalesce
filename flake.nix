@@ -65,6 +65,7 @@
 
           # Performance profiling
           cargo-flamegraph
+          hyperfine
 
           # Build acceleration
           sccache

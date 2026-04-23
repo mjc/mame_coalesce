@@ -38,6 +38,12 @@ panic = "abort"
 lto = true
 codegen-units = 1
 
+[profile.profiling]
+inherits = "release"
+debug = 2
+strip = false
+lto = "thin"
+
 [lints.rust]
 unsafe_code = "forbid"
 elided_lifetimes_in_paths = "deny"
@@ -99,4 +105,7 @@ default-features = false
 features = ["zlib-ng-compat"]
 
 [dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+proptest = "1"
 tempfile = "3.27"

@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+BINARY="$SCRIPT_DIR/../target/release/parse_flamegraph"
+SOURCE="$SCRIPT_DIR/parse_flamegraph.rs"
+
+mkdir -p "$(dirname "$BINARY")"
+
+if [ ! -f "$BINARY" ] || [ "$SOURCE" -nt "$BINARY" ]; then
+    echo "Compiling parse_flamegraph..." >&2
+    rustc -O -o "$BINARY" "$SOURCE"
+fi
+
+exec "$BINARY" "$@"
