@@ -1,6 +1,6 @@
 use camino::Utf8PathBuf;
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use mame_coalesce::domain::BuildMode;
+use mame_coalesce::domain::{BuildMode, ZipCompression};
 
 #[derive(Parser)]
 #[command(name = "mame_coalesce")]
@@ -66,6 +66,8 @@ pub struct BuildArgs {
     pub out: Utf8PathBuf,
     #[arg(long, value_enum, default_value_t = ModeArg::ParentBundles)]
     pub mode: ModeArg,
+    #[arg(long, value_enum, default_value_t = CompressionArg::Deflate)]
+    pub compression: CompressionArg,
     #[arg(long, default_value_t = false)]
     pub dry_run: bool,
     #[arg(long, default_value_t = false)]
@@ -82,6 +84,8 @@ pub struct RunArgs {
     pub out: Utf8PathBuf,
     #[arg(long, value_enum, default_value_t = ModeArg::ParentBundles)]
     pub mode: ModeArg,
+    #[arg(long, value_enum, default_value_t = CompressionArg::Deflate)]
+    pub compression: CompressionArg,
     #[arg(short, long, default_value_t = 0)]
     pub jobs: usize,
     #[arg(long, default_value_t = false)]
@@ -102,6 +106,22 @@ impl From<ModeArg> for BuildMode {
         match mode {
             ModeArg::ParentBundles => Self::ParentBundles,
             ModeArg::PerGame => Self::PerGame,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+pub enum CompressionArg {
+    #[default]
+    Deflate,
+    Store,
+}
+
+impl From<CompressionArg> for ZipCompression {
+    fn from(compression: CompressionArg) -> Self {
+        match compression {
+            CompressionArg::Deflate => Self::Deflate,
+            CompressionArg::Store => Self::Store,
         }
     }
 }

@@ -31,25 +31,25 @@ impl Rom {
 
     /// Get a reference to the rom's size.
     #[must_use]
-    pub const fn size(&self) -> &i32 {
-        &self.size
+    pub const fn size(&self) -> i32 {
+        self.size
     }
 
     /// Get a reference to the rom's md5.
     #[must_use]
-    pub fn md5(&self) -> &Vec<u8> {
+    pub fn md5(&self) -> &[u8] {
         self.md5.as_ref()
     }
 
     /// Get a reference to the rom's sha1.
     #[must_use]
-    pub fn sha1(&self) -> &Vec<u8> {
+    pub fn sha1(&self) -> &[u8] {
         self.sha1.as_ref()
     }
 
     /// Get a reference to the rom's crc.
     #[must_use]
-    pub fn crc(&self) -> &Vec<u8> {
+    pub fn crc(&self) -> &[u8] {
         self.crc.as_ref()
     }
 

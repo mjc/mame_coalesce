@@ -47,10 +47,10 @@ impl New {
     pub fn from_logiqx(rom: &logiqx::Rom, game_id: i32) -> Self {
         Self {
             name: rom.name().to_owned(),
-            size: *rom.size(),
-            md5: rom.md5().clone(),
-            sha1: rom.sha1().clone(),
-            crc: rom.crc().clone(),
+            size: rom.size(),
+            md5: rom.md5().to_vec(),
+            sha1: rom.sha1().to_vec(),
+            crc: rom.crc().to_vec(),
             date: None,
             updated_at: None,
             inserted_at: None,

@@ -1,10 +1,12 @@
+use crate::hashes::Sha1Digest;
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct DatRom {
     pub dat_name: String,
     pub game_name: String,
     pub parent_name: Option<String>,
     pub rom_name: String,
-    pub sha1: String,
+    pub sha1: Sha1Digest,
 }
 
 impl DatRom {
@@ -22,6 +24,13 @@ pub enum BuildMode {
     #[default]
     ParentBundles,
     PerGame,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ZipCompression {
+    #[default]
+    Deflate,
+    Store,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,7 +56,7 @@ pub struct SourceFile {
     pub source_root: String,
     pub canonical_path: String,
     pub entry_name: Option<String>,
-    pub sha1: String,
+    pub sha1: Sha1Digest,
     pub kind: SourceKind,
 }
 
@@ -108,7 +117,7 @@ pub struct BuildReport {
 pub struct MissingRom {
     pub game_name: String,
     pub rom_name: String,
-    pub sha1: String,
+    pub sha1: Sha1Digest,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

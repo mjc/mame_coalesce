@@ -29,7 +29,7 @@ impl DataFile {
 
     pub fn from_path(path: &Utf8Path) -> crate::Result<Self> {
         let mmap = hashes::mmap_path(path)?;
-        let sha1 = hashes::stream_sha1(&mmap);
+        let sha1 = hashes::stream_sha1(&mmap).to_vec();
         let reader = mmap
             .reader(0)
             .map_err(|e| crate::Error::Mmap(e.to_string()))?;
@@ -57,31 +57,26 @@ impl DataFile {
 
     /// Get a reference to the data file's sha1.
     #[must_use]
-    pub const fn sha1(&self) -> Option<&Vec<u8>> {
-        self.sha1.as_ref()
+    pub fn sha1(&self) -> Option<&[u8]> {
+        self.sha1.as_deref()
     }
 
     /// Get a reference to the data file's file name.
     #[must_use]
-    pub const fn file_name(&self) -> Option<&String> {
-        self.file_name.as_ref()
-    }
-
-    /// Set the data file's file name.
-    pub fn set_file_name(&mut self, file_name: Option<String>) {
-        self.file_name = file_name;
+    pub fn file_name(&self) -> Option<&str> {
+        self.file_name.as_deref()
     }
 
     /// Get a reference to the data file's build.
     #[must_use]
-    pub const fn build(&self) -> Option<&String> {
-        self.build.as_ref()
+    pub fn build(&self) -> Option<&str> {
+        self.build.as_deref()
     }
 
     /// Get a reference to the data file's debug.
     #[must_use]
-    pub const fn debug(&self) -> Option<&String> {
-        self.debug.as_ref()
+    pub fn debug(&self) -> Option<&str> {
+        self.debug.as_deref()
     }
 }
 
@@ -175,7 +170,7 @@ mod tests {
             .first()
             .ok_or_else(|| io::Error::other("missing rom"))?;
         assert_eq!(rom.name(), "pong.rom");
-        assert_eq!(*rom.size(), 4096);
+        assert_eq!(rom.size(), 4096);
         assert_eq!(
             hex::encode(rom.sha1()),
             "a9993e364706816aba3e25717850c26c9cd0d89d"
@@ -200,10 +195,7 @@ mod tests {
             .find(|g| g.name() == "clone1")
             .ok_or_else(|| io::Error::other("missing clone"))?;
         assert!(parent.cloneof().is_none());
-        assert_eq!(
-            clone.cloneof().map(std::string::String::as_str),
-            Some("parent")
-        );
+        assert_eq!(clone.cloneof(), Some("parent"));
         Ok(())
     }
 
@@ -224,6 +216,49 @@ mod tests {
         assert!(df.header().url().is_none());
         assert_eq!(df.games().len(), 0);
         Ok(())
+    }
+
+    #[test]
+    fn optional_logiqx_fields_use_expected_defaults() -> Result<(), Box<dyn std::error::Error>> {
+        let minimal_game = r#"<?xml version="1.0"?>
+<datafile build="2024-01-01" debug="no">
+  <header>
+    <name>Minimal Game</name>
+  </header>
+  <game name="empty">
+  </game>
+</datafile>"#;
+
+        let df = DataFile::from_reader(minimal_game.as_bytes())?;
+        let game = df
+            .games()
+            .first()
+            .ok_or_else(|| io::Error::other("missing game"))?;
+
+        assert_eq!(df.build(), Some("2024-01-01"));
+        assert_eq!(df.debug(), Some("no"));
+        assert!(df.file_name().is_none());
+        assert!(df.sha1().is_none());
+        assert_eq!(game.sourcefile(), "");
+        assert_eq!(game.isbios(), "");
+        assert_eq!(game.cloneof(), None);
+        assert!(game.roms().is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_hex_in_dat_xml_fails_parsing() {
+        let invalid = r#"<?xml version="1.0"?>
+<datafile>
+  <header>
+    <name>Invalid</name>
+  </header>
+  <game name="bad">
+    <rom name="bad.rom" size="1" sha1="not-hex" md5="900150983cd24fb0d6963f7d28e17f72" crc="12345678"/>
+  </game>
+</datafile>"#;
+
+        assert!(DataFile::from_reader(invalid.as_bytes()).is_err());
     }
 
     #[test]

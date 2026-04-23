@@ -32,16 +32,16 @@ pub struct New<'a> {
     author: Option<String>,
     homepage: Option<String>,
     url: Option<String>,
-    sha1: Option<&'a Vec<u8>>,
+    sha1: Option<&'a [u8]>,
 }
 
 impl New<'_> {
     #[must_use]
     pub fn from_logiqx(l_data_file: &logiqx::DataFile) -> New<'_> {
         New {
-            build: l_data_file.build().cloned(),
-            debug: l_data_file.debug().cloned(),
-            file_name: l_data_file.file_name().cloned(),
+            build: l_data_file.build().map(str::to_owned),
+            debug: l_data_file.debug().map(str::to_owned),
+            file_name: l_data_file.file_name().map(str::to_owned),
             name: l_data_file.header().name().to_owned(),
             description: l_data_file.header().description().cloned(),
             version: l_data_file.header().version().cloned(),
@@ -53,7 +53,7 @@ impl New<'_> {
     }
 
     #[must_use]
-    pub const fn sha1(&self) -> Option<&Vec<u8>> {
+    pub const fn sha1(&self) -> Option<&[u8]> {
         self.sha1
     }
 

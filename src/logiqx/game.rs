@@ -91,7 +91,7 @@ impl Game {
 
     /// Get a reference to the game's cloneof.
     #[must_use]
-    pub const fn cloneof(&self) -> Option<&String> {
-        self.cloneof.as_ref()
+    pub fn cloneof(&self) -> Option<&str> {
+        self.cloneof.as_deref()
     }
 }

@@ -2,9 +2,9 @@ use camino::Utf8PathBuf;
 use log::{info, warn};
 
 use crate::{
-    build::{planner::plan_build, writer::write_plan},
+    build::{planner::plan_build, writer::write_plan_with_compression},
     db::Pool,
-    domain::{BuildMode, BuildReport, BuildRequest},
+    domain::{BuildMode, BuildReport, BuildRequest, ZipCompression},
     operations,
     storage::repositories::{BuildRepository, DataFileSelector, SourceRepository},
 };
@@ -36,6 +36,7 @@ pub struct BuildWorkflowRequest {
     pub source_path: Utf8PathBuf,
     pub destination_path: Utf8PathBuf,
     pub mode: BuildMode,
+    pub compression: ZipCompression,
     pub dry_run: bool,
     pub strict: bool,
 }
@@ -46,6 +47,7 @@ pub struct BuildWorkflowReport {
     pub build_report: BuildReport,
     pub exit_code: i32,
     pub mode: BuildMode,
+    pub compression: ZipCompression,
     pub dry_run: bool,
     pub strict: bool,
 }
@@ -56,6 +58,7 @@ pub struct RunWorkflowRequest {
     pub source_path: Utf8PathBuf,
     pub destination_path: Utf8PathBuf,
     pub mode: BuildMode,
+    pub compression: ZipCompression,
     pub jobs: usize,
     pub dry_run: bool,
     pub strict: bool,
@@ -90,13 +93,15 @@ pub fn build(pool: &Pool, request: &BuildWorkflowRequest) -> crate::Result<Build
     report_build_outcome(&plan.report);
     let exit_code = plan.report.exit_code;
     let build_report = plan.report.clone();
-    let written_paths = write_plan(&plan, &request.destination_path)?;
+    let written_paths =
+        write_plan_with_compression(&plan, &request.destination_path, request.compression)?;
 
     Ok(BuildWorkflowReport {
         written_paths,
         build_report,
         exit_code,
         mode: request.mode,
+        compression: request.compression,
         dry_run: request.dry_run,
         strict: request.strict,
     })
@@ -109,24 +114,8 @@ pub fn run(pool: &Pool, request: &RunWorkflowRequest) -> crate::Result<BuildWork
             dat_path: request.dat_path.clone(),
         },
     )?;
-    scan_source(
-        pool,
-        &SourceScanRequest {
-            source_path: request.source_path.clone(),
-            jobs: request.jobs,
-        },
-    )?;
-    build(
-        pool,
-        &BuildWorkflowRequest {
-            dat_path: request.dat_path.clone(),
-            source_path: request.source_path.clone(),
-            destination_path: request.destination_path.clone(),
-            mode: request.mode,
-            dry_run: request.dry_run,
-            strict: request.strict,
-        },
-    )
+    scan_source(pool, &source_scan_request_from_run(request))?;
+    build(pool, &build_workflow_request_from_run(request))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -157,6 +146,25 @@ fn resolve_dat_selector(dat_path: &Utf8PathBuf) -> BuildDatSelector {
     )
 }
 
+fn source_scan_request_from_run(request: &RunWorkflowRequest) -> SourceScanRequest {
+    SourceScanRequest {
+        source_path: request.source_path.clone(),
+        jobs: request.jobs,
+    }
+}
+
+fn build_workflow_request_from_run(request: &RunWorkflowRequest) -> BuildWorkflowRequest {
+    BuildWorkflowRequest {
+        dat_path: request.dat_path.clone(),
+        source_path: request.source_path.clone(),
+        destination_path: request.destination_path.clone(),
+        mode: request.mode,
+        compression: request.compression,
+        dry_run: request.dry_run,
+        strict: request.strict,
+    }
+}
+
 fn report_build_outcome(report: &BuildReport) {
     info!("matched {} ROMs", report.matched_roms);
 
@@ -165,7 +173,9 @@ fn report_build_outcome(report: &BuildReport) {
         for missing in &report.missing_roms {
             warn!(
                 "missing ROM: game={} rom={} sha1={}",
-                missing.game_name, missing.rom_name, missing.sha1
+                missing.game_name,
+                missing.rom_name,
+                hex::encode(missing.sha1)
             );
         }
     }

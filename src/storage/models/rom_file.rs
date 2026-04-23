@@ -3,7 +3,10 @@ use std::path::Path;
 use camino::Utf8Path;
 use diesel::{Associations, Insertable, Queryable};
 
-use crate::{hashes, schema::rom_files};
+use crate::{
+    hashes::{self, Sha1Digest, Xxh3Digest},
+    schema::rom_files,
+};
 
 #[derive(Queryable, Associations, PartialEq, Eq, Debug, Hash)]
 #[diesel(table_name = rom_files)]
@@ -45,8 +48,8 @@ pub struct New {
     pub parent_path: String,
     pub path: String,
     pub name: String,
-    pub sha1: Vec<u8>,
-    pub xxhash3: Vec<u8>,
+    pub sha1: Sha1Digest,
+    pub xxhash3: Xxh3Digest,
     pub in_archive: bool,
     pub rom_id: Option<i32>,
 }
@@ -76,8 +79,8 @@ impl New {
     pub fn from_archive(
         path: &Utf8Path,
         name: &Path,
-        sha1: Vec<u8>,
-        xxhash3: Vec<u8>,
+        sha1: Sha1Digest,
+        xxhash3: Xxh3Digest,
     ) -> Option<Self> {
         let parent_path = path.parent()?.to_string();
         let path = path.to_string();
@@ -96,13 +99,5 @@ impl New {
     #[must_use]
     pub fn name(&self) -> &str {
         self.name.as_ref()
-    }
-
-    pub fn set_sha1(&mut self, sha1: Vec<u8>) {
-        self.sha1 = sha1;
-    }
-
-    pub fn set_xxhash3(&mut self, xxhash3: Vec<u8>) {
-        self.xxhash3 = xxhash3;
     }
 }

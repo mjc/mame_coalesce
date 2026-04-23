@@ -26,6 +26,9 @@ pub enum Error {
     #[error("Invalid path: {0}")]
     InvalidPath(String),
 
+    #[error("Invalid hash: {0}")]
+    InvalidHash(String),
+
     #[error("Migration error: {0}")]
     Migration(String),
 
