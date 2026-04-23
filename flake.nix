@@ -125,6 +125,9 @@
 
         cargoLock = {
           lockFile = ./Cargo.lock;
+          outputHashes = {
+            "r7z-0.1.0" = "sha256-cGN38FXLELCJMQtOs478gtPoooCowqtF9iM1TmCTtV0=";
+          };
         };
 
         inherit nativeBuildInputs buildInputs;

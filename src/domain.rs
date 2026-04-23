@@ -88,7 +88,7 @@ pub struct BuildPlan {
 
 impl BuildPlan {
     #[must_use]
-    pub fn writes_files(&self) -> bool {
+    pub const fn writes_files(&self) -> bool {
         !self.dry_run && !self.zips.is_empty() && self.report.exit_code == 0
     }
 }

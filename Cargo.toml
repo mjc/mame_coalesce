@@ -6,7 +6,7 @@ license = "MIT"
 description = "Merge MAME ROMs into 1 game 1 zip format"
 repository = "https://github.com/mjc/mame_coalesce"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 default-run = "mame_coalesce"
 exclude = [
     ".env",

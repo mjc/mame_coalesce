@@ -31,6 +31,8 @@
   default so measurements do not include `cargo run` overhead.
 - Updated profiling parser categories for the current ZIP, 7z, and RAR archive
   implementation.
+- Refreshed Cargo and Nix dependencies, including raising the declared Rust
+  version to `1.88` for the current dependency graph.
 - Aligned the GitHub CI gate with the local release-readiness checks.
 - Verified the current handoff with formatting, tests, clippy, package,
   shellcheck, audit, deny, and udeps checks.
