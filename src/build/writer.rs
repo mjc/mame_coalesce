@@ -1,11 +1,11 @@
 use std::{
     collections::BTreeSet,
     fs::{File, OpenOptions, create_dir_all},
-    io::{BufReader, BufWriter, Write},
+    io::{BufReader, BufWriter},
+    path::Path,
 };
 
 use camino::{Utf8Path, Utf8PathBuf};
-use compress_tools::{ArchiveContents, ArchiveIterator};
 use zip::{ZipWriter, write::SimpleFileOptions};
 
 use crate::domain::{BuildPlan, SourceFile, SourceKind, ZipEntrySpec};
@@ -115,8 +115,11 @@ fn write_entry(
         SourceKind::BareFile => {
             copy_bare_file(&entry.source, &entry.output_name, zip_writer, options)
         }
-        SourceKind::ZipEntry | SourceKind::ArchiveEntry => {
-            copy_from_archive(&entry.source, &entry.output_name, zip_writer, options)
+        SourceKind::ZipEntry => {
+            copy_from_zip_archive(&entry.source, &entry.output_name, zip_writer, options)
+        }
+        SourceKind::ArchiveEntry => {
+            copy_from_7z_archive(&entry.source, &entry.output_name, zip_writer, options)
         }
     }
 }
@@ -134,7 +137,7 @@ fn copy_bare_file(
     Ok(())
 }
 
-fn copy_from_archive(
+fn copy_from_zip_archive(
     source: &SourceFile,
     destination_name: &str,
     zip_writer: &mut ZipWriter<BufWriter<File>>,
@@ -148,41 +151,47 @@ fn copy_from_archive(
     })?;
     let input_file = File::open(&source.canonical_path)?;
     let input_reader = BufReader::new(input_file);
-    let mut iter = ArchiveIterator::from_read(input_reader)?;
-    let mut current_name = String::new();
-    let mut found = false;
+    let mut input_zip = zip::ZipArchive::new(input_reader)?;
+    let mut entry = input_zip.by_name(entry_name)?;
+    zip_writer.start_file(destination_name, options)?;
+    std::io::copy(&mut entry, zip_writer)?;
+    Ok(())
+}
 
-    for content in &mut iter {
-        match content {
-            ArchiveContents::StartOfEntry(name, _) => {
-                current_name = name;
-                if current_name == entry_name {
-                    found = true;
-                    zip_writer.start_file(destination_name, options)?;
-                }
-            }
-            ArchiveContents::DataChunk(chunk) => {
-                if current_name == entry_name {
-                    zip_writer.write_all(&chunk)?;
-                }
-            }
-            ArchiveContents::EndOfEntry => {
-                if current_name == entry_name {
-                    zip_writer.flush()?;
-                }
-            }
-            ArchiveContents::Err(error) => return Err(error.into()),
+fn copy_from_7z_archive(
+    source: &SourceFile,
+    destination_name: &str,
+    zip_writer: &mut ZipWriter<BufWriter<File>>,
+    options: SimpleFileOptions,
+) -> crate::Result<()> {
+    let entry_name = source.entry_name.as_deref().ok_or_else(|| {
+        crate::Error::InvalidPath(format!(
+            "archive source has no entry name: {}",
+            source.display_name()
+        ))
+    })?;
+    let archive = r7z::Archive::open(Path::new(&source.canonical_path))?;
+    let Some(files) = archive.files_info() else {
+        return Err(crate::Error::InvalidPath(format!(
+            "archive entry not found: {}",
+            source.display_name()
+        )));
+    };
+    for index in 0..archive.num_files() {
+        if files.is_directory(index) || files.is_anti(index) {
+            continue;
+        }
+        if files.name(index).as_deref() == Some(entry_name) {
+            zip_writer.start_file(destination_name, options)?;
+            archive.extract_to_writer(index, zip_writer)?;
+            return Ok(());
         }
     }
 
-    if found {
-        Ok(())
-    } else {
-        Err(crate::Error::InvalidPath(format!(
-            "archive entry not found: {}",
-            source.display_name()
-        )))
-    }
+    Err(crate::Error::InvalidPath(format!(
+        "archive entry not found: {}",
+        source.display_name()
+    )))
 }
 
 #[cfg(test)]
@@ -206,6 +215,18 @@ mod tests {
             entry_name: None,
             sha1: "sha1".to_owned(),
             kind: SourceKind::BareFile,
+        }
+    }
+
+    fn archive_source_file(path: &Utf8Path, entry_name: &str) -> SourceFile {
+        SourceFile {
+            source_root: path
+                .parent()
+                .map_or_else(String::new, |parent| parent.as_str().to_owned()),
+            canonical_path: path.as_str().to_owned(),
+            entry_name: Some(entry_name.to_owned()),
+            sha1: "sha1".to_owned(),
+            kind: SourceKind::ArchiveEntry,
         }
     }
 
@@ -342,6 +363,38 @@ mod tests {
         let zip_path = written_paths.pop().ok_or("expected written zip")?;
         let mut zip = zip::ZipArchive::new(File::open(zip_path)?)?;
         let mut entry = zip.by_name("nested/game.rom")?;
+        let mut contents = Vec::new();
+        entry.read_to_end(&mut contents)?;
+
+        assert_eq!(contents, b"rom");
+        Ok(())
+    }
+
+    #[test]
+    fn write_plan_copies_from_7z_archive() -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let archive_path = utf8_path(temp_dir.path())?.join("source.7z");
+        let archive_data = r7z::ArchiveBuilder::new()
+            .add_file("nested/game.rom", b"rom")
+            .build()?;
+        std::fs::write(&archive_path, archive_data)?;
+        let destination = utf8_path(temp_dir.path())?.join("output");
+        let plan = BuildPlan {
+            zips: vec![ZipSpec {
+                file_name: "safe.zip".to_owned(),
+                entries: vec![ZipEntrySpec {
+                    output_name: "game.rom".to_owned(),
+                    source: archive_source_file(&archive_path, "nested/game.rom"),
+                }],
+            }],
+            report: BuildReport::default(),
+            dry_run: false,
+        };
+
+        let mut written_paths = write_plan(&plan, &destination)?;
+        let zip_path = written_paths.pop().ok_or("expected written zip")?;
+        let mut zip = zip::ZipArchive::new(File::open(zip_path)?)?;
+        let mut entry = zip.by_name("game.rom")?;
         let mut contents = Vec::new();
         entry.read_to_end(&mut contents)?;
 

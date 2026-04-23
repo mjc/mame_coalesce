@@ -60,7 +60,7 @@ Use `--max-roms 0` to include every collected ROM entry.
 
 ## Maintenance
 
-Use the Nix shell as the development environment. Plain `cargo test` may fail on systems without `pkg-config`, `libarchive`, and SQLite development libraries.
+Use the Nix shell as the development environment. Plain `cargo test` may fail on systems without `pkg-config` and SQLite development libraries.
 
 ## Verification
 
@@ -71,7 +71,6 @@ nix develop -c shellcheck scripts/fetch_public_domain_test_data.sh
 nix develop -c cargo fmt --check
 nix develop -c cargo test
 nix develop -c cargo clippy --all-targets --all-features -- -D warnings
-nix develop -c cargo package
 ```
 
 Dependency and maintenance checks:
@@ -86,11 +85,13 @@ nix develop -c cargo-udeps udeps --all-targets
 
 ## Known Operational Constraints
 
-- Running outside Nix requires system `pkg-config`, `libarchive`, SQLite, zlib,
-  and related development libraries.
+- Running outside Nix requires system `pkg-config`, SQLite, zlib, and related
+  development libraries.
 - Current dependency majors include crates that declare MSRVs newer than Rust
   `1.85`; the Nix shell currently builds with Rust `1.92`.
 - `Cargo.toml` still declares `rust-version = "1.85"` until the MSRV policy is
   intentionally revised.
+- `cargo package` requires `r7z` to be published on crates.io; until then the
+  crate uses a pinned `mjc/r7z` git dependency.
 - `cargo deny check` may report duplicate dependency warnings under the current
   policy, but the check exits successfully.

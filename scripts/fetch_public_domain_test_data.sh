@@ -232,7 +232,7 @@ is_archive_name() {
   lower="$(printf '%s' "$(basename "$1")" | tr '[:upper:]' '[:lower:]')"
   ext=".${lower##*.}"
   case "$ext" in
-    .zip|.7z|.rar)
+    .zip|.7z)
       return 0
       ;;
     *)
@@ -318,7 +318,6 @@ source_catalog() {
   cat <<'CATALOG'
 metadata|archive|rs32_20200909|NES PD.zip|0|0|archive.org metadata licenseurl is Public Domain Mark; description says it includes PD ROMS
 metadata|archive|rs32_20200909|SNES PD.zip|0|0|archive.org metadata licenseurl is Public Domain Mark; description says it includes PD ROMS
-metadata|archive|rs32_20200909|GBA PD.rar|0|0|archive.org metadata licenseurl is Public Domain Mark; description says it includes PD ROMS
 curated|archive|Chip-8RomsThatAreInThePublicDomain|c8games.zip|1|0|archive.org title says CHIP-8 ROMs are in the public domain; Zophar page calls the pack public domain
 curated|archive|pdrc2_5-submissions|pdrc2_5-submissions.zip|0|0|archive.org description identifies PDRoms Coding Competition 2.5 and links pdroms.de source
 curated|git_bundle|github.com-DerekTurtleRoe-N64-PD-ROMS_-_2023-10-31_17-21-10|DerekTurtleRoe-N64-PD-ROMS_-_2023-10-31_17-21-10.bundle|0|1|upstream repository README/LICENSE say ROMs are public domain unless otherwise noted
@@ -450,14 +449,14 @@ hash_zip_entries_to_dat() {
 
     tmp_entry="$tmp_dir/entry-$rom_count.bin"
     if ! bsdtar -xOf "$archive_path" "$entry" >"$tmp_entry"; then
-      printf 'skipping unreadable ZIP entry: %s:%s\n' "$archive_path" "$entry" >&2
+      printf 'skipping unreadable archive entry: %s:%s\n' "$archive_path" "$entry" >&2
       rm -f "$tmp_entry"
       continue
     fi
     hash_file_to_dat "$tmp_entry" "$relative_archive" "$entry" "$evidence_tier" "$evidence" || true
     rm -f "$tmp_entry"
   done < <(bsdtar -tf "$archive_path" 2>/dev/null || {
-    printf 'skipping unreadable ZIP source archive: %s\n' "$archive_path" >&2
+    printf 'skipping unreadable source archive: %s\n' "$archive_path" >&2
     true
   })
 }

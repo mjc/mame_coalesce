@@ -18,7 +18,7 @@ pub enum Error {
     Zip(#[from] zip::result::ZipError),
 
     #[error("Archive error: {0}")]
-    Archive(#[from] compress_tools::Error),
+    Archive(#[from] r7z::R7zError),
 
     #[error("Mmap error: {0}")]
     Mmap(String),
