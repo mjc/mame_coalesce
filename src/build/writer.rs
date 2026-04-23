@@ -1,12 +1,11 @@
 use std::{
     collections::BTreeSet,
     fs::{File, OpenOptions, create_dir_all},
-    io::{BufReader, BufWriter, Read, Seek, Write},
+    io::{BufReader, BufWriter, Read, Seek},
     path::Path,
 };
 
 use camino::{Utf8Path, Utf8PathBuf};
-use compress_tools::{ArchiveContents, ArchiveIterator};
 use zip::{ZipWriter, result::ZipError, write::SimpleFileOptions};
 
 use crate::domain::{BuildPlan, SourceFile, SourceKind, ZipCompression, ZipEntrySpec};
@@ -136,7 +135,7 @@ fn write_entry(
             copy_from_zip_entry(&entry.source, &entry.output_name, zip_writer, options)
         }
         SourceKind::ArchiveEntry => {
-            copy_from_generic_archive(&entry.source, &entry.output_name, zip_writer, options)
+            copy_from_7z_archive(&entry.source, &entry.output_name, zip_writer, options)
         }
     }
 }
@@ -237,7 +236,7 @@ fn zip_entry_enclosed_name_matches<R: Read>(
     )
 }
 
-fn copy_from_generic_archive(
+fn copy_from_7z_archive(
     source: &SourceFile,
     destination_name: &str,
     zip_writer: &mut ZipWriter<BufWriter<File>>,
@@ -249,44 +248,29 @@ fn copy_from_generic_archive(
             source.display_name()
         ))
     })?;
-    let input_file = File::open(&source.canonical_path)?;
-    let input_reader = BufReader::new(input_file);
-    let mut iter = ArchiveIterator::from_read(input_reader)?;
-    let mut copying = false;
-    let mut found = false;
+    let archive = r7z::Archive::open(Path::new(&source.canonical_path))?;
+    let Some(files) = archive.files_info() else {
+        return Err(crate::Error::InvalidPath(format!(
+            "archive entry not found: {}",
+            source.display_name()
+        )));
+    };
 
-    for content in &mut iter {
-        match content {
-            ArchiveContents::StartOfEntry(name, _) => {
-                copying = name == entry_name;
-                if copying {
-                    found = true;
-                    zip_writer.start_file(destination_name, options)?;
-                }
-            }
-            ArchiveContents::DataChunk(chunk) => {
-                if copying {
-                    zip_writer.write_all(&chunk)?;
-                }
-            }
-            ArchiveContents::EndOfEntry => {
-                if copying {
-                    zip_writer.flush()?;
-                }
-                copying = false;
-            }
-            ArchiveContents::Err(error) => return Err(error.into()),
+    for index in 0..archive.num_files() {
+        if files.is_directory(index) || files.is_anti(index) {
+            continue;
+        }
+        if files.name(index).as_deref() == Some(entry_name) {
+            zip_writer.start_file(destination_name, options)?;
+            archive.extract_to_writer(index, zip_writer)?;
+            return Ok(());
         }
     }
 
-    if found {
-        Ok(())
-    } else {
-        Err(crate::Error::InvalidPath(format!(
-            "archive entry not found: {}",
-            source.display_name()
-        )))
-    }
+    Err(crate::Error::InvalidPath(format!(
+        "archive entry not found: {}",
+        source.display_name()
+    )))
 }
 
 #[cfg(test)]
@@ -773,10 +757,42 @@ mod tests {
     }
 
     #[test]
+    fn archive_source_entry_writes_7z_content() -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let archive_path = utf8_path(temp_dir.path())?.join("source.7z");
+        let archive_data = r7z::ArchiveBuilder::new()
+            .add_file("nested/game.rom", b"rom")
+            .build()?;
+        std::fs::write(&archive_path, archive_data)?;
+        let destination = utf8_path(temp_dir.path())?.join("output");
+        let plan = single_zip_entry_plan(
+            &archive_path,
+            "nested/game.rom",
+            "game.rom",
+            SourceKind::ArchiveEntry,
+        );
+
+        let written_paths = write_plan(&plan, &destination)?;
+        let zip_path = written_paths
+            .first()
+            .ok_or_else(|| io::Error::other("expected written zip"))?;
+        let mut zip = zip::ZipArchive::new(File::open(zip_path)?)?;
+        let mut entry = zip.by_name("game.rom")?;
+        let mut contents = Vec::new();
+        entry.read_to_end(&mut contents)?;
+
+        assert_eq!(contents, b"rom");
+        Ok(())
+    }
+
+    #[test]
     fn missing_archive_entry_errors_clearly() -> Result<(), Box<dyn std::error::Error>> {
         let temp_dir = tempfile::tempdir()?;
-        let archive_path = utf8_path(temp_dir.path())?.join("source.zip");
-        write_source_zip(&archive_path, &[("present.rom", b"rom")])?;
+        let archive_path = utf8_path(temp_dir.path())?.join("source.7z");
+        let archive_data = r7z::ArchiveBuilder::new()
+            .add_file("present.rom", b"rom")
+            .build()?;
+        std::fs::write(&archive_path, archive_data)?;
         let destination = utf8_path(temp_dir.path())?.join("output");
         let plan = single_zip_entry_plan(
             &archive_path,

@@ -12,6 +12,7 @@ use std::{
     collections::BTreeMap,
     fs,
     io::{self, Read},
+    process::Command as ProcessCommand,
 };
 
 use diesel::prelude::*;
@@ -414,6 +415,83 @@ fn scan_zip_inserts_entries() -> Result<(), Box<dyn std::error::Error>> {
     let mut conn = pool.get()?;
     let count: i64 = rom_files.count().get_result(&mut conn)?;
     assert_eq!(count, 2);
+    Ok(())
+}
+
+#[test]
+fn run_workflow_writes_from_7z_archive() -> Result<(), Box<dyn std::error::Error>> {
+    let pool = in_memory_pool()?;
+    let work_dir = tempfile::tempdir()?;
+    let source_dir = tempfile::tempdir()?;
+    let output_dir = tempfile::tempdir()?;
+    let dat_path = write_shared_dat(
+        work_dir.path(),
+        "set-7z.dat",
+        "Set 7z",
+        "a9993e364706816aba3e25717850c26c9cd0d89d",
+    )?;
+    let archive_data = r7z::ArchiveBuilder::new()
+        .add_file("shared.rom", b"abc")
+        .build()?;
+    fs::write(source_dir.path().join("source.7z"), archive_data)?;
+    let source_path = utf8_path(source_dir.path())?.to_path_buf();
+    let output_path = utf8_path(output_dir.path())?.to_path_buf();
+
+    let report = app::run(
+        &pool,
+        &RunWorkflowRequest {
+            dat_path,
+            source_path,
+            destination_path: output_path.clone(),
+            mode: BuildMode::ParentBundles,
+            jobs: 1,
+            compression: ZipCompression::Deflate,
+            dry_run: false,
+            strict: true,
+        },
+    )?;
+
+    assert_eq!(report.exit_code, 0);
+    assert_eq!(report.build_report.matched_roms, 1);
+    assert!(report.build_report.missing_roms.is_empty());
+    assert_eq!(report.written_paths, vec![output_path.join("shared.zip")]);
+    assert_eq!(
+        zip_entries(&output_path.join("shared.zip"))?
+            .get("shared.rom")
+            .map(Vec::as_slice),
+        Some(b"abc" as &[u8])
+    );
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires p7zip in the test environment"]
+fn p7zip_extracts_r7z_builder_archive() -> Result<(), Box<dyn std::error::Error>> {
+    let work_dir = tempfile::tempdir()?;
+    let archive_path = work_dir.path().join("source.7z");
+    let extract_dir = work_dir.path().join("extract");
+    let archive_data = r7z::ArchiveBuilder::new()
+        .add_file("nested/shared.rom", b"abc")
+        .build()?;
+    fs::write(&archive_path, archive_data)?;
+
+    let output = ProcessCommand::new("7z")
+        .arg("x")
+        .arg(&archive_path)
+        .arg(format!("-o{}", extract_dir.display()))
+        .arg("-y")
+        .output()?;
+
+    assert!(
+        output.status.success(),
+        "7z failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read(extract_dir.join("nested").join("shared.rom"))?,
+        b"abc"
+    );
     Ok(())
 }
 

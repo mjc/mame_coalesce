@@ -60,6 +60,7 @@
           # Utilities
           curl
           jq
+          p7zip
           tokei
           gh
 
@@ -79,14 +80,12 @@
       buildInputs = with pkgs; [
         openssl
         zlib
-        libarchive
         sqlite
       ];
 
       pkgConfigPath = with pkgs; lib.concatStringsSep ":" [
         "${openssl.dev}/lib/pkgconfig"
         "${zlib.dev}/lib/pkgconfig"
-        "${libarchive.dev}/lib/pkgconfig"
         "${sqlite.dev}/lib/pkgconfig"
       ];
     in {
@@ -97,7 +96,7 @@
           export RUST_SRC_PATH="${rustToolchain}/lib/rustlib/src/rust/library"
           export PKG_CONFIG_PATH="${pkgConfigPath}"
           export RUSTC_WRAPPER="sccache"
-          export LIBRARY_PATH="${pkgs.sqlite}/lib:${pkgs.libarchive}/lib:${pkgs.zlib}/lib:${pkgs.openssl.out}/lib"
+          export LIBRARY_PATH="${pkgs.sqlite}/lib:${pkgs.zlib}/lib:${pkgs.openssl.out}/lib"
 
           ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
             export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER="clang"

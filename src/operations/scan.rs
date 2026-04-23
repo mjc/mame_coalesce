@@ -1,11 +1,9 @@
 use std::{
-    fs::File,
-    io::{BufReader, Read},
+    io::{Read, Write},
     path::Path,
 };
 
 use camino::{Utf8Path, Utf8PathBuf};
-use compress_tools::{ArchiveContents, ArchiveIteratorBuilder};
 use fmmap::{MmapFile, MmapFileExt};
 
 use indicatif::ParallelProgressIterator;
@@ -20,7 +18,7 @@ use xxhash_rust::xxh3::Xxh3;
 use crate::{
     Error,
     db::{self, Pool},
-    hashes::Sha1Digest,
+    hashes::{Sha1Digest, Xxh3Digest},
     models::NewRomFile,
     progress,
 };
@@ -70,7 +68,10 @@ fn scan_path(path: &Utf8Path) -> crate::Result<Vec<NewRomFile>> {
         || scan_bare_file(path),
         |file_type| match file_type.mime_type() {
             "application/zip" => scan_zip(&mmap),
-            "application/x-7z-compressed" | "application/vnd.rar" => scan_libarchive(path),
+            "application/x-7z-compressed" => scan_7z(path),
+            "application/vnd.rar" => Err(Error::InvalidPath(format!(
+                "unsupported archive format: {path}"
+            ))),
             _mime_type => scan_bare_file(path),
         },
     )
@@ -110,49 +111,33 @@ fn scan_zip(mmap: &MmapFile) -> crate::Result<Vec<NewRomFile>> {
     Ok(rom_files)
 }
 
-fn scan_libarchive(path: &Utf8Path) -> crate::Result<Vec<NewRomFile>> {
-    let f = File::open(path)?;
-    let reader = BufReader::new(f);
-    // let mmap = mmap_path(path)?;
-    // let chunks = mmap.chunks(16_384);
+fn scan_7z(path: &Utf8Path) -> crate::Result<Vec<NewRomFile>> {
+    let archive = r7z::Archive::open(path.as_std_path())?;
+    let Some(files) = archive.files_info() else {
+        return Ok(Vec::new());
+    };
     let mut rom_files = Vec::new();
-    let iter = ArchiveIteratorBuilder::new(reader)
-        .filter(|_name, stat| !archive_entry_is_directory(stat))
-        .build()?;
 
-    let mut name = String::new();
-    let mut sha1hasher = Sha1::new();
-    let mut xxhash3 = Xxh3::new();
-
-    for content in iter {
-        match content {
-            ArchiveContents::StartOfEntry(s, _) => {
-                name = s;
-                sha1hasher.reset();
-                xxhash3.reset();
-            }
-            ArchiveContents::DataChunk(v) => {
-                sha1hasher.update(&v);
-                xxhash3.update(&v);
-            }
-            ArchiveContents::EndOfEntry => {
-                let sha1: Sha1Digest = sha1hasher.finalize_reset().into();
-                let xxh3 = xxhash3.digest().to_be_bytes();
-                let filename = Path::new(&name);
-                if let Some(nrf) = NewRomFile::from_archive(path, filename, sha1, xxh3) {
-                    rom_files.push(nrf);
-                }
-            }
-            ArchiveContents::Err(error) => return Err(error.into()),
+    for index in 0..archive.num_files() {
+        if files.is_directory(index) || files.is_anti(index) {
+            continue;
+        }
+        let name = files
+            .name(index)
+            .ok_or_else(|| Error::InvalidPath(format!("missing 7z entry name in: {path}")))?;
+        let filename = Path::new(&name);
+        let mut hash_writer = RomHashWriter::default();
+        archive.extract_to_writer(index, &mut hash_writer)?;
+        let (sha1, xxh3) = hash_writer.finish();
+        if let Some(nrf) = NewRomFile::from_archive(path, filename, sha1, xxh3) {
+            rom_files.push(nrf);
         }
     }
 
     Ok(rom_files)
 }
 
-fn hash_reader_chunks<R: Read>(
-    mut reader: R,
-) -> crate::Result<(Sha1Digest, crate::hashes::Xxh3Digest)> {
+fn hash_reader_chunks<R: Read>(mut reader: R) -> crate::Result<(Sha1Digest, Xxh3Digest)> {
     let mut sha1hasher = Sha1::new();
     let mut xxhash3 = Xxh3::new();
     let mut scratch = vec![0_u8; 64 * 1024];
@@ -170,8 +155,31 @@ fn hash_reader_chunks<R: Read>(
     Ok((sha1hasher.finalize().into(), xxhash3.digest().to_be_bytes()))
 }
 
-const fn archive_entry_is_directory(stat: &libc::stat) -> bool {
-    stat.st_mode & libc::S_IFMT == libc::S_IFDIR
+#[derive(Default)]
+struct RomHashWriter {
+    sha1: Sha1,
+    xxhash3: Xxh3,
+}
+
+impl RomHashWriter {
+    fn finish(self) -> (Sha1Digest, Xxh3Digest) {
+        (
+            self.sha1.finalize().into(),
+            self.xxhash3.digest().to_be_bytes(),
+        )
+    }
+}
+
+impl Write for RomHashWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.sha1.update(buf);
+        self.xxhash3.update(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 fn walk_for_files(dir: &Utf8Path, excluded_paths: &[Utf8PathBuf]) -> Vec<Utf8PathBuf> {
@@ -407,7 +415,7 @@ mod tests {
     }
 
     #[test]
-    fn scan_path_reports_corrupt_libarchive_file() -> Result<(), Box<dyn std::error::Error>> {
+    fn scan_path_reports_corrupt_7z_file() -> Result<(), Box<dyn std::error::Error>> {
         let tmp = tempfile::NamedTempFile::new()?;
         std::fs::write(tmp.path(), b"7z\xBC\xAF\x27\x1Cnot a valid 7z")?;
         let utf8_path = camino::Utf8Path::from_path(tmp.path())
@@ -422,24 +430,37 @@ mod tests {
     }
 
     #[test]
-    fn scan_libarchive_skips_directory_entries() -> Result<(), Box<dyn std::error::Error>> {
-        let cursor = std::io::Cursor::new(Vec::new());
-        let mut zip = zip::ZipWriter::new(cursor);
-        let options = SimpleFileOptions::default();
-        zip.add_directory("nested/", options)?;
-        zip.start_file("nested/game.rom", options)?;
-        zip.write_all(b"rom")?;
-        let zip_data = zip.finish()?.into_inner();
-
+    fn scan_path_reports_unsupported_rar() -> Result<(), Box<dyn std::error::Error>> {
         let tmp = tempfile::NamedTempFile::new()?;
-        std::fs::write(tmp.path(), &zip_data)?;
+        std::fs::write(tmp.path(), b"Rar!\x1A\x07\x00not supported")?;
+        let utf8_path = camino::Utf8Path::from_path(tmp.path())
+            .ok_or_else(|| io::Error::other("temp path is not UTF-8"))?;
+
+        let Err(error) = scan_path(utf8_path) else {
+            return Err("expected RAR scan to fail".into());
+        };
+
+        assert!(error.to_string().contains("unsupported archive format"));
+        Ok(())
+    }
+
+    #[test]
+    fn scan_7z_skips_directory_entries() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::NamedTempFile::new()?;
+        let archive_data = r7z::ArchiveBuilder::new()
+            .add_directory("nested", r7z::EntryMeta::default())
+            .add_file("nested/game.rom", b"rom")
+            .build()?;
+        std::fs::write(tmp.path(), archive_data)?;
 
         let utf8_path = camino::Utf8Path::from_path(tmp.path())
             .ok_or_else(|| io::Error::other("temp path is not UTF-8"))?;
-        let rom_files = scan_libarchive(utf8_path)?;
+        let rom_files = scan_7z(utf8_path)?;
 
         assert_eq!(rom_files.len(), 1);
         assert_eq!(rom_files[0].name, "nested/game.rom");
+        assert_eq!(rom_files[0].sha1, crate::hashes::sha1_bytes(b"rom"));
+        assert_eq!(rom_files[0].xxhash3, crate::hashes::xxhash3_bytes(b"rom"));
         Ok(())
     }
 }

@@ -73,8 +73,7 @@ serde = { version = "1", features = ["derive"] }
 serde-xml-rs = "0.8"
 
 zip = { version = "8.5", features = ["deflate", "bzip2", "zstd"] }
-
-compress-tools = "0.15"
+r7z = { version = "0.1.0", git = "https://github.com/mjc/r7z.git", rev = "77e58c207f5f810c6f12319999b500319177137b" }
 
 hex = { version = "0.4", features = ["serde"] }
 sha-1 = { version = "0.10", features = ["asm"] }
@@ -93,7 +92,6 @@ chrono = "0.4.44"
 
 infer = "0.19"
 
-libc = "0.2"
 thiserror = "2"
 
 # I don't know why but 1.1.5 segfaults if you don't include this, instead of letting flate2 pull it in.
