@@ -1,4 +1,4 @@
-use crate::{logiqx, schema::games};
+use crate::{logiqx, storage::schema::games};
 use diesel::{Associations, Identifiable, Insertable, Queryable};
 
 use super::DataFile;

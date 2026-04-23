@@ -2,8 +2,8 @@ use camino::Utf8Path;
 use log::info;
 
 use crate::{
-    db::{self, Pool},
     logiqx,
+    storage::db::{self, Pool},
 };
 
 mod scan;

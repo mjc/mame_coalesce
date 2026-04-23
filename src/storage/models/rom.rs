@@ -2,7 +2,7 @@ use chrono::{NaiveDate, NaiveDateTime};
 use diesel::{Associations, Insertable, Queryable};
 
 use super::Game;
-use crate::{logiqx, schema::roms};
+use crate::{logiqx, storage::schema::roms};
 
 #[derive(Queryable, Insertable, Associations, PartialEq, Eq, Debug, Hash)]
 #[diesel(table_name = roms)]

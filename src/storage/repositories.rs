@@ -3,18 +3,25 @@ use diesel::prelude::*;
 use crate::{
     domain::{DatRom, SourceFile, SourceKind},
     hashes::Sha1Digest,
-    logiqx,
     storage::{
-        db::{self, Pool},
-        models::{DataFile, NewRomFile, RomFile},
+        db::Pool,
+        models::{DataFile, RomFile},
         schema,
     },
 };
 
+#[cfg(test)]
+use crate::{
+    logiqx,
+    storage::{db, models::NewRomFile},
+};
+
+#[cfg(test)]
 pub struct DatRepository<'pool> {
     pool: &'pool Pool,
 }
 
+#[cfg(test)]
 impl<'pool> DatRepository<'pool> {
     #[must_use]
     pub const fn new(pool: &'pool Pool) -> Self {
@@ -36,6 +43,7 @@ impl<'pool> SourceRepository<'pool> {
         Self { pool }
     }
 
+    #[cfg(test)]
     pub fn import_rom_files(&self, rom_files: &[NewRomFile]) -> crate::Result<usize> {
         db::import_rom_files(self.pool, rom_files)
     }
@@ -90,7 +98,7 @@ impl<'pool> BuildRepository<'pool> {
         let rows = schema::games::dsl::games
             .filter(schema::games::dsl::data_file_id.eq(data_file.id))
             .inner_join(schema::roms::dsl::roms)
-            .load::<(crate::models::Game, crate::models::Rom)>(&mut conn)?;
+            .load::<(crate::storage::models::Game, crate::storage::models::Rom)>(&mut conn)?;
 
         rows.into_iter()
             .map(|(game, rom)| {
@@ -319,7 +327,7 @@ mod tests {
         let database_url = database_path
             .to_str()
             .ok_or("temporary database path is not UTF-8")?;
-        let pool = crate::db::create_db_pool(database_url)?;
+        let pool = crate::storage::db::create_db_pool(database_url)?;
         Ok((temp_dir, pool))
     }
 

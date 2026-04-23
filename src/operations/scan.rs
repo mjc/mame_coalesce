@@ -17,10 +17,12 @@ use xxhash_rust::xxh3::Xxh3;
 
 use crate::{
     Error,
-    db::{self, Pool},
     hashes::{Sha1Digest, Xxh3Digest},
-    models::NewRomFile,
     progress,
+    storage::{
+        db::{self, Pool},
+        models::NewRomFile,
+    },
 };
 
 pub fn source(path: &Utf8Path, jobs: usize, pool: &Pool) -> crate::Result<Utf8PathBuf> {
@@ -34,7 +36,8 @@ pub fn source(path: &Utf8Path, jobs: usize, pool: &Pool) -> crate::Result<Utf8Pa
         "rom files found (unpacked and packed both): {}",
         new_rom_files.len()
     );
-    let associated_roms = db::import_rom_files(pool, &new_rom_files)?;
+    let associated_roms =
+        db::replace_rom_files_for_source_root(pool, &source_root, &new_rom_files)?;
     if associated_roms == 0 && !new_rom_files.is_empty() {
         warn!(
             "scanned {} ROM files, but none matched imported DAT ROMs",

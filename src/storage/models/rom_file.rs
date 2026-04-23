@@ -5,12 +5,12 @@ use diesel::{Associations, Insertable, Queryable};
 
 use crate::{
     hashes::{self, Sha1Digest, Xxh3Digest},
-    schema::rom_files,
+    storage::schema::rom_files,
 };
 
 #[derive(Queryable, Associations, PartialEq, Eq, Debug, Hash)]
 #[diesel(table_name = rom_files)]
-#[diesel(belongs_to(crate::models::Rom))]
+#[diesel(belongs_to(crate::storage::models::Rom))]
 pub struct RomFile {
     pub id: i32,
     pub parent_path: String,
@@ -23,23 +23,6 @@ pub struct RomFile {
     pub xxhash3: Vec<u8>,
     pub in_archive: bool,
     pub rom_id: Option<i32>,
-}
-
-impl RomFile {
-    #[must_use]
-    pub fn path(&self) -> &str {
-        self.path.as_ref()
-    }
-
-    #[must_use]
-    pub fn name(&self) -> &str {
-        self.name.as_ref()
-    }
-
-    #[must_use]
-    pub const fn in_archive(&self) -> bool {
-        self.in_archive
-    }
 }
 
 #[derive(Insertable, Debug)]

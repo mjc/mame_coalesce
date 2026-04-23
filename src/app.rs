@@ -3,7 +3,7 @@ use log::{info, warn};
 
 use crate::{
     build::{planner::plan_build, writer::write_plan_with_compression},
-    db::Pool,
+    database::Database,
     domain::{BuildMode, BuildReport, BuildRequest, ZipCompression},
     operations,
     storage::repositories::{BuildRepository, DataFileSelector, SourceRepository},
@@ -64,21 +64,31 @@ pub struct RunWorkflowRequest {
     pub strict: bool,
 }
 
-pub fn import_dat(pool: &Pool, request: &DatImportRequest) -> crate::Result<DatImportReport> {
-    operations::parse_and_insert_datfile(&request.dat_path, pool)
+pub fn import_dat(
+    database: &Database,
+    request: &DatImportRequest,
+) -> crate::Result<DatImportReport> {
+    operations::parse_and_insert_datfile(&request.dat_path, database.pool())
         .map(|data_file_id| DatImportReport { data_file_id })
 }
 
-pub fn scan_source(pool: &Pool, request: &SourceScanRequest) -> crate::Result<SourceScanReport> {
-    operations::source(&request.source_path, request.jobs, pool)
+pub fn scan_source(
+    database: &Database,
+    request: &SourceScanRequest,
+) -> crate::Result<SourceScanReport> {
+    operations::source(&request.source_path, request.jobs, database.pool())
         .map(|source_path| SourceScanReport { source_path })
 }
 
-pub fn build(pool: &Pool, request: &BuildWorkflowRequest) -> crate::Result<BuildWorkflowReport> {
+pub fn build(
+    database: &Database,
+    request: &BuildWorkflowRequest,
+) -> crate::Result<BuildWorkflowReport> {
     let dat_selector = resolve_dat_selector(&request.dat_path);
     let source_root = request.source_path.canonicalize_utf8()?;
-    let dat_roms = BuildRepository::new(pool).load_dat_roms(dat_selector.repository_selector())?;
-    let source_files = SourceRepository::new(pool).load_source_files()?;
+    let dat_roms =
+        BuildRepository::new(database.pool()).load_dat_roms(dat_selector.repository_selector())?;
+    let source_files = SourceRepository::new(database.pool()).load_source_files()?;
     let plan = plan_build(
         &dat_roms,
         &source_files,
@@ -107,15 +117,18 @@ pub fn build(pool: &Pool, request: &BuildWorkflowRequest) -> crate::Result<Build
     })
 }
 
-pub fn run(pool: &Pool, request: &RunWorkflowRequest) -> crate::Result<BuildWorkflowReport> {
+pub fn run(
+    database: &Database,
+    request: &RunWorkflowRequest,
+) -> crate::Result<BuildWorkflowReport> {
     import_dat(
-        pool,
+        database,
         &DatImportRequest {
             dat_path: request.dat_path.clone(),
         },
     )?;
-    scan_source(pool, &source_scan_request_from_run(request))?;
-    build(pool, &build_workflow_request_from_run(request))
+    scan_source(database, &source_scan_request_from_run(request))?;
+    build(database, &build_workflow_request_from_run(request))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

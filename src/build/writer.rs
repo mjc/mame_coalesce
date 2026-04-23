@@ -10,6 +10,7 @@ use zip::{ZipWriter, result::ZipError, write::SimpleFileOptions};
 
 use crate::domain::{BuildPlan, SourceFile, SourceKind, ZipCompression, ZipEntrySpec};
 
+#[cfg(test)]
 pub fn write_plan(plan: &BuildPlan, destination: &Utf8Path) -> crate::Result<Vec<Utf8PathBuf>> {
     write_plan_with_compression(plan, destination, ZipCompression::Deflate)
 }

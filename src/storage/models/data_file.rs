@@ -1,6 +1,6 @@
 use diesel::{Identifiable, Insertable, Queryable};
 
-use crate::{logiqx, schema::data_files};
+use crate::{logiqx, storage::schema::data_files};
 
 #[derive(Identifiable, Queryable, PartialEq, Eq, Debug)]
 #[diesel(table_name = data_files)]

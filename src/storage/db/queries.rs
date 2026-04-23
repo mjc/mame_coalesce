@@ -1,7 +1,12 @@
-use crate::models::{NewDataFile, NewGame, NewRom, NewRomFile};
-use crate::{db::Pool as DbPool, logiqx};
+use crate::{
+    logiqx,
+    storage::{
+        db::Pool as DbPool, models::NewDataFile, models::NewGame, models::NewRom,
+        models::NewRomFile,
+    },
+};
 
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use diesel::result::Error as DieselError;
 use diesel::{QueryResult, QueryableByName, SqliteConnection};
 use diesel::{prelude::*, sql_query};
@@ -30,7 +35,7 @@ pub fn traverse_and_insert_data_file(
 }
 
 fn delete_existing_data_file_children(conn: &mut SqliteConnection, name: &str) -> QueryResult<()> {
-    use crate::schema::data_files::dsl as data_files_dsl;
+    use crate::storage::schema::data_files::dsl as data_files_dsl;
 
     if let Some(existing_data_file_id) = data_files_dsl::data_files
         .filter(data_files_dsl::name.eq(name))
@@ -45,7 +50,7 @@ fn delete_existing_data_file_children(conn: &mut SqliteConnection, name: &str) -
 }
 
 fn delete_data_file_children(conn: &mut SqliteConnection, data_file_id: i32) -> QueryResult<()> {
-    use crate::schema::{
+    use crate::storage::schema::{
         games::dsl as games_dsl, rom_files::dsl as rom_files_dsl, roms::dsl as roms_dsl,
     };
 
@@ -78,7 +83,7 @@ fn upsert_data_file(
     conn: &mut SqliteConnection,
     new_data_file: &NewDataFile<'_>,
 ) -> QueryResult<i32> {
-    use crate::schema::data_files::dsl as data_files_dsl;
+    use crate::storage::schema::data_files::dsl as data_files_dsl;
     use diesel::replace_into;
 
     replace_into(data_files_dsl::data_files)
@@ -96,7 +101,7 @@ fn insert_games_and_roms(
     logiqx_data_file: &logiqx::DataFile,
     data_file_id: i32,
 ) -> QueryResult<()> {
-    use crate::schema::{games::dsl as games_dsl, roms::dsl as roms_dsl};
+    use crate::storage::schema::{games::dsl as games_dsl, roms::dsl as roms_dsl};
     use diesel::replace_into;
 
     logiqx_data_file.games().iter().try_for_each(|game| {
@@ -135,13 +140,34 @@ fn update_parent_links(conn: &mut SqliteConnection, data_file_id: i32) -> QueryR
     .execute(conn)
 }
 
+#[cfg(test)]
 pub fn import_rom_files(pool: &DbPool, new_rom_files: &[NewRomFile]) -> crate::Result<usize> {
-    use crate::schema::rom_files::dsl::rom_files;
+    use crate::storage::schema::rom_files::dsl::rom_files;
     use diesel::replace_into;
 
     let mut conn = pool.get()?;
 
     Ok(conn.transaction::<_, DieselError, _>(|conn| {
+        new_rom_files
+            .iter()
+            .map(|new_rom_file| replace_into(rom_files).values(new_rom_file).execute(conn))
+            .collect::<QueryResult<Vec<usize>>>()?;
+        associate_rom_files(conn)
+    })?)
+}
+
+pub fn replace_rom_files_for_source_root(
+    pool: &DbPool,
+    source_root: &Utf8Path,
+    new_rom_files: &[NewRomFile],
+) -> crate::Result<usize> {
+    use crate::storage::schema::rom_files::dsl::rom_files;
+    use diesel::replace_into;
+
+    let mut conn = pool.get()?;
+
+    Ok(conn.transaction::<_, DieselError, _>(|conn| {
+        delete_rom_files_for_source_root(conn, source_root.as_str())?;
         new_rom_files
             .iter()
             .map(|new_rom_file| replace_into(rom_files).values(new_rom_file).execute(conn))
@@ -174,6 +200,29 @@ fn associate_rom_files(conn: &mut SqliteConnection) -> QueryResult<usize> {
         .execute(conn)
 }
 
+fn delete_rom_files_for_source_root(
+    conn: &mut SqliteConnection,
+    source_root: &str,
+) -> QueryResult<usize> {
+    sql_query(
+        r"
+        DELETE FROM rom_files
+        WHERE parent_path = ?
+            OR (
+                length(parent_path) > length(?)
+                AND substr(parent_path, 1, length(?)) = ?
+                AND substr(parent_path, length(?) + 1, 1) = '/'
+            )
+        ",
+    )
+    .bind::<diesel::sql_types::Text, _>(source_root)
+    .bind::<diesel::sql_types::Text, _>(source_root)
+    .bind::<diesel::sql_types::Text, _>(source_root)
+    .bind::<diesel::sql_types::Text, _>(source_root)
+    .bind::<diesel::sql_types::Text, _>(source_root)
+    .execute(conn)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -186,7 +235,7 @@ mod tests {
         let database_url = database_path
             .to_str()
             .ok_or("temporary database path is not UTF-8")?;
-        let pool = crate::db::create_db_pool(database_url)?;
+        let pool = crate::storage::db::create_db_pool(database_url)?;
         let canonical = Utf8PathBuf::from(database_url).canonicalize_utf8()?;
 
         let paths = database_file_paths(&pool)?;

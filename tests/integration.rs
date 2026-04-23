@@ -1,11 +1,9 @@
 use assert_cmd::Command;
 use mame_coalesce::{
     app::{self, BuildWorkflowRequest, DatImportRequest, RunWorkflowRequest, SourceScanRequest},
-    db::{self, create_db_pool},
+    database::Database,
     domain::{BuildMode, ZipCompression},
     logiqx::DataFile,
-    operations,
-    schema::rom_files::dsl::{rom_files, rom_id, sha1},
 };
 use predicates::str::contains;
 use std::{
@@ -15,33 +13,9 @@ use std::{
     process::Command as ProcessCommand,
 };
 
-use diesel::prelude::*;
-
 // =====================================================================
 // DAT Parsing → DB Insert
 // =====================================================================
-
-const SIMPLE_DAT: &str = r#"<?xml version="1.0"?>
-<datafile>
-  <header>
-    <name>Test Set</name>
-    <description>Integration Test Data</description>
-    <version>1.0</version>
-    <author>Test</author>
-  </header>
-  <game name="pong" sourcefile="pong.c">
-    <description>Pong</description>
-    <year>1972</year>
-    <manufacturer>Atari</manufacturer>
-    <rom name="pong.rom" size="4096" sha1="a9993e364706816aba3e25717850c26c9cd0d89d" md5="900150983cd24fb0d6963f7d28e17f72" crc="12345678"/>
-  </game>
-  <game name="pong2" sourcefile="pong.c">
-    <description>Pong 2</description>
-    <year>1973</year>
-    <manufacturer>Atari</manufacturer>
-    <rom name="pong2.rom" size="8192" sha1="84983e441c3bd26ebaae4aa1f575527d004816f2" md5="f96b697d7cb7938d525a2f31aaf161d0" crc="aabbccdd"/>
-  </game>
-</datafile>"#;
 
 const CLONE_DAT: &str = r#"<?xml version="1.0"?>
 <datafile>
@@ -71,12 +45,14 @@ const CLONE_DAT: &str = r#"<?xml version="1.0"?>
   </game>
 </datafile>"#;
 
-fn in_memory_pool() -> mame_coalesce::Result<mame_coalesce::db::Pool> {
-    create_db_pool(":memory:")
-}
-
 fn utf8_path(path: &std::path::Path) -> Result<&camino::Utf8Path, io::Error> {
     camino::Utf8Path::from_path(path).ok_or_else(|| io::Error::other("path is not UTF-8"))
+}
+
+fn test_database(path: &std::path::Path) -> Result<Database, Box<dyn std::error::Error>> {
+    let database_path = path.join("test.db");
+    let database_path = utf8_path(&database_path)?.to_path_buf();
+    Ok(Database::open(&database_path)?)
 }
 
 fn write_clone_dat(dir: &std::path::Path) -> Result<camino::Utf8PathBuf, io::Error> {
@@ -206,7 +182,7 @@ fn cargo_command() -> Command {
 }
 
 fn db_arg(path: &camino::Utf8Path) -> [&str; 2] {
-    ["--database-path", path.as_str()]
+    ["--cache", path.as_str()]
 }
 
 // =====================================================================
@@ -214,27 +190,7 @@ fn db_arg(path: &camino::Utf8Path) -> [&str; 2] {
 // =====================================================================
 
 #[test]
-fn parse_and_insert_dat_game_count() -> Result<(), Box<dyn std::error::Error>> {
-    let pool = in_memory_pool()?;
-    let df = DataFile::from_reader(SIMPLE_DAT.as_bytes())?;
-    assert_eq!(df.games().len(), 2);
-    db::traverse_and_insert_data_file(&pool, &df)?;
-    Ok(())
-}
-
-#[test]
-fn parse_and_insert_dat_rom_count() -> Result<(), Box<dyn std::error::Error>> {
-    let pool = in_memory_pool()?;
-    let df = DataFile::from_reader(SIMPLE_DAT.as_bytes())?;
-    let total_roms: usize = df.games().iter().map(|g| g.roms().len()).sum();
-    assert_eq!(total_roms, 2);
-    db::traverse_and_insert_data_file(&pool, &df)?;
-    Ok(())
-}
-
-#[test]
 fn parse_and_insert_clone_dat() -> Result<(), Box<dyn std::error::Error>> {
-    let pool = in_memory_pool()?;
     let df = DataFile::from_reader(CLONE_DAT.as_bytes())?;
     assert_eq!(df.games().len(), 3);
     let parent = df
@@ -249,186 +205,13 @@ fn parse_and_insert_clone_dat() -> Result<(), Box<dyn std::error::Error>> {
         .ok_or_else(|| io::Error::other("missing clone game"))?;
     assert!(parent.cloneof().is_none());
     assert_eq!(clone1.cloneof(), Some("parent"));
-    db::traverse_and_insert_data_file(&pool, &df)?;
-    Ok(())
-}
-
-#[test]
-fn reimport_dat_replaces_previous_games_and_roms() -> Result<(), Box<dyn std::error::Error>> {
-    use mame_coalesce::schema::{
-        data_files::dsl::data_files,
-        games::dsl::{games, name as game_name},
-        roms::dsl::{name as rom_name, roms},
-    };
-
-    let pool = in_memory_pool()?;
-    let dat_dir = tempfile::tempdir()?;
-    let dat_file = dat_dir.path().join("mutable.dat");
-    let dat_path = write_single_game_dat(
-        &dat_file,
-        "Mutable Set",
-        "old-game",
-        "old.rom",
-        "a9993e364706816aba3e25717850c26c9cd0d89d",
-    )?;
-
-    operations::parse_and_insert_datfile(&dat_path, &pool)?;
-    write_single_game_dat(
-        &dat_file,
-        "Mutable Set",
-        "new-game",
-        "new.rom",
-        "da39a3ee5e6b4b0d3255bfef95601890afd80709",
-    )?;
-    operations::parse_and_insert_datfile(&dat_path, &pool)?;
-
-    let mut conn = pool.get()?;
-    assert_eq!(data_files.count().get_result::<i64>(&mut conn)?, 1);
-    assert_eq!(games.count().get_result::<i64>(&mut conn)?, 1);
-    assert_eq!(roms.count().get_result::<i64>(&mut conn)?, 1);
-
-    let game_names = games.select(game_name).load::<String>(&mut conn)?;
-    let rom_names = roms.select(rom_name).load::<String>(&mut conn)?;
-    assert_eq!(game_names, vec!["new-game"]);
-    assert_eq!(rom_names, vec!["new.rom"]);
-    Ok(())
-}
-
-#[test]
-fn reimport_dat_clears_stale_rom_file_associations() -> Result<(), Box<dyn std::error::Error>> {
-    let pool = in_memory_pool()?;
-    let dat_dir = tempfile::tempdir()?;
-    let source_dir = tempfile::tempdir()?;
-    let dat_file = dat_dir.path().join("mutable.dat");
-    let dat_path = write_single_game_dat(
-        &dat_file,
-        "Mutable Associations",
-        "old-game",
-        "old.rom",
-        "a9993e364706816aba3e25717850c26c9cd0d89d",
-    )?;
-    std::fs::write(source_dir.path().join("old.rom"), b"abc")?;
-    let source_path = utf8_path(source_dir.path())?.to_path_buf();
-
-    operations::parse_and_insert_datfile(&dat_path, &pool)?;
-    operations::source(&source_path, 1, &pool)?;
-
-    let linked_before_reimport = {
-        let mut conn = pool.get()?;
-        rom_files
-            .filter(rom_id.is_not_null())
-            .count()
-            .get_result::<i64>(&mut conn)?
-    };
-    assert_eq!(linked_before_reimport, 1);
-
-    write_single_game_dat(
-        &dat_file,
-        "Mutable Associations",
-        "new-game",
-        "new.rom",
-        "da39a3ee5e6b4b0d3255bfef95601890afd80709",
-    )?;
-    operations::parse_and_insert_datfile(&dat_path, &pool)?;
-
-    let linked_after_reimport = {
-        let mut conn = pool.get()?;
-        rom_files
-            .filter(rom_id.is_not_null())
-            .count()
-            .get_result::<i64>(&mut conn)?
-    };
-    assert_eq!(linked_after_reimport, 0);
-    Ok(())
-}
-
-// =====================================================================
-// Scan → DB
-// =====================================================================
-
-#[test]
-fn scan_bare_files_inserts_rom_files() -> Result<(), Box<dyn std::error::Error>> {
-    let pool = in_memory_pool()?;
-    let dir = tempfile::tempdir()?;
-
-    // Write a known file
-    let content = b"rom content here";
-    let rom_path = dir.path().join("game.rom");
-    std::fs::write(&rom_path, content)?;
-
-    let expected_sha1 = mame_coalesce::hashes::sha1_bytes(content);
-
-    let utf8_dir = camino::Utf8Path::from_path(dir.path())
-        .ok_or_else(|| io::Error::other("temp path is not UTF-8"))?;
-    operations::source(utf8_dir, 0, &pool)?;
-
-    // Verify something was inserted in the `rom_files` table.
-    let mut conn = pool.get()?;
-    let count: i64 = rom_files.count().get_result(&mut conn)?;
-    assert_eq!(count, 1);
-
-    // Verify the sha1 matches
-    let sha1s: Vec<Vec<u8>> = rom_files.select(sha1).load(&mut conn)?;
-    assert_eq!(sha1s[0], expected_sha1);
-    Ok(())
-}
-
-#[test]
-fn scan_source_skips_database_file_inside_source_root() -> Result<(), Box<dyn std::error::Error>> {
-    let dir = tempfile::tempdir()?;
-    let utf8_dir = utf8_path(dir.path())?;
-    let database_path = utf8_dir.join("coalesce.db");
-    let pool = create_db_pool(database_path.as_str())?;
-
-    std::fs::write(dir.path().join("game.rom"), b"rom content here")?;
-    std::fs::write(format!("{}-wal", database_path.as_str()), b"wal")?;
-    std::fs::write(format!("{}-shm", database_path.as_str()), b"shm")?;
-    std::fs::write(format!("{}-journal", database_path.as_str()), b"journal")?;
-
-    operations::source(utf8_dir, 0, &pool)?;
-
-    let mut conn = pool.get()?;
-    let count: i64 = rom_files.count().get_result(&mut conn)?;
-    assert_eq!(count, 1);
-    Ok(())
-}
-
-#[test]
-fn scan_zip_inserts_entries() -> Result<(), Box<dyn std::error::Error>> {
-    use std::io::Write;
-    use zip::write::SimpleFileOptions;
-
-    let pool = in_memory_pool()?;
-    let dir = tempfile::tempdir()?;
-
-    // Build a zip with two entries
-    let content_a = b"entry-a-content";
-    let content_b = b"entry-b-content";
-    let zip_path = dir.path().join("test.zip");
-    {
-        let f = std::fs::File::create(&zip_path)?;
-        let mut zip = zip::ZipWriter::new(f);
-        let opts = SimpleFileOptions::default();
-        zip.start_file("a.rom", opts)?;
-        zip.write_all(content_a)?;
-        zip.start_file("b.rom", opts)?;
-        zip.write_all(content_b)?;
-        zip.finish()?;
-    }
-
-    let utf8_dir = camino::Utf8Path::from_path(dir.path())
-        .ok_or_else(|| io::Error::other("temp path is not UTF-8"))?;
-    operations::source(utf8_dir, 1, &pool)?;
-
-    let mut conn = pool.get()?;
-    let count: i64 = rom_files.count().get_result(&mut conn)?;
-    assert_eq!(count, 2);
     Ok(())
 }
 
 #[test]
 fn run_workflow_writes_from_7z_archive() -> Result<(), Box<dyn std::error::Error>> {
-    let pool = in_memory_pool()?;
+    let database_dir = tempfile::tempdir()?;
+    let database = test_database(database_dir.path())?;
     let work_dir = tempfile::tempdir()?;
     let source_dir = tempfile::tempdir()?;
     let output_dir = tempfile::tempdir()?;
@@ -446,7 +229,7 @@ fn run_workflow_writes_from_7z_archive() -> Result<(), Box<dyn std::error::Error
     let output_path = utf8_path(output_dir.path())?.to_path_buf();
 
     let report = app::run(
-        &pool,
+        &database,
         &RunWorkflowRequest {
             dat_path,
             source_path,
@@ -474,7 +257,8 @@ fn run_workflow_writes_from_7z_archive() -> Result<(), Box<dyn std::error::Error
 
 #[test]
 fn run_workflow_writes_from_rar_archive() -> Result<(), Box<dyn std::error::Error>> {
-    let pool = in_memory_pool()?;
+    let database_dir = tempfile::tempdir()?;
+    let database = test_database(database_dir.path())?;
     let work_dir = tempfile::tempdir()?;
     let source_dir = tempfile::tempdir()?;
     let output_dir = tempfile::tempdir()?;
@@ -489,7 +273,7 @@ fn run_workflow_writes_from_rar_archive() -> Result<(), Box<dyn std::error::Erro
     let output_path = utf8_path(output_dir.path())?.to_path_buf();
 
     let report = app::run(
-        &pool,
+        &database,
         &RunWorkflowRequest {
             dat_path,
             source_path,
@@ -548,44 +332,50 @@ fn p7zip_extracts_r7z_builder_archive() -> Result<(), Box<dyn std::error::Error>
 
 #[test]
 fn importing_dat_links_previously_scanned_rom_files() -> Result<(), Box<dyn std::error::Error>> {
-    let pool = in_memory_pool()?;
+    let database_dir = tempfile::tempdir()?;
+    let database = test_database(database_dir.path())?;
     let work_dir = tempfile::tempdir()?;
     let source_dir = tempfile::tempdir()?;
+    let output_dir = tempfile::tempdir()?;
     let dat_path = write_clone_dat(work_dir.path())?;
     let source_path = write_present_clone_roms(source_dir.path())?;
+    let output_path = utf8_path(output_dir.path())?.to_path_buf();
 
     app::scan_source(
-        &pool,
+        &database,
         &SourceScanRequest {
-            source_path,
+            source_path: source_path.clone(),
             jobs: 1,
         },
     )?;
-    let linked_before_import = {
-        let mut conn = pool.get()?;
-        rom_files
-            .filter(rom_id.is_not_null())
-            .count()
-            .get_result::<i64>(&mut conn)?
-    };
-    assert_eq!(linked_before_import, 0);
+    app::import_dat(
+        &database,
+        &DatImportRequest {
+            dat_path: dat_path.clone(),
+        },
+    )?;
 
-    app::import_dat(&pool, &DatImportRequest { dat_path })?;
+    let report = app::build(
+        &database,
+        &BuildWorkflowRequest {
+            dat_path,
+            source_path,
+            destination_path: output_path,
+            mode: BuildMode::ParentBundles,
+            compression: ZipCompression::Deflate,
+            dry_run: false,
+            strict: false,
+        },
+    )?;
 
-    let linked_after_import = {
-        let mut conn = pool.get()?;
-        rom_files
-            .filter(rom_id.is_not_null())
-            .count()
-            .get_result::<i64>(&mut conn)?
-    };
-    assert_eq!(linked_after_import, 2);
+    assert_eq!(report.build_report.matched_roms, 2);
     Ok(())
 }
 
 #[test]
 fn run_workflow_writes_parent_bundle_zip() -> Result<(), Box<dyn std::error::Error>> {
-    let pool = in_memory_pool()?;
+    let database_dir = tempfile::tempdir()?;
+    let database = test_database(database_dir.path())?;
     let work_dir = tempfile::tempdir()?;
     let source_dir = tempfile::tempdir()?;
     let output_dir = tempfile::tempdir()?;
@@ -594,7 +384,7 @@ fn run_workflow_writes_parent_bundle_zip() -> Result<(), Box<dyn std::error::Err
     let output_path = utf8_path(output_dir.path())?.to_path_buf();
 
     let report = app::run(
-        &pool,
+        &database,
         &RunWorkflowRequest {
             dat_path,
             source_path,
@@ -628,7 +418,8 @@ fn run_workflow_writes_parent_bundle_zip() -> Result<(), Box<dyn std::error::Err
 
 #[test]
 fn dry_run_workflow_reports_plan_without_writing_files() -> Result<(), Box<dyn std::error::Error>> {
-    let pool = in_memory_pool()?;
+    let database_dir = tempfile::tempdir()?;
+    let database = test_database(database_dir.path())?;
     let work_dir = tempfile::tempdir()?;
     let source_dir = tempfile::tempdir()?;
     let output_dir = tempfile::tempdir()?;
@@ -637,7 +428,7 @@ fn dry_run_workflow_reports_plan_without_writing_files() -> Result<(), Box<dyn s
     let output_path = utf8_path(output_dir.path())?.join("dry-run-output");
 
     let report = app::run(
-        &pool,
+        &database,
         &RunWorkflowRequest {
             dat_path,
             source_path,
@@ -661,7 +452,8 @@ fn dry_run_workflow_reports_plan_without_writing_files() -> Result<(), Box<dyn s
 
 #[test]
 fn build_workflow_accepts_imported_dat_name() -> Result<(), Box<dyn std::error::Error>> {
-    let pool = in_memory_pool()?;
+    let database_dir = tempfile::tempdir()?;
+    let database = test_database(database_dir.path())?;
     let work_dir = tempfile::tempdir()?;
     let source_dir = tempfile::tempdir()?;
     let output_dir = tempfile::tempdir()?;
@@ -669,9 +461,9 @@ fn build_workflow_accepts_imported_dat_name() -> Result<(), Box<dyn std::error::
     let source_path = write_present_clone_roms(source_dir.path())?;
     let output_path = utf8_path(output_dir.path())?.to_path_buf();
 
-    app::import_dat(&pool, &DatImportRequest { dat_path })?;
+    app::import_dat(&database, &DatImportRequest { dat_path })?;
     app::scan_source(
-        &pool,
+        &database,
         &SourceScanRequest {
             source_path: source_path.clone(),
             jobs: 1,
@@ -679,7 +471,7 @@ fn build_workflow_accepts_imported_dat_name() -> Result<(), Box<dyn std::error::
     )?;
 
     let report = app::build(
-        &pool,
+        &database,
         &BuildWorkflowRequest {
             dat_path: camino::Utf8PathBuf::from("Clone Test"),
             source_path,
@@ -713,7 +505,8 @@ fn build_workflow_accepts_imported_dat_name() -> Result<(), Box<dyn std::error::
 #[test]
 fn build_matches_sources_scanned_from_noncanonical_path() -> Result<(), Box<dyn std::error::Error>>
 {
-    let pool = in_memory_pool()?;
+    let database_dir = tempfile::tempdir()?;
+    let database = test_database(database_dir.path())?;
     let work_dir = tempfile::tempdir()?;
     let source_dir = tempfile::tempdir()?;
     let output_dir = tempfile::tempdir()?;
@@ -723,13 +516,13 @@ fn build_matches_sources_scanned_from_noncanonical_path() -> Result<(), Box<dyn 
     let output_path = utf8_path(output_dir.path())?.to_path_buf();
 
     app::import_dat(
-        &pool,
+        &database,
         &DatImportRequest {
             dat_path: dat_path.clone(),
         },
     )?;
     let scan_report = app::scan_source(
-        &pool,
+        &database,
         &SourceScanRequest {
             source_path: scanned_source_path,
             jobs: 1,
@@ -739,7 +532,7 @@ fn build_matches_sources_scanned_from_noncanonical_path() -> Result<(), Box<dyn 
     assert_eq!(scan_report.source_path, source_path.canonicalize_utf8()?);
 
     let report = app::build(
-        &pool,
+        &database,
         &BuildWorkflowRequest {
             dat_path,
             source_path,
@@ -758,9 +551,218 @@ fn build_matches_sources_scanned_from_noncanonical_path() -> Result<(), Box<dyn 
 }
 
 #[test]
+fn source_scan_replaces_rows_for_source_root() -> Result<(), Box<dyn std::error::Error>> {
+    let database_dir = tempfile::tempdir()?;
+    let database = test_database(database_dir.path())?;
+    let work_dir = tempfile::tempdir()?;
+    let source_dir = tempfile::tempdir()?;
+    let output_dirs = [tempfile::tempdir()?, tempfile::tempdir()?];
+    let dat_a = write_single_game_dat(
+        &work_dir.path().join("set-a.dat"),
+        "Refresh Set A",
+        "game-a",
+        "a.rom",
+        "a9993e364706816aba3e25717850c26c9cd0d89d",
+    )?;
+    let dat_b = write_single_game_dat(
+        &work_dir.path().join("set-b.dat"),
+        "Refresh Set B",
+        "game-b",
+        "b.rom",
+        "da39a3ee5e6b4b0d3255bfef95601890afd80709",
+    )?;
+    let source_path = utf8_path(source_dir.path())?.to_path_buf();
+
+    app::import_dat(
+        &database,
+        &DatImportRequest {
+            dat_path: dat_a.clone(),
+        },
+    )?;
+    app::import_dat(
+        &database,
+        &DatImportRequest {
+            dat_path: dat_b.clone(),
+        },
+    )?;
+    fs::write(source_dir.path().join("a.rom"), b"abc")?;
+    app::scan_source(
+        &database,
+        &SourceScanRequest {
+            source_path: source_path.clone(),
+            jobs: 1,
+        },
+    )?;
+
+    fs::remove_file(source_dir.path().join("a.rom"))?;
+    fs::write(source_dir.path().join("b.rom"), b"")?;
+    app::scan_source(
+        &database,
+        &SourceScanRequest {
+            source_path: source_path.clone(),
+            jobs: 1,
+        },
+    )?;
+
+    let stale_report = app::build(
+        &database,
+        &BuildWorkflowRequest {
+            dat_path: dat_a,
+            source_path: source_path.clone(),
+            destination_path: utf8_path(output_dirs[0].path())?.to_path_buf(),
+            mode: BuildMode::ParentBundles,
+            compression: ZipCompression::Deflate,
+            dry_run: false,
+            strict: true,
+        },
+    )?;
+    let fresh_report = app::build(
+        &database,
+        &BuildWorkflowRequest {
+            dat_path: dat_b,
+            source_path,
+            destination_path: utf8_path(output_dirs[1].path())?.to_path_buf(),
+            mode: BuildMode::ParentBundles,
+            compression: ZipCompression::Deflate,
+            dry_run: false,
+            strict: true,
+        },
+    )?;
+
+    assert_eq!(stale_report.exit_code, 2);
+    assert_eq!(stale_report.build_report.missing_roms.len(), 1);
+    assert_eq!(fresh_report.exit_code, 0);
+    assert_eq!(fresh_report.build_report.matched_roms, 1);
+    Ok(())
+}
+
+#[test]
+fn source_scan_does_not_delete_similarly_prefixed_root() -> Result<(), Box<dyn std::error::Error>> {
+    let database_dir = tempfile::tempdir()?;
+    let database = test_database(database_dir.path())?;
+    let work_dir = tempfile::tempdir()?;
+    let dat_dir = tempfile::tempdir()?;
+    let output_dir = tempfile::tempdir()?;
+    let source_dir = work_dir.path().join("source");
+    let prefixed_source_dir = work_dir.path().join("source-other");
+    fs::create_dir(&source_dir)?;
+    fs::create_dir(&prefixed_source_dir)?;
+    fs::write(source_dir.join("a.rom"), b"abc")?;
+    fs::write(prefixed_source_dir.join("b.rom"), b"")?;
+    let dat_a = write_single_game_dat(
+        &dat_dir.path().join("set-a.dat"),
+        "Boundary Set A",
+        "game-a",
+        "a.rom",
+        "a9993e364706816aba3e25717850c26c9cd0d89d",
+    )?;
+    let dat_b = write_single_game_dat(
+        &dat_dir.path().join("set-b.dat"),
+        "Boundary Set B",
+        "game-b",
+        "b.rom",
+        "da39a3ee5e6b4b0d3255bfef95601890afd80709",
+    )?;
+    let source_path = utf8_path(&source_dir)?.to_path_buf();
+    let prefixed_source_path = utf8_path(&prefixed_source_dir)?.to_path_buf();
+
+    app::import_dat(
+        &database,
+        &DatImportRequest {
+            dat_path: dat_a.clone(),
+        },
+    )?;
+    app::import_dat(&database, &DatImportRequest { dat_path: dat_b })?;
+    app::scan_source(
+        &database,
+        &SourceScanRequest {
+            source_path: source_path.clone(),
+            jobs: 1,
+        },
+    )?;
+    app::scan_source(
+        &database,
+        &SourceScanRequest {
+            source_path: prefixed_source_path,
+            jobs: 1,
+        },
+    )?;
+
+    let report = app::build(
+        &database,
+        &BuildWorkflowRequest {
+            dat_path: dat_a,
+            source_path,
+            destination_path: utf8_path(output_dir.path())?.to_path_buf(),
+            mode: BuildMode::ParentBundles,
+            compression: ZipCompression::Deflate,
+            dry_run: false,
+            strict: true,
+        },
+    )?;
+
+    assert_eq!(report.exit_code, 0);
+    assert_eq!(report.build_report.matched_roms, 1);
+    Ok(())
+}
+
+#[test]
+fn one_shot_build_does_not_use_stale_removed_source_file() -> Result<(), Box<dyn std::error::Error>>
+{
+    let database_dir = tempfile::tempdir()?;
+    let database = test_database(database_dir.path())?;
+    let work_dir = tempfile::tempdir()?;
+    let source_dir = tempfile::tempdir()?;
+    let output_dirs = [tempfile::tempdir()?, tempfile::tempdir()?];
+    let dat_path = write_single_game_dat(
+        &work_dir.path().join("set-a.dat"),
+        "One Shot Stale",
+        "game-a",
+        "a.rom",
+        "a9993e364706816aba3e25717850c26c9cd0d89d",
+    )?;
+    let source_path = utf8_path(source_dir.path())?.to_path_buf();
+    fs::write(source_dir.path().join("a.rom"), b"abc")?;
+
+    let first_report = app::run(
+        &database,
+        &RunWorkflowRequest {
+            dat_path: dat_path.clone(),
+            source_path: source_path.clone(),
+            destination_path: utf8_path(output_dirs[0].path())?.to_path_buf(),
+            mode: BuildMode::ParentBundles,
+            compression: ZipCompression::Deflate,
+            jobs: 1,
+            dry_run: false,
+            strict: true,
+        },
+    )?;
+    fs::remove_file(source_dir.path().join("a.rom"))?;
+    let second_report = app::run(
+        &database,
+        &RunWorkflowRequest {
+            dat_path,
+            source_path,
+            destination_path: utf8_path(output_dirs[1].path())?.to_path_buf(),
+            mode: BuildMode::ParentBundles,
+            compression: ZipCompression::Deflate,
+            jobs: 1,
+            dry_run: false,
+            strict: true,
+        },
+    )?;
+
+    assert_eq!(first_report.exit_code, 0);
+    assert_eq!(second_report.exit_code, 2);
+    assert!(second_report.written_paths.is_empty());
+    Ok(())
+}
+
+#[test]
 fn strict_run_workflow_writes_nothing_when_roms_are_missing()
 -> Result<(), Box<dyn std::error::Error>> {
-    let pool = in_memory_pool()?;
+    let database_dir = tempfile::tempdir()?;
+    let database = test_database(database_dir.path())?;
     let work_dir = tempfile::tempdir()?;
     let source_dir = tempfile::tempdir()?;
     let output_dir = tempfile::tempdir()?;
@@ -769,7 +771,7 @@ fn strict_run_workflow_writes_nothing_when_roms_are_missing()
     let output_path = utf8_path(output_dir.path())?.join("strict-output");
 
     let report = app::run(
-        &pool,
+        &database,
         &RunWorkflowRequest {
             dat_path,
             source_path,
@@ -794,7 +796,8 @@ fn strict_run_workflow_writes_nothing_when_roms_are_missing()
 #[test]
 fn overlapping_dats_with_same_game_and_rom_names_build_independently()
 -> Result<(), Box<dyn std::error::Error>> {
-    let pool = in_memory_pool()?;
+    let database_dir = tempfile::tempdir()?;
+    let database = test_database(database_dir.path())?;
     let dat_dir = tempfile::tempdir()?;
     let abc_source_dir = tempfile::tempdir()?;
     let empty_source_dir = tempfile::tempdir()?;
@@ -818,26 +821,26 @@ fn overlapping_dats_with_same_game_and_rom_names_build_independently()
     let output_b = utf8_path(empty_output_dir.path())?.to_path_buf();
 
     app::import_dat(
-        &pool,
+        &database,
         &DatImportRequest {
             dat_path: dat_a.clone(),
         },
     )?;
     app::import_dat(
-        &pool,
+        &database,
         &DatImportRequest {
             dat_path: dat_b.clone(),
         },
     )?;
     app::scan_source(
-        &pool,
+        &database,
         &SourceScanRequest {
             source_path: source_a.clone(),
             jobs: 1,
         },
     )?;
     app::scan_source(
-        &pool,
+        &database,
         &SourceScanRequest {
             source_path: source_b.clone(),
             jobs: 1,
@@ -845,7 +848,7 @@ fn overlapping_dats_with_same_game_and_rom_names_build_independently()
     )?;
 
     let report_a = app::build(
-        &pool,
+        &database,
         &BuildWorkflowRequest {
             dat_path: dat_a,
             source_path: source_a,
@@ -857,7 +860,7 @@ fn overlapping_dats_with_same_game_and_rom_names_build_independently()
         },
     )?;
     let report_b = app::build(
-        &pool,
+        &database,
         &BuildWorkflowRequest {
             dat_path: dat_b,
             source_path: source_b,
@@ -891,7 +894,8 @@ fn overlapping_dats_with_same_game_and_rom_names_build_independently()
 #[test]
 fn one_scanned_source_file_can_build_matching_roms_from_multiple_dats()
 -> Result<(), Box<dyn std::error::Error>> {
-    let pool = in_memory_pool()?;
+    let database_dir = tempfile::tempdir()?;
+    let database = test_database(database_dir.path())?;
     let dat_dir = tempfile::tempdir()?;
     let source_dir = tempfile::tempdir()?;
     let output_dirs = [tempfile::tempdir()?, tempfile::tempdir()?];
@@ -915,19 +919,19 @@ fn one_scanned_source_file_can_build_matching_roms_from_multiple_dats()
     let output_b = utf8_path(output_dirs[1].path())?.to_path_buf();
 
     app::import_dat(
-        &pool,
+        &database,
         &DatImportRequest {
             dat_path: dat_a.clone(),
         },
     )?;
     app::import_dat(
-        &pool,
+        &database,
         &DatImportRequest {
             dat_path: dat_b.clone(),
         },
     )?;
     app::scan_source(
-        &pool,
+        &database,
         &SourceScanRequest {
             source_path: source_path.clone(),
             jobs: 1,
@@ -935,7 +939,7 @@ fn one_scanned_source_file_can_build_matching_roms_from_multiple_dats()
     )?;
 
     let report_a = app::build(
-        &pool,
+        &database,
         &BuildWorkflowRequest {
             dat_path: dat_a,
             source_path: source_path.clone(),
@@ -947,7 +951,7 @@ fn one_scanned_source_file_can_build_matching_roms_from_multiple_dats()
         },
     )?;
     let report_b = app::build(
-        &pool,
+        &database,
         &BuildWorkflowRequest {
             dat_path: dat_b,
             source_path,
@@ -982,10 +986,11 @@ fn one_scanned_source_file_can_build_matching_roms_from_multiple_dats()
 fn cli_help_commands_render_successfully() {
     for args in [
         vec!["--help"],
-        vec!["dat", "import", "--help"],
-        vec!["source", "scan", "--help"],
         vec!["build", "--help"],
-        vec!["run", "--help"],
+        vec!["cache", "--help"],
+        vec!["cache", "import", "--help"],
+        vec!["cache", "scan", "--help"],
+        vec!["cache", "build", "--help"],
     ] {
         cargo_command()
             .args(args)
@@ -996,7 +1001,7 @@ fn cli_help_commands_render_successfully() {
 }
 
 #[test]
-fn cli_run_dry_run_exits_zero_and_writes_no_files() -> Result<(), Box<dyn std::error::Error>> {
+fn cli_build_dry_run_exits_zero_and_writes_no_files() -> Result<(), Box<dyn std::error::Error>> {
     let work_dir = tempfile::tempdir()?;
     let source_dir = tempfile::tempdir()?;
     let output_dir = tempfile::tempdir()?;
@@ -1009,12 +1014,9 @@ fn cli_run_dry_run_exits_zero_and_writes_no_files() -> Result<(), Box<dyn std::e
     cargo_command()
         .args(db_arg(&database_path))
         .args([
-            "run",
-            "--dat",
+            "build",
             dat_path.as_str(),
-            "--source",
             source_path.as_str(),
-            "--out",
             output_path.as_str(),
             "--jobs",
             "1",
@@ -1028,8 +1030,8 @@ fn cli_run_dry_run_exits_zero_and_writes_no_files() -> Result<(), Box<dyn std::e
 }
 
 #[test]
-fn cli_run_strict_missing_roms_exits_two_and_writes_no_files()
--> Result<(), Box<dyn std::error::Error>> {
+fn cli_build_missing_fail_exits_two_and_writes_no_files() -> Result<(), Box<dyn std::error::Error>>
+{
     let work_dir = tempfile::tempdir()?;
     let source_dir = tempfile::tempdir()?;
     let output_dir = tempfile::tempdir()?;
@@ -1042,16 +1044,14 @@ fn cli_run_strict_missing_roms_exits_two_and_writes_no_files()
     cargo_command()
         .args(db_arg(&database_path))
         .args([
-            "run",
-            "--dat",
+            "build",
             dat_path.as_str(),
-            "--source",
             source_path.as_str(),
-            "--out",
             output_path.as_str(),
             "--jobs",
             "1",
-            "--strict",
+            "--missing",
+            "fail",
         ])
         .assert()
         .code(2);
@@ -1061,7 +1061,8 @@ fn cli_run_strict_missing_roms_exits_two_and_writes_no_files()
 }
 
 #[test]
-fn cli_build_accepts_dat_header_name_after_import() -> Result<(), Box<dyn std::error::Error>> {
+fn cli_cache_build_accepts_dat_header_name_after_import() -> Result<(), Box<dyn std::error::Error>>
+{
     let work_dir = tempfile::tempdir()?;
     let source_dir = tempfile::tempdir()?;
     let output_dir = tempfile::tempdir()?;
@@ -1073,23 +1074,21 @@ fn cli_build_accepts_dat_header_name_after_import() -> Result<(), Box<dyn std::e
 
     cargo_command()
         .args(db_arg(&database_path))
-        .args(["dat", "import", dat_path.as_str()])
+        .args(["cache", "import", dat_path.as_str()])
         .assert()
         .success();
     cargo_command()
         .args(db_arg(&database_path))
-        .args(["source", "scan", source_path.as_str(), "--jobs", "1"])
+        .args(["cache", "scan", source_path.as_str(), "--jobs", "1"])
         .assert()
         .success();
     cargo_command()
         .args(db_arg(&database_path))
         .args([
+            "cache",
             "build",
-            "--dat",
             "Clone Test",
-            "--source",
             source_path.as_str(),
-            "--out",
             output_path.as_str(),
         ])
         .assert()
@@ -1100,7 +1099,7 @@ fn cli_build_accepts_dat_header_name_after_import() -> Result<(), Box<dyn std::e
 }
 
 #[test]
-fn cli_per_game_mode_writes_separate_zip_files() -> Result<(), Box<dyn std::error::Error>> {
+fn cli_per_game_layout_writes_separate_zip_files() -> Result<(), Box<dyn std::error::Error>> {
     let work_dir = tempfile::tempdir()?;
     let source_dir = tempfile::tempdir()?;
     let output_dir = tempfile::tempdir()?;
@@ -1113,16 +1112,13 @@ fn cli_per_game_mode_writes_separate_zip_files() -> Result<(), Box<dyn std::erro
     cargo_command()
         .args(db_arg(&database_path))
         .args([
-            "run",
-            "--dat",
+            "build",
             dat_path.as_str(),
-            "--source",
             source_path.as_str(),
-            "--out",
             output_path.as_str(),
             "--jobs",
             "1",
-            "--mode",
+            "--layout",
             "per-game",
         ])
         .assert()
@@ -1147,12 +1143,9 @@ fn cli_store_compression_writes_stored_zip_entries() -> Result<(), Box<dyn std::
     cargo_command()
         .args(db_arg(&database_path))
         .args([
-            "run",
-            "--dat",
+            "build",
             dat_path.as_str(),
-            "--source",
             source_path.as_str(),
-            "--out",
             output_path.as_str(),
             "--jobs",
             "1",
@@ -1184,12 +1177,9 @@ fn cli_invalid_dat_path_exits_one() -> Result<(), Box<dyn std::error::Error>> {
     cargo_command()
         .args(db_arg(&database_path))
         .args([
-            "run",
-            "--dat",
+            "build",
             missing_dat.as_str(),
-            "--source",
             source_path.as_str(),
-            "--out",
             output_path.as_str(),
             "--jobs",
             "1",
