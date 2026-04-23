@@ -176,6 +176,14 @@ fn write_single_rom_source(
     Ok(utf8_path(dir)?.to_path_buf())
 }
 
+fn write_version_rar(path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    let archive = hex::decode(
+        "526172211a0700cf907300000d000000000000000f0c7420802700150000000b0000000345f37dc6a48a07471d330700a481000056455253494f4e0c008fec8a45cc23c848088362fe5fdd5c5388f072c43d7b00400700",
+    )?;
+    fs::write(path, archive)?;
+    Ok(())
+}
+
 fn zip_entries(
     path: &camino::Utf8Path,
 ) -> Result<BTreeMap<String, Vec<u8>>, Box<dyn std::error::Error>> {
@@ -460,6 +468,49 @@ fn run_workflow_writes_from_7z_archive() -> Result<(), Box<dyn std::error::Error
             .get("shared.rom")
             .map(Vec::as_slice),
         Some(b"abc" as &[u8])
+    );
+    Ok(())
+}
+
+#[test]
+fn run_workflow_writes_from_rar_archive() -> Result<(), Box<dyn std::error::Error>> {
+    let pool = in_memory_pool()?;
+    let work_dir = tempfile::tempdir()?;
+    let source_dir = tempfile::tempdir()?;
+    let output_dir = tempfile::tempdir()?;
+    let dat_path = write_shared_dat(
+        work_dir.path(),
+        "set-rar.dat",
+        "Set RAR",
+        "baffb26680d43e04ed6fcf558a8a1bb772e6b8f6",
+    )?;
+    write_version_rar(&source_dir.path().join("source.rar"))?;
+    let source_path = utf8_path(source_dir.path())?.to_path_buf();
+    let output_path = utf8_path(output_dir.path())?.to_path_buf();
+
+    let report = app::run(
+        &pool,
+        &RunWorkflowRequest {
+            dat_path,
+            source_path,
+            destination_path: output_path.clone(),
+            mode: BuildMode::ParentBundles,
+            jobs: 1,
+            compression: ZipCompression::Deflate,
+            dry_run: false,
+            strict: true,
+        },
+    )?;
+
+    assert_eq!(report.exit_code, 0);
+    assert_eq!(report.build_report.matched_roms, 1);
+    assert!(report.build_report.missing_roms.is_empty());
+    assert_eq!(report.written_paths, vec![output_path.join("shared.zip")]);
+    assert_eq!(
+        zip_entries(&output_path.join("shared.zip"))?
+            .get("shared.rom")
+            .map(Vec::as_slice),
+        Some(b"unrar-0.4.0" as &[u8])
     );
     Ok(())
 }
