@@ -73,7 +73,8 @@ serde = { version = "1", features = ["derive"] }
 serde-xml-rs = "0.8"
 
 zip = { version = "8.5", features = ["deflate", "bzip2", "zstd"] }
-r7z = { version = "0.1.0", git = "https://github.com/mjc/r7z.git", rev = "77e58c207f5f810c6f12319999b500319177137b" }
+r7z = { version = "0.1.0", git = "https://github.com/mjc/r7z.git", rev = "08f90bb068154b4b5999ea7cdf8361d1407ba024" }
+unrar = "0.5.8"
 
 hex = { version = "0.4", features = ["serde"] }
 sha-1 = { version = "0.10", features = ["asm"] }

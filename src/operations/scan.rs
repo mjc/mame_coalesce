@@ -1,6 +1,6 @@
 use std::{
     io::{Read, Write},
-    path::Path,
+    path::{Component, Path, PathBuf},
 };
 
 use camino::{Utf8Path, Utf8PathBuf};
@@ -69,9 +69,7 @@ fn scan_path(path: &Utf8Path) -> crate::Result<Vec<NewRomFile>> {
         |file_type| match file_type.mime_type() {
             "application/zip" => scan_zip(&mmap),
             "application/x-7z-compressed" => scan_7z(path),
-            "application/vnd.rar" => Err(Error::InvalidPath(format!(
-                "unsupported archive format: {path}"
-            ))),
+            "application/vnd.rar" => scan_rar(path),
             _mime_type => scan_bare_file(path),
         },
     )
@@ -111,28 +109,72 @@ fn scan_zip(mmap: &MmapFile) -> crate::Result<Vec<NewRomFile>> {
     Ok(rom_files)
 }
 
-fn scan_7z(path: &Utf8Path) -> crate::Result<Vec<NewRomFile>> {
-    let archive = r7z::Archive::open(path.as_std_path())?;
-    let Some(files) = archive.files_info() else {
-        return Ok(Vec::new());
-    };
+fn scan_rar(path: &Utf8Path) -> crate::Result<Vec<NewRomFile>> {
+    let mut archive = unrar::Archive::new(path.as_std_path()).open_for_processing()?;
     let mut rom_files = Vec::new();
 
-    for index in 0..archive.num_files() {
-        if files.is_directory(index) || files.is_anti(index) {
-            continue;
-        }
-        let name = files
-            .name(index)
-            .ok_or_else(|| Error::InvalidPath(format!("missing 7z entry name in: {path}")))?;
-        let filename = Path::new(&name);
+    while let Some(header) = archive.read_header()? {
+        let entry_path = safe_rar_entry_path(header.entry())?;
+        archive = if let Some(filename) = entry_path {
+            let (data, rest) = header.read()?;
+            let sha1 = crate::hashes::sha1_bytes(&data);
+            let xxh3 = crate::hashes::xxhash3_bytes(&data);
+            if let Some(nrf) = NewRomFile::from_archive(path, &filename, sha1, xxh3) {
+                rom_files.push(nrf);
+            }
+            rest
+        } else {
+            header.skip()?
+        };
+    }
+
+    Ok(rom_files)
+}
+
+fn safe_rar_entry_path(header: &unrar::FileHeader) -> crate::Result<Option<PathBuf>> {
+    if !header.is_file() {
+        return Ok(None);
+    }
+
+    let name = header.filename.to_str().ok_or_else(|| {
+        Error::InvalidPath(format!(
+            "RAR entry name is not UTF-8: {}",
+            header.filename.display()
+        ))
+    })?;
+    if name.contains('\\') || name.contains('\0') {
+        return Err(Error::InvalidPath(format!("unsafe RAR entry name: {name}")));
+    }
+
+    let path = Path::new(name);
+    let components = path.components().collect::<Vec<_>>();
+    if components.is_empty()
+        || !components
+            .iter()
+            .all(|component| matches!(component, Component::Normal(_)))
+    {
+        return Err(Error::InvalidPath(format!("unsafe RAR entry name: {name}")));
+    }
+
+    Ok(Some(path.to_owned()))
+}
+
+fn scan_7z(path: &Utf8Path) -> crate::Result<Vec<NewRomFile>> {
+    let archive = r7z::Archive::open(path.as_std_path())?;
+    let mut rom_files = Vec::new();
+
+    archive.stream_files(|entry, reader| {
+        let filename = entry
+            .safe_path()
+            .ok_or_else(|| r7z::R7zError::UnsafePath(entry.name.clone()))?;
         let mut hash_writer = RomHashWriter::default();
-        archive.extract_to_writer(index, &mut hash_writer)?;
+        std::io::copy(reader, &mut hash_writer)?;
         let (sha1, xxh3) = hash_writer.finish();
         if let Some(nrf) = NewRomFile::from_archive(path, filename, sha1, xxh3) {
             rom_files.push(nrf);
         }
-    }
+        Ok(())
+    })?;
 
     Ok(rom_files)
 }
@@ -240,6 +282,14 @@ mod tests {
             zip.write_all(data)?;
         }
         Ok(zip.finish()?.into_inner())
+    }
+
+    fn write_version_rar(path: &Utf8Path) -> Result<(), Box<dyn std::error::Error>> {
+        let archive = hex::decode(
+            "526172211a0700cf907300000d000000000000000f0c7420802700150000000b0000000345f37dc6a48a07471d330700a481000056455253494f4e0c008fec8a45cc23c848088362fe5fdd5c5388f072c43d7b00400700",
+        )?;
+        std::fs::write(path, archive)?;
+        Ok(())
     }
 
     #[test]
@@ -430,17 +480,22 @@ mod tests {
     }
 
     #[test]
-    fn scan_path_reports_unsupported_rar() -> Result<(), Box<dyn std::error::Error>> {
+    fn scan_rar_reads_file_entries() -> Result<(), Box<dyn std::error::Error>> {
         let tmp = tempfile::NamedTempFile::new()?;
-        std::fs::write(tmp.path(), b"Rar!\x1A\x07\x00not supported")?;
         let utf8_path = camino::Utf8Path::from_path(tmp.path())
             .ok_or_else(|| io::Error::other("temp path is not UTF-8"))?;
+        write_version_rar(utf8_path)?;
 
-        let Err(error) = scan_path(utf8_path) else {
-            return Err("expected RAR scan to fail".into());
-        };
+        let rom_files = scan_path(utf8_path)?;
 
-        assert!(error.to_string().contains("unsupported archive format"));
+        assert_eq!(rom_files.len(), 1);
+        assert_eq!(rom_files[0].name, "VERSION");
+        assert_eq!(rom_files[0].sha1, crate::hashes::sha1_bytes(b"unrar-0.4.0"));
+        assert_eq!(
+            rom_files[0].xxhash3,
+            crate::hashes::xxhash3_bytes(b"unrar-0.4.0")
+        );
+        assert!(rom_files[0].in_archive);
         Ok(())
     }
 

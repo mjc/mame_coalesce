@@ -15,8 +15,8 @@
   workflows build correctly.
 - Propagated corrupt or unreadable source file, ZIP, and 7z scan errors
   instead of silently dropping bad inputs.
-- Replaced libarchive-backed archive handling with pure-Rust 7z handling through
-  `r7z`; RAR archives are no longer supported by the scanner.
+- Replaced libarchive-backed archive handling with `r7z` for 7z archives and
+  the `unrar` crate for RAR archives.
 - Added end-to-end 7z workflow coverage, including p7zip extraction of archives
   produced by `r7z`.
 - Validated build output ZIP file names and ZIP entry names before writing, and

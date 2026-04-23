@@ -1,8 +1,8 @@
 use std::{
     collections::BTreeSet,
     fs::{File, OpenOptions, create_dir_all},
-    io::{BufReader, BufWriter, Read, Seek},
-    path::Path,
+    io::{BufReader, BufWriter, Read, Seek, Write},
+    path::{Component, Path, PathBuf},
 };
 
 use camino::{Utf8Path, Utf8PathBuf};
@@ -135,7 +135,7 @@ fn write_entry(
             copy_from_zip_entry(&entry.source, &entry.output_name, zip_writer, options)
         }
         SourceKind::ArchiveEntry => {
-            copy_from_7z_archive(&entry.source, &entry.output_name, zip_writer, options)
+            copy_from_archive_entry(&entry.source, &entry.output_name, zip_writer, options)
         }
     }
 }
@@ -236,6 +236,97 @@ fn zip_entry_enclosed_name_matches<R: Read>(
     )
 }
 
+fn copy_from_archive_entry(
+    source: &SourceFile,
+    destination_name: &str,
+    zip_writer: &mut ZipWriter<BufWriter<File>>,
+    options: SimpleFileOptions,
+) -> crate::Result<()> {
+    if archive_path_is_rar(Path::new(&source.canonical_path)) {
+        copy_from_rar_archive(source, destination_name, zip_writer, options)
+    } else {
+        copy_from_7z_archive(source, destination_name, zip_writer, options)
+    }
+}
+
+fn archive_path_is_rar(path: &Path) -> bool {
+    path.extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("rar"))
+}
+
+fn copy_from_rar_archive(
+    source: &SourceFile,
+    destination_name: &str,
+    zip_writer: &mut ZipWriter<BufWriter<File>>,
+    options: SimpleFileOptions,
+) -> crate::Result<()> {
+    let entry_name = source.entry_name.as_deref().ok_or_else(|| {
+        crate::Error::InvalidPath(format!(
+            "archive source has no entry name: {}",
+            source.display_name()
+        ))
+    })?;
+    let requested_path = safe_rar_entry_path(entry_name)?;
+    let mut archive =
+        unrar::Archive::new(Path::new(&source.canonical_path)).open_for_processing()?;
+
+    while let Some(header) = archive.read_header()? {
+        archive = if rar_header_matches_entry(header.entry(), &requested_path)? {
+            let (data, _rest) = header.read()?;
+            zip_writer.start_file(destination_name, options)?;
+            zip_writer.write_all(&data)?;
+            return Ok(());
+        } else {
+            header.skip()?
+        };
+    }
+
+    Err(crate::Error::InvalidPath(format!(
+        "archive entry not found: {}",
+        source.display_name()
+    )))
+}
+
+fn rar_header_matches_entry(
+    header: &unrar::FileHeader,
+    requested_path: &Path,
+) -> crate::Result<bool> {
+    if !header.is_file() {
+        return Ok(false);
+    }
+
+    Ok(safe_rar_entry_path_from_path(&header.filename)? == requested_path)
+}
+
+fn safe_rar_entry_path(entry_name: &str) -> crate::Result<PathBuf> {
+    safe_rar_entry_path_from_path(Path::new(entry_name))
+}
+
+fn safe_rar_entry_path_from_path(path: &Path) -> crate::Result<PathBuf> {
+    let name = path.to_str().ok_or_else(|| {
+        crate::Error::InvalidPath(format!("RAR entry name is not UTF-8: {}", path.display()))
+    })?;
+    if name.contains('\\') || name.contains('\0') {
+        return Err(crate::Error::InvalidPath(format!(
+            "unsafe RAR entry name: {name}"
+        )));
+    }
+
+    let components = path.components().collect::<Vec<_>>();
+    if components.is_empty()
+        || !components
+            .iter()
+            .all(|component| matches!(component, Component::Normal(_)))
+    {
+        return Err(crate::Error::InvalidPath(format!(
+            "unsafe RAR entry name: {name}"
+        )));
+    }
+
+    Ok(path.to_owned())
+}
+
 fn copy_from_7z_archive(
     source: &SourceFile,
     destination_name: &str,
@@ -249,28 +340,32 @@ fn copy_from_7z_archive(
         ))
     })?;
     let archive = r7z::Archive::open(Path::new(&source.canonical_path))?;
-    let Some(files) = archive.files_info() else {
+    if !has_extractable_7z_entry(&archive, entry_name) {
         return Err(crate::Error::InvalidPath(format!(
             "archive entry not found: {}",
             source.display_name()
         )));
-    };
-
-    for index in 0..archive.num_files() {
-        if files.is_directory(index) || files.is_anti(index) {
-            continue;
-        }
-        if files.name(index).as_deref() == Some(entry_name) {
-            zip_writer.start_file(destination_name, options)?;
-            archive.extract_to_writer(index, zip_writer)?;
-            return Ok(());
-        }
     }
 
-    Err(crate::Error::InvalidPath(format!(
-        "archive entry not found: {}",
-        source.display_name()
-    )))
+    zip_writer.start_file(destination_name, options)?;
+    archive.extract_by_name(entry_name, zip_writer)?;
+    Ok(())
+}
+
+fn has_extractable_7z_entry(archive: &r7z::Archive, entry_name: &str) -> bool {
+    if archive
+        .entries()
+        .any(|entry| entry.is_file() && entry.name == entry_name)
+    {
+        return true;
+    }
+
+    let Ok(requested_path) = r7z::safe_archive_name(entry_name) else {
+        return false;
+    };
+    archive
+        .entries()
+        .any(|entry| entry.is_file() && entry.safe_path() == Some(requested_path.as_path()))
 }
 
 #[cfg(test)]
@@ -334,6 +429,14 @@ mod tests {
             zip.write_all(contents)?;
         }
         zip.finish()?;
+        Ok(())
+    }
+
+    fn write_version_rar(path: &Utf8Path) -> Result<(), Box<dyn std::error::Error>> {
+        let archive = hex::decode(
+            "526172211a0700cf907300000d000000000000000f0c7420802700150000000b0000000345f37dc6a48a07471d330700a481000056455253494f4e0c008fec8a45cc23c848088362fe5fdd5c5388f072c43d7b00400700",
+        )?;
+        std::fs::write(path, archive)?;
         Ok(())
     }
 
@@ -782,6 +885,32 @@ mod tests {
         entry.read_to_end(&mut contents)?;
 
         assert_eq!(contents, b"rom");
+        Ok(())
+    }
+
+    #[test]
+    fn archive_source_entry_writes_rar_content() -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let archive_path = utf8_path(temp_dir.path())?.join("source.rar");
+        write_version_rar(&archive_path)?;
+        let destination = utf8_path(temp_dir.path())?.join("output");
+        let plan = single_zip_entry_plan(
+            &archive_path,
+            "VERSION",
+            "game.rom",
+            SourceKind::ArchiveEntry,
+        );
+
+        let written_paths = write_plan(&plan, &destination)?;
+        let zip_path = written_paths
+            .first()
+            .ok_or_else(|| io::Error::other("expected written zip"))?;
+        let mut zip = zip::ZipArchive::new(File::open(zip_path)?)?;
+        let mut entry = zip.by_name("game.rom")?;
+        let mut contents = Vec::new();
+        entry.read_to_end(&mut contents)?;
+
+        assert_eq!(contents, b"unrar-0.4.0");
         Ok(())
     }
 

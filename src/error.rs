@@ -20,6 +20,9 @@ pub enum Error {
     #[error("Archive error: {0}")]
     Archive(#[from] r7z::R7zError),
 
+    #[error("RAR error: {0}")]
+    Rar(#[from] unrar::error::UnrarError),
+
     #[error("Mmap error: {0}")]
     Mmap(String),
 
