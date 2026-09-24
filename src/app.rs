@@ -15,11 +15,28 @@ use crate::{
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CatalogImportRequest {
     pub document_path: Utf8PathBuf,
+    pub format: CatalogDocumentFormat,
     pub source_key: PublishingSourceKey,
     pub source_display_name: String,
     pub catalog_key: CatalogKey,
     pub catalog_display_name: String,
     pub scope: CatalogScope,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CatalogDocumentFormat {
+    Logiqx,
+    MameListXml,
+}
+
+impl CatalogDocumentFormat {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Logiqx => "logiqx",
+            Self::MameListXml => "mame-listxml",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -6,6 +6,7 @@ pub mod domain;
 pub mod error;
 pub mod hashes;
 pub mod logiqx;
+mod mame;
 mod operations;
 mod progress;
 mod storage;

@@ -95,13 +95,30 @@ impl DocumentStore {
         metadata: &AcquisitionMetadata,
         reader: R,
     ) -> crate::Result<RetainedDocument> {
-        self.retain_with_limit(metadata, reader, MAX_DOCUMENT_BYTES)
+        self.retain_with_limit_and_validation(metadata, reader, MAX_DOCUMENT_BYTES, true)
     }
 
     pub fn retain_path(
         &self,
         source_key: PublishingSourceKey,
         path: &Utf8Path,
+    ) -> crate::Result<RetainedDocument> {
+        self.retain_path_with_validation(source_key, path, true)
+    }
+
+    pub(crate) fn retain_path_raw(
+        &self,
+        source_key: PublishingSourceKey,
+        path: &Utf8Path,
+    ) -> crate::Result<RetainedDocument> {
+        self.retain_path_with_validation(source_key, path, false)
+    }
+
+    fn retain_path_with_validation(
+        &self,
+        source_key: PublishingSourceKey,
+        path: &Utf8Path,
+        validate_xml: bool,
     ) -> crate::Result<RetainedDocument> {
         let mut metadata = AcquisitionMetadata {
             source_key,
@@ -127,7 +144,12 @@ impl DocumentStore {
         }
         metadata.source_uri = Some(canonical_path.to_string_lossy().into_owned());
         match File::open(&canonical_path) {
-            Ok(file) => self.retain(&metadata, file),
+            Ok(file) => self.retain_with_limit_and_validation(
+                &metadata,
+                file,
+                MAX_DOCUMENT_BYTES,
+                validate_xml,
+            ),
             Err(error) => {
                 self.record_failed_attempt(&metadata, "io", &error.to_string())?;
                 Err(error.into())
@@ -148,11 +170,12 @@ impl DocumentStore {
         Ok(row.payload)
     }
 
-    fn retain_with_limit<R: Read>(
+    fn retain_with_limit_and_validation<R: Read>(
         &self,
         metadata: &AcquisitionMetadata,
         reader: R,
         limit: usize,
+        validate_xml: bool,
     ) -> crate::Result<RetainedDocument> {
         let transport_metadata = metadata
             .transport_metadata
@@ -175,7 +198,7 @@ impl DocumentStore {
             self.record_failed_attempt(metadata, error_code(&error), &error.to_string())?;
             return Err(error);
         }
-        if let Err(error) = DataFile::validate_document_bytes(&raw) {
+        if validate_xml && let Err(error) = DataFile::validate_document_bytes(&raw) {
             self.record_failed_attempt(metadata, error_code(&error), &error.to_string())?;
             return Err(error);
         }
@@ -536,7 +559,8 @@ mod tests {
     fn oversized_stream_is_recorded_as_a_failed_attempt() -> TestResult {
         let (_directory, store) = setup_store()?;
         let oversized = io::Cursor::new(VALID_DAT);
-        let result = store.retain_with_limit(&acquisition("source-a"), oversized, 8);
+        let result =
+            store.retain_with_limit_and_validation(&acquisition("source-a"), oversized, 8, true);
         assert!(matches!(
             result,
             Err(crate::Error::DocumentTooLarge { limit: 8 })
@@ -764,6 +788,15 @@ mod tests {
         )
         .execute(&mut conn)?;
 
+        conn.revert_last_migration(crate::storage::db::MIGRATIONS)?;
+        let snapshot_tables_after_asset_revert = sql_query(
+            "SELECT COUNT(*) AS count FROM sqlite_master \
+             WHERE type = 'table' AND name IN ('snapshot_sets', 'asset_requirements', \
+                 'snapshot_extensions', 'import_diagnostics')",
+        )
+        .get_result::<CountRow>(&mut conn)?
+        .count;
+        assert_eq!(snapshot_tables_after_asset_revert, 4);
         conn.revert_last_migration(crate::storage::db::MIGRATIONS)?;
         let snapshot_tables = sql_query(
             "SELECT COUNT(*) AS count FROM sqlite_master \

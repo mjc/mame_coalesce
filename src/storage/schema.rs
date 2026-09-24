@@ -87,6 +87,7 @@ diesel::table! {
         dump_status -> Nullable<Text>,
         serial -> Nullable<Text>,
         date -> Nullable<Text>,
+        metadata_json -> Text,
         source_line -> BigInt,
         source_column -> BigInt,
     }

@@ -100,7 +100,11 @@ const REQUIRED_FIXTURES: &[(&str, &str, &str)] = &[
         "logiqx-supported",
     ),
     ("logiqx-malformed-xml", "logiqx", "malformed-logiqx"),
-    ("mame-machine-relationships", "mame-listxml", "fixture-only"),
+    (
+        "mame-machine-relationships",
+        "mame-listxml",
+        "mame-listxml-supported",
+    ),
     (
         "clrmamepro-synthetic-subset",
         "clrmamepro-dat",
@@ -171,6 +175,22 @@ fn assert_fixture_record(fixture: &Fixture) -> Result<(), Box<dyn std::error::Er
                 fixture.id
             );
             assert!(fixture.expected_error_contains.is_none(), "{}", fixture.id);
+        }
+        "mame-listxml-supported" => {
+            assert_eq!(fixture.format, "mame-listxml");
+            assert!(fixture.expected.is_none(), "{}", fixture.id);
+            assert!(
+                !fixture.expected_adapter_fields.is_empty(),
+                "{}",
+                fixture.id
+            );
+            assert!(!fixture.expected_diagnostics.is_empty(), "{}", fixture.id);
+            assert!(
+                fixture
+                    .unsupported_semantics
+                    .iter()
+                    .any(|s| s.contains("retained"))
+            );
         }
         "fixture-only" => {
             assert!(fixture.expected.is_none(), "{}", fixture.id);

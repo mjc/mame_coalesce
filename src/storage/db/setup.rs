@@ -53,6 +53,12 @@ mod tests {
         id: i32,
     }
 
+    #[derive(QueryableByName)]
+    struct TextRow {
+        #[diesel(sql_type = diesel::sql_types::Text)]
+        value: String,
+    }
+
     fn count(conn: &mut SqliteConnection, table: &str) -> QueryResult<i64> {
         sql_query(format!("SELECT COUNT(*) AS count FROM {table}"))
             .get_result::<CountRow>(conn)
@@ -114,6 +120,59 @@ mod tests {
         );
         assert_eq!(count(&mut conn, "publishing_sources")?, 0);
         assert!(conn.run_pending_migrations(MIGRATIONS)?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn machine_asset_migration_preserves_existing_rom_requirements()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut conn = SqliteConnection::establish(":memory:")?;
+        conn.batch_execute("PRAGMA foreign_keys = ON")?;
+        conn.run_pending_migrations(MIGRATIONS)?;
+        conn.revert_last_migration(MIGRATIONS)?;
+        conn.batch_execute(
+            "INSERT INTO publishing_sources (source_key, display_name)
+                 VALUES ('source', 'Source');
+             INSERT INTO catalogs (catalog_key, source_key, display_name)
+                 VALUES ('catalog', 'source', 'Catalog');
+             INSERT INTO documents (document_key) VALUES ('document');
+             INSERT INTO parser_interpretations (interpretation_key, format)
+                 VALUES ('interpretation', 'logiqx');
+             INSERT INTO catalog_snapshots
+                 (snapshot_key, catalog_key, document_key, interpretation_key, scope_kind)
+                 VALUES ('snapshot', 'catalog', 'document', 'interpretation', 'unknown');
+             INSERT INTO snapshot_sets
+                 (snapshot_key, set_name, metadata_json, source_line, source_column)
+                 VALUES ('snapshot', 'set', '{}', 1, 1);
+             INSERT INTO asset_requirements
+                 (snapshot_key, set_name, component_order, asset_name, role,
+                  evidence_scope, evidence_provenance, source_line, source_column)
+                 VALUES ('snapshot', 'set', 0, 'rom.bin', 'rom', 'whole_asset',
+                         'source_declared', 2, 3);",
+        )?;
+        conn.run_pending_migrations(MIGRATIONS)?;
+        let migrated = sql_query(
+            "SELECT metadata_json AS value FROM asset_requirements WHERE asset_name = 'rom.bin'",
+        )
+        .get_result::<TextRow>(&mut conn)?;
+        assert_eq!(migrated.value, "{}");
+        assert_eq!(count(&mut conn, "asset_requirements")?, 1);
+        assert!(
+            conn.batch_execute(
+                "INSERT INTO asset_requirements
+                 (snapshot_key, set_name, component_order, asset_name, role,
+                  evidence_scope, evidence_provenance, source_line, source_column)
+             VALUES ('snapshot', 'set', 1, 'disk.chd', 'disk', 'disk_data',
+                     'source_declared', 4, 5);",
+            )
+            .is_ok()
+        );
+        assert!(
+            conn.batch_execute(
+                "UPDATE asset_requirements SET asset_name = 'changed' WHERE component_order = 0;",
+            )
+            .is_err()
+        );
         Ok(())
     }
 
