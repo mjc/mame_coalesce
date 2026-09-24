@@ -14,6 +14,26 @@ diesel::table! {
         source_uri -> Nullable<Text>,
         method -> Nullable<Text>,
         acquired_at -> Nullable<Timestamp>,
+        transport_metadata_json -> Nullable<Text>,
+        expected_sha256 -> Nullable<Binary>,
+        verification_status -> Text,
+    }
+}
+
+diesel::table! {
+    acquisition_attempts (attempt_key) {
+        attempt_key -> Text,
+        source_key -> Text,
+        source_uri -> Nullable<Text>,
+        method -> Nullable<Text>,
+        attempted_at -> Timestamp,
+        transport_metadata_json -> Nullable<Text>,
+        expected_sha256 -> Nullable<Binary>,
+        outcome -> Text,
+        verification_status -> Text,
+        document_key -> Nullable<Text>,
+        acquisition_key -> Nullable<Text>,
+        diagnostic -> Nullable<Text>,
     }
 }
 
@@ -44,6 +64,10 @@ diesel::table! {
         document_key -> Text,
         sha1 -> Nullable<Binary>,
         byte_length -> Nullable<BigInt>,
+        sha256 -> Nullable<Binary>,
+        payload -> Nullable<Binary>,
+        format_hint -> Nullable<Text>,
+        retention_status -> Text,
     }
 }
 
@@ -150,6 +174,9 @@ diesel::table! {
 
 diesel::joinable!(games -> data_files (data_file_id));
 diesel::joinable!(catalogs -> publishing_sources (source_key));
+diesel::joinable!(acquisition_attempts -> publishing_sources (source_key));
+diesel::joinable!(acquisition_attempts -> documents (document_key));
+diesel::joinable!(acquisition_attempts -> acquisitions (acquisition_key));
 diesel::joinable!(acquisitions -> publishing_sources (source_key));
 diesel::joinable!(acquisitions -> documents (document_key));
 diesel::joinable!(catalog_snapshots -> catalogs (catalog_key));
@@ -164,6 +191,7 @@ diesel::joinable!(roms -> games (game_id));
 
 diesel::allow_tables_to_appear_in_same_query!(
     acquisitions,
+    acquisition_attempts,
     archive_files,
     catalogs,
     catalog_snapshots,

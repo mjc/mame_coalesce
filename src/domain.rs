@@ -1,5 +1,73 @@
 use crate::hashes::Sha1Digest;
+use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicU64, Ordering};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DocumentKey([u8; 32]);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DocumentDigest([u8; 32]);
+
+impl DocumentDigest {
+    #[must_use]
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        Self(Sha256::digest(bytes).into())
+    }
+
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+impl DocumentKey {
+    #[must_use]
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        Self(DocumentDigest::from_bytes(bytes).0)
+    }
+
+    #[must_use]
+    pub const fn digest(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for DocumentKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "sha256:{}", hex::encode(self.0))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PublishingSourceKey(String);
+
+impl PublishingSourceKey {
+    #[must_use]
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct AcquisitionKey(uuid::Uuid);
+
+impl AcquisitionKey {
+    #[must_use]
+    pub fn fresh() -> Self {
+        Self(uuid::Uuid::new_v4())
+    }
+}
+
+impl std::fmt::Display for AcquisitionKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CatalogKey(u64);

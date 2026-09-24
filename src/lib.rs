@@ -1,6 +1,7 @@
 pub mod app;
 mod build;
 pub mod database;
+mod document_input;
 pub mod domain;
 pub mod error;
 pub mod hashes;
@@ -10,6 +11,7 @@ mod progress;
 mod storage;
 
 pub use error::Error;
+pub use storage::documents::{AcquisitionMetadata, DocumentStore, RetainedDocument};
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[cfg(test)]

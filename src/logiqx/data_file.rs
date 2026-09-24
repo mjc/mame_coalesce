@@ -1,13 +1,16 @@
-use std::io::Read;
+use std::{
+    fs::File,
+    io::{Cursor, Read},
+};
 
 use camino::Utf8Path;
-use fmmap::MmapFileExt;
 use serde::Deserialize;
+use xml::reader::{ParserConfig, XmlEvent};
 
 use super::game::Game;
 use super::header::Header;
 
-use crate::hashes;
+use crate::{document_input, hashes};
 
 #[derive(Debug, Deserialize)]
 pub struct DataFile {
@@ -23,24 +26,37 @@ pub struct DataFile {
 }
 impl DataFile {
     pub fn from_reader<R: Read>(reader: R) -> crate::Result<Self> {
-        let data_file: Self = serde_xml_rs::from_reader(reader)?;
-        Ok(data_file)
+        let raw = document_input::read_bounded(reader, document_input::MAX_DOCUMENT_BYTES)?;
+        Self::from_bytes(&raw)
     }
 
     pub fn from_path(path: &Utf8Path) -> crate::Result<Self> {
-        let mmap = hashes::mmap_path(path)?;
-        let sha1 = hashes::stream_sha1(&mmap).to_vec();
-        let reader = mmap
-            .reader(0)
-            .map_err(|e| crate::Error::Mmap(e.to_string()))?;
-
-        let mut data_file = Self::from_reader(reader)?;
+        let raw =
+            document_input::read_bounded(File::open(path)?, document_input::MAX_DOCUMENT_BYTES)?;
+        let mut data_file = Self::from_bytes(&raw)?;
         data_file.file_name = path
             .canonicalize()
             .ok()
             .map(|p| p.to_string_lossy().into_owned());
-        data_file.sha1 = Some(sha1);
+        data_file.sha1 = Some(hashes::sha1_bytes(&raw).to_vec());
         Ok(data_file)
+    }
+
+    fn from_bytes(raw: &[u8]) -> crate::Result<Self> {
+        let xml = document_input::decode_xml(raw)?;
+        validate_xml(&xml)?;
+        Ok(serde_xml_rs::SerdeXml::new()
+            .parser(
+                ParserConfig::new()
+                    .max_entity_expansion_length(1024)
+                    .max_entity_expansion_depth(4)
+                    .max_name_length(4096)
+                    .max_attributes(1024)
+                    .max_attribute_length(1024 * 1024)
+                    .max_data_length(1024 * 1024)
+                    .allow_multiple_root_elements(false),
+            )
+            .from_reader(Cursor::new(xml.as_ref()))?)
     }
 
     /// Get a reference to the data file's header.
@@ -78,6 +94,32 @@ impl DataFile {
     pub fn debug(&self) -> Option<&str> {
         self.debug.as_deref()
     }
+}
+
+fn validate_xml(bytes: &[u8]) -> crate::Result<()> {
+    if bytes
+        .windows(b"<!ENTITY".len())
+        .any(|marker| marker == b"<!ENTITY")
+    {
+        return Err(crate::Error::XmlEntityNotAllowed);
+    }
+    let config = ParserConfig::new()
+        .max_entity_expansion_length(1024)
+        .max_entity_expansion_depth(4)
+        .max_name_length(4096)
+        .max_attributes(1024)
+        .max_attribute_length(1024 * 1024)
+        .max_data_length(1024 * 1024)
+        .allow_multiple_root_elements(false);
+    for event in config.create_reader(bytes) {
+        match event {
+            // xml-rs reports the declaration without fetching external subsets. The
+            // constrained parser config limits any document-local expansion.
+            Ok(XmlEvent::Doctype { .. } | _) => {}
+            Err(error) => return Err(crate::Error::XmlValidation(error.to_string())),
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -140,6 +182,22 @@ mod tests {
             Some("Tester")
         );
         assert_eq!(df.games().len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_external_entity_expansion_without_rejecting_standard_logiqx_doctypes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dat = br#"<?xml version="1.0"?>
+<!DOCTYPE datafile [<!ENTITY remote SYSTEM "http://127.0.0.1:9/catalog.dtd">]>
+<datafile><header><name>&remote;</name></header></datafile>"#;
+        assert!(DataFile::from_reader(dat.as_slice()).is_err());
+
+        let standard = br#"<!DOCTYPE datafile PUBLIC "-//Logiqx//DTD ROM Management Datafile//EN" "http://www.logiqx.com/Dats/datafile.dtd"><datafile><header><name>Standard</name></header></datafile>"#;
+        assert_eq!(
+            DataFile::from_reader(standard.as_slice())?.header().name(),
+            "Standard"
+        );
         Ok(())
     }
 
