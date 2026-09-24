@@ -46,6 +46,44 @@ struct IntegerRow {
     value: i64,
 }
 
+#[derive(QueryableByName)]
+struct SoftwareItemRow {
+    #[diesel(sql_type = Text)]
+    supported: String,
+    #[diesel(sql_type = Text)]
+    info: String,
+    #[diesel(sql_type = Text)]
+    shared_features: String,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    source_line: i64,
+}
+
+#[derive(QueryableByName)]
+struct SoftwareAreaRow {
+    #[diesel(sql_type = Nullable<BigInt>)]
+    declared_size: Option<i64>,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    width: Option<i64>,
+    #[diesel(sql_type = Nullable<Text>)]
+    endianness: Option<String>,
+    #[diesel(sql_type = BigInt)]
+    source_line: i64,
+}
+
+#[derive(QueryableByName)]
+struct SoftwareComponentRow {
+    #[diesel(sql_type = Nullable<Text>)]
+    dump_status: Option<String>,
+    #[diesel(sql_type = Nullable<diesel::sql_types::Binary>)]
+    sha1: Option<Vec<u8>>,
+    #[diesel(sql_type = Nullable<Text>)]
+    load_instruction: Option<String>,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    writeable: Option<i64>,
+    #[diesel(sql_type = BigInt)]
+    source_line: i64,
+}
+
 fn setup() -> Result<(tempfile::TempDir, Database, SqliteConnection), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("catalog.sqlite");
@@ -92,6 +130,17 @@ fn mame_request() -> Result<CatalogImportRequest, Box<dyn std::error::Error>> {
         "Synthetic MAME machine catalog",
     )?;
     request.format = CatalogDocumentFormat::MameListXml;
+    Ok(request)
+}
+
+fn mame_softwarelist_request() -> Result<CatalogImportRequest, Box<dyn std::error::Error>> {
+    let mut request = request(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/catalog/mame/software-list.xml"),
+        "mame-softwarelists",
+        "mame-softwarelists-fixture",
+        "Synthetic MAME software lists",
+    )?;
+    request.format = CatalogDocumentFormat::MameSoftwareListXml;
     Ok(request)
 }
 
@@ -232,6 +281,263 @@ fn imports_mame_machine_rom_disk_bios_and_device_semantics_loss_aware()
     assert!(sql_query("SELECT COUNT(*) AS count FROM import_diagnostics WHERE run_key = ? AND code = 'unsupported_element'")
         .bind::<Text, _>(report.run_key.to_string())
         .get_result::<CountRow>(&mut connection)?.count > 0);
+    Ok(())
+}
+
+#[test]
+fn imports_mame_softwarelists_with_nested_order_dependencies_and_load_claims()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, mut connection) = setup()?;
+    let request = mame_softwarelist_request()?;
+    let report = app::import_catalog(&database, &request)?;
+    let repeated = app::import_catalog(&database, &request)?;
+    assert_eq!(report.status, app::CatalogImportStatus::Succeeded);
+    let snapshot = report
+        .snapshot_key
+        .ok_or("software-list snapshot missing")?;
+    assert_eq!(Some(snapshot.clone()), repeated.snapshot_key);
+
+    assert_eq!(count(&mut connection, "software_lists")?, 2);
+    assert_eq!(count(&mut connection, "software_items")?, 3);
+    assert_eq!(count(&mut connection, "software_parts")?, 4);
+    assert_eq!(count(&mut connection, "software_areas")?, 5);
+    assert_eq!(count(&mut connection, "software_components")?, 6);
+    assert_eq!(count(&mut connection, "software_item_dependencies")?, 1);
+    assert_eq!(count(&mut connection, "snapshot_sets")?, 0);
+    assert_eq!(count(&mut connection, "asset_requirements")?, 0);
+
+    assert_software_list_identity_and_dependencies(&mut connection, &snapshot)?;
+    assert_software_list_nesting(&mut connection, &snapshot)?;
+    assert_software_list_components(&mut connection, &snapshot)?;
+    assert_software_list_extensions(&mut connection, &snapshot)?;
+    assert_malformed_software_list_fails(directory.path(), &database, &mut connection, request)?;
+    Ok(())
+}
+
+fn assert_software_list_identity_and_dependencies(
+    connection: &mut SqliteConnection,
+    snapshot: &mame_coalesce::domain::SnapshotKey,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let list_order = sql_query(
+        "SELECT GROUP_CONCAT(list_name, ',') AS value \
+         FROM (SELECT list_name FROM software_lists WHERE snapshot_key = ? ORDER BY list_order)",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(connection)?;
+    assert_eq!(list_order.value, "demo_cart,demo_flop");
+
+    let item_order = sql_query(
+        "SELECT GROUP_CONCAT(item_name, ',') AS value FROM ( \
+         SELECT item_name FROM software_items WHERE snapshot_key = ? \
+         AND list_name = 'demo_cart' ORDER BY item_order)",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(connection)?;
+    assert_eq!(item_order.value, "demo_game,demo_original");
+
+    let scoped_duplicates = sql_query(
+        "SELECT COUNT(*) AS count FROM software_items \
+         WHERE snapshot_key = ? AND item_name = 'demo_game'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<CountRow>(connection)?;
+    assert_eq!(scoped_duplicates.count, 2);
+
+    let dependency = sql_query(
+        "SELECT target_item_name AS value FROM software_item_dependencies \
+         WHERE snapshot_key = ? AND list_name = 'demo_cart' AND item_name = 'demo_game' \
+         AND dependency_kind = 'clone_of'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(connection)?;
+    assert_eq!(dependency.value, "demo_original");
+    Ok(())
+}
+
+fn assert_software_list_nesting(
+    connection: &mut SqliteConnection,
+    snapshot: &mame_coalesce::domain::SnapshotKey,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let item = sql_query(
+        "SELECT supported, info_json AS info, shared_features_json AS shared_features, source_line \
+         FROM software_items WHERE snapshot_key = ? AND list_name = 'demo_cart' \
+         AND item_name = 'demo_game'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<SoftwareItemRow>(connection)?;
+    assert_eq!(item.supported, "partial");
+    assert_eq!(item.info.matches("language").count(), 2);
+    let english = item
+        .info
+        .find("English")
+        .ok_or("English metadata missing")?;
+    let french = item.info.find("French").ok_or("French metadata missing")?;
+    assert!(english < french);
+    assert!(item.shared_features.contains("compatibility"));
+
+    let parts = sql_query(
+        "SELECT GROUP_CONCAT(part_name, ',') AS value FROM ( \
+         SELECT part_name FROM software_parts WHERE snapshot_key = ? \
+         AND list_name = 'demo_cart' AND item_name = 'demo_game' ORDER BY part_order)",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(connection)?;
+    assert_eq!(parts.value, "cart,manual");
+
+    let part_interfaces = sql_query(
+        "SELECT GROUP_CONCAT(interface, ',') AS value FROM ( \
+         SELECT interface FROM software_parts WHERE snapshot_key = ? \
+         AND list_name = 'demo_cart' AND item_name = 'demo_game' ORDER BY part_order)",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(connection)?;
+    assert_eq!(part_interfaces.value, "demo_cart,document");
+
+    let area_order = sql_query(
+        "SELECT GROUP_CONCAT(area_kind || ':' || area_name, ',') AS value FROM ( \
+         SELECT area_kind, area_name FROM software_areas WHERE snapshot_key = ? \
+         AND list_name = 'demo_cart' AND item_name = 'demo_game' AND part_name = 'cart' \
+         ORDER BY area_order)",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(connection)?;
+    assert_eq!(area_order.value, "data:program,disk:media");
+
+    let area = sql_query(
+        "SELECT declared_size, width, endianness, source_line FROM software_areas \
+         WHERE snapshot_key = ? AND list_name = 'demo_cart' AND item_name = 'demo_game' \
+         AND part_name = 'cart' AND area_name = 'program' AND area_kind = 'data'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<SoftwareAreaRow>(connection)?;
+    assert_eq!(area.declared_size, Some(32));
+    assert_eq!(area.width, Some(16));
+    assert_eq!(area.endianness.as_deref(), Some("big"));
+    assert!(item.source_line < area.source_line);
+    Ok(())
+}
+
+fn assert_software_list_components(
+    connection: &mut SqliteConnection,
+    snapshot: &mame_coalesce::domain::SnapshotKey,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let components = sql_query(
+        "SELECT GROUP_CONCAT(component_name, ',') AS value \
+         FROM (SELECT component_name FROM software_components WHERE snapshot_key = ? \
+         AND list_name = 'demo_cart' AND item_name = 'demo_game' AND part_name = 'cart' \
+         AND area_name = 'program' AND area_kind = 'data' ORDER BY component_order)",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(connection)?;
+    assert_eq!(components.value, "program.bin,missing.bin");
+
+    let component_roles = sql_query(
+        "SELECT GROUP_CONCAT(component_kind || ':' || component_name, ',') AS value \
+         FROM (SELECT component_kind, component_name FROM software_components \
+         WHERE snapshot_key = ? AND list_name = 'demo_cart' AND item_name = 'demo_game' \
+         AND part_name = 'cart' AND area_kind = 'data' AND area_name = 'program' \
+         ORDER BY component_order)",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(connection)?;
+    assert_eq!(component_roles.value, "rom:program.bin,rom:missing.bin");
+
+    let load_claim = sql_query(
+        "SELECT load_instruction AS value FROM software_components WHERE snapshot_key = ? \
+         AND list_name = 'demo_cart' AND item_name = 'demo_game' AND component_name = 'program.bin'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(connection)?;
+    assert_eq!(load_claim.value, "load16_word_swap");
+
+    let no_dump = sql_query(
+        "SELECT dump_status, sha1, load_instruction, writeable, source_line \
+         FROM software_components \
+         WHERE snapshot_key = ? AND component_name = 'missing.bin'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<SoftwareComponentRow>(connection)?;
+    assert_eq!(no_dump.dump_status.as_deref(), Some("nodump"));
+    assert!(no_dump.sha1.is_none());
+    assert_eq!(no_dump.load_instruction.as_deref(), Some("continue"));
+    let parent_area_line = sql_query(
+        "SELECT source_line AS value FROM software_areas WHERE snapshot_key = ? \
+         AND list_name = 'demo_cart' AND item_name = 'demo_game' AND part_name = 'cart' \
+         AND area_name = 'program' AND area_kind = 'data'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<IntegerRow>(connection)?;
+    assert!(parent_area_line.value < no_dump.source_line);
+
+    let disk = sql_query(
+        "SELECT dump_status, sha1, load_instruction, writeable, source_line \
+         FROM software_components WHERE snapshot_key = ? AND component_name = 'demo-disk'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<SoftwareComponentRow>(connection)?;
+    assert!(disk.dump_status.is_none());
+    assert!(disk.sha1.is_some());
+    assert_eq!(disk.writeable, Some(1));
+
+    let absent_status = sql_query(
+        "SELECT dump_status, NULL AS sha1, NULL AS load_instruction, writeable, source_line \
+         FROM software_components WHERE snapshot_key = ? \
+         AND component_name = 'original.bin'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<SoftwareComponentRow>(connection)?;
+    assert!(absent_status.dump_status.is_none());
+    Ok(())
+}
+
+fn assert_software_list_extensions(
+    connection: &mut SqliteConnection,
+    snapshot: &mame_coalesce::domain::SnapshotKey,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let unknown_element = sql_query(
+        "SELECT raw_value_json AS value FROM snapshot_extensions WHERE snapshot_key = ? \
+         AND field_name = 'element:future-policy'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(connection)?;
+    assert!(unknown_element.value.contains("vendor payload"));
+
+    let unknown_attribute = sql_query(
+        "SELECT raw_value_json AS value FROM snapshot_extensions WHERE snapshot_key = ? \
+         AND field_name = '@future-flag'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(connection)?;
+    assert!(unknown_attribute.value.contains("retained"));
+    Ok(())
+}
+
+fn assert_malformed_software_list_fails(
+    temp_dir: &Path,
+    database: &Database,
+    connection: &mut SqliteConnection,
+    request: CatalogImportRequest,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let malformed_path = temp_dir.join("malformed-softwarelist.xml");
+    std::fs::write(
+        &malformed_path,
+        b"<softwarelist name=\"broken\"><software name=\"game\"><description>Game</description><year>2000</year><publisher>Pub</publisher><part name=\"cart\"/></software></softwarelist>",
+    )?;
+    let mut malformed_request = request;
+    malformed_request.document_path = Utf8PathBuf::from_path_buf(malformed_path)
+        .map_err(|_| "non-UTF8 malformed fixture path")?;
+    malformed_request.catalog_key = CatalogKey::new("malformed-softwarelist");
+    malformed_request.catalog_display_name = "Malformed software list".into();
+    let failed = app::import_catalog(database, &malformed_request)?;
+    assert_eq!(failed.status, app::CatalogImportStatus::Failed);
+    assert!(failed.snapshot_key.is_none());
+    assert_eq!(count(connection, "catalog_snapshots")?, 1);
+    assert!(count(connection, "import_diagnostics")? > 0);
+    let failure_location =
+        sql_query("SELECT source_line AS value FROM import_diagnostics WHERE run_key = ?")
+            .bind::<Text, _>(failed.run_key.to_string())
+            .get_result::<IntegerRow>(connection)?;
+    assert!(failure_location.value > 0);
     Ok(())
 }
 

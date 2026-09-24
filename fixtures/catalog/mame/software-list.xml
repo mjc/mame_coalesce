@@ -1,15 +1,52 @@
 <?xml version="1.0"?>
 <!DOCTYPE softwarelists>
-<softwarelists>
+<softwarelists build="0.289-synthetic">
   <softwarelist name="demo_cart" description="Synthetic cartridge list">
-    <software name="demo_game">
+    <software name="demo_game" cloneof="demo_original" supported="partial" future-flag="retained">
       <description>Synthetic Game</description>
-      <year>2000</year>
-      <publisher>Example</publisher>
+      <year>2000?</year>
+      <publisher>Example Publisher</publisher>
+      <info name="serial" value="SYN-001" />
+      <info name="language" value="English" />
+      <info name="language" value="French" />
+      <sharedfeat name="compatibility" value="PAL" />
+      <part name="cart" interface="demo_cart">
+        <feature name="pcb" value="standard" />
+        <dataarea name="program" size="0x20" width="16" endianness="big">
+          <rom name="program.bin" size="16" crc="12345678" sha1="0123456789abcdef0123456789abcdef01234567" offset="0x0" loadflag="load16_word_swap" />
+          <rom name="missing.bin" size="16" status="nodump" loadflag="continue" />
+        </dataarea>
+        <diskarea name="media">
+          <disk name="demo-disk" sha1="fedcba9876543210fedcba9876543210fedcba98" writeable="yes" />
+        </diskarea>
+      </part>
+      <part name="manual" interface="document">
+        <dataarea name="text" size="0x10">
+          <rom name="manual.bin" size="16" status="baddump" />
+        </dataarea>
+      </part>
+      <future-policy mode="preserve">vendor payload</future-policy>
+    </software>
+    <software name="demo_original">
+      <description>Synthetic Original</description>
+      <year>1999</year>
+      <publisher>Example Publisher</publisher>
       <part name="cart" interface="demo_cart">
         <dataarea name="rom" size="16">
-          <rom name="program.bin" size="16" crc="12345678" sha1="0123456789abcdef0123456789abcdef01234567" />
+          <rom name="original.bin" size="16" crc="87654321" />
         </dataarea>
+      </part>
+    </software>
+  </softwarelist>
+  <softwarelist name="demo_flop" description="Second synthetic list">
+    <software name="demo_game">
+      <description>Same short name, another list</description>
+      <year>2001</year>
+      <publisher>Another Publisher</publisher>
+      <part name="disk1" interface="floppy_3_5">
+        <diskarea name="flop">
+          <disk name="demo-game-disk" status="nodump" />
+        </diskarea>
       </part>
     </software>
   </softwarelist>

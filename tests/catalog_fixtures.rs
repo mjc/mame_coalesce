@@ -133,7 +133,7 @@ const REQUIRED_FIXTURES: &[(&str, &str, &str)] = &[
     (
         "mame-software-list-parts",
         "mame-softwarelist-xml",
-        "fixture-only",
+        "mame-softwarelist-supported",
     ),
 ];
 
@@ -227,6 +227,18 @@ fn assert_fixture_parser_status(fixture: &Fixture) -> Result<(), Box<dyn std::er
                     .iter()
                     .any(|s| s.contains("retained"))
             );
+        }
+        "mame-softwarelist-supported" => {
+            assert_eq!(fixture.format, "mame-softwarelist-xml");
+            assert!(fixture.expected.is_none(), "{}", fixture.id);
+            assert!(fixture.expected_error_contains.is_none(), "{}", fixture.id);
+            assert!(
+                fixture.expected_adapter_fields.len() >= 15,
+                "{}",
+                fixture.id
+            );
+            assert!(!fixture.retained_raw_fields.is_empty(), "{}", fixture.id);
+            assert!(!fixture.expected_diagnostics.is_empty(), "{}", fixture.id);
         }
         "clrmamepro-supported" => {
             assert_eq!(fixture.format, "clrmamepro-dat");

@@ -772,7 +772,8 @@ mod tests {
     }
 
     #[test]
-    fn down_migrations_remove_snapshot_and_document_retention_extensions() -> TestResult {
+    fn down_migrations_remove_software_list_snapshot_and_document_retention_extensions()
+    -> TestResult {
         let mut conn = SqliteConnection::establish(":memory:")?;
         conn.batch_execute("PRAGMA foreign_keys = ON")?;
         conn.run_pending_migrations(crate::storage::db::MIGRATIONS)?;
@@ -789,6 +790,17 @@ mod tests {
         .execute(&mut conn)?;
 
         conn.revert_last_migration(crate::storage::db::MIGRATIONS)?;
+        let software_list_tables = sql_query(
+            "SELECT COUNT(*) AS count FROM sqlite_master \
+             WHERE type = 'table' AND name IN ('software_lists', 'software_items', \
+                 'software_parts', 'software_areas', 'software_components', \
+                 'software_item_dependencies')",
+        )
+        .get_result::<CountRow>(&mut conn)?
+        .count;
+        assert_eq!(software_list_tables, 0);
+
+        conn.revert_last_migration(crate::storage::db::MIGRATIONS)?;
         let snapshot_tables_after_asset_revert = sql_query(
             "SELECT COUNT(*) AS count FROM sqlite_master \
              WHERE type = 'table' AND name IN ('snapshot_sets', 'asset_requirements', \
@@ -797,6 +809,7 @@ mod tests {
         .get_result::<CountRow>(&mut conn)?
         .count;
         assert_eq!(snapshot_tables_after_asset_revert, 4);
+
         conn.revert_last_migration(crate::storage::db::MIGRATIONS)?;
         let snapshot_tables = sql_query(
             "SELECT COUNT(*) AS count FROM sqlite_master \
