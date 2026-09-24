@@ -81,6 +81,102 @@ diesel::table! {
 }
 
 diesel::table! {
+    software_lists (snapshot_key, list_name) {
+        snapshot_key -> Text,
+        list_name -> Text,
+        list_order -> BigInt,
+        description -> Nullable<Text>,
+        source_line -> BigInt,
+        source_column -> BigInt,
+    }
+}
+
+diesel::table! {
+    software_items (snapshot_key, list_name, item_name) {
+        snapshot_key -> Text,
+        list_name -> Text,
+        item_name -> Text,
+        item_order -> BigInt,
+        supported -> Text,
+        description -> Text,
+        year -> Text,
+        publisher -> Text,
+        notes -> Nullable<Text>,
+        info_json -> Text,
+        shared_features_json -> Text,
+        source_line -> BigInt,
+        source_column -> BigInt,
+    }
+}
+
+diesel::table! {
+    software_parts (snapshot_key, list_name, item_name, part_name) {
+        snapshot_key -> Text,
+        list_name -> Text,
+        item_name -> Text,
+        part_name -> Text,
+        part_order -> BigInt,
+        interface -> Text,
+        features_json -> Text,
+        source_line -> BigInt,
+        source_column -> BigInt,
+    }
+}
+
+diesel::table! {
+    software_areas (snapshot_key, list_name, item_name, part_name, area_kind, area_name) {
+        snapshot_key -> Text,
+        list_name -> Text,
+        item_name -> Text,
+        part_name -> Text,
+        area_name -> Text,
+        area_kind -> Text,
+        area_order -> BigInt,
+        declared_size -> Nullable<BigInt>,
+        width -> Nullable<BigInt>,
+        endianness -> Nullable<Text>,
+        source_line -> BigInt,
+        source_column -> BigInt,
+    }
+}
+
+diesel::table! {
+    software_components (snapshot_key, list_name, item_name, part_name, area_kind, area_name, component_order) {
+        snapshot_key -> Text,
+        list_name -> Text,
+        item_name -> Text,
+        part_name -> Text,
+        area_kind -> Text,
+        area_name -> Text,
+        component_order -> BigInt,
+        component_kind -> Text,
+        component_name -> Nullable<Text>,
+        size -> Nullable<BigInt>,
+        crc -> Nullable<Binary>,
+        sha1 -> Nullable<Binary>,
+        offset -> Nullable<BigInt>,
+        value -> Nullable<Text>,
+        dump_status -> Nullable<Text>,
+        writeable -> Nullable<BigInt>,
+        load_instruction -> Nullable<Text>,
+        source_line -> BigInt,
+        source_column -> BigInt,
+    }
+}
+
+diesel::table! {
+    software_item_dependencies (snapshot_key, list_name, item_name, dependency_kind) {
+        snapshot_key -> Text,
+        list_name -> Text,
+        item_name -> Text,
+        dependency_kind -> Text,
+        target_item_name -> Text,
+        source_line -> BigInt,
+        source_column -> BigInt,
+    }
+}
+
+diesel::table! {
     asset_requirements (snapshot_key, set_name, component_order) {
         snapshot_key -> Text,
         set_name -> Text,
@@ -281,6 +377,12 @@ diesel::allow_tables_to_appear_in_same_query!(
     publishing_sources,
     rom_files,
     roms,
+    software_areas,
+    software_components,
+    software_item_dependencies,
+    software_items,
+    software_lists,
+    software_parts,
     snapshot_extensions,
     snapshot_sets,
     snapshot_publications,

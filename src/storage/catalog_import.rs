@@ -9,6 +9,7 @@ use crate::{
     domain::{DocumentKey, ImportRunKey, ParserInterpretationKey, SnapshotKey},
     logiqx::{DataFile, XmlSourceMap},
     mame::MameCatalog,
+    mame_softwarelist::SoftwareListCatalog,
     storage::{db::Pool, documents::DocumentStore},
 };
 
@@ -43,6 +44,7 @@ struct IdentityRow {
 struct SnapshotData {
     version: Option<String>,
     sets: Vec<SnapshotSet>,
+    software_lists: Option<SoftwareListCatalog>,
     extensions: Vec<StoredExtension>,
 }
 
@@ -127,6 +129,7 @@ impl SnapshotData {
         Ok(Self {
             version: data_file.header().version().cloned(),
             sets,
+            software_lists: None,
             extensions: source_map
                 .unsupported_attributes
                 .iter()
@@ -188,6 +191,22 @@ impl SnapshotData {
         Self {
             version: catalog.build,
             sets,
+            software_lists: None,
+            extensions,
+        }
+    }
+
+    fn from_mame_softwarelist(catalog: SoftwareListCatalog) -> Self {
+        let extensions = catalog
+            .extensions
+            .iter()
+            .cloned()
+            .map(stored_extension)
+            .collect();
+        Self {
+            version: None,
+            sets: Vec::new(),
+            software_lists: Some(catalog),
             extensions,
         }
     }
@@ -242,6 +261,7 @@ impl SnapshotData {
         Self {
             version: catalog.version,
             sets,
+            software_lists: None,
             extensions,
         }
     }
@@ -279,6 +299,8 @@ pub fn import(pool: &Pool, request: &CatalogImportRequest) -> crate::Result<Cata
         CatalogDocumentFormat::MameListXml => {
             documents.retain_path_mame(request.source_key.clone(), &request.document_path)?
         }
+        CatalogDocumentFormat::MameSoftwareListXml => documents
+            .retain_path_mame_softwarelist(request.source_key.clone(), &request.document_path)?,
         CatalogDocumentFormat::ClrMamePro => {
             documents.retain_path_clrmamepro(request.source_key.clone(), &request.document_path)?
         }
@@ -289,6 +311,9 @@ pub fn import(pool: &Pool, request: &CatalogImportRequest) -> crate::Result<Cata
             .and_then(|(data_file, source_map)| SnapshotData::from_logiqx(&data_file, &source_map)),
         CatalogDocumentFormat::MameListXml => {
             MameCatalog::parse(&bytes).map(SnapshotData::from_mame)
+        }
+        CatalogDocumentFormat::MameSoftwareListXml => {
+            SoftwareListCatalog::parse(&bytes).map(SnapshotData::from_mame_softwarelist)
         }
         CatalogDocumentFormat::ClrMamePro => {
             ClrMameProCatalog::parse(&bytes).map(SnapshotData::from_clrmamepro)
@@ -694,6 +719,10 @@ fn insert_snapshot_contents(
         }
     }
 
+    if let Some(catalog) = &snapshot_data.software_lists {
+        insert_software_list_contents(conn, snapshot_key, catalog)?;
+    }
+
     for extension in &snapshot_data.extensions {
         sql_query(
             "INSERT INTO snapshot_extensions \
@@ -711,4 +740,271 @@ fn insert_snapshot_contents(
         .execute(conn)?;
     }
     Ok(())
+}
+
+fn insert_software_list_contents(
+    conn: &mut SqliteConnection,
+    snapshot_key: &SnapshotKey,
+    catalog: &SoftwareListCatalog,
+) -> crate::Result<()> {
+    for (list_order, list) in catalog.lists.iter().enumerate() {
+        insert_software_list(conn, snapshot_key, list, list_order)?;
+    }
+    Ok(())
+}
+
+fn insert_software_list(
+    conn: &mut SqliteConnection,
+    snapshot_key: &SnapshotKey,
+    list: &crate::mame_softwarelist::SoftwareList,
+    list_order: usize,
+) -> crate::Result<()> {
+    sql_query(
+        "INSERT INTO software_lists \
+         (snapshot_key, list_name, list_order, description, source_line, source_column) \
+         VALUES (?, ?, ?, ?, ?, ?)",
+    )
+    .bind::<Text, _>(snapshot_key.as_str())
+    .bind::<Text, _>(list.name.as_str())
+    .bind::<BigInt, _>(checked_order(list_order, "software lists")?)
+    .bind::<Nullable<Text>, _>(list.description.as_deref())
+    .bind::<BigInt, _>(list.location.line)
+    .bind::<BigInt, _>(list.location.column)
+    .execute(conn)?;
+
+    for (item_order, item) in list.items.iter().enumerate() {
+        insert_software_item(conn, snapshot_key, list.name.as_str(), item, item_order)?;
+    }
+    Ok(())
+}
+
+fn insert_software_item(
+    conn: &mut SqliteConnection,
+    snapshot_key: &SnapshotKey,
+    list_name: &str,
+    item: &crate::mame_softwarelist::SoftwareItem,
+    item_order: usize,
+) -> crate::Result<()> {
+    sql_query(
+        "INSERT INTO software_items \
+         (snapshot_key, list_name, item_name, item_order, supported, description, year, \
+          publisher, notes, info_json, shared_features_json, source_line, source_column) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind::<Text, _>(snapshot_key.as_str())
+    .bind::<Text, _>(list_name)
+    .bind::<Text, _>(item.name.as_str())
+    .bind::<BigInt, _>(checked_order(item_order, "software items")?)
+    .bind::<Text, _>(item.supported.as_str())
+    .bind::<Text, _>(&item.description)
+    .bind::<Text, _>(&item.year)
+    .bind::<Text, _>(&item.publisher)
+    .bind::<Nullable<Text>, _>(item.notes.as_deref())
+    .bind::<Text, _>(named_values_json(&item.info))
+    .bind::<Text, _>(named_values_json(&item.shared_features))
+    .bind::<BigInt, _>(item.location.line)
+    .bind::<BigInt, _>(item.location.column)
+    .execute(conn)?;
+
+    if let Some(parent) = &item.clone_of {
+        sql_query(
+            "INSERT INTO software_item_dependencies \
+             (snapshot_key, list_name, item_name, dependency_kind, target_item_name, \
+              source_line, source_column) VALUES (?, ?, ?, 'clone_of', ?, ?, ?)",
+        )
+        .bind::<Text, _>(snapshot_key.as_str())
+        .bind::<Text, _>(list_name)
+        .bind::<Text, _>(item.name.as_str())
+        .bind::<Text, _>(parent.as_str())
+        .bind::<BigInt, _>(item.location.line)
+        .bind::<BigInt, _>(item.location.column)
+        .execute(conn)?;
+    }
+
+    let scope = SoftwareItemScope {
+        snapshot_key,
+        list_name,
+        item_name: item.name.as_str(),
+    };
+    for (part_order, part) in item.parts.iter().enumerate() {
+        insert_software_part(conn, scope, part, part_order)?;
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+struct SoftwareItemScope<'a> {
+    snapshot_key: &'a SnapshotKey,
+    list_name: &'a str,
+    item_name: &'a str,
+}
+
+#[derive(Clone, Copy)]
+struct SoftwarePartScope<'a> {
+    item: SoftwareItemScope<'a>,
+    part_name: &'a str,
+}
+
+fn insert_software_part(
+    conn: &mut SqliteConnection,
+    item: SoftwareItemScope<'_>,
+    part: &crate::mame_softwarelist::SoftwarePart,
+    part_order: usize,
+) -> crate::Result<()> {
+    sql_query(
+        "INSERT INTO software_parts \
+         (snapshot_key, list_name, item_name, part_name, part_order, interface, features_json, \
+          source_line, source_column) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind::<Text, _>(item.snapshot_key.as_str())
+    .bind::<Text, _>(item.list_name)
+    .bind::<Text, _>(item.item_name)
+    .bind::<Text, _>(part.name.as_str())
+    .bind::<BigInt, _>(checked_order(part_order, "software parts")?)
+    .bind::<Text, _>(&part.interface)
+    .bind::<Text, _>(named_values_json(&part.features))
+    .bind::<BigInt, _>(part.location.line)
+    .bind::<BigInt, _>(part.location.column)
+    .execute(conn)?;
+
+    let scope = SoftwarePartScope {
+        item,
+        part_name: part.name.as_str(),
+    };
+    for (area_order, area) in part.areas.iter().enumerate() {
+        insert_software_area(conn, scope, area, area_order)?;
+    }
+    Ok(())
+}
+
+fn insert_software_area(
+    conn: &mut SqliteConnection,
+    part: SoftwarePartScope<'_>,
+    area: &crate::mame_softwarelist::SoftwareArea,
+    area_order: usize,
+) -> crate::Result<()> {
+    let declared_size = area
+        .declared_size
+        .map(i64::try_from)
+        .transpose()
+        .map_err(|_| crate::Error::InvalidRomSize(area.declared_size.unwrap_or_default()))?;
+    sql_query(
+        "INSERT INTO software_areas \
+         (snapshot_key, list_name, item_name, part_name, area_name, area_kind, area_order, \
+          declared_size, width, endianness, source_line, source_column) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind::<Text, _>(part.item.snapshot_key.as_str())
+    .bind::<Text, _>(part.item.list_name)
+    .bind::<Text, _>(part.item.item_name)
+    .bind::<Text, _>(part.part_name)
+    .bind::<Text, _>(area.name.as_str())
+    .bind::<Text, _>(area.kind.as_str())
+    .bind::<BigInt, _>(checked_order(area_order, "software areas")?)
+    .bind::<Nullable<BigInt>, _>(declared_size)
+    .bind::<Nullable<BigInt>, _>(area.width.map(i64::from))
+    .bind::<Nullable<Text>, _>(
+        area.endianness
+            .map(crate::mame_softwarelist::Endianness::as_str),
+    )
+    .bind::<BigInt, _>(area.location.line)
+    .bind::<BigInt, _>(area.location.column)
+    .execute(conn)?;
+
+    for (component_order, component) in area.components.iter().enumerate() {
+        insert_software_component(conn, part, area, component_order, component)?;
+    }
+    Ok(())
+}
+
+fn insert_software_component(
+    conn: &mut SqliteConnection,
+    part: SoftwarePartScope<'_>,
+    area: &crate::mame_softwarelist::SoftwareArea,
+    component_order: usize,
+    component: &crate::mame_softwarelist::SoftwareComponent,
+) -> crate::Result<()> {
+    let (name, size, crc, sha1, offset, value, status, writeable, load) = match component {
+        crate::mame_softwarelist::SoftwareComponent::Rom(rom) => (
+            rom.name
+                .as_ref()
+                .map(crate::mame_softwarelist::ComponentName::as_str),
+            rom.size,
+            rom.crc.map(|digest| digest.to_vec()),
+            rom.sha1.map(|digest| digest.to_vec()),
+            rom.offset,
+            rom.value.as_deref(),
+            rom.status.as_ref().map(|status| status.as_str()),
+            None,
+            rom.load
+                .as_ref()
+                .map(crate::mame_softwarelist::LoadInstruction::as_str),
+        ),
+        crate::mame_softwarelist::SoftwareComponent::Disk(disk) => (
+            Some(disk.name.as_str()),
+            None,
+            None,
+            disk.sha1.map(|digest| digest.to_vec()),
+            None,
+            None,
+            disk.status.as_ref().map(|status| status.as_str()),
+            Some(i64::from(disk.writeable)),
+            None,
+        ),
+    };
+    let size = size
+        .map(i64::try_from)
+        .transpose()
+        .map_err(|_| crate::Error::InvalidRomSize(size.unwrap_or_default()))?;
+    let offset = offset
+        .map(i64::try_from)
+        .transpose()
+        .map_err(|_| crate::Error::InvalidRomSize(offset.unwrap_or_default()))?;
+    sql_query(
+        "INSERT INTO software_components \
+         (snapshot_key, list_name, item_name, part_name, area_kind, area_name, component_order, \
+          component_kind, component_name, size, crc, sha1, offset, value, dump_status, writeable, \
+          load_instruction, source_line, source_column) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind::<Text, _>(part.item.snapshot_key.as_str())
+    .bind::<Text, _>(part.item.list_name)
+    .bind::<Text, _>(part.item.item_name)
+    .bind::<Text, _>(part.part_name)
+    .bind::<Text, _>(area.kind.as_str())
+    .bind::<Text, _>(area.name.as_str())
+    .bind::<BigInt, _>(checked_order(component_order, "software components")?)
+    .bind::<Text, _>(component.kind())
+    .bind::<Nullable<Text>, _>(name)
+    .bind::<Nullable<BigInt>, _>(size)
+    .bind::<Nullable<Binary>, _>(crc)
+    .bind::<Nullable<Binary>, _>(sha1)
+    .bind::<Nullable<BigInt>, _>(offset)
+    .bind::<Nullable<Text>, _>(value)
+    .bind::<Nullable<Text>, _>(status)
+    .bind::<Nullable<BigInt>, _>(writeable)
+    .bind::<Nullable<Text>, _>(load)
+    .bind::<BigInt, _>(component.location().line)
+    .bind::<BigInt, _>(component.location().column)
+    .execute(conn)?;
+    Ok(())
+}
+
+fn named_values_json(values: &[crate::mame_softwarelist::NamedValue]) -> String {
+    serde_json::json!(
+        values
+            .iter()
+            .map(|value| serde_json::json!({
+                "name": value.name,
+                "value": value.value,
+                "source_line": value.location.line,
+                "source_column": value.location.column,
+            }))
+            .collect::<Vec<_>>()
+    )
+    .to_string()
+}
+
+fn checked_order(order: usize, kind: &str) -> crate::Result<i64> {
+    i64::try_from(order).map_err(|_| crate::Error::InvalidPath(format!("too many {kind}")))
 }

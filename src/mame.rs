@@ -51,30 +51,30 @@ pub struct XmlExtension {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-struct Element {
-    name: String,
-    attributes: BTreeMap<String, String>,
-    content: Vec<ElementContent>,
+pub struct Element {
+    pub name: String,
+    pub attributes: BTreeMap<String, String>,
+    pub content: Vec<ElementContent>,
     #[serde(skip)]
-    location: RecordLocation,
+    pub location: RecordLocation,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
-enum ElementContent {
+pub enum ElementContent {
     Text(String),
     Element(Element),
 }
 
 impl Element {
-    fn children(&self) -> impl Iterator<Item = &Self> {
+    pub fn children(&self) -> impl Iterator<Item = &Self> {
         self.content.iter().filter_map(|content| match content {
             ElementContent::Element(child) => Some(child),
             ElementContent::Text(_) => None,
         })
     }
 
-    fn direct_text(&self) -> String {
+    pub fn direct_text(&self) -> String {
         self.content
             .iter()
             .filter_map(|content| match content {
@@ -143,7 +143,7 @@ impl MameCatalog {
     }
 }
 
-fn parse_xml_element(bytes: &[u8]) -> crate::Result<Element> {
+pub fn parse_xml_element(bytes: &[u8]) -> crate::Result<Element> {
     let xml = document_input::decode_xml(bytes)?;
     if xml
         .windows(b"<!ENTITY".len())
