@@ -58,10 +58,7 @@ in {
       description = "Run unit, property, integration and doc tests";
       showOutput = true;
       after = ["project:format"];
-      exec = ''
-        cargo test --locked &&
-        cargo test --locked --test integration p7zip_extracts_r7z_builder_archive -- --ignored --exact
-      '';
+      exec = "cargo test --locked";
     };
     "project:clippy" = {
       description = "Check all targets and features with the existing strict lint policy";

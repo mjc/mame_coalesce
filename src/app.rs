@@ -188,7 +188,9 @@ fn report_build_outcome(report: &BuildReport) {
                 "missing ROM: game={} rom={} sha1={}",
                 missing.game_name,
                 missing.rom_name,
-                hex::encode(missing.sha1)
+                missing
+                    .sha1
+                    .map_or_else(|| "not supplied".to_owned(), hex::encode)
             );
         }
     }

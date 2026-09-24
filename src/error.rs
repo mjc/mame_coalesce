@@ -32,6 +32,9 @@ pub enum Error {
     #[error("Invalid hash: {0}")]
     InvalidHash(String),
 
+    #[error("ROM size cannot be stored in SQLite: {0}")]
+    InvalidRomSize(u64),
+
     #[error("Migration error: {0}")]
     Migration(String),
 
