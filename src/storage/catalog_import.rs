@@ -10,6 +10,7 @@ use crate::{
     logiqx::{DataFile, XmlSourceMap},
     mame::MameCatalog,
     mame_softwarelist::SoftwareListCatalog,
+    no_intro_pc_xml::Catalog as NoIntroCatalog,
     storage::{db::Pool, documents::DocumentStore},
 };
 
@@ -251,6 +252,56 @@ impl SnapshotData {
             extensions,
         }
     }
+
+    fn from_no_intro(catalog: NoIntroCatalog) -> Self {
+        let mut extensions = catalog
+            .extensions
+            .into_iter()
+            .map(stored_extension)
+            .collect::<Vec<_>>();
+        let sets = catalog
+            .entries
+            .into_iter()
+            .map(|entry| {
+                extensions.extend(entry.extensions.into_iter().map(stored_extension));
+                let assets = entry
+                    .assets
+                    .into_iter()
+                    .map(|asset| {
+                        extensions.extend(asset.extensions.into_iter().map(stored_extension));
+                        SnapshotAsset {
+                            name: asset.name,
+                            role: "rom",
+                            size: asset.size,
+                            crc: asset.crc,
+                            md5: None,
+                            sha1: asset.sha1,
+                            evidence_scope: "whole_asset",
+                            merge: None,
+                            dump_status: None,
+                            serial: None,
+                            date: None,
+                            metadata: serde_json::Value::Null,
+                            location: asset.location,
+                        }
+                    })
+                    .collect();
+                SnapshotSet {
+                    name: entry.name,
+                    parent: None,
+                    metadata: serde_json::json!(entry.metadata),
+                    location: entry.location,
+                    assets,
+                }
+            })
+            .collect();
+        Self {
+            version: catalog.version,
+            sets,
+            software_lists: None,
+            extensions,
+        }
+    }
 }
 
 fn stored_extension(ext: crate::mame::XmlExtension) -> StoredExtension {
@@ -284,7 +335,8 @@ pub fn import(pool: &Pool, request: &CatalogImportRequest) -> crate::Result<Cata
         }
         CatalogDocumentFormat::MameListXml
         | CatalogDocumentFormat::MameSoftwareListXml
-        | CatalogDocumentFormat::ClrMamePro => {
+        | CatalogDocumentFormat::ClrMamePro
+        | CatalogDocumentFormat::NoIntroPcXml => {
             documents.retain_path_raw(request.source_key.clone(), &request.document_path)?
         }
     };
@@ -300,6 +352,9 @@ pub fn import(pool: &Pool, request: &CatalogImportRequest) -> crate::Result<Cata
         }
         CatalogDocumentFormat::ClrMamePro => {
             ClrMameProCatalog::parse(&bytes).map(SnapshotData::from_clrmamepro)
+        }
+        CatalogDocumentFormat::NoIntroPcXml => {
+            NoIntroCatalog::parse(&bytes).map(SnapshotData::from_no_intro)
         }
     };
     let snapshot_data = match parsed {

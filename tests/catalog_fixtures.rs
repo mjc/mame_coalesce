@@ -113,7 +113,7 @@ const REQUIRED_FIXTURES: &[(&str, &str, &str)] = &[
     (
         "no-intro-pc-xml-synthetic",
         "no-intro-pc-xml",
-        "assessment-only",
+        "no-intro-synthetic-supported",
     ),
     (
         "tosec-logiqx-xml-synthetic",
@@ -255,6 +255,10 @@ fn assert_fixture_parser_status(fixture: &Fixture) -> Result<(), Box<dyn std::er
                     .iter()
                     .any(|field| field == "comments")
             );
+        }
+        "no-intro-synthetic-supported" => {
+            assert_eq!(fixture.format, "no-intro-pc-xml");
+            assert!(fixture.provenance.contains("not an upstream export"));
         }
         "fixture-only" => {
             assert!(fixture.expected.is_none(), "{}", fixture.id);

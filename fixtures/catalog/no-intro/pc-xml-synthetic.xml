@@ -5,10 +5,10 @@
     <version>synthetic-2026-09-24</version>
     <description>CC0 assessment fixture; not an upstream export</description>
   </header>
-  <game name="Synthetic Cartridge (World)" clone="1042" region="World" languages="En,Ja" bios="0">
+  <game name="Synthetic Cartridge (World)" clone="P" region="World" languages="En,Ja" bios="0">
     <rom name="synthetic-cartridge.bin" size="4" crc="12345678" sha1="0123456789abcdef0123456789abcdef01234567" />
   </game>
-  <game name="Synthetic Cartridge (Japan)" clone="1041" region="Japan" languages="Ja" mergeof="1042">
+  <game name="Synthetic Cartridge (Japan)" namealt="合成カートリッジ (日本)" clone="1041" region="Japan" languages="Ja" version="1.0" mergeof="1042" future-field="retained">
     <rom name="synthetic-cartridge-jp.bin" size="4" crc="87654321" />
   </game>
 </datafile>

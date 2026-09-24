@@ -9,6 +9,7 @@ pub mod hashes;
 pub mod logiqx;
 pub(crate) mod mame;
 pub(crate) mod mame_softwarelist;
+mod no_intro_pc_xml;
 mod operations;
 mod progress;
 mod storage;

@@ -215,7 +215,16 @@ pub fn parse_xml_element(bytes: &[u8]) -> crate::Result<Element> {
             }
             Ok(XmlEvent::EndDocument) => break,
             Ok(_) => {}
-            Err(error) => return Err(crate::Error::XmlValidation(error.to_string())),
+            Err(error) => {
+                let position = location(reader.position());
+                return Err(crate::Error::CatalogParse {
+                    message: error.to_string(),
+                    record_kind: Some("document".into()),
+                    record_name: None,
+                    line: Some(position.line),
+                    column: Some(position.column),
+                });
+            }
         }
     }
     root.ok_or_else(|| crate::Error::XmlValidation("missing document root".into()))
