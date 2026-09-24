@@ -75,6 +75,10 @@ struct RetainedPayload {
 }
 
 impl DocumentStore {
+    pub(crate) const fn from_pool(pool: Pool) -> Self {
+        Self { pool }
+    }
+
     pub fn open(database_url: &str) -> crate::Result<Self> {
         Ok(Self {
             pool: create_db_pool(database_url)?,
@@ -171,7 +175,7 @@ impl DocumentStore {
             self.record_failed_attempt(metadata, error_code(&error), &error.to_string())?;
             return Err(error);
         }
-        if let Err(error) = DataFile::from_reader(raw.as_slice()) {
+        if let Err(error) = DataFile::validate_document_bytes(&raw) {
             self.record_failed_attempt(metadata, error_code(&error), &error.to_string())?;
             return Err(error);
         }
@@ -497,7 +501,7 @@ mod tests {
         let malformed: &[u8] = b"<datafile><header>";
         assert!(store.retain(&acquisition("source-a"), malformed).is_err());
         let external: &[u8] =
-            br#"<!DOCTYPE datafile SYSTEM "http://127.0.0.1:9/catalog.dtd"><datafile/>"#;
+            br#"<!DOCTYPE datafile [<!ENTITY remote SYSTEM "http://127.0.0.1:9/catalog.dtd">]><datafile><header><name>&remote;</name></header></datafile>"#;
         assert!(store.retain(&acquisition("source-a"), external).is_err());
         assert_eq!(count(&store, "documents")?, 0);
         assert_eq!(count(&store, "acquisitions")?, 0);
@@ -744,7 +748,7 @@ mod tests {
     }
 
     #[test]
-    fn down_migration_removes_new_triggers_and_columns() -> TestResult {
+    fn down_migrations_remove_snapshot_and_document_retention_extensions() -> TestResult {
         let mut conn = SqliteConnection::establish(":memory:")?;
         conn.batch_execute("PRAGMA foreign_keys = ON")?;
         conn.run_pending_migrations(crate::storage::db::MIGRATIONS)?;
@@ -760,6 +764,15 @@ mod tests {
         )
         .execute(&mut conn)?;
 
+        conn.revert_last_migration(crate::storage::db::MIGRATIONS)?;
+        let snapshot_tables = sql_query(
+            "SELECT COUNT(*) AS count FROM sqlite_master \
+             WHERE type = 'table' AND name IN ('snapshot_sets', 'asset_requirements', \
+                 'snapshot_extensions', 'import_diagnostics')",
+        )
+        .get_result::<CountRow>(&mut conn)?
+        .count;
+        assert_eq!(snapshot_tables, 0);
         conn.revert_last_migration(crate::storage::db::MIGRATIONS)?;
         sql_query(
             "UPDATE acquisitions SET source_uri = 'restored' \

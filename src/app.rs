@@ -4,10 +4,47 @@ use log::{info, warn};
 use crate::{
     build::{planner::plan_build, writer::write_plan_with_compression},
     database::Database,
-    domain::{BuildMode, BuildReport, BuildRequest, ZipCompression},
+    domain::{
+        BuildMode, BuildReport, BuildRequest, CatalogKey, CatalogScope, ImportRunKey,
+        PublishingSourceKey, SnapshotKey, ZipCompression,
+    },
     operations,
     storage::repositories::{BuildRepository, DataFileSelector, SourceRepository},
 };
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CatalogImportRequest {
+    pub document_path: Utf8PathBuf,
+    pub source_key: PublishingSourceKey,
+    pub source_display_name: String,
+    pub catalog_key: CatalogKey,
+    pub catalog_display_name: String,
+    pub scope: CatalogScope,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CatalogImportStatus {
+    Succeeded,
+    Failed,
+}
+
+impl CatalogImportStatus {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CatalogImportReport {
+    pub snapshot_key: Option<SnapshotKey>,
+    pub run_key: ImportRunKey,
+    pub status: CatalogImportStatus,
+    pub diagnostic_count: usize,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DatImportRequest {
@@ -70,6 +107,13 @@ pub fn import_dat(
 ) -> crate::Result<DatImportReport> {
     operations::parse_and_insert_datfile(&request.dat_path, database.pool())
         .map(|data_file_id| DatImportReport { data_file_id })
+}
+
+pub fn import_catalog(
+    database: &Database,
+    request: &CatalogImportRequest,
+) -> crate::Result<CatalogImportReport> {
+    crate::storage::catalog_import::import(database.pool(), request)
 }
 
 pub fn scan_source(

@@ -60,6 +60,68 @@ diesel::table! {
 }
 
 diesel::table! {
+    snapshot_sets (snapshot_key, set_name) {
+        snapshot_key -> Text,
+        set_name -> Text,
+        parent_name -> Nullable<Text>,
+        metadata_json -> Text,
+        source_line -> BigInt,
+        source_column -> BigInt,
+    }
+}
+
+diesel::table! {
+    asset_requirements (snapshot_key, set_name, component_order) {
+        snapshot_key -> Text,
+        set_name -> Text,
+        component_order -> BigInt,
+        asset_name -> Text,
+        role -> Text,
+        size -> Nullable<BigInt>,
+        crc -> Nullable<Binary>,
+        md5 -> Nullable<Binary>,
+        sha1 -> Nullable<Binary>,
+        evidence_scope -> Text,
+        evidence_provenance -> Text,
+        merge_name -> Nullable<Text>,
+        dump_status -> Nullable<Text>,
+        serial -> Nullable<Text>,
+        date -> Nullable<Text>,
+        source_line -> BigInt,
+        source_column -> BigInt,
+    }
+}
+
+diesel::table! {
+    snapshot_extensions (extension_id) {
+        extension_id -> BigInt,
+        snapshot_key -> Text,
+        record_kind -> Text,
+        record_name -> Nullable<Text>,
+        field_name -> Text,
+        namespace_uri -> Nullable<Text>,
+        raw_value_json -> Text,
+        source_line -> BigInt,
+        source_column -> BigInt,
+    }
+}
+
+diesel::table! {
+    import_diagnostics (diagnostic_key) {
+        diagnostic_key -> Text,
+        run_key -> Text,
+        code -> Text,
+        message -> Text,
+        record_kind -> Nullable<Text>,
+        record_name -> Nullable<Text>,
+        field_name -> Nullable<Text>,
+        raw_value_json -> Nullable<Text>,
+        source_line -> Nullable<BigInt>,
+        source_column -> Nullable<BigInt>,
+    }
+}
+
+diesel::table! {
     documents (document_key) {
         document_key -> Text,
         sha1 -> Nullable<Binary>,
@@ -182,6 +244,9 @@ diesel::joinable!(acquisitions -> documents (document_key));
 diesel::joinable!(catalog_snapshots -> catalogs (catalog_key));
 diesel::joinable!(catalog_snapshots -> documents (document_key));
 diesel::joinable!(catalog_snapshots -> parser_interpretations (interpretation_key));
+diesel::joinable!(snapshot_sets -> catalog_snapshots (snapshot_key));
+diesel::joinable!(snapshot_extensions -> catalog_snapshots (snapshot_key));
+diesel::joinable!(import_diagnostics -> import_runs (run_key));
 diesel::joinable!(import_runs -> catalogs (catalog_key));
 diesel::joinable!(import_runs -> documents (document_key));
 diesel::joinable!(import_runs -> parser_interpretations (interpretation_key));
@@ -192,6 +257,7 @@ diesel::joinable!(roms -> games (game_id));
 diesel::allow_tables_to_appear_in_same_query!(
     acquisitions,
     acquisition_attempts,
+    asset_requirements,
     archive_files,
     catalogs,
     catalog_snapshots,
@@ -199,8 +265,11 @@ diesel::allow_tables_to_appear_in_same_query!(
     documents,
     games,
     import_runs,
+    import_diagnostics,
     parser_interpretations,
     publishing_sources,
     rom_files,
     roms,
+    snapshot_extensions,
+    snapshot_sets,
 );

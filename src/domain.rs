@@ -1,6 +1,5 @@
 use crate::hashes::Sha1Digest;
 use sha2::{Digest, Sha256};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DocumentKey([u8; 32]);
@@ -70,7 +69,16 @@ impl std::fmt::Display for AcquisitionKey {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct CatalogKey(u64);
+pub struct CatalogKey(String);
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ParserInterpretationKey(String);
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SnapshotKey(String);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ImportRunKey(uuid::Uuid);
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SetName(String);
@@ -94,9 +102,123 @@ impl AssetName {
 
 impl CatalogKey {
     #[must_use]
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    #[must_use]
     pub fn fresh() -> Self {
-        static NEXT_KEY: AtomicU64 = AtomicU64::new(1);
-        Self(NEXT_KEY.fetch_add(1, Ordering::Relaxed))
+        Self(uuid::Uuid::new_v4().to_string())
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for CatalogKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl ParserInterpretationKey {
+    #[must_use]
+    pub fn logiqx_v1(scope: &CatalogScope) -> Self {
+        let (scope_kind, scope_details) = scope.as_storage();
+        Self(stable_key(
+            "parser-interpretation-v1",
+            &[
+                "logiqx",
+                env!("CARGO_PKG_VERSION"),
+                "normalization-v1",
+                scope_kind,
+                scope_details.as_deref().unwrap_or_default(),
+            ],
+        ))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl SnapshotKey {
+    #[must_use]
+    pub fn new(
+        catalog: &CatalogKey,
+        document: &DocumentKey,
+        interpretation: &ParserInterpretationKey,
+    ) -> Self {
+        Self(stable_key(
+            "catalog-snapshot-v1",
+            &[
+                catalog.as_str(),
+                &document.to_string(),
+                interpretation.as_str(),
+            ],
+        ))
+    }
+
+    pub(crate) const fn from_persisted(value: String) -> Self {
+        Self(value)
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for SnapshotKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl ImportRunKey {
+    #[must_use]
+    pub fn fresh() -> Self {
+        Self(uuid::Uuid::new_v4())
+    }
+}
+
+impl std::fmt::Display for ImportRunKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+fn stable_key(domain: &str, parts: &[&str]) -> String {
+    let mut hash = Sha256::new();
+    hash.update(domain.as_bytes());
+    for part in parts {
+        hash.update(part.len().to_string().as_bytes());
+        hash.update(b":");
+        hash.update(part.as_bytes());
+    }
+    format!("sha256:{}", hex::encode(hash.finalize()))
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CatalogScope {
+    Unknown,
+    Complete,
+    Filtered(serde_json::Value),
+    Partial(serde_json::Value),
+}
+
+impl CatalogScope {
+    #[must_use]
+    pub fn as_storage(&self) -> (&'static str, Option<String>) {
+        match self {
+            Self::Unknown => ("unknown", None),
+            Self::Complete => ("complete", None),
+            Self::Filtered(details) => ("filtered", Some(details.to_string())),
+            Self::Partial(details) => ("partial", Some(details.to_string())),
+        }
     }
 }
 

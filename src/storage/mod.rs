@@ -1,3 +1,4 @@
+pub mod catalog_import;
 pub mod db;
 pub mod documents;
 pub mod models;
