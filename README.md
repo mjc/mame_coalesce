@@ -5,18 +5,20 @@
 ## Status
 
 This project is pre-1.0. The primary verified development and handoff path is
-the Nix shell provided by this repository.
+the pinned devenv environment provided by this repository.
 
 The crate is not currently being treated as a crates.io publishing artifact.
 Release readiness here means a reviewed GitHub handoff with reproducible local
 checks, CI coverage, and explicit release notes.
+Normal CI and day-to-day verification do not run `cargo package`; packaging is
+deferred until crates.io distribution becomes a goal.
 
 ## Workflow
 
 The primary workflow is one-shot:
 
 ```sh
-nix develop -c cargo run -- build fixtures/test.dat /path/to/roms /path/to/out --jobs 8
+devenv shell -- cargo run -- build fixtures/test.dat /path/to/roms /path/to/out --jobs 8
 ```
 
 Common options:
@@ -55,7 +57,7 @@ Defaults:
 To test against downloaded public-domain ROM bundles:
 
 ```sh
-nix develop -c bash scripts/fetch_public_domain_test_data.sh
+devenv shell -- bash scripts/fetch_public_domain_test_data.sh
 ```
 
 The script downloads only archive.org items whose metadata is Public Domain Mark
@@ -69,7 +71,39 @@ Use `--max-roms 0` to include every collected ROM entry.
 
 ## Maintenance
 
-Use the Nix shell as the development environment. Plain `cargo test` may fail on systems without `pkg-config` and SQLite development libraries.
+Use devenv 2.3.1 or newer with Nix. The repository owns `devenv.nix`,
+`devenv.yaml`, and `devenv.lock`; no machine-local devshell imports are needed.
+The Rust module selects latest stable (currently pinned to 1.98.1), including
+Clippy, rustfmt, rust-analyzer and Rust sources. Nix supplies the compiler/linker,
+SQLite, OpenSSL, zlib, CMake and pkg-config; sccache caches compilation.
+
+```sh
+devenv shell                 # interactive development shell
+devenv shell -- build        # cargo build --locked
+devenv tasks run project:check  # formatting, scripts, tests, strict Clippy
+devenv test                  # the same gate, Git hooks and CLI smoke test
+```
+
+Inside an already activated shell, run `cargo` or `build` directly.
+Do not nest `nix develop` inside devenv. For automatic activation, configure
+`devenv hook` for your shell and run `devenv allow` after reviewing the checkout.
+The project does not require `.envrc` or automatically load `.env`.
+
+| Feature | Usage |
+| --- | --- |
+| Named verification tasks | `devenv tasks list`; `devenv tasks run project:format` |
+| Git checks installed on shell entry | Rust formatting, Nix formatting, ShellCheck |
+| Faster test runner | `devenv shell -- cargo nextest run --locked` (the main gate also runs doctests) |
+| Profiling tools | `devenv --profile profiling shell` for flamegraphs, perf on Linux and hyperfine |
+| Maintenance tools | `devenv --profile maintenance shell` for audit, deny, outdated and machete |
+| Toolchain refresh | `devenv update rust-overlay`, then `devenv test`; review and commit the lockfile |
+
+Normal builds and tests use `--locked`; entering a shell does not update
+Cargo dependencies or run the full test suite. No services are needed for this
+CLI: tests use temporary SQLite databases and synthetic archive fixtures.
+
+The older `nix develop -c ...` entrypoint remains available for compatibility,
+but devenv is the primary development and CI gate.
 
 ### CPU Flamegraphs
 
@@ -80,7 +114,7 @@ planning, SQLite/Diesel, and writing. Always run them through Nix.
 Baseline single-thread run:
 
 ```sh
-nix develop -c bash scripts/profile_flamegraph.sh \
+devenv --profile profiling shell -- bash scripts/profile_flamegraph.sh \
   --dat fixtures/<dat>.dat \
   --source <source-dir> \
   --out target/profiling/out-jobs-1 \
@@ -90,7 +124,7 @@ nix develop -c bash scripts/profile_flamegraph.sh \
 If perf permissions block sampling, retry with `--root`:
 
 ```sh
-nix develop -c bash scripts/profile_flamegraph.sh \
+devenv --profile profiling shell -- bash scripts/profile_flamegraph.sh \
   --dat fixtures/<dat>.dat \
   --source <source-dir> \
   --out target/profiling/out-jobs-1 \
@@ -101,7 +135,7 @@ nix develop -c bash scripts/profile_flamegraph.sh \
 Parallel comparison:
 
 ```sh
-nix develop -c bash scripts/profile_flamegraph.sh \
+devenv --profile profiling shell -- bash scripts/profile_flamegraph.sh \
   --dat fixtures/<dat>.dat \
   --source <source-dir> \
   --out target/profiling/out-jobs-8 \
@@ -111,16 +145,16 @@ nix develop -c bash scripts/profile_flamegraph.sh \
 Summarize or compare generated flamegraphs:
 
 ```sh
-nix develop -c bash scripts/parse_flamegraph target/profiling/flamegraphs/run-jobs-1.svg summary
-nix develop -c bash scripts/parse_flamegraph target/profiling/flamegraphs/run-jobs-1.svg top 30 0.5
-nix develop -c bash scripts/parse_flamegraph target/profiling/flamegraphs/run-jobs-1.svg search planner
-nix develop -c bash scripts/parse_flamegraph target/profiling/flamegraphs/run-jobs-1.svg diff target/profiling/flamegraphs/run-jobs-8.svg
+devenv shell -- bash scripts/parse_flamegraph target/profiling/flamegraphs/run-jobs-1.svg summary
+devenv shell -- bash scripts/parse_flamegraph target/profiling/flamegraphs/run-jobs-1.svg top 30 0.5
+devenv shell -- bash scripts/parse_flamegraph target/profiling/flamegraphs/run-jobs-1.svg search planner
+devenv shell -- bash scripts/parse_flamegraph target/profiling/flamegraphs/run-jobs-1.svg diff target/profiling/flamegraphs/run-jobs-8.svg
 ```
 
 Benchmark the full `build` workflow with repeated wall-clock samples:
 
 ```sh
-nix develop -c bash scripts/benchmark_run.sh \
+devenv --profile profiling shell -- bash scripts/benchmark_run.sh \
   --dat tmp/perf-public-domain/dats/public-domain-roms.dat \
   --source tmp/perf-public-domain/source-roms \
   --out-root target/profiling/perf-out-jobs-1 \
@@ -137,36 +171,41 @@ Optional raw perf-data analysis, if `perf.data` is retained or captured
 manually:
 
 ```sh
-nix develop -c sh -lc 'perf script 2>/dev/null | bash scripts/parse_perfdata'
+devenv --profile profiling shell -- sh -c 'perf script 2>/dev/null | bash scripts/parse_perfdata'
 ```
 
 ## Verification
 
-Required local gate:
+Required local gate: `devenv test`. It also runs the normally ignored p7zip
+interoperability test because devenv supplies `7z`. The component commands are:
 
 ```sh
-nix develop -c shellcheck scripts/fetch_public_domain_test_data.sh scripts/profile_flamegraph.sh scripts/benchmark_run.sh scripts/parse_flamegraph scripts/parse_perfdata
-nix develop -c cargo fmt --check
-nix develop -c cargo test
-nix develop -c cargo clippy --all-targets --all-features -- -D warnings
+devenv shell -- shellcheck scripts/fetch_public_domain_test_data.sh scripts/profile_flamegraph.sh scripts/benchmark_run.sh scripts/parse_flamegraph scripts/parse_perfdata
+devenv shell -- cargo fmt --check
+devenv shell -- cargo test --locked
+devenv shell -- cargo test --locked --test integration p7zip_extracts_r7z_builder_archive -- --ignored --exact
+devenv shell -- cargo clippy --locked --all-targets --all-features -- -D warnings
 ```
+
+`cargo package` is intentionally not part of the normal local or CI gate while
+the project depends on the git-only `r7z` crate.
 
 Dependency and maintenance checks:
 
 ```sh
-nix develop -c cargo update
-nix develop -c cargo tree -d
-nix develop -c cargo audit
-nix develop -c cargo deny check
-nix develop -c cargo-udeps udeps --all-targets
+devenv shell -- cargo tree -d
+devenv --profile maintenance shell -- cargo audit
+devenv --profile maintenance shell -- cargo deny check
+devenv --profile maintenance shell -- cargo machete
 ```
 
 ## Known Operational Constraints
 
 - Running outside Nix requires system `pkg-config`, SQLite, zlib, and related
   development libraries.
-- The crate currently declares `rust-version = "1.88"`; the Nix shell builds
-  with the latest stable Rust toolchain from `rust-overlay`.
+- The crate currently declares `rust-version = "1.88"`; devenv builds
+  with latest stable Rust from the locked `rust-overlay` input. Updating the
+  development toolchain does not by itself change the declared MSRV.
 - `cargo package` requires `r7z` to be published on crates.io; until then the
   crate uses a pinned `mjc/r7z` git dependency.
 - `cargo deny check` may report duplicate dependency warnings under the current

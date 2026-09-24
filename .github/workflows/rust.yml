@@ -16,38 +16,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y \
-            cmake \
-            libarchive-dev \
-            liblz4-dev \
-            libsqlite3-dev \
-            pkg-config \
-            shellcheck \
-            zlib1g-dev
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: cachix/install-nix-action@v31
+      - uses: cachix/cachix-action@v16
         with:
-          components: clippy, rustfmt
+          name: devenv
 
-      - name: Check formatting
-        run: cargo fmt --check
+      - name: Install devenv
+        run: nix profile add nixpkgs#devenv
 
-      - name: Run tests
-        run: cargo test
+      - name: Run the pinned development environment gate
+        run: devenv --no-tui test
 
-      - name: Run clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
-
-      - name: Verify package
-        run: cargo package --locked
-
-      - name: Check scripts
-        run: shellcheck scripts/fetch_public_domain_test_data.sh
-
+      # `cargo package` is intentionally not part of push/PR CI because the
+      # project currently depends on the git-only `r7z` crate and is not
+      # treated as a crates.io-publishable artifact yet.
   maintenance:
     runs-on: ubuntu-latest
 

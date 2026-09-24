@@ -4,3 +4,12 @@
 .direnv/
 **/*.rs.bk
 coalesce.db*
+
+.envrc
+.devenv/
+.pre-commit-config.yaml
+
+# This project owns its reproducible environment, even on hosts ignoring these globally.
+!/devenv.nix
+!/devenv.yaml
+!/devenv.lock

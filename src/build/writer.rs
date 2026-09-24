@@ -106,7 +106,7 @@ fn is_normal_relative_component(component: &str) -> bool {
         && !has_windows_drive_prefix(component)
 }
 
-fn has_windows_drive_prefix(path: &str) -> bool {
+const fn has_windows_drive_prefix(path: &str) -> bool {
     let bytes = path.as_bytes();
     bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
 }

@@ -20,7 +20,7 @@ Options:
   -h, --help                  Show this help
 
 Run through Nix:
-  nix develop -c bash scripts/benchmark_run.sh --dat <path> --source <path> --out-root target/profiling/perf-out-jobs-1 --jobs 1
+  devenv --profile profiling shell -- bash scripts/benchmark_run.sh --dat <path> --source <path> --out-root target/profiling/perf-out-jobs-1 --jobs 1
 USAGE
 }
 

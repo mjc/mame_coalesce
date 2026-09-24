@@ -8,7 +8,7 @@ from the downloaded bytes, and runs the one-shot `mame_coalesce build` workflow 
 an isolated temp directory.
 
 ```sh
-nix develop -c bash scripts/fetch_public_domain_test_data.sh
+devenv shell -- bash scripts/fetch_public_domain_test_data.sh
 ```
 
 The default `--catalog-tier curated` includes:
@@ -21,13 +21,13 @@ The default `--catalog-tier curated` includes:
 Use strict archive.org license metadata only:
 
 ```sh
-nix develop -c bash scripts/fetch_public_domain_test_data.sh --catalog-tier metadata
+devenv shell -- bash scripts/fetch_public_domain_test_data.sh --catalog-tier metadata
 ```
 
 Use every collected ROM entry instead of the default cap:
 
 ```sh
-nix develop -c bash scripts/fetch_public_domain_test_data.sh --max-roms 0
+devenv shell -- bash scripts/fetch_public_domain_test_data.sh --max-roms 0
 ```
 
 The script does not download abandonware, commercial ROM-set mirrors,
@@ -39,7 +39,7 @@ commercial game properties.
 Generate a symbol-rich flamegraph for the full `build` workflow:
 
 ```sh
-nix develop -c bash scripts/profile_flamegraph.sh \
+devenv --profile profiling shell -- bash scripts/profile_flamegraph.sh \
   --dat fixtures/<dat>.dat \
   --source <source-dir> \
   --out target/profiling/out-jobs-1 \
@@ -49,7 +49,7 @@ nix develop -c bash scripts/profile_flamegraph.sh \
 If perf permissions block sampling, retry with `--root`:
 
 ```sh
-nix develop -c bash scripts/profile_flamegraph.sh \
+devenv --profile profiling shell -- bash scripts/profile_flamegraph.sh \
   --dat fixtures/<dat>.dat \
   --source <source-dir> \
   --out target/profiling/out-jobs-1 \
@@ -60,7 +60,7 @@ nix develop -c bash scripts/profile_flamegraph.sh \
 Summarize the generated SVG:
 
 ```sh
-nix develop -c bash scripts/parse_flamegraph target/profiling/flamegraphs/run-jobs-1.svg summary
+devenv shell -- bash scripts/parse_flamegraph target/profiling/flamegraphs/run-jobs-1.svg summary
 ```
 
 ## Run benchmarks
@@ -73,7 +73,7 @@ It prebuilds `target/profiling/mame_coalesce` and runs that binary directly by
 default so samples do not include `cargo run` overhead.
 
 ```sh
-nix develop -c bash scripts/benchmark_run.sh \
+devenv --profile profiling shell -- bash scripts/benchmark_run.sh \
   --dat tmp/perf-public-domain/dats/public-domain-roms.dat \
   --source tmp/perf-public-domain/source-roms \
   --out-root target/profiling/perf-out-jobs-1 \

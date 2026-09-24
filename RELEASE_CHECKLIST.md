@@ -14,34 +14,40 @@ Expected tracked state: no modified, added, or deleted tracked files.
 ## 2. Run The Local Gate
 
 ```sh
-nix develop -c shellcheck scripts/fetch_public_domain_test_data.sh
-nix develop -c cargo fmt --check
-nix develop -c cargo test
-nix develop -c cargo clippy --all-targets --all-features -- -D warnings
-nix develop -c cargo package
+devenv test
 ```
 
-## 3. Run Maintenance Checks
+## 3. Optional Packaging Check
+
+Run this only if crates.io packaging or publishing is part of the release goal.
 
 ```sh
-nix develop -c cargo audit
-nix develop -c cargo deny check
-nix develop -c cargo-udeps udeps --all-targets
+devenv shell -- cargo package --locked
+```
+
+This currently fails because the project depends on the git-only `r7z` crate.
+
+## 4. Run Maintenance Checks
+
+```sh
+devenv --profile maintenance shell -- cargo audit
+devenv --profile maintenance shell -- cargo deny check
+devenv --profile maintenance shell -- cargo machete
 ```
 
 `cargo deny check` may print duplicate dependency warnings under the current
 policy. The release gate requires a zero exit code.
 
-## 4. Optional External Smoke Test
+## 5. Optional External Smoke Test
 
 This command downloads public-domain test data from archive.org, so it is not
 part of the default local gate.
 
 ```sh
-nix develop -c bash scripts/fetch_public_domain_test_data.sh --catalog-tier metadata --dry-run
+devenv shell -- bash scripts/fetch_public_domain_test_data.sh --catalog-tier metadata --dry-run
 ```
 
-## 5. Before Pushing
+## 6. Before Pushing
 
 ```sh
 git log --oneline origin/main..main

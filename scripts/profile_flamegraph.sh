@@ -21,7 +21,7 @@ Options:
   -h, --help                  Show this help
 
 Run through Nix:
-  nix develop -c bash scripts/profile_flamegraph.sh --dat <path> --source <path> --out <path>
+  devenv --profile profiling shell -- bash scripts/profile_flamegraph.sh --dat <path> --source <path> --out <path>
 USAGE
 }
 
@@ -135,7 +135,7 @@ fi
 if ! command -v cargo-flamegraph >/dev/null 2>&1; then
     cat >&2 <<'MSG'
 cargo flamegraph is not available.
-Run this through: nix develop -c bash scripts/profile_flamegraph.sh ...
+Run this through: devenv --profile profiling shell -- bash scripts/profile_flamegraph.sh ...
 MSG
     exit 127
 fi
@@ -209,7 +209,7 @@ if [[ $status -ne 0 ]]; then
     cat >&2 <<MSG
 cargo flamegraph failed with exit status ${status}.
 If this is a perf permissions error, retry with:
-nix develop -c bash scripts/profile_flamegraph.sh --dat "${dat_path}" --source "${source_path}" --out "${out_path}" --jobs "${jobs}" --root
+devenv --profile profiling shell -- bash scripts/profile_flamegraph.sh --dat "${dat_path}" --source "${source_path}" --out "${out_path}" --jobs "${jobs}" --root
 MSG
     exit "$status"
 fi

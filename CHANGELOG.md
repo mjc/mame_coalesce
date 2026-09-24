@@ -36,6 +36,9 @@
   dominant measured hotspot; default output remains deflated.
 - Updated the benchmark helper to run the prebuilt profiling binary directly by
   default so measurements do not include `cargo run` overhead.
+- Removed `cargo package --locked` from normal push/PR CI because the current
+  `r7z` git dependency makes crates.io-style packaging intentionally
+  unsupported; packaging remains a manual release-time concern.
 - Updated profiling parser categories for the current ZIP, 7z, and RAR archive
   implementation.
 - Refreshed Cargo and Nix dependencies, including raising the declared Rust

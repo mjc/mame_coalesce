@@ -1,0 +1,9 @@
+require_version: true
+inputs:
+  git-hooks:
+    url: github:cachix/git-hooks.nix
+  rust-overlay:
+    url: github:oxalica/rust-overlay
+    inputs:
+      nixpkgs:
+        follows: nixpkgs

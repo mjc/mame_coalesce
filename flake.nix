@@ -99,8 +99,9 @@
           export LIBRARY_PATH="${pkgs.sqlite}/lib:${pkgs.zlib}/lib:${pkgs.openssl.out}/lib"
 
           ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
-            export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER="clang"
-            export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C link-arg=-fuse-ld=mold -C target-cpu=native"
+            export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER="${pkgs.llvmPackages.clang}/bin/clang"
+            export RUSTFLAGS="-C link-arg=-fuse-ld=${pkgs.mold}/bin/mold -C target-cpu=native"
+            export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="$RUSTFLAGS"
           ''}
 
           ${pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
