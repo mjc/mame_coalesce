@@ -1,0 +1,5 @@
+<?xml version="1.0"?>
+<datafile>
+  <header><name>Malformed synthetic fixture</name></header>
+  <game name="truncated">
+    <rom name="missing-end-tag.bin" size="4" crc="12345678" />

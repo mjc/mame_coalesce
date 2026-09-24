@@ -1,0 +1,12 @@
+<?xml version="1.0"?>
+<datafile>
+  <header><name>Synthetic Catalog A</name><version>snapshot-2</version></header>
+  <game name="alpha" cloneof="parent" sourcefile="alpha.cpp" isbios="yes" romof="bios" sampleof="samples" board="synthetic" rebuildto="alpha-rebuilt">
+    <description>Alpha fixture set</description>
+    <year>1998</year>
+    <manufacturer>Example Works</manufacturer>
+    <device_ref name="fixture-sound" />
+    <rom name="a-cart.bin" size="16" crc="12345678" sha1="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" />
+    <rom name="disputed.bin" size="32" crc="22222222" sha1="2222222222222222222222222222222222222222" status="verified" serial="SYN-001" date="2024-01" />
+  </game>
+</datafile>
