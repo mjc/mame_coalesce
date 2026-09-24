@@ -637,6 +637,69 @@ fn source_scan_replaces_rows_for_source_root() -> Result<(), Box<dyn std::error:
 }
 
 #[test]
+fn failed_archive_scan_preserves_cached_source_rows() -> Result<(), Box<dyn std::error::Error>> {
+    let database_dir = tempfile::tempdir()?;
+    let database = test_database(database_dir.path())?;
+    let work_dir = tempfile::tempdir()?;
+    let source_dir = tempfile::tempdir()?;
+    let output_dir = tempfile::tempdir()?;
+    let dat_path = write_single_game_dat(
+        &work_dir.path().join("archive-error.dat"),
+        "Archive read failure",
+        "game",
+        "a.rom",
+        "a9993e364706816aba3e25717850c26c9cd0d89d",
+    )?;
+    let source_path = utf8_path(source_dir.path())?.to_path_buf();
+    fs::write(source_dir.path().join("a.rom"), b"abc")?;
+    app::import_dat(
+        &database,
+        &DatImportRequest {
+            dat_path: dat_path.clone(),
+        },
+    )?;
+    app::scan_source(
+        &database,
+        &SourceScanRequest {
+            source_path: source_path.clone(),
+            jobs: 1,
+        },
+    )?;
+
+    fs::remove_file(source_dir.path().join("a.rom"))?;
+    fs::write(
+        source_dir.path().join("broken.zip"),
+        b"PK\x03\x04not a zip archive",
+    )?;
+    let Err(error) = app::scan_source(
+        &database,
+        &SourceScanRequest {
+            source_path: source_path.clone(),
+            jobs: 1,
+        },
+    ) else {
+        return Err("expected corrupt archive to fail the scan".into());
+    };
+    assert!(error.to_string().contains("Zip error"));
+
+    let report = app::build(
+        &database,
+        &BuildWorkflowRequest {
+            dat_path,
+            source_path,
+            destination_path: utf8_path(output_dir.path())?.to_path_buf(),
+            mode: BuildMode::ParentBundles,
+            compression: ZipCompression::Deflate,
+            dry_run: true,
+            strict: true,
+        },
+    )?;
+    assert_eq!(report.exit_code, 0);
+    assert_eq!(report.build_report.matched_roms, 1);
+    Ok(())
+}
+
+#[test]
 fn source_scan_does_not_delete_similarly_prefixed_root() -> Result<(), Box<dyn std::error::Error>> {
     let database_dir = tempfile::tempdir()?;
     let database = test_database(database_dir.path())?;

@@ -52,6 +52,10 @@ Defaults:
 - `--missing fail` exits `2` and writes nothing when required ROMs are missing
 - duplicate source matches are resolved deterministically
 
+Source scans intentionally skip hidden files and directories below the source
+root. Non-UTF-8 paths and traversal or archive-read errors fail the scan, so an
+incomplete inventory cannot replace the last successful cache contents.
+
 ## External smoke test
 
 To test against downloaded public-domain ROM bundles:
