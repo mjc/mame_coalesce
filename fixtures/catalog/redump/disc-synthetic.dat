@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<datafile>
+  <header>
+    <name>Synthetic Redump disc catalog</name>
+    <version>synthetic-2026-09-24</version>
+    <description>CC0 assessment fixture; hashes and tracks are invented</description>
+  </header>
+  <game name="Synthetic Optical Disc (USA)">
+    <description>Serial: SYN-0001; synthetic two-track disc</description>
+    <rom name="synthetic-disc (Track 1).bin" size="9408" crc="12345678" md5="0123456789abcdef0123456789abcdef" sha1="0123456789abcdef0123456789abcdef01234567" />
+    <rom name="synthetic-disc (Track 2).bin" size="355152" crc="87654321" md5="fedcba9876543210fedcba9876543210" sha1="fedcba9876543210fedcba9876543210fedcba98" />
+  </game>
+</datafile>

@@ -111,6 +111,26 @@ const REQUIRED_FIXTURES: &[(&str, &str, &str)] = &[
         "clrmamepro-supported",
     ),
     (
+        "no-intro-pc-xml-synthetic",
+        "no-intro-pc-xml",
+        "assessment-only",
+    ),
+    (
+        "tosec-logiqx-xml-synthetic",
+        "tosec-logiqx-xml",
+        "assessment-only",
+    ),
+    (
+        "redump-track-dat-synthetic",
+        "redump-logiqx-xml",
+        "assessment-only",
+    ),
+    (
+        "redump-cue-companion-synthetic",
+        "redump-cue",
+        "assessment-only",
+    ),
+    (
         "mame-software-list-parts",
         "mame-softwarelist-xml",
         "fixture-only",
@@ -131,6 +151,12 @@ fn assert_required_fixtures(matrix: &Matrix) -> Result<(), Box<dyn std::error::E
 }
 
 fn assert_fixture_record(fixture: &Fixture) -> Result<(), Box<dyn std::error::Error>> {
+    assert_fixture_metadata(fixture);
+    assert_fixture_bytes(fixture)?;
+    assert_fixture_parser_status(fixture)
+}
+
+fn assert_fixture_metadata(fixture: &Fixture) {
     assert!(fixture.version.is_some(), "missing version: {}", fixture.id);
     assert_eq!(fixture.license, "CC0-1.0", "{}", fixture.id);
     assert!(
@@ -140,6 +166,11 @@ fn assert_fixture_record(fixture: &Fixture) -> Result<(), Box<dyn std::error::Er
     );
     assert!(!fixture.dialect.is_empty(), "{}", fixture.id);
     assert!(!fixture.source_reference.is_empty(), "{}", fixture.id);
+    assert!(
+        fixture.source_reference.starts_with("https://"),
+        "non-HTTPS source reference: {}",
+        fixture.id
+    );
     assert!(!fixture.scope.is_empty(), "{}", fixture.id);
     assert!(!fixture.normalized_facts.is_empty(), "{}", fixture.id);
     assert!(
@@ -154,7 +185,9 @@ fn assert_fixture_record(fixture: &Fixture) -> Result<(), Box<dyn std::error::Er
             .iter()
             .all(|semantics| !semantics.is_empty())
     );
+}
 
+fn assert_fixture_bytes(fixture: &Fixture) -> Result<(), Box<dyn std::error::Error>> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(&fixture.path);
     let bytes = fs::read(path)?;
     assert!(bytes.len() < 16 * 1024, "fixture too large: {}", fixture.id);
@@ -164,7 +197,10 @@ fn assert_fixture_record(fixture: &Fixture) -> Result<(), Box<dyn std::error::Er
         "fixture bytes changed without updating manifest: {}",
         fixture.id
     );
+    Ok(())
+}
 
+fn assert_fixture_parser_status(fixture: &Fixture) -> Result<(), Box<dyn std::error::Error>> {
     match fixture.parser_status.as_str() {
         "logiqx-supported" => {
             assert_eq!(fixture.format, "logiqx");
@@ -215,6 +251,25 @@ fn assert_fixture_record(fixture: &Fixture) -> Result<(), Box<dyn std::error::Er
             assert!(
                 !fixture.expected_adapter_fields.is_empty(),
                 "missing future adapter field expectations: {}",
+                fixture.id
+            );
+        }
+        "assessment-only" => {
+            assert!(fixture.expected.is_none(), "{}", fixture.id);
+            assert!(fixture.expected_error_contains.is_none(), "{}", fixture.id);
+            assert!(!fixture.retained_raw_fields.is_empty(), "{}", fixture.id);
+            assert!(
+                !fixture.expected_adapter_fields.is_empty(),
+                "{}",
+                fixture.id
+            );
+            assert!(!fixture.expected_diagnostics.is_empty(), "{}", fixture.id);
+            assert!(
+                fixture
+                    .unsupported_semantics
+                    .iter()
+                    .any(|semantics| !semantics.is_empty()),
+                "{}",
                 fixture.id
             );
         }

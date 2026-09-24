@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<datafile>
+  <header>
+    <name>Synthetic TOSEC - System - Games</name>
+    <version>TOSEC-v2026-09-24</version>
+    <description>CC0 assessment fixture; no image payloads</description>
+  </header>
+  <game name="Synthetic Adventure v1.0 (2001)(Example Publisher)(Synthetic System)(US)[b]">
+    <description>Synthetic bad-dump marker; not a real release.</description>
+    <rom name="Synthetic Adventure v1.0 (2001)(Example Publisher)(Synthetic System)(US)[b].bin" size="4" crc="12345678" md5="0123456789abcdef0123456789abcdef" sha1="0123456789abcdef0123456789abcdef01234567" />
+  </game>
+</datafile>
