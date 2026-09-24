@@ -35,6 +35,8 @@ enum FormatHint {
     MameSoftwareListXmlGzip,
     ClrMameProText,
     ClrMameProTextGzip,
+    NoIntroPcXml,
+    NoIntroPcXmlGzip,
 }
 
 impl FormatHint {
@@ -48,6 +50,8 @@ impl FormatHint {
             Self::MameSoftwareListXmlGzip => "mame-softwarelist-xml+gzip",
             Self::ClrMameProText => "clrmamepro-text",
             Self::ClrMameProTextGzip => "clrmamepro-text+gzip",
+            Self::NoIntroPcXml => "no-intro-pc-xml",
+            Self::NoIntroPcXmlGzip => "no-intro-pc-xml+gzip",
         }
     }
 
@@ -206,6 +210,14 @@ impl DocumentStore {
             false,
             Some(FormatHint::MameSoftwareListXml),
         )
+    }
+
+    pub(crate) fn retain_path_no_intro_pc_xml(
+        &self,
+        source_key: PublishingSourceKey,
+        path: &Utf8Path,
+    ) -> crate::Result<RetainedDocument> {
+        self.retain_path_with_options(source_key, path, false, Some(FormatHint::NoIntroPcXml))
     }
 
     fn retain_path_with_options(
@@ -399,6 +411,12 @@ impl DocumentStore {
                 }
                 (FormatHint::ClrMameProText | FormatHint::ClrMameProTextGzip, true) => {
                     FormatHint::ClrMameProTextGzip
+                }
+                (FormatHint::NoIntroPcXml | FormatHint::NoIntroPcXmlGzip, false) => {
+                    FormatHint::NoIntroPcXml
+                }
+                (FormatHint::NoIntroPcXml | FormatHint::NoIntroPcXmlGzip, true) => {
+                    FormatHint::NoIntroPcXmlGzip
                 }
                 (_, false) => FormatHint::LogiqxXml,
                 (_, true) => FormatHint::LogiqxXmlGzip,

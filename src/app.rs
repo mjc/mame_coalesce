@@ -29,6 +29,7 @@ pub enum CatalogDocumentFormat {
     MameListXml,
     MameSoftwareListXml,
     ClrMamePro,
+    NoIntroPcXml,
 }
 
 impl CatalogDocumentFormat {
@@ -39,6 +40,7 @@ impl CatalogDocumentFormat {
             Self::MameListXml => "mame-listxml",
             Self::MameSoftwareListXml => "mame-softwarelist-xml",
             Self::ClrMamePro => "clrmamepro-dat",
+            Self::NoIntroPcXml => "no-intro-pc-xml",
         }
     }
 }

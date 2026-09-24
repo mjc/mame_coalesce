@@ -41,6 +41,14 @@ struct BytesRow {
 }
 
 #[derive(QueryableByName)]
+struct AssetHashesRow {
+    #[diesel(sql_type = Nullable<diesel::sql_types::Binary>)]
+    crc: Option<Vec<u8>>,
+    #[diesel(sql_type = Nullable<diesel::sql_types::Binary>)]
+    sha1: Option<Vec<u8>>,
+}
+
+#[derive(QueryableByName)]
 struct IntegerRow {
     #[diesel(sql_type = diesel::sql_types::BigInt)]
     value: i64,
@@ -50,6 +58,14 @@ struct IntegerRow {
 struct NullableIntegerRow {
     #[diesel(sql_type = Nullable<BigInt>)]
     value: Option<i64>,
+}
+
+#[derive(QueryableByName)]
+struct DiagnosticLocationRow {
+    #[diesel(sql_type = Nullable<BigInt>)]
+    source_line: Option<i64>,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    source_column: Option<i64>,
 }
 
 #[derive(QueryableByName)]
@@ -170,6 +186,19 @@ fn clrmamepro_request() -> Result<CatalogImportRequest, Box<dyn std::error::Erro
         "Synthetic ClrMamePro catalog",
     )?;
     request.format = CatalogDocumentFormat::ClrMamePro;
+    Ok(request)
+}
+
+fn no_intro_request() -> Result<CatalogImportRequest, Box<dyn std::error::Error>> {
+    let mut request = request(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures/catalog/no-intro/pc-xml-synthetic.xml"),
+        "no-intro",
+        "no-intro-pc-xml-fixture",
+        "Synthetic No-Intro P/C XML",
+    )?;
+    request.format = CatalogDocumentFormat::NoIntroPcXml;
+    request.scope = CatalogScope::Filtered(serde_json::json!({"fixture": "synthetic"}));
     Ok(request)
 }
 
@@ -308,6 +337,163 @@ fn publishing_completes_a_matching_identity_only_snapshot() -> Result<(), Box<dy
 }
 
 #[test]
+fn imports_no_intro_pc_xml_metadata_without_inventing_title_relationships()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (_directory, database, mut connection) = setup()?;
+    let request = no_intro_request()?;
+    let report = app::import_catalog(&database, &request)?;
+    let repeated = app::import_catalog(&database, &request)?;
+    assert_eq!(report.status, app::CatalogImportStatus::Succeeded);
+    assert_eq!(report.snapshot_key, repeated.snapshot_key);
+    let snapshot = report.snapshot_key.ok_or("No-Intro snapshot missing")?;
+
+    assert_eq!(count(&mut connection, "catalog_snapshots")?, 1);
+    assert_eq!(count(&mut connection, "snapshot_sets")?, 2);
+    assert_eq!(count(&mut connection, "asset_requirements")?, 2);
+    let hashed_requirements = sql_query(
+        "SELECT COUNT(*) AS count FROM asset_requirements \
+         WHERE snapshot_key = ? AND size = 4 AND crc IS NOT NULL AND sha1 IS NOT NULL",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<CountRow>(&mut connection)?;
+    assert_eq!(hashed_requirements.count, 1);
+    let hashes = sql_query(
+        "SELECT crc, sha1 FROM asset_requirements \
+         WHERE snapshot_key = ? AND asset_name = 'synthetic-cartridge.bin'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<AssetHashesRow>(&mut connection)?;
+    assert_eq!(hashes.crc, Some(vec![0x12, 0x34, 0x56, 0x78]));
+    assert_eq!(
+        hashes.sha1,
+        Some(vec![
+            0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
+            0xcd, 0xef, 0x01, 0x23, 0x45, 0x67,
+        ])
+    );
+
+    let snapshot_scope =
+        sql_query("SELECT scope_json AS value FROM catalog_snapshots WHERE snapshot_key = ?")
+            .bind::<Text, _>(snapshot.as_str())
+            .get_result::<TextRow>(&mut connection)?;
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&snapshot_scope.value)?,
+        serde_json::json!({"fixture": "synthetic"})
+    );
+    let declared_version =
+        sql_query("SELECT declared_version AS value FROM catalog_snapshots WHERE snapshot_key = ?")
+            .bind::<Text, _>(snapshot.as_str())
+            .get_result::<TextRow>(&mut connection)?;
+    assert_eq!(declared_version.value, "synthetic-2026-09-24");
+
+    let source_lineage =
+        sql_query("SELECT source_key AS value FROM catalogs WHERE catalog_key = ?")
+            .bind::<Text, _>("no-intro-pc-xml-fixture")
+            .get_result::<TextRow>(&mut connection)?;
+    assert_eq!(source_lineage.value, "no-intro");
+
+    let metadata = sql_query(
+        "SELECT metadata_json AS value FROM snapshot_sets \
+         WHERE snapshot_key = ? AND set_name = 'Synthetic Cartridge (Japan)'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(&mut connection)?;
+    let metadata: serde_json::Value = serde_json::from_str(&metadata.value)?;
+    assert_eq!(metadata["name_alt"], "合成カートリッジ (日本)");
+    assert_eq!(metadata["region"], "Japan");
+    assert_eq!(metadata["languages"], serde_json::json!(["Ja"]));
+    assert_eq!(metadata["version"], "1.0");
+    assert_eq!(metadata["bios"], serde_json::Value::Null);
+    assert_eq!(metadata["clone"], "1041");
+    assert_eq!(metadata["mergeof"], "1042");
+    let source_line = sql_query(
+        "SELECT source_line AS value FROM snapshot_sets \
+         WHERE snapshot_key = ? AND set_name = 'Synthetic Cartridge (Japan)'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<IntegerRow>(&mut connection)?;
+    assert!(source_line.value > 0);
+
+    let parent_metadata = sql_query(
+        "SELECT metadata_json AS value FROM snapshot_sets \
+         WHERE snapshot_key = ? AND set_name = 'Synthetic Cartridge (World)'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(&mut connection)?;
+    let parent_metadata: serde_json::Value = serde_json::from_str(&parent_metadata.value)?;
+    assert_eq!(parent_metadata["clone"], "P");
+    assert_eq!(parent_metadata["bios"], "0");
+
+    assert_no_intro_source_assertions(
+        &mut connection,
+        snapshot.as_str(),
+        &report.run_key.to_string(),
+    )?;
+
+    let retained_unknown = sql_query(
+        "SELECT raw_value_json AS value FROM snapshot_extensions \
+         WHERE snapshot_key = ? AND field_name = 'future-field'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(&mut connection)?;
+    assert_eq!(retained_unknown.value, "\"retained\"");
+
+    let document = sql_query(
+        "SELECT payload AS value FROM documents \
+         JOIN catalog_snapshots USING (document_key) WHERE snapshot_key = ?",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<BytesRow>(&mut connection)?;
+    assert_eq!(document.value, std::fs::read(&request.document_path)?);
+    let format_hint = sql_query(
+        "SELECT documents.format_hint AS value FROM documents \
+         JOIN catalog_snapshots USING (document_key) WHERE snapshot_key = ?",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<NullableTextRow>(&mut connection)?;
+    assert_eq!(format_hint.value.as_deref(), Some("no-intro-pc-xml"));
+
+    Ok(())
+}
+
+fn assert_no_intro_source_assertions(
+    connection: &mut SqliteConnection,
+    snapshot: &str,
+    run_key: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let relationships = sql_query(
+        "SELECT COUNT(*) AS count FROM snapshot_sets \
+         WHERE snapshot_key = ? AND parent_name IS NOT NULL",
+    )
+    .bind::<Text, _>(snapshot)
+    .get_result::<CountRow>(connection)?;
+    assert_eq!(relationships.count, 0);
+    let merge_links = sql_query(
+        "SELECT COUNT(*) AS count FROM asset_requirements \
+         WHERE snapshot_key = ? AND asset_name = 'synthetic-cartridge-jp.bin' \
+         AND merge_name IS NOT NULL",
+    )
+    .bind::<Text, _>(snapshot)
+    .get_result::<CountRow>(connection)?;
+    assert_eq!(merge_links.count, 0);
+    let raw_reference = sql_query(
+        "SELECT raw_value_json AS value FROM snapshot_extensions \
+         WHERE snapshot_key = ? AND field_name = 'clone' AND record_name = 'Synthetic Cartridge (Japan)'",
+    )
+    .bind::<Text, _>(snapshot)
+    .get_result::<TextRow>(connection)?;
+    assert_eq!(raw_reference.value, "\"1041\"");
+    let diagnostics = sql_query(
+        "SELECT COUNT(*) AS count FROM import_diagnostics \
+         WHERE run_key = ? AND field_name = 'clone' AND code = 'unsupported_attribute'",
+    )
+    .bind::<Text, _>(run_key)
+    .get_result::<CountRow>(connection)?;
+    assert_eq!(diagnostics.count, 2);
+    Ok(())
+}
+
+#[test]
 fn stale_identity_only_metadata_is_not_published_as_current()
 -> Result<(), Box<dyn std::error::Error>> {
     let (directory, database, mut connection) = setup()?;
@@ -358,6 +544,66 @@ fn stale_identity_only_metadata_is_not_published_as_current()
             .bind::<Text, _>(published_key)
             .get_result::<NullableTextRow>(&mut connection)?;
     assert_eq!(version.value.as_deref(), Some("2.0"));
+    Ok(())
+}
+
+#[test]
+fn malformed_no_intro_xml_does_not_publish_a_snapshot() -> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, mut connection) = setup()?;
+    let malformed_path = directory.path().join("malformed.xml");
+    std::fs::write(&malformed_path, b"<datafile><game name=\"incomplete\">")?;
+    let mut request = no_intro_request()?;
+    request.document_path = Utf8PathBuf::from_path_buf(malformed_path)
+        .map_err(|_| "non-UTF8 malformed fixture path")?;
+
+    let report = app::import_catalog(&database, &request)?;
+    assert_eq!(report.status, app::CatalogImportStatus::Failed);
+    assert!(report.snapshot_key.is_none());
+    assert_eq!(count(&mut connection, "catalog_snapshots")?, 0);
+    assert_eq!(count(&mut connection, "import_diagnostics")?, 1);
+    let location = sql_query("SELECT source_line, source_column FROM import_diagnostics")
+        .get_result::<DiagnosticLocationRow>(&mut connection)?;
+    assert!(location.source_line.is_some_and(|line| line > 0));
+    assert!(location.source_column.is_some_and(|column| column > 0));
+    Ok(())
+}
+
+#[test]
+fn malformed_no_intro_source_records_are_located_and_never_published()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, mut connection) = setup()?;
+    let invalid_reference_path = directory.path().join("invalid-reference.xml");
+    std::fs::write(
+        &invalid_reference_path,
+        b"<datafile>\n  <game name=\"bad-reference\" clone=\"not-an-id\"/>\n</datafile>",
+    )?;
+    let mut invalid_reference = no_intro_request()?;
+    invalid_reference.document_path = Utf8PathBuf::from_path_buf(invalid_reference_path)
+        .map_err(|_| "non-UTF8 invalid-reference path")?;
+    let report = app::import_catalog(&database, &invalid_reference)?;
+    assert_eq!(report.status, app::CatalogImportStatus::Failed);
+    assert!(report.snapshot_key.is_none());
+
+    let duplicate_path = directory.path().join("duplicate-archives.xml");
+    std::fs::write(
+        &duplicate_path,
+        b"<datafile>\n  <game name=\"same-archive\"/>\n  <game name=\"same-archive\"/>\n</datafile>",
+    )?;
+    let mut duplicate = no_intro_request()?;
+    duplicate.document_path = Utf8PathBuf::from_path_buf(duplicate_path)
+        .map_err(|_| "non-UTF8 duplicate-archive path")?;
+    let report = app::import_catalog(&database, &duplicate)?;
+    assert_eq!(report.status, app::CatalogImportStatus::Failed);
+    assert!(report.snapshot_key.is_none());
+    assert_eq!(count(&mut connection, "catalog_snapshots")?, 0);
+    assert_eq!(count(&mut connection, "import_diagnostics")?, 2);
+
+    let located = sql_query(
+        "SELECT COUNT(*) AS count FROM import_diagnostics \
+         WHERE source_line IS NOT NULL AND source_column IS NOT NULL",
+    )
+    .get_result::<CountRow>(&mut connection)?;
+    assert_eq!(located.count, 2);
     Ok(())
 }
 
