@@ -1,0 +1,258 @@
+{
+  "schema_version": 1,
+  "fixtures": [
+    {
+      "id": "logiqx-catalog-a-snapshot-1",
+      "path": "fixtures/catalog/logiqx/catalog-a-v1.dat",
+      "format": "logiqx",
+      "dialect": "Logiqx DAT XML",
+      "version": "snapshot-1",
+      "source_reference": "https://github.com/logiqx/datfiles",
+      "license": "CC0-1.0",
+      "provenance": "Synthetic fixture authored for this repository; contains no ROM payload.",
+      "sha1": "a1e4013e4f0c9559e9617609307d635210df6036",
+      "parser_status": "logiqx-supported",
+      "scope": "Complete synthetic catalog A snapshot 1.",
+      "normalized_facts": [
+        "Catalog A has set alpha with two ROM requirements.",
+        "a-cart.bin and localized-cart.bin in catalog B share compatible size and digests.",
+        "disputed.bin is intentionally contradicted by catalog B and later changes in snapshot 2."
+      ],
+      "retained_raw_fields": ["header.name", "header.version", "game.name", "game.cloneof", "game.sourcefile", "game.isbios", "game.romof", "game.sampleof", "game.board", "game.rebuildto", "game.description", "game.year", "game.manufacturer", "game.device_ref", "rom.name", "rom.size", "rom.crc", "rom.sha1", "rom.status", "rom.serial", "rom.date"],
+      "expected_adapter_fields": [],
+      "unsupported_semantics": ["No ROM bytes are included; matching or global identity adjudication is out of scope."],
+      "expected_diagnostics": [],
+      "expected": {
+        "name": "Synthetic Catalog A",
+        "version": "snapshot-1",
+        "games": [
+          {
+            "name": "alpha",
+            "clone_of": "parent",
+            "sourcefile": "alpha.cpp",
+            "isbios": "yes",
+            "rom_of": "bios",
+            "sample_of": "samples",
+            "description": "Alpha fixture set",
+            "year": "1998",
+            "manufacturer": "Example Works",
+            "board": "synthetic",
+            "rebuild_to": "alpha-rebuilt",
+            "device_refs": ["fixture-sound"],
+            "roms": [
+              {"name": "a-cart.bin", "size": 16, "crc": "12345678", "sha1": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "merge": null, "status": null},
+              {"name": "disputed.bin", "size": 32, "crc": "11111111", "sha1": "1111111111111111111111111111111111111111", "merge": null, "status": "good", "serial": "SYN-001", "date": "2024-01"}
+            ]
+          }
+        ]
+      },
+      "expected_error_contains": null
+    },
+    {
+      "id": "logiqx-catalog-a-snapshot-2",
+      "path": "fixtures/catalog/logiqx/catalog-a-v2.dat",
+      "format": "logiqx",
+      "dialect": "Logiqx DAT XML",
+      "version": "snapshot-2",
+      "source_reference": "https://github.com/logiqx/datfiles",
+      "license": "CC0-1.0",
+      "provenance": "Synthetic fixture authored for this repository; contains no ROM payload.",
+      "sha1": "659da0f61ce70c8ee425ba61a2914b31aab83725",
+      "parser_status": "logiqx-supported",
+      "scope": "Complete later snapshot of the same synthetic catalog as snapshot 1.",
+      "normalized_facts": [
+        "Catalog identity label remains Synthetic Catalog A.",
+        "disputed.bin changes expected CRC, SHA1, and status from snapshot 1.",
+        "a-cart.bin remains unchanged from snapshot 1."
+      ],
+      "retained_raw_fields": ["header.name", "header.version", "game.name", "game.cloneof", "game.sourcefile", "game.isbios", "game.romof", "game.sampleof", "game.board", "game.rebuildto", "game.description", "game.year", "game.manufacturer", "game.device_ref", "rom.name", "rom.size", "rom.crc", "rom.sha1", "rom.status", "rom.serial", "rom.date"],
+      "expected_adapter_fields": [],
+      "unsupported_semantics": ["Snapshot persistence/history is implemented by a later ticket, not this fixture ticket."],
+      "expected_diagnostics": [],
+      "expected": {
+        "name": "Synthetic Catalog A",
+        "version": "snapshot-2",
+        "games": [
+          {
+            "name": "alpha",
+            "clone_of": "parent",
+            "sourcefile": "alpha.cpp",
+            "isbios": "yes",
+            "rom_of": "bios",
+            "sample_of": "samples",
+            "description": "Alpha fixture set",
+            "year": "1998",
+            "manufacturer": "Example Works",
+            "board": "synthetic",
+            "rebuild_to": "alpha-rebuilt",
+            "device_refs": ["fixture-sound"],
+            "roms": [
+              {"name": "a-cart.bin", "size": 16, "crc": "12345678", "sha1": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "merge": null, "status": null},
+              {"name": "disputed.bin", "size": 32, "crc": "22222222", "sha1": "2222222222222222222222222222222222222222", "merge": null, "status": "verified", "serial": "SYN-001", "date": "2024-01"}
+            ]
+          }
+        ]
+      },
+      "expected_error_contains": null
+    },
+    {
+      "id": "logiqx-catalog-b-overlap-and-conflict",
+      "path": "fixtures/catalog/logiqx/catalog-b.dat",
+      "format": "logiqx",
+      "dialect": "Logiqx DAT XML",
+      "version": "snapshot-1",
+      "source_reference": "https://github.com/logiqx/datfiles",
+      "license": "CC0-1.0",
+      "provenance": "Synthetic fixture authored for this repository; contains no ROM payload.",
+      "sha1": "d427ef08fcdedc7e6a24eb6e0255b71860223cf7",
+      "parser_status": "logiqx-supported",
+      "scope": "Independent catalog B; names are intentionally not canonical cross-catalog identities.",
+      "normalized_facts": [
+        "localized-cart.bin is compatible with catalog A's a-cart.bin by size, CRC, and SHA1.",
+        "disputed.bin disagrees with catalog A's same-named requirement.",
+        "future-policy is an unsupported attribute that the current parser ignores; no retention is claimed."
+      ],
+      "retained_raw_fields": ["header.name", "header.version", "game.name", "game.description", "rom.name", "rom.size", "rom.crc", "rom.sha1", "rom.status"],
+      "expected_adapter_fields": [],
+      "unsupported_semantics": ["game.@future-policy is outside the current DTO; its retention or diagnostic behavior is not asserted by this fixture."],
+      "expected_diagnostics": [],
+      "expected": {
+        "name": "Synthetic Catalog B",
+        "version": "snapshot-1",
+        "games": [
+          {
+            "name": "alpha-alias",
+            "clone_of": null,
+            "description": "Overlapping fixture set with a different local name",
+            "device_refs": [],
+            "roms": [
+              {"name": "localized-cart.bin", "size": 16, "crc": "12345678", "sha1": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "merge": null, "status": null},
+              {"name": "disputed.bin", "size": 32, "crc": "33333333", "sha1": "3333333333333333333333333333333333333333", "merge": null, "status": "good"}
+            ]
+          }
+        ]
+      },
+      "expected_error_contains": null
+    },
+    {
+      "id": "logiqx-catalog-a-filtered-alpha",
+      "path": "fixtures/catalog/logiqx/catalog-a-filtered.dat",
+      "format": "logiqx",
+      "dialect": "Logiqx DAT XML",
+      "version": "snapshot-2-filter-alpha",
+      "source_reference": "https://github.com/logiqx/datfiles",
+      "license": "CC0-1.0",
+      "provenance": "Synthetic filtered export authored for this repository; contains no ROM payload.",
+      "sha1": "d5d6e4e4bdbd0c47401136dd37270b1556b49cbf",
+      "parser_status": "logiqx-supported",
+      "scope": "Only set alpha is included. Absence of other sets means out-of-scope for this export, not deletion.",
+      "normalized_facts": [
+        "The export contains alpha and a-cart.bin only.",
+        "disputed.bin is omitted by filter scope and must not imply catalog-wide removal."
+      ],
+      "retained_raw_fields": ["header.name", "header.description", "header.version", "game.name", "rom.name", "rom.size", "rom.crc", "rom.sha1"],
+      "expected_adapter_fields": [],
+      "unsupported_semantics": ["The Logiqx parser does not assign durable filtered-export scope; this fixture records it for later import work."],
+      "expected_diagnostics": [],
+      "expected": {
+        "name": "Synthetic Catalog A filtered export",
+        "version": "snapshot-2-filter-alpha",
+        "games": [
+          {
+            "name": "alpha",
+            "clone_of": "parent",
+            "sourcefile": "alpha.cpp",
+            "description": "Alpha fixture set",
+            "year": "1998",
+            "manufacturer": "Example Works",
+            "device_refs": [],
+            "roms": [
+              {"name": "a-cart.bin", "size": 16, "crc": "12345678", "sha1": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "merge": null, "status": null}
+            ]
+          }
+        ]
+      },
+      "expected_error_contains": null
+    },
+    {
+      "id": "logiqx-malformed-xml",
+      "path": "fixtures/catalog/logiqx/malformed.dat",
+      "format": "logiqx",
+      "dialect": "Logiqx DAT XML",
+      "version": "invalid-fixture-v1",
+      "source_reference": "https://github.com/logiqx/datfiles",
+      "license": "CC0-1.0",
+      "provenance": "Synthetic truncated XML authored for this repository; contains no ROM payload.",
+      "sha1": "e6e0f4fa50245eefbdbf4ffd2807a38d0c93c0a7",
+      "parser_status": "malformed-logiqx",
+      "scope": "Invalid document; no catalog facts should be accepted.",
+      "normalized_facts": ["Parsing must reject the truncated ROM/game/document."],
+      "retained_raw_fields": [],
+      "expected_adapter_fields": [],
+      "unsupported_semantics": ["No partial import or persistence behavior is asserted."],
+      "expected_diagnostics": ["The XML parser reports unexpected end of stream."],
+      "expected": null,
+      "expected_error_contains": "end of stream"
+    },
+    {
+      "id": "mame-machine-relationships",
+      "path": "fixtures/catalog/mame/machine.xml",
+      "format": "mame-listxml",
+      "dialect": "MAME -listxml machine XML synthetic subset",
+      "version": "synthetic-v1",
+      "source_reference": "https://docs.mamedev.org/commandline/commandline-all.html#listxml-lx-pattern",
+      "license": "CC0-1.0",
+      "provenance": "Synthetic fixture authored for this repository from documented element relationships; contains no ROM payload.",
+      "sha1": "87e5cc682a706734bedefacb482890008651d4f0",
+      "parser_status": "fixture-only",
+      "scope": "Machine/device/BIOS sample only; it makes no software-list claims.",
+      "normalized_facts": ["demo_machine references demo_bios and device demo_sound.", "The BIOS ROM metadata belongs to maincpu region."],
+      "retained_raw_fields": [],
+      "expected_adapter_fields": ["machine.name", "machine.sourcefile", "biosset.name", "rom.region", "rom.bios", "device_ref.name"],
+      "unsupported_semantics": ["No production MAME machine XML adapter exists in this ticket."],
+      "expected_diagnostics": [],
+      "expected": null,
+      "expected_error_contains": null
+    },
+    {
+      "id": "clrmamepro-synthetic-subset",
+      "path": "fixtures/catalog/clrmamepro/sample.dat",
+      "format": "clrmamepro-dat",
+      "dialect": "ClrMamePro parenthesized DAT synthetic subset",
+      "version": "synthetic-subset-v1",
+      "source_reference": "https://www.clrmame.pro/en/profiler",
+      "license": "CC0-1.0",
+      "provenance": "Synthetic fixture authored for this repository; contains no ROM payload and does not assert a formal grammar.",
+      "sha1": "0b9bcb004216b7ced774967550b1f8c96cf5df06",
+      "parser_status": "fixture-only",
+      "scope": "One set and one ROM in a deliberately small ClrMamePro-shaped DAT.",
+      "normalized_facts": ["The subset declares Synthetic Catalog, demo_set, and demo.bin with size 16 and CRC 12345678."],
+      "retained_raw_fields": [],
+      "expected_adapter_fields": ["clrmamepro.name", "game.name", "game.description", "rom.name", "rom.size", "rom.crc"],
+      "unsupported_semantics": ["No production ClrMamePro adapter or complete grammar is asserted."],
+      "expected_diagnostics": [],
+      "expected": null,
+      "expected_error_contains": null
+    },
+    {
+      "id": "mame-software-list-parts",
+      "path": "fixtures/catalog/mame/software-list.xml",
+      "format": "mame-softwarelist-xml",
+      "dialect": "MAME software-list XML synthetic subset",
+      "version": "synthetic-v1",
+      "source_reference": "https://docs.mamedev.org/contributing/softlist.html",
+      "license": "CC0-1.0",
+      "provenance": "Synthetic fixture authored for this repository from documented element relationships; contains no ROM payload.",
+      "sha1": "2a2c17c40384dcb24d45a1c61f8c2cda05b2feae",
+      "parser_status": "fixture-only",
+      "scope": "One software item, one part/interface, and one dataarea ROM reference.",
+      "normalized_facts": ["demo_game belongs to demo_cart; part cart uses interface demo_cart and has a 16-byte program.bin reference."],
+      "retained_raw_fields": [],
+      "expected_adapter_fields": ["softwarelist.name", "software.name", "part.name", "part.interface", "dataarea.name", "dataarea.size", "rom.name", "rom.size", "rom.crc"],
+      "unsupported_semantics": ["No production software-list XML adapter or disk/feature/dependency behavior is asserted."],
+      "expected_diagnostics": [],
+      "expected": null,
+      "expected_error_contains": null
+    }
+  ]
+}

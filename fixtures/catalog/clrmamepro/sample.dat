@@ -1,0 +1,9 @@
+; Synthetic subset only; no formal ClrMamePro specification is asserted.
+clrmamepro (
+ name "Synthetic Catalog"
+)
+game (
+ name "demo_set"
+ description "Synthetic set"
+ rom ( name "demo.bin" size 16 crc 12345678 )
+)

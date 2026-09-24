@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<!DOCTYPE mame>
+<mame build="synthetic" debug="no" mameconfig="10">
+  <machine name="demo_machine" sourcefile="demo.cpp">
+    <description>Synthetic Machine</description>
+    <year>2000</year>
+    <manufacturer>Example</manufacturer>
+    <biosset name="demo_bios" description="Demo BIOS" default="yes" />
+    <rom name="demo_bios.bin" size="16" crc="12345678" sha1="0123456789abcdef0123456789abcdef01234567" region="maincpu" bios="demo_bios" />
+    <device_ref name="demo_sound" />
+  </machine>
+  <machine name="demo_sound" sourcefile="sound.cpp" isdevice="yes" runnable="no">
+    <description>Synthetic Sound Device</description>
+  </machine>
+</mame>
