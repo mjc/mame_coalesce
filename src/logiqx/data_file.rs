@@ -151,9 +151,9 @@ mod tests {
             .first()
             .ok_or_else(|| io::Error::other("missing game"))?;
         assert_eq!(game.name(), "pong");
-        assert_eq!(game.sourcefile(), "pong.c");
-        assert_eq!(game.year(), "1972");
-        assert_eq!(game.manufacturer(), "Atari");
+        assert_eq!(game.sourcefile_opt(), Some("pong.c"));
+        assert_eq!(game.year_opt(), Some("1972"));
+        assert_eq!(game.manufacturer_opt(), Some("Atari"));
         assert!(game.cloneof().is_none());
         Ok(())
     }
@@ -170,13 +170,16 @@ mod tests {
             .first()
             .ok_or_else(|| io::Error::other("missing rom"))?;
         assert_eq!(rom.name(), "pong.rom");
-        assert_eq!(rom.size(), 4096);
+        assert_eq!(rom.size(), Some(4096));
         assert_eq!(
-            hex::encode(rom.sha1()),
+            hex::encode(rom.sha1().ok_or("missing SHA1")?),
             "a9993e364706816aba3e25717850c26c9cd0d89d"
         );
-        assert_eq!(hex::encode(rom.md5()), "900150983cd24fb0d6963f7d28e17f72");
-        assert_eq!(hex::encode(rom.crc()), "12345678");
+        assert_eq!(
+            hex::encode(rom.md5().ok_or("missing MD5")?),
+            "900150983cd24fb0d6963f7d28e17f72"
+        );
+        assert_eq!(hex::encode(rom.crc().ok_or("missing CRC")?), "12345678");
         Ok(())
     }
 
@@ -239,10 +242,68 @@ mod tests {
         assert_eq!(df.debug(), Some("no"));
         assert!(df.file_name().is_none());
         assert!(df.sha1().is_none());
-        assert_eq!(game.sourcefile(), "");
-        assert_eq!(game.isbios(), "");
+        assert_eq!(game.sourcefile_opt(), None);
+        assert_eq!(game.isbios_opt(), None);
         assert_eq!(game.cloneof(), None);
         assert!(game.roms().is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn optional_rom_metadata_and_partial_hashes_are_preserved()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dat = r#"<datafile><header><name>Optional</name></header>
+<game name="partial"><rom name="large.bin" size="4294967296" crc="ABCDEF01"/></game>
+</datafile>"#;
+        let df = DataFile::from_reader(dat.as_bytes())?;
+        let rom = &df.games()[0].roms()[0];
+        assert_eq!(rom.size(), Some(4_294_967_296));
+        assert_eq!(rom.crc(), Some(&[0xab, 0xcd, 0xef, 0x01][..]));
+        assert_eq!(rom.md5(), None);
+        assert_eq!(rom.sha1(), None);
+        assert_eq!(rom.merge(), None);
+        assert_eq!(rom.status(), None);
+        assert_eq!(rom.serial(), None);
+        assert_eq!(rom.date(), None);
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_supplied_hashes_are_rejected() {
+        for (attribute, value) in [("crc", "xyz"), ("md5", "xyz"), ("sha1", "xyz")] {
+            let dat = format!(
+                "<datafile><header><name>Bad</name></header><game name=\"g\"><rom name=\"r\" size=\"1\" {attribute}=\"{value}\"/></game></datafile>"
+            );
+            assert!(
+                DataFile::from_reader(dat.as_bytes()).is_err(),
+                "{attribute}"
+            );
+        }
+    }
+
+    #[test]
+    fn game_metadata_is_optional_and_device_relationships_are_kept()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dat = r#"<datafile><header><name>Game metadata</name></header>
+<game name="machine" cloneof="parent" romof="bios" sampleof="samples" isbios="yes">
+  <device_ref name="sound-chip"/>
+</game><game name="minimal"/>
+</datafile>"#;
+        let df = DataFile::from_reader(dat.as_bytes())?;
+        let game = &df.games()[0];
+        assert_eq!(game.isbios_opt(), Some("yes"));
+        assert_eq!(game.romof_opt(), Some("bios"));
+        assert_eq!(game.sampleof_opt(), Some("samples"));
+        assert_eq!(game.device_refs().collect::<Vec<_>>(), ["sound-chip"]);
+        let minimal = &df.games()[1];
+        assert_eq!(minimal.sourcefile_opt(), None);
+        assert_eq!(minimal.isbios_opt(), None);
+        assert_eq!(minimal.romof_opt(), None);
+        assert_eq!(minimal.sampleof_opt(), None);
+        assert_eq!(minimal.board_opt(), None);
+        assert_eq!(minimal.rebuildto_opt(), None);
+        assert_eq!(minimal.year_opt(), None);
+        assert_eq!(minimal.manufacturer_opt(), None);
         Ok(())
     }
 

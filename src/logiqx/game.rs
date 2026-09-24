@@ -6,90 +6,98 @@ use super::Rom;
 pub struct Game {
     #[serde(rename = "@name")]
     name: String,
-    #[serde(rename = "@sourcefile", default)]
-    sourcefile: String,
-    #[serde(rename = "@isbios", default)]
-    isbios: String,
-    #[serde(rename = "@cloneof", default)]
+    #[serde(rename = "@sourcefile")]
+    sourcefile: Option<String>,
+    #[serde(rename = "@isbios")]
+    isbios: Option<String>,
+    #[serde(rename = "@cloneof")]
     cloneof: Option<String>,
-    #[serde(rename = "@romof", default)]
-    romof: String,
-    #[serde(rename = "@sampleof", default)]
-    sampleof: String,
-    #[serde(rename = "@board", default)]
-    board: String,
-    #[serde(rename = "@rebuildto", default)]
-    rebuildto: String,
+    #[serde(rename = "@romof")]
+    romof: Option<String>,
+    #[serde(rename = "@sampleof")]
+    sampleof: Option<String>,
+    #[serde(rename = "@board")]
+    board: Option<String>,
+    #[serde(rename = "@rebuildto")]
+    rebuildto: Option<String>,
     #[serde(default)]
-    year: String, // should probably be a DateTime
+    description: Option<String>,
     #[serde(default)]
-    manufacturer: String,
+    year: Option<String>,
+    #[serde(default)]
+    manufacturer: Option<String>,
+    #[serde(rename = "device_ref", default)]
+    device_refs: Vec<DeviceRef>,
     #[serde(rename = "rom", default)]
     roms: Vec<Rom>,
 }
 
+#[derive(Debug, Deserialize)]
+struct DeviceRef {
+    #[serde(rename = "@name")]
+    name: String,
+}
+
 impl Game {
-    /// Get a reference to the game's name.
     #[must_use]
     pub fn name(&self) -> &str {
-        self.name.as_ref()
+        &self.name
     }
 
-    /// Get a reference to the game's sourcefile.
     #[must_use]
-    pub fn sourcefile(&self) -> &str {
-        self.sourcefile.as_ref()
+    pub fn sourcefile_opt(&self) -> Option<&str> {
+        self.sourcefile.as_deref()
     }
 
-    /// Get a reference to the game's isbios.
     #[must_use]
-    pub fn isbios(&self) -> &str {
-        self.isbios.as_ref()
+    pub fn isbios_opt(&self) -> Option<&str> {
+        self.isbios.as_deref()
     }
 
-    /// Get a reference to the game's romof.
     #[must_use]
-    pub fn romof(&self) -> &str {
-        self.romof.as_ref()
+    pub fn romof_opt(&self) -> Option<&str> {
+        self.romof.as_deref()
     }
 
-    /// Get a reference to the game's sampleof.
     #[must_use]
-    pub fn sampleof(&self) -> &str {
-        self.sampleof.as_ref()
+    pub fn sampleof_opt(&self) -> Option<&str> {
+        self.sampleof.as_deref()
     }
 
-    /// Get a reference to the game's board.
     #[must_use]
-    pub fn board(&self) -> &str {
-        self.board.as_ref()
+    pub fn board_opt(&self) -> Option<&str> {
+        self.board.as_deref()
     }
 
-    /// Get a reference to the game's rebuildto.
     #[must_use]
-    pub fn rebuildto(&self) -> &str {
-        self.rebuildto.as_ref()
+    pub fn rebuildto_opt(&self) -> Option<&str> {
+        self.rebuildto.as_deref()
     }
 
-    /// Get a reference to the game's year.
     #[must_use]
-    pub fn year(&self) -> &str {
-        self.year.as_ref()
+    pub fn description_opt(&self) -> Option<&str> {
+        self.description.as_deref()
     }
 
-    /// Get a reference to the game's manufacturer.
     #[must_use]
-    pub fn manufacturer(&self) -> &str {
-        self.manufacturer.as_ref()
+    pub fn year_opt(&self) -> Option<&str> {
+        self.year.as_deref()
     }
 
-    /// Get a reference to the game's roms.
+    #[must_use]
+    pub fn manufacturer_opt(&self) -> Option<&str> {
+        self.manufacturer.as_deref()
+    }
+
+    pub fn device_refs(&self) -> impl Iterator<Item = &str> {
+        self.device_refs.iter().map(|device| device.name.as_str())
+    }
+
     #[must_use]
     pub fn roms(&self) -> &[Rom] {
-        self.roms.as_ref()
+        &self.roms
     }
 
-    /// Get a reference to the game's cloneof.
     #[must_use]
     pub fn cloneof(&self) -> Option<&str> {
         self.cloneof.as_deref()

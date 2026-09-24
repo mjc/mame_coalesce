@@ -100,7 +100,7 @@ fn insert_games_and_roms(
     conn: &mut SqliteConnection,
     logiqx_data_file: &logiqx::DataFile,
     data_file_id: i32,
-) -> QueryResult<()> {
+) -> crate::Result<()> {
     use crate::storage::schema::{games::dsl as games_dsl, roms::dsl as roms_dsl};
     use diesel::replace_into;
 
@@ -117,11 +117,12 @@ fn insert_games_and_roms(
             .first(conn)?;
 
         game.roms().iter().try_for_each(|rom| {
-            let new_rom = NewRom::from_logiqx(rom, game_id);
+            let new_rom = NewRom::from_logiqx(rom, game_id)?;
             replace_into(roms_dsl::roms).values(new_rom).execute(conn)?;
-            Ok(())
+            Ok::<_, crate::Error>(())
         })
-    })
+    })?;
+    Ok(())
 }
 
 fn update_parent_links(conn: &mut SqliteConnection, data_file_id: i32) -> QueryResult<usize> {

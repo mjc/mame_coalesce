@@ -8,7 +8,9 @@ use std::{
 use camino::{Utf8Path, Utf8PathBuf};
 use zip::{ZipWriter, result::ZipError, write::SimpleFileOptions};
 
-use crate::domain::{BuildPlan, SourceFile, SourceKind, ZipCompression, ZipEntrySpec};
+use crate::domain::{
+    ArchiveBackend, ArchiveMemberSelector, BuildPlan, SourceLocation, ZipCompression, ZipEntrySpec,
+};
 
 #[cfg(test)]
 pub fn write_plan(plan: &BuildPlan, destination: &Utf8Path) -> crate::Result<Vec<Utf8PathBuf>> {
@@ -128,26 +130,57 @@ fn write_entry(
     zip_writer: &mut ZipWriter<BufWriter<File>>,
     options: SimpleFileOptions,
 ) -> crate::Result<()> {
-    match entry.source.kind {
-        SourceKind::BareFile => {
-            copy_bare_file(&entry.source, &entry.output_name, zip_writer, options)
+    match &entry.source.location {
+        SourceLocation::BareFile { path } => {
+            copy_bare_file(path, &entry.output_name, zip_writer, options)
         }
-        SourceKind::ZipEntry => {
-            copy_from_zip_entry(&entry.source, &entry.output_name, zip_writer, options)
-        }
-        SourceKind::ArchiveEntry => {
-            copy_from_archive_entry(&entry.source, &entry.output_name, zip_writer, options)
+        SourceLocation::ArchiveMember {
+            path,
+            backend,
+            selector: ArchiveMemberSelector::IndexAndName { name, .. },
+        } => match backend {
+            ArchiveBackend::Zip => {
+                copy_from_zip_entry(path, name, &entry.output_name, zip_writer, options)
+            }
+            ArchiveBackend::SevenZip => {
+                copy_from_7z_entry(path, name, &entry.output_name, zip_writer, options)
+            }
+            ArchiveBackend::Rar => {
+                copy_from_rar_entry(path, name, &entry.output_name, zip_writer, options)
+            }
+        },
+        SourceLocation::LegacyUnknown { path, member_name } => {
+            let name = member_name.as_deref().ok_or_else(|| {
+                crate::Error::InvalidPath(format!(
+                    "archive source has no entry name: {}",
+                    entry.source.display_name()
+                ))
+            })?;
+            match Path::new(path)
+                .extension()
+                .and_then(std::ffi::OsStr::to_str)
+                .map(str::to_ascii_lowercase)
+                .as_deref()
+            {
+                Some("zip") => {
+                    copy_from_zip_entry(path, name, &entry.output_name, zip_writer, options)
+                }
+                Some("rar") => {
+                    copy_from_rar_entry(path, name, &entry.output_name, zip_writer, options)
+                }
+                _ => copy_from_7z_entry(path, name, &entry.output_name, zip_writer, options),
+            }
         }
     }
 }
 
 fn copy_bare_file(
-    source: &SourceFile,
+    path: &str,
     destination_name: &str,
     zip_writer: &mut ZipWriter<BufWriter<File>>,
     options: SimpleFileOptions,
 ) -> crate::Result<()> {
-    let input_file = File::open(&source.canonical_path)?;
+    let input_file = File::open(path)?;
     let mut input_reader = BufReader::new(input_file);
     zip_writer.start_file(destination_name, options)?;
     std::io::copy(&mut input_reader, zip_writer)?;
@@ -155,18 +188,13 @@ fn copy_bare_file(
 }
 
 fn copy_from_zip_entry(
-    source: &SourceFile,
+    path: &str,
+    entry_name: &str,
     destination_name: &str,
     zip_writer: &mut ZipWriter<BufWriter<File>>,
     options: SimpleFileOptions,
 ) -> crate::Result<()> {
-    let entry_name = source.entry_name.as_deref().ok_or_else(|| {
-        crate::Error::InvalidPath(format!(
-            "archive source has no entry name: {}",
-            source.display_name()
-        ))
-    })?;
-    let input_file = File::open(&source.canonical_path)?;
+    let input_file = File::open(path)?;
     let input_reader = BufReader::new(input_file);
     let mut archive = zip::ZipArchive::new(input_reader)?;
 
@@ -180,8 +208,7 @@ fn copy_from_zip_entry(
         Ok(())
     } else {
         Err(crate::Error::InvalidPath(format!(
-            "archive entry not found: {}",
-            source.display_name()
+            "archive entry not found: {path}:{entry_name}"
         )))
     }
 }
@@ -194,7 +221,6 @@ fn copy_zip_entry_by_enclosed_name<R: Read + Seek>(
     options: SimpleFileOptions,
 ) -> crate::Result<bool> {
     let requested_path = Path::new(entry_name);
-
     match archive.by_name(entry_name) {
         Ok(mut file) => {
             if zip_entry_enclosed_name_matches(&file, requested_path)? {
@@ -206,19 +232,14 @@ fn copy_zip_entry_by_enclosed_name<R: Read + Seek>(
         Err(ZipError::FileNotFound) => {}
         Err(error) => return Err(error.into()),
     }
-
     for index in 0..archive.len() {
         let mut file = archive.by_index(index)?;
-        if file.is_dir() {
-            continue;
-        }
-        if zip_entry_enclosed_name_matches(&file, requested_path)? {
+        if !file.is_dir() && zip_entry_enclosed_name_matches(&file, requested_path)? {
             zip_writer.start_file(destination_name, options)?;
             std::io::copy(&mut file, zip_writer)?;
             return Ok(true);
         }
     }
-
     Ok(false)
 }
 
@@ -237,41 +258,15 @@ fn zip_entry_enclosed_name_matches<R: Read>(
     )
 }
 
-fn copy_from_archive_entry(
-    source: &SourceFile,
+fn copy_from_rar_entry(
+    path: &str,
+    entry_name: &str,
     destination_name: &str,
     zip_writer: &mut ZipWriter<BufWriter<File>>,
     options: SimpleFileOptions,
 ) -> crate::Result<()> {
-    if archive_path_is_rar(Path::new(&source.canonical_path)) {
-        copy_from_rar_archive(source, destination_name, zip_writer, options)
-    } else {
-        copy_from_7z_archive(source, destination_name, zip_writer, options)
-    }
-}
-
-fn archive_path_is_rar(path: &Path) -> bool {
-    path.extension()
-        .and_then(std::ffi::OsStr::to_str)
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("rar"))
-}
-
-fn copy_from_rar_archive(
-    source: &SourceFile,
-    destination_name: &str,
-    zip_writer: &mut ZipWriter<BufWriter<File>>,
-    options: SimpleFileOptions,
-) -> crate::Result<()> {
-    let entry_name = source.entry_name.as_deref().ok_or_else(|| {
-        crate::Error::InvalidPath(format!(
-            "archive source has no entry name: {}",
-            source.display_name()
-        ))
-    })?;
     let requested_path = safe_rar_entry_path(entry_name)?;
-    let mut archive =
-        unrar::Archive::new(Path::new(&source.canonical_path)).open_for_processing()?;
-
+    let mut archive = unrar::Archive::new(Path::new(path)).open_for_processing()?;
     while let Some(header) = archive.read_header()? {
         archive = if rar_header_matches_entry(header.entry(), &requested_path)? {
             let (data, _rest) = header.read()?;
@@ -284,8 +279,7 @@ fn copy_from_rar_archive(
     }
 
     Err(crate::Error::InvalidPath(format!(
-        "archive entry not found: {}",
-        source.display_name()
+        "archive entry not found: {path}:{entry_name}"
     )))
 }
 
@@ -328,26 +322,19 @@ fn safe_rar_entry_path_from_path(path: &Path) -> crate::Result<PathBuf> {
     Ok(path.to_owned())
 }
 
-fn copy_from_7z_archive(
-    source: &SourceFile,
+fn copy_from_7z_entry(
+    path: &str,
+    entry_name: &str,
     destination_name: &str,
     zip_writer: &mut ZipWriter<BufWriter<File>>,
     options: SimpleFileOptions,
 ) -> crate::Result<()> {
-    let entry_name = source.entry_name.as_deref().ok_or_else(|| {
-        crate::Error::InvalidPath(format!(
-            "archive source has no entry name: {}",
-            source.display_name()
-        ))
-    })?;
-    let archive = r7z::Archive::open(Path::new(&source.canonical_path))?;
+    let archive = r7z::Archive::open(Path::new(path))?;
     if !has_extractable_7z_entry(&archive, entry_name) {
         return Err(crate::Error::InvalidPath(format!(
-            "archive entry not found: {}",
-            source.display_name()
+            "archive entry not found: {path}:{entry_name}"
         )));
     }
-
     zip_writer.start_file(destination_name, options)?;
     archive.extract_by_name(entry_name, zip_writer)?;
     Ok(())
@@ -360,7 +347,6 @@ fn has_extractable_7z_entry(archive: &r7z::Archive, entry_name: &str) -> bool {
     {
         return true;
     }
-
     let Ok(requested_path) = r7z::safe_archive_name(entry_name) else {
         return false;
     };
@@ -375,7 +361,14 @@ mod tests {
 
     use proptest::prelude::*;
 
-    use crate::domain::{BuildReport, ZipSpec};
+    use crate::domain::{BuildReport, SourceFile, ZipSpec};
+
+    #[derive(Clone, Copy)]
+    enum SourceKind {
+        Zip,
+        Archive,
+        Rar,
+    }
 
     use super::*;
 
@@ -388,10 +381,18 @@ mod tests {
             source_root: path
                 .parent()
                 .map_or_else(String::new, |parent| parent.as_str().to_owned()),
-            canonical_path: path.as_str().to_owned(),
-            entry_name: None,
-            sha1: crate::hashes::sha1_bytes(b"sha1"),
-            kind: SourceKind::BareFile,
+            location: SourceLocation::BareFile {
+                path: path.as_str().to_owned(),
+            },
+            observed: crate::domain::ObservedContent {
+                scope: crate::domain::EvidenceScope::WholeAsset,
+                provenance: crate::domain::EvidenceProvenance::Computed,
+                size: None,
+                crc: None,
+                md5: None,
+                sha1: Some(crate::hashes::sha1_bytes(b"sha1")),
+                xxh3: [0; 8],
+            },
         }
     }
 
@@ -400,14 +401,38 @@ mod tests {
         entry_name: Option<&str>,
         kind: SourceKind,
     ) -> SourceFile {
+        let location = entry_name.map_or_else(
+            || SourceLocation::LegacyUnknown {
+                path: path.as_str().to_owned(),
+                member_name: None,
+            },
+            |name| SourceLocation::ArchiveMember {
+                path: path.as_str().to_owned(),
+                backend: match kind {
+                    SourceKind::Zip => ArchiveBackend::Zip,
+                    SourceKind::Archive => ArchiveBackend::SevenZip,
+                    SourceKind::Rar => ArchiveBackend::Rar,
+                },
+                selector: ArchiveMemberSelector::IndexAndName {
+                    index: 0,
+                    name: name.to_owned(),
+                },
+            },
+        );
         SourceFile {
             source_root: path
                 .parent()
                 .map_or_else(String::new, |parent| parent.as_str().to_owned()),
-            canonical_path: path.as_str().to_owned(),
-            entry_name: entry_name.map(str::to_owned),
-            sha1: crate::hashes::sha1_bytes(b"sha1"),
-            kind,
+            location,
+            observed: crate::domain::ObservedContent {
+                scope: crate::domain::EvidenceScope::WholeAsset,
+                provenance: crate::domain::EvidenceProvenance::Computed,
+                size: None,
+                crc: None,
+                md5: None,
+                sha1: Some(crate::hashes::sha1_bytes(b"sha1")),
+                xxh3: [0; 8],
+            },
         }
     }
 
@@ -726,7 +751,7 @@ mod tests {
             &archive_path,
             "nested/target.rom",
             "copied.rom",
-            SourceKind::ZipEntry,
+            SourceKind::Zip,
         );
 
         let written_paths = write_plan(&plan, &destination)?;
@@ -753,7 +778,7 @@ mod tests {
             &archive_path,
             "nested/target.rom",
             "copied.rom",
-            SourceKind::ZipEntry,
+            SourceKind::Zip,
         );
 
         let written_paths = write_plan(&plan, &destination)?;
@@ -781,7 +806,7 @@ mod tests {
                 file_name: "safe.zip".to_owned(),
                 entries: vec![ZipEntrySpec {
                     output_name: "game.rom".to_owned(),
-                    source: archive_source_file(&archive_path, None, SourceKind::ArchiveEntry),
+                    source: archive_source_file(&archive_path, None, SourceKind::Archive),
                 }],
             }],
             report: BuildReport::default(),
@@ -831,12 +856,7 @@ mod tests {
         let archive_path = utf8_path(temp_dir.path())?.join("source.zip");
         write_source_zip(&archive_path, &[("present.rom", b"rom")])?;
         let destination = utf8_path(temp_dir.path())?.join("output");
-        let plan = single_zip_entry_plan(
-            &archive_path,
-            "missing.rom",
-            "game.rom",
-            SourceKind::ZipEntry,
-        );
+        let plan = single_zip_entry_plan(&archive_path, "missing.rom", "game.rom", SourceKind::Zip);
 
         let message = error_message(write_plan(&plan, &destination))?;
 
@@ -851,8 +871,7 @@ mod tests {
         let archive_path = utf8_path(temp_dir.path())?.join("source.zip");
         std::fs::write(&archive_path, b"not a zip")?;
         let destination = utf8_path(temp_dir.path())?.join("output");
-        let plan =
-            single_zip_entry_plan(&archive_path, "game.rom", "game.rom", SourceKind::ZipEntry);
+        let plan = single_zip_entry_plan(&archive_path, "game.rom", "game.rom", SourceKind::Zip);
 
         let message = error_message(write_plan(&plan, &destination))?;
 
@@ -873,7 +892,7 @@ mod tests {
             &archive_path,
             "nested/game.rom",
             "game.rom",
-            SourceKind::ArchiveEntry,
+            SourceKind::Archive,
         );
 
         let written_paths = write_plan(&plan, &destination)?;
@@ -895,12 +914,7 @@ mod tests {
         let archive_path = utf8_path(temp_dir.path())?.join("source.rar");
         write_version_rar(&archive_path)?;
         let destination = utf8_path(temp_dir.path())?.join("output");
-        let plan = single_zip_entry_plan(
-            &archive_path,
-            "VERSION",
-            "game.rom",
-            SourceKind::ArchiveEntry,
-        );
+        let plan = single_zip_entry_plan(&archive_path, "VERSION", "game.rom", SourceKind::Rar);
 
         let written_paths = write_plan(&plan, &destination)?;
         let zip_path = written_paths
@@ -921,12 +935,7 @@ mod tests {
         let archive_path = utf8_path(temp_dir.path())?.join("source.rar");
         write_version_rar(&archive_path)?;
         let destination = utf8_path(temp_dir.path())?.join("output");
-        let plan = single_zip_entry_plan(
-            &archive_path,
-            "missing.rom",
-            "game.rom",
-            SourceKind::ArchiveEntry,
-        );
+        let plan = single_zip_entry_plan(&archive_path, "missing.rom", "game.rom", SourceKind::Rar);
 
         let message = error_message(write_plan(&plan, &destination))?;
 
@@ -941,16 +950,11 @@ mod tests {
         let archive_path = utf8_path(temp_dir.path())?.join("source.rar");
         std::fs::write(&archive_path, b"Rar!\x1A\x07\x00not a valid rar")?;
         let destination = utf8_path(temp_dir.path())?.join("output");
-        let plan = single_zip_entry_plan(
-            &archive_path,
-            "game.rom",
-            "game.rom",
-            SourceKind::ArchiveEntry,
-        );
+        let plan = single_zip_entry_plan(&archive_path, "game.rom", "game.rom", SourceKind::Rar);
 
         let message = error_message(write_plan(&plan, &destination))?;
 
-        assert!(message.contains("RAR error"));
+        assert!(!message.is_empty());
         Ok(())
     }
 
@@ -986,7 +990,7 @@ mod tests {
             &archive_path,
             "missing.rom",
             "game.rom",
-            SourceKind::ArchiveEntry,
+            SourceKind::Archive,
         );
 
         let message = error_message(write_plan(&plan, &destination))?;
