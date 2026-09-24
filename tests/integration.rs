@@ -9,7 +9,7 @@ use predicates::str::contains;
 use std::{
     collections::BTreeMap,
     fs,
-    io::{self, Read},
+    io::{self, Read, Write},
     process::Command as ProcessCommand,
 };
 
@@ -1005,6 +1005,7 @@ fn cli_build_dry_run_exits_zero_and_writes_no_files() -> Result<(), Box<dyn std:
     let work_dir = tempfile::tempdir()?;
     let source_dir = tempfile::tempdir()?;
     let output_dir = tempfile::tempdir()?;
+    let cached_output_dir = tempfile::tempdir()?;
     let root = utf8_path(work_dir.path())?;
     let dat_path = write_clone_dat(work_dir.path())?;
     let source_path = write_present_clone_roms(source_dir.path())?;
@@ -1026,6 +1027,20 @@ fn cli_build_dry_run_exits_zero_and_writes_no_files() -> Result<(), Box<dyn std:
         .success();
 
     assert!(!output_path.exists());
+
+    let cached_output_path = utf8_path(cached_output_dir.path())?.to_path_buf();
+    cargo_command()
+        .args(db_arg(&database_path))
+        .args([
+            "cache",
+            "build",
+            "Clone Test",
+            source_path.as_str(),
+            cached_output_path.as_str(),
+        ])
+        .assert()
+        .success();
+    assert!(cached_output_path.join("parent.zip").exists());
     Ok(())
 }
 
@@ -1035,6 +1050,7 @@ fn cli_build_missing_fail_exits_two_and_writes_no_files() -> Result<(), Box<dyn 
     let work_dir = tempfile::tempdir()?;
     let source_dir = tempfile::tempdir()?;
     let output_dir = tempfile::tempdir()?;
+    let cached_output_dir = tempfile::tempdir()?;
     let root = utf8_path(work_dir.path())?;
     let dat_path = write_clone_dat(work_dir.path())?;
     let source_path = write_present_clone_roms(source_dir.path())?;
@@ -1057,6 +1073,20 @@ fn cli_build_missing_fail_exits_two_and_writes_no_files() -> Result<(), Box<dyn 
         .code(2);
 
     assert!(!output_path.exists());
+
+    let cached_output_path = utf8_path(cached_output_dir.path())?.to_path_buf();
+    cargo_command()
+        .args(db_arg(&database_path))
+        .args([
+            "cache",
+            "build",
+            "Clone Test",
+            source_path.as_str(),
+            cached_output_path.as_str(),
+        ])
+        .assert()
+        .success();
+    assert!(cached_output_path.join("parent.zip").exists());
     Ok(())
 }
 
@@ -1094,7 +1124,104 @@ fn cli_cache_build_accepts_dat_header_name_after_import() -> Result<(), Box<dyn 
         .assert()
         .success();
 
-    assert!(output_path.join("parent.zip").exists());
+    let archive_path = output_path.join("parent.zip");
+    assert!(archive_path.exists());
+    let mut archive = zip::ZipArchive::new(fs::File::open(archive_path)?)?;
+    assert_eq!(
+        archive.by_name("parent.rom")?.compression(),
+        zip::CompressionMethod::Deflated
+    );
+    Ok(())
+}
+
+#[test]
+fn sha1_match_ignores_inconsistent_size_crc_and_md5() -> Result<(), Box<dyn std::error::Error>> {
+    let database_dir = tempfile::tempdir()?;
+    let database = test_database(database_dir.path())?;
+    let work_dir = tempfile::tempdir()?;
+    let source_dir = tempfile::tempdir()?;
+    let output_dir = tempfile::tempdir()?;
+    let dat_path = write_single_game_dat(
+        &work_dir.path().join("metadata-mismatch.dat"),
+        "Metadata mismatch",
+        "game",
+        "shared.rom",
+        "a9993e364706816aba3e25717850c26c9cd0d89d",
+    )?;
+    let dat = fs::read_to_string(&dat_path)?
+        .replace("size=\"4096\"", "size=\"9999\"")
+        .replace(
+            "md5=\"900150983cd24fb0d6963f7d28e17f72\"",
+            "md5=\"00000000000000000000000000000000\"",
+        );
+    fs::write(&dat_path, dat)?;
+    let source_path = write_single_rom_source(source_dir.path(), b"abc")?;
+
+    let report = app::run(
+        &database,
+        &RunWorkflowRequest {
+            dat_path,
+            source_path,
+            destination_path: utf8_path(output_dir.path())?.to_path_buf(),
+            mode: BuildMode::ParentBundles,
+            jobs: 1,
+            compression: ZipCompression::Deflate,
+            dry_run: false,
+            strict: true,
+        },
+    )?;
+
+    assert_eq!(report.exit_code, 0);
+    assert_eq!(report.build_report.matched_roms, 1);
+    assert!(report.build_report.missing_roms.is_empty());
+    Ok(())
+}
+
+#[test]
+fn normalized_zip_member_scans_and_builds() -> Result<(), Box<dyn std::error::Error>> {
+    let database_dir = tempfile::tempdir()?;
+    let database = test_database(database_dir.path())?;
+    let work_dir = tempfile::tempdir()?;
+    let source_dir = tempfile::tempdir()?;
+    let output_dir = tempfile::tempdir()?;
+    let dat_path = write_single_game_dat(
+        &work_dir.path().join("normalized-member.dat"),
+        "Normalized member",
+        "game",
+        "nested/shared.rom",
+        "a9993e364706816aba3e25717850c26c9cd0d89d",
+    )?;
+    let archive_path = source_dir.path().join("source.zip");
+    let archive_file = fs::File::create(&archive_path)?;
+    let mut archive = zip::ZipWriter::new(archive_file);
+    archive.start_file(
+        "./nested/shared.rom",
+        zip::write::SimpleFileOptions::default(),
+    )?;
+    archive.write_all(b"abc")?;
+    archive.finish()?;
+
+    let report = app::run(
+        &database,
+        &RunWorkflowRequest {
+            dat_path,
+            source_path: utf8_path(source_dir.path())?.to_path_buf(),
+            destination_path: utf8_path(output_dir.path())?.to_path_buf(),
+            mode: BuildMode::ParentBundles,
+            jobs: 1,
+            compression: ZipCompression::Deflate,
+            dry_run: false,
+            strict: true,
+        },
+    )?;
+
+    assert_eq!(report.build_report.matched_roms, 1);
+    assert_eq!(
+        zip_entries(&utf8_path(output_dir.path())?.join("game.zip"))?
+            .get("nested/shared.rom")
+            .map(Vec::as_slice),
+        Some(b"abc" as &[u8])
+    );
     Ok(())
 }
 

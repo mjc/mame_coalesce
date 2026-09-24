@@ -428,8 +428,14 @@ mod tests {
         ];
 
         let plan = plan_build(&dat_roms, &source_files, &request(BuildMode::ParentBundles));
+        let reordered_plan = plan_build(
+            &dat_roms,
+            &source_files.iter().rev().cloned().collect::<Vec<_>>(),
+            &request(BuildMode::ParentBundles),
+        );
 
         let duplicate = &plan.report.duplicate_matches[0];
+        assert_eq!(plan, reordered_plan);
         assert_eq!(duplicate.selected.display_name(), "/src-a/a.rom");
         assert_eq!(
             duplicate

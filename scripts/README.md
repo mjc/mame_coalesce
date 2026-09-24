@@ -65,6 +65,16 @@ devenv shell -- bash scripts/parse_flamegraph target/profiling/flamegraphs/run-j
 
 ## Run benchmarks
 
+Generate a repeatable 100-ROM synthetic corpus for baseline comparisons:
+
+```sh
+devenv shell -- bash scripts/generate_synthetic_benchmark_corpus.sh
+```
+
+The helper creates `target/profiling/synthetic-corpus/` and refuses to replace
+an existing corpus. Pass its `synthetic.dat` and `source/` paths to
+`benchmark_run.sh` for each jobs/compression combination.
+
 Use `benchmark_run.sh` to capture repeated wall-clock samples for the full
 `build` workflow. The script cleans only the selected cache database and output
 directory under `target/profiling` before each measured run and writes a
