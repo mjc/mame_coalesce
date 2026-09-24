@@ -189,7 +189,6 @@ mod tests {
                  (id, parent_path, path, name, sha1, xxhash3, in_archive, rom_id)
                  VALUES (41, '/roms', '/roms/legacy.rom', 'legacy.rom', X'02', X'04', 0, 31);",
         )?;
-
         run_startup_migrations(&mut conn)?;
         assert_eq!(count(&mut conn, "data_files")?, 1);
         assert_eq!(count(&mut conn, "games")?, 1);
@@ -626,19 +625,17 @@ mod tests {
                  (snapshot_key, catalog_key, document_key, interpretation_key,
                   declared_version, scope_kind)
                  VALUES ('snapshot-a1', 'catalog-a', 'document-a', 'logiqx-v1', '1.0', 'unknown'),
-                        ('snapshot-a2', 'catalog-a', 'document-a', 'logiqx-v1', '1.0', 'unknown'),
                         ('snapshot-a3', 'catalog-a', 'document-a', 'logiqx-v2', NULL, 'unknown');
              INSERT INTO import_runs
                  (run_key, catalog_key, document_key, interpretation_key, snapshot_key, status)
                  VALUES ('run-a1', 'catalog-a', 'document-a', 'logiqx-v1', 'snapshot-a1', 'succeeded'),
-                        ('run-a2', 'catalog-a', 'document-a', 'logiqx-v1', 'snapshot-a2', 'succeeded'),
                         ('run-a3', 'catalog-a', 'document-a', 'logiqx-v2', NULL, 'succeeded');",
         )?;
 
         assert_eq!(count(&mut conn, "publishing_sources")?, 2);
         assert_eq!(count(&mut conn, "catalogs")?, 2);
-        assert_eq!(count(&mut conn, "catalog_snapshots")?, 3);
-        assert_eq!(count(&mut conn, "import_runs")?, 3);
+        assert_eq!(count(&mut conn, "catalog_snapshots")?, 2);
+        assert_eq!(count(&mut conn, "import_runs")?, 2);
         assert_eq!(
             sql_query(
                 "SELECT COUNT(*) AS count FROM import_runs \
@@ -646,9 +643,15 @@ mod tests {
             )
             .get_result::<CountRow>(&mut conn)?
             .count,
-            2
+            1
         );
         assert_snapshot_parent_is_catalog_scoped(&mut conn)?;
+        assert!(sql_fails(
+            &mut conn,
+            "INSERT INTO catalog_snapshots \
+                 (snapshot_key, catalog_key, document_key, interpretation_key, scope_kind) \
+             VALUES ('duplicate-snapshot', 'catalog-a', 'document-a', 'logiqx-v1', 'unknown')",
+        ));
         assert!(sql_fails(
             &mut conn,
             "INSERT INTO catalogs (catalog_key, source_key, display_name) \

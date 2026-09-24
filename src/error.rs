@@ -50,6 +50,12 @@ pub enum Error {
     #[error("document {0} does not have retained payload bytes")]
     DocumentUnavailable(String),
 
+    #[error("catalog identity {0} conflicts with previously persisted metadata")]
+    CatalogIdentityConflict(String),
+
+    #[error("source identity {0} conflicts with previously persisted metadata")]
+    SourceIdentityConflict(String),
+
     #[error("transport metadata serialization failed: {0}")]
     Json(#[from] serde_json::Error),
 

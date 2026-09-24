@@ -3,6 +3,7 @@ use std::io::{Cursor, Read};
 use camino::Utf8Path;
 use fmmap::MmapFileExt;
 use serde::Deserialize;
+use xml::common::Position;
 use xml::reader::{ParserConfig, XmlEvent};
 
 use super::game::Game;
@@ -22,10 +23,34 @@ pub struct DataFile {
     #[serde(rename = "game", default)]
     games: Vec<Game>,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// A one-based XML parser position immediately after an opening record tag.
+pub struct RecordLocation {
+    pub line: i64,
+    pub column: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnsupportedAttribute {
+    pub record_kind: String,
+    pub record_name: Option<String>,
+    pub field_name: String,
+    pub namespace_uri: Option<String>,
+    pub value: String,
+    pub location: RecordLocation,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct XmlSourceMap {
+    pub game_locations: Vec<RecordLocation>,
+    pub rom_locations: Vec<Vec<RecordLocation>>,
+    pub unsupported_attributes: Vec<UnsupportedAttribute>,
+}
 impl DataFile {
     pub fn from_reader<R: Read>(reader: R) -> crate::Result<Self> {
         let raw = document_input::read_bounded(reader, document_input::MAX_DOCUMENT_BYTES)?;
-        Self::from_bytes(&raw)
+        Self::parse_bytes(&raw).map(|(data_file, _)| data_file)
     }
 
     pub fn from_path(path: &Utf8Path) -> crate::Result<Self> {
@@ -33,7 +58,7 @@ impl DataFile {
         // historical size behavior. `from_reader` remains deliberately bounded.
         let mmap = hashes::mmap_path(path)?;
         let raw = mmap.as_slice();
-        let mut data_file = Self::from_bytes(raw)?;
+        let (mut data_file, _) = Self::parse_bytes(&raw)?;
         data_file.file_name = path
             .canonicalize()
             .ok()
@@ -42,10 +67,22 @@ impl DataFile {
         Ok(data_file)
     }
 
-    fn from_bytes(raw: &[u8]) -> crate::Result<Self> {
+    pub(crate) fn from_reader_with_source_map<R: Read>(
+        reader: R,
+    ) -> crate::Result<(Self, XmlSourceMap)> {
+        let raw = document_input::read_bounded(reader, document_input::MAX_DOCUMENT_BYTES)?;
+        Self::parse_bytes(&raw)
+    }
+
+    pub(crate) fn validate_document_bytes(raw: &[u8]) -> crate::Result<()> {
         let xml = document_input::decode_xml(raw)?;
-        validate_xml(&xml)?;
-        Ok(serde_xml_rs::SerdeXml::new()
+        validate_xml(&xml).map(|_| ())
+    }
+
+    fn parse_bytes(raw: &[u8]) -> crate::Result<(Self, XmlSourceMap)> {
+        let xml = document_input::decode_xml(raw)?;
+        let source_map = validate_xml(&xml)?;
+        let data_file = serde_xml_rs::SerdeXml::new()
             .parser(
                 ParserConfig::new()
                     .trim_whitespace(true)
@@ -61,7 +98,8 @@ impl DataFile {
                     .max_data_length(1024 * 1024)
                     .allow_multiple_root_elements(false),
             )
-            .from_reader(Cursor::new(xml.as_ref()))?)
+            .from_reader(Cursor::new(xml.as_ref()))?;
+        Ok((data_file, source_map))
     }
 
     /// Get a reference to the data file's header.
@@ -101,7 +139,7 @@ impl DataFile {
     }
 }
 
-fn validate_xml(bytes: &[u8]) -> crate::Result<()> {
+fn validate_xml(bytes: &[u8]) -> crate::Result<XmlSourceMap> {
     if contains_entity_declaration(bytes)
         .map_err(|()| crate::Error::XmlValidation("malformed UTF-16 encoding".into()))?
     {
@@ -115,15 +153,95 @@ fn validate_xml(bytes: &[u8]) -> crate::Result<()> {
         .max_attribute_length(1024 * 1024)
         .max_data_length(1024 * 1024)
         .allow_multiple_root_elements(false);
-    for event in config.create_reader(bytes) {
+    let mut reader = config.create_reader(bytes);
+    let mut source_map = XmlSourceMap::default();
+    let mut current_game = None;
+    loop {
+        let event = reader.next();
         match event {
-            // xml-rs reports the declaration without fetching external subsets. The
-            // constrained parser config limits any document-local expansion.
+            Ok(XmlEvent::StartElement {
+                name, attributes, ..
+            }) => {
+                let local_name = name.local_name;
+                let position = reader.position();
+                let location = RecordLocation {
+                    line: i64::try_from(position.row.saturating_add(1)).unwrap_or(i64::MAX),
+                    column: i64::try_from(position.column.saturating_add(1)).unwrap_or(i64::MAX),
+                };
+                let record_name = attributes
+                    .iter()
+                    .find(|attribute| attribute.name.local_name == "name")
+                    .map(|attribute| attribute.value.clone());
+                match local_name.as_str() {
+                    "game" => {
+                        current_game = Some(source_map.game_locations.len());
+                        source_map.game_locations.push(location);
+                        source_map.rom_locations.push(Vec::new());
+                    }
+                    "rom" => {
+                        if let Some(index) = current_game {
+                            source_map.rom_locations[index].push(location);
+                        }
+                    }
+                    _ => {}
+                }
+                for attribute in &attributes {
+                    if attribute.name.namespace.is_some()
+                        || !known_attribute(&local_name, &attribute.name.local_name)
+                    {
+                        let record_kind = match local_name.as_str() {
+                            "game" => "game",
+                            "rom" => "rom",
+                            _ => "document",
+                        };
+                        source_map
+                            .unsupported_attributes
+                            .push(UnsupportedAttribute {
+                                record_kind: record_kind.to_owned(),
+                                record_name: record_name.clone(),
+                                field_name: attribute.name.local_name.clone(),
+                                namespace_uri: attribute.name.namespace.clone(),
+                                value: attribute.value.clone(),
+                                location,
+                            });
+                    }
+                }
+            }
+            Ok(XmlEvent::EndElement { name }) => {
+                if name.local_name == "game" {
+                    current_game = None;
+                }
+            }
+            Ok(XmlEvent::EndDocument) => break,
+            // xml-rs reports declarations without fetching external subsets.
+            // Entity declarations were rejected above.
             Ok(XmlEvent::Doctype { .. } | _) => {}
             Err(error) => return Err(crate::Error::XmlValidation(error.to_string())),
         }
     }
-    Ok(())
+    Ok(source_map)
+}
+
+fn known_attribute(element: &str, attribute: &str) -> bool {
+    let known = match element {
+        "datafile" => &["build", "debug"][..],
+        "game" => &[
+            "name",
+            "sourcefile",
+            "isbios",
+            "cloneof",
+            "romof",
+            "sampleof",
+            "board",
+            "rebuildto",
+        ][..],
+        "rom" => &[
+            "name", "size", "md5", "sha1", "crc", "merge", "status", "serial", "date",
+        ][..],
+        "device_ref" => &["name"][..],
+        _ => &[][..],
+    };
+    known.contains(&attribute)
 }
 
 fn contains_entity_declaration(bytes: &[u8]) -> Result<bool, ()> {
@@ -317,6 +435,25 @@ mod tests {
 <datafile><!-- <!ENTITY comment "ignored"> --><header><name>Test <![CDATA[& stuff <!ENTITY literal>]]></name></header></datafile>"#;
         let parsed = DataFile::from_reader(dat.as_slice())?;
         assert_eq!(parsed.header().name(), "Test & stuff <!ENTITY literal>");
+        Ok(())
+    }
+
+    #[test]
+    fn parser_source_map_retains_unknown_attributes_and_record_positions()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let xml = br#"<datafile>
+  <header><name>Source map</name></header>
+  <game name="set" future="preserve">
+    <rom name="asset.bin" size="4" future-hash="unknown"/>
+  </game>
+</datafile>"#;
+        let (data_file, source_map) = DataFile::from_reader_with_source_map(xml.as_slice())?;
+        assert_eq!(data_file.games().len(), 1);
+        assert_eq!(source_map.game_locations[0].line, 3);
+        assert_eq!(source_map.rom_locations[0][0].line, 4);
+        assert_eq!(source_map.unsupported_attributes.len(), 2);
+        assert_eq!(source_map.unsupported_attributes[0].field_name, "future");
+        assert_eq!(source_map.unsupported_attributes[1].value, "unknown");
         Ok(())
     }
 
