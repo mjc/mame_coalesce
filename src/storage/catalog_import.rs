@@ -159,19 +159,36 @@ impl SnapshotData {
                     .into_iter()
                     .map(|asset| {
                         extensions.extend(asset.extensions.into_iter().map(stored_extension));
+                        let evidence_scope = asset
+                            .disk_requirement
+                            .as_ref()
+                            .map_or("whole_asset", |requirement| {
+                                requirement.digest_scope().as_str()
+                            });
+                        let sha1 = asset
+                            .disk_requirement
+                            .as_ref()
+                            .and_then(crate::disk::DiskRequirement::expected_sha1)
+                            .map(|digest| digest.as_bytes().to_vec())
+                            .or(asset.sha1);
+                        let merge = asset
+                            .disk_requirement
+                            .as_ref()
+                            .and_then(crate::disk::DiskRequirement::parent)
+                            .map(|name| name.as_str().to_owned());
                         SnapshotAsset {
                             name: asset.name,
-                            role: asset.role,
+                            role: match asset.role {
+                                crate::domain::AssetRole::Rom => "rom",
+                                crate::domain::AssetRole::Disk => "disk",
+                                crate::domain::AssetRole::Other => "other",
+                            },
                             size: asset.size,
                             crc: asset.crc,
                             md5: asset.md5,
-                            sha1: asset.sha1,
-                            evidence_scope: if asset.role == "disk" {
-                                "disk_data"
-                            } else {
-                                "whole_asset"
-                            },
-                            merge: asset.merge_name,
+                            sha1,
+                            evidence_scope,
+                            merge: merge.or(asset.merge_name),
                             dump_status: asset.dump_status,
                             serial: None,
                             date: None,

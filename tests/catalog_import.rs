@@ -771,6 +771,15 @@ fn imports_mame_machine_rom_disk_bios_and_device_semantics_loss_aware()
     let disk_scope = sql_query("SELECT evidence_scope AS value FROM asset_requirements WHERE snapshot_key = ? AND asset_name = 'demo_disk'")
         .bind::<Text, _>(snapshot.as_str()).get_result::<TextRow>(&mut connection)?;
     assert_eq!(disk_scope.value, "disk_data");
+    let disk_identity = sql_query("SELECT sha1 AS value FROM asset_requirements WHERE snapshot_key = ? AND asset_name = 'demo_disk'")
+        .bind::<Text, _>(snapshot.as_str()).get_result::<BytesRow>(&mut connection)?;
+    assert_eq!(
+        disk_identity.value,
+        hex::decode("1123456789abcdef0123456789abcdef01234567")?
+    );
+    let parent_disk = sql_query("SELECT merge_name AS value FROM asset_requirements WHERE snapshot_key = ? AND asset_name = 'demo_disk'")
+        .bind::<Text, _>(snapshot.as_str()).get_result::<TextRow>(&mut connection)?;
+    assert_eq!(parent_disk.value, "parent_disk");
     let version =
         sql_query("SELECT declared_version AS value FROM catalog_snapshots WHERE snapshot_key = ?")
             .bind::<Text, _>(snapshot.as_str())

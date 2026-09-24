@@ -7,7 +7,9 @@ use xml::{
 };
 
 use crate::{
+    disk::{DiskDigestScope, DiskIdentitySha1, DiskName, DiskRequirement, ParentDiskName},
     document_input,
+    domain::AssetRole,
     logiqx::{RecordLocation, contains_entity_declaration},
 };
 
@@ -31,13 +33,14 @@ pub struct Machine {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MachineAsset {
     pub name: String,
-    pub role: &'static str,
+    pub role: AssetRole,
     pub size: Option<u64>,
     pub crc: Option<Vec<u8>>,
     pub md5: Option<Vec<u8>>,
     pub sha1: Option<Vec<u8>>,
     pub merge_name: Option<String>,
     pub dump_status: Option<String>,
+    pub disk_requirement: Option<DiskRequirement>,
     pub location: RecordLocation,
     pub metadata: BTreeMap<String, serde_json::Value>,
     pub extensions: Vec<XmlExtension>,
@@ -361,6 +364,7 @@ fn parse_asset(node: &Element) -> crate::Result<MachineAsset> {
         .transpose()?;
     let merge_name = node.attributes.get("merge").cloned();
     let dump_status = node.attributes.get("status").cloned();
+    let disk_requirement = parse_disk_requirement(node, name, sha1.as_deref())?;
     let metadata = node
         .attributes
         .iter()
@@ -390,17 +394,46 @@ fn parse_asset(node: &Element) -> crate::Result<MachineAsset> {
     }
     Ok(MachineAsset {
         name: name.into(),
-        role: if node.name == "rom" { "rom" } else { "disk" },
+        role: if node.name == "rom" {
+            AssetRole::Rom
+        } else {
+            AssetRole::Disk
+        },
         size,
         crc,
         md5,
         sha1,
         merge_name,
         dump_status,
+        disk_requirement,
         location: node.location,
         metadata,
         extensions,
     })
+}
+
+fn parse_disk_requirement(
+    node: &Element,
+    name: &str,
+    sha1: Option<&[u8]>,
+) -> crate::Result<Option<DiskRequirement>> {
+    if node.name != "disk" {
+        return Ok(None);
+    }
+    let expected_sha1 = sha1
+        .map(<[u8; 20]>::try_from)
+        .transpose()
+        .map_err(|_| crate::Error::XmlValidation("invalid MAME disk SHA-1 length".into()))?
+        .map(DiskIdentitySha1::new);
+    let requirement = DiskRequirement::new(
+        DiskName::new(name),
+        expected_sha1,
+        DiskDigestScope::LogicalDiskData,
+    );
+    Ok(Some(match node.attributes.get("merge") {
+        Some(parent) => requirement.with_parent(ParentDiskName::new(parent.clone())),
+        None => requirement,
+    }))
 }
 
 fn extension(kind: &str, record_name: Option<&str>, node: &Element) -> crate::Result<XmlExtension> {
