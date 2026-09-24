@@ -5,6 +5,7 @@ use diesel::{
 
 use crate::{
     app::{CatalogDocumentFormat, CatalogImportReport, CatalogImportRequest, CatalogImportStatus},
+    clrmamepro::Catalog as ClrMameProCatalog,
     domain::{DocumentKey, ImportRunKey, ParserInterpretationKey, SnapshotKey},
     logiqx::{DataFile, XmlSourceMap},
     mame::MameCatalog,
@@ -176,6 +177,60 @@ impl SnapshotData {
             extensions,
         }
     }
+
+    fn from_clrmamepro(catalog: ClrMameProCatalog) -> Self {
+        let mut extensions = catalog
+            .extensions
+            .into_iter()
+            .map(stored_clrmamepro_extension)
+            .collect::<Vec<_>>();
+        let sets = catalog
+            .sets
+            .into_iter()
+            .map(|set| {
+                extensions.extend(set.extensions.into_iter().map(stored_clrmamepro_extension));
+                let assets = set
+                    .assets
+                    .into_iter()
+                    .map(|asset| {
+                        extensions.extend(
+                            asset
+                                .extensions
+                                .into_iter()
+                                .map(stored_clrmamepro_extension),
+                        );
+                        SnapshotAsset {
+                            name: asset.name,
+                            role: "rom",
+                            size: asset.size,
+                            crc: asset.crc,
+                            md5: asset.md5,
+                            sha1: asset.sha1,
+                            evidence_scope: "whole_asset",
+                            merge: asset.merge,
+                            dump_status: asset.status,
+                            serial: None,
+                            date: None,
+                            metadata: asset.metadata,
+                            location: asset.location,
+                        }
+                    })
+                    .collect();
+                SnapshotSet {
+                    name: set.name,
+                    parent: set.parent,
+                    metadata: set.metadata,
+                    location: set.location,
+                    assets,
+                }
+            })
+            .collect();
+        Self {
+            version: catalog.version,
+            sets,
+            extensions,
+        }
+    }
 }
 
 fn stored_extension(ext: crate::mame::XmlExtension) -> StoredExtension {
@@ -189,6 +244,17 @@ fn stored_extension(ext: crate::mame::XmlExtension) -> StoredExtension {
     }
 }
 
+fn stored_clrmamepro_extension(ext: crate::clrmamepro::Extension) -> StoredExtension {
+    StoredExtension {
+        record_kind: ext.record_kind,
+        record_name: ext.record_name,
+        field_name: ext.field_name,
+        namespace_uri: None,
+        value: ext.value,
+        location: ext.location,
+    }
+}
+
 pub fn import(pool: &Pool, request: &CatalogImportRequest) -> crate::Result<CatalogImportReport> {
     ensure_source(pool, request)?;
     let documents = DocumentStore::from_pool(pool.clone());
@@ -196,7 +262,7 @@ pub fn import(pool: &Pool, request: &CatalogImportRequest) -> crate::Result<Cata
         CatalogDocumentFormat::Logiqx => {
             documents.retain_path(request.source_key.clone(), &request.document_path)?
         }
-        CatalogDocumentFormat::MameListXml => {
+        CatalogDocumentFormat::MameListXml | CatalogDocumentFormat::ClrMamePro => {
             documents.retain_path_raw(request.source_key.clone(), &request.document_path)?
         }
     };
@@ -206,6 +272,9 @@ pub fn import(pool: &Pool, request: &CatalogImportRequest) -> crate::Result<Cata
             .and_then(|(data_file, source_map)| SnapshotData::from_logiqx(&data_file, &source_map)),
         CatalogDocumentFormat::MameListXml => {
             MameCatalog::parse(&bytes).map(SnapshotData::from_mame)
+        }
+        CatalogDocumentFormat::ClrMamePro => {
+            ClrMameProCatalog::parse(&bytes).map(SnapshotData::from_clrmamepro)
         }
     };
     let snapshot_data = match parsed {
@@ -264,6 +333,16 @@ fn record_failed_import(
     let interpretation = interpretation(request);
     let run_key = ImportRunKey::fresh();
     let diagnostic = error.to_string();
+    let (record_kind, record_name, source_line, source_column) = match error {
+        crate::Error::CatalogParse {
+            record_kind,
+            record_name,
+            line,
+            column,
+            ..
+        } => (record_kind.clone(), record_name.clone(), *line, *column),
+        _ => (None, None, None, None),
+    };
     let mut conn = pool.get()?;
     conn.immediate_transaction::<_, crate::Error, _>(|conn| {
         ensure_identities(conn, request, &interpretation)?;
@@ -280,11 +359,16 @@ fn record_failed_import(
         )?;
         sql_query(
             "INSERT INTO import_diagnostics \
-             (diagnostic_key, run_key, code, message) VALUES (?, ?, 'parse_failed', ?)",
+            (diagnostic_key, run_key, code, message, record_kind, record_name, source_line, source_column) \
+             VALUES (?, ?, 'parse_failed', ?, ?, ?, ?, ?)",
         )
         .bind::<Text, _>(uuid::Uuid::new_v4().to_string())
         .bind::<Text, _>(run_key.to_string())
         .bind::<Text, _>(&diagnostic)
+        .bind::<Nullable<Text>, _>(record_kind)
+        .bind::<Nullable<Text>, _>(record_name)
+        .bind::<Nullable<BigInt>, _>(source_line)
+        .bind::<Nullable<BigInt>, _>(source_column)
         .execute(conn)?;
         Ok(CatalogImportReport {
             snapshot_key: None,

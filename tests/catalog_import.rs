@@ -95,6 +95,17 @@ fn mame_request() -> Result<CatalogImportRequest, Box<dyn std::error::Error>> {
     Ok(request)
 }
 
+fn clrmamepro_request() -> Result<CatalogImportRequest, Box<dyn std::error::Error>> {
+    let mut request = request(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/catalog/clrmamepro/sample.dat"),
+        "clrmamepro",
+        "clrmamepro-fixture",
+        "Synthetic ClrMamePro catalog",
+    )?;
+    request.format = CatalogDocumentFormat::ClrMamePro;
+    Ok(request)
+}
+
 fn count(connection: &mut SqliteConnection, table: &str) -> Result<i64, diesel::result::Error> {
     sql_query(format!("SELECT COUNT(*) AS count FROM {table}"))
         .get_result::<CountRow>(connection)
@@ -221,6 +232,256 @@ fn imports_mame_machine_rom_disk_bios_and_device_semantics_loss_aware()
     assert!(sql_query("SELECT COUNT(*) AS count FROM import_diagnostics WHERE run_key = ? AND code = 'unsupported_element'")
         .bind::<Text, _>(report.run_key.to_string())
         .get_result::<CountRow>(&mut connection)?.count > 0);
+    Ok(())
+}
+
+#[test]
+fn imports_clrmamepro_sets_rom_statuses_and_retained_source_tokens()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (_directory, database, mut connection) = setup()?;
+    let request = clrmamepro_request()?;
+    let report = app::import_catalog(&database, &request)?;
+    let repeated = app::import_catalog(&database, &request)?;
+    assert_eq!(report.status, app::CatalogImportStatus::Succeeded);
+    let snapshot = report.snapshot_key.ok_or("ClrMamePro snapshot missing")?;
+    assert_eq!(Some(snapshot.clone()), repeated.snapshot_key);
+    assert_eq!(count(&mut connection, "catalog_snapshots")?, 1);
+    assert_eq!(count(&mut connection, "snapshot_sets")?, 2);
+    assert_eq!(count(&mut connection, "asset_requirements")?, 6);
+    assert_clrmamepro_set_metadata(&mut connection, &snapshot)?;
+    assert_clrmamepro_rom_facts(&mut connection, &snapshot)?;
+    assert_clrmamepro_retained_tokens(&mut connection, &snapshot)?;
+    assert!(report.diagnostic_count >= 3);
+    Ok(())
+}
+
+fn assert_clrmamepro_set_metadata(
+    connection: &mut SqliteConnection,
+    snapshot: &mame_coalesce::domain::SnapshotKey,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let clone = sql_query(
+        "SELECT parent_name AS value FROM snapshot_sets \
+         WHERE snapshot_key = ? AND set_name = 'clone_set'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<NullableTextRow>(connection)?;
+    assert_eq!(clone.value.as_deref(), Some("demo_set"));
+    let metadata = sql_query(
+        "SELECT metadata_json AS value FROM snapshot_sets \
+         WHERE snapshot_key = ? AND set_name = 'demo_set'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(connection)?;
+    assert!(metadata.value.contains("Synthetic parent set"));
+    assert!(metadata.value.contains("Example Works"));
+    assert!(metadata.value.contains("1998"));
+    let clone_metadata = sql_query(
+        "SELECT metadata_json AS value FROM snapshot_sets \
+         WHERE snapshot_key = ? AND set_name = 'clone_set'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(connection)?;
+    let clone_metadata: serde_json::Value = serde_json::from_str(&clone_metadata.value)?;
+    assert_eq!(clone_metadata["description"], "Clone \"quoted\" set");
+    Ok(())
+}
+
+fn assert_clrmamepro_rom_facts(
+    connection: &mut SqliteConnection,
+    snapshot: &mame_coalesce::domain::SnapshotKey,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let primary_rom = sql_query(
+        "SELECT CAST(size AS TEXT) AS value FROM asset_requirements \
+         WHERE snapshot_key = ? AND asset_name = 'demo.bin'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<NullableTextRow>(connection)?;
+    assert_eq!(primary_rom.value.as_deref(), Some("16"));
+    let primary_crc = sql_query(
+        "SELECT crc AS value FROM asset_requirements \
+         WHERE snapshot_key = ? AND asset_name = 'demo.bin'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<BytesRow>(connection)?;
+    assert_eq!(primary_crc.value, [0x12, 0x34, 0x56, 0x78]);
+    let primary_sha1 = sql_query(
+        "SELECT sha1 AS value FROM asset_requirements \
+         WHERE snapshot_key = ? AND asset_name = 'demo.bin'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<BytesRow>(connection)?;
+    assert_eq!(
+        primary_sha1.value,
+        hex::decode("0123456789abcdef0123456789abcdef01234567")?
+    );
+
+    let merged = sql_query(
+        "SELECT merge_name AS value FROM asset_requirements \
+         WHERE snapshot_key = ? AND asset_name = 'shared.bin'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<NullableTextRow>(connection)?;
+    assert_eq!(merged.value.as_deref(), Some("demo.bin"));
+    let statuses = sql_query(
+        "SELECT GROUP_CONCAT(asset_name || ':' || dump_status, ',') AS value \
+         FROM (SELECT asset_name, dump_status FROM asset_requirements \
+               WHERE snapshot_key = ? AND dump_status IS NOT NULL ORDER BY component_order)",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(connection)?;
+    assert_eq!(statuses.value, "no_dump.bin:nodump,bad_dump.bin:baddump");
+    let partial_hash = sql_query(
+        "SELECT sha1 AS value FROM asset_requirements \
+         WHERE snapshot_key = ? AND asset_name = 'partial.bin'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<BytesRow>(connection)?;
+    assert_eq!(partial_hash.value, vec![0xaa; 20]);
+    Ok(())
+}
+
+fn assert_clrmamepro_retained_tokens(
+    connection: &mut SqliteConnection,
+    snapshot: &mame_coalesce::domain::SnapshotKey,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let unknown = sql_query(
+        "SELECT raw_value_json AS value FROM snapshot_extensions \
+         WHERE snapshot_key = ? AND field_name = 'futureflag'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(connection)?;
+    assert!(unknown.value.contains("future-token"));
+    let header_tokens = sql_query(
+        "SELECT raw_value_json AS value FROM snapshot_extensions \
+         WHERE snapshot_key = ? AND record_kind = 'clrmamepro' AND field_name = 'source_tokens'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(connection)?;
+    assert!(header_tokens.value.contains("Synthetic Catalog"));
+    let comment_count = sql_query(
+        "SELECT COUNT(*) AS count FROM snapshot_extensions \
+         WHERE snapshot_key = ? AND field_name = 'comment'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<CountRow>(connection)?;
+    assert!(comment_count.count >= 2);
+    let version =
+        sql_query("SELECT declared_version AS value FROM catalog_snapshots WHERE snapshot_key = ?")
+            .bind::<Text, _>(snapshot.as_str())
+            .get_result::<TextRow>(connection)?;
+    assert_eq!(version.value, "synthetic-1");
+    Ok(())
+}
+
+#[test]
+fn malformed_clrmamepro_record_has_location_and_publishes_no_snapshot()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, mut connection) = setup()?;
+    let path = directory.path().join("malformed.dat");
+    std::fs::write(
+        &path,
+        b"clrmamepro ( version 1 )\ngame ( name broken rom ( name bad.bin sha1 invalid ) )",
+    )?;
+    let mut request = request(
+        path,
+        "clrmamepro-bad",
+        "malformed-clrmamepro",
+        "Malformed DAT",
+    )?;
+    request.format = CatalogDocumentFormat::ClrMamePro;
+    let report = app::import_catalog(&database, &request)?;
+    assert_eq!(report.status, app::CatalogImportStatus::Failed);
+    assert!(report.snapshot_key.is_none());
+    assert_eq!(count(&mut connection, "catalog_snapshots")?, 0);
+    let diagnostic = sql_query(
+        "SELECT record_kind || ':' || record_name AS value FROM import_diagnostics \
+         WHERE run_key = ?",
+    )
+    .bind::<Text, _>(report.run_key.to_string())
+    .get_result::<TextRow>(&mut connection)?;
+    assert_eq!(diagnostic.value, "rom:bad.bin");
+    let location =
+        sql_query("SELECT source_line AS value FROM import_diagnostics WHERE run_key = ?")
+            .bind::<Text, _>(report.run_key.to_string())
+            .get_result::<IntegerRow>(&mut connection)?;
+    assert_eq!(location.value, 2);
+    Ok(())
+}
+
+#[test]
+fn clrmamepro_and_logiqx_normalize_shared_set_and_rom_facts_equivalently()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, mut connection) = setup()?;
+    let logiqx_path = directory.path().join("equivalent.xml");
+    let clrmamepro_path = directory.path().join("equivalent.dat");
+    std::fs::write(
+        &logiqx_path,
+        br#"<datafile><header><name>Equivalent</name></header><game name="equiv"><description>Equivalent set</description><year>1998</year><manufacturer>Example Works</manufacturer><rom name="equiv.bin" size="16" crc="12345678"/></game></datafile>"#,
+    )?;
+    std::fs::write(
+        &clrmamepro_path,
+        b"clrmamepro ( version v1 ) game ( name equiv description \"Equivalent set\" year 1998 manufacturer \"Example Works\" rom ( name equiv.bin size 16 crc 12345678 ) )",
+    )?;
+    let logiqx = app::import_catalog(
+        &database,
+        &request(logiqx_path, "equiv-logiqx", "equiv-logiqx", "Equivalent")?,
+    )?;
+    let mut dat_request = request(
+        clrmamepro_path,
+        "equiv-clrmamepro",
+        "equiv-clrmamepro",
+        "Equivalent",
+    )?;
+    dat_request.format = CatalogDocumentFormat::ClrMamePro;
+    let clrmamepro = app::import_catalog(&database, &dat_request)?;
+    let logiqx_snapshot = logiqx.snapshot_key.ok_or("Logiqx snapshot missing")?;
+    let clrmamepro_snapshot = clrmamepro
+        .snapshot_key
+        .ok_or("ClrMamePro snapshot missing")?;
+
+    for field in ["description", "year", "manufacturer"] {
+        let logiqx_metadata = sql_query(
+            "SELECT metadata_json AS value FROM snapshot_sets \
+             WHERE snapshot_key = ? AND set_name = 'equiv'",
+        )
+        .bind::<Text, _>(logiqx_snapshot.as_str())
+        .get_result::<TextRow>(&mut connection)?;
+        let dat_metadata = sql_query(
+            "SELECT metadata_json AS value FROM snapshot_sets \
+             WHERE snapshot_key = ? AND set_name = 'equiv'",
+        )
+        .bind::<Text, _>(clrmamepro_snapshot.as_str())
+        .get_result::<TextRow>(&mut connection)?;
+        let logiqx_value: serde_json::Value = serde_json::from_str(&logiqx_metadata.value)?;
+        let dat_value: serde_json::Value = serde_json::from_str(&dat_metadata.value)?;
+        assert_eq!(logiqx_value[field], dat_value[field], "{field}");
+    }
+    let logiqx_size = sql_query(
+        "SELECT CAST(size AS TEXT) AS value FROM asset_requirements \
+         WHERE snapshot_key = ? AND asset_name = 'equiv.bin'",
+    )
+    .bind::<Text, _>(logiqx_snapshot.as_str())
+    .get_result::<NullableTextRow>(&mut connection)?;
+    let dat_size = sql_query(
+        "SELECT CAST(size AS TEXT) AS value FROM asset_requirements \
+         WHERE snapshot_key = ? AND asset_name = 'equiv.bin'",
+    )
+    .bind::<Text, _>(clrmamepro_snapshot.as_str())
+    .get_result::<NullableTextRow>(&mut connection)?;
+    assert_eq!(logiqx_size.value, dat_size.value);
+    let logiqx_crc = sql_query(
+        "SELECT crc AS value FROM asset_requirements \
+         WHERE snapshot_key = ? AND asset_name = 'equiv.bin'",
+    )
+    .bind::<Text, _>(logiqx_snapshot.as_str())
+    .get_result::<BytesRow>(&mut connection)?;
+    let dat_crc = sql_query(
+        "SELECT crc AS value FROM asset_requirements \
+         WHERE snapshot_key = ? AND asset_name = 'equiv.bin'",
+    )
+    .bind::<Text, _>(clrmamepro_snapshot.as_str())
+    .get_result::<BytesRow>(&mut connection)?;
+    assert_eq!(logiqx_crc.value, dat_crc.value);
     Ok(())
 }
 

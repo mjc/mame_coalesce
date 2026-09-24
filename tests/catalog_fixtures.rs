@@ -108,7 +108,7 @@ const REQUIRED_FIXTURES: &[(&str, &str, &str)] = &[
     (
         "clrmamepro-synthetic-subset",
         "clrmamepro-dat",
-        "fixture-only",
+        "clrmamepro-supported",
     ),
     (
         "mame-software-list-parts",
@@ -190,6 +190,22 @@ fn assert_fixture_record(fixture: &Fixture) -> Result<(), Box<dyn std::error::Er
                     .unsupported_semantics
                     .iter()
                     .any(|s| s.contains("retained"))
+            );
+        }
+        "clrmamepro-supported" => {
+            assert_eq!(fixture.format, "clrmamepro-dat");
+            assert!(fixture.expected.is_none(), "{}", fixture.id);
+            assert!(
+                fixture.expected_adapter_fields.len() >= 10,
+                "{}",
+                fixture.id
+            );
+            assert!(!fixture.expected_diagnostics.is_empty(), "{}", fixture.id);
+            assert!(
+                fixture
+                    .retained_raw_fields
+                    .iter()
+                    .any(|field| field == "comments")
             );
         }
         "fixture-only" => {

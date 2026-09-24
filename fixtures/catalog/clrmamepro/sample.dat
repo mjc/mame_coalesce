@@ -1,9 +1,29 @@
-; Synthetic subset only; no formal ClrMamePro specification is asserted.
+; Synthetic ClrMamePro sample: comments and spacing are retained verbatim.
 clrmamepro (
  name "Synthetic Catalog"
+ version "synthetic-1"
+ author "Repository fixture"
 )
-game (
+set (
  name "demo_set"
- description "Synthetic set"
- rom ( name "demo.bin" size 16 crc 12345678 )
+ description "Synthetic parent set"
+ year 1998
+ manufacturer "Example Works"
+ rom (
+  name "demo.bin"
+  size 16
+  crc 12345678
+  sha1 0123456789abcdef0123456789abcdef01234567
+ )
+ rom ( name "shared.bin" size 3 merge "demo.bin" ) ; merged requirement
+)
+; Clone records use the same name/cloneof vocabulary as Logiqx.
+game (
+ name "clone_set"
+ cloneof "demo_set"
+ description "Clone \"quoted\" set"
+ rom ( name "no_dump.bin" nodump )
+ rom ( name "bad_dump.bin" size 5 baddump crc32 87654321 )
+ rom ( name "partial.bin" sha1 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa )
+ rom ( name "opaque.bin" size 2 futureflag "future-token" )
 )
