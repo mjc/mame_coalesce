@@ -1,7 +1,11 @@
 use diesel::prelude::*;
 
 use crate::{
-    domain::{DatRom, SourceFile, SourceKind},
+    domain::{
+        CatalogKey, Crc32Digest, DatRom, EvidenceProvenance, EvidenceScope, ExpectedEvidence,
+        Md5Digest, ObservedContent, RequirementKey, SetKey, SetMetadata, SourceFile,
+        SourceLocation,
+    },
     hashes::Sha1Digest,
     storage::{
         db::Pool,
@@ -100,15 +104,41 @@ impl<'pool> BuildRepository<'pool> {
             .inner_join(schema::roms::dsl::roms)
             .load::<(crate::storage::models::Game, crate::storage::models::Rom)>(&mut conn)?;
 
+        let catalog_key = CatalogKey::fresh();
         rows.into_iter()
             .map(|(game, rom)| {
-                let sha1 = sha1_digest_from_db(rom.sha1, "roms.sha1", &rom.name)?;
+                let size = u64::try_from(rom.size).map_err(|_| {
+                    crate::Error::InvalidRomSize(u64::from(rom.size.unsigned_abs()))
+                })?;
+                let expected = ExpectedEvidence {
+                    scope: EvidenceScope::WholeAsset,
+                    provenance: EvidenceProvenance::LegacyCache,
+                    size: Some(size),
+                    crc: digest_from_db::<4>(Some(rom.crc), "roms.crc", &rom.name)?
+                        .map(Crc32Digest),
+                    md5: digest_from_db::<16>(Some(rom.md5), "roms.md5", &rom.name)?.map(Md5Digest),
+                    sha1: digest_from_db(Some(rom.sha1), "roms.sha1", &rom.name)?,
+                    merge: None,
+                    dump_status: None,
+                    serial: None,
+                    date: None,
+                };
                 Ok(DatRom {
-                    dat_name: dat_name.clone(),
-                    game_name: game.name,
+                    catalog_name: dat_name.clone(),
+                    key: RequirementKey::new(SetKey::new(catalog_key.clone(), game.name), rom.name),
                     parent_name: game.clone_of,
-                    rom_name: rom.name,
-                    sha1,
+                    set_metadata: SetMetadata {
+                        is_bios: game.is_bios,
+                        rom_of: game.rom_of,
+                        sample_of: game.sample_of,
+                        board: game.board,
+                        year: game.year,
+                        manufacturer: game.manufacturer,
+                        ..SetMetadata::default()
+                    },
+                    role: crate::domain::AssetRole::Rom,
+                    component_order: None,
+                    expected,
                 })
             })
             .collect()
@@ -116,39 +146,59 @@ impl<'pool> BuildRepository<'pool> {
 }
 
 fn source_file_from_model(rom_file: RomFile) -> crate::Result<SourceFile> {
-    let kind = source_kind_from_rom_file(&rom_file);
+    let location = source_location_from_model(&rom_file);
     let sha1 = sha1_digest_from_db(rom_file.sha1, "rom_files.sha1", &rom_file.name)?;
-
+    let xxh3 = digest_from_db::<8>(Some(rom_file.xxhash3), "rom_files.xxhash3", &rom_file.name)?
+        .ok_or_else(|| {
+            crate::Error::InvalidHash(format!(
+                "rom_files.xxhash3 for {} is missing",
+                rom_file.name
+            ))
+        })?;
     Ok(SourceFile {
         source_root: rom_file.parent_path,
-        canonical_path: rom_file.path,
-        entry_name: rom_file.in_archive.then_some(rom_file.name),
-        sha1,
-        kind,
+        location,
+        observed: ObservedContent {
+            scope: EvidenceScope::WholeAsset,
+            provenance: EvidenceProvenance::Computed,
+            size: None,
+            crc: None,
+            md5: None,
+            sha1: Some(sha1),
+            xxh3,
+        },
     })
 }
 
-fn source_kind_from_rom_file(rom_file: &RomFile) -> SourceKind {
+fn source_location_from_model(rom_file: &RomFile) -> SourceLocation {
     if !rom_file.in_archive {
-        return SourceKind::BareFile;
+        return SourceLocation::BareFile {
+            path: rom_file.path.clone(),
+        };
     }
-
-    if std::path::Path::new(&rom_file.path)
-        .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("zip"))
-    {
-        SourceKind::ZipEntry
-    } else {
-        SourceKind::ArchiveEntry
+    SourceLocation::LegacyUnknown {
+        path: rom_file.path.clone(),
+        member_name: Some(rom_file.name.clone()),
     }
 }
 
 fn sha1_digest_from_db(bytes: Vec<u8>, column: &str, label: &str) -> crate::Result<Sha1Digest> {
-    let len = bytes.len();
-    bytes.try_into().map_err(|_| {
-        crate::Error::InvalidHash(format!(
-            "{column} for {label} has length {len}; expected 20 bytes"
-        ))
+    digest_from_db::<20>(Some(bytes), column, label)?
+        .ok_or_else(|| crate::Error::InvalidHash(format!("{column} for {label} is missing")))
+}
+
+fn digest_from_db<const N: usize>(
+    bytes: Option<Vec<u8>>,
+    column: &str,
+    label: &str,
+) -> crate::Result<Option<[u8; N]>> {
+    bytes.map_or(Ok(None), |bytes| {
+        let len = bytes.len();
+        bytes.try_into().map(Some).map_err(|_| {
+            crate::Error::InvalidHash(format!(
+                "{column} for {label} has length {len}; expected {N} bytes"
+            ))
+        })
     })
 }
 
@@ -193,36 +243,13 @@ mod tests {
         let source_files = SourceRepository::new(&pool).load_source_files()?;
 
         assert_eq!(dat_roms.len(), 1);
-        assert_eq!(dat_roms[0].rom_name, "repo.rom");
+        assert_eq!(dat_roms[0].rom_name(), "repo.rom");
         assert_eq!(source_files.len(), 1);
-        assert_eq!(source_files[0].kind, SourceKind::BareFile);
+        assert!(matches!(
+            source_files[0].location,
+            SourceLocation::BareFile { .. }
+        ));
         Ok(())
-    }
-
-    #[test]
-    fn source_kind_derives_archive_variants_from_rom_file() {
-        let mut rom_file = RomFile {
-            id: 1,
-            parent_path: "/source".to_owned(),
-            parent_game_name: None,
-            path: "/source/archive.zip".to_owned(),
-            name: "entry.rom".to_owned(),
-            crc: None,
-            sha1: crate::hashes::sha1_bytes(b"abc").to_vec(),
-            md5: None,
-            xxhash3: crate::hashes::xxhash3_bytes(b"abc").to_vec(),
-            in_archive: true,
-            rom_id: None,
-        };
-
-        assert_eq!(source_kind_from_rom_file(&rom_file), SourceKind::ZipEntry);
-        rom_file.path = "/source/archive.7z".to_owned();
-        assert_eq!(
-            source_kind_from_rom_file(&rom_file),
-            SourceKind::ArchiveEntry
-        );
-        rom_file.in_archive = false;
-        assert_eq!(source_kind_from_rom_file(&rom_file), SourceKind::BareFile);
     }
 
     #[test]

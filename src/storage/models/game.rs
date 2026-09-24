@@ -49,14 +49,14 @@ impl New {
     pub fn from_logiqx(logiqx: &logiqx::Game, data_file_id: i32) -> Self {
         Self {
             name: logiqx.name().to_owned(),
-            is_bios: Some(logiqx.isbios().to_owned()),
+            is_bios: logiqx.isbios_opt().map(str::to_owned),
             clone_of: logiqx.cloneof().map(std::string::ToString::to_string),
-            rom_of: Some(logiqx.romof().to_owned()),
-            sample_of: Some(logiqx.sampleof().to_owned()),
-            board: Some(logiqx.board().to_owned()),
-            rebuildto: Some(logiqx.rebuildto().to_owned()),
-            year: Some(logiqx.year().to_owned()),
-            manufacturer: Some(logiqx.manufacturer().to_owned()),
+            rom_of: logiqx.romof_opt().map(str::to_owned),
+            sample_of: logiqx.sampleof_opt().map(str::to_owned),
+            board: logiqx.board_opt().map(str::to_owned),
+            rebuildto: logiqx.rebuildto_opt().map(str::to_owned),
+            year: logiqx.year_opt().map(str::to_owned),
+            manufacturer: logiqx.manufacturer_opt().map(str::to_owned),
             data_file_id: Some(data_file_id),
         }
     }

@@ -55,7 +55,7 @@ struct MatchedRom<'a> {
 fn selected_dat_roms<'a>(dat_roms: &'a [DatRom], dat_name: &str) -> Vec<&'a DatRom> {
     let mut selected = dat_roms
         .iter()
-        .filter(|rom| rom.dat_name == dat_name)
+        .filter(|rom| rom.catalog_name() == dat_name)
         .collect::<Vec<_>>();
     selected.sort();
     selected
@@ -66,20 +66,25 @@ fn sources_for_root<'a>(
     source_root: &str,
 ) -> BTreeMap<Sha1Digest, Vec<&'a SourceFile>> {
     let mut source_by_sha1 = BTreeMap::<Sha1Digest, Vec<&SourceFile>>::new();
-    for source in source_files
+    for (sha1, source) in source_files
         .iter()
         .filter(|source| source_in_root(source, source_root))
+        .filter_map(|source| source.observed.sha1.map(|sha1| (sha1, source)))
     {
-        source_by_sha1.entry(source.sha1).or_default().push(source);
+        source_by_sha1.entry(sha1).or_default().push(source);
     }
 
     for candidates in source_by_sha1.values_mut() {
         candidates.sort_by(|left, right| {
-            left.kind
+            left.location
                 .priority()
-                .cmp(&right.kind.priority())
-                .then_with(|| left.canonical_path.cmp(&right.canonical_path))
-                .then_with(|| left.entry_name.cmp(&right.entry_name))
+                .cmp(&right.location.priority())
+                .then_with(|| left.location.path().cmp(right.location.path()))
+                .then_with(|| {
+                    left.location
+                        .member_name()
+                        .cmp(&right.location.member_name())
+                })
         });
     }
 
@@ -90,8 +95,11 @@ fn resolve_rom<'a>(
     rom: &'a DatRom,
     source_index: &'a BTreeMap<Sha1Digest, Vec<&'a SourceFile>>,
 ) -> RomResolution<'a> {
+    let Some(sha1) = rom.sha1() else {
+        return RomResolution::Missing(rom);
+    };
     let candidates = source_index
-        .get(&rom.sha1)
+        .get(sha1)
         .map(Vec::as_slice)
         .unwrap_or_default();
 
@@ -121,7 +129,7 @@ fn plan_zip_entries(
                 .entry(format!("{}.zip", matched.rom.bundle_name(mode)))
                 .or_default()
                 .push(ZipEntrySpec {
-                    output_name: matched.rom.rom_name.clone(),
+                    output_name: matched.rom.rom_name().to_owned(),
                     source: matched.selected.clone(),
                 });
             entries_by_zip
@@ -137,7 +145,7 @@ fn build_report(resolutions: &[RomResolution<'_>], strict: bool) -> BuildReport 
                     report.matched_roms += 1;
                     if matched.candidates.len() > 1 {
                         report.duplicate_matches.push(DuplicateMatch {
-                            rom_name: matched.rom.rom_name.clone(),
+                            rom_name: matched.rom.rom_name().to_owned(),
                             selected: matched.selected.clone(),
                             candidates: matched
                                 .candidates
@@ -149,9 +157,9 @@ fn build_report(resolutions: &[RomResolution<'_>], strict: bool) -> BuildReport 
                 }
                 RomResolution::Missing(rom) => {
                     report.missing_roms.push(MissingRom {
-                        game_name: rom.game_name.clone(),
-                        rom_name: rom.rom_name.clone(),
-                        sha1: rom.sha1,
+                        game_name: rom.game_name().to_owned(),
+                        rom_name: rom.rom_name().to_owned(),
+                        sha1: rom.sha1().copied(),
                     });
                 }
             }
@@ -168,14 +176,25 @@ fn build_report(resolutions: &[RomResolution<'_>], strict: bool) -> BuildReport 
 fn source_in_root(source: &SourceFile, source_root: &str) -> bool {
     let source_root = Utf8Path::new(source_root);
     Utf8Path::new(&source.source_root) == source_root
-        || Utf8Path::new(&source.canonical_path).starts_with(source_root)
+        || Utf8Path::new(source.location.path()).starts_with(source_root)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{BuildMode, SourceKind};
+    use crate::domain::BuildMode;
+    use crate::domain::{
+        ArchiveBackend, ArchiveMemberSelector, CatalogKey, ExpectedEvidence, ObservedContent,
+        RequirementKey, SetKey, SourceLocation,
+    };
     use proptest::prelude::*;
+
+    #[derive(Clone, Copy)]
+    enum SourceKind {
+        BareFile,
+        ZipEntry,
+        ArchiveEntry,
+    }
 
     fn digest(value: &str) -> crate::hashes::Sha1Digest {
         crate::hashes::sha1_bytes(value.as_bytes())
@@ -193,11 +212,16 @@ mod tests {
 
     fn rom(game_name: &str, parent_name: Option<&str>, rom_name: &str, sha1: &str) -> DatRom {
         DatRom {
-            dat_name: "dat-a".to_owned(),
-            game_name: game_name.to_owned(),
+            catalog_name: "dat-a".to_owned(),
+            key: RequirementKey::new(SetKey::new(CatalogKey::fresh(), game_name), rom_name),
             parent_name: parent_name.map(str::to_owned),
-            rom_name: rom_name.to_owned(),
-            sha1: digest(sha1),
+            set_metadata: crate::domain::SetMetadata::default(),
+            role: crate::domain::AssetRole::Rom,
+            component_order: Some(0),
+            expected: ExpectedEvidence {
+                sha1: Some(digest(sha1)),
+                ..ExpectedEvidence::default()
+            },
         }
     }
 
@@ -208,12 +232,39 @@ mod tests {
         sha1: &str,
         kind: SourceKind,
     ) -> SourceFile {
+        let location = match kind {
+            SourceKind::BareFile => SourceLocation::BareFile {
+                path: path.to_owned(),
+            },
+            SourceKind::ZipEntry => SourceLocation::ArchiveMember {
+                path: path.to_owned(),
+                backend: ArchiveBackend::Zip,
+                selector: ArchiveMemberSelector::IndexAndName {
+                    index: 0,
+                    name: entry_name.unwrap_or_default().to_owned(),
+                },
+            },
+            SourceKind::ArchiveEntry => SourceLocation::ArchiveMember {
+                path: path.to_owned(),
+                backend: ArchiveBackend::SevenZip,
+                selector: ArchiveMemberSelector::IndexAndName {
+                    index: 0,
+                    name: entry_name.unwrap_or_default().to_owned(),
+                },
+            },
+        };
         SourceFile {
             source_root: root.to_owned(),
-            canonical_path: path.to_owned(),
-            entry_name: entry_name.map(str::to_owned),
-            sha1: digest(sha1),
-            kind,
+            location,
+            observed: ObservedContent {
+                scope: crate::domain::EvidenceScope::WholeAsset,
+                provenance: crate::domain::EvidenceProvenance::Computed,
+                size: None,
+                crc: None,
+                md5: None,
+                sha1: Some(digest(sha1)),
+                xxh3: [0; 8],
+            },
         }
     }
 
@@ -243,11 +294,16 @@ mod tests {
     #[test]
     fn no_selected_dat_rows_produces_empty_successful_plan() {
         let dat_roms = [DatRom {
-            dat_name: "other-dat".to_owned(),
-            game_name: "game".to_owned(),
+            catalog_name: "other-dat".to_owned(),
+            key: RequirementKey::new(SetKey::new(CatalogKey::fresh(), "game"), "game.rom"),
             parent_name: None,
-            rom_name: "game.rom".to_owned(),
-            sha1: digest("sha1"),
+            set_metadata: crate::domain::SetMetadata::default(),
+            role: crate::domain::AssetRole::Rom,
+            component_order: Some(0),
+            expected: ExpectedEvidence {
+                sha1: Some(digest("sha1")),
+                ..ExpectedEvidence::default()
+            },
         }];
 
         let plan = plan_build(&dat_roms, &[], &request(BuildMode::ParentBundles));
@@ -324,11 +380,11 @@ mod tests {
 
         assert_eq!(plan.report.duplicate_matches.len(), 1);
         assert_eq!(
-            plan.report.duplicate_matches[0].selected.canonical_path,
+            plan.report.duplicate_matches[0].selected.location.path(),
             "/src-a/bare-a.rom"
         );
         assert_eq!(
-            plan.zips[0].entries[0].source.canonical_path,
+            plan.zips[0].entries[0].source.location.path(),
             "/src-a/bare-a.rom"
         );
     }
@@ -363,8 +419,8 @@ mod tests {
         let plan = plan_build(&dat_roms, &source_files, &request(BuildMode::ParentBundles));
 
         let duplicate = &plan.report.duplicate_matches[0];
-        assert_eq!(duplicate.selected.canonical_path, "/src-a/a.zip");
-        assert_eq!(duplicate.selected.entry_name.as_deref(), Some("a.rom"));
+        assert_eq!(duplicate.selected.location.path(), "/src-a/a.zip");
+        assert_eq!(duplicate.selected.location.member_name(), Some("a.rom"));
         assert_eq!(
             duplicate
                 .candidates
@@ -506,7 +562,7 @@ mod tests {
         assert_eq!(plan.report.matched_roms, 1);
         assert!(plan.report.missing_roms.is_empty());
         assert_eq!(
-            plan.zips[0].entries[0].source.canonical_path,
+            plan.zips[0].entries[0].source.location.path(),
             "/src-a/nested/nested.rom"
         );
     }
@@ -575,18 +631,28 @@ mod tests {
     fn overlapping_dats_scope_to_requested_dat() {
         let dat_roms = [
             DatRom {
-                dat_name: "dat-a".to_owned(),
-                game_name: "game".to_owned(),
+                catalog_name: "dat-a".to_owned(),
+                key: RequirementKey::new(SetKey::new(CatalogKey::fresh(), "game"), "shared.rom"),
                 parent_name: None,
-                rom_name: "shared.rom".to_owned(),
-                sha1: digest("sha1-a"),
+                set_metadata: crate::domain::SetMetadata::default(),
+                role: crate::domain::AssetRole::Rom,
+                component_order: Some(0),
+                expected: ExpectedEvidence {
+                    sha1: Some(digest("sha1-a")),
+                    ..ExpectedEvidence::default()
+                },
             },
             DatRom {
-                dat_name: "dat-b".to_owned(),
-                game_name: "game".to_owned(),
+                catalog_name: "dat-b".to_owned(),
+                key: RequirementKey::new(SetKey::new(CatalogKey::fresh(), "game"), "shared.rom"),
                 parent_name: None,
-                rom_name: "shared.rom".to_owned(),
-                sha1: digest("sha1-b"),
+                set_metadata: crate::domain::SetMetadata::default(),
+                role: crate::domain::AssetRole::Rom,
+                component_order: Some(0),
+                expected: ExpectedEvidence {
+                    sha1: Some(digest("sha1-b")),
+                    ..ExpectedEvidence::default()
+                },
             },
         ];
         let source_files = [source(
@@ -608,18 +674,28 @@ mod tests {
     fn one_source_file_can_match_multiple_dats() {
         let dat_roms = [
             DatRom {
-                dat_name: "dat-a".to_owned(),
-                game_name: "game-a".to_owned(),
+                catalog_name: "dat-a".to_owned(),
+                key: RequirementKey::new(SetKey::new(CatalogKey::fresh(), "game-a"), "a.rom"),
                 parent_name: None,
-                rom_name: "a.rom".to_owned(),
-                sha1: digest("sha1-shared"),
+                set_metadata: crate::domain::SetMetadata::default(),
+                role: crate::domain::AssetRole::Rom,
+                component_order: Some(0),
+                expected: ExpectedEvidence {
+                    sha1: Some(digest("sha1-shared")),
+                    ..ExpectedEvidence::default()
+                },
             },
             DatRom {
-                dat_name: "dat-b".to_owned(),
-                game_name: "game-b".to_owned(),
+                catalog_name: "dat-b".to_owned(),
+                key: RequirementKey::new(SetKey::new(CatalogKey::fresh(), "game-b"), "b.rom"),
                 parent_name: None,
-                rom_name: "b.rom".to_owned(),
-                sha1: digest("sha1-shared"),
+                set_metadata: crate::domain::SetMetadata::default(),
+                role: crate::domain::AssetRole::Rom,
+                component_order: Some(0),
+                expected: ExpectedEvidence {
+                    sha1: Some(digest("sha1-shared")),
+                    ..ExpectedEvidence::default()
+                },
             },
         ];
         let source_files = [source(

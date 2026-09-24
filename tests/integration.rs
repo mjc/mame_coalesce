@@ -300,7 +300,6 @@ fn run_workflow_writes_from_rar_archive() -> Result<(), Box<dyn std::error::Erro
 }
 
 #[test]
-#[ignore = "requires p7zip in the test environment"]
 fn p7zip_extracts_r7z_builder_archive() -> Result<(), Box<dyn std::error::Error>> {
     let work_dir = tempfile::tempdir()?;
     let archive_path = work_dir.path().join("source.7z");
