@@ -6,8 +6,9 @@ use crate::{
     domain::{
         ArtifactOutcome, ArtifactResult, AuditReport, BuildMode, BuildReport, BuildRequest,
         CatalogKey, CatalogScope, ImportRunKey, MatchingPolicy, MissingContentPolicy,
-        ObservationBasis, OutputContainer, PlanOutcome, PublishingSourceKey, ScanRunKey,
-        SetSelection, SnapshotKey, SourceRoot, ZipCompression,
+        ObservationBasis, OutputContainer, PlanOutcome, PublishingSourceKey,
+        RelationshipAssertionKey, RelationshipClaim, RelationshipExplanation, RelationshipReview,
+        ScanRunKey, SetSelection, SnapshotKey, SourceRoot, ZipCompression,
     },
     operations,
     storage::repositories::{BuildRepository, DataFileSelector, SourceRepository},
@@ -205,6 +206,28 @@ pub fn import_catalog(
     request: &CatalogImportRequest,
 ) -> crate::Result<CatalogImportReport> {
     crate::storage::catalog_import::import(database.pool(), request)
+}
+
+/// Persist a derived candidate or user-authored relationship without conflating it with a source claim.
+pub fn record_relationship(
+    database: &Database,
+    claim: &RelationshipClaim,
+) -> crate::Result<RelationshipAssertionKey> {
+    crate::storage::relationships::record_claim(database.pool(), claim)
+}
+
+/// Append a review event. Earlier reviews remain available as durable history.
+pub fn review_relationship(
+    database: &Database,
+    assertion_key: &RelationshipAssertionKey,
+    review: &RelationshipReview,
+) -> crate::Result<()> {
+    crate::storage::relationships::review_claim(database.pool(), assertion_key, review)
+}
+
+/// Explain all known source claims, derived candidates, and user conclusions in stable order.
+pub fn explain_relationships(database: &Database) -> crate::Result<Vec<RelationshipExplanation>> {
+    crate::storage::relationships::explain_all(database.pool())
 }
 
 pub fn scan_source(

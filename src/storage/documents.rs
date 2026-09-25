@@ -795,6 +795,7 @@ mod tests {
         conn.revert_last_migration(crate::storage::db::MIGRATIONS)?;
         conn.revert_last_migration(crate::storage::db::MIGRATIONS)?;
         conn.revert_last_migration(crate::storage::db::MIGRATIONS)?;
+        conn.revert_last_migration(crate::storage::db::MIGRATIONS)?;
         let software_list_tables = sql_query(
             "SELECT COUNT(*) AS count FROM sqlite_master \
              WHERE type = 'table' AND name IN ('software_lists', 'software_items', \
