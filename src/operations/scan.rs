@@ -27,10 +27,19 @@ use crate::{
 };
 
 pub fn source(path: &Utf8Path, jobs: usize, pool: &Pool) -> crate::Result<Utf8PathBuf> {
+    source_with_walk(path, jobs, pool, walk_for_files)
+}
+
+fn source_with_walk(
+    path: &Utf8Path,
+    jobs: usize,
+    pool: &Pool,
+    walk: impl FnOnce(&Utf8Path, &[Utf8PathBuf]) -> crate::Result<Vec<Utf8PathBuf>>,
+) -> crate::Result<Utf8PathBuf> {
     let source_root = path.canonicalize_utf8()?;
     info!("Looking in path: {source_root}");
     let excluded_paths = db::database_file_paths(pool)?;
-    let file_list = walk_for_files(&source_root, &excluded_paths)?;
+    let file_list = walk(&source_root, &excluded_paths)?;
     let new_rom_files = get_all_rom_files(&file_list, jobs)?;
 
     info!(
@@ -245,9 +254,20 @@ fn walk_for_files(
     dir: &Utf8Path,
     excluded_paths: &[Utf8PathBuf],
 ) -> crate::Result<Vec<Utf8PathBuf>> {
-    let files = WalkDir::new(dir)
+    collect_walked_files(
+        WalkDir::new(dir)
+            .into_iter()
+            .filter_entry(entry_is_relevant),
+        excluded_paths,
+    )
+}
+
+fn collect_walked_files(
+    entries: impl IntoIterator<Item = Result<DirEntry, walkdir::Error>>,
+    excluded_paths: &[Utf8PathBuf],
+) -> crate::Result<Vec<Utf8PathBuf>> {
+    let files = entries
         .into_iter()
-        .filter_entry(entry_is_relevant)
         .try_fold(Vec::new(), |mut files, entry| {
             let entry = entry.map_err(|error| {
                 Error::InvalidPath(format!("failed to traverse source path: {error}"))
@@ -306,6 +326,8 @@ fn optimize_file_order(mut dirs: Vec<DirEntry>) -> Vec<DirEntry> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::repositories::SourceRepository;
+    use std::cell::Cell;
     use std::collections::BTreeSet;
     use std::io::{self, Write};
     use zip::write::SimpleFileOptions;
@@ -368,6 +390,62 @@ mod tests {
         };
 
         assert!(error.to_string().contains("failed to traverse source path"));
+        Ok(())
+    }
+
+    #[test]
+    fn failed_partial_walk_preserves_cached_source_rows() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let database_dir = tempfile::tempdir()?;
+        let database_path = database_dir.path().join("cache.sqlite");
+        let pool = db::create_db_pool(
+            database_path
+                .to_str()
+                .ok_or_else(|| io::Error::other("database path is not UTF-8"))?,
+        )?;
+        let source_dir = tempfile::tempdir()?;
+        let root = Utf8Path::from_path(source_dir.path())
+            .ok_or_else(|| io::Error::other("source path is not UTF-8"))?;
+        std::fs::write(root.join("a.rom"), b"cached")?;
+        source(root, 1, &pool)?;
+        let cached = SourceRepository::new(&pool).load_source_files()?;
+        assert_eq!(cached.len(), 1);
+
+        std::fs::remove_file(root.join("a.rom"))?;
+        std::fs::write(root.join("b.rom"), b"new")?;
+        let saw_file = Cell::new(false);
+        let result = source_with_walk(root, 1, &pool, |source_root, excluded_paths| {
+            let missing_path = source_root.join("removed-during-scan");
+            let Some(Err(walk_error)) = WalkDir::new(&missing_path).into_iter().next() else {
+                return Err(Error::InvalidPath(
+                    "missing path should fail traversal".to_owned(),
+                ));
+            };
+            let partial_walk = WalkDir::new(source_root)
+                .into_iter()
+                .filter_entry(entry_is_relevant)
+                .take(2)
+                .inspect(|entry| {
+                    if entry
+                        .as_ref()
+                        .is_ok_and(|entry| entry.file_type().is_file())
+                    {
+                        saw_file.set(true);
+                    }
+                })
+                .chain(std::iter::once(Err(walk_error)));
+            collect_walked_files(partial_walk, excluded_paths)
+        });
+
+        assert!(
+            saw_file.get(),
+            "the walk must observe a file before failing"
+        );
+        let Err(error) = result else {
+            return Err("expected partial walk to fail".into());
+        };
+        assert!(error.to_string().contains("removed-during-scan"));
+        assert_eq!(SourceRepository::new(&pool).load_source_files()?, cached);
         Ok(())
     }
 
