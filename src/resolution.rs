@@ -972,6 +972,7 @@ mod tests {
             fingerprint: None,
             scan_run: None,
             scan_provenance: None,
+            bare_file_cache_stamp: None,
         }
     }
 

@@ -13,7 +13,7 @@ use mame_coalesce::{
     app::{
         self, AuditRefresh, AuditRequest, BuildWorkflowRequest, CatalogImportRequest,
         CatalogImportStatus, DatImportRequest, DiskAuditRequest, RunWorkflowRequest,
-        SourceRootSelection,
+        ScanCachePolicy, SourceRootSelection, SourceScanRequest,
     },
     database::Database,
     domain::{CatalogKey, PublishingSourceKey},
@@ -78,24 +78,7 @@ fn run() -> mame_coalesce::Result<ExitCode> {
         } => import_catalog_command(&database, args),
         Command::Cache {
             command: CacheCommand::Scan(args),
-        } => {
-            let progress = render::ScanProgressReporter::default();
-            let callback = |event| progress.update(event);
-            let reports = app::scan_sources_with_progress(
-                &database,
-                &SourceRootSelection {
-                    primary: args.source.clone(),
-                    additional: args.additional_source_roots.clone(),
-                },
-                args.jobs,
-                &callback,
-            )?;
-            progress.finish();
-            for report in &reports {
-                render::scan_report(report);
-            }
-            Ok(ExitCode::SUCCESS)
-        }
+        } => cache_scan_command(&database, args),
         Command::Cache {
             command: CacheCommand::Build(args),
         } => {
@@ -213,6 +196,47 @@ fn render_workflow_scans(report: &mame_coalesce::app::BuildWorkflowReport) {
             render::scan_report(scan_report);
         }
     }
+}
+
+fn cache_scan_command(
+    database: &Database,
+    args: &options::CacheScanArgs,
+) -> mame_coalesce::Result<ExitCode> {
+    let progress = render::ScanProgressReporter::default();
+    let callback = |event| progress.update(event);
+    let reports = if args.reuse_unchanged {
+        if !args.additional_source_roots.is_empty() {
+            return Err(mame_coalesce::Error::InvalidPath(
+                "bare-file reuse currently supports one source root per scan".to_owned(),
+            ));
+        }
+        vec![app::scan_source_with_policy_and_progress(
+            database,
+            &SourceScanRequest {
+                source_path: args.source.clone(),
+                jobs: args.jobs,
+            },
+            ScanCachePolicy::ReuseUnchangedBareFiles {
+                force_rehash: args.force_rehash.clone(),
+            },
+            &callback,
+        )?]
+    } else {
+        app::scan_sources_with_progress(
+            database,
+            &SourceRootSelection {
+                primary: args.source.clone(),
+                additional: args.additional_source_roots.clone(),
+            },
+            args.jobs,
+            &callback,
+        )?
+    };
+    progress.finish();
+    for report in &reports {
+        render::scan_report(report);
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 fn audit_command(database: &Database, args: &AuditArgs) -> mame_coalesce::Result<ExitCode> {
