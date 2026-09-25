@@ -155,6 +155,10 @@ Use `--max-roms 0` to include every collected ROM entry.
 
 ## Maintenance
 
+For module boundaries, compatibility and cache-migration behavior, change
+recipes, and refactor test/measurement evidence, see
+[`docs/architecture.md`](docs/architecture.md).
+
 Use devenv 2.3.1 or newer with Nix. The repository owns `devenv.nix`,
 `devenv.yaml`, and `devenv.lock`; no machine-local devshell imports are needed.
 The Rust module selects latest stable (currently pinned to 1.98.1), including
