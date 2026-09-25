@@ -246,6 +246,9 @@ fn parse_machine(node: &Element) -> crate::Result<Machine> {
         "sourcefile".into(),
         value(node.attributes.get("sourcefile")),
     );
+    if let Some(parent) = &parent {
+        metadata.insert("cloneof".into(), serde_json::json!(parent));
+    }
     for flag in [
         "isdevice",
         "runnable",
@@ -306,6 +309,7 @@ fn parse_machine(node: &Element) -> crate::Result<Machine> {
         if ![
             "name",
             "sourcefile",
+            "cloneof",
             "isdevice",
             "runnable",
             "isbios",
