@@ -15,6 +15,17 @@ pub fn plan_build(
     source_files: &[SourceFile],
     request: &BuildRequest,
 ) -> BuildPlan {
+    let selected_dat_roms = match &request.set_selection {
+        crate::domain::SetSelection::All => None,
+        crate::domain::SetSelection::ExactNames(_) => Some(
+            dat_roms
+                .iter()
+                .filter(|rom| request.set_selection.includes(rom.key.set()))
+                .cloned()
+                .collect::<Vec<_>>(),
+        ),
+    };
+    let dat_roms = selected_dat_roms.as_deref().unwrap_or(dat_roms);
     let resolutions = resolution::resolve_across_roots(
         dat_roms,
         source_files,
@@ -155,6 +166,7 @@ mod tests {
             mode,
             matching_policy: MatchingPolicy::Sha1Compatibility,
             missing_policy: MissingContentPolicy::AllowPartial,
+            set_selection: crate::domain::SetSelection::All,
         }
     }
 

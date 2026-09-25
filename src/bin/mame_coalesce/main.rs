@@ -46,6 +46,7 @@ fn run() -> mame_coalesce::Result<ExitCode> {
                     jobs: args.jobs,
                     dry_run: args.options.dry_run,
                     strict: args.options.missing.strict(),
+                    set_selection: args.options.set_selection(),
                 },
                 &SourceRootSelection {
                     primary: args.source.clone(),
@@ -87,6 +88,7 @@ fn run() -> mame_coalesce::Result<ExitCode> {
                     compression: args.options.compression.into(),
                     dry_run: args.options.dry_run,
                     strict: args.options.missing.strict(),
+                    set_selection: args.options.set_selection(),
                 },
                 &SourceRootSelection {
                     primary: args.source.clone(),
@@ -156,6 +158,7 @@ fn audit_command(database: &Database, args: &AuditArgs) -> mame_coalesce::Result
             },
             jobs: args.jobs,
             matching_policy: args.matching_policy.into(),
+            set_selection: args.set_selection(),
         },
         &SourceRootSelection {
             primary: args.source.clone(),

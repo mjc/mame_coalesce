@@ -1,6 +1,7 @@
 use crate::hashes::Sha1Digest;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DocumentKey([u8; 32]);
@@ -88,6 +89,11 @@ pub struct SetName(String);
 pub struct AssetName(String);
 
 impl SetName {
+    #[must_use]
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
@@ -263,6 +269,29 @@ impl SetKey {
 pub struct RequirementKey {
     set: SetKey,
     asset: AssetName,
+}
+
+/// Select all sets or an exact set-name subset within the already selected catalog.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum SetSelection {
+    #[default]
+    All,
+    ExactNames(BTreeSet<SetName>),
+}
+
+impl SetSelection {
+    #[must_use]
+    pub fn exact_names(names: impl IntoIterator<Item = SetName>) -> Self {
+        Self::ExactNames(names.into_iter().collect())
+    }
+
+    #[must_use]
+    pub fn includes(&self, set: &SetKey) -> bool {
+        match self {
+            Self::All => true,
+            Self::ExactNames(names) => names.contains(set.set_name()),
+        }
+    }
 }
 
 impl RequirementKey {
@@ -784,6 +813,7 @@ pub struct BuildRequest {
     pub mode: BuildMode,
     pub matching_policy: MatchingPolicy,
     pub missing_policy: MissingContentPolicy,
+    pub set_selection: SetSelection,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
