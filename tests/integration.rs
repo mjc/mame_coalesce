@@ -1812,6 +1812,57 @@ fn assert_directory_backend_build(
 }
 
 #[test]
+fn cli_legacy_build_defaults_preserve_parent_bundle_deflated_zip_and_warn_missing()
+-> Result<(), Box<dyn std::error::Error>> {
+    let work_dir = tempfile::tempdir()?;
+    let source_dir = tempfile::tempdir()?;
+    let output_dir = tempfile::tempdir()?;
+    let root = utf8_path(work_dir.path())?;
+    let dat_path = write_clone_dat(work_dir.path())?;
+    let source_path = write_present_clone_roms(source_dir.path())?;
+    let database_path = root.join("cli.db");
+    let output_path = utf8_path(output_dir.path())?.to_path_buf();
+
+    cargo_command()
+        .args(db_arg(&database_path))
+        .args([
+            "build",
+            dat_path.as_str(),
+            source_path.as_str(),
+            output_path.as_str(),
+        ])
+        .assert()
+        .success();
+
+    let bundle_path = output_path.join("parent.zip");
+    assert!(bundle_path.is_file());
+    assert!(!output_path.join("parent").exists());
+
+    let mut archive = zip::ZipArchive::new(fs::File::open(bundle_path)?)?;
+    let mut entries = BTreeMap::new();
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index)?;
+        assert_eq!(entry.compression(), zip::CompressionMethod::Deflated);
+        let mut contents = Vec::new();
+        entry.read_to_end(&mut contents)?;
+        entries.insert(entry.name().to_owned(), contents);
+    }
+    assert_eq!(
+        entries.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["clone2.rom", "parent.rom"]
+    );
+    assert_eq!(
+        entries.get("parent.rom").map(Vec::as_slice),
+        Some(b"abc" as &[u8])
+    );
+    assert_eq!(
+        entries.get("clone2.rom").map(Vec::as_slice),
+        Some(b"" as &[u8])
+    );
+    Ok(())
+}
+
+#[test]
 fn cli_store_compression_writes_stored_zip_entries() -> Result<(), Box<dyn std::error::Error>> {
     let work_dir = tempfile::tempdir()?;
     let source_dir = tempfile::tempdir()?;
