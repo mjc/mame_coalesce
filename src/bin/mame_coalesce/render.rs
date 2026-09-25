@@ -44,8 +44,8 @@ impl Drop for ScanProgressReporter {
 
 pub fn scan_report(report: &SourceScanReport) {
     info!(
-        "scanned {} ROM files at {}",
-        report.observation_count, report.source_path
+        "scanned {} ROM files at {} (reused {} unchanged bare files)",
+        report.observation_count, report.source_path, report.reused_bare_files
     );
     if report.associated_rom_count == 0 && report.observation_count > 0 {
         warn!(

@@ -6,9 +6,10 @@ use diesel::{
 
 use crate::{
     domain::{
-        CatalogKey, CompleteSourceScan, Crc32Digest, DatRom, EvidenceProvenance, EvidenceScope,
-        ExpectedEvidence, Md5Digest, ObservedContent, RequirementKey, ScanProvenance, ScanRunKey,
-        SetKey, SetMetadata, SourceFile, SourceFingerprint, SourceLocation, SourceRoot,
+        BareFileCacheStamp, CatalogKey, CompleteSourceScan, Crc32Digest, DatRom,
+        EvidenceProvenance, EvidenceScope, ExpectedEvidence, Md5Digest, ObservedContent,
+        RequirementKey, ScanProvenance, ScanRunKey, SetKey, SetMetadata, SourceFile,
+        SourceFingerprint, SourceLocation, SourceRoot,
     },
     hashes::Sha1Digest,
     storage::{
@@ -214,6 +215,8 @@ impl<'pool> BuildRepository<'pool> {
 
 fn source_file_from_model(rom_file: RomFile) -> crate::Result<SourceFile> {
     let location = source_location_from_model(&rom_file)?;
+    let scan_run = scan_run_from_model(&rom_file)?;
+    let scan_provenance = scan_provenance_from_model(&rom_file)?;
     let sha1 = sha1_digest_from_db(rom_file.sha1, "rom_files.sha1", &rom_file.name)?;
     let xxh3 = digest_from_db::<8>(Some(rom_file.xxhash3), "rom_files.xxhash3", &rom_file.name)?
         .ok_or_else(|| {
@@ -234,24 +237,12 @@ fn source_file_from_model(rom_file: RomFile) -> crate::Result<SourceFile> {
         &rom_file.name,
     )?
     .map(SourceFingerprint::new);
-    let scan_run = match rom_file.scan_run.as_deref() {
-        Some(key) => Some(ScanRunKey::from_storage_key(key).ok_or_else(|| {
-            crate::Error::InvalidPath(format!(
-                "source {} has an invalid scan run key",
-                rom_file.path
-            ))
-        })?),
-        None => None,
-    };
-    let scan_provenance = match rom_file.scan_provenance.as_deref() {
-        Some(value) => Some(ScanProvenance::from_storage_key(value).ok_or_else(|| {
-            crate::Error::InvalidPath(format!(
-                "source {} has unknown scan provenance",
-                rom_file.path
-            ))
-        })?),
-        None => None,
-    };
+    let bare_file_cache_stamp = digest_from_db::<32>(
+        rom_file.bare_file_cache_stamp,
+        "rom_files.bare_file_cache_stamp",
+        &rom_file.name,
+    )?
+    .map(BareFileCacheStamp::new);
     if rom_file.scan_root.is_some() != scan_run.is_some()
         || scan_run.is_some() != fingerprint.is_some()
         || fingerprint.is_some() != scan_provenance.is_some()
@@ -261,10 +252,28 @@ fn source_file_from_model(rom_file: RomFile) -> crate::Result<SourceFile> {
             rom_file.path
         )));
     }
-    let content_provenance = if scan_provenance.is_some() {
-        EvidenceProvenance::Computed
-    } else {
-        EvidenceProvenance::Unknown
+    if matches!(
+        &location,
+        SourceLocation::ArchiveMember { .. } | SourceLocation::LegacyUnknown { .. }
+    ) && bare_file_cache_stamp.is_some()
+    {
+        return Err(crate::Error::InvalidPath(format!(
+            "archive source {} has a bare-file cache stamp",
+            rom_file.path
+        )));
+    }
+    if scan_provenance == Some(ScanProvenance::ReusedStatValidatedV1)
+        && bare_file_cache_stamp.is_none()
+    {
+        return Err(crate::Error::InvalidPath(format!(
+            "reused source {} has no bare-file cache stamp",
+            rom_file.path
+        )));
+    }
+    let content_provenance = match scan_provenance {
+        Some(ScanProvenance::StreamedSha1Xxh3V1) => EvidenceProvenance::Computed,
+        Some(ScanProvenance::ReusedStatValidatedV1) => EvidenceProvenance::StatValidatedCache,
+        None => EvidenceProvenance::Unknown,
     };
     Ok(SourceFile {
         source_root: SourceRoot::new(rom_file.scan_root.unwrap_or(rom_file.parent_path)),
@@ -281,7 +290,49 @@ fn source_file_from_model(rom_file: RomFile) -> crate::Result<SourceFile> {
         fingerprint,
         scan_run,
         scan_provenance,
+        bare_file_cache_stamp,
     })
+}
+
+fn scan_run_from_model(rom_file: &RomFile) -> crate::Result<Option<ScanRunKey>> {
+    rom_file
+        .scan_run
+        .as_deref()
+        .map(|key| {
+            ScanRunKey::from_storage_key(key).ok_or_else(|| {
+                crate::Error::InvalidPath(format!(
+                    "source {} has an invalid scan run key",
+                    rom_file.path
+                ))
+            })
+        })
+        .transpose()
+}
+
+fn scan_provenance_from_model(rom_file: &RomFile) -> crate::Result<Option<ScanProvenance>> {
+    let provenance = rom_file
+        .scan_provenance
+        .as_deref()
+        .map(|value| {
+            ScanProvenance::from_storage_key(value).ok_or_else(|| {
+                crate::Error::InvalidPath(format!(
+                    "source {} has unknown scan provenance",
+                    rom_file.path
+                ))
+            })
+        })
+        .transpose()?;
+    if rom_file.cache_reused {
+        if provenance != Some(ScanProvenance::StreamedSha1Xxh3V1) {
+            return Err(crate::Error::InvalidPath(format!(
+                "source {} has inconsistent reused-scan metadata",
+                rom_file.path
+            )));
+        }
+        Ok(Some(ScanProvenance::ReusedStatValidatedV1))
+    } else {
+        Ok(provenance)
+    }
 }
 
 fn source_location_from_model(rom_file: &RomFile) -> crate::Result<SourceLocation> {
@@ -381,6 +432,8 @@ mod tests {
             observed_size: None,
             source_fingerprint: None,
             scan_provenance: None,
+            bare_file_cache_stamp: None,
+            cache_reused: false,
             rom_id: None,
         }
     }
@@ -435,21 +488,28 @@ mod tests {
         let run = ScanRunKey::fresh();
         let root = SourceRoot::new("/source");
         let content_sha1 = crate::hashes::sha1_bytes(b"abc");
-        let observation = |location| crate::domain::SourceObservation {
-            source_root: root.clone(),
-            scan_run: run,
-            location,
-            observed: ObservedContent {
-                scope: EvidenceScope::WholeAsset,
-                provenance: EvidenceProvenance::Computed,
-                size: Some(3),
-                crc: None,
-                md5: None,
-                sha1: Some(content_sha1),
-                xxh3: crate::hashes::xxhash3_bytes(b"abc"),
-            },
-            fingerprint: SourceFingerprint::new([7; 20]),
-            scan_provenance: ScanProvenance::StreamedSha1Xxh3V1,
+        let observation = |location| {
+            let bare_file_cache_stamp = match &location {
+                SourceLocation::BareFile { .. } => Some(BareFileCacheStamp::new([4; 32])),
+                _ => None,
+            };
+            crate::domain::SourceObservation {
+                source_root: root.clone(),
+                scan_run: run,
+                location,
+                observed: ObservedContent {
+                    scope: EvidenceScope::WholeAsset,
+                    provenance: EvidenceProvenance::Computed,
+                    size: Some(3),
+                    crc: None,
+                    md5: None,
+                    sha1: Some(content_sha1),
+                    xxh3: crate::hashes::xxhash3_bytes(b"abc"),
+                },
+                fingerprint: SourceFingerprint::new([7; 20]),
+                scan_provenance: ScanProvenance::StreamedSha1Xxh3V1,
+                bare_file_cache_stamp,
+            }
         };
         let scan = CompleteSourceScan::new(
             root.clone(),

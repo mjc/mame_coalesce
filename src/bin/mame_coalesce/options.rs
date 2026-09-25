@@ -161,6 +161,15 @@ pub struct CacheScanArgs {
     pub additional_source_roots: Vec<Utf8PathBuf>,
     #[arg(short, long, default_value_t = 0, help = "Scan worker count")]
     pub jobs: usize,
+    #[arg(long, help = "Reuse unchanged bare-file observations from this cache")]
+    pub reuse_unchanged: bool,
+    #[arg(
+        long,
+        value_name = "FILE",
+        requires = "reuse_unchanged",
+        help = "Force rehash of this file even when reuse metadata matches (repeatable)"
+    )]
+    pub force_rehash: Vec<Utf8PathBuf>,
 }
 
 #[derive(Clone, Debug, Args)]

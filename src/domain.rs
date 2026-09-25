@@ -318,6 +318,7 @@ pub enum EvidenceScope {
 pub enum EvidenceProvenance {
     SourceDeclared,
     Computed,
+    StatValidatedCache,
     LegacyCache,
     #[default]
     Unknown,
@@ -576,16 +577,34 @@ impl SourceFingerprint {
     }
 }
 
+/// Platform stat evidence used only to decide whether an opt-in bare-file scan may be reused.
+/// It is not a content digest and never replaces build-time byte verification.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct BareFileCacheStamp([u8; 32]);
+
+impl BareFileCacheStamp {
+    #[must_use]
+    pub const fn new(digest: [u8; 32]) -> Self {
+        Self(digest)
+    }
+
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum ScanProvenance {
     StreamedSha1Xxh3V1,
+    ReusedStatValidatedV1,
 }
 
 impl ScanProvenance {
     #[must_use]
     pub const fn storage_key(self) -> &'static str {
         match self {
-            Self::StreamedSha1Xxh3V1 => "streamed_sha1_xxh3_v1",
+            Self::StreamedSha1Xxh3V1 | Self::ReusedStatValidatedV1 => "streamed_sha1_xxh3_v1",
         }
     }
 
@@ -691,6 +710,7 @@ pub struct SourceFile {
     pub fingerprint: Option<SourceFingerprint>,
     pub scan_run: Option<ScanRunKey>,
     pub scan_provenance: Option<ScanProvenance>,
+    pub bare_file_cache_stamp: Option<BareFileCacheStamp>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -701,6 +721,7 @@ pub struct SourceObservation {
     pub observed: ObservedContent,
     pub fingerprint: SourceFingerprint,
     pub scan_provenance: ScanProvenance,
+    pub bare_file_cache_stamp: Option<BareFileCacheStamp>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -388,6 +388,7 @@ mod tests {
                 fingerprint: None,
                 scan_run: None,
                 scan_provenance: None,
+                bare_file_cache_stamp: None,
             },
             requirement: crate::domain::RequirementKey::new(
                 crate::domain::SetKey::new(crate::domain::CatalogKey::new("test"), path),

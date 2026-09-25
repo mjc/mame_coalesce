@@ -790,7 +790,8 @@ mod tests {
         .execute(&mut conn)?;
 
         // This test targets catalog/document rollback behavior; remove the newer
-        // ROM-scan extension before walking back those migrations.
+        // ROM-scan extensions before walking back those migrations.
+        conn.revert_last_migration(crate::storage::db::MIGRATIONS)?;
         conn.revert_last_migration(crate::storage::db::MIGRATIONS)?;
         conn.revert_last_migration(crate::storage::db::MIGRATIONS)?;
         conn.revert_last_migration(crate::storage::db::MIGRATIONS)?;

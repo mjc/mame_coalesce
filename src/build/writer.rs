@@ -1159,6 +1159,7 @@ mod tests {
             fingerprint,
             scan_run: None,
             scan_provenance: None,
+            bare_file_cache_stamp: None,
         }
     }
 
@@ -1245,6 +1246,7 @@ mod tests {
             fingerprint,
             scan_run: None,
             scan_provenance: None,
+            bare_file_cache_stamp: None,
         }
     }
 
