@@ -1,5 +1,5 @@
 pub mod app;
-mod build;
+pub mod build;
 mod clrmamepro;
 pub mod database;
 pub mod disk;

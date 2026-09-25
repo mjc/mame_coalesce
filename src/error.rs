@@ -68,6 +68,9 @@ pub enum Error {
     #[error("transport metadata serialization failed: {0}")]
     Json(#[from] serde_json::Error),
 
+    #[error("unsupported serialized plan version: {0}")]
+    UnsupportedPlanVersion(u32),
+
     #[error("ROM size cannot be stored in SQLite: {0}")]
     InvalidRomSize(u64),
 
