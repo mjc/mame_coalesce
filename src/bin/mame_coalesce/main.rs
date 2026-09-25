@@ -1,4 +1,4 @@
-use std::process::ExitCode;
+use std::{io::Write, process::ExitCode};
 
 use camino::Utf8PathBuf;
 use clap::Parser;
@@ -6,10 +6,13 @@ use clap::Parser;
 mod logger;
 mod options;
 mod render;
-use options::{CacheCommand, Cli, Command};
+use options::{AuditArgs, AuditFormatArg, CacheCommand, Cli, Command};
 
 use mame_coalesce::{
-    app::{self, BuildWorkflowRequest, DatImportRequest, RunWorkflowRequest, SourceScanRequest},
+    app::{
+        self, AuditRefresh, AuditRequest, BuildWorkflowRequest, DatImportRequest,
+        RunWorkflowRequest, SourceScanRequest,
+    },
     database::Database,
 };
 
@@ -50,6 +53,7 @@ fn run() -> mame_coalesce::Result<ExitCode> {
             render::build_report(&report);
             Ok(render::exit_code(&report))
         }
+        Command::Audit(args) => audit_command(&database, args),
         Command::Cache {
             command: CacheCommand::Import { dat },
         } => {
@@ -98,6 +102,36 @@ fn run() -> mame_coalesce::Result<ExitCode> {
             Ok(render::exit_code(&report))
         }
     }
+}
+
+fn audit_command(database: &Database, args: &AuditArgs) -> mame_coalesce::Result<ExitCode> {
+    let progress = render::ScanProgressReporter::default();
+    let callback = |event| progress.update(event);
+    let report = app::audit_with_progress(
+        database,
+        &AuditRequest {
+            dat_path: args.dat.clone(),
+            source_path: args.source.clone(),
+            refresh: if args.refresh {
+                AuditRefresh::Refresh
+            } else {
+                AuditRefresh::Cached
+            },
+            jobs: args.jobs,
+            matching_policy: args.matching_policy.into(),
+        },
+        &callback,
+    )?;
+    progress.finish();
+    match args.format {
+        AuditFormatArg::Human => print!("{}", render::audit_report(&report)),
+        AuditFormatArg::Json => {
+            let mut stdout = std::io::stdout().lock();
+            stdout.write_all(&report.to_json()?)?;
+            stdout.write_all(b"\n")?;
+        }
+    }
+    Ok(render::audit_exit_code(&report))
 }
 
 fn resolve_cache_path(cache: Option<&Utf8PathBuf>) -> Utf8PathBuf {

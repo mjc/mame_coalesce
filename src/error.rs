@@ -74,6 +74,9 @@ pub enum Error {
     #[error("unsupported serialized plan version: {0}")]
     UnsupportedPlanVersion(u32),
 
+    #[error("unsupported serialized audit version: {0}")]
+    UnsupportedAuditVersion(u32),
+
     #[error("{0}")]
     PlanValidation(#[from] crate::build::validation::PlanValidation),
 

@@ -1,6 +1,6 @@
 use camino::Utf8PathBuf;
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use mame_coalesce::domain::{BuildMode, ZipCompression};
+use mame_coalesce::domain::{BuildMode, MatchingPolicy, ZipCompression};
 
 #[derive(Parser)]
 #[command(name = "mame_coalesce")]
@@ -35,11 +35,58 @@ impl Cli {
 pub enum Command {
     /// Import a DAT, scan sources, and write merged ZIP outputs.
     Build(BuildArgs),
+    /// Report catalog coverage from cached or explicitly refreshed source observations.
+    Audit(AuditArgs),
     /// Manage the persistent cache explicitly.
     Cache {
         #[command(subcommand)]
         command: CacheCommand,
     },
+}
+
+#[derive(Clone, Debug, Args)]
+pub struct AuditArgs {
+    #[arg(
+        value_name = "dat-or-name",
+        help = "Imported DAT file path or DAT header name"
+    )]
+    pub dat: Utf8PathBuf,
+    #[arg(
+        value_name = "source",
+        help = "Source root represented by cached observations"
+    )]
+    pub source: Utf8PathBuf,
+    #[arg(short, long, default_value_t = 0, help = "Refresh scan worker count")]
+    pub jobs: usize,
+    #[arg(long, help = "Refresh and persist source observations before auditing")]
+    pub refresh: bool,
+    #[arg(long, value_enum, default_value_t = MatchingPolicyArg::Sha1Compatibility, help = "Evidence matching policy")]
+    pub matching_policy: MatchingPolicyArg,
+    #[arg(long, value_enum, default_value_t = AuditFormatArg::Human, help = "Audit report format")]
+    pub format: AuditFormatArg,
+}
+
+#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+pub enum AuditFormatArg {
+    #[default]
+    Human,
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+pub enum MatchingPolicyArg {
+    #[default]
+    Sha1Compatibility,
+    EvidenceAware,
+}
+
+impl From<MatchingPolicyArg> for MatchingPolicy {
+    fn from(policy: MatchingPolicyArg) -> Self {
+        match policy {
+            MatchingPolicyArg::Sha1Compatibility => Self::Sha1Compatibility,
+            MatchingPolicyArg::EvidenceAware => Self::EvidenceAware,
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]
