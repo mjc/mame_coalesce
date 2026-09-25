@@ -1,12 +1,11 @@
 use camino::{Utf8Path, Utf8PathBuf};
-use log::info;
 
 use crate::{
     logiqx,
     storage::db::{self, Pool},
 };
 
-mod scan;
+pub mod scan;
 
 pub use scan::source;
 
@@ -17,7 +16,6 @@ pub fn list_source_paths(path: &Utf8Path, pool: &Pool) -> crate::Result<Vec<Utf8
 }
 
 pub fn parse_and_insert_datfile(path: &Utf8Path, pool: &Pool) -> crate::Result<i32> {
-    info!("Using datafile: {path}");
     logiqx::DataFile::from_path(path)
         .and_then(|datafile| db::traverse_and_insert_data_file(pool, &datafile))
 }

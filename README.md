@@ -41,6 +41,16 @@ mame_coalesce --cache /tmp/coalesce.db cache scan /path/to/roms --jobs 8
 mame_coalesce --cache /tmp/coalesce.db cache build "DAT Header Name" /path/to/roms /path/to/out
 ```
 
+The reusable library operations in `app` do not initialize logging or terminal
+progress. `plan_build` reads the selected catalog and cached scan observations
+and returns a logical plan without creating outputs. `build` reads the cache and
+writes requested artifacts. `import_dat` and `scan_source` persist catalog and
+inventory changes, respectively; `run` performs those imports/scan updates
+before building. A one-shot `--dry-run` or strict-missing build still imports the
+DAT and refreshes the scan cache, but does not write ROM outputs. The CLI owns
+human-readable reports, progress bars, and mapping build outcomes to process
+exit codes.
+
 ZIP compression defaults to deflate for compatibility. Use `--compression store`
 when profiling or when faster, larger ZIP output is preferred.
 
