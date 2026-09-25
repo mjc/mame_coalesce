@@ -6,7 +6,7 @@ use crate::{
     database::Database,
     domain::{
         BuildMode, BuildReport, BuildRequest, CatalogKey, CatalogScope, ImportRunKey,
-        PublishingSourceKey, ScanRunKey, SnapshotKey, SourceRoot, ZipCompression,
+        MatchingPolicy, PublishingSourceKey, ScanRunKey, SnapshotKey, SourceRoot, ZipCompression,
     },
     operations,
     storage::repositories::{BuildRepository, DataFileSelector, SourceRepository},
@@ -177,8 +177,9 @@ pub fn build(
         &source_files,
         &BuildRequest {
             dat_name: dat_selector.value().to_owned(),
-            source_root: source_root.to_string(),
+            source_root: SourceRoot::new(source_root.to_string()),
             mode: request.mode,
+            matching_policy: MatchingPolicy::Sha1Compatibility,
             dry_run: request.dry_run,
             strict: request.strict,
         },

@@ -232,7 +232,7 @@ fn source_file_from_model(rom_file: RomFile) -> crate::Result<SourceFile> {
         EvidenceProvenance::Unknown
     };
     Ok(SourceFile {
-        source_root: rom_file.scan_root.unwrap_or(rom_file.parent_path),
+        source_root: SourceRoot::new(rom_file.scan_root.unwrap_or(rom_file.parent_path)),
         location,
         observed: ObservedContent {
             scope: EvidenceScope::WholeAsset,
