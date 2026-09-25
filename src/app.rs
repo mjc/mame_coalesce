@@ -6,7 +6,7 @@ use crate::{
     database::Database,
     domain::{
         BuildMode, BuildReport, BuildRequest, CatalogKey, CatalogScope, ImportRunKey,
-        PublishingSourceKey, SnapshotKey, ZipCompression,
+        PublishingSourceKey, ScanRunKey, SnapshotKey, SourceRoot, ZipCompression,
     },
     operations,
     storage::repositories::{BuildRepository, DataFileSelector, SourceRepository},
@@ -88,6 +88,8 @@ pub struct SourceScanRequest {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SourceScanReport {
     pub source_path: Utf8PathBuf,
+    pub scan_run: ScanRunKey,
+    pub observation_count: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -143,8 +145,21 @@ pub fn scan_source(
     database: &Database,
     request: &SourceScanRequest,
 ) -> crate::Result<SourceScanReport> {
-    operations::source(&request.source_path, request.jobs, database.pool())
-        .map(|source_path| SourceScanReport { source_path })
+    let excluded_paths = crate::storage::db::database_file_paths(database.pool())?;
+    let completed_scan = operations::source(&request.source_path, request.jobs, &excluded_paths)?;
+    let source_path = Utf8PathBuf::from(completed_scan.source_root().as_str());
+    let scan_run = completed_scan.scan_run();
+    let observation_count = completed_scan.observations().len();
+    let associated_roms =
+        SourceRepository::new(database.pool()).replace_completed_scan(&completed_scan)?;
+    if associated_roms == 0 && observation_count > 0 {
+        warn!("scanned {observation_count} ROM files, but none matched imported DAT ROMs");
+    }
+    Ok(SourceScanReport {
+        source_path,
+        scan_run,
+        observation_count,
+    })
 }
 
 pub fn build(
@@ -155,7 +170,8 @@ pub fn build(
     let source_root = request.source_path.canonicalize_utf8()?;
     let dat_roms =
         BuildRepository::new(database.pool()).load_dat_roms(dat_selector.repository_selector())?;
-    let source_files = SourceRepository::new(database.pool()).load_source_files()?;
+    let source_files = SourceRepository::new(database.pool())
+        .load_source_files_for_root(&SourceRoot::new(source_root.to_string()))?;
     let plan = plan_build(
         &dat_roms,
         &source_files,

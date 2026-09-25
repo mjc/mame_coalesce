@@ -313,6 +313,11 @@ diesel::table! {
         in_archive -> Bool,
         archive_backend -> Nullable<Text>,
         archive_member_index -> Nullable<BigInt>,
+        scan_root -> Nullable<Text>,
+        scan_run -> Nullable<Text>,
+        observed_size -> Nullable<BigInt>,
+        source_fingerprint -> Nullable<Binary>,
+        scan_provenance -> Nullable<Text>,
         rom_id -> Nullable<Integer>,
     }
 }
