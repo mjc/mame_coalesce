@@ -32,6 +32,9 @@ pub enum Error {
     #[error("no published snapshot exists for catalog {0}")]
     CatalogNotFound(String),
 
+    #[error("source changed since planning: {path}: {reason}")]
+    SourceChanged { path: String, reason: String },
+
     #[error("Invalid hash: {0}")]
     InvalidHash(String),
 
