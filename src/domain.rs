@@ -76,7 +76,7 @@ pub struct CatalogKey(String);
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ParserInterpretationKey(String);
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct SnapshotKey(String);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -397,6 +397,301 @@ impl ExpectedEvidence {
             date: rom.date().map(str::to_owned),
         })
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RelationshipType {
+    ExactContentIdentity,
+    RevisionOf,
+    DumpOfIntendedRelease,
+    AlternateRepresentationOf,
+    SourceParentClone,
+    RuntimeDependency,
+    CatalogCorrection,
+    CatalogContinuity,
+}
+
+impl RelationshipType {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ExactContentIdentity => "exact_content_identity",
+            Self::RevisionOf => "revision_of",
+            Self::DumpOfIntendedRelease => "dump_of_intended_release",
+            Self::AlternateRepresentationOf => "alternate_representation_of",
+            Self::SourceParentClone => "source_parent_clone",
+            Self::RuntimeDependency => "runtime_dependency",
+            Self::CatalogCorrection => "catalog_correction",
+            Self::CatalogContinuity => "catalog_continuity",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CatalogRecordKind {
+    Set,
+    AssetRequirement,
+    SoftwareItem,
+}
+
+impl CatalogRecordKind {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Set => "catalog_set",
+            Self::AssetRequirement => "asset_requirement",
+            Self::SoftwareItem => "software_item",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct RelationshipRecordKey(String);
+
+impl RelationshipRecordKey {
+    #[must_use]
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct CatalogRecordRef {
+    pub snapshot: SnapshotKey,
+    pub kind: CatalogRecordKind,
+    pub key: RelationshipRecordKey,
+}
+
+impl CatalogRecordRef {
+    #[must_use]
+    pub fn new(snapshot: SnapshotKey, kind: CatalogRecordKind, key: impl Into<String>) -> Self {
+        Self {
+            snapshot,
+            kind,
+            key: RelationshipRecordKey::new(key),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContentDigestAlgorithm {
+    Crc32,
+    Md5,
+    Sha1,
+    Sha256,
+}
+
+impl ContentDigestAlgorithm {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Crc32 => "crc32",
+            Self::Md5 => "md5",
+            Self::Sha1 => "sha1",
+            Self::Sha256 => "sha256",
+        }
+    }
+
+    const fn hex_length(self) -> usize {
+        match self {
+            Self::Crc32 => 8,
+            Self::Md5 => 32,
+            Self::Sha1 => 40,
+            Self::Sha256 => 64,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+pub struct ContentIdentity {
+    algorithm: ContentDigestAlgorithm,
+    digest: String,
+}
+
+impl ContentIdentity {
+    pub fn new(
+        algorithm: ContentDigestAlgorithm,
+        digest: impl Into<String>,
+    ) -> crate::Result<Self> {
+        let digest = digest.into();
+        if digest.len() != algorithm.hex_length()
+            || !digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(crate::Error::InvalidHash(format!(
+                "{} digest must contain {} hexadecimal characters",
+                algorithm.as_str(),
+                algorithm.hex_length()
+            )));
+        }
+        Ok(Self {
+            algorithm,
+            digest: digest.to_ascii_lowercase(),
+        })
+    }
+
+    #[must_use]
+    pub const fn algorithm(&self) -> ContentDigestAlgorithm {
+        self.algorithm
+    }
+
+    #[must_use]
+    pub fn digest(&self) -> &str {
+        &self.digest
+    }
+}
+
+impl<'de> Deserialize<'de> for ContentIdentity {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct SerializedContentIdentity {
+            algorithm: ContentDigestAlgorithm,
+            digest: String,
+        }
+
+        let value = SerializedContentIdentity::deserialize(deserializer)?;
+        Self::new(value.algorithm, value.digest).map_err(serde::de::Error::custom)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct ExternalRecordRef {
+    pub namespace: String,
+    pub key: RelationshipRecordKey,
+}
+
+impl ExternalRecordRef {
+    #[must_use]
+    pub fn new(namespace: impl Into<String>, key: impl Into<String>) -> Self {
+        Self {
+            namespace: namespace.into(),
+            key: RelationshipRecordKey::new(key),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum RelationshipEndpoint {
+    CatalogRecord(CatalogRecordRef),
+    ContentObject(ContentIdentity),
+    ExternalRecord(ExternalRecordRef),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RelationshipReviewDecision {
+    Accepted,
+    Rejected,
+    Withdrawn,
+    Superseded,
+}
+
+impl RelationshipReviewDecision {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Accepted => "accepted",
+            Self::Rejected => "rejected",
+            Self::Withdrawn => "withdrawn",
+            Self::Superseded => "superseded",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "origin", rename_all = "snake_case")]
+pub enum RelationshipOrigin {
+    SourceAssertion {
+        snapshot: SnapshotKey,
+        field: String,
+        location: Option<DocumentLocation>,
+    },
+    DerivedCandidate {
+        rule_version: String,
+        supporting_assertions: Vec<RelationshipAssertionKey>,
+    },
+    UserConclusion,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DocumentLocation {
+    pub line: i64,
+    pub column: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct RelationshipAssertionKey(String);
+
+impl RelationshipAssertionKey {
+    #[must_use]
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    #[must_use]
+    pub fn fresh() -> Self {
+        Self(uuid::Uuid::new_v4().to_string())
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelationshipClaim {
+    pub relation_type: RelationshipType,
+    pub subject: RelationshipEndpoint,
+    pub target: RelationshipEndpoint,
+    pub origin: RelationshipOrigin,
+    pub evidence: serde_json::Value,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelationshipReview {
+    pub decision: RelationshipReviewDecision,
+    pub note: String,
+    pub superseded_by: Option<RelationshipAssertionKey>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelationshipExplanation {
+    pub assertion_key: RelationshipAssertionKey,
+    pub claim: RelationshipClaim,
+    pub source_field: Option<String>,
+    pub source_location: Option<DocumentLocation>,
+    pub source: Option<RelationshipSourceProvenance>,
+    pub latest_review: Option<RelationshipReview>,
+    pub review_history: Vec<RelationshipReviewEvent>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelationshipReviewEvent {
+    pub review: RelationshipReview,
+    pub created_at: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelationshipSourceProvenance {
+    pub source_key: String,
+    pub source_name: String,
+    pub document_key: String,
+    pub declared_version: Option<String>,
+    pub parser_name: Option<String>,
+    pub parser_version: Option<String>,
+    pub rules_version: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

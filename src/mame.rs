@@ -23,6 +23,7 @@ pub struct MameCatalog {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Machine {
     pub name: String,
+    pub parent: Option<String>,
     pub location: RecordLocation,
     pub metadata: BTreeMap<String, serde_json::Value>,
     pub assets: Vec<MachineAsset>,
@@ -238,11 +239,15 @@ pub fn parse_xml_element(bytes: &[u8]) -> crate::Result<Element> {
 
 fn parse_machine(node: &Element) -> crate::Result<Machine> {
     let name = required(node, "name")?;
+    let parent = node.attributes.get("cloneof").cloned();
     let mut metadata = BTreeMap::new();
     metadata.insert(
         "sourcefile".into(),
         value(node.attributes.get("sourcefile")),
     );
+    if let Some(parent) = &parent {
+        metadata.insert("cloneof".into(), serde_json::json!(parent));
+    }
     for flag in [
         "isdevice",
         "runnable",
@@ -301,6 +306,7 @@ fn parse_machine(node: &Element) -> crate::Result<Machine> {
         if ![
             "name",
             "sourcefile",
+            "cloneof",
             "isdevice",
             "runnable",
             "isbios",
@@ -322,6 +328,7 @@ fn parse_machine(node: &Element) -> crate::Result<Machine> {
     }
     Ok(Machine {
         name: name.into(),
+        parent,
         location: node.location,
         metadata,
         assets,

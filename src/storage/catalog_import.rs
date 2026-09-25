@@ -6,12 +6,19 @@ use diesel::{
 use crate::{
     app::{CatalogDocumentFormat, CatalogImportReport, CatalogImportRequest, CatalogImportStatus},
     clrmamepro::Catalog as ClrMameProCatalog,
-    domain::{DocumentKey, ImportRunKey, ParserInterpretationKey, SnapshotKey},
+    domain::{
+        CatalogRecordKind, CatalogRecordRef, DocumentKey, DocumentLocation, ImportRunKey,
+        ParserInterpretationKey, RelationshipType, SnapshotKey,
+    },
     logiqx::{DataFile, XmlSourceMap},
     mame::MameCatalog,
     mame_softwarelist::SoftwareListCatalog,
     no_intro_pc_xml::Catalog as NoIntroCatalog,
-    storage::{db::Pool, documents::DocumentStore},
+    storage::{
+        db::Pool,
+        documents::DocumentStore,
+        relationships::{SourceRelationshipDraft, insert_source_assertion},
+    },
 };
 
 #[derive(QueryableByName)]
@@ -38,6 +45,8 @@ struct SnapshotData {
 struct SnapshotSet {
     name: String,
     parent: Option<String>,
+    parent_field: Option<String>,
+    runtime_dependencies: Vec<(String, String)>,
     metadata: serde_json::Value,
     location: crate::logiqx::RecordLocation,
     assets: Vec<SnapshotAsset>,
@@ -109,6 +118,11 @@ impl SnapshotData {
             }
             sets.push(SnapshotSet {
                 name: game.name().into(), parent: game.cloneof().map(str::to_owned),
+                parent_field: game.cloneof().map(|_| "cloneof".to_owned()),
+                runtime_dependencies: [
+                    game.romof_opt().map(|name| ("romof".to_owned(), name.to_owned())),
+                    game.sampleof_opt().map(|name| ("sampleof".to_owned(), name.to_owned())),
+                ].into_iter().flatten().collect(),
                 metadata: serde_json::json!({"source_file": game.sourcefile_opt(), "is_bios": game.isbios_opt(), "rom_of": game.romof_opt(), "sample_of": game.sampleof_opt(), "board": game.board_opt(), "rebuild_to": game.rebuildto_opt(), "description": game.description_opt(), "year": game.year_opt(), "manufacturer": game.manufacturer_opt(), "device_refs": game.device_refs().collect::<Vec<_>>()}),
                 location, assets,
             });
@@ -140,6 +154,19 @@ impl SnapshotData {
             .into_iter()
             .map(|machine| {
                 extensions.extend(machine.extensions.into_iter().map(stored_extension));
+                let runtime_dependencies = machine
+                    .metadata
+                    .get("device_refs")
+                    .and_then(serde_json::Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|reference| {
+                        reference
+                            .get("name")
+                            .and_then(serde_json::Value::as_str)
+                            .map(|name| ("device_ref".to_owned(), name.to_owned()))
+                    })
+                    .collect();
                 let assets = machine
                     .assets
                     .into_iter()
@@ -185,7 +212,9 @@ impl SnapshotData {
                     .collect();
                 SnapshotSet {
                     name: machine.name,
-                    parent: None,
+                    parent: machine.parent.clone(),
+                    parent_field: machine.parent.as_ref().map(|_| "cloneof".to_owned()),
+                    runtime_dependencies,
                     metadata: serde_json::json!(machine.metadata),
                     location: machine.location,
                     assets,
@@ -226,6 +255,7 @@ impl SnapshotData {
             .into_iter()
             .map(|set| {
                 extensions.extend(set.extensions.into_iter().map(stored_clrmamepro_extension));
+                let parent_field = set.parent.as_ref().map(|_| "cloneof".to_owned());
                 let assets = set
                     .assets
                     .into_iter()
@@ -256,6 +286,8 @@ impl SnapshotData {
                 SnapshotSet {
                     name: set.name,
                     parent: set.parent,
+                    parent_field,
+                    runtime_dependencies: Vec::new(),
                     metadata: set.metadata,
                     location: set.location,
                     assets,
@@ -306,6 +338,8 @@ impl SnapshotData {
                 SnapshotSet {
                     name: entry.name,
                     parent: None,
+                    parent_field: None,
+                    runtime_dependencies: Vec::new(),
                     metadata: serde_json::json!(entry.metadata),
                     location: entry.location,
                     assets,
@@ -681,6 +715,8 @@ fn insert_snapshot_contents(
         .bind::<BigInt, _>(set.location.column)
         .execute(conn)?;
 
+        persist_set_relationships(conn, snapshot_key, set)?;
+
         for (order, asset) in set.assets.iter().enumerate() {
             let component_order = i64::try_from(order)
                 .map_err(|_| crate::Error::InvalidPath("too many catalog assets".into()))?;
@@ -714,6 +750,8 @@ fn insert_snapshot_contents(
             .bind::<BigInt, _>(asset.location.line)
             .bind::<BigInt, _>(asset.location.column)
             .execute(conn)?;
+
+            persist_asset_merge_relationship(conn, snapshot_key, set, asset, component_order)?;
         }
     }
 
@@ -737,6 +775,86 @@ fn insert_snapshot_contents(
         .bind::<BigInt, _>(extension.location.column)
         .execute(conn)?;
     }
+    Ok(())
+}
+
+fn persist_set_relationships(
+    conn: &mut SqliteConnection,
+    snapshot: &SnapshotKey,
+    set: &SnapshotSet,
+) -> crate::Result<()> {
+    let subject = CatalogRecordRef::new(snapshot.clone(), CatalogRecordKind::Set, &set.name);
+    let location = Some(DocumentLocation {
+        line: set.location.line,
+        column: set.location.column,
+    });
+    if let Some(parent) = &set.parent {
+        insert_source_assertion(
+            conn,
+            SourceRelationshipDraft {
+                relation_type: RelationshipType::SourceParentClone,
+                subject: subject.clone(),
+                target: CatalogRecordRef::new(snapshot.clone(), CatalogRecordKind::Set, parent),
+                source_field: set.parent_field.as_deref().unwrap_or("parent_name").into(),
+                source_location: location,
+                evidence: serde_json::json!({"target_name": parent}),
+            },
+        )?;
+    }
+    for (source_field, target) in &set.runtime_dependencies {
+        insert_source_assertion(
+            conn,
+            SourceRelationshipDraft {
+                relation_type: RelationshipType::RuntimeDependency,
+                subject: subject.clone(),
+                target: CatalogRecordRef::new(snapshot.clone(), CatalogRecordKind::Set, target),
+                source_field: source_field.clone(),
+                source_location: location,
+                evidence: serde_json::json!({"source_field": source_field, "target_name": target}),
+            },
+        )?;
+    }
+    Ok(())
+}
+
+fn persist_asset_merge_relationship(
+    conn: &mut SqliteConnection,
+    snapshot: &SnapshotKey,
+    set: &SnapshotSet,
+    asset: &SnapshotAsset,
+    component_order: i64,
+) -> crate::Result<()> {
+    let (Some(parent), Some(merged_name)) = (&set.parent, &asset.merge) else {
+        return Ok(());
+    };
+    insert_source_assertion(
+        conn,
+        SourceRelationshipDraft {
+            relation_type: RelationshipType::ExactContentIdentity,
+            subject: CatalogRecordRef::new(
+                snapshot.clone(),
+                CatalogRecordKind::AssetRequirement,
+                format!("{}/{}#{}", set.name, asset.name, component_order),
+            ),
+            target: CatalogRecordRef::new(
+                snapshot.clone(),
+                CatalogRecordKind::AssetRequirement,
+                format!("{parent}/{merged_name}"),
+            ),
+            source_field: "merge".to_owned(),
+            source_location: Some(DocumentLocation {
+                line: asset.location.line,
+                column: asset.location.column,
+            }),
+            evidence: serde_json::json!({
+                "declared_merge_name": merged_name,
+                "parent_set_name": parent,
+                "expected_sha1": asset.sha1.as_ref().map(hex::encode),
+                "expected_crc": asset.crc.as_ref().map(hex::encode),
+                "size": asset.size,
+            }),
+        },
+    )?;
     Ok(())
 }
 
@@ -817,6 +935,31 @@ fn insert_software_item(
         .bind::<BigInt, _>(item.location.line)
         .bind::<BigInt, _>(item.location.column)
         .execute(conn)?;
+        insert_source_assertion(
+            conn,
+            SourceRelationshipDraft {
+                relation_type: RelationshipType::SourceParentClone,
+                subject: CatalogRecordRef::new(
+                    snapshot_key.clone(),
+                    CatalogRecordKind::SoftwareItem,
+                    format!("{list_name}/{}", item.name.as_str()),
+                ),
+                target: CatalogRecordRef::new(
+                    snapshot_key.clone(),
+                    CatalogRecordKind::SoftwareItem,
+                    format!("{list_name}/{}", parent.as_str()),
+                ),
+                source_field: "cloneof".to_owned(),
+                source_location: Some(DocumentLocation {
+                    line: item.location.line,
+                    column: item.location.column,
+                }),
+                evidence: serde_json::json!({
+                    "list_name": list_name,
+                    "target_item_name": parent.as_str()
+                }),
+            },
+        )?;
     }
 
     let scope = SoftwareItemScope {
