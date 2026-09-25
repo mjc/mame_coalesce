@@ -636,6 +636,68 @@ fn source_scan_replaces_rows_for_source_root() -> Result<(), Box<dyn std::error:
 }
 
 #[test]
+fn parent_refresh_removes_stale_observations_owned_by_overlapping_root()
+-> Result<(), Box<dyn std::error::Error>> {
+    let database_dir = tempfile::tempdir()?;
+    let database = test_database(database_dir.path())?;
+    let work_dir = tempfile::tempdir()?;
+    let source_dir = tempfile::tempdir()?;
+    let nested_dir = source_dir.path().join("nested");
+    fs::create_dir(&nested_dir)?;
+    let output_dir = tempfile::tempdir()?;
+    let dat_path = write_single_game_dat(
+        &work_dir.path().join("overlap.dat"),
+        "Overlapping root refresh",
+        "game",
+        "nested.rom",
+        "a9993e364706816aba3e25717850c26c9cd0d89d",
+    )?;
+    let parent_root = utf8_path(source_dir.path())?.to_path_buf();
+    let child_root = utf8_path(&nested_dir)?.to_path_buf();
+    fs::write(nested_dir.join("nested.rom"), b"abc")?;
+    app::import_dat(
+        &database,
+        &DatImportRequest {
+            dat_path: dat_path.clone(),
+        },
+    )?;
+
+    for source_path in [&parent_root, &child_root] {
+        app::scan_source(
+            &database,
+            &SourceScanRequest {
+                source_path: source_path.clone(),
+                jobs: 1,
+            },
+        )?;
+    }
+    fs::remove_file(nested_dir.join("nested.rom"))?;
+    app::scan_source(
+        &database,
+        &SourceScanRequest {
+            source_path: parent_root.clone(),
+            jobs: 1,
+        },
+    )?;
+
+    let report = app::build(
+        &database,
+        &BuildWorkflowRequest {
+            dat_path,
+            source_path: parent_root,
+            destination_path: utf8_path(output_dir.path())?.to_path_buf(),
+            mode: BuildMode::ParentBundles,
+            compression: ZipCompression::Deflate,
+            dry_run: true,
+            strict: true,
+        },
+    )?;
+    assert_eq!(report.exit_code, 2);
+    assert_eq!(report.build_report.missing_roms.len(), 1);
+    Ok(())
+}
+
+#[test]
 fn failed_archive_scan_preserves_cached_source_rows() -> Result<(), Box<dyn std::error::Error>> {
     let database_dir = tempfile::tempdir()?;
     let database = test_database(database_dir.path())?;

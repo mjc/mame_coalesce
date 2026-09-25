@@ -1,15 +1,11 @@
-use std::{
-    ffi::OsStr,
-    io::Write,
-    path::{Path, PathBuf},
-};
+use std::{ffi::OsStr, io::Write, path::PathBuf};
 
 use camino::{Utf8Path, Utf8PathBuf};
 #[cfg(test)]
 use fmmap::{MmapFile, MmapFileExt};
 
 use indicatif::ParallelProgressIterator;
-use log::{info, warn};
+use log::info;
 
 use rayon::prelude::*;
 use sha1::{Digest, Sha1};
@@ -19,46 +15,49 @@ use xxhash_rust::xxh3::Xxh3;
 
 use crate::{
     Error,
+    domain::{
+        ArchiveMemberSelector, CompleteSourceScan, EvidenceProvenance, EvidenceScope,
+        ObservedContent, ScanProvenance, ScanRunKey, SourceFingerprint, SourceLocation,
+        SourceObservation, SourceRoot,
+    },
     hashes::{Sha1Digest, Xxh3Digest},
     progress,
-    storage::{
-        db::{self, Pool},
-        models::NewRomFile,
-    },
 };
 
-pub fn source(path: &Utf8Path, jobs: usize, pool: &Pool) -> crate::Result<Utf8PathBuf> {
+pub fn source(
+    path: &Utf8Path,
+    jobs: usize,
+    excluded_paths: &[Utf8PathBuf],
+) -> crate::Result<CompleteSourceScan> {
     let source_root = path.canonicalize_utf8()?;
     info!("Looking in path: {source_root}");
-    let excluded_paths = db::database_file_paths(pool)?;
-    let file_list = walk_for_files(&source_root, &excluded_paths)?;
-    let new_rom_files = get_all_rom_files(&file_list, jobs)?;
+    let file_list = walk_for_files(&source_root, excluded_paths)?;
+    let source_root = SourceRoot::new(source_root.to_string());
+    let scan_run = ScanRunKey::fresh();
+    let observations = get_all_observations(&file_list, jobs, &source_root, scan_run)?;
 
     info!(
         "rom files found (unpacked and packed both): {}",
-        new_rom_files.len()
+        observations.len()
     );
-    let associated_roms =
-        db::replace_rom_files_for_source_root(pool, &source_root, &new_rom_files)?;
-    if associated_roms == 0 && !new_rom_files.is_empty() {
-        warn!(
-            "scanned {} ROM files, but none matched imported DAT ROMs",
-            new_rom_files.len()
-        );
-    }
-    Ok(source_root)
+    CompleteSourceScan::new(source_root, scan_run, observations)
 }
 
-fn get_all_rom_files(file_list: &[Utf8PathBuf], jobs: usize) -> crate::Result<Vec<NewRomFile>> {
+fn get_all_observations(
+    file_list: &[Utf8PathBuf],
+    jobs: usize,
+    source_root: &SourceRoot,
+    scan_run: ScanRunKey,
+) -> crate::Result<Vec<SourceObservation>> {
     let bar = progress::bar(file_list.len() as u64);
     let pool = rayon::ThreadPoolBuilder::new().num_threads(jobs).build()?;
     pool.install(|| {
         file_list
             .par_iter()
             .progress_with(bar)
-            .try_fold(Vec::new, |mut rom_files, path| {
-                rom_files.extend(scan_path(path)?);
-                Ok(rom_files)
+            .try_fold(Vec::new, |mut observations, path| {
+                observations.extend(scan_one_path(path, source_root, scan_run)?);
+                Ok(observations)
             })
             .try_reduce(Vec::new, |mut left, mut right| {
                 left.append(&mut right);
@@ -67,80 +66,139 @@ fn get_all_rom_files(file_list: &[Utf8PathBuf], jobs: usize) -> crate::Result<Ve
     })
 }
 
-fn scan_path(path: &Utf8Path) -> crate::Result<Vec<NewRomFile>> {
+fn scan_one_path(
+    path: &Utf8Path,
+    source_root: &SourceRoot,
+    scan_run: ScanRunKey,
+) -> crate::Result<Vec<SourceObservation>> {
     match crate::sources::detect(path)? {
-        crate::sources::SourceKind::BareFile => scan_bare_file(path),
-        crate::sources::SourceKind::Archive(backend) => scan_archive(path, backend),
+        crate::sources::SourceKind::BareFile => scan_bare_file(path, source_root, scan_run),
+        crate::sources::SourceKind::Archive(backend) => {
+            scan_archive(path, backend, source_root, scan_run)
+        }
     }
 }
 
-fn scan_bare_file(path: &Utf8Path) -> crate::Result<Vec<NewRomFile>> {
+#[cfg(test)]
+fn scan_path(path: &Utf8Path) -> crate::Result<Vec<SourceObservation>> {
+    let source_root = SourceRoot::new(
+        path.parent()
+            .ok_or_else(|| Error::InvalidPath(format!("source path has no parent: {path}")))?
+            .as_str()
+            .to_owned(),
+    );
+    scan_one_path(path, &source_root, ScanRunKey::fresh())
+}
+
+fn scan_bare_file(
+    path: &Utf8Path,
+    source_root: &SourceRoot,
+    scan_run: ScanRunKey,
+) -> crate::Result<Vec<SourceObservation>> {
     let mut hash_writer = RomHashWriter::default();
     crate::sources::stream_file(path, &mut hash_writer)?;
-    let (sha1, xxhash3) = hash_writer.finish();
-    let name = path
-        .file_name()
-        .ok_or_else(|| Error::InvalidPath(format!("source path has no filename: {path}")))?;
-    let parent_path = path
-        .parent()
-        .ok_or_else(|| Error::InvalidPath(format!("source path has no parent: {path}")))?;
-    Ok(vec![NewRomFile {
-        parent_path: parent_path.to_string(),
-        path: path.to_string(),
-        name: name.to_owned(),
-        sha1,
-        xxhash3,
-        in_archive: false,
-        archive_backend: None,
-        archive_member_index: None,
-        rom_id: None,
+    let (size, sha1, xxhash3) = hash_writer.finish();
+    Ok(vec![SourceObservation {
+        source_root: source_root.clone(),
+        scan_run,
+        location: SourceLocation::BareFile {
+            path: path.to_string(),
+        },
+        observed: ObservedContent {
+            scope: EvidenceScope::WholeAsset,
+            provenance: EvidenceProvenance::Computed,
+            size: Some(size),
+            crc: None,
+            md5: None,
+            sha1: Some(sha1),
+            xxh3: xxhash3,
+        },
+        fingerprint: SourceFingerprint::new(sha1),
+        scan_provenance: ScanProvenance::StreamedSha1Xxh3V1,
     }])
 }
 
 #[cfg(test)]
-fn scan_zip(mmap: &MmapFile) -> crate::Result<Vec<NewRomFile>> {
+fn scan_zip(mmap: &MmapFile) -> crate::Result<Vec<SourceObservation>> {
     let path = Utf8Path::from_path(mmap.path())
         .ok_or_else(|| Error::InvalidPath("invalid path".to_owned()))?;
-    scan_archive(path, crate::domain::ArchiveBackend::Zip)
+    scan_path(path)
 }
 
 #[cfg(test)]
-fn scan_7z(path: &Utf8Path) -> crate::Result<Vec<NewRomFile>> {
-    scan_archive(path, crate::domain::ArchiveBackend::SevenZip)
+fn scan_7z(path: &Utf8Path) -> crate::Result<Vec<SourceObservation>> {
+    scan_path(path)
 }
 
 fn scan_archive(
     path: &Utf8Path,
     backend: crate::domain::ArchiveBackend,
-) -> crate::Result<Vec<NewRomFile>> {
-    let mut rom_files = Vec::new();
+    source_root: &SourceRoot,
+    scan_run: ScanRunKey,
+) -> crate::Result<Vec<SourceObservation>> {
+    let fingerprint = fingerprint_file(path)?;
+    let mut observations = Vec::new();
     crate::sources::stream_archive(path, backend, None, |member, reader| {
         let mut hash_writer = RomHashWriter::default();
         std::io::copy(reader, &mut hash_writer)?;
-        let (sha1, xxhash3) = hash_writer.finish();
-        let name = Path::new(&member.selector.name);
-        rom_files.push(archive_rom_file(
-            path,
-            name,
-            sha1,
-            xxhash3,
-            backend,
-            member.selector.index as u64,
-        )?);
+        let (size, sha1, xxhash3) = hash_writer.finish();
+        observations.push(SourceObservation {
+            source_root: source_root.clone(),
+            scan_run,
+            location: SourceLocation::ArchiveMember {
+                path: path.to_string(),
+                backend,
+                selector: ArchiveMemberSelector::IndexAndName {
+                    index: u64::try_from(member.selector.index).map_err(|_| {
+                        Error::InvalidPath("archive member index exceeds u64".to_owned())
+                    })?,
+                    name: member.selector.name.clone(),
+                },
+            },
+            observed: ObservedContent {
+                scope: EvidenceScope::WholeAsset,
+                provenance: EvidenceProvenance::Computed,
+                size: Some(size),
+                crc: None,
+                md5: None,
+                sha1: Some(sha1),
+                xxh3: xxhash3,
+            },
+            fingerprint,
+            scan_provenance: ScanProvenance::StreamedSha1Xxh3V1,
+        });
         Ok(())
     })?;
-    Ok(rom_files)
+    verify_archive_fingerprint(path, fingerprint)?;
+    Ok(observations)
+}
+
+fn fingerprint_file(path: &Utf8Path) -> crate::Result<SourceFingerprint> {
+    let mut hasher = Sha1::new();
+    crate::sources::stream_file(path, &mut hasher)?;
+    Ok(SourceFingerprint::new(hasher.finalize().into()))
+}
+
+fn verify_archive_fingerprint(path: &Utf8Path, expected: SourceFingerprint) -> crate::Result<()> {
+    if fingerprint_file(path)? != expected {
+        return Err(Error::InvalidPath(format!(
+            "archive changed while it was being scanned: {path}"
+        )));
+    }
+    Ok(())
 }
 
 #[derive(Default)]
 struct RomHashWriter {
     sha1: Sha1,
     xxhash3: Xxh3,
+    size: u64,
 }
 
 impl RomHashWriter {
-    fn finish(self) -> (Sha1Digest, Xxh3Digest) {
+    fn finish(self) -> (u64, Sha1Digest, Xxh3Digest) {
         (
+            self.size,
             self.sha1.finalize().into(),
             self.xxhash3.digest().to_be_bytes(),
         )
@@ -149,6 +207,10 @@ impl RomHashWriter {
 
 impl Write for RomHashWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.size = self
+            .size
+            .checked_add(u64::try_from(buf.len()).map_err(std::io::Error::other)?)
+            .ok_or_else(|| std::io::Error::other("observed source size overflowed"))?;
         self.sha1.update(buf);
         self.xxhash3.update(buf);
         Ok(buf.len())
@@ -157,27 +219,6 @@ impl Write for RomHashWriter {
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
-}
-
-fn archive_rom_file(
-    archive_path: &Utf8Path,
-    member_path: &Path,
-    sha1: Sha1Digest,
-    xxhash3: Xxh3Digest,
-    backend: crate::domain::ArchiveBackend,
-    index: u64,
-) -> std::io::Result<NewRomFile> {
-    NewRomFile::from_archive(archive_path, member_path, sha1, xxhash3, backend, index).ok_or_else(
-        || {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!(
-                    "couldn't represent archive member {} in {archive_path}",
-                    member_path.display()
-                ),
-            )
-        },
-    )
 }
 
 fn walk_for_files(
@@ -333,41 +374,16 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn archive_member_conversion_errors_are_propagated() -> Result<(), Box<dyn std::error::Error>> {
-        use std::os::unix::ffi::OsStrExt;
-
-        let member = Path::new(OsStr::from_bytes(b"bad-\xff"));
-        let Err(error) = archive_rom_file(
-            Utf8Path::new("/source/archive.zip"),
-            member,
-            Sha1Digest::default(),
-            Xxh3Digest::default(),
-            crate::domain::ArchiveBackend::Rar,
-            0,
-        ) else {
-            return Err("expected non-UTF-8 archive member to fail conversion".into());
-        };
-
-        assert!(
-            error
-                .to_string()
-                .contains("couldn't represent archive member")
-        );
-        Ok(())
-    }
-
     #[test]
     fn source_walk_excludes_database_and_sidecar_paths() -> Result<(), Box<dyn std::error::Error>> {
         let temp_dir = tempfile::tempdir()?;
         let root = Utf8Path::from_path(temp_dir.path())
             .ok_or_else(|| io::Error::other("temp path is not UTF-8"))?;
         let database_path = root.join("cache.sqlite");
-        let pool = db::create_db_pool(database_path.as_str())?;
+        let pool = crate::storage::db::create_db_pool(database_path.as_str())?;
         let rom_path = root.join("game.rom");
         std::fs::write(&rom_path, b"rom")?;
-        let excluded_paths = db::database_file_paths(&pool)?;
+        let excluded_paths = crate::storage::db::database_file_paths(&pool)?;
 
         assert!(excluded_paths.contains(&database_path.canonicalize_utf8()?));
         assert!(excluded_paths.contains(&Utf8PathBuf::from(format!("{database_path}-wal"))));
@@ -384,15 +400,28 @@ mod tests {
         let path = root.join("game.rom");
         std::fs::write(&path, b"rom")?;
 
-        let rom_files = scan_path(&path)?;
+        let observations = scan_path(&path)?;
 
-        assert_eq!(rom_files.len(), 1);
-        assert_eq!(rom_files[0].name, "game.rom");
-        assert_eq!(rom_files[0].parent_path, root.as_str());
-        assert_eq!(rom_files[0].path, path.as_str());
-        assert_eq!(rom_files[0].sha1, crate::hashes::sha1_bytes(b"rom"));
-        assert_eq!(rom_files[0].xxhash3, crate::hashes::xxhash3_bytes(b"rom"));
-        assert!(!rom_files[0].in_archive);
+        assert_eq!(observations.len(), 1);
+        assert!(matches!(
+            observations[0].location,
+            SourceLocation::BareFile { .. }
+        ));
+        assert_eq!(observations[0].location.path(), path.as_str());
+        assert_eq!(observations[0].source_root.as_str(), root.as_str());
+        assert_eq!(
+            observations[0].observed.sha1,
+            Some(crate::hashes::sha1_bytes(b"rom"))
+        );
+        assert_eq!(observations[0].observed.size, Some(3));
+        assert_eq!(
+            observations[0].observed.xxh3,
+            crate::hashes::xxhash3_bytes(b"rom")
+        );
+        assert_eq!(
+            observations[0].fingerprint.digest(),
+            crate::hashes::sha1_bytes(b"rom")
+        );
         Ok(())
     }
 
@@ -407,9 +436,42 @@ mod tests {
 
         let scanned = scan_path(&path)?;
         assert_eq!(scanned.len(), 1);
-        assert_eq!(scanned[0].archive_backend.as_deref(), Some("zip"));
-        assert_eq!(scanned[0].archive_member_index, Some(0));
-        assert_eq!(scanned[0].name, "game.rom");
+        assert!(matches!(
+            scanned[0].location,
+            SourceLocation::ArchiveMember {
+                backend: crate::domain::ArchiveBackend::Zip,
+                selector: ArchiveMemberSelector::IndexAndName { index: 0, .. },
+                ..
+            }
+        ));
+        assert_eq!(scanned[0].location.member_name(), Some("game.rom"));
+        assert_eq!(
+            scanned[0].fingerprint.digest(),
+            crate::hashes::sha1_bytes(&std::fs::read(&path)?)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn archive_fingerprint_check_rejects_a_replaced_archive()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let root = Utf8Path::from_path(temp_dir.path())
+            .ok_or_else(|| io::Error::other("temp path is not UTF-8"))?;
+        let path = root.join("archive.zip");
+        std::fs::write(&path, make_test_zip(&[("game.rom", b"old")])?)?;
+        let scanned_fingerprint = fingerprint_file(&path)?;
+
+        std::fs::write(&path, make_test_zip(&[("game.rom", b"new")])?)?;
+
+        let Err(error) = verify_archive_fingerprint(&path, scanned_fingerprint) else {
+            return Err("expected archive replacement to invalidate the scan".into());
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("changed while it was being scanned")
+        );
         Ok(())
     }
 
@@ -430,8 +492,9 @@ mod tests {
         let rom_files = scan_zip(&mmap)?;
 
         assert_eq!(rom_files.len(), 1);
-        assert_eq!(rom_files[0].sha1, expected_sha1);
-        assert_eq!(rom_files[0].xxhash3, expected_xxh);
+        assert_eq!(rom_files[0].observed.sha1, Some(expected_sha1));
+        assert_eq!(rom_files[0].observed.xxh3, expected_xxh);
+        assert_eq!(rom_files[0].observed.size, Some(content.len() as u64));
         Ok(())
     }
 
@@ -449,11 +512,24 @@ mod tests {
         let rom_files = scan_zip(&mmap)?;
 
         assert_eq!(rom_files.len(), 2);
-        assert_eq!(rom_files[0].archive_backend.as_deref(), Some("zip"));
-        assert_eq!(rom_files[0].archive_member_index, Some(0));
-        assert_eq!(rom_files[1].archive_member_index, Some(1));
+        assert!(matches!(
+            rom_files[0].location,
+            SourceLocation::ArchiveMember {
+                backend: crate::domain::ArchiveBackend::Zip,
+                selector: ArchiveMemberSelector::IndexAndName { index: 0, .. },
+                ..
+            }
+        ));
+        assert!(matches!(
+            rom_files[1].location,
+            SourceLocation::ArchiveMember {
+                backend: crate::domain::ArchiveBackend::Zip,
+                selector: ArchiveMemberSelector::IndexAndName { index: 1, .. },
+                ..
+            }
+        ));
         // Verify hashes differ between entries
-        assert_ne!(rom_files[0].sha1, rom_files[1].sha1);
+        assert_ne!(rom_files[0].observed.sha1, rom_files[1].observed.sha1);
         Ok(())
     }
 
@@ -476,7 +552,7 @@ mod tests {
         let rom_files = scan_zip(&mmap)?;
 
         assert_eq!(rom_files.len(), 1);
-        assert_eq!(rom_files[0].name, "nested/game.rom");
+        assert_eq!(rom_files[0].location.member_name(), Some("nested/game.rom"));
         Ok(())
     }
 
@@ -508,17 +584,44 @@ mod tests {
         std::fs::write(root.join("c.rom"), b"c")?;
         let files = walk_for_files(root, &[])?;
 
-        let normalize = |mut rom_files: Vec<NewRomFile>| {
-            rom_files.sort_by(|left, right| left.name.cmp(&right.name));
-            rom_files
+        let source_root = SourceRoot::new(root.as_str());
+        let normalize = |mut observations: Vec<SourceObservation>| {
+            observations.sort_by(|left, right| {
+                left.location
+                    .member_name()
+                    .cmp(&right.location.member_name())
+            });
+            observations
                 .into_iter()
-                .map(|rom_file| (rom_file.name, rom_file.sha1, rom_file.xxhash3))
+                .map(|observation| {
+                    (
+                        observation.location.member_name().map(str::to_owned),
+                        observation.observed.sha1,
+                        observation.observed.xxh3,
+                        observation.observed.size,
+                    )
+                })
                 .collect::<Vec<_>>()
         };
 
-        let jobs_zero = normalize(get_all_rom_files(&files, 0)?);
-        let jobs_one = normalize(get_all_rom_files(&files, 1)?);
-        let jobs_two = normalize(get_all_rom_files(&files, 2)?);
+        let jobs_zero = normalize(get_all_observations(
+            &files,
+            0,
+            &source_root,
+            ScanRunKey::fresh(),
+        )?);
+        let jobs_one = normalize(get_all_observations(
+            &files,
+            1,
+            &source_root,
+            ScanRunKey::fresh(),
+        )?);
+        let jobs_two = normalize(get_all_observations(
+            &files,
+            2,
+            &source_root,
+            ScanRunKey::fresh(),
+        )?);
 
         assert_eq!(jobs_zero, jobs_one);
         assert_eq!(jobs_one, jobs_two);
@@ -580,13 +683,19 @@ mod tests {
         let rom_files = scan_path(utf8_path)?;
 
         assert_eq!(rom_files.len(), 1);
-        assert_eq!(rom_files[0].name, "VERSION");
-        assert_eq!(rom_files[0].sha1, crate::hashes::sha1_bytes(b"unrar-0.4.0"));
+        assert_eq!(rom_files[0].location.member_name(), Some("VERSION"));
         assert_eq!(
-            rom_files[0].xxhash3,
+            rom_files[0].observed.sha1,
+            Some(crate::hashes::sha1_bytes(b"unrar-0.4.0"))
+        );
+        assert_eq!(
+            rom_files[0].observed.xxh3,
             crate::hashes::xxhash3_bytes(b"unrar-0.4.0")
         );
-        assert!(rom_files[0].in_archive);
+        assert!(matches!(
+            rom_files[0].location,
+            SourceLocation::ArchiveMember { .. }
+        ));
         Ok(())
     }
 
@@ -604,9 +713,15 @@ mod tests {
         let rom_files = scan_7z(utf8_path)?;
 
         assert_eq!(rom_files.len(), 1);
-        assert_eq!(rom_files[0].name, "nested/game.rom");
-        assert_eq!(rom_files[0].sha1, crate::hashes::sha1_bytes(b"rom"));
-        assert_eq!(rom_files[0].xxhash3, crate::hashes::xxhash3_bytes(b"rom"));
+        assert_eq!(rom_files[0].location.member_name(), Some("nested/game.rom"));
+        assert_eq!(
+            rom_files[0].observed.sha1,
+            Some(crate::hashes::sha1_bytes(b"rom"))
+        );
+        assert_eq!(
+            rom_files[0].observed.xxh3,
+            crate::hashes::xxhash3_bytes(b"rom")
+        );
         Ok(())
     }
 }

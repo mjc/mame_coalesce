@@ -1,24 +1,25 @@
-use diesel::prelude::*;
+use diesel::{
+    dsl::sql,
+    prelude::*,
+    sql_types::{Bool, Text},
+};
 
 use crate::{
     domain::{
-        CatalogKey, Crc32Digest, DatRom, EvidenceProvenance, EvidenceScope, ExpectedEvidence,
-        Md5Digest, ObservedContent, RequirementKey, SetKey, SetMetadata, SourceFile,
-        SourceLocation,
+        CatalogKey, CompleteSourceScan, Crc32Digest, DatRom, EvidenceProvenance, EvidenceScope,
+        ExpectedEvidence, Md5Digest, ObservedContent, RequirementKey, ScanProvenance, ScanRunKey,
+        SetKey, SetMetadata, SourceFile, SourceFingerprint, SourceLocation, SourceRoot,
     },
     hashes::Sha1Digest,
     storage::{
         db::Pool,
-        models::{DataFile, RomFile},
+        models::{DataFile, NewRomFile, RomFile},
         schema,
     },
 };
 
 #[cfg(test)]
-use crate::{
-    logiqx,
-    storage::{db, models::NewRomFile},
-};
+use crate::{logiqx, storage::db};
 
 #[cfg(test)]
 pub struct DatRepository<'pool> {
@@ -47,14 +48,45 @@ impl<'pool> SourceRepository<'pool> {
         Self { pool }
     }
 
-    #[cfg(test)]
-    pub fn import_rom_files(&self, rom_files: &[NewRomFile]) -> crate::Result<usize> {
-        db::import_rom_files(self.pool, rom_files)
+    pub fn replace_completed_scan(&self, scan: &CompleteSourceScan) -> crate::Result<usize> {
+        let rows = scan
+            .observations()
+            .iter()
+            .map(NewRomFile::from_observation)
+            .collect::<crate::Result<Vec<_>>>()?;
+        crate::storage::db::replace_rom_files_for_source_root(
+            self.pool,
+            camino::Utf8Path::new(scan.source_root().as_str()),
+            &rows,
+        )
     }
 
-    pub fn load_source_files(&self) -> crate::Result<Vec<SourceFile>> {
+    pub fn load_source_files_for_root(
+        &self,
+        source_root: &SourceRoot,
+    ) -> crate::Result<Vec<SourceFile>> {
         let mut conn = self.pool.get()?;
+        let root = source_root.as_str();
+        let mut escaped_root = String::with_capacity(root.len());
+        for character in root.chars() {
+            match character {
+                '*' => escaped_root.push_str("[*]"),
+                '?' => escaped_root.push_str("[?]"),
+                '[' => escaped_root.push_str("[[]"),
+                ']' => escaped_root.push_str("[]]"),
+                _ => escaped_root.push(character),
+            }
+        }
+        let pattern = if root == "/" {
+            "/*".to_owned()
+        } else {
+            format!("{escaped_root}/*")
+        };
+        let within_root = sql::<Bool>("path = ")
+            .bind::<Text, _>(root)
+            .or(sql::<Bool>("path GLOB ").bind::<Text, _>(pattern));
         schema::rom_files::dsl::rom_files
+            .filter(within_root)
             .load::<RomFile>(&mut conn)?
             .into_iter()
             .map(source_file_from_model)
@@ -155,18 +187,65 @@ fn source_file_from_model(rom_file: RomFile) -> crate::Result<SourceFile> {
                 rom_file.name
             ))
         })?;
+    let source_size = rom_file
+        .observed_size
+        .map(|size| {
+            u64::try_from(size).map_err(|_| crate::Error::InvalidRomSize(size.unsigned_abs()))
+        })
+        .transpose()?;
+    let fingerprint = digest_from_db::<20>(
+        rom_file.source_fingerprint,
+        "rom_files.source_fingerprint",
+        &rom_file.name,
+    )?
+    .map(SourceFingerprint::new);
+    let scan_run = match rom_file.scan_run.as_deref() {
+        Some(key) => Some(ScanRunKey::from_storage_key(key).ok_or_else(|| {
+            crate::Error::InvalidPath(format!(
+                "source {} has an invalid scan run key",
+                rom_file.path
+            ))
+        })?),
+        None => None,
+    };
+    let scan_provenance = match rom_file.scan_provenance.as_deref() {
+        Some(value) => Some(ScanProvenance::from_storage_key(value).ok_or_else(|| {
+            crate::Error::InvalidPath(format!(
+                "source {} has unknown scan provenance",
+                rom_file.path
+            ))
+        })?),
+        None => None,
+    };
+    if rom_file.scan_root.is_some() != scan_run.is_some()
+        || scan_run.is_some() != fingerprint.is_some()
+        || fingerprint.is_some() != scan_provenance.is_some()
+    {
+        return Err(crate::Error::InvalidPath(format!(
+            "source {} has incomplete scan provenance",
+            rom_file.path
+        )));
+    }
+    let content_provenance = if scan_provenance.is_some() {
+        EvidenceProvenance::Computed
+    } else {
+        EvidenceProvenance::Unknown
+    };
     Ok(SourceFile {
-        source_root: rom_file.parent_path,
+        source_root: rom_file.scan_root.unwrap_or(rom_file.parent_path),
         location,
         observed: ObservedContent {
             scope: EvidenceScope::WholeAsset,
-            provenance: EvidenceProvenance::Computed,
-            size: None,
+            provenance: content_provenance,
+            size: source_size,
             crc: None,
             md5: None,
             sha1: Some(sha1),
             xxh3,
         },
+        fingerprint,
+        scan_run,
+        scan_provenance,
     })
 }
 
@@ -262,6 +341,11 @@ mod tests {
             in_archive,
             archive_backend: archive_backend.map(str::to_owned),
             archive_member_index,
+            scan_root: None,
+            scan_run: None,
+            observed_size: None,
+            source_fingerprint: None,
+            scan_provenance: None,
             rom_id: None,
         }
     }
@@ -313,37 +397,58 @@ mod tests {
         let data_file_id = DatRepository::new(&pool).import(&data_file)?;
         assert!(data_file_id > 0);
 
-        let rom_file = NewRomFile {
-            parent_path: "/source".to_owned(),
-            path: "/source/repo.rom".to_owned(),
-            name: "repo.rom".to_owned(),
-            sha1: crate::hashes::sha1_bytes(b"abc"),
-            xxhash3: crate::hashes::xxhash3_bytes(b"abc"),
-            in_archive: false,
-            archive_backend: None,
-            archive_member_index: None,
-            rom_id: None,
+        let run = ScanRunKey::fresh();
+        let root = SourceRoot::new("/source");
+        let content_sha1 = crate::hashes::sha1_bytes(b"abc");
+        let observation = |location| crate::domain::SourceObservation {
+            source_root: root.clone(),
+            scan_run: run,
+            location,
+            observed: ObservedContent {
+                scope: EvidenceScope::WholeAsset,
+                provenance: EvidenceProvenance::Computed,
+                size: Some(3),
+                crc: None,
+                md5: None,
+                sha1: Some(content_sha1),
+                xxh3: crate::hashes::xxhash3_bytes(b"abc"),
+            },
+            fingerprint: SourceFingerprint::new([7; 20]),
+            scan_provenance: ScanProvenance::StreamedSha1Xxh3V1,
         };
-        let associated = SourceRepository::new(&pool).import_rom_files(&[rom_file])?;
-        assert_eq!(associated, 1);
-        let archived_rom = NewRomFile::from_archive(
-            camino::Utf8Path::new("/source/repo-game.zip"),
-            std::path::Path::new("repo.rom"),
-            crate::hashes::sha1_bytes(b"abc"),
-            crate::hashes::xxhash3_bytes(b"abc"),
-            crate::domain::ArchiveBackend::Zip,
-            4,
-        )
-        .ok_or("expected archive source model")?;
-        SourceRepository::new(&pool).import_rom_files(&[archived_rom])?;
+        let scan = CompleteSourceScan::new(
+            root.clone(),
+            run,
+            vec![
+                observation(SourceLocation::BareFile {
+                    path: "/source/repo.rom".to_owned(),
+                }),
+                observation(SourceLocation::ArchiveMember {
+                    path: "/source/repo-game.zip".to_owned(),
+                    backend: crate::domain::ArchiveBackend::Zip,
+                    selector: crate::domain::ArchiveMemberSelector::IndexAndName {
+                        index: 4,
+                        name: "repo.rom".to_owned(),
+                    },
+                }),
+            ],
+        )?;
+        let associated = SourceRepository::new(&pool).replace_completed_scan(&scan)?;
+        assert_eq!(associated, 2);
 
         let dat_roms =
             BuildRepository::new(&pool).load_dat_roms(DataFileSelector::Name("Repository Test"))?;
-        let source_files = SourceRepository::new(&pool).load_source_files()?;
+        let source_files = SourceRepository::new(&pool).load_source_files_for_root(&root)?;
 
         assert_eq!(dat_roms.len(), 1);
         assert_eq!(dat_roms[0].rom_name(), "repo.rom");
         assert_eq!(source_files.len(), 2);
+        assert!(source_files.iter().all(|source| {
+            source.observed.size == Some(3)
+                && source.fingerprint == Some(SourceFingerprint::new([7; 20]))
+                && source.scan_run == Some(run)
+                && source.scan_provenance == Some(ScanProvenance::StreamedSha1Xxh3V1)
+        }));
         assert!(
             matches!(source_files[0].location, SourceLocation::BareFile { .. })
                 || matches!(source_files[1].location, SourceLocation::BareFile { .. })
@@ -359,6 +464,38 @@ mod tests {
                 ..
             } if name == "repo.rom"
         )));
+        Ok(())
+    }
+
+    #[test]
+    fn source_inventory_query_treats_like_wildcards_as_path_characters()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (_temp_dir, pool) = file_backed_pool()?;
+        let mut conn = pool.get()?;
+        for path in [
+            "/source%_dir/inside.rom",
+            "/sourceXXdir/false-match.rom",
+            "/source%_directory/sibling.rom",
+        ] {
+            sql_query(
+                "INSERT INTO rom_files (parent_path, path, name, sha1, xxhash3, in_archive) VALUES (?, ?, ?, ?, ?, 0)",
+            )
+            .bind::<diesel::sql_types::Text, _>("/source")
+            .bind::<diesel::sql_types::Text, _>(path)
+            .bind::<diesel::sql_types::Text, _>(path.rsplit('/').next().unwrap_or(""))
+            .bind::<diesel::sql_types::Binary, _>(vec![1; 20])
+            .bind::<diesel::sql_types::Binary, _>(vec![2; 8])
+            .execute(&mut conn)?;
+        }
+
+        let source_files = SourceRepository::new(&pool)
+            .load_source_files_for_root(&SourceRoot::new("/source%_dir"))?;
+        assert_eq!(source_files.len(), 1);
+        assert_eq!(source_files[0].location.path(), "/source%_dir/inside.rom");
+        assert_eq!(
+            source_files[0].observed.provenance,
+            EvidenceProvenance::Unknown
+        );
         Ok(())
     }
 
@@ -398,7 +535,7 @@ mod tests {
         .execute(&mut conn)?;
 
         let repository = SourceRepository::new(&pool);
-        let Err(error) = repository.load_source_files() else {
+        let Err(error) = repository.load_source_files_for_root(&SourceRoot::new("/source")) else {
             return Err("expected invalid SHA1 length to fail".into());
         };
 

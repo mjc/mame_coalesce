@@ -502,6 +502,78 @@ pub enum ArchiveBackend {
     Rar,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SourceRoot(String);
+
+impl SourceRoot {
+    #[must_use]
+    pub fn new(canonical_path: impl Into<String>) -> Self {
+        Self(canonical_path.into())
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ScanRunKey(uuid::Uuid);
+
+impl ScanRunKey {
+    #[must_use]
+    pub fn fresh() -> Self {
+        Self(uuid::Uuid::new_v4())
+    }
+
+    #[must_use]
+    pub fn to_storage_key(self) -> String {
+        self.0.to_string()
+    }
+
+    #[must_use]
+    pub fn from_storage_key(value: &str) -> Option<Self> {
+        uuid::Uuid::parse_str(value).ok().map(Self)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SourceFingerprint(Sha1Digest);
+
+impl SourceFingerprint {
+    #[must_use]
+    pub const fn new(digest: Sha1Digest) -> Self {
+        Self(digest)
+    }
+
+    #[must_use]
+    pub const fn digest(self) -> Sha1Digest {
+        self.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ScanProvenance {
+    StreamedSha1Xxh3V1,
+}
+
+impl ScanProvenance {
+    #[must_use]
+    pub const fn storage_key(self) -> &'static str {
+        match self {
+            Self::StreamedSha1Xxh3V1 => "streamed_sha1_xxh3_v1",
+        }
+    }
+
+    #[must_use]
+    pub fn from_storage_key(value: &str) -> Option<Self> {
+        match value {
+            "streamed_sha1_xxh3_v1" => Some(Self::StreamedSha1Xxh3V1),
+            _ => None,
+        }
+    }
+}
+
 impl ArchiveBackend {
     #[must_use]
     pub fn from_storage_key(value: &str) -> Option<Self> {
@@ -592,6 +664,62 @@ pub struct SourceFile {
     pub source_root: String,
     pub location: SourceLocation,
     pub observed: ObservedContent,
+    pub fingerprint: Option<SourceFingerprint>,
+    pub scan_run: Option<ScanRunKey>,
+    pub scan_provenance: Option<ScanProvenance>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceObservation {
+    pub source_root: SourceRoot,
+    pub scan_run: ScanRunKey,
+    pub location: SourceLocation,
+    pub observed: ObservedContent,
+    pub fingerprint: SourceFingerprint,
+    pub scan_provenance: ScanProvenance,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompleteSourceScan {
+    source_root: SourceRoot,
+    scan_run: ScanRunKey,
+    observations: Vec<SourceObservation>,
+}
+
+impl CompleteSourceScan {
+    pub(crate) fn new(
+        source_root: SourceRoot,
+        scan_run: ScanRunKey,
+        observations: Vec<SourceObservation>,
+    ) -> crate::Result<Self> {
+        if observations.iter().any(|observation| {
+            observation.source_root != source_root || observation.scan_run != scan_run
+        }) {
+            return Err(crate::Error::InvalidPath(
+                "completed source scan contains observations from another root or run".to_owned(),
+            ));
+        }
+        Ok(Self {
+            source_root,
+            scan_run,
+            observations,
+        })
+    }
+
+    #[must_use]
+    pub const fn source_root(&self) -> &SourceRoot {
+        &self.source_root
+    }
+
+    #[must_use]
+    pub const fn scan_run(&self) -> ScanRunKey {
+        self.scan_run
+    }
+
+    #[must_use]
+    pub fn observations(&self) -> &[SourceObservation] {
+        &self.observations
+    }
 }
 
 impl SourceFile {

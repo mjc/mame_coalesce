@@ -67,6 +67,20 @@ mod tests {
         archive_member_index: Option<i64>,
     }
 
+    #[derive(QueryableByName)]
+    struct LegacyScanEvidenceRow {
+        #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Text>)]
+        scan_root: Option<String>,
+        #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Text>)]
+        scan_run: Option<String>,
+        #[diesel(sql_type = diesel::sql_types::Nullable<BigInt>)]
+        observed_size: Option<i64>,
+        #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Binary>)]
+        source_fingerprint: Option<Vec<u8>>,
+        #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Text>)]
+        scan_provenance: Option<String>,
+    }
+
     fn count(conn: &mut SqliteConnection, table: &str) -> QueryResult<i64> {
         sql_query(format!("SELECT COUNT(*) AS count FROM {table}"))
             .get_result::<CountRow>(conn)
@@ -131,6 +145,16 @@ mod tests {
                 .get_result::<LegacyArchiveIdentityRow>(&mut conn)?;
         assert_eq!(identity.archive_backend, None);
         assert_eq!(identity.archive_member_index, None);
+        let scan_evidence = sql_query(
+            "SELECT scan_root, scan_run, observed_size, source_fingerprint, scan_provenance \
+             FROM rom_files WHERE id = 41",
+        )
+        .get_result::<LegacyScanEvidenceRow>(&mut conn)?;
+        assert!(scan_evidence.scan_root.is_none());
+        assert!(scan_evidence.scan_run.is_none());
+        assert!(scan_evidence.observed_size.is_none());
+        assert!(scan_evidence.source_fingerprint.is_none());
+        assert!(scan_evidence.scan_provenance.is_none());
         assert_eq!(count(&mut conn, "publishing_sources")?, 0);
         assert!(conn.run_pending_migrations(MIGRATIONS)?.is_empty());
         Ok(())
