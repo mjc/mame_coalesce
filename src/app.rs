@@ -17,9 +17,10 @@ use crate::{
         DiskVerificationState, ParentDiskName,
     },
     domain::{
-        ArtifactOutcome, ArtifactResult, BuildMode, BuildReport, BuildRequest, CatalogKey,
-        CatalogScope, ImportRunKey, MatchingPolicy, MissingContentPolicy, PlanOutcome,
-        PublishingSourceKey, ScanRunKey, SnapshotKey, SourceRoot, ZipCompression,
+        ArtifactOutcome, ArtifactResult, AuditReport, BuildMode, BuildReport, BuildRequest,
+        CatalogKey, CatalogScope, ImportRunKey, MatchingPolicy, MissingContentPolicy,
+        ObservationBasis, PlanOutcome, PublishingSourceKey, ScanRunKey, SnapshotKey, SourceRoot,
+        ZipCompression,
     },
     operations,
     storage::repositories::{BuildRepository, DataFileSelector, SourceRepository},
@@ -150,7 +151,23 @@ pub struct BuildPlanRequest {
     pub dat_path: Utf8PathBuf,
     pub source_path: Utf8PathBuf,
     pub mode: BuildMode,
+    pub matching_policy: MatchingPolicy,
     pub missing_policy: MissingContentPolicy,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuditRefresh {
+    Cached,
+    Refresh,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AuditRequest {
+    pub dat_path: Utf8PathBuf,
+    pub source_path: Utf8PathBuf,
+    pub refresh: AuditRefresh,
+    pub matching_policy: MatchingPolicy,
+    pub jobs: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -662,6 +679,7 @@ pub fn build(
             dat_path: request.dat_path.clone(),
             source_path: request.source_path.clone(),
             mode: request.mode,
+            matching_policy: MatchingPolicy::Sha1Compatibility,
             missing_policy: if request.strict {
                 MissingContentPolicy::RequireComplete
             } else {
@@ -747,10 +765,48 @@ pub fn plan_build(
             dat_name: dat_selector.value().to_owned(),
             source_root: SourceRoot::new(source_root.to_string()),
             mode: request.mode,
-            matching_policy: MatchingPolicy::Sha1Compatibility,
+            matching_policy: request.matching_policy,
             missing_policy: request.missing_policy,
         },
     ))
+}
+
+pub fn audit(database: &Database, request: &AuditRequest) -> crate::Result<AuditReport> {
+    audit_with_progress(database, request, &|_| {})
+}
+
+pub fn audit_with_progress(
+    database: &Database,
+    request: &AuditRequest,
+    progress: &(impl Fn(ScanProgressEvent) + Sync),
+) -> crate::Result<AuditReport> {
+    let observation_basis = match request.refresh {
+        AuditRefresh::Cached => ObservationBasis::Cached,
+        AuditRefresh::Refresh => {
+            let scan = scan_source_with_progress(
+                database,
+                &SourceScanRequest {
+                    source_path: request.source_path.clone(),
+                    jobs: request.jobs,
+                },
+                progress,
+            )?;
+            ObservationBasis::FreshScan {
+                scan_run: scan.scan_run,
+            }
+        }
+    };
+    let plan = plan_build(
+        database,
+        &BuildPlanRequest {
+            dat_path: request.dat_path.clone(),
+            source_path: request.source_path.clone(),
+            mode: BuildMode::ParentBundles,
+            matching_policy: request.matching_policy,
+            missing_policy: MissingContentPolicy::AllowPartial,
+        },
+    )?;
+    Ok(AuditReport::new(observation_basis, plan.report))
 }
 
 /// Import a DAT, scan its source, plan the build, and write eligible artifacts.
@@ -979,6 +1035,7 @@ mod tests {
                 dat_path,
                 source_path,
                 mode: BuildMode::PerGame,
+                matching_policy: MatchingPolicy::Sha1Compatibility,
                 missing_policy: MissingContentPolicy::RequireComplete,
             },
         )?;

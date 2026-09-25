@@ -39,6 +39,9 @@ Explicit cache maintenance commands are available for advanced workflows:
 mame_coalesce --cache /tmp/coalesce.db cache import fixtures/test.dat
 mame_coalesce --cache /tmp/coalesce.db cache scan /path/to/roms --jobs 8
 mame_coalesce --cache /tmp/coalesce.db cache build "DAT Header Name" /path/to/roms /path/to/out
+mame_coalesce --cache /tmp/coalesce.db audit "DAT Header Name" /path/to/roms
+mame_coalesce --cache /tmp/coalesce.db audit "DAT Header Name" /path/to/roms --format json
+mame_coalesce --cache /tmp/coalesce.db audit "DAT Header Name" /path/to/roms --refresh --jobs 8
 ```
 
 The reusable library operations in `app` do not initialize logging or terminal
@@ -50,6 +53,20 @@ before building. A one-shot `--dry-run` or strict-missing build still imports th
 DAT and refreshes the scan cache, but does not write ROM outputs. The CLI owns
 human-readable reports, progress bars, and mapping build outcomes to process
 exit codes.
+
+`audit` has no output destination and never invokes an output writer. It uses
+an already-imported DAT and cached source observations by default and labels
+them as cached rather than freshly checked bytes. Opening the cache may apply
+database migrations; that does not refresh source observations. `--refresh`
+explicitly rescans and persists the selected source root before resolving;
+`--matching-policy evidence-aware` opts into the
+resolver's evidence-aware conflict/ambiguity classifications. Human reports
+include expected and observed evidence and the selected or competing sources.
+`--format json` writes a versioned audit document to stdout and keeps logs and
+progress on stderr. Audit exits `0` when all requirements match and `1` when
+requirements remain unresolved (operational failures also exit `1`). These
+audit statuses do not change build's existing `0` success, `1` execution-failure
+and `2` strict-missing behavior.
 
 ZIP compression defaults to deflate for compatibility. Use `--compression store`
 when profiling or when faster, larger ZIP output is preferred.
