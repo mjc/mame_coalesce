@@ -1,13 +1,13 @@
 use camino::Utf8PathBuf;
 
 use crate::{
-    build::{planner::plan_build as build_plan, write_plan_with_compression},
+    build::{planner::plan_build as build_plan, write_plan_with_container},
     database::Database,
     domain::{
         ArtifactOutcome, ArtifactResult, AuditReport, BuildMode, BuildReport, BuildRequest,
         CatalogKey, CatalogScope, ImportRunKey, MatchingPolicy, MissingContentPolicy,
-        ObservationBasis, PlanOutcome, PublishingSourceKey, ScanRunKey, SnapshotKey, SourceRoot,
-        ZipCompression,
+        ObservationBasis, OutputContainer, PlanOutcome, PublishingSourceKey, ScanRunKey,
+        SnapshotKey, SourceRoot, ZipCompression,
     },
     operations,
     storage::repositories::{BuildRepository, DataFileSelector, SourceRepository},
@@ -285,10 +285,32 @@ pub fn build(
     )
 }
 
+pub fn build_with_container(
+    database: &Database,
+    request: &BuildWorkflowRequest,
+    container: OutputContainer,
+) -> crate::Result<BuildWorkflowReport> {
+    build_with_roots_and_container(
+        database,
+        request,
+        &SourceRootSelection::single(request.source_path.clone()),
+        container,
+    )
+}
+
 pub fn build_with_roots(
     database: &Database,
     request: &BuildWorkflowRequest,
     selection: &SourceRootSelection,
+) -> crate::Result<BuildWorkflowReport> {
+    build_with_roots_and_container(database, request, selection, OutputContainer::Zip)
+}
+
+pub fn build_with_roots_and_container(
+    database: &Database,
+    request: &BuildWorkflowRequest,
+    selection: &SourceRootSelection,
+    container: OutputContainer,
 ) -> crate::Result<BuildWorkflowReport> {
     let roots = canonical_roots(selection)?;
     let canonical_paths = roots
@@ -320,7 +342,10 @@ pub fn build_with_roots(
             .map(|group| ArtifactResult {
                 path: request
                     .destination_path
-                    .join(format!("{}.zip", group.path.as_str()))
+                    .join(match container {
+                        OutputContainer::Zip => format!("{}.zip", group.path.as_str()),
+                        OutputContainer::Directory => group.path.as_str().to_owned(),
+                    })
                     .to_string(),
                 outcome: ArtifactOutcome::Unattempted,
             })
@@ -335,11 +360,20 @@ pub fn build_with_roots(
                 &canonical_paths,
                 &request.destination_path,
             )?;
-            let results =
-                write_plan_with_compression(&plan, &request.destination_path, request.compression)?;
+            let results = write_plan_with_container(
+                &plan,
+                &request.destination_path,
+                container,
+                request.compression,
+            )?;
             let paths = results
                 .iter()
-                .filter(|result| result.outcome == ArtifactOutcome::Completed)
+                .filter(|result| {
+                    matches!(
+                        result.outcome,
+                        ArtifactOutcome::Completed | ArtifactOutcome::CompletedWithWarning { .. }
+                    )
+                })
                 .map(|result| Utf8PathBuf::from(&result.path))
                 .collect::<Vec<_>>();
             (paths, results)
@@ -470,6 +504,20 @@ pub fn run(
     run_with_progress(database, request, &|_| {})
 }
 
+pub fn run_with_container(
+    database: &Database,
+    request: &RunWorkflowRequest,
+    container: OutputContainer,
+) -> crate::Result<BuildWorkflowReport> {
+    run_with_roots_and_container_and_progress(
+        database,
+        request,
+        &SourceRootSelection::single(request.source_path.clone()),
+        container,
+        &|_| {},
+    )
+}
+
 pub fn run_with_progress(
     database: &Database,
     request: &RunWorkflowRequest,
@@ -497,6 +545,22 @@ pub fn run_with_roots_and_progress(
     selection: &SourceRootSelection,
     progress: &(impl Fn(ScanProgressEvent) + Sync),
 ) -> crate::Result<BuildWorkflowReport> {
+    run_with_roots_and_container_and_progress(
+        database,
+        request,
+        selection,
+        OutputContainer::Zip,
+        progress,
+    )
+}
+
+pub fn run_with_roots_and_container_and_progress(
+    database: &Database,
+    request: &RunWorkflowRequest,
+    selection: &SourceRootSelection,
+    container: OutputContainer,
+    progress: &(impl Fn(ScanProgressEvent) + Sync),
+) -> crate::Result<BuildWorkflowReport> {
     let roots = canonical_roots(selection)?;
     let canonical_paths = roots
         .iter()
@@ -513,10 +577,11 @@ pub fn run_with_roots_and_progress(
         },
     )?;
     scan_sources_with_progress(database, selection, request.jobs, progress)?;
-    build_with_roots(
+    build_with_roots_and_container(
         database,
         &build_workflow_request_from_run(request),
         selection,
+        container,
     )
 }
 

@@ -28,6 +28,8 @@ Common options:
 --layout per-game
 --compression deflate
 --compression store
+--output-container zip
+--output-container directory
 --missing warn
 --missing fail
 --dry-run
@@ -69,7 +71,9 @@ before building. The `*_with_roots` operations accept an ordered
 one-shot `--dry-run` or strict-missing build still imports the
 DAT and refreshes the scan cache, but does not write ROM outputs. The CLI owns
 human-readable reports, progress bars, and mapping build outcomes to process
-exit codes.
+exit codes. `build_with_container` and `run_with_container` select ZIP or
+directory output without changing request types; their ordered-root variants
+offer the same choice.
 
 `audit` has no output destination and never invokes an output writer. It uses
 an already-imported DAT and cached source observations by default and labels
@@ -87,11 +91,15 @@ and `2` strict-missing behavior.
 
 ZIP compression defaults to deflate for compatibility. Use `--compression store`
 when profiling or when faster, larger ZIP output is preferred.
+`--output-container` is independent of layout and compression; it defaults to
+`zip`, and `directory` writes each logical group as an uncompressed directory.
+Compression settings apply only to ZIP output.
 
 Defaults:
 
 - `--layout parent-bundles`
 - `--compression deflate`
+- `--output-container zip`
 - missing ROMs are reported without failing
 - `--missing fail` exits `2` and writes nothing when required ROMs are missing
 - duplicate source matches are resolved deterministically
@@ -112,6 +120,17 @@ same-filesystem temporary file replaces one artifact atomically. A multi-artifac
 build is not atomic as a whole: execution stops at the first failure and reports
 which artifacts completed, failed, or were not attempted. Atomic replacement is
 currently supported on Unix only.
+
+Each directory artifact is materialized in a private sibling staging directory.
+Replacing an existing real directory first renames it into a unique sibling
+backup, then installs the staged directory. If installation fails, the writer
+attempts to restore the backup; if rollback also fails, the report includes the
+recoverable backup path. A successful install whose backup cleanup fails is
+reported as completed with a warning and retains that backup. Directory rename
+is not treated as a universally atomic replacement: a process or machine crash
+between moving the old directory aside and installing the new one can leave the
+destination absent, with the old output under its hidden backup name. A
+multi-group build is not atomic as a whole. Output sources are read-only.
 
 Source scans intentionally skip hidden files and directories below the source
 root. Non-UTF-8 paths and traversal or archive-read errors fail the scan, so an

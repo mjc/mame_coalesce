@@ -1,6 +1,6 @@
 use camino::Utf8PathBuf;
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use mame_coalesce::domain::{BuildMode, MatchingPolicy, ZipCompression};
+use mame_coalesce::domain::{BuildMode, MatchingPolicy, OutputContainer, ZipCompression};
 
 #[derive(Parser)]
 #[command(name = "mame_coalesce")]
@@ -165,6 +165,8 @@ pub struct CacheScanArgs {
 
 #[derive(Clone, Debug, Args)]
 pub struct BuildOptions {
+    #[arg(long, value_enum, default_value_t = OutputContainerArg::Zip, help = "Output container format")]
+    pub output_container: OutputContainerArg,
     #[arg(long, value_enum, default_value_t = LayoutArg::ParentBundles, help = "Output ZIP layout")]
     pub layout: LayoutArg,
     #[arg(long, value_enum, default_value_t = CompressionArg::Deflate, help = "Output ZIP compression")]
@@ -177,6 +179,22 @@ pub struct BuildOptions {
         help = "Plan and report without writing files"
     )]
     pub dry_run: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+pub enum OutputContainerArg {
+    #[default]
+    Zip,
+    Directory,
+}
+
+impl From<OutputContainerArg> for OutputContainer {
+    fn from(container: OutputContainerArg) -> Self {
+        match container {
+            OutputContainerArg::Zip => Self::Zip,
+            OutputContainerArg::Directory => Self::Directory,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]
