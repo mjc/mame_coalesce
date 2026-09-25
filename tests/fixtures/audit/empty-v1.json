@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "observation_basis": "Cached",
+  "report": {
+    "missing_roms": [],
+    "duplicate_matches": [],
+    "resolutions": [],
+    "validation_issues": [],
+    "matched_roms": 0,
+    "outcome": "Ready"
+  }
+}

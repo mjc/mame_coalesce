@@ -869,6 +869,68 @@ pub struct BuildReport {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ObservationBasis {
+    Cached,
+    FreshScan { scan_run: ScanRunKey },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct AuditReport {
+    schema_version: u32,
+    observation_basis: ObservationBasis,
+    report: BuildReport,
+}
+
+impl AuditReport {
+    pub const SCHEMA_VERSION: u32 = 1;
+
+    #[must_use]
+    pub const fn new(observation_basis: ObservationBasis, report: BuildReport) -> Self {
+        Self {
+            schema_version: Self::SCHEMA_VERSION,
+            observation_basis,
+            report,
+        }
+    }
+
+    #[must_use]
+    pub const fn schema_version(&self) -> u32 {
+        self.schema_version
+    }
+
+    #[must_use]
+    pub const fn observation_basis(&self) -> &ObservationBasis {
+        &self.observation_basis
+    }
+
+    #[must_use]
+    pub const fn report(&self) -> &BuildReport {
+        &self.report
+    }
+
+    pub fn to_json(&self) -> crate::Result<Vec<u8>> {
+        Ok(serde_json::to_vec_pretty(self)?)
+    }
+
+    pub fn from_json(bytes: &[u8]) -> crate::Result<Self> {
+        #[derive(Deserialize)]
+        struct Document {
+            schema_version: u32,
+            observation_basis: ObservationBasis,
+            report: BuildReport,
+        }
+
+        let document: Document = serde_json::from_slice(bytes)?;
+        if document.schema_version != Self::SCHEMA_VERSION {
+            return Err(crate::Error::UnsupportedAuditVersion(
+                document.schema_version,
+            ));
+        }
+        Ok(Self::new(document.observation_basis, document.report))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ArtifactOutcome {
     Completed,
     Failed { error: String },
