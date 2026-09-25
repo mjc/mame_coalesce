@@ -18,4 +18,9 @@ impl Database {
     pub(crate) const fn pool(&self) -> &crate::storage::db::Pool {
         &self.pool
     }
+
+    #[cfg(test)]
+    pub(crate) fn in_memory() -> crate::Result<Self> {
+        crate::storage::db::create_db_pool(":memory:").map(|pool| Self { pool })
+    }
 }

@@ -269,7 +269,12 @@ fn build_reports_partial_artifact_completion_when_a_later_source_disappears()
         },
     )?;
 
-    assert_eq!(report.exit_code, 1);
+    assert!(
+        report
+            .artifact_results
+            .iter()
+            .any(|artifact| matches!(&artifact.outcome, ArtifactOutcome::Failed { .. }))
+    );
     assert_eq!(report.written_paths, vec![output_path.join("a.zip")]);
     let mut results = report.artifact_results.iter();
     assert_eq!(
@@ -350,7 +355,10 @@ fn run_workflow_writes_from_7z_archive() -> Result<(), Box<dyn std::error::Error
         },
     )?;
 
-    assert_eq!(report.exit_code, 0);
+    assert_eq!(
+        report.build_report.outcome,
+        mame_coalesce::domain::PlanOutcome::Ready
+    );
     assert_eq!(report.build_report.matched_roms, 1);
     assert!(report.build_report.missing_roms.is_empty());
     assert_eq!(report.written_paths, vec![output_path.join("shared.zip")]);
@@ -394,7 +402,10 @@ fn run_workflow_writes_from_rar_archive() -> Result<(), Box<dyn std::error::Erro
         },
     )?;
 
-    assert_eq!(report.exit_code, 0);
+    assert_eq!(
+        report.build_report.outcome,
+        mame_coalesce::domain::PlanOutcome::Ready
+    );
     assert_eq!(report.build_report.matched_roms, 1);
     assert!(report.build_report.missing_roms.is_empty());
     assert_eq!(report.written_paths, vec![output_path.join("shared.zip")]);
@@ -504,7 +515,10 @@ fn run_workflow_writes_parent_bundle_zip() -> Result<(), Box<dyn std::error::Err
         },
     )?;
 
-    assert_eq!(report.exit_code, 0);
+    assert_eq!(
+        report.build_report.outcome,
+        mame_coalesce::domain::PlanOutcome::Ready
+    );
     assert_eq!(report.build_report.matched_roms, 2);
     assert_eq!(report.build_report.missing_roms.len(), 1);
     assert_eq!(report.build_report.missing_roms[0].rom_name, "clone1.rom");
@@ -548,8 +562,16 @@ fn dry_run_workflow_reports_plan_without_writing_files() -> Result<(), Box<dyn s
         },
     )?;
 
-    assert_eq!(report.exit_code, 0);
-    assert!(report.dry_run);
+    assert_eq!(
+        report.build_report.outcome,
+        mame_coalesce::domain::PlanOutcome::Ready
+    );
+    assert!(
+        report
+            .artifact_results
+            .iter()
+            .all(|artifact| artifact.outcome == ArtifactOutcome::Unattempted)
+    );
     assert_eq!(report.build_report.matched_roms, 2);
     assert_eq!(report.build_report.missing_roms.len(), 1);
     assert!(report.written_paths.is_empty());
@@ -590,7 +612,10 @@ fn build_workflow_accepts_imported_dat_name() -> Result<(), Box<dyn std::error::
         },
     )?;
 
-    assert_eq!(report.exit_code, 0);
+    assert_eq!(
+        report.build_report.outcome,
+        mame_coalesce::domain::PlanOutcome::Ready
+    );
     assert_eq!(report.build_report.matched_roms, 2);
     assert_eq!(report.build_report.missing_roms.len(), 1);
     assert_eq!(report.build_report.missing_roms[0].rom_name, "clone1.rom");
@@ -651,7 +676,10 @@ fn build_matches_sources_scanned_from_noncanonical_path() -> Result<(), Box<dyn 
         },
     )?;
 
-    assert_eq!(report.exit_code, 0);
+    assert_eq!(
+        report.build_report.outcome,
+        mame_coalesce::domain::PlanOutcome::Ready
+    );
     assert_eq!(report.build_report.matched_roms, 2);
     assert_eq!(report.written_paths, vec![output_path.join("parent.zip")]);
     Ok(())
@@ -736,9 +764,15 @@ fn source_scan_replaces_rows_for_source_root() -> Result<(), Box<dyn std::error:
         },
     )?;
 
-    assert_eq!(stale_report.exit_code, 2);
+    assert!(matches!(
+        stale_report.build_report.outcome,
+        mame_coalesce::domain::PlanOutcome::Blocked(_)
+    ));
     assert_eq!(stale_report.build_report.missing_roms.len(), 1);
-    assert_eq!(fresh_report.exit_code, 0);
+    assert_eq!(
+        fresh_report.build_report.outcome,
+        mame_coalesce::domain::PlanOutcome::Ready
+    );
     assert_eq!(fresh_report.build_report.matched_roms, 1);
     Ok(())
 }
@@ -800,7 +834,10 @@ fn parent_refresh_removes_stale_observations_owned_by_overlapping_root()
             strict: true,
         },
     )?;
-    assert_eq!(report.exit_code, 2);
+    assert!(matches!(
+        report.build_report.outcome,
+        mame_coalesce::domain::PlanOutcome::Blocked(_)
+    ));
     assert_eq!(report.build_report.missing_roms.len(), 1);
     Ok(())
 }
@@ -863,7 +900,10 @@ fn failed_archive_scan_preserves_cached_source_rows() -> Result<(), Box<dyn std:
             strict: true,
         },
     )?;
-    assert_eq!(report.exit_code, 0);
+    assert_eq!(
+        report.build_report.outcome,
+        mame_coalesce::domain::PlanOutcome::Ready
+    );
     assert_eq!(report.build_report.matched_roms, 1);
     Ok(())
 }
@@ -933,7 +973,10 @@ fn source_scan_does_not_delete_similarly_prefixed_root() -> Result<(), Box<dyn s
         },
     )?;
 
-    assert_eq!(report.exit_code, 0);
+    assert_eq!(
+        report.build_report.outcome,
+        mame_coalesce::domain::PlanOutcome::Ready
+    );
     assert_eq!(report.build_report.matched_roms, 1);
     Ok(())
 }
@@ -984,8 +1027,14 @@ fn one_shot_build_does_not_use_stale_removed_source_file() -> Result<(), Box<dyn
         },
     )?;
 
-    assert_eq!(first_report.exit_code, 0);
-    assert_eq!(second_report.exit_code, 2);
+    assert_eq!(
+        first_report.build_report.outcome,
+        mame_coalesce::domain::PlanOutcome::Ready
+    );
+    assert!(matches!(
+        second_report.build_report.outcome,
+        mame_coalesce::domain::PlanOutcome::Blocked(_)
+    ));
     assert!(second_report.written_paths.is_empty());
     Ok(())
 }
@@ -1016,7 +1065,10 @@ fn strict_run_workflow_writes_nothing_when_roms_are_missing()
         },
     )?;
 
-    assert_eq!(report.exit_code, 2);
+    assert!(matches!(
+        report.build_report.outcome,
+        mame_coalesce::domain::PlanOutcome::Blocked(_)
+    ));
     assert_eq!(report.build_report.matched_roms, 2);
     assert_eq!(report.build_report.missing_roms.len(), 1);
     assert_eq!(report.build_report.missing_roms[0].rom_name, "clone1.rom");
@@ -1104,8 +1156,14 @@ fn overlapping_dats_with_same_game_and_rom_names_build_independently()
         },
     )?;
 
-    assert_eq!(report_a.exit_code, 0);
-    assert_eq!(report_b.exit_code, 0);
+    assert_eq!(
+        report_a.build_report.outcome,
+        mame_coalesce::domain::PlanOutcome::Ready
+    );
+    assert_eq!(
+        report_b.build_report.outcome,
+        mame_coalesce::domain::PlanOutcome::Ready
+    );
     assert_eq!(report_a.build_report.matched_roms, 1);
     assert_eq!(report_b.build_report.matched_roms, 1);
     assert_eq!(
@@ -1195,8 +1253,14 @@ fn one_scanned_source_file_can_build_matching_roms_from_multiple_dats()
         },
     )?;
 
-    assert_eq!(report_a.exit_code, 0);
-    assert_eq!(report_b.exit_code, 0);
+    assert_eq!(
+        report_a.build_report.outcome,
+        mame_coalesce::domain::PlanOutcome::Ready
+    );
+    assert_eq!(
+        report_b.build_report.outcome,
+        mame_coalesce::domain::PlanOutcome::Ready
+    );
     assert_eq!(report_a.build_report.matched_roms, 1);
     assert_eq!(report_b.build_report.matched_roms, 1);
     assert_eq!(
@@ -1403,7 +1467,10 @@ fn sha1_match_ignores_inconsistent_size_crc_and_md5() -> Result<(), Box<dyn std:
         },
     )?;
 
-    assert_eq!(report.exit_code, 0);
+    assert_eq!(
+        report.build_report.outcome,
+        mame_coalesce::domain::PlanOutcome::Ready
+    );
     assert_eq!(report.build_report.matched_roms, 1);
     assert!(report.build_report.missing_roms.is_empty());
     Ok(())
