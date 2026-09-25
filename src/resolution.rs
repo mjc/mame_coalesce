@@ -1,5 +1,7 @@
 //! Pure, deterministic matching of catalog requirements to source observations.
 
+use std::collections::BTreeSet;
+
 use camino::Utf8Path;
 use serde::{Deserialize, Serialize};
 
@@ -88,6 +90,27 @@ pub fn resolve(
     source_root: &SourceRoot,
     policy: MatchingPolicy,
 ) -> Vec<RequirementResolution> {
+    resolve_across_roots(
+        dat_roms,
+        source_files,
+        catalog_name,
+        std::slice::from_ref(source_root),
+        policy,
+    )
+}
+
+/// Resolve against ordered source roots using root-first precedence.
+///
+/// Within-root source-kind/path/member ordering is unchanged. Overlap contributes one candidate
+/// per physical location, attributed to its earliest selected root.
+#[must_use]
+pub fn resolve_across_roots(
+    dat_roms: &[DatRom],
+    source_files: &[SourceFile],
+    catalog_name: &str,
+    source_roots: &[SourceRoot],
+    policy: MatchingPolicy,
+) -> Vec<RequirementResolution> {
     let mut requirements = dat_roms
         .iter()
         .filter(|rom| rom.catalog_name() == catalog_name)
@@ -96,9 +119,11 @@ pub fn resolve(
 
     let mut sources = source_files
         .iter()
-        .filter(|source| source_in_root(source, source_root))
+        .filter(|source| source_in_roots(source, source_roots))
         .collect::<Vec<_>>();
-    sources.sort_by(|left, right| source_order(left, right));
+    sources.sort_by(|left, right| source_order_for_roots(left, right, source_roots));
+    let mut physical_locations = BTreeSet::new();
+    sources.retain(|source| physical_locations.insert(source.location.clone()));
 
     requirements
         .into_iter()
@@ -107,6 +132,28 @@ pub fn resolve(
             status: resolve_one(requirement, &sources, policy),
         })
         .collect()
+}
+
+fn source_order_for_roots(
+    left: &SourceFile,
+    right: &SourceFile,
+    roots: &[SourceRoot],
+) -> std::cmp::Ordering {
+    root_precedence(left, roots)
+        .cmp(&root_precedence(right, roots))
+        .then_with(|| source_order(left, right))
+}
+
+fn root_precedence(source: &SourceFile, roots: &[SourceRoot]) -> usize {
+    roots
+        .iter()
+        .position(|root| root == &source.source_root)
+        .or_else(|| roots.iter().position(|root| source_in_root(source, root)))
+        .unwrap_or(usize::MAX)
+}
+
+fn source_in_roots(source: &SourceFile, roots: &[SourceRoot]) -> bool {
+    roots.iter().any(|root| source_in_root(source, root))
 }
 
 fn resolve_one(
@@ -369,8 +416,8 @@ fn source_in_root(source: &SourceFile, source_root: &SourceRoot) -> bool {
 mod tests {
     use super::*;
     use crate::domain::{
-        AssetRole, CatalogKey, ExpectedEvidence, ObservedContent, RequirementKey, SetKey,
-        SetMetadata, SourceLocation,
+        ArchiveBackend, ArchiveMemberSelector, AssetRole, CatalogKey, ExpectedEvidence,
+        ObservedContent, RequirementKey, SetKey, SetMetadata, SourceLocation,
     };
     use crate::hashes::Sha1Digest;
 
@@ -555,6 +602,100 @@ mod tests {
                 equivalent_copies,
                 ..
             } if selected.location.path() == "/roms/a.rom" && equivalent_copies.len() == 2
+        ));
+    }
+
+    #[test]
+    fn ordered_roots_precede_within_root_order_and_overlap_is_physically_deduplicated() {
+        let rom = requirement(ExpectedEvidence {
+            sha1: Some(crate::hashes::sha1_bytes(b"rom")),
+            ..ExpectedEvidence::default()
+        });
+        let mut outer_observation = source(
+            "/roms/nested/game.rom",
+            computed(None, None, None, Some(crate::hashes::sha1_bytes(b"rom"))),
+        );
+        let mut nested_observation = outer_observation.clone();
+        outer_observation.source_root = SourceRoot::new("/roms");
+        nested_observation.source_root = SourceRoot::new("/roms/nested");
+        let inventory = [nested_observation, outer_observation];
+        let outer = SourceRoot::new("/roms");
+        let nested = SourceRoot::new("/roms/nested");
+
+        for (roots, expected_root) in [
+            (vec![outer.clone(), nested.clone()], outer),
+            (vec![nested.clone(), SourceRoot::new("/roms")], nested),
+        ] {
+            let resolutions = resolve_across_roots(
+                std::slice::from_ref(&rom),
+                &inventory,
+                "catalog",
+                &roots,
+                MatchingPolicy::Sha1Compatibility,
+            );
+            assert!(matches!(
+                resolutions[0].status,
+                ResolutionStatus::Matched { .. }
+            ));
+            let ResolutionStatus::Matched {
+                selected,
+                equivalent_copies,
+                assessments,
+                ..
+            } = &resolutions[0].status
+            else {
+                return;
+            };
+            assert_eq!(selected.source_root, expected_root);
+            assert_eq!(equivalent_copies.len(), 1);
+            assert!(assessments.is_empty());
+        }
+    }
+
+    #[test]
+    fn earlier_root_wins_before_a_later_roots_better_source_kind() {
+        let rom = requirement(ExpectedEvidence {
+            sha1: Some(crate::hashes::sha1_bytes(b"rom")),
+            ..ExpectedEvidence::default()
+        });
+        let mut earlier_archive = source(
+            "/first/archive.zip",
+            computed(None, None, None, Some(crate::hashes::sha1_bytes(b"rom"))),
+        );
+        earlier_archive.source_root = SourceRoot::new("/first");
+        earlier_archive.location = SourceLocation::ArchiveMember {
+            path: "/first/archive.zip".to_owned(),
+            backend: ArchiveBackend::Zip,
+            selector: ArchiveMemberSelector::IndexAndName {
+                index: 0,
+                name: "rom.bin".to_owned(),
+            },
+        };
+        let mut later_bare_file = source(
+            "/second/rom.bin",
+            computed(None, None, None, Some(crate::hashes::sha1_bytes(b"rom"))),
+        );
+        later_bare_file.source_root = SourceRoot::new("/second");
+        let inventory = [later_bare_file, earlier_archive];
+        let resolutions = resolve_across_roots(
+            &[rom],
+            &inventory,
+            "catalog",
+            &[SourceRoot::new("/first"), SourceRoot::new("/second")],
+            MatchingPolicy::Sha1Compatibility,
+        );
+
+        assert!(matches!(
+            resolutions[0].status,
+            ResolutionStatus::Matched { .. }
+        ));
+        let ResolutionStatus::Matched { selected, .. } = &resolutions[0].status else {
+            return;
+        };
+        assert_eq!(selected.source_root.as_str(), "/first");
+        assert!(matches!(
+            selected.location,
+            SourceLocation::ArchiveMember { .. }
         ));
     }
 

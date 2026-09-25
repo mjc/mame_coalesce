@@ -15,11 +15,11 @@ pub fn plan_build(
     source_files: &[SourceFile],
     request: &BuildRequest,
 ) -> BuildPlan {
-    let resolutions = resolution::resolve(
+    let resolutions = resolution::resolve_across_roots(
         dat_roms,
         source_files,
         &request.dat_name,
-        &request.source_root,
+        &request.source_roots,
         request.matching_policy,
     );
     let report = build_report(&resolutions, request.missing_policy);
@@ -151,7 +151,7 @@ mod tests {
     fn request(mode: BuildMode) -> BuildRequest {
         BuildRequest {
             dat_name: "dat-a".to_owned(),
-            source_root: crate::domain::SourceRoot::new("/src-a"),
+            source_roots: vec![crate::domain::SourceRoot::new("/src-a")],
             mode,
             matching_policy: MatchingPolicy::Sha1Compatibility,
             missing_policy: MissingContentPolicy::AllowPartial,

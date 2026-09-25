@@ -11,7 +11,7 @@ use options::{AuditArgs, AuditFormatArg, CacheCommand, Cli, Command};
 use mame_coalesce::{
     app::{
         self, AuditRefresh, AuditRequest, BuildWorkflowRequest, DatImportRequest,
-        RunWorkflowRequest, SourceScanRequest,
+        RunWorkflowRequest, SourceRootSelection,
     },
     database::Database,
 };
@@ -35,7 +35,7 @@ fn run() -> mame_coalesce::Result<ExitCode> {
         Command::Build(args) => {
             let progress = render::ScanProgressReporter::default();
             let callback = |event| progress.update(event);
-            let report = app::run_with_progress(
+            let report = app::run_with_roots_and_progress(
                 &database,
                 &RunWorkflowRequest {
                     dat_path: args.dat.clone(),
@@ -46,6 +46,10 @@ fn run() -> mame_coalesce::Result<ExitCode> {
                     jobs: args.jobs,
                     dry_run: args.options.dry_run,
                     strict: args.options.missing.strict(),
+                },
+                &SourceRootSelection {
+                    primary: args.source.clone(),
+                    additional: args.additional_source_roots.clone(),
                 },
                 &callback,
             )?;
@@ -67,26 +71,29 @@ fn run() -> mame_coalesce::Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Command::Cache {
-            command: CacheCommand::Scan { source, jobs },
+            command: CacheCommand::Scan(args),
         } => {
             let progress = render::ScanProgressReporter::default();
             let callback = |event| progress.update(event);
-            let report = app::scan_source_with_progress(
+            let reports = app::scan_sources_with_progress(
                 &database,
-                &SourceScanRequest {
-                    source_path: source.clone(),
-                    jobs: *jobs,
+                &SourceRootSelection {
+                    primary: args.source.clone(),
+                    additional: args.additional_source_roots.clone(),
                 },
+                args.jobs,
                 &callback,
             )?;
             progress.finish();
-            render::scan_report(&report);
+            for report in &reports {
+                render::scan_report(report);
+            }
             Ok(ExitCode::SUCCESS)
         }
         Command::Cache {
             command: CacheCommand::Build(args),
         } => {
-            let report = app::build(
+            let report = app::build_with_roots(
                 &database,
                 &BuildWorkflowRequest {
                     dat_path: args.dat.clone(),
@@ -96,6 +103,10 @@ fn run() -> mame_coalesce::Result<ExitCode> {
                     compression: args.options.compression.into(),
                     dry_run: args.options.dry_run,
                     strict: args.options.missing.strict(),
+                },
+                &SourceRootSelection {
+                    primary: args.source.clone(),
+                    additional: args.additional_source_roots.clone(),
                 },
             )?;
             render::build_report(&report);
@@ -107,7 +118,7 @@ fn run() -> mame_coalesce::Result<ExitCode> {
 fn audit_command(database: &Database, args: &AuditArgs) -> mame_coalesce::Result<ExitCode> {
     let progress = render::ScanProgressReporter::default();
     let callback = |event| progress.update(event);
-    let report = app::audit_with_progress(
+    let report = app::audit_with_roots_and_progress(
         database,
         &AuditRequest {
             dat_path: args.dat.clone(),
@@ -119,6 +130,10 @@ fn audit_command(database: &Database, args: &AuditArgs) -> mame_coalesce::Result
             },
             jobs: args.jobs,
             matching_policy: args.matching_policy.into(),
+        },
+        &SourceRootSelection {
+            primary: args.source.clone(),
+            additional: args.additional_source_roots.clone(),
         },
         &callback,
     )?;

@@ -129,6 +129,17 @@ pub fn audit_report(report: &AuditReport) -> String {
                 scan_run.to_storage_key()
             );
         }
+        ObservationBasis::FreshScans { scan_runs } => {
+            let _ = writeln!(output, "Audit after {} fresh source scans", scan_runs.len());
+            for scan in scan_runs {
+                let _ = writeln!(
+                    output,
+                    "  {} (run {})",
+                    scan.source_root.as_str(),
+                    scan.scan_run.to_storage_key()
+                );
+            }
+        }
     }
     let build = report.report();
     let _ = writeln!(

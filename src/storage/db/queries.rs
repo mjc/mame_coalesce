@@ -146,18 +146,48 @@ pub fn replace_rom_files_for_source_root(
     source_root: &Utf8Path,
     new_rom_files: &[NewRomFile],
 ) -> crate::Result<usize> {
+    replace_rom_files_for_source_roots(
+        pool,
+        &[(source_root.as_str().to_owned(), new_rom_files.to_vec())],
+    )
+    .map(|counts| counts.into_iter().sum())
+}
+
+pub fn replace_rom_files_for_source_roots(
+    pool: &DbPool,
+    roots_and_files: &[(String, Vec<crate::storage::models::NewRomFile>)],
+) -> crate::Result<Vec<usize>> {
     use crate::storage::schema::rom_files::dsl::rom_files;
     use diesel::replace_into;
 
     let mut conn = pool.get()?;
 
     Ok(conn.transaction::<_, DieselError, _>(|conn| {
-        delete_rom_files_for_source_root(conn, source_root.as_str())?;
-        new_rom_files
+        for (source_root, new_rom_files) in roots_and_files {
+            delete_rom_files_for_source_root(conn, source_root)?;
+            new_rom_files
+                .iter()
+                .map(|new_rom_file| replace_into(rom_files).values(new_rom_file).execute(conn))
+                .collect::<QueryResult<Vec<usize>>>()?;
+        }
+        associate_rom_files(conn)?;
+        roots_and_files
             .iter()
-            .map(|new_rom_file| replace_into(rom_files).values(new_rom_file).execute(conn))
-            .collect::<QueryResult<Vec<usize>>>()?;
-        associate_rom_files(conn)
+            .map(|(source_root, _)| {
+                rom_files
+                    .filter(crate::storage::schema::rom_files::dsl::scan_root.eq(source_root))
+                    .filter(crate::storage::schema::rom_files::dsl::rom_id.is_not_null())
+                    .count()
+                    .get_result::<i64>(conn)
+                    .and_then(|count| {
+                        usize::try_from(count).map_err(|_| {
+                            diesel::result::Error::DeserializationError(
+                                "associated ROM count does not fit usize".into(),
+                            )
+                        })
+                    })
+            })
+            .collect()
     })?)
 }
 
@@ -196,13 +226,17 @@ fn delete_rom_files_for_source_root(
     sql_query(
         r"
         DELETE FROM rom_files
-        WHERE path = ?
+        WHERE scan_root = ?
+            OR (
+                scan_root IS NULL
+                AND (path = ?
             OR (
                 substr(path, 1, length(?)) = ?
                 AND (substr(path, length(?) + 1, 1) = '/' OR ? = '/')
-            )
+            )))
         ",
     )
+    .bind::<diesel::sql_types::Text, _>(source_root)
     .bind::<diesel::sql_types::Text, _>(source_root)
     .bind::<diesel::sql_types::Text, _>(source_root)
     .bind::<diesel::sql_types::Text, _>(source_root)

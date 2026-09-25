@@ -61,36 +61,71 @@ impl<'pool> SourceRepository<'pool> {
         )
     }
 
+    pub fn replace_completed_scans(
+        &self,
+        scans: &[CompleteSourceScan],
+    ) -> crate::Result<Vec<usize>> {
+        let rows = scans
+            .iter()
+            .map(|scan| {
+                scan.observations()
+                    .iter()
+                    .map(NewRomFile::from_observation)
+                    .collect::<crate::Result<Vec<_>>>()
+                    .map(|rows| (scan.source_root().as_str().to_owned(), rows))
+            })
+            .collect::<crate::Result<Vec<_>>>()?;
+        crate::storage::db::replace_rom_files_for_source_roots(self.pool, &rows)
+    }
+
     pub fn load_source_files_for_root(
         &self,
         source_root: &SourceRoot,
     ) -> crate::Result<Vec<SourceFile>> {
+        self.load_source_files_for_roots(std::slice::from_ref(source_root))
+    }
+
+    pub fn load_source_files_for_roots(
+        &self,
+        source_roots: &[SourceRoot],
+    ) -> crate::Result<Vec<SourceFile>> {
         let mut conn = self.pool.get()?;
-        let root = source_root.as_str();
-        let mut escaped_root = String::with_capacity(root.len());
-        for character in root.chars() {
-            match character {
-                '*' => escaped_root.push_str("[*]"),
-                '?' => escaped_root.push_str("[?]"),
-                '[' => escaped_root.push_str("[[]"),
-                ']' => escaped_root.push_str("[]]"),
-                _ => escaped_root.push(character),
+        let mut files = Vec::new();
+        for source_root in source_roots {
+            let root = source_root.as_str();
+            let mut escaped_root = String::with_capacity(root.len());
+            for character in root.chars() {
+                match character {
+                    '*' => escaped_root.push_str("[*]"),
+                    '?' => escaped_root.push_str("[?]"),
+                    '[' => escaped_root.push_str("[[]"),
+                    ']' => escaped_root.push_str("[]]"),
+                    _ => escaped_root.push(character),
+                }
             }
+            let pattern = if root == "/" {
+                "/*".to_owned()
+            } else {
+                format!("{escaped_root}/*")
+            };
+            let within_root =
+                schema::rom_files::dsl::scan_root
+                    .eq(root)
+                    .or(schema::rom_files::dsl::scan_root.is_null().and(
+                        schema::rom_files::dsl::path
+                            .eq(root)
+                            .or(sql::<Bool>("path GLOB ").bind::<Text, _>(pattern)),
+                    ));
+            files.extend(
+                schema::rom_files::dsl::rom_files
+                    .filter(within_root)
+                    .load::<RomFile>(&mut conn)?
+                    .into_iter()
+                    .map(source_file_from_model)
+                    .collect::<crate::Result<Vec<_>>>()?,
+            );
         }
-        let pattern = if root == "/" {
-            "/*".to_owned()
-        } else {
-            format!("{escaped_root}/*")
-        };
-        let within_root = sql::<Bool>("path = ")
-            .bind::<Text, _>(root)
-            .or(sql::<Bool>("path GLOB ").bind::<Text, _>(pattern));
-        schema::rom_files::dsl::rom_files
-            .filter(within_root)
-            .load::<RomFile>(&mut conn)?
-            .into_iter()
-            .map(source_file_from_model)
-            .collect()
+        Ok(files)
     }
 }
 

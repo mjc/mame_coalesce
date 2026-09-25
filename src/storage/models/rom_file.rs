@@ -30,7 +30,7 @@ pub struct RomFile {
     pub rom_id: Option<i32>,
 }
 
-#[derive(Insertable, Debug)]
+#[derive(Clone, Insertable, Debug)]
 #[diesel(table_name = rom_files)]
 pub struct New {
     pub parent_path: String,
