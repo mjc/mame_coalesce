@@ -5,10 +5,10 @@ use crate::{
     database::Database,
     domain::{
         ArtifactOutcome, ArtifactResult, AuditReport, BuildMode, BuildReport, BuildRequest,
-        CatalogKey, CatalogScope, ImportRunKey, MatchingPolicy, MissingContentPolicy,
-        ObservationBasis, OutputContainer, PlanOutcome, PublishingSourceKey,
-        RelationshipAssertionKey, RelationshipClaim, RelationshipExplanation, RelationshipReview,
-        ScanRunKey, SetSelection, SnapshotKey, SourceRoot, ZipCompression,
+        CatalogKey, CatalogScope, CatalogSnapshotDiff, CatalogSnapshotEntry, ImportRunKey,
+        MatchingPolicy, MissingContentPolicy, ObservationBasis, OutputContainer, PlanOutcome,
+        PublishingSourceKey, RelationshipAssertionKey, RelationshipClaim, RelationshipExplanation,
+        RelationshipReview, ScanRunKey, SetSelection, SnapshotKey, SourceRoot, ZipCompression,
     },
     operations,
     storage::repositories::{BuildRepository, DataFileSelector, SourceRepository},
@@ -228,6 +228,23 @@ pub fn review_relationship(
 /// Explain all known source claims, derived candidates, and user conclusions in stable order.
 pub fn explain_relationships(database: &Database) -> crate::Result<Vec<RelationshipExplanation>> {
     crate::storage::relationships::explain_all(database.pool())
+}
+
+/// Compare two explicit catalog snapshots without changing either published snapshot.
+pub fn diff_catalog_snapshots(
+    database: &Database,
+    previous: &SnapshotKey,
+    current: &SnapshotKey,
+) -> crate::Result<CatalogSnapshotDiff> {
+    crate::storage::snapshot_history::diff(database.pool(), previous, current)
+}
+
+/// List immutable snapshots for one catalog in stable identity order.
+pub fn catalog_snapshot_history(
+    database: &Database,
+    catalog: &CatalogKey,
+) -> crate::Result<Vec<CatalogSnapshotEntry>> {
+    crate::storage::snapshot_history::history(database.pool(), catalog)
 }
 
 pub fn scan_source(
