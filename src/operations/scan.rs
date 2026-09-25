@@ -4,9 +4,6 @@ use camino::{Utf8Path, Utf8PathBuf};
 #[cfg(test)]
 use fmmap::{MmapFile, MmapFileExt};
 
-use indicatif::ParallelProgressIterator;
-use log::info;
-
 use rayon::prelude::*;
 use sha1::{Digest, Sha1};
 
@@ -21,25 +18,25 @@ use crate::{
         SourceObservation, SourceRoot,
     },
     hashes::{Sha1Digest, Xxh3Digest},
-    progress,
 };
 
-pub fn source(
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScanProgress {
+    Started { files: u64 },
+    Advanced,
+}
+
+pub fn source_with_progress(
     path: &Utf8Path,
     jobs: usize,
     excluded_paths: &[Utf8PathBuf],
+    progress: &(impl Fn(ScanProgress) + Sync),
 ) -> crate::Result<CompleteSourceScan> {
     let source_root = path.canonicalize_utf8()?;
-    info!("Looking in path: {source_root}");
     let file_list = walk_for_files(&source_root, excluded_paths)?;
     let source_root = SourceRoot::new(source_root.to_string());
     let scan_run = ScanRunKey::fresh();
-    let observations = get_all_observations(&file_list, jobs, &source_root, scan_run)?;
-
-    info!(
-        "rom files found (unpacked and packed both): {}",
-        observations.len()
-    );
+    let observations = get_all_observations(&file_list, jobs, &source_root, scan_run, progress)?;
     CompleteSourceScan::new(source_root, scan_run, observations)
 }
 
@@ -48,15 +45,18 @@ fn get_all_observations(
     jobs: usize,
     source_root: &SourceRoot,
     scan_run: ScanRunKey,
+    progress: &(impl Fn(ScanProgress) + Sync),
 ) -> crate::Result<Vec<SourceObservation>> {
-    let bar = progress::bar(file_list.len() as u64);
+    progress(ScanProgress::Started {
+        files: u64::try_from(file_list.len()).unwrap_or(u64::MAX),
+    });
     let pool = rayon::ThreadPoolBuilder::new().num_threads(jobs).build()?;
     pool.install(|| {
         file_list
             .par_iter()
-            .progress_with(bar)
             .try_fold(Vec::new, |mut observations, path| {
                 observations.extend(scan_one_path(path, source_root, scan_run)?);
+                progress(ScanProgress::Advanced);
                 Ok(observations)
             })
             .try_reduce(Vec::new, |mut left, mut right| {
@@ -584,6 +584,25 @@ mod tests {
         std::fs::write(root.join("c.rom"), b"c")?;
         let files = walk_for_files(root, &[])?;
 
+        let events = std::sync::Mutex::new(Vec::new());
+        let scanned = source_with_progress(root, 2, &[], &|event| {
+            events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(event);
+        })?;
+        let events = events
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(events.first(), Some(&ScanProgress::Started { files: 3 }));
+        assert_eq!(events.len(), 4);
+        assert!(
+            events[1..]
+                .iter()
+                .all(|event| *event == ScanProgress::Advanced)
+        );
+        assert_eq!(scanned.observations().len(), 3);
+
         let source_root = SourceRoot::new(root.as_str());
         let normalize = |mut observations: Vec<SourceObservation>| {
             observations.sort_by(|left, right| {
@@ -609,18 +628,21 @@ mod tests {
             0,
             &source_root,
             ScanRunKey::fresh(),
+            &|_| {},
         )?);
         let jobs_one = normalize(get_all_observations(
             &files,
             1,
             &source_root,
             ScanRunKey::fresh(),
+            &|_| {},
         )?);
         let jobs_two = normalize(get_all_observations(
             &files,
             2,
             &source_root,
             ScanRunKey::fresh(),
+            &|_| {},
         )?);
 
         assert_eq!(jobs_zero, jobs_one);

@@ -5,6 +5,7 @@ use clap::Parser;
 
 mod logger;
 mod options;
+mod render;
 use options::{CacheCommand, Cli, Command};
 
 use mame_coalesce::{
@@ -29,7 +30,9 @@ fn run() -> mame_coalesce::Result<ExitCode> {
 
     match cli.command() {
         Command::Build(args) => {
-            let report = app::run(
+            let progress = render::ScanProgressReporter::default();
+            let callback = |event| progress.update(event);
+            let report = app::run_with_progress(
                 &database,
                 &RunWorkflowRequest {
                     dat_path: args.dat.clone(),
@@ -41,30 +44,39 @@ fn run() -> mame_coalesce::Result<ExitCode> {
                     dry_run: args.options.dry_run,
                     strict: args.options.missing.strict(),
                 },
+                &callback,
             )?;
-            Ok(exit_code(report.exit_code))
+            progress.finish();
+            render::build_report(&report);
+            Ok(render::exit_code(&report))
         }
         Command::Cache {
             command: CacheCommand::Import { dat },
         } => {
-            app::import_dat(
+            let report = app::import_dat(
                 &database,
                 &DatImportRequest {
                     dat_path: dat.clone(),
                 },
             )?;
+            log::info!("imported DAT as cache data file {}", report.data_file_id);
             Ok(ExitCode::SUCCESS)
         }
         Command::Cache {
             command: CacheCommand::Scan { source, jobs },
         } => {
-            app::scan_source(
+            let progress = render::ScanProgressReporter::default();
+            let callback = |event| progress.update(event);
+            let report = app::scan_source_with_progress(
                 &database,
                 &SourceScanRequest {
                     source_path: source.clone(),
                     jobs: *jobs,
                 },
+                &callback,
             )?;
+            progress.finish();
+            render::scan_report(&report);
             Ok(ExitCode::SUCCESS)
         }
         Command::Cache {
@@ -82,7 +94,8 @@ fn run() -> mame_coalesce::Result<ExitCode> {
                     strict: args.options.missing.strict(),
                 },
             )?;
-            Ok(exit_code(report.exit_code))
+            render::build_report(&report);
+            Ok(render::exit_code(&report))
         }
     }
 }
@@ -104,12 +117,4 @@ fn default_cache_path() -> Utf8PathBuf {
             || Utf8PathBuf::from("coalesce.db"),
             |cache_root| cache_root.join("mame_coalesce").join("coalesce.db"),
         )
-}
-
-fn exit_code(code: i32) -> ExitCode {
-    match code {
-        0 => ExitCode::SUCCESS,
-        2 => ExitCode::from(2),
-        _ => ExitCode::from(1),
-    }
 }
