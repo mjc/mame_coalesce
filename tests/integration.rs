@@ -5,7 +5,7 @@ use mame_coalesce::{
         ScanCachePolicy, SourceScanRequest,
     },
     database::Database,
-    domain::{ArtifactOutcome, BuildMode, OutputContainer, ZipCompression},
+    domain::{ArtifactOutcome, BuildMode, OutputContainer, SetName, SetSelection, ZipCompression},
     logiqx::DataFile,
 };
 use predicates::str::contains;
@@ -147,6 +147,40 @@ fn write_single_game_dat(
     Ok(utf8_path(path)?.to_path_buf())
 }
 
+fn write_two_game_dat(
+    path: &std::path::Path,
+    title: &str,
+    selected_rom: (&str, &str),
+    unselected_rom: (&str, &str),
+) -> Result<camino::Utf8PathBuf, io::Error> {
+    let dat = format!(
+        r#"<?xml version="1.0"?>
+<datafile>
+  <header>
+    <name>{title}</name>
+    <description>Set selection test</description>
+    <version>1.0</version>
+    <author>Test</author>
+  </header>
+  <game name="repeated-set" sourcefile="reimport.c">
+    <description>Selected set</description>
+    <year>1980</year>
+    <manufacturer>Acme</manufacturer>
+    <rom name="{}" size="4096" sha1="{}" md5="900150983cd24fb0d6963f7d28e17f72" crc="12345678"/>
+  </game>
+  <game name="unselected-set" sourcefile="reimport.c">
+    <description>Unselected set</description>
+    <year>1980</year>
+    <manufacturer>Acme</manufacturer>
+    <rom name="{}" size="4096" sha1="{}" md5="900150983cd24fb0d6963f7d28e17f72" crc="12345678"/>
+  </game>
+</datafile>"#,
+        selected_rom.0, selected_rom.1, unselected_rom.0, unselected_rom.1
+    );
+    fs::write(path, dat)?;
+    Ok(utf8_path(path)?.to_path_buf())
+}
+
 fn write_single_rom_source(
     dir: &std::path::Path,
     contents: &[u8],
@@ -230,6 +264,7 @@ fn one_shot_rejects_source_destination_overlap_before_catalog_import()
     let result = app::run(
         &database,
         &RunWorkflowRequest {
+            set_selection: mame_coalesce::domain::SetSelection::All,
             dat_path: missing_dat,
             source_path: source.clone(),
             destination_path: source,
@@ -291,6 +326,7 @@ fn build_reports_partial_artifact_completion_when_a_later_source_disappears()
     let report = app::build(
         &database,
         &BuildWorkflowRequest {
+            set_selection: mame_coalesce::domain::SetSelection::All,
             dat_path,
             source_path,
             destination_path: output_path.clone(),
@@ -376,6 +412,7 @@ fn run_workflow_writes_from_7z_archive() -> Result<(), Box<dyn std::error::Error
     let report = app::run(
         &database,
         &RunWorkflowRequest {
+            set_selection: mame_coalesce::domain::SetSelection::All,
             dat_path,
             source_path,
             destination_path: output_path.clone(),
@@ -423,6 +460,7 @@ fn run_workflow_writes_from_rar_archive() -> Result<(), Box<dyn std::error::Erro
     let report = app::run(
         &database,
         &RunWorkflowRequest {
+            set_selection: mame_coalesce::domain::SetSelection::All,
             dat_path,
             source_path,
             destination_path: output_path.clone(),
@@ -508,6 +546,7 @@ fn importing_dat_links_previously_scanned_rom_files() -> Result<(), Box<dyn std:
     let report = app::build(
         &database,
         &BuildWorkflowRequest {
+            set_selection: mame_coalesce::domain::SetSelection::All,
             dat_path,
             source_path,
             destination_path: output_path,
@@ -536,6 +575,7 @@ fn run_workflow_writes_parent_bundle_zip() -> Result<(), Box<dyn std::error::Err
     let report = app::run(
         &database,
         &RunWorkflowRequest {
+            set_selection: mame_coalesce::domain::SetSelection::All,
             dat_path,
             source_path,
             destination_path: output_path.clone(),
@@ -583,6 +623,7 @@ fn dry_run_workflow_reports_plan_without_writing_files() -> Result<(), Box<dyn s
     let report = app::run(
         &database,
         &RunWorkflowRequest {
+            set_selection: mame_coalesce::domain::SetSelection::All,
             dat_path,
             source_path,
             destination_path: output_path.clone(),
@@ -634,6 +675,7 @@ fn build_workflow_accepts_imported_dat_name() -> Result<(), Box<dyn std::error::
     let report = app::build(
         &database,
         &BuildWorkflowRequest {
+            set_selection: mame_coalesce::domain::SetSelection::All,
             dat_path: camino::Utf8PathBuf::from("Clone Test"),
             source_path,
             destination_path: output_path.clone(),
@@ -698,6 +740,7 @@ fn build_matches_sources_scanned_from_noncanonical_path() -> Result<(), Box<dyn 
     let report = app::build(
         &database,
         &BuildWorkflowRequest {
+            set_selection: mame_coalesce::domain::SetSelection::All,
             dat_path,
             source_path,
             destination_path: output_path.clone(),
@@ -774,6 +817,7 @@ fn source_scan_replaces_rows_for_source_root() -> Result<(), Box<dyn std::error:
     let stale_report = app::build(
         &database,
         &BuildWorkflowRequest {
+            set_selection: mame_coalesce::domain::SetSelection::All,
             dat_path: dat_a,
             source_path: source_path.clone(),
             destination_path: utf8_path(output_dirs[0].path())?.to_path_buf(),
@@ -786,6 +830,7 @@ fn source_scan_replaces_rows_for_source_root() -> Result<(), Box<dyn std::error:
     let fresh_report = app::build(
         &database,
         &BuildWorkflowRequest {
+            set_selection: mame_coalesce::domain::SetSelection::All,
             dat_path: dat_b,
             source_path,
             destination_path: utf8_path(output_dirs[1].path())?.to_path_buf(),
@@ -872,6 +917,7 @@ fn opt_in_bare_file_reuse_supports_forced_rehash_and_detects_same_mtime_changes(
     let plan = app::plan_build(
         &database,
         &BuildPlanRequest {
+            set_selection: mame_coalesce::domain::SetSelection::All,
             dat_path,
             source_path,
             mode: BuildMode::ParentBundles,
@@ -932,6 +978,7 @@ fn parent_refresh_removes_stale_observations_owned_by_overlapping_root()
     let report = app::build(
         &database,
         &BuildWorkflowRequest {
+            set_selection: mame_coalesce::domain::SetSelection::All,
             dat_path,
             source_path: parent_root,
             destination_path: utf8_path(output_dir.path())?.to_path_buf(),
@@ -998,6 +1045,7 @@ fn failed_archive_scan_preserves_cached_source_rows() -> Result<(), Box<dyn std:
     let report = app::build(
         &database,
         &BuildWorkflowRequest {
+            set_selection: mame_coalesce::domain::SetSelection::All,
             dat_path,
             source_path,
             destination_path: utf8_path(output_dir.path())?.to_path_buf(),
@@ -1070,6 +1118,7 @@ fn source_scan_does_not_delete_similarly_prefixed_root() -> Result<(), Box<dyn s
     let report = app::build(
         &database,
         &BuildWorkflowRequest {
+            set_selection: mame_coalesce::domain::SetSelection::All,
             dat_path: dat_a,
             source_path,
             destination_path: utf8_path(output_dir.path())?.to_path_buf(),
@@ -1109,6 +1158,7 @@ fn one_shot_build_does_not_use_stale_removed_source_file() -> Result<(), Box<dyn
     let first_report = app::run(
         &database,
         &RunWorkflowRequest {
+            set_selection: mame_coalesce::domain::SetSelection::All,
             dat_path: dat_path.clone(),
             source_path: source_path.clone(),
             destination_path: utf8_path(output_dirs[0].path())?.to_path_buf(),
@@ -1123,6 +1173,7 @@ fn one_shot_build_does_not_use_stale_removed_source_file() -> Result<(), Box<dyn
     let second_report = app::run(
         &database,
         &RunWorkflowRequest {
+            set_selection: mame_coalesce::domain::SetSelection::All,
             dat_path,
             source_path,
             destination_path: utf8_path(output_dirs[1].path())?.to_path_buf(),
@@ -1161,6 +1212,7 @@ fn strict_run_workflow_writes_nothing_when_roms_are_missing()
     let report = app::run(
         &database,
         &RunWorkflowRequest {
+            set_selection: mame_coalesce::domain::SetSelection::All,
             dat_path,
             source_path,
             destination_path: output_path.clone(),
@@ -1241,6 +1293,7 @@ fn overlapping_dats_with_same_game_and_rom_names_build_independently()
     let report_a = app::build(
         &database,
         &BuildWorkflowRequest {
+            set_selection: mame_coalesce::domain::SetSelection::All,
             dat_path: dat_a,
             source_path: source_a,
             destination_path: output_a.clone(),
@@ -1253,6 +1306,7 @@ fn overlapping_dats_with_same_game_and_rom_names_build_independently()
     let report_b = app::build(
         &database,
         &BuildWorkflowRequest {
+            set_selection: mame_coalesce::domain::SetSelection::All,
             dat_path: dat_b,
             source_path: source_b,
             destination_path: output_b.clone(),
@@ -1338,6 +1392,7 @@ fn one_scanned_source_file_can_build_matching_roms_from_multiple_dats()
     let report_a = app::build(
         &database,
         &BuildWorkflowRequest {
+            set_selection: mame_coalesce::domain::SetSelection::All,
             dat_path: dat_a,
             source_path: source_path.clone(),
             destination_path: output_a.clone(),
@@ -1350,6 +1405,7 @@ fn one_scanned_source_file_can_build_matching_roms_from_multiple_dats()
     let report_b = app::build(
         &database,
         &BuildWorkflowRequest {
+            set_selection: mame_coalesce::domain::SetSelection::All,
             dat_path: dat_b,
             source_path,
             destination_path: output_b.clone(),
@@ -1569,6 +1625,7 @@ fn sha1_match_ignores_inconsistent_size_crc_and_md5() -> Result<(), Box<dyn std:
     let report = app::run(
         &database,
         &RunWorkflowRequest {
+            set_selection: mame_coalesce::domain::SetSelection::All,
             dat_path,
             source_path,
             destination_path: utf8_path(output_dir.path())?.to_path_buf(),
@@ -1616,6 +1673,7 @@ fn normalized_zip_member_scans_and_builds() -> Result<(), Box<dyn std::error::Er
     let report = app::run(
         &database,
         &RunWorkflowRequest {
+            set_selection: mame_coalesce::domain::SetSelection::All,
             dat_path,
             source_path: utf8_path(source_dir.path())?.to_path_buf(),
             destination_path: utf8_path(output_dir.path())?.to_path_buf(),
@@ -1825,6 +1883,7 @@ fn directory_output_preserves_existing_group_when_cached_source_is_stale()
     let output_path = utf8_path(output_dir.path())?.join("out");
     let selection = app::SourceRootSelection::single(source_path.clone());
     let request = RunWorkflowRequest {
+        set_selection: mame_coalesce::domain::SetSelection::All,
         dat_path: dat_path.clone(),
         source_path: source_path.clone(),
         destination_path: output_path.clone(),
@@ -1848,6 +1907,7 @@ fn directory_output_preserves_existing_group_when_cached_source_is_stale()
     let stale = app::build_with_roots_and_container(
         &database,
         &BuildWorkflowRequest {
+            set_selection: mame_coalesce::domain::SetSelection::All,
             dat_path,
             source_path,
             destination_path: output_path.clone(),
@@ -1892,6 +1952,141 @@ fn assert_directory_backend_build(
         .assert()
         .success();
     assert_eq!(fs::read(output_path.join("shared/shared.rom"))?, expected);
+    Ok(())
+}
+
+fn assert_cli_set_selection(
+    work_dir: &std::path::Path,
+    dat_path: &camino::Utf8Path,
+    source_path: &camino::Utf8Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let cli_database = utf8_path(&work_dir.join("cli.db"))?.to_path_buf();
+    let output_dir = tempfile::tempdir()?;
+    let output_path = utf8_path(output_dir.path())?.join("out");
+    cargo_command()
+        .args(db_arg(&cli_database))
+        .args([
+            "build",
+            dat_path.as_str(),
+            source_path.as_str(),
+            output_path.as_str(),
+            "--jobs",
+            "1",
+            "--layout",
+            "per-game",
+            "--output-container",
+            "directory",
+            "--set",
+            "repeated-set",
+        ])
+        .assert()
+        .success();
+    assert_eq!(
+        fs::read(output_path.join("repeated-set/first.rom"))?,
+        b"first"
+    );
+    assert!(!output_path.join("unselected-set").exists());
+
+    let audit = cargo_command()
+        .args(db_arg(&cli_database))
+        .args([
+            "audit",
+            dat_path.as_str(),
+            source_path.as_str(),
+            "--set",
+            "repeated-set",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success();
+    let audit_json: serde_json::Value = serde_json::from_slice(&audit.get_output().stdout)?;
+    assert_eq!(audit_json["report"]["matched_roms"], 1);
+    assert_eq!(
+        audit_json["report"]["resolutions"].as_array().map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(
+        audit_json["report"]["missing_roms"]
+            .as_array()
+            .map(Vec::len),
+        Some(0)
+    );
+    Ok(())
+}
+
+#[test]
+fn exact_set_selection_is_scoped_to_the_selected_catalog() -> Result<(), Box<dyn std::error::Error>>
+{
+    let work_dir = tempfile::tempdir()?;
+    let source_dir = tempfile::tempdir()?;
+    let source_path = utf8_path(source_dir.path())?.to_path_buf();
+    let first_selected_sha1 = hex::encode(mame_coalesce::hashes::sha1_bytes(b"first"));
+    let first_ignored_sha1 = hex::encode(mame_coalesce::hashes::sha1_bytes(b"ignored-first"));
+    let second_selected_sha1 = hex::encode(mame_coalesce::hashes::sha1_bytes(b"second"));
+    let second_ignored_sha1 = hex::encode(mame_coalesce::hashes::sha1_bytes(b"ignored-second"));
+    let first_dat = write_two_game_dat(
+        &work_dir.path().join("first.dat"),
+        "First catalog",
+        ("first.rom", &first_selected_sha1),
+        ("ignored-first.rom", &first_ignored_sha1),
+    )?;
+    let second_dat = write_two_game_dat(
+        &work_dir.path().join("second.dat"),
+        "Second catalog",
+        ("second.rom", &second_selected_sha1),
+        ("ignored-second.rom", &second_ignored_sha1),
+    )?;
+    fs::write(source_dir.path().join("first.rom"), b"first")?;
+    fs::write(source_dir.path().join("second.rom"), b"second")?;
+    fs::write(
+        source_dir.path().join("ignored-first.rom"),
+        b"ignored-first",
+    )?;
+    fs::write(
+        source_dir.path().join("ignored-second.rom"),
+        b"ignored-second",
+    )?;
+    let database_dir = tempfile::tempdir()?;
+    let database = test_database(database_dir.path())?;
+    app::import_dat(
+        &database,
+        &DatImportRequest {
+            dat_path: first_dat.clone(),
+        },
+    )?;
+    app::import_dat(
+        &database,
+        &DatImportRequest {
+            dat_path: second_dat.clone(),
+        },
+    )?;
+    app::scan_source(
+        &database,
+        &SourceScanRequest {
+            source_path: source_path.clone(),
+            jobs: 1,
+        },
+    )?;
+
+    for (dat_path, expected_rom) in [(&first_dat, "first.rom"), (&second_dat, "second.rom")] {
+        let plan = app::plan_build(
+            &database,
+            &BuildPlanRequest {
+                dat_path: dat_path.clone(),
+                source_path: source_path.clone(),
+                mode: BuildMode::PerGame,
+                matching_policy: mame_coalesce::domain::MatchingPolicy::Sha1Compatibility,
+                missing_policy: mame_coalesce::domain::MissingContentPolicy::RequireComplete,
+                set_selection: SetSelection::ExactNames([SetName::new("repeated-set")].into()),
+            },
+        )?;
+        assert_eq!(plan.report.matched_roms, 1);
+        assert!(plan.report.missing_roms.is_empty());
+        assert_eq!(plan.groups.len(), 1);
+        assert_eq!(plan.groups[0].entries[0].path.as_str(), expected_rom);
+    }
+    assert_cli_set_selection(work_dir.path(), &first_dat, &source_path)?;
     Ok(())
 }
 

@@ -7,7 +7,7 @@ use crate::{
         ArtifactOutcome, ArtifactResult, AuditReport, BuildMode, BuildReport, BuildRequest,
         CatalogKey, CatalogScope, ImportRunKey, MatchingPolicy, MissingContentPolicy,
         ObservationBasis, OutputContainer, PlanOutcome, PublishingSourceKey, ScanRunKey,
-        SnapshotKey, SourceRoot, ZipCompression,
+        SetSelection, SnapshotKey, SourceRoot, ZipCompression,
     },
     operations,
     storage::repositories::{BuildRepository, DataFileSelector, SourceRepository},
@@ -143,6 +143,7 @@ pub struct BuildWorkflowRequest {
     pub compression: ZipCompression,
     pub dry_run: bool,
     pub strict: bool,
+    pub set_selection: SetSelection,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -159,6 +160,7 @@ pub struct BuildPlanRequest {
     pub mode: BuildMode,
     pub matching_policy: MatchingPolicy,
     pub missing_policy: MissingContentPolicy,
+    pub set_selection: SetSelection,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -174,6 +176,7 @@ pub struct AuditRequest {
     pub refresh: AuditRefresh,
     pub matching_policy: MatchingPolicy,
     pub jobs: usize,
+    pub set_selection: SetSelection,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -186,6 +189,7 @@ pub struct RunWorkflowRequest {
     pub jobs: usize,
     pub dry_run: bool,
     pub strict: bool,
+    pub set_selection: SetSelection,
 }
 
 pub fn import_dat(
@@ -396,6 +400,7 @@ pub fn build_with_roots_and_container(
             } else {
                 MissingContentPolicy::AllowPartial
             },
+            set_selection: request.set_selection.clone(),
         },
         selection,
     )?;
@@ -489,6 +494,7 @@ pub fn plan_build_with_roots(
             mode: request.mode,
             matching_policy: request.matching_policy,
             missing_policy: request.missing_policy,
+            set_selection: request.set_selection.clone(),
         },
     );
     Ok(plan)
@@ -554,6 +560,7 @@ pub fn audit_with_roots_and_progress(
             mode: BuildMode::ParentBundles,
             matching_policy: request.matching_policy,
             missing_policy: MissingContentPolicy::AllowPartial,
+            set_selection: request.set_selection.clone(),
         },
         selection,
     )?;
@@ -706,6 +713,7 @@ mod tests {
                 mode: BuildMode::PerGame,
                 matching_policy: MatchingPolicy::Sha1Compatibility,
                 missing_policy: MissingContentPolicy::RequireComplete,
+                set_selection: SetSelection::All,
             },
         )?;
 
@@ -754,6 +762,7 @@ fn build_workflow_request_from_run(request: &RunWorkflowRequest) -> BuildWorkflo
         compression: request.compression,
         dry_run: request.dry_run,
         strict: request.strict,
+        set_selection: request.set_selection.clone(),
     }
 }
 

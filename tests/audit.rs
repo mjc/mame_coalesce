@@ -61,6 +61,7 @@ impl Fixture {
 
     fn request(&self, refresh: AuditRefresh) -> AuditRequest {
         AuditRequest {
+            set_selection: mame_coalesce::domain::SetSelection::All,
             dat_path: self.dat.clone(),
             source_path: self.source.clone(),
             refresh,
@@ -71,6 +72,7 @@ impl Fixture {
 
     fn evidence_aware_request(&self) -> AuditRequest {
         AuditRequest {
+            set_selection: mame_coalesce::domain::SetSelection::All,
             matching_policy: MatchingPolicy::EvidenceAware,
             ..self.request(AuditRefresh::Refresh)
         }
@@ -88,6 +90,7 @@ fn audit_uses_cached_observations_by_default_and_refresh_is_explicit()
     let build_plan = app::plan_build(
         &fixture.database,
         &BuildPlanRequest {
+            set_selection: mame_coalesce::domain::SetSelection::All,
             dat_path: fixture.dat.clone(),
             source_path: fixture.source.clone(),
             mode: BuildMode::ParentBundles,
@@ -128,6 +131,7 @@ fn audit_uses_cached_observations_by_default_and_refresh_is_explicit()
     let refreshed_plan = app::plan_build(
         &fixture.database,
         &BuildPlanRequest {
+            set_selection: mame_coalesce::domain::SetSelection::All,
             dat_path: fixture.dat.clone(),
             source_path: fixture.source.clone(),
             mode: BuildMode::ParentBundles,
