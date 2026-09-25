@@ -2,7 +2,7 @@ use assert_cmd::Command;
 use mame_coalesce::{
     app::{self, BuildWorkflowRequest, DatImportRequest, RunWorkflowRequest, SourceScanRequest},
     database::Database,
-    domain::{BuildMode, ZipCompression},
+    domain::{ArtifactOutcome, BuildMode, ZipCompression},
     logiqx::DataFile,
 };
 use predicates::str::contains;
@@ -216,6 +216,80 @@ fn one_shot_rejects_source_destination_overlap_before_catalog_import()
     };
 
     assert!(error.to_string().contains("source/destination overlap"));
+    Ok(())
+}
+
+#[test]
+fn build_reports_partial_artifact_completion_when_a_later_source_disappears()
+-> Result<(), Box<dyn std::error::Error>> {
+    let database_dir = tempfile::tempdir()?;
+    let database = test_database(database_dir.path())?;
+    let work_dir = tempfile::tempdir()?;
+    let source_dir = tempfile::tempdir()?;
+    let output_dir = tempfile::tempdir()?;
+    let dat_path = work_dir.path().join("two-games.dat");
+    fs::write(
+        &dat_path,
+        r#"<?xml version="1.0"?>
+<datafile><header><name>Two games</name></header>
+<game name="a"><rom name="a.rom" size="1" crc="e8b7be43" md5="0cc175b9c0f1b6a831c399e269772661" sha1="86f7e437faa5a7fce15d1ddcb9eaeaea377667b8"/></game>
+<game name="b"><rom name="b.rom" size="1" crc="71beeff9" md5="92eb5ffee6ae2fec3ad71c777531578f" sha1="e9d71f5ee7c92d6dc9e92ffdad17b8bd49418f98"/></game>
+</datafile>"#,
+    )?;
+    let dat_path = utf8_path(&dat_path)?.to_path_buf();
+    let source_path = utf8_path(source_dir.path())?.to_path_buf();
+    let output_path = utf8_path(output_dir.path())?.join("out");
+    fs::write(source_dir.path().join("a.rom"), b"a")?;
+    fs::write(source_dir.path().join("b.rom"), b"b")?;
+    app::import_dat(
+        &database,
+        &DatImportRequest {
+            dat_path: dat_path.clone(),
+        },
+    )?;
+    app::scan_source(
+        &database,
+        &SourceScanRequest {
+            source_path: source_path.clone(),
+            jobs: 1,
+        },
+    )?;
+    fs::remove_file(source_dir.path().join("b.rom"))?;
+
+    let report = app::build(
+        &database,
+        &BuildWorkflowRequest {
+            dat_path,
+            source_path,
+            destination_path: output_path.clone(),
+            mode: BuildMode::PerGame,
+            compression: ZipCompression::Deflate,
+            dry_run: false,
+            strict: false,
+        },
+    )?;
+
+    assert_eq!(report.exit_code, 1);
+    assert_eq!(report.written_paths, vec![output_path.join("a.zip")]);
+    let mut results = report.artifact_results.iter();
+    assert_eq!(
+        results.next().map(|result| &result.outcome),
+        Some(&ArtifactOutcome::Completed)
+    );
+    let failed = results
+        .next()
+        .ok_or_else(|| io::Error::other("expected the second artifact result"))?;
+    let ArtifactOutcome::Failed { error } = &failed.outcome else {
+        return Err(io::Error::other("the second artifact should report failure").into());
+    };
+    assert!(!error.is_empty());
+    assert!(results.next().is_none());
+    assert_eq!(
+        zip_entries(&output_path.join("a.zip"))?
+            .get("a.rom")
+            .map(Vec::as_slice),
+        Some(b"a" as &[u8])
+    );
     Ok(())
 }
 
