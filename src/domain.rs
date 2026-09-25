@@ -604,6 +604,13 @@ pub enum ZipCompression {
     Store,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OutputContainer {
+    #[default]
+    Zip,
+    Directory,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum ArchiveBackend {
     Zip,
@@ -1089,6 +1096,9 @@ pub enum ArtifactOutcome {
     /// The replacement is visible, but syncing its containing directory failed.
     ReplacedButNotDurable {
         error: String,
+    },
+    CompletedWithWarning {
+        warning: String,
     },
     Unattempted,
 }

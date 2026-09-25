@@ -38,7 +38,7 @@ fn run() -> mame_coalesce::Result<ExitCode> {
         Command::Build(args) => {
             let progress = render::ScanProgressReporter::default();
             let callback = |event| progress.update(event);
-            let result = app::run_with_roots_and_progress(
+            let result = app::run_with_roots_and_container_and_progress(
                 &database,
                 &RunWorkflowRequest {
                     dat_path: args.dat.clone(),
@@ -54,6 +54,7 @@ fn run() -> mame_coalesce::Result<ExitCode> {
                     primary: args.source.clone(),
                     additional: args.additional_source_roots.clone(),
                 },
+                args.options.output_container.into(),
                 &callback,
             );
             progress.finish();
@@ -98,7 +99,7 @@ fn run() -> mame_coalesce::Result<ExitCode> {
         Command::Cache {
             command: CacheCommand::Build(args),
         } => {
-            let result = app::build_with_roots(
+            let result = app::build_with_roots_and_container(
                 &database,
                 &BuildWorkflowRequest {
                     dat_path: args.dat.clone(),
@@ -113,6 +114,7 @@ fn run() -> mame_coalesce::Result<ExitCode> {
                     primary: args.source.clone(),
                     additional: args.additional_source_roots.clone(),
                 },
+                args.options.output_container.into(),
             );
             render_build_result(result)
         }

@@ -96,6 +96,12 @@ pub fn build_report(report: &BuildWorkflowReport) {
     for artifact in &report.artifact_results {
         match &artifact.outcome {
             ArtifactOutcome::Completed => info!("completed output artifact: {}", artifact.path),
+            ArtifactOutcome::CompletedWithWarning { warning } => {
+                warn!(
+                    "completed output artifact with warning: {}: {warning}",
+                    artifact.path
+                );
+            }
             ArtifactOutcome::Failed { error } => {
                 warn!("failed output artifact: {}: {error}", artifact.path);
             }
@@ -396,6 +402,6 @@ mod tests {
 
         assert_eq!(audit_exit_code(&report), std::process::ExitCode::from(1));
         assert!(human.contains("Plan readiness: Blocked(InvalidPlan)"));
-        assert!(human.contains("validation issue: unsafe output zip file name"));
+        assert!(human.contains("validation issue: unsafe logical output group path"));
     }
 }
