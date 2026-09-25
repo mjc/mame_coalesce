@@ -181,9 +181,13 @@ pub fn database_file_paths(pool: &DbPool) -> crate::Result<Vec<Utf8PathBuf>> {
     let rows = sql_query("SELECT file FROM pragma_database_list WHERE file != ''")
         .load::<DatabasePathRow>(&mut conn)?;
 
-    Ok(rows
+    let paths = rows
         .into_iter()
-        .filter_map(|row| Utf8PathBuf::from(row.file).canonicalize_utf8().ok())
+        .map(|row| Utf8PathBuf::from(row.file).canonicalize_utf8())
+        .collect::<std::io::Result<Vec<_>>>()?;
+
+    Ok(paths
+        .into_iter()
         .flat_map(|path| {
             let base = path.as_str().to_owned();
             std::iter::once(path).chain(

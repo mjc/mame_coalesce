@@ -1,4 +1,5 @@
 use std::{
+    ffi::OsStr,
     io::{Read, Write},
     path::{Component, Path, PathBuf},
 };
@@ -26,10 +27,19 @@ use crate::{
 };
 
 pub fn source(path: &Utf8Path, jobs: usize, pool: &Pool) -> crate::Result<Utf8PathBuf> {
+    source_with_walk(path, jobs, pool, walk_for_files)
+}
+
+fn source_with_walk(
+    path: &Utf8Path,
+    jobs: usize,
+    pool: &Pool,
+    walk: impl FnOnce(&Utf8Path, &[Utf8PathBuf]) -> crate::Result<Vec<Utf8PathBuf>>,
+) -> crate::Result<Utf8PathBuf> {
     let source_root = path.canonicalize_utf8()?;
     info!("Looking in path: {source_root}");
     let excluded_paths = db::database_file_paths(pool)?;
-    let file_list = walk_for_files(&source_root, &excluded_paths);
+    let file_list = walk(&source_root, &excluded_paths)?;
     let new_rom_files = get_all_rom_files(&file_list, jobs)?;
 
     info!(
@@ -122,9 +132,7 @@ fn scan_rar(path: &Utf8Path) -> crate::Result<Vec<NewRomFile>> {
             let (data, rest) = header.read()?;
             let sha1 = crate::hashes::sha1_bytes(&data);
             let xxh3 = crate::hashes::xxhash3_bytes(&data);
-            if let Some(nrf) = NewRomFile::from_archive(path, &filename, sha1, xxh3) {
-                rom_files.push(nrf);
-            }
+            rom_files.push(archive_rom_file(path, &filename, sha1, xxh3)?);
             rest
         } else {
             header.skip()?
@@ -173,9 +181,7 @@ fn scan_7z(path: &Utf8Path) -> crate::Result<Vec<NewRomFile>> {
         let mut hash_writer = RomHashWriter::default();
         std::io::copy(reader, &mut hash_writer)?;
         let (sha1, xxh3) = hash_writer.finish();
-        if let Some(nrf) = NewRomFile::from_archive(path, filename, sha1, xxh3) {
-            rom_files.push(nrf);
-        }
+        rom_files.push(archive_rom_file(path, filename, sha1, xxh3)?);
         Ok(())
     })?;
 
@@ -227,30 +233,78 @@ impl Write for RomHashWriter {
     }
 }
 
-fn walk_for_files(dir: &Utf8Path, excluded_paths: &[Utf8PathBuf]) -> Vec<Utf8PathBuf> {
-    let v = WalkDir::new(dir)
+fn archive_rom_file(
+    archive_path: &Utf8Path,
+    member_path: &Path,
+    sha1: Sha1Digest,
+    xxhash3: Xxh3Digest,
+) -> std::io::Result<NewRomFile> {
+    NewRomFile::from_archive(archive_path, member_path, sha1, xxhash3).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "couldn't represent archive member {} in {archive_path}",
+                member_path.display()
+            ),
+        )
+    })
+}
+
+fn walk_for_files(
+    dir: &Utf8Path,
+    excluded_paths: &[Utf8PathBuf],
+) -> crate::Result<Vec<Utf8PathBuf>> {
+    collect_walked_files(
+        WalkDir::new(dir)
+            .into_iter()
+            .filter_entry(entry_is_relevant),
+        excluded_paths,
+    )
+}
+
+fn collect_walked_files(
+    entries: impl IntoIterator<Item = Result<DirEntry, walkdir::Error>>,
+    excluded_paths: &[Utf8PathBuf],
+) -> crate::Result<Vec<Utf8PathBuf>> {
+    let files = entries
         .into_iter()
-        .filter_entry(entry_is_relevant)
-        .flatten()
-        .filter(|entry| !entry.file_type().is_dir())
-        .collect();
-    let optimized = optimize_file_order(v);
-    optimized
+        .try_fold(Vec::new(), |mut files, entry| {
+            let entry = entry.map_err(|error| {
+                Error::InvalidPath(format!("failed to traverse source path: {error}"))
+            })?;
+            if !entry.file_type().is_dir() {
+                files.push(entry);
+            }
+            Ok::<_, crate::Error>(files)
+        })?;
+    let paths = optimize_file_order(files)
         .into_iter()
-        .filter_map(|direntry| Utf8PathBuf::from_path_buf(direntry.into_path()).ok())
+        .map(|entry| source_path_from_path_buf(entry.into_path()))
+        .collect::<crate::Result<Vec<_>>>()?;
+    Ok(paths
+        .into_iter()
         .filter(|path| {
             !excluded_paths
                 .iter()
                 .any(|excluded_path| path == excluded_path)
         })
-        .collect()
+        .collect())
+}
+
+fn source_path_from_path_buf(path: PathBuf) -> crate::Result<Utf8PathBuf> {
+    Utf8PathBuf::from_path_buf(path)
+        .map_err(|path| Error::InvalidPath(format!("source path is not UTF-8: {}", path.display())))
 }
 
 fn entry_is_relevant(entry: &DirEntry) -> bool {
-    entry
-        .file_name()
-        .to_str()
-        .is_some_and(|s| entry.depth() == 0 || !s.starts_with('.'))
+    entry_name_is_relevant(entry.file_name(), entry.depth())
+}
+
+fn entry_name_is_relevant(name: &OsStr, depth: usize) -> bool {
+    // Hidden entries below the root are intentionally skipped; invalid UTF-8 names proceed to
+    // path conversion so they fail the scan instead of appearing to have disappeared.
+    name.to_str()
+        .is_none_or(|name| depth == 0 || !name.starts_with('.'))
 }
 
 #[cfg(target_os = "linux")]
@@ -272,6 +326,8 @@ fn optimize_file_order(mut dirs: Vec<DirEntry>) -> Vec<DirEntry> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::repositories::SourceRepository;
+    use std::cell::Cell;
     use std::collections::BTreeSet;
     use std::io::{self, Write};
     use zip::write::SimpleFileOptions;
@@ -308,7 +364,7 @@ mod tests {
         std::fs::write(root.join("visible-dir").join(".hidden.rom"), b"hidden file")?;
         std::fs::write(root.join("visible-dir").join("nested.rom"), b"nested")?;
 
-        let files = walk_for_files(root, &[])
+        let files = walk_for_files(root, &[])?
             .into_iter()
             .map(|path| path.strip_prefix(root).map(Utf8Path::to_owned))
             .collect::<Result<BTreeSet<_>, _>>()?;
@@ -320,6 +376,140 @@ mod tests {
                 Utf8PathBuf::from("visible.rom"),
             ])
         );
+        Ok(())
+    }
+
+    #[test]
+    fn walk_for_files_propagates_traversal_errors() -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let root = Utf8Path::from_path(temp_dir.path())
+            .ok_or_else(|| io::Error::other("temp path is not UTF-8"))?;
+        let missing_root = root.join("removed-during-scan");
+        let Err(error) = walk_for_files(&missing_root, &[]) else {
+            return Err("expected a traversal error for the missing root".into());
+        };
+
+        assert!(error.to_string().contains("failed to traverse source path"));
+        Ok(())
+    }
+
+    #[test]
+    fn failed_partial_walk_preserves_cached_source_rows() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let database_dir = tempfile::tempdir()?;
+        let database_path = database_dir.path().join("cache.sqlite");
+        let pool = db::create_db_pool(
+            database_path
+                .to_str()
+                .ok_or_else(|| io::Error::other("database path is not UTF-8"))?,
+        )?;
+        let source_dir = tempfile::tempdir()?;
+        let root = Utf8Path::from_path(source_dir.path())
+            .ok_or_else(|| io::Error::other("source path is not UTF-8"))?;
+        std::fs::write(root.join("a.rom"), b"cached")?;
+        source(root, 1, &pool)?;
+        let cached = SourceRepository::new(&pool).load_source_files()?;
+        assert_eq!(cached.len(), 1);
+
+        std::fs::remove_file(root.join("a.rom"))?;
+        std::fs::write(root.join("b.rom"), b"new")?;
+        let saw_file = Cell::new(false);
+        let result = source_with_walk(root, 1, &pool, |source_root, excluded_paths| {
+            let missing_path = source_root.join("removed-during-scan");
+            let Some(Err(walk_error)) = WalkDir::new(&missing_path).into_iter().next() else {
+                return Err(Error::InvalidPath(
+                    "missing path should fail traversal".to_owned(),
+                ));
+            };
+            let partial_walk = WalkDir::new(source_root)
+                .into_iter()
+                .filter_entry(entry_is_relevant)
+                .take(2)
+                .inspect(|entry| {
+                    if entry
+                        .as_ref()
+                        .is_ok_and(|entry| entry.file_type().is_file())
+                    {
+                        saw_file.set(true);
+                    }
+                })
+                .chain(std::iter::once(Err(walk_error)));
+            collect_walked_files(partial_walk, excluded_paths)
+        });
+
+        assert!(
+            saw_file.get(),
+            "the walk must observe a file before failing"
+        );
+        let Err(error) = result else {
+            return Err("expected partial walk to fail".into());
+        };
+        assert!(error.to_string().contains("removed-during-scan"));
+        assert_eq!(SourceRepository::new(&pool).load_source_files()?, cached);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_entry_names_are_not_skipped_as_hidden() {
+        use std::os::unix::ffi::OsStrExt;
+
+        assert!(entry_name_is_relevant(OsStr::from_bytes(b"x\xff"), 1));
+        assert!(!entry_name_is_relevant(OsStr::new(".hidden"), 1));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_paths_reject_non_utf8_paths() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::ffi::OsStringExt;
+
+        let path = PathBuf::from(std::ffi::OsString::from_vec(b"bad-\xff".to_vec()));
+        let Err(error) = source_path_from_path_buf(path) else {
+            return Err("expected non-UTF-8 path to fail conversion".into());
+        };
+
+        assert!(error.to_string().contains("source path is not UTF-8"));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn archive_member_conversion_errors_are_propagated() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::ffi::OsStrExt;
+
+        let member = Path::new(OsStr::from_bytes(b"bad-\xff"));
+        let Err(error) = archive_rom_file(
+            Utf8Path::new("/source/archive.zip"),
+            member,
+            Sha1Digest::default(),
+            Xxh3Digest::default(),
+        ) else {
+            return Err("expected non-UTF-8 archive member to fail conversion".into());
+        };
+
+        assert!(
+            error
+                .to_string()
+                .contains("couldn't represent archive member")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn source_walk_excludes_database_and_sidecar_paths() -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let root = Utf8Path::from_path(temp_dir.path())
+            .ok_or_else(|| io::Error::other("temp path is not UTF-8"))?;
+        let database_path = root.join("cache.sqlite");
+        let pool = db::create_db_pool(database_path.as_str())?;
+        let rom_path = root.join("game.rom");
+        std::fs::write(&rom_path, b"rom")?;
+        let excluded_paths = db::database_file_paths(&pool)?;
+
+        assert!(excluded_paths.contains(&database_path.canonicalize_utf8()?));
+        assert!(excluded_paths.contains(&Utf8PathBuf::from(format!("{database_path}-wal"))));
+        assert!(excluded_paths.contains(&Utf8PathBuf::from(format!("{database_path}-shm"))));
+        assert_eq!(walk_for_files(root, &excluded_paths)?, vec![rom_path]);
         Ok(())
     }
 
@@ -433,7 +623,7 @@ mod tests {
         std::fs::write(root.join("a.rom"), b"a")?;
         std::fs::write(root.join("b.rom"), b"b")?;
         std::fs::write(root.join("c.rom"), b"c")?;
-        let files = walk_for_files(root, &[]);
+        let files = walk_for_files(root, &[])?;
 
         let normalize = |mut rom_files: Vec<NewRomFile>| {
             rom_files.sort_by(|left, right| left.name.cmp(&right.name));
