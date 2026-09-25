@@ -512,6 +512,13 @@ pub enum ZipCompression {
     Store,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OutputContainer {
+    #[default]
+    Zip,
+    Directory,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum ArchiveBackend {
     Zip,
@@ -940,6 +947,7 @@ impl AuditReport {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ArtifactOutcome {
     Completed,
+    CompletedWithWarning { warning: String },
     Failed { error: String },
     Unattempted,
 }

@@ -38,11 +38,11 @@ pub struct PlanIssue {
 impl std::fmt::Display for PlanIssue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let label = match self.kind {
-            PlanIssueKind::UnsafeGroupPath => "unsafe output zip file name",
-            PlanIssueKind::UnsafeEntryPath => "unsafe zip entry name",
-            PlanIssueKind::DuplicateGroup => "duplicate output zip file name",
+            PlanIssueKind::UnsafeGroupPath => "unsafe logical output group path",
+            PlanIssueKind::UnsafeEntryPath => "unsafe logical entry path",
+            PlanIssueKind::DuplicateGroup => "duplicate logical output group path",
             PlanIssueKind::GroupFileDirectoryConflict => "group file/directory path conflict",
-            PlanIssueKind::DuplicateEntry(_) => "duplicate zip entry name",
+            PlanIssueKind::DuplicateEntry(_) => "duplicate logical entry path",
             PlanIssueKind::EntryFileDirectoryConflict => "entry file/directory path conflict",
         };
         write!(f, "{label}: {}", self.path.as_str())?;

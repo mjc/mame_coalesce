@@ -91,6 +91,12 @@ pub fn build_report(report: &BuildWorkflowReport) {
     for artifact in &report.artifact_results {
         match &artifact.outcome {
             ArtifactOutcome::Completed => info!("completed output artifact: {}", artifact.path),
+            ArtifactOutcome::CompletedWithWarning { warning } => {
+                warn!(
+                    "completed output artifact with warning: {}: {warning}",
+                    artifact.path
+                );
+            }
             ArtifactOutcome::Failed { error } => {
                 warn!("failed output artifact: {}: {error}", artifact.path);
             }

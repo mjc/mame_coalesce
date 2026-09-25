@@ -2,7 +2,7 @@ use assert_cmd::Command;
 use mame_coalesce::{
     app::{self, BuildWorkflowRequest, DatImportRequest, RunWorkflowRequest, SourceScanRequest},
     database::Database,
-    domain::{ArtifactOutcome, BuildMode, ZipCompression},
+    domain::{ArtifactOutcome, BuildMode, OutputContainer, ZipCompression},
     logiqx::DataFile,
 };
 use predicates::str::contains;
@@ -174,6 +174,35 @@ fn zip_entries(
         entries.insert(file.name().to_owned(), contents);
     }
 
+    Ok(entries)
+}
+
+fn directory_entries(
+    root: &std::path::Path,
+) -> Result<BTreeMap<String, Vec<u8>>, Box<dyn std::error::Error>> {
+    fn visit(
+        root: &std::path::Path,
+        current: &std::path::Path,
+        entries: &mut BTreeMap<String, Vec<u8>>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        for entry in fs::read_dir(current)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                visit(root, &path, entries)?;
+            } else {
+                let name = path
+                    .strip_prefix(root)?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                entries.insert(name, fs::read(path)?);
+            }
+        }
+        Ok(())
+    }
+
+    let mut entries = BTreeMap::new();
+    visit(root, root, &mut entries)?;
     Ok(entries)
 }
 
@@ -1552,6 +1581,233 @@ fn cli_per_game_layout_writes_separate_zip_files() -> Result<(), Box<dyn std::er
 
     assert!(output_path.join("parent.zip").exists());
     assert!(output_path.join("clone2.zip").exists());
+    Ok(())
+}
+
+#[test]
+fn cli_directory_output_materializes_bare_roms() -> Result<(), Box<dyn std::error::Error>> {
+    let work_dir = tempfile::tempdir()?;
+    let source_dir = tempfile::tempdir()?;
+    let output_dir = tempfile::tempdir()?;
+    let root = utf8_path(work_dir.path())?;
+    let dat_path = write_shared_dat(
+        work_dir.path(),
+        "directory.dat",
+        "Directory Output",
+        "a9993e364706816aba3e25717850c26c9cd0d89d",
+    )?;
+    fs::write(source_dir.path().join("shared.rom"), b"abc")?;
+    let source_path = utf8_path(source_dir.path())?;
+    let database_path = root.join("directory.db");
+    let output_path = utf8_path(output_dir.path())?.join("out");
+
+    cargo_command()
+        .args(db_arg(&database_path))
+        .args([
+            "build",
+            dat_path.as_str(),
+            source_path.as_str(),
+            output_path.as_str(),
+            "--jobs",
+            "1",
+            "--output-container",
+            "directory",
+        ])
+        .assert()
+        .success();
+
+    assert_eq!(fs::read(output_path.join("shared/shared.rom"))?, b"abc");
+    Ok(())
+}
+
+#[test]
+fn cli_directory_and_zip_outputs_match_for_each_layout() -> Result<(), Box<dyn std::error::Error>> {
+    let work_dir = tempfile::tempdir()?;
+    let source_dir = tempfile::tempdir()?;
+    let zip_dir = tempfile::tempdir()?;
+    let directory_dir = tempfile::tempdir()?;
+    let root = utf8_path(work_dir.path())?;
+    let dat_path = write_clone_dat(work_dir.path())?;
+    let source_path = write_present_clone_roms(source_dir.path())?;
+    let database_path = root.join("layout-parity.db");
+
+    for (layout, layout_arg) in [
+        ("parent-bundles", "parent-bundles"),
+        ("per-game", "per-game"),
+    ] {
+        let zip_output = utf8_path(zip_dir.path())?.join(layout);
+        let directory_output = utf8_path(directory_dir.path())?.join(layout);
+        for (destination, container) in [(&zip_output, "zip"), (&directory_output, "directory")] {
+            cargo_command()
+                .args(db_arg(&database_path))
+                .args([
+                    "build",
+                    dat_path.as_str(),
+                    source_path.as_str(),
+                    destination.as_str(),
+                    "--jobs",
+                    "1",
+                    "--layout",
+                    layout_arg,
+                    "--output-container",
+                    container,
+                ])
+                .assert()
+                .success();
+        }
+
+        for group in ["parent", "clone2"] {
+            if layout == "parent-bundles" && group == "clone2" {
+                continue;
+            }
+            let zip = zip_entries(&zip_output.join(format!("{group}.zip")))?;
+            let directory = directory_entries(directory_output.join(group).as_std_path())?;
+            assert_eq!(zip, directory, "layout {layout}, group {group}");
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn cli_directory_output_reads_zip_7z_and_rar_sources() -> Result<(), Box<dyn std::error::Error>> {
+    let work_dir = tempfile::tempdir()?;
+    let dat_path = write_shared_dat(
+        work_dir.path(),
+        "archive-directory.dat",
+        "Archive Directory Output",
+        "a9993e364706816aba3e25717850c26c9cd0d89d",
+    )?;
+    let database_path = utf8_path(work_dir.path())?.join("archive-directory.db");
+
+    for backend in ["zip", "7z"] {
+        let source_dir = tempfile::tempdir()?;
+        let archive_path = source_dir.path().join(format!("source.{backend}"));
+        if backend == "zip" {
+            let file = fs::File::create(&archive_path)?;
+            let mut zip = zip::ZipWriter::new(file);
+            zip.start_file("shared.rom", zip::write::SimpleFileOptions::default())?;
+            zip.write_all(b"abc")?;
+            zip.finish()?;
+        } else {
+            let archive_data = r7z::ArchiveBuilder::new()
+                .add_file("shared.rom", b"abc")
+                .build()?;
+            fs::write(archive_path, archive_data)?;
+        }
+        let output_dir = tempfile::tempdir()?;
+        assert_directory_backend_build(
+            &database_path,
+            &dat_path,
+            source_dir.path(),
+            output_dir.path(),
+            b"abc",
+        )?;
+    }
+
+    let source_dir = tempfile::tempdir()?;
+    write_version_rar(&source_dir.path().join("source.rar"))?;
+    let dat_path = write_shared_dat(
+        work_dir.path(),
+        "rar-directory.dat",
+        "RAR Directory Output",
+        "baffb26680d43e04ed6fcf558a8a1bb772e6b8f6",
+    )?;
+    let output_dir = tempfile::tempdir()?;
+    assert_directory_backend_build(
+        &database_path,
+        &dat_path,
+        source_dir.path(),
+        output_dir.path(),
+        b"unrar-0.4.0",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn directory_output_preserves_existing_group_when_cached_source_is_stale()
+-> Result<(), Box<dyn std::error::Error>> {
+    let database_dir = tempfile::tempdir()?;
+    let database = test_database(database_dir.path())?;
+    let work_dir = tempfile::tempdir()?;
+    let source_dir = tempfile::tempdir()?;
+    let output_dir = tempfile::tempdir()?;
+    let dat_path = write_shared_dat(
+        work_dir.path(),
+        "stale-directory.dat",
+        "Stale Directory Output",
+        "a9993e364706816aba3e25717850c26c9cd0d89d",
+    )?;
+    let source_path = write_single_rom_source(source_dir.path(), b"abc")?;
+    let output_path = utf8_path(output_dir.path())?.join("out");
+    let selection = app::SourceRootSelection::single(source_path.clone());
+    let request = RunWorkflowRequest {
+        dat_path: dat_path.clone(),
+        source_path: source_path.clone(),
+        destination_path: output_path.clone(),
+        mode: BuildMode::ParentBundles,
+        compression: ZipCompression::Deflate,
+        jobs: 1,
+        dry_run: false,
+        strict: true,
+    };
+
+    let initial = app::run_with_roots_and_container_and_progress(
+        &database,
+        &request,
+        &selection,
+        OutputContainer::Directory,
+        &|_| {},
+    )?;
+    assert_eq!(initial.written_paths, vec![output_path.join("shared")]);
+    fs::write(source_dir.path().join("shared.rom"), b"changed")?;
+
+    let stale = app::build_with_roots_and_container(
+        &database,
+        &BuildWorkflowRequest {
+            dat_path,
+            source_path,
+            destination_path: output_path.clone(),
+            mode: BuildMode::ParentBundles,
+            compression: ZipCompression::Deflate,
+            dry_run: false,
+            strict: true,
+        },
+        &selection,
+        OutputContainer::Directory,
+    )?;
+
+    assert!(matches!(
+        stale.artifact_results[0].outcome,
+        ArtifactOutcome::Failed { .. }
+    ));
+    assert_eq!(fs::read(output_path.join("shared/shared.rom"))?, b"abc");
+    Ok(())
+}
+
+fn assert_directory_backend_build(
+    database_path: &camino::Utf8Path,
+    dat_path: &camino::Utf8Path,
+    source_dir: &std::path::Path,
+    output_dir: &std::path::Path,
+    expected: &[u8],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let source_path = utf8_path(source_dir)?;
+    let output_path = utf8_path(output_dir)?.join("out");
+    cargo_command()
+        .args(db_arg(database_path))
+        .args([
+            "build",
+            dat_path.as_str(),
+            source_path.as_str(),
+            output_path.as_str(),
+            "--jobs",
+            "1",
+            "--output-container",
+            "directory",
+        ])
+        .assert()
+        .success();
+    assert_eq!(fs::read(output_path.join("shared/shared.rom"))?, expected);
     Ok(())
 }
 
