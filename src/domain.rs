@@ -1,4 +1,5 @@
 use crate::hashes::Sha1Digest;
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -350,7 +351,7 @@ impl SourceLocation {
     }
 
     #[must_use]
-    pub const fn priority(&self) -> u8 {
+    pub fn priority(&self) -> u8 {
         match self {
             Self::BareFile { .. } => 0,
             Self::ArchiveMember {
@@ -365,7 +366,15 @@ impl SourceLocation {
                 backend: ArchiveBackend::Rar,
                 ..
             } => 3,
-            Self::LegacyUnknown { .. } => u8::MAX,
+            Self::LegacyUnknown { path, .. } => match Path::new(path)
+                .extension()
+                .and_then(std::ffi::OsStr::to_str)
+                .map(str::to_ascii_lowercase)
+                .as_deref()
+            {
+                Some("zip") => 1,
+                _ => 2,
+            },
         }
     }
 

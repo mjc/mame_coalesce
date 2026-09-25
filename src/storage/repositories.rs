@@ -132,6 +132,7 @@ impl<'pool> BuildRepository<'pool> {
                         rom_of: game.rom_of,
                         sample_of: game.sample_of,
                         board: game.board,
+                        rebuild_to: game.rebuildto,
                         year: game.year,
                         manufacturer: game.manufacturer,
                         ..SetMetadata::default()
@@ -214,7 +215,7 @@ mod tests {
   <header>
     <name>Repository Test</name>
   </header>
-  <game name="repo-game">
+  <game name="repo-game" rebuildto="repo-target">
     <rom name="repo.rom" size="3" sha1="a9993e364706816aba3e25717850c26c9cd0d89d" md5="900150983cd24fb0d6963f7d28e17f72" crc="12345678"/>
   </game>
 </datafile>"#;
@@ -244,12 +245,38 @@ mod tests {
 
         assert_eq!(dat_roms.len(), 1);
         assert_eq!(dat_roms[0].rom_name(), "repo.rom");
+        assert_eq!(
+            dat_roms[0].set_metadata.rebuild_to.as_deref(),
+            Some("repo-target")
+        );
         assert_eq!(source_files.len(), 1);
         assert!(matches!(
             source_files[0].location,
             SourceLocation::BareFile { .. }
         ));
         Ok(())
+    }
+
+    #[test]
+    fn legacy_archive_models_keep_known_backend_priority() {
+        let archived_file = |path: &str| RomFile {
+            id: 1,
+            parent_path: "/source".to_owned(),
+            parent_game_name: None,
+            path: path.to_owned(),
+            name: "game.rom".to_owned(),
+            crc: None,
+            sha1: crate::hashes::sha1_bytes(b"content").to_vec(),
+            md5: None,
+            xxhash3: crate::hashes::xxhash3_bytes(b"content").to_vec(),
+            in_archive: true,
+            rom_id: None,
+        };
+
+        let zip = source_location_from_model(&archived_file("/source/z.zip"));
+        let seven_zip = source_location_from_model(&archived_file("/source/a.7z"));
+
+        assert!(zip.priority() < seven_zip.priority());
     }
 
     #[test]
