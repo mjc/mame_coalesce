@@ -185,6 +185,40 @@ fn db_arg(path: &camino::Utf8Path) -> [&str; 2] {
     ["--cache", path.as_str()]
 }
 
+#[test]
+fn one_shot_rejects_source_destination_overlap_before_catalog_import()
+-> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = tempfile::tempdir()?;
+    let database = test_database(temp_dir.path())?;
+    let source = temp_dir.path().join("source");
+    fs::create_dir_all(&source)?;
+    let source = utf8_path(&source)?.to_path_buf();
+    let missing_dat = utf8_path(&temp_dir.path().join("does-not-exist.dat"))?.to_path_buf();
+
+    let result = app::run(
+        &database,
+        &RunWorkflowRequest {
+            dat_path: missing_dat,
+            source_path: source.clone(),
+            destination_path: source,
+            mode: BuildMode::ParentBundles,
+            compression: ZipCompression::Deflate,
+            jobs: 1,
+            dry_run: false,
+            strict: false,
+        },
+    );
+    let Err(error) = result else {
+        return Err(io::Error::other(
+            "overlapping paths are rejected before attempting the missing DAT",
+        )
+        .into());
+    };
+
+    assert!(error.to_string().contains("source/destination overlap"));
+    Ok(())
+}
+
 // =====================================================================
 // DAT → DB insert
 // =====================================================================

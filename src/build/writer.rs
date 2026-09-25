@@ -17,6 +17,7 @@ type StagedArchiveMembers = BTreeMap<StagedArchiveKey, PathBuf>;
 use camino::{Utf8Path, Utf8PathBuf};
 use zip::{ZipWriter, write::SimpleFileOptions};
 
+use crate::build::validation::{is_safe_relative_path, validate_plan};
 use crate::domain::{
     ArchiveBackend, ArchiveMemberSelector, BuildPlan, LogicalEntry, OutputGroup, PlanOutcome,
     SourceLocation, ZipCompression,
@@ -36,19 +37,60 @@ pub fn write_plan_with_compression(
         return Ok(Vec::new());
     }
 
-    validate_plan_paths(plan)?;
+    let validated = validate_plan(plan)?;
+    let plan = validated.plan();
+    let output_paths = zip_output_paths(plan, destination)?;
     let options = file_options(compression);
     create_dir_all(destination)?;
     let mut written_paths = Vec::with_capacity(plan.groups.len());
-    plan.groups.iter().try_for_each(|group| {
-        let zip_path = destination.join(format!("{}.zip", group.path.as_str()));
-        let mut writer = open_destination_zip(&zip_path)?;
-        write_zip_group(group, &mut writer, options, destination)?;
-        writer.finish()?;
-        written_paths.push(zip_path);
-        Ok::<_, crate::Error>(())
-    })?;
+    plan.groups
+        .iter()
+        .zip(output_paths)
+        .try_for_each(|(group, zip_path)| {
+            if let Some(parent) = zip_path.parent() {
+                create_dir_all(parent)?;
+            }
+            let mut writer = open_destination_zip(&zip_path)?;
+            write_zip_group(group, &mut writer, options, destination)?;
+            writer.finish()?;
+            written_paths.push(zip_path);
+            Ok::<_, crate::Error>(())
+        })?;
     Ok(written_paths)
+}
+
+fn zip_output_paths(plan: &BuildPlan, destination: &Utf8Path) -> crate::Result<Vec<Utf8PathBuf>> {
+    let relative_paths = plan
+        .groups
+        .iter()
+        .map(|group| format!("{}.zip", group.path.as_str()))
+        .collect::<Vec<_>>();
+    let mut folded_paths = BTreeSet::new();
+    for path in &relative_paths {
+        if !is_safe_relative_path(path) {
+            return Err(crate::Error::InvalidPath(format!(
+                "unsafe ZIP artifact path: {path}"
+            )));
+        }
+        if !folded_paths.insert(path.to_ascii_lowercase()) {
+            return Err(crate::Error::InvalidPath(format!(
+                "duplicate ZIP artifact path: {path}"
+            )));
+        }
+    }
+    for path in &relative_paths {
+        for slash in path.match_indices('/').map(|(index, _)| index) {
+            if folded_paths.contains(&path[..slash].to_ascii_lowercase()) {
+                return Err(crate::Error::InvalidPath(format!(
+                    "ZIP artifact file/directory conflict: {path}"
+                )));
+            }
+        }
+    }
+    Ok(relative_paths
+        .into_iter()
+        .map(|path| destination.join(path))
+        .collect())
 }
 
 fn file_options(compression: ZipCompression) -> SimpleFileOptions {
@@ -59,36 +101,9 @@ fn file_options(compression: ZipCompression) -> SimpleFileOptions {
     SimpleFileOptions::default().compression_method(method)
 }
 
-fn validate_plan_paths(plan: &BuildPlan) -> crate::Result<()> {
-    let mut output_file_names = BTreeSet::new();
-    plan.groups.iter().try_for_each(|group| {
-        validate_output_file_name(group.path.as_str())?;
-        let file_name = format!("{}.zip", group.path.as_str());
-        if !output_file_names.insert(output_file_name_key(&file_name)) {
-            return Err(crate::Error::InvalidPath(format!(
-                "duplicate output zip file name: {}",
-                group.path.as_str()
-            )));
-        }
-
-        let mut entry_names = BTreeSet::new();
-        group.entries.iter().try_for_each(|entry| {
-            validate_zip_entry_name(entry.path.as_str())?;
-            if !entry_names.insert(entry.path.as_str()) {
-                return Err(crate::Error::InvalidPath(format!(
-                    "duplicate zip entry name in {}: {}",
-                    group.path.as_str(),
-                    entry.path.as_str()
-                )));
-            }
-            Ok(())
-        })
-    })?;
-    Ok(())
-}
-
+#[cfg(test)]
 fn validate_output_file_name(name: &str) -> crate::Result<()> {
-    if is_normal_relative_component(name) {
+    if is_safe_relative_path(name) {
         Ok(())
     } else {
         Err(crate::Error::InvalidPath(format!(
@@ -97,47 +112,15 @@ fn validate_output_file_name(name: &str) -> crate::Result<()> {
     }
 }
 
-fn output_file_name_key(name: &str) -> String {
-    name.to_ascii_lowercase()
-}
-
+#[cfg(test)]
 fn validate_zip_entry_name(name: &str) -> crate::Result<()> {
-    if name.split('/').all(is_normal_relative_component) {
+    if is_safe_relative_path(name) {
         Ok(())
     } else {
         Err(crate::Error::InvalidPath(format!(
             "unsafe zip entry name: {name}"
         )))
     }
-}
-
-fn is_normal_relative_component(component: &str) -> bool {
-    if component.is_empty()
-        || component == "."
-        || component == ".."
-        || component.contains('/')
-        || !component.is_ascii()
-        || component.ends_with(['.', ' '])
-        || component.chars().any(|ch| {
-            ch.is_control() || matches!(ch, '<' | '>' | ':' | '"' | '|' | '?' | '*' | '\\')
-        })
-    {
-        return false;
-    }
-
-    let stem = component
-        .split('.')
-        .next()
-        .unwrap_or_default()
-        .to_ascii_uppercase();
-    !matches!(
-        stem.as_str(),
-        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
-    ) && !["COM", "LPT"].into_iter().any(|prefix| {
-        stem.strip_prefix(prefix).is_some_and(|suffix| {
-            suffix.len() == 1 && suffix.as_bytes()[0].is_ascii_digit() && suffix != "0"
-        })
-    })
 }
 
 fn open_destination_zip(zip_file_path: &Utf8Path) -> crate::Result<ZipWriter<BufWriter<File>>> {
@@ -652,7 +635,6 @@ mod tests {
             "",
             ".",
             "..",
-            "nested/file.zip",
             "nested\\file.zip",
             "bad\0.zip",
             "C:bad.zip",
@@ -674,6 +656,7 @@ mod tests {
                 "expected {name:?} to be rejected"
             );
         }
+        assert!(validate_output_file_name("nested/file.zip").is_ok());
     }
 
     #[test]
@@ -884,6 +867,54 @@ mod tests {
         entry.read_to_end(&mut contents)?;
 
         assert_eq!(contents, b"rom");
+        Ok(())
+    }
+
+    #[test]
+    fn nested_logical_groups_write_under_nested_destination_directories()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let source_path = utf8_path(temp_dir.path())?.join("source.rom");
+        std::fs::write(&source_path, b"rom")?;
+        let destination = utf8_path(temp_dir.path())?.join("output");
+        let plan = BuildPlan {
+            groups: vec![OutputGroup {
+                path: LogicalPath::new("nested/set"),
+                entries: vec![logical_entry("game.rom", source_file(&source_path))],
+            }],
+            report: BuildReport::default(),
+        };
+
+        let written = write_plan(&plan, &destination)?;
+
+        let expected_path = destination.join("nested/set.zip");
+        assert_eq!(written, vec![expected_path.clone()]);
+        assert!(expected_path.is_file());
+        Ok(())
+    }
+
+    #[test]
+    fn zip_extension_is_included_in_artifact_collision_validation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let destination = utf8_path(temp_dir.path())?.join("output");
+        let plan = BuildPlan {
+            groups: vec![
+                OutputGroup {
+                    path: LogicalPath::new("a"),
+                    entries: Vec::new(),
+                },
+                OutputGroup {
+                    path: LogicalPath::new("a.zip/child"),
+                    entries: Vec::new(),
+                },
+            ],
+            report: BuildReport::default(),
+        };
+
+        let message = error_message(write_plan(&plan, &destination))?;
+        assert!(message.contains("ZIP artifact file/directory conflict"));
+        assert!(!destination.exists());
         Ok(())
     }
 
