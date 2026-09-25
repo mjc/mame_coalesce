@@ -13,7 +13,11 @@ use diesel::{
 use mame_coalesce::{
     app::{self, CatalogDocumentFormat, CatalogImportRequest},
     database::Database,
-    domain::{CatalogKey, CatalogScope, PublishingSourceKey},
+    domain::{
+        CatalogKey, CatalogRecordKind, CatalogRecordRef, CatalogScope, ExternalRecordRef,
+        PublishingSourceKey, RelationshipClaim, RelationshipEndpoint, RelationshipOrigin,
+        RelationshipType, SnapshotRecordStatus,
+    },
 };
 
 #[derive(QueryableByName)]
@@ -1112,6 +1116,405 @@ fn changed_document_publishes_a_new_snapshot_and_preserves_the_previous_one()
     )
     .get_result::<CountRow>(&mut connection)?;
     assert_eq!(expected_values.count, 2);
+    Ok(())
+}
+
+#[test]
+fn snapshot_diff_separates_hash_changes_from_metadata_and_regrouping()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (_directory, database, _connection) = setup()?;
+    let mut first_request = request(
+        fixture("catalog-a-v1.dat"),
+        "publisher-a",
+        "catalog-a",
+        "Catalog A",
+    )?;
+    first_request.scope = CatalogScope::Complete;
+    let first = app::import_catalog(&database, &first_request)?;
+    let mut second_request = request(
+        fixture("catalog-a-v2.dat"),
+        "publisher-a",
+        "catalog-a",
+        "Catalog A",
+    )?;
+    second_request.scope = CatalogScope::Complete;
+    let second = app::import_catalog(&database, &second_request)?;
+    let previous = first.snapshot_key.ok_or("first snapshot missing")?;
+    let current = second.snapshot_key.ok_or("second snapshot missing")?;
+
+    app::record_relationship(
+        &database,
+        &RelationshipClaim {
+            relation_type: RelationshipType::CatalogContinuity,
+            subject: RelationshipEndpoint::ExternalRecord(ExternalRecordRef::new(
+                "publisher-note",
+                "alpha-history",
+            )),
+            target: RelationshipEndpoint::CatalogRecord(CatalogRecordRef::new(
+                current.clone(),
+                CatalogRecordKind::Set,
+                "alpha",
+            )),
+            origin: RelationshipOrigin::UserConclusion,
+            evidence: serde_json::json!({"reason": "explicitly linked"}),
+        },
+    )?;
+
+    let history = app::catalog_snapshot_history(&database, &CatalogKey::new("catalog-a"))?;
+    assert_eq!(history.len(), 2);
+    assert!(history.windows(2).all(|pair| {
+        (pair[0].document_key.as_str(), pair[0].snapshot.as_str())
+            <= (pair[1].document_key.as_str(), pair[1].snapshot.as_str())
+    }));
+    let diff = app::diff_catalog_snapshots(&database, &previous, &current)?;
+    let alpha = diff
+        .records
+        .iter()
+        .find(|record| record.set_name == "alpha")
+        .ok_or("alpha diff missing")?;
+    assert_eq!(alpha.status, SnapshotRecordStatus::Changed);
+    assert!(!alpha.metadata_changed);
+    assert!(!alpha.regrouped);
+    assert!(alpha.relationship_evidence.iter().any(|evidence| matches!(
+        &evidence.claim.origin,
+        mame_coalesce::domain::RelationshipOrigin::SourceAssertion { .. }
+    )));
+    assert!(alpha.relationship_evidence.iter().any(|evidence| matches!(
+        &evidence.claim.subject,
+        mame_coalesce::domain::RelationshipEndpoint::ExternalRecord(_)
+    )));
+    let disputed = alpha
+        .requirement_changes
+        .iter()
+        .find(|change| change.asset_name == "disputed.bin")
+        .ok_or("changed requirement missing")?;
+    assert!(disputed.hash_changed);
+    assert!(!disputed.size_changed);
+    assert!(disputed.other_evidence_changed);
+    assert_eq!(
+        disputed
+            .previous
+            .as_ref()
+            .and_then(|v| v[0]["crc"].as_str()),
+        Some("11111111")
+    );
+    assert_eq!(
+        disputed.current.as_ref().and_then(|v| v[0]["crc"].as_str()),
+        Some("22222222")
+    );
+    Ok(())
+}
+
+#[test]
+fn snapshot_diff_treats_filtered_absence_as_unknown_and_complete_absence_as_removal()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, _connection) = setup()?;
+    let complete_path = directory.path().join("complete.dat");
+    let filtered_path = directory.path().join("filtered.dat");
+    std::fs::write(
+        &complete_path,
+        br#"<datafile><header><name>Scope</name></header><game name="alpha"/><game name="beta"/></datafile>"#,
+    )?;
+    std::fs::write(
+        &filtered_path,
+        br#"<datafile><header><name>Scope</name></header><game name="alpha"/></datafile>"#,
+    )?;
+    let mut complete_request = request(complete_path, "publisher-scope", "scope", "Scope")?;
+    complete_request.scope = CatalogScope::Complete;
+    let complete = app::import_catalog(&database, &complete_request)?;
+    let mut filtered_request = request(filtered_path, "publisher-scope", "scope", "Scope")?;
+    filtered_request.scope = CatalogScope::Filtered(serde_json::json!({"sets": ["alpha"]}));
+    let filtered = app::import_catalog(&database, &filtered_request)?;
+    let complete_key = complete.snapshot_key.ok_or("complete snapshot missing")?;
+    let filtered_key = filtered.snapshot_key.ok_or("filtered snapshot missing")?;
+
+    let diff = app::diff_catalog_snapshots(&database, &complete_key, &filtered_key)?;
+    assert!(!diff.same_scope);
+    let beta = diff
+        .records
+        .iter()
+        .find(|record| record.set_name == "beta")
+        .ok_or("beta diff missing")?;
+    assert_eq!(beta.status, SnapshotRecordStatus::OutOfScope);
+
+    let unknown_request = request(
+        filtered_request.document_path.into_std_path_buf(),
+        "publisher-scope",
+        "scope",
+        "Scope",
+    )?;
+    let unknown = app::import_catalog(&database, &unknown_request)?;
+    let unknown_key = unknown
+        .snapshot_key
+        .ok_or("unknown-scope snapshot missing")?;
+    let unknown_diff = app::diff_catalog_snapshots(&database, &complete_key, &unknown_key)?;
+    assert_eq!(
+        unknown_diff
+            .records
+            .iter()
+            .find(|record| record.set_name == "beta")
+            .map(|record| record.status),
+        Some(SnapshotRecordStatus::Unknown)
+    );
+
+    let mut next_complete_request = request(
+        fixture("catalog-a-filtered.dat"),
+        "publisher-scope",
+        "scope",
+        "Scope",
+    )?;
+    next_complete_request.scope = CatalogScope::Complete;
+    let next_complete = app::import_catalog(&database, &next_complete_request)?;
+    let next_key = next_complete.snapshot_key.ok_or("next snapshot missing")?;
+    let removal = app::diff_catalog_snapshots(&database, &complete_key, &next_key)?;
+    assert!(removal.same_scope);
+    assert_eq!(
+        removal
+            .records
+            .iter()
+            .find(|record| record.set_name == "beta")
+            .map(|record| record.status),
+        Some(SnapshotRecordStatus::RemovedWithinScope)
+    );
+
+    let included_path = directory.path().join("included-filter.dat");
+    std::fs::write(
+        &included_path,
+        br#"<datafile><header><name>Scope</name></header><game name="alpha"/><game name="beta"/><game name="gamma"/></datafile>"#,
+    )?;
+    let mut included_request = request(included_path, "publisher-scope", "scope", "Scope")?;
+    included_request.scope = CatalogScope::Filtered(serde_json::json!({
+        "sets": ["alpha", "beta", "gamma"]
+    }));
+    let included = app::import_catalog(&database, &included_request)?;
+    let included_key = included.snapshot_key.ok_or("included snapshot missing")?;
+    let addition = app::diff_catalog_snapshots(&database, &complete_key, &included_key)?;
+    assert_eq!(
+        addition
+            .records
+            .iter()
+            .find(|record| record.set_name == "gamma")
+            .map(|record| record.status),
+        Some(SnapshotRecordStatus::AddedWithinScope)
+    );
+    Ok(())
+}
+
+#[test]
+fn snapshot_diff_tracks_unknown_extensions_and_does_not_call_missing_hashes_changed()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, _connection) = setup()?;
+    let first_path = directory.path().join("machine-v1.xml");
+    let second_path = directory.path().join("machine-v2.xml");
+    std::fs::write(
+        &first_path,
+        br#"<mame><machine name="thing"><description>Thing</description><future value="one"/></machine></mame>"#,
+    )?;
+    std::fs::write(
+        &second_path,
+        br#"<mame><machine name="thing"><description>Thing</description><future value="two"/><rom name="undumped.bin"/></machine></mame>"#,
+    )?;
+    let mut first_request = request(first_path, "publisher-machines", "machines", "Machines")?;
+    first_request.format = CatalogDocumentFormat::MameListXml;
+    first_request.scope = CatalogScope::Complete;
+    let first = app::import_catalog(&database, &first_request)?;
+    let mut second_request = request(second_path, "publisher-machines", "machines", "Machines")?;
+    second_request.format = CatalogDocumentFormat::MameListXml;
+    second_request.scope = CatalogScope::Complete;
+    let second = app::import_catalog(&database, &second_request)?;
+    let diff = app::diff_catalog_snapshots(
+        &database,
+        &first.snapshot_key.ok_or("first snapshot missing")?,
+        &second.snapshot_key.ok_or("second snapshot missing")?,
+    )?;
+    let thing = diff
+        .records
+        .iter()
+        .find(|record| record.set_name == "thing")
+        .ok_or("machine diff missing")?;
+    assert!(thing.metadata_changed);
+    let undumped = thing
+        .requirement_changes
+        .iter()
+        .find(|change| change.asset_name == "undumped.bin")
+        .ok_or("new undumped requirement missing")?;
+    assert!(!undumped.size_changed);
+    assert!(!undumped.hash_changed);
+    Ok(())
+}
+
+#[test]
+fn snapshot_diff_tracks_logiqx_game_extensions() -> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, _connection) = setup()?;
+    let logiqx_v1 = directory.path().join("logiqx-extension-v1.dat");
+    let logiqx_v2 = directory.path().join("logiqx-extension-v2.dat");
+    std::fs::write(
+        &logiqx_v1,
+        br#"<datafile><header><name>Extension test</name></header><game name="thing" future="one"/></datafile>"#,
+    )?;
+    std::fs::write(
+        &logiqx_v2,
+        br#"<datafile><header><name>Extension test</name></header><game name="thing" future="two"/></datafile>"#,
+    )?;
+    let mut logiqx_first = request(
+        logiqx_v1,
+        "publisher-logiqx-extensions",
+        "logiqx-extensions",
+        "Extension test",
+    )?;
+    logiqx_first.scope = CatalogScope::Complete;
+    let first = app::import_catalog(&database, &logiqx_first)?;
+    let mut logiqx_second = request(
+        logiqx_v2,
+        "publisher-logiqx-extensions",
+        "logiqx-extensions",
+        "Extension test",
+    )?;
+    logiqx_second.scope = CatalogScope::Complete;
+    let second = app::import_catalog(&database, &logiqx_second)?;
+    let logiqx_diff = app::diff_catalog_snapshots(
+        &database,
+        &first.snapshot_key.ok_or("Logiqx first snapshot missing")?,
+        &second
+            .snapshot_key
+            .ok_or("Logiqx second snapshot missing")?,
+    )?;
+    assert!(logiqx_diff.records[0].metadata_changed);
+    Ok(())
+}
+
+#[test]
+fn snapshot_diff_does_not_attribute_device_ref_extensions_to_a_same_named_set()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, _connection) = setup()?;
+    let device_ref_v1 = directory.path().join("device-ref-v1.xml");
+    let device_ref_v2 = directory.path().join("device-ref-v2.xml");
+    for (path, value) in [(&device_ref_v1, "one"), (&device_ref_v2, "two")] {
+        std::fs::write(
+            path,
+            format!(
+                "<mame><machine name=\"owner\"><description>Owner</description><device_ref name=\"target\" future=\"{value}\"/></machine><machine name=\"target\"><description>Target</description></machine></mame>"
+            ),
+        )?;
+    }
+    let mut device_ref_first = request(
+        device_ref_v1,
+        "publisher-device-ref",
+        "device-refs",
+        "Device refs",
+    )?;
+    device_ref_first.format = CatalogDocumentFormat::MameListXml;
+    device_ref_first.scope = CatalogScope::Complete;
+    let first = app::import_catalog(&database, &device_ref_first)?;
+    let mut device_ref_second = request(
+        device_ref_v2,
+        "publisher-device-ref",
+        "device-refs",
+        "Device refs",
+    )?;
+    device_ref_second.format = CatalogDocumentFormat::MameListXml;
+    device_ref_second.scope = CatalogScope::Complete;
+    let second = app::import_catalog(&database, &device_ref_second)?;
+    let device_ref_diff = app::diff_catalog_snapshots(
+        &database,
+        &first
+            .snapshot_key
+            .ok_or("device-ref first snapshot missing")?,
+        &second
+            .snapshot_key
+            .ok_or("device-ref second snapshot missing")?,
+    )?;
+    assert!(device_ref_diff.records.iter().all(|record| {
+        record.status == SnapshotRecordStatus::Unchanged && !record.metadata_changed
+    }));
+    Ok(())
+}
+
+#[test]
+fn snapshot_diff_compares_duplicate_asset_fields_as_unordered_multisets()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, _connection) = setup()?;
+    let first_path = directory.path().join("duplicates-v1.dat");
+    let second_path = directory.path().join("duplicates-v2.dat");
+    std::fs::write(
+        &first_path,
+        br#"<datafile><header><name>Duplicates</name></header><game name="set"><rom name="same.bin" size="1" crc="11111111" status="good"/><rom name="same.bin" size="2" crc="11111111" status="bad"/></game></datafile>"#,
+    )?;
+    std::fs::write(
+        &second_path,
+        br#"<datafile><header><name>Duplicates</name></header><game name="set"><rom name="same.bin" size="2" crc="11111111" status="good"/><rom name="same.bin" size="1" crc="11111111" status="bad"/></game></datafile>"#,
+    )?;
+    let mut first_request = request(
+        first_path,
+        "publisher-duplicates",
+        "duplicates",
+        "Duplicates",
+    )?;
+    first_request.scope = CatalogScope::Complete;
+    let first = app::import_catalog(&database, &first_request)?;
+    let mut second_request = request(
+        second_path,
+        "publisher-duplicates",
+        "duplicates",
+        "Duplicates",
+    )?;
+    second_request.scope = CatalogScope::Complete;
+    let second = app::import_catalog(&database, &second_request)?;
+    let diff = app::diff_catalog_snapshots(
+        &database,
+        &first.snapshot_key.ok_or("first snapshot missing")?,
+        &second.snapshot_key.ok_or("second snapshot missing")?,
+    )?;
+    let duplicate = diff.records[0]
+        .requirement_changes
+        .first()
+        .ok_or("duplicate requirement change missing")?;
+    assert!(!duplicate.size_changed);
+    assert!(!duplicate.hash_changed);
+    assert!(duplicate.other_evidence_changed);
+    Ok(())
+}
+
+#[test]
+fn snapshot_diff_is_order_independent_and_rejects_cross_catalog_name_matching()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, _connection) = setup()?;
+    let first_path = directory.path().join("first-order.dat");
+    let second_path = directory.path().join("second-order.dat");
+    std::fs::write(
+        &first_path,
+        br#"<datafile><header><name>Order</name></header><game name="one"><rom name="one.rom" crc="11111111"/></game><game name="two"><rom name="two.rom" crc="22222222"/></game></datafile>"#,
+    )?;
+    std::fs::write(
+        &second_path,
+        br#"<datafile><header><name>Order</name></header><game name="two"><rom name="two.rom" crc="22222222"/></game><game name="one"><rom name="one.rom" crc="11111111"/></game></datafile>"#,
+    )?;
+    let mut first_request = request(first_path, "publisher-order", "order", "Order")?;
+    first_request.scope = CatalogScope::Complete;
+    let first = app::import_catalog(&database, &first_request)?;
+    let mut second_request = request(second_path, "publisher-order", "order", "Order")?;
+    second_request.scope = CatalogScope::Complete;
+    let second = app::import_catalog(&database, &second_request)?;
+    let first_key = first.snapshot_key.ok_or("first snapshot missing")?;
+    let second_key = second.snapshot_key.ok_or("second snapshot missing")?;
+    let diff = app::diff_catalog_snapshots(&database, &first_key, &second_key)?;
+    assert!(
+        diff.records
+            .iter()
+            .all(|record| record.status == SnapshotRecordStatus::Unchanged)
+    );
+
+    let other_catalog = app::import_catalog(
+        &database,
+        &request(
+            fixture("catalog-b.dat"),
+            "publisher-b",
+            "another-order",
+            "Another catalog",
+        )?,
+    )?;
+    let other_key = other_catalog.snapshot_key.ok_or("other snapshot missing")?;
+    assert!(app::diff_catalog_snapshots(&database, &first_key, &other_key).is_err());
     Ok(())
 }
 

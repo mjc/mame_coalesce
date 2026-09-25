@@ -5,3 +5,4 @@ pub mod models;
 pub mod relationships;
 pub mod repositories;
 pub mod schema;
+pub mod snapshot_history;
