@@ -234,6 +234,52 @@ impl CatalogScope {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SnapshotRecordStatus {
+    AddedWithinScope,
+    RemovedWithinScope,
+    Changed,
+    Unchanged,
+    Unknown,
+    OutOfScope,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SnapshotRequirementChange {
+    pub asset_name: String,
+    pub previous: Option<serde_json::Value>,
+    pub current: Option<serde_json::Value>,
+    pub size_changed: bool,
+    pub hash_changed: bool,
+    pub other_evidence_changed: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SnapshotRecordDiff {
+    pub set_name: String,
+    pub status: SnapshotRecordStatus,
+    pub metadata_changed: bool,
+    pub regrouped: bool,
+    pub requirement_changes: Vec<SnapshotRequirementChange>,
+    pub relationship_evidence: Vec<RelationshipExplanation>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CatalogSnapshotDiff {
+    pub previous: SnapshotKey,
+    pub current: SnapshotKey,
+    pub same_scope: bool,
+    pub records: Vec<SnapshotRecordDiff>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CatalogSnapshotEntry {
+    pub snapshot: SnapshotKey,
+    pub document_key: String,
+    pub declared_version: Option<String>,
+    pub scope: CatalogScope,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct SetKey {
     catalog: CatalogKey,
