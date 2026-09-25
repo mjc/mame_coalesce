@@ -169,6 +169,10 @@ pub fn build(
 ) -> crate::Result<BuildWorkflowReport> {
     let dat_selector = resolve_dat_selector(&request.dat_path);
     let source_root = request.source_path.canonicalize_utf8()?;
+    crate::build::validation::ensure_sources_disjoint_from_destination(
+        &[source_root.as_path()],
+        &request.destination_path,
+    )?;
     let dat_roms =
         BuildRepository::new(database.pool()).load_dat_roms(dat_selector.repository_selector())?;
     let source_files = SourceRepository::new(database.pool())
@@ -197,6 +201,10 @@ pub fn build(
     let written_paths = if request.dry_run || exit_code != 0 {
         Vec::new()
     } else {
+        crate::build::validation::ensure_sources_disjoint_from_destination(
+            &[source_root.as_path()],
+            &request.destination_path,
+        )?;
         write_plan_with_compression(&plan, &request.destination_path, request.compression)?
     };
 
@@ -215,6 +223,10 @@ pub fn run(
     database: &Database,
     request: &RunWorkflowRequest,
 ) -> crate::Result<BuildWorkflowReport> {
+    crate::build::validation::ensure_sources_disjoint_from_destination(
+        &[request.source_path.as_path()],
+        &request.destination_path,
+    )?;
     import_dat(
         database,
         &DatImportRequest {
@@ -302,5 +314,9 @@ fn report_build_outcome(report: &BuildReport) {
                 duplicate.candidates.len()
             );
         }
+    }
+
+    for issue in &report.validation_issues {
+        warn!("build plan validation: {issue}");
     }
 }

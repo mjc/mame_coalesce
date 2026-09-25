@@ -71,6 +71,9 @@ pub enum Error {
     #[error("unsupported serialized plan version: {0}")]
     UnsupportedPlanVersion(u32),
 
+    #[error("{0}")]
+    PlanValidation(#[from] crate::build::validation::PlanValidation),
+
     #[error("ROM size cannot be stored in SQLite: {0}")]
     InvalidRomSize(u64),
 

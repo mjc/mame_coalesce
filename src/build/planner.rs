@@ -33,13 +33,15 @@ pub fn plan_build(
         BTreeMap::new()
     };
 
-    BuildPlan {
+    let mut plan = BuildPlan {
         groups: groups
             .into_iter()
             .map(|(path, entries)| OutputGroup { path, entries })
             .collect(),
         report,
-    }
+    };
+    plan.report.validation_issues = crate::build::validation::inspect_plan(&plan);
+    plan
 }
 
 fn plan_logical_entries(
@@ -283,6 +285,37 @@ mod tests {
         assert_eq!(plan.report.outcome, PlanOutcome::Ready);
         assert_eq!(plan.groups.len(), 1);
         assert!(plan.has_outputs());
+    }
+
+    #[test]
+    fn planner_exposes_casefold_collisions_as_validation_diagnostics() {
+        let dat_roms = [
+            rom("Set", None, "upper.rom", "sha1-upper"),
+            rom("set", None, "lower.rom", "sha1-lower"),
+        ];
+        let source_files = [
+            source(
+                "/src-a",
+                "/src-a/upper.rom",
+                None,
+                "sha1-upper",
+                SourceKind::BareFile,
+            ),
+            source(
+                "/src-a",
+                "/src-a/lower.rom",
+                None,
+                "sha1-lower",
+                SourceKind::BareFile,
+            ),
+        ];
+
+        let plan = plan_build(&dat_roms, &source_files, &request(BuildMode::PerGame));
+
+        assert_eq!(plan.groups.len(), 2);
+        assert!(plan.report.validation_issues.iter().any(|issue| {
+            issue.kind == crate::build::validation::PlanIssueKind::DuplicateGroup
+        }));
     }
 
     #[test]
