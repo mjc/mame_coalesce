@@ -180,7 +180,7 @@ Required local gate: `devenv test`. It also runs the normally ignored p7zip
 interoperability test because devenv supplies `7z`. The component commands are:
 
 ```sh
-devenv shell -- shellcheck scripts/fetch_public_domain_test_data.sh scripts/profile_flamegraph.sh scripts/benchmark_run.sh scripts/parse_flamegraph scripts/parse_perfdata
+devenv shell -- shellcheck scripts/fetch_public_domain_test_data.sh scripts/profile_flamegraph.sh scripts/benchmark_run.sh scripts/generate_synthetic_benchmark_corpus.sh scripts/parse_flamegraph scripts/parse_perfdata
 devenv shell -- cargo fmt --check
 devenv shell -- cargo test --locked
 devenv shell -- cargo test --locked --test integration p7zip_extracts_r7z_builder_archive -- --ignored --exact
