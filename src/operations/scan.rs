@@ -1,10 +1,11 @@
 use std::{
     ffi::OsStr,
-    io::{Read, Write},
-    path::{Component, Path, PathBuf},
+    io::Write,
+    path::{Path, PathBuf},
 };
 
 use camino::{Utf8Path, Utf8PathBuf};
+#[cfg(test)]
 use fmmap::{MmapFile, MmapFileExt};
 
 use indicatif::ParallelProgressIterator;
@@ -67,134 +68,68 @@ fn get_all_rom_files(file_list: &[Utf8PathBuf], jobs: usize) -> crate::Result<Ve
 }
 
 fn scan_path(path: &Utf8Path) -> crate::Result<Vec<NewRomFile>> {
-    let mmap = crate::hashes::mmap_path(path)?;
-    infer::get_from_path(path)?.map_or_else(
-        || scan_bare_file(path),
-        |file_type| match file_type.mime_type() {
-            "application/zip" => scan_zip(&mmap),
-            "application/x-7z-compressed" => scan_7z(path),
-            "application/vnd.rar" => scan_rar(path),
-            _mime_type => scan_bare_file(path),
-        },
-    )
+    match crate::sources::detect(path)? {
+        crate::sources::SourceKind::BareFile => scan_bare_file(path),
+        crate::sources::SourceKind::Archive(backend) => scan_archive(path, backend),
+    }
 }
 
 fn scan_bare_file(path: &Utf8Path) -> crate::Result<Vec<NewRomFile>> {
-    NewRomFile::from_path(path)
-        .map(|nrf| vec![nrf])
-        .ok_or_else(|| Error::InvalidPath(format!("couldn't scan file: {path}")))
+    let mut hash_writer = RomHashWriter::default();
+    crate::sources::stream_file(path, &mut hash_writer)?;
+    let (sha1, xxhash3) = hash_writer.finish();
+    let name = path
+        .file_name()
+        .ok_or_else(|| Error::InvalidPath(format!("source path has no filename: {path}")))?;
+    let parent_path = path
+        .parent()
+        .ok_or_else(|| Error::InvalidPath(format!("source path has no parent: {path}")))?;
+    Ok(vec![NewRomFile {
+        parent_path: parent_path.to_string(),
+        path: path.to_string(),
+        name: name.to_owned(),
+        sha1,
+        xxhash3,
+        in_archive: false,
+        archive_backend: None,
+        archive_member_index: None,
+        rom_id: None,
+    }])
 }
 
+#[cfg(test)]
 fn scan_zip(mmap: &MmapFile) -> crate::Result<Vec<NewRomFile>> {
     let path = Utf8Path::from_path(mmap.path())
         .ok_or_else(|| Error::InvalidPath("invalid path".to_owned()))?;
-    let reader = mmap.reader(0).map_err(|e| Error::Mmap(e.to_string()))?;
-    let mut zip = zip::ZipArchive::new(reader)?;
-    let mut rom_files = Vec::new();
-
-    for i in 0..zip.len() {
-        let mut file = zip.by_index(i)?;
-        if file.is_dir() {
-            continue;
-        }
-        // enclosed_name() returns &Path in zip 2.x
-        let name = file
-            .enclosed_name()
-            .ok_or_else(|| Error::InvalidPath(format!("invalid name inside zip: {path:?}")))?
-            .clone();
-
-        let (sha1, xxh3) = hash_reader_chunks(&mut file)?;
-        let nrf = NewRomFile::from_archive(path, &name, sha1, xxh3).ok_or_else(|| {
-            Error::InvalidPath(format!("couldn't make database entry for file: {path:?}"))
-        })?;
-        rom_files.push(nrf);
-    }
-
-    Ok(rom_files)
+    scan_archive(path, crate::domain::ArchiveBackend::Zip)
 }
 
-fn scan_rar(path: &Utf8Path) -> crate::Result<Vec<NewRomFile>> {
-    let mut archive = unrar::Archive::new(path.as_std_path()).open_for_processing()?;
-    let mut rom_files = Vec::new();
-
-    while let Some(header) = archive.read_header()? {
-        let entry_path = safe_rar_entry_path(header.entry())?;
-        archive = if let Some(filename) = entry_path {
-            let (data, rest) = header.read()?;
-            let sha1 = crate::hashes::sha1_bytes(&data);
-            let xxh3 = crate::hashes::xxhash3_bytes(&data);
-            rom_files.push(archive_rom_file(path, &filename, sha1, xxh3)?);
-            rest
-        } else {
-            header.skip()?
-        };
-    }
-
-    Ok(rom_files)
-}
-
-fn safe_rar_entry_path(header: &unrar::FileHeader) -> crate::Result<Option<PathBuf>> {
-    if !header.is_file() {
-        return Ok(None);
-    }
-
-    let name = header.filename.to_str().ok_or_else(|| {
-        Error::InvalidPath(format!(
-            "RAR entry name is not UTF-8: {}",
-            header.filename.display()
-        ))
-    })?;
-    if name.contains('\\') || name.contains('\0') {
-        return Err(Error::InvalidPath(format!("unsafe RAR entry name: {name}")));
-    }
-
-    let path = Path::new(name);
-    let components = path.components().collect::<Vec<_>>();
-    if components.is_empty()
-        || !components
-            .iter()
-            .all(|component| matches!(component, Component::Normal(_)))
-    {
-        return Err(Error::InvalidPath(format!("unsafe RAR entry name: {name}")));
-    }
-
-    Ok(Some(path.to_owned()))
-}
-
+#[cfg(test)]
 fn scan_7z(path: &Utf8Path) -> crate::Result<Vec<NewRomFile>> {
-    let archive = r7z::Archive::open(path.as_std_path())?;
-    let mut rom_files = Vec::new();
+    scan_archive(path, crate::domain::ArchiveBackend::SevenZip)
+}
 
-    archive.stream_files(|entry, reader| {
-        let filename = entry
-            .safe_path()
-            .ok_or_else(|| r7z::R7zError::UnsafePath(entry.name.clone()))?;
+fn scan_archive(
+    path: &Utf8Path,
+    backend: crate::domain::ArchiveBackend,
+) -> crate::Result<Vec<NewRomFile>> {
+    let mut rom_files = Vec::new();
+    crate::sources::stream_archive(path, backend, None, |member, reader| {
         let mut hash_writer = RomHashWriter::default();
         std::io::copy(reader, &mut hash_writer)?;
-        let (sha1, xxh3) = hash_writer.finish();
-        rom_files.push(archive_rom_file(path, filename, sha1, xxh3)?);
+        let (sha1, xxhash3) = hash_writer.finish();
+        let name = Path::new(&member.selector.name);
+        rom_files.push(archive_rom_file(
+            path,
+            name,
+            sha1,
+            xxhash3,
+            backend,
+            member.selector.index as u64,
+        )?);
         Ok(())
     })?;
-
     Ok(rom_files)
-}
-
-fn hash_reader_chunks<R: Read>(mut reader: R) -> crate::Result<(Sha1Digest, Xxh3Digest)> {
-    let mut sha1hasher = Sha1::new();
-    let mut xxhash3 = Xxh3::new();
-    let mut scratch = vec![0_u8; 64 * 1024];
-
-    loop {
-        let read = reader.read(&mut scratch)?;
-        if read == 0 {
-            break;
-        }
-        let chunk = &scratch[..read];
-        sha1hasher.update(chunk);
-        xxhash3.update(chunk);
-    }
-
-    Ok((sha1hasher.finalize().into(), xxhash3.digest().to_be_bytes()))
 }
 
 #[derive(Default)]
@@ -229,16 +164,20 @@ fn archive_rom_file(
     member_path: &Path,
     sha1: Sha1Digest,
     xxhash3: Xxh3Digest,
+    backend: crate::domain::ArchiveBackend,
+    index: u64,
 ) -> std::io::Result<NewRomFile> {
-    NewRomFile::from_archive(archive_path, member_path, sha1, xxhash3).ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!(
-                "couldn't represent archive member {} in {archive_path}",
-                member_path.display()
-            ),
-        )
-    })
+    NewRomFile::from_archive(archive_path, member_path, sha1, xxhash3, backend, index).ok_or_else(
+        || {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "couldn't represent archive member {} in {archive_path}",
+                    member_path.display()
+                ),
+            )
+        },
+    )
 }
 
 fn walk_for_files(
@@ -405,6 +344,8 @@ mod tests {
             member,
             Sha1Digest::default(),
             Xxh3Digest::default(),
+            crate::domain::ArchiveBackend::Rar,
+            0,
         ) else {
             return Err("expected non-UTF-8 archive member to fail conversion".into());
         };
@@ -456,6 +397,23 @@ mod tests {
     }
 
     #[test]
+    fn scan_path_detects_and_persists_renamed_zip_identity()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let root = Utf8Path::from_path(temp_dir.path())
+            .ok_or_else(|| io::Error::other("temp path is not UTF-8"))?;
+        let path = root.join("archive.data");
+        std::fs::write(&path, make_test_zip(&[("game.rom", b"rom")])?)?;
+
+        let scanned = scan_path(&path)?;
+        assert_eq!(scanned.len(), 1);
+        assert_eq!(scanned[0].archive_backend.as_deref(), Some("zip"));
+        assert_eq!(scanned[0].archive_member_index, Some(0));
+        assert_eq!(scanned[0].name, "game.rom");
+        Ok(())
+    }
+
+    #[test]
     fn scan_zip_computes_correct_hashes() -> Result<(), Box<dyn std::error::Error>> {
         let content = b"hello rom";
         let zip_data = make_test_zip(&[("test.rom", content)])?;
@@ -491,6 +449,9 @@ mod tests {
         let rom_files = scan_zip(&mmap)?;
 
         assert_eq!(rom_files.len(), 2);
+        assert_eq!(rom_files[0].archive_backend.as_deref(), Some("zip"));
+        assert_eq!(rom_files[0].archive_member_index, Some(0));
+        assert_eq!(rom_files[1].archive_member_index, Some(1));
         // Verify hashes differ between entries
         assert_ne!(rom_files[0].sha1, rom_files[1].sha1);
         Ok(())
@@ -532,7 +493,7 @@ mod tests {
             return Err("expected unsafe zip entry to fail".into());
         };
 
-        assert!(error.to_string().contains("invalid name inside zip"));
+        assert!(error.to_string().contains("unsafe archive member name"));
         Ok(())
     }
 
@@ -575,7 +536,7 @@ mod tests {
             return Err("expected corrupt zip scan to fail".into());
         };
 
-        assert!(error.to_string().contains("Zip error"));
+        assert!(error.to_string().contains("ZIP"), "{error}");
         Ok(())
     }
 

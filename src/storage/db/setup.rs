@@ -59,6 +59,14 @@ mod tests {
         value: String,
     }
 
+    #[derive(QueryableByName)]
+    struct LegacyArchiveIdentityRow {
+        #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Text>)]
+        archive_backend: Option<String>,
+        #[diesel(sql_type = diesel::sql_types::Nullable<BigInt>)]
+        archive_member_index: Option<i64>,
+    }
+
     fn count(conn: &mut SqliteConnection, table: &str) -> QueryResult<i64> {
         sql_query(format!("SELECT COUNT(*) AS count FROM {table}"))
             .get_result::<CountRow>(conn)
@@ -87,7 +95,7 @@ mod tests {
                  VALUES (31, 'legacy.rom', 3, X'01', X'02', X'03', 23);
              INSERT INTO rom_files
                  (id, parent_path, path, name, sha1, xxhash3, in_archive, rom_id)
-                 VALUES (41, '/roms', '/roms/legacy.rom', 'legacy.rom', X'02', X'04', 0, 31);",
+                 VALUES (41, '/roms', '/roms/legacy.zip', 'legacy.rom', X'02', X'04', 1, 31);",
         )?;
         conn.run_pending_migrations(MIGRATIONS)?;
         assert_eq!(count(&mut conn, "data_files")?, 1);
@@ -118,6 +126,11 @@ mod tests {
                 .id,
             41
         );
+        let identity =
+            sql_query("SELECT archive_backend, archive_member_index FROM rom_files WHERE id = 41")
+                .get_result::<LegacyArchiveIdentityRow>(&mut conn)?;
+        assert_eq!(identity.archive_backend, None);
+        assert_eq!(identity.archive_member_index, None);
         assert_eq!(count(&mut conn, "publishing_sources")?, 0);
         assert!(conn.run_pending_migrations(MIGRATIONS)?.is_empty());
         Ok(())
@@ -129,6 +142,7 @@ mod tests {
         let mut conn = SqliteConnection::establish(":memory:")?;
         conn.batch_execute("PRAGMA foreign_keys = ON")?;
         conn.run_pending_migrations(MIGRATIONS)?;
+        conn.revert_last_migration(MIGRATIONS)?;
         conn.revert_last_migration(MIGRATIONS)?;
         conn.batch_execute(
             "INSERT INTO publishing_sources (source_key, display_name)

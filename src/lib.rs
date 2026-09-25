@@ -12,7 +12,9 @@ pub(crate) mod mame;
 pub(crate) mod mame_softwarelist;
 mod no_intro_pc_xml;
 mod operations;
+mod private_temp;
 mod progress;
+pub(crate) mod sources;
 mod storage;
 
 pub use error::Error;

@@ -311,6 +311,8 @@ diesel::table! {
         md5 -> Nullable<Binary>,
         xxhash3 -> Binary,
         in_archive -> Bool,
+        archive_backend -> Nullable<Text>,
+        archive_member_index -> Nullable<BigInt>,
         rom_id -> Nullable<Integer>,
     }
 }

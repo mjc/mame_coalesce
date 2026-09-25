@@ -1,15 +1,18 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs::{File, OpenOptions, create_dir_all},
-    io::{BufReader, BufWriter, Read, Seek, Write},
-    path::{Component, Path, PathBuf},
+    io::{self, BufWriter, Write},
+    path::PathBuf,
 };
 
+const MAX_ARCHIVE_STAGING_BYTES: u64 = 16 * 1024 * 1024 * 1024;
+
 use camino::{Utf8Path, Utf8PathBuf};
-use zip::{ZipWriter, result::ZipError, write::SimpleFileOptions};
+use zip::{ZipWriter, write::SimpleFileOptions};
 
 use crate::domain::{
     ArchiveBackend, ArchiveMemberSelector, BuildPlan, SourceLocation, ZipCompression, ZipEntrySpec,
+    ZipSpec,
 };
 
 #[cfg(test)]
@@ -33,10 +36,7 @@ pub fn write_plan_with_compression(
     plan.zips.iter().try_for_each(|zip_spec| {
         let zip_path = destination.join(&zip_spec.file_name);
         let mut writer = open_destination_zip(&zip_path)?;
-        zip_spec.entries.iter().try_for_each(|entry| {
-            write_entry(entry, &mut writer, options)?;
-            Ok::<_, crate::Error>(())
-        })?;
+        write_zip_spec(zip_spec, &mut writer, options)?;
         writer.finish()?;
         written_paths.push(zip_path);
         Ok::<_, crate::Error>(())
@@ -125,30 +125,131 @@ fn open_destination_zip(zip_file_path: &Utf8Path) -> crate::Result<ZipWriter<Buf
     Ok(zip_writer)
 }
 
-fn write_entry(
-    entry: &ZipEntrySpec,
+fn write_zip_spec(
+    zip_spec: &ZipSpec,
     zip_writer: &mut ZipWriter<BufWriter<File>>,
     options: SimpleFileOptions,
 ) -> crate::Result<()> {
-    match &entry.source.location {
-        SourceLocation::BareFile { path } => {
-            copy_bare_file(path, &entry.output_name, zip_writer, options)
+    let resolved = zip_spec
+        .entries
+        .iter()
+        .map(resolve_source)
+        .collect::<crate::Result<Vec<_>>>()?;
+    let mut groups: BTreeMap<
+        (String, ArchiveBackend),
+        BTreeSet<crate::sources::ArchiveMemberSelector>,
+    > = BTreeMap::new();
+    for source in &resolved {
+        if let ResolvedSource::Archive {
+            path,
+            backend,
+            selector,
+        } = source
+        {
+            groups
+                .entry((path.clone(), *backend))
+                .or_default()
+                .insert(selector.clone());
         }
+    }
+
+    let spool = if groups.is_empty() {
+        None
+    } else {
+        Some(ArchiveSpool::create()?)
+    };
+    let mut staged = BTreeMap::new();
+    for ((path, backend), selectors) in groups {
+        let source_path = Utf8Path::new(&path);
+        let selectors = selectors.into_iter().collect::<Vec<_>>();
+        crate::sources::stream_archive(
+            source_path,
+            backend,
+            Some(&selectors),
+            |member, reader| {
+                let spool = spool.as_ref().ok_or_else(|| {
+                    crate::Error::InvalidPath("archive staging was not initialized".to_owned())
+                })?;
+                let staged_path = spool.next_path()?;
+                let remaining = spool.remaining_bytes();
+                if member.size > remaining {
+                    return Err(crate::Error::InvalidPath(format!(
+                        "selected archive members exceed the {} GiB staging limit",
+                        MAX_ARCHIVE_STAGING_BYTES / (1024 * 1024 * 1024)
+                    )));
+                }
+                let file = OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&staged_path)?;
+                let mut file = ArchiveSpoolWriter::new(file, remaining);
+                std::io::copy(reader, &mut file)?;
+                spool.record_bytes(file.written_bytes())?;
+                staged.insert(
+                    (path.clone(), backend, member.selector.clone()),
+                    staged_path,
+                );
+                Ok(())
+            },
+        )?;
+    }
+
+    for (entry, source) in zip_spec.entries.iter().zip(resolved) {
+        zip_writer.start_file(&entry.output_name, options)?;
+        match source {
+            ResolvedSource::Bare { path } => {
+                crate::sources::stream_file(Utf8Path::new(&path), zip_writer)?;
+            }
+            ResolvedSource::Archive {
+                path,
+                backend,
+                selector,
+            } => {
+                let staged_path =
+                    staged
+                        .get(&(path.clone(), backend, selector))
+                        .ok_or_else(|| {
+                            crate::Error::InvalidPath(format!(
+                                "selected archive member was not staged: {path}"
+                            ))
+                        })?;
+                std::io::copy(&mut File::open(staged_path)?, zip_writer)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug)]
+enum ResolvedSource {
+    Bare {
+        path: String,
+    },
+    Archive {
+        path: String,
+        backend: ArchiveBackend,
+        selector: crate::sources::ArchiveMemberSelector,
+    },
+}
+
+fn resolve_source(entry: &ZipEntrySpec) -> crate::Result<ResolvedSource> {
+    match &entry.source.location {
+        SourceLocation::BareFile { path } => Ok(ResolvedSource::Bare { path: path.clone() }),
         SourceLocation::ArchiveMember {
             path,
             backend,
-            selector: ArchiveMemberSelector::IndexAndName { name, .. },
-        } => match backend {
-            ArchiveBackend::Zip => {
-                copy_from_zip_entry(path, name, &entry.output_name, zip_writer, options)
-            }
-            ArchiveBackend::SevenZip => {
-                copy_from_7z_entry(path, name, &entry.output_name, zip_writer, options)
-            }
-            ArchiveBackend::Rar => {
-                copy_from_rar_entry(path, name, &entry.output_name, zip_writer, options)
-            }
-        },
+            selector: ArchiveMemberSelector::IndexAndName { index, name },
+        } => {
+            let index = usize::try_from(*index).map_err(|_| {
+                crate::Error::InvalidPath(format!("archive member index is too large: {index}"))
+            })?;
+            let name = crate::sources::normalize_member_name(name)?;
+            Ok(ResolvedSource::Archive {
+                path: path.clone(),
+                backend: *backend,
+                selector: crate::sources::ArchiveMemberSelector { index, name },
+            })
+        }
         SourceLocation::LegacyUnknown { path, member_name } => {
             let name = member_name.as_deref().ok_or_else(|| {
                 crate::Error::InvalidPath(format!(
@@ -156,203 +257,127 @@ fn write_entry(
                     entry.source.display_name()
                 ))
             })?;
-            match Path::new(path)
-                .extension()
-                .and_then(std::ffi::OsStr::to_str)
-                .map(str::to_ascii_lowercase)
-                .as_deref()
-            {
-                Some("zip") => {
-                    copy_from_zip_entry(path, name, &entry.output_name, zip_writer, options)
+            let backend = match crate::sources::detect(Utf8Path::new(path))? {
+                crate::sources::SourceKind::Archive(backend) => backend,
+                crate::sources::SourceKind::BareFile => {
+                    return Err(crate::Error::InvalidPath(format!(
+                        "legacy archive source is not an archive: {path}"
+                    )));
                 }
-                Some("rar") => {
-                    copy_from_rar_entry(path, name, &entry.output_name, zip_writer, options)
-                }
-                _ => copy_from_7z_entry(path, name, &entry.output_name, zip_writer, options),
-            }
+            };
+            let name = crate::sources::normalize_member_name(name)?;
+            let matches = crate::sources::enumerate(Utf8Path::new(path), backend)?
+                .into_iter()
+                .filter(|member| member.selector.name == name)
+                .collect::<Vec<_>>();
+            let [member] = matches.as_slice() else {
+                return Err(crate::Error::InvalidPath(format!(
+                    "legacy archive member name is {} in {path}: {name}",
+                    if matches.is_empty() {
+                        "missing"
+                    } else {
+                        "ambiguous"
+                    }
+                )));
+            };
+            Ok(ResolvedSource::Archive {
+                path: path.clone(),
+                backend,
+                selector: member.selector.clone(),
+            })
         }
     }
 }
 
-fn copy_bare_file(
-    path: &str,
-    destination_name: &str,
-    zip_writer: &mut ZipWriter<BufWriter<File>>,
-    options: SimpleFileOptions,
-) -> crate::Result<()> {
-    let input_file = File::open(path)?;
-    let mut input_reader = BufReader::new(input_file);
-    zip_writer.start_file(destination_name, options)?;
-    std::io::copy(&mut input_reader, zip_writer)?;
-    Ok(())
+struct ArchiveSpool {
+    _directory: crate::private_temp::PrivateTempDir,
+    root: PathBuf,
+    next: std::cell::Cell<u64>,
+    staged_bytes: std::cell::Cell<u64>,
 }
 
-fn copy_from_zip_entry(
-    path: &str,
-    entry_name: &str,
-    destination_name: &str,
-    zip_writer: &mut ZipWriter<BufWriter<File>>,
-    options: SimpleFileOptions,
-) -> crate::Result<()> {
-    let input_file = File::open(path)?;
-    let input_reader = BufReader::new(input_file);
-    let mut archive = zip::ZipArchive::new(input_reader)?;
+impl ArchiveSpool {
+    fn create() -> crate::Result<Self> {
+        let directory = crate::private_temp::PrivateTempDir::create("mame-coalesce-build-")?;
+        let root = directory.path().to_path_buf();
+        Ok(Self {
+            _directory: directory,
+            root,
+            next: std::cell::Cell::new(0),
+            staged_bytes: std::cell::Cell::new(0),
+        })
+    }
 
-    if copy_zip_entry_by_enclosed_name(
-        &mut archive,
-        entry_name,
-        destination_name,
-        zip_writer,
-        options,
-    )? {
+    fn next_path(&self) -> crate::Result<PathBuf> {
+        let index = self.next.get();
+        self.next.set(index.checked_add(1).ok_or_else(|| {
+            crate::Error::InvalidPath("archive staging file count overflowed".to_owned())
+        })?);
+        Ok(self.root.join(format!("{index}.member")))
+    }
+
+    const fn remaining_bytes(&self) -> u64 {
+        MAX_ARCHIVE_STAGING_BYTES - self.staged_bytes.get()
+    }
+
+    fn record_bytes(&self, count: u64) -> crate::Result<()> {
+        let total = self.staged_bytes.get().checked_add(count).ok_or_else(|| {
+            crate::Error::InvalidPath("archive staging byte count overflowed".to_owned())
+        })?;
+        if total > MAX_ARCHIVE_STAGING_BYTES {
+            return Err(crate::Error::InvalidPath(format!(
+                "selected archive members exceed the {} GiB staging limit",
+                MAX_ARCHIVE_STAGING_BYTES / (1024 * 1024 * 1024)
+            )));
+        }
+        self.staged_bytes.set(total);
         Ok(())
-    } else {
-        Err(crate::Error::InvalidPath(format!(
-            "archive entry not found: {path}:{entry_name}"
-        )))
     }
 }
 
-fn copy_zip_entry_by_enclosed_name<R: Read + Seek>(
-    archive: &mut zip::ZipArchive<R>,
-    entry_name: &str,
-    destination_name: &str,
-    zip_writer: &mut ZipWriter<BufWriter<File>>,
-    options: SimpleFileOptions,
-) -> crate::Result<bool> {
-    let requested_path = Path::new(entry_name);
-    match archive.by_name(entry_name) {
-        Ok(mut file) => {
-            if zip_entry_enclosed_name_matches(&file, requested_path)? {
-                zip_writer.start_file(destination_name, options)?;
-                std::io::copy(&mut file, zip_writer)?;
-                return Ok(true);
-            }
-        }
-        Err(ZipError::FileNotFound) => {}
-        Err(error) => return Err(error.into()),
-    }
-    for index in 0..archive.len() {
-        let mut file = archive.by_index(index)?;
-        if !file.is_dir() && zip_entry_enclosed_name_matches(&file, requested_path)? {
-            zip_writer.start_file(destination_name, options)?;
-            std::io::copy(&mut file, zip_writer)?;
-            return Ok(true);
+struct ArchiveSpoolWriter {
+    file: File,
+    remaining: u64,
+    written: u64,
+}
+
+impl ArchiveSpoolWriter {
+    const fn new(file: File, remaining: u64) -> Self {
+        Self {
+            file,
+            remaining,
+            written: 0,
         }
     }
-    Ok(false)
+
+    const fn written_bytes(&self) -> u64 {
+        self.written
+    }
 }
 
-fn zip_entry_enclosed_name_matches<R: Read>(
-    file: &zip::read::ZipFile<'_, R>,
-    requested_path: &Path,
-) -> crate::Result<bool> {
-    file.enclosed_name().map_or_else(
-        || {
-            Err(crate::Error::InvalidPath(format!(
-                "unsafe name inside zip: {}",
-                file.name()
-            )))
-        },
-        |enclosed_name| Ok(enclosed_name == requested_path),
-    )
-}
-
-fn copy_from_rar_entry(
-    path: &str,
-    entry_name: &str,
-    destination_name: &str,
-    zip_writer: &mut ZipWriter<BufWriter<File>>,
-    options: SimpleFileOptions,
-) -> crate::Result<()> {
-    let requested_path = safe_rar_entry_path(entry_name)?;
-    let mut archive = unrar::Archive::new(Path::new(path)).open_for_processing()?;
-    while let Some(header) = archive.read_header()? {
-        archive = if rar_header_matches_entry(header.entry(), &requested_path)? {
-            let (data, _rest) = header.read()?;
-            zip_writer.start_file(destination_name, options)?;
-            zip_writer.write_all(&data)?;
-            return Ok(());
-        } else {
-            header.skip()?
-        };
+impl Write for ArchiveSpoolWriter {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        if buffer.is_empty() {
+            return Ok(0);
+        }
+        if self.remaining == 0 {
+            return Err(io::Error::other("archive staging limit exceeded"));
+        }
+        let allowed = usize::try_from(self.remaining).unwrap_or(usize::MAX);
+        let written = self.file.write(&buffer[..buffer.len().min(allowed)])?;
+        let written_u64 = u64::try_from(written)
+            .map_err(|_| io::Error::other("archive staging byte count overflowed"))?;
+        self.remaining -= written_u64;
+        self.written = self
+            .written
+            .checked_add(written_u64)
+            .ok_or_else(|| io::Error::other("archive staging byte count overflowed"))?;
+        Ok(written)
     }
 
-    Err(crate::Error::InvalidPath(format!(
-        "archive entry not found: {path}:{entry_name}"
-    )))
-}
-
-fn rar_header_matches_entry(
-    header: &unrar::FileHeader,
-    requested_path: &Path,
-) -> crate::Result<bool> {
-    if !header.is_file() {
-        return Ok(false);
+    fn flush(&mut self) -> io::Result<()> {
+        self.file.flush()
     }
-
-    Ok(safe_rar_entry_path_from_path(&header.filename)? == requested_path)
-}
-
-fn safe_rar_entry_path(entry_name: &str) -> crate::Result<PathBuf> {
-    safe_rar_entry_path_from_path(Path::new(entry_name))
-}
-
-fn safe_rar_entry_path_from_path(path: &Path) -> crate::Result<PathBuf> {
-    let name = path.to_str().ok_or_else(|| {
-        crate::Error::InvalidPath(format!("RAR entry name is not UTF-8: {}", path.display()))
-    })?;
-    if name.contains('\\') || name.contains('\0') {
-        return Err(crate::Error::InvalidPath(format!(
-            "unsafe RAR entry name: {name}"
-        )));
-    }
-
-    let components = path.components().collect::<Vec<_>>();
-    if components.is_empty()
-        || !components
-            .iter()
-            .all(|component| matches!(component, Component::Normal(_)))
-    {
-        return Err(crate::Error::InvalidPath(format!(
-            "unsafe RAR entry name: {name}"
-        )));
-    }
-
-    Ok(path.to_owned())
-}
-
-fn copy_from_7z_entry(
-    path: &str,
-    entry_name: &str,
-    destination_name: &str,
-    zip_writer: &mut ZipWriter<BufWriter<File>>,
-    options: SimpleFileOptions,
-) -> crate::Result<()> {
-    let archive = r7z::Archive::open(Path::new(path))?;
-    if !has_extractable_7z_entry(&archive, entry_name) {
-        return Err(crate::Error::InvalidPath(format!(
-            "archive entry not found: {path}:{entry_name}"
-        )));
-    }
-    zip_writer.start_file(destination_name, options)?;
-    archive.extract_by_name(entry_name, zip_writer)?;
-    Ok(())
-}
-
-fn has_extractable_7z_entry(archive: &r7z::Archive, entry_name: &str) -> bool {
-    if archive
-        .entries()
-        .any(|entry| entry.is_file() && entry.name == entry_name)
-    {
-        return true;
-    }
-    let Ok(requested_path) = r7z::safe_archive_name(entry_name) else {
-        return false;
-    };
-    archive
-        .entries()
-        .any(|entry| entry.is_file() && entry.safe_path() == Some(requested_path.as_path()))
 }
 
 #[cfg(test)]
@@ -374,6 +399,17 @@ mod tests {
 
     fn utf8_path(path: &std::path::Path) -> Result<&Utf8Path, io::Error> {
         Utf8Path::from_path(path).ok_or_else(|| io::Error::other("path is not UTF-8"))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn archive_spool_directory_is_private() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let spool = ArchiveSpool::create()?;
+        let mode = std::fs::metadata(&spool.root)?.permissions().mode();
+        assert_eq!(mode & 0o077, 0);
+        Ok(())
     }
 
     fn source_file(path: &Utf8Path) -> SourceFile {
@@ -406,17 +442,29 @@ mod tests {
                 path: path.as_str().to_owned(),
                 member_name: None,
             },
-            |name| SourceLocation::ArchiveMember {
-                path: path.as_str().to_owned(),
-                backend: match kind {
+            |name| {
+                let backend = match kind {
                     SourceKind::Zip => ArchiveBackend::Zip,
                     SourceKind::Archive => ArchiveBackend::SevenZip,
                     SourceKind::Rar => ArchiveBackend::Rar,
-                },
-                selector: ArchiveMemberSelector::IndexAndName {
-                    index: 0,
-                    name: name.to_owned(),
-                },
+                };
+                let normalized = crate::sources::normalize_member_name(name).ok();
+                let index = crate::sources::enumerate(path, backend)
+                    .ok()
+                    .and_then(|members| {
+                        members.into_iter().find(|member| {
+                            normalized.as_deref() == Some(member.selector.name.as_str())
+                        })
+                    })
+                    .map_or(0, |member| member.selector.index as u64);
+                SourceLocation::ArchiveMember {
+                    path: path.as_str().to_owned(),
+                    backend,
+                    selector: ArchiveMemberSelector::IndexAndName {
+                        index,
+                        name: name.to_owned(),
+                    },
+                }
             },
         );
         SourceFile {
@@ -737,7 +785,7 @@ mod tests {
     #[test]
     fn zip_source_entry_writes_expected_content() -> Result<(), Box<dyn std::error::Error>> {
         let temp_dir = tempfile::tempdir()?;
-        let archive_path = utf8_path(temp_dir.path())?.join("source.zip");
+        let archive_path = utf8_path(temp_dir.path())?.join("source.archive-data");
         write_source_zip(
             &archive_path,
             &[
@@ -765,6 +813,54 @@ mod tests {
         entry.read_to_end(&mut contents)?;
 
         assert_eq!(contents, b"target");
+        Ok(())
+    }
+
+    #[test]
+    fn archive_batch_preserves_logical_output_order_and_magic_detects_renamed_zip()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let archive_path = utf8_path(temp_dir.path())?.join("source.payload");
+        write_source_zip(
+            &archive_path,
+            &[("first.rom", b"first"), ("second.rom", b"second")],
+        )?;
+        let destination = utf8_path(temp_dir.path())?.join("output");
+        let plan = BuildPlan {
+            zips: vec![ZipSpec {
+                file_name: "ordered.zip".to_owned(),
+                entries: vec![
+                    ZipEntrySpec {
+                        output_name: "logical-first.rom".to_owned(),
+                        source: archive_source_file(
+                            &archive_path,
+                            Some("second.rom"),
+                            SourceKind::Zip,
+                        ),
+                    },
+                    ZipEntrySpec {
+                        output_name: "logical-second.rom".to_owned(),
+                        source: archive_source_file(
+                            &archive_path,
+                            Some("first.rom"),
+                            SourceKind::Zip,
+                        ),
+                    },
+                ],
+            }],
+            report: BuildReport::default(),
+            dry_run: false,
+        };
+
+        let written = write_plan(&plan, &destination)?;
+        let output_path = written.first().ok_or("expected output ZIP")?;
+        let mut output = zip::ZipArchive::new(File::open(output_path)?)?;
+        let mut first = Vec::new();
+        output.by_index(0)?.read_to_end(&mut first)?;
+        let mut second = Vec::new();
+        output.by_index(1)?.read_to_end(&mut second)?;
+        assert_eq!(first, b"second");
+        assert_eq!(second, b"first");
         Ok(())
     }
 
@@ -959,7 +1055,7 @@ mod tests {
     }
 
     #[test]
-    fn rar_entry_name_validation_rejects_unsafe_components()
+    fn shared_member_name_validation_rejects_unsafe_components()
     -> Result<(), Box<dyn std::error::Error>> {
         for entry_name in [
             "",
@@ -969,11 +1065,30 @@ mod tests {
             "nested\\game.rom",
             "nul\0.rom",
         ] {
-            let Err(error) = safe_rar_entry_path(entry_name) else {
-                return Err(format!("expected unsafe RAR entry to fail: {entry_name:?}").into());
+            let Err(error) = crate::sources::normalize_member_name(entry_name) else {
+                return Err(
+                    format!("expected unsafe archive entry to fail: {entry_name:?}").into(),
+                );
             };
-            assert!(error.to_string().contains("unsafe RAR entry name"));
+            assert!(error.to_string().contains("unsafe archive member name"));
         }
+        Ok(())
+    }
+
+    #[test]
+    fn archive_spool_writer_enforces_actual_bytes_not_declared_size()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let spool_path = directory.path().join("bounded.member");
+        let file = File::create(&spool_path)?;
+        let mut writer = ArchiveSpoolWriter::new(file, 3);
+        let mut input = std::io::Cursor::new(b"four bytes".as_slice());
+        let Err(error) = std::io::copy(&mut input, &mut writer) else {
+            return Err("staging byte limit was not enforced".into());
+        };
+        assert!(error.to_string().contains("staging limit exceeded"));
+        drop(writer);
+        assert_eq!(std::fs::read(spool_path)?, b"fou");
         Ok(())
     }
 
