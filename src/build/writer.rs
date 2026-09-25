@@ -414,9 +414,10 @@ mod tests {
 
     fn source_file(path: &Utf8Path) -> SourceFile {
         SourceFile {
-            source_root: path
-                .parent()
-                .map_or_else(String::new, |parent| parent.as_str().to_owned()),
+            source_root: crate::domain::SourceRoot::new(
+                path.parent()
+                    .map_or_else(String::new, |parent| parent.as_str().to_owned()),
+            ),
             location: SourceLocation::BareFile {
                 path: path.as_str().to_owned(),
             },
@@ -471,9 +472,10 @@ mod tests {
             },
         );
         SourceFile {
-            source_root: path
-                .parent()
-                .map_or_else(String::new, |parent| parent.as_str().to_owned()),
+            source_root: crate::domain::SourceRoot::new(
+                path.parent()
+                    .map_or_else(String::new, |parent| parent.as_str().to_owned()),
+            ),
             location,
             observed: crate::domain::ObservedContent {
                 scope: crate::domain::EvidenceScope::WholeAsset,

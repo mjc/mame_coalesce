@@ -364,7 +364,7 @@ impl ExpectedEvidence {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ObservedContent {
     pub scope: EvidenceScope,
     pub provenance: EvidenceProvenance,
@@ -486,6 +486,16 @@ pub enum BuildMode {
     #[default]
     ParentBundles,
     PerGame,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MatchingPolicy {
+    /// Match only SHA1, ignoring size/CRC/MD5 disagreements for historical compatibility.
+    #[default]
+    Sha1Compatibility,
+    /// Compare mutually available evidence, veto weaker fallback on stronger contradictions,
+    /// and retain lower-priority disagreements as explanations after a stronger match.
+    EvidenceAware,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -661,7 +671,7 @@ impl SourceLocation {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SourceFile {
-    pub source_root: String,
+    pub source_root: SourceRoot,
     pub location: SourceLocation,
     pub observed: ObservedContent,
     pub fingerprint: Option<SourceFingerprint>,
@@ -735,8 +745,9 @@ impl SourceFile {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BuildRequest {
     pub dat_name: String,
-    pub source_root: String,
+    pub source_root: SourceRoot,
     pub mode: BuildMode,
+    pub matching_policy: MatchingPolicy,
     pub dry_run: bool,
     pub strict: bool,
 }
