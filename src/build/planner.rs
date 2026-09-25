@@ -2,8 +2,9 @@ use std::collections::BTreeMap;
 
 use crate::{
     domain::{
-        BuildMode, BuildPlan, BuildReport, BuildRequest, DatRom, DuplicateMatch, MissingRom,
-        SourceFile, ZipEntrySpec, ZipSpec,
+        BuildPlan, BuildReport, BuildRequest, DatRom, DuplicateMatch, LogicalEntry, LogicalPath,
+        MissingContentPolicy, MissingRom, OutputGroup, PlanBlockReason, PlanOutcome,
+        SelectionProvenance, SourceFile,
     },
     resolution::{self, RequirementResolution, ResolutionStatus},
 };
@@ -21,51 +22,71 @@ pub fn plan_build(
         &request.source_root,
         request.matching_policy,
     );
-    let report = build_report(&resolutions, request.strict);
-
-    if request.strict && !report.missing_roms.is_empty() {
-        return BuildPlan {
-            zips: Vec::new(),
-            report,
-            dry_run: request.dry_run,
-        };
-    }
+    let report = build_report(&resolutions, request.missing_policy);
+    let report = BuildReport {
+        resolutions: resolutions.clone(),
+        ..report
+    };
+    let groups = if report.outcome == PlanOutcome::Ready {
+        plan_logical_entries(&resolutions, request.mode, request.matching_policy)
+    } else {
+        BTreeMap::new()
+    };
 
     BuildPlan {
-        zips: plan_zip_entries(&resolutions, request.mode)
+        groups: groups
             .into_iter()
-            .map(|(file_name, entries)| ZipSpec { file_name, entries })
+            .map(|(path, entries)| OutputGroup { path, entries })
             .collect(),
         report,
-        dry_run: request.dry_run,
     }
 }
 
-fn plan_zip_entries(
+fn plan_logical_entries(
     resolutions: &[RequirementResolution],
-    mode: BuildMode,
-) -> BTreeMap<String, Vec<ZipEntrySpec>> {
+    mode: crate::domain::BuildMode,
+    policy: crate::domain::MatchingPolicy,
+) -> BTreeMap<LogicalPath, Vec<LogicalEntry>> {
     resolutions
         .iter()
         .filter_map(|resolution| match &resolution.status {
-            ResolutionStatus::Matched { selected, .. } => Some((&resolution.requirement, selected)),
+            ResolutionStatus::Matched {
+                selected,
+                strength,
+                assessments,
+                ..
+            } => Some((resolution, selected, strength, assessments)),
             ResolutionStatus::AmbiguousWeak { .. }
             | ResolutionStatus::Conflicting { .. }
             | ResolutionStatus::Missing { .. } => None,
         })
-        .fold(BTreeMap::new(), |mut entries_by_zip, (rom, selected)| {
-            entries_by_zip
-                .entry(format!("{}.zip", rom.bundle_name(mode)))
-                .or_default()
-                .push(ZipEntrySpec {
-                    output_name: rom.rom_name().to_owned(),
-                    source: selected.as_ref().clone(),
-                });
-            entries_by_zip
-        })
+        .fold(
+            BTreeMap::new(),
+            |mut entries_by_group, (resolution, selected, strength, assessments)| {
+                let requirement = &resolution.requirement;
+                entries_by_group
+                    .entry(LogicalPath::new(requirement.bundle_name(mode)))
+                    .or_default()
+                    .push(LogicalEntry {
+                        path: LogicalPath::new(requirement.rom_name()),
+                        source: selected.as_ref().clone(),
+                        requirement: requirement.key.clone(),
+                        expected: requirement.expected.clone(),
+                        selection: SelectionProvenance {
+                            policy,
+                            strength: *strength,
+                            assessments: assessments.clone(),
+                        },
+                    });
+                entries_by_group
+            },
+        )
 }
 
-fn build_report(resolutions: &[RequirementResolution], strict: bool) -> BuildReport {
+fn build_report(
+    resolutions: &[RequirementResolution],
+    missing_policy: MissingContentPolicy,
+) -> BuildReport {
     let mut report = resolutions
         .iter()
         .fold(BuildReport::default(), |mut report, resolution| {
@@ -97,8 +118,8 @@ fn build_report(resolutions: &[RequirementResolution], strict: bool) -> BuildRep
             report
         });
 
-    if strict && !report.missing_roms.is_empty() {
-        report.exit_code = 2;
+    if missing_policy == MissingContentPolicy::RequireComplete && !report.missing_roms.is_empty() {
+        report.outcome = PlanOutcome::Blocked(PlanBlockReason::MissingContent);
     }
 
     report
@@ -131,15 +152,17 @@ mod tests {
             source_root: crate::domain::SourceRoot::new("/src-a"),
             mode,
             matching_policy: MatchingPolicy::Sha1Compatibility,
-            dry_run: false,
-            strict: false,
+            missing_policy: MissingContentPolicy::AllowPartial,
         }
     }
 
     fn rom(game_name: &str, parent_name: Option<&str>, rom_name: &str, sha1: &str) -> DatRom {
         DatRom {
             catalog_name: "dat-a".to_owned(),
-            key: RequirementKey::new(SetKey::new(CatalogKey::fresh(), game_name), rom_name),
+            key: RequirementKey::new(
+                SetKey::new(CatalogKey::new("catalog-test"), game_name),
+                rom_name,
+            ),
             parent_name: parent_name.map(str::to_owned),
             set_metadata: crate::domain::SetMetadata::default(),
             role: crate::domain::AssetRole::Rom,
@@ -213,11 +236,11 @@ mod tests {
 
         let plan = plan_build(&dat_roms, &source_files, &request(BuildMode::ParentBundles));
 
-        assert_eq!(plan.report.exit_code, 0);
+        assert_eq!(plan.report.outcome, PlanOutcome::Ready);
         assert_eq!(plan.report.matched_roms, 1);
         assert_eq!(plan.report.missing_roms.len(), 1);
         assert_eq!(plan.report.missing_roms[0].rom_name, "missing.rom");
-        assert!(plan.writes_files());
+        assert!(plan.has_outputs());
     }
 
     #[test]
@@ -237,15 +260,15 @@ mod tests {
 
         let plan = plan_build(&dat_roms, &[], &request(BuildMode::ParentBundles));
 
-        assert_eq!(plan.report.exit_code, 0);
+        assert_eq!(plan.report.outcome, PlanOutcome::Ready);
         assert_eq!(plan.report.matched_roms, 0);
         assert!(plan.report.missing_roms.is_empty());
-        assert!(plan.zips.is_empty());
-        assert!(!plan.writes_files());
+        assert!(plan.groups.is_empty());
+        assert!(!plan.has_outputs());
     }
 
     #[test]
-    fn dry_run_plans_never_report_writes_files() {
+    fn logical_plan_does_not_capture_dry_run_execution_policy() {
         let dat_roms = [rom("parent", None, "present.rom", "sha1-present")];
         let source_files = [source(
             "/src-a",
@@ -254,28 +277,29 @@ mod tests {
             "sha1-present",
             SourceKind::BareFile,
         )];
-        let mut build_request = request(BuildMode::ParentBundles);
-        build_request.dry_run = true;
-
+        let build_request = request(BuildMode::ParentBundles);
         let plan = plan_build(&dat_roms, &source_files, &build_request);
 
-        assert_eq!(plan.report.exit_code, 0);
-        assert_eq!(plan.zips.len(), 1);
-        assert!(!plan.writes_files());
+        assert_eq!(plan.report.outcome, PlanOutcome::Ready);
+        assert_eq!(plan.groups.len(), 1);
+        assert!(plan.has_outputs());
     }
 
     #[test]
     fn strict_missing_roms_write_nothing_and_exit_two() {
         let dat_roms = [rom("parent", None, "missing.rom", "sha1-missing")];
         let mut build_request = request(BuildMode::ParentBundles);
-        build_request.strict = true;
+        build_request.missing_policy = MissingContentPolicy::RequireComplete;
 
         let plan = plan_build(&dat_roms, &[], &build_request);
 
-        assert_eq!(plan.report.exit_code, 2);
+        assert_eq!(
+            plan.report.outcome,
+            PlanOutcome::Blocked(PlanBlockReason::MissingContent)
+        );
         assert_eq!(plan.report.missing_roms.len(), 1);
-        assert!(plan.zips.is_empty());
-        assert!(!plan.writes_files());
+        assert!(plan.groups.is_empty());
+        assert!(!plan.has_outputs());
     }
 
     #[test]
@@ -313,7 +337,7 @@ mod tests {
             "/src-a/bare-a.rom"
         );
         assert_eq!(
-            plan.zips[0].entries[0].source.location.path(),
+            plan.groups[0].entries[0].source.location.path(),
             "/src-a/bare-a.rom"
         );
     }
@@ -454,7 +478,7 @@ mod tests {
 
         assert_eq!(plan.report.matched_roms, 0);
         assert_eq!(plan.report.missing_roms.len(), 1);
-        assert!(plan.zips.is_empty());
+        assert!(plan.groups.is_empty());
     }
 
     #[test]
@@ -472,7 +496,7 @@ mod tests {
 
         assert_eq!(plan.report.matched_roms, 0);
         assert_eq!(plan.report.missing_roms.len(), 1);
-        assert!(plan.zips.is_empty());
+        assert!(plan.groups.is_empty());
     }
 
     #[test]
@@ -491,7 +515,7 @@ mod tests {
         assert_eq!(plan.report.matched_roms, 1);
         assert!(plan.report.missing_roms.is_empty());
         assert_eq!(
-            plan.zips[0].entries[0].source.location.path(),
+            plan.groups[0].entries[0].source.location.path(),
             "/src-a/nested/nested.rom"
         );
     }
@@ -521,9 +545,9 @@ mod tests {
 
         let plan = plan_build(&dat_roms, &source_files, &request(BuildMode::ParentBundles));
 
-        assert_eq!(plan.zips.len(), 1);
-        assert_eq!(plan.zips[0].file_name, "parent.zip");
-        assert_eq!(plan.zips[0].entries.len(), 2);
+        assert_eq!(plan.groups.len(), 1);
+        assert_eq!(plan.groups[0].path.as_str(), "parent");
+        assert_eq!(plan.groups[0].entries.len(), 2);
     }
 
     #[test]
@@ -551,9 +575,9 @@ mod tests {
 
         let plan = plan_build(&dat_roms, &source_files, &request(BuildMode::PerGame));
 
-        assert_eq!(plan.zips.len(), 2);
-        assert_eq!(plan.zips[0].file_name, "clone.zip");
-        assert_eq!(plan.zips[1].file_name, "parent.zip");
+        assert_eq!(plan.groups.len(), 2);
+        assert_eq!(plan.groups[0].path.as_str(), "clone");
+        assert_eq!(plan.groups[1].path.as_str(), "parent");
     }
 
     #[test]
@@ -596,7 +620,7 @@ mod tests {
 
         assert_eq!(plan.report.matched_roms, 1);
         assert!(plan.report.missing_roms.is_empty());
-        assert_eq!(plan.zips[0].entries[0].output_name, "shared.rom");
+        assert_eq!(plan.groups[0].entries[0].path.as_str(), "shared.rom");
     }
 
     #[test]
@@ -642,8 +666,8 @@ mod tests {
 
         assert_eq!(first_plan.report.matched_roms, 1);
         assert_eq!(second_plan.report.matched_roms, 1);
-        assert_eq!(first_plan.zips[0].entries[0].output_name, "a.rom");
-        assert_eq!(second_plan.zips[0].entries[0].output_name, "b.rom");
+        assert_eq!(first_plan.groups[0].entries[0].path.as_str(), "a.rom");
+        assert_eq!(second_plan.groups[0].entries[0].path.as_str(), "b.rom");
     }
 
     #[test]
@@ -695,6 +719,41 @@ mod tests {
         );
 
         assert_eq!(first_plan, second_plan);
+    }
+
+    #[test]
+    fn logical_plan_and_report_round_trip_with_versioned_json() -> crate::Result<()> {
+        let dat_roms = [rom("parent", None, "game.rom", "sha1-game")];
+        let source_files = [source(
+            "/src-a",
+            "/src-a/game.rom",
+            None,
+            "sha1-game",
+            SourceKind::BareFile,
+        )];
+        let plan = plan_build(&dat_roms, &source_files, &request(BuildMode::ParentBundles));
+
+        let json = plan.to_json()?;
+        let decoded = crate::domain::BuildPlan::from_json(&json)?;
+
+        assert_eq!(decoded, plan);
+        assert_eq!(decoded.groups[0].path.as_str(), "parent");
+        assert_eq!(decoded.report.resolutions.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn serialized_plan_rejects_unknown_versions_before_decoding_payload()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let plan = plan_build(&[], &[], &request(BuildMode::ParentBundles));
+        let mut document: serde_json::Value = serde_json::from_slice(&plan.to_json()?)?;
+        document["version"] = serde_json::json!(999);
+
+        assert!(matches!(
+            crate::domain::BuildPlan::from_json(&serde_json::to_vec(&document)?),
+            Err(crate::Error::UnsupportedPlanVersion(999))
+        ));
+        Ok(())
     }
 
     proptest! {

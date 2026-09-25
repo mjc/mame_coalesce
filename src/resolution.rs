@@ -1,12 +1,13 @@
 //! Pure, deterministic matching of catalog requirements to source observations.
 
 use camino::Utf8Path;
+use serde::{Deserialize, Serialize};
 
 use crate::domain::{DatRom, EvidenceProvenance, EvidenceScope, SourceFile, SourceRoot};
 
 pub use crate::domain::MatchingPolicy;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MatchStrength {
     Sha1,
     Md5,
@@ -23,7 +24,7 @@ impl MatchStrength {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EvidenceField {
     Sha1,
     Md5,
@@ -31,7 +32,7 @@ pub enum EvidenceField {
     Size,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MissingReason {
     NoExpectedContentEvidence,
     UnsupportedExpectedScope,
@@ -40,7 +41,7 @@ pub enum MissingReason {
     NoMatchingSource,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceAssessment {
     pub source: SourceFile,
     pub strength: Option<MatchStrength>,
@@ -49,7 +50,7 @@ pub struct SourceAssessment {
     pub comparable: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ResolutionStatus {
     Matched {
         selected: Box<SourceFile>,
@@ -69,7 +70,7 @@ pub enum ResolutionStatus {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RequirementResolution {
     pub requirement: DatRom,
     pub status: ResolutionStatus,
