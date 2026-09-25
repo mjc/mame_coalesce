@@ -777,7 +777,7 @@ impl BuildPlan {
         !self.groups.is_empty()
     }
 
-    pub const SERIALIZATION_VERSION: u32 = 1;
+    pub const SERIALIZATION_VERSION: u32 = 2;
 
     /// Encode plan and report together with the schema version required to read them.
     pub fn to_json(&self) -> crate::Result<Vec<u8>> {
@@ -862,6 +862,8 @@ pub struct BuildReport {
     pub missing_roms: Vec<MissingRom>,
     pub duplicate_matches: Vec<DuplicateMatch>,
     pub resolutions: Vec<crate::resolution::RequirementResolution>,
+    /// Pure layout validation findings available before an output backend is invoked.
+    pub validation_issues: Vec<crate::build::validation::PlanIssue>,
     pub matched_roms: usize,
     pub outcome: PlanOutcome,
 }
@@ -872,6 +874,7 @@ impl Default for BuildReport {
             missing_roms: Vec::new(),
             duplicate_matches: Vec::new(),
             resolutions: Vec::new(),
+            validation_issues: Vec::new(),
             matched_roms: 0,
             outcome: PlanOutcome::Ready,
         }
