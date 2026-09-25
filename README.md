@@ -44,12 +44,29 @@ mame_coalesce --cache /tmp/coalesce.db audit "DAT Header Name" /path/to/roms --f
 mame_coalesce --cache /tmp/coalesce.db audit "DAT Header Name" /path/to/roms --refresh --jobs 8
 ```
 
+Build, audit, and cache scan also accept repeatable `--source-root DIR` options.
+The positional source directory stays first; roots are canonicalized and exact
+aliases are scanned once. Earlier roots take precedence over later roots, then
+the existing within-root bare-file/archive/path/member order applies. Physical
+members reached through overlapping roots resolve once, attributed to the
+earliest matching root; a nested root still has its own cached provenance and
+can take precedence when listed first. A multi-root refresh scans every root
+before changing inventory, then replaces all requested scopes in one SQLite
+transaction. If scanning any root fails, none of those scopes are replaced.
+
+For example, `mame_coalesce build catalog.dat /roms/primary out
+--source-root /roms/secondary --source-root /roms/overrides` searches the
+primary tree first, followed by secondary and overrides. Repeat the same ordered
+options for `audit` or `cache scan` to use the same scope and precedence.
+
 The reusable library operations in `app` do not initialize logging or terminal
 progress. `plan_build` reads the selected catalog and cached scan observations
 and returns a logical plan without creating outputs. `build` reads the cache and
 writes requested artifacts. `import_dat` and `scan_source` persist catalog and
 inventory changes, respectively; `run` performs those imports/scan updates
-before building. A one-shot `--dry-run` or strict-missing build still imports the
+before building. The `*_with_roots` operations accept an ordered
+`SourceRootSelection`; the original operations remain one-root conveniences. A
+one-shot `--dry-run` or strict-missing build still imports the
 DAT and refreshes the scan cache, but does not write ROM outputs. The CLI owns
 human-readable reports, progress bars, and mapping build outcomes to process
 exit codes.

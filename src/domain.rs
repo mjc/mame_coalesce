@@ -752,7 +752,7 @@ impl SourceFile {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BuildRequest {
     pub dat_name: String,
-    pub source_root: SourceRoot,
+    pub source_roots: Vec<SourceRoot>,
     pub mode: BuildMode,
     pub matching_policy: MatchingPolicy,
     pub missing_policy: MissingContentPolicy,
@@ -872,6 +872,13 @@ pub struct BuildReport {
 pub enum ObservationBasis {
     Cached,
     FreshScan { scan_run: ScanRunKey },
+    FreshScans { scan_runs: Vec<RootScanRun> },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RootScanRun {
+    pub source_root: SourceRoot,
+    pub scan_run: ScanRunKey,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

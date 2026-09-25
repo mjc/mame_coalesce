@@ -56,6 +56,12 @@ pub struct AuditArgs {
         help = "Source root represented by cached observations"
     )]
     pub source: Utf8PathBuf,
+    #[arg(
+        long = "source-root",
+        value_name = "DIR",
+        help = "Additional ordered source root (repeatable)"
+    )]
+    pub additional_source_roots: Vec<Utf8PathBuf>,
     #[arg(short, long, default_value_t = 0, help = "Refresh scan worker count")]
     pub jobs: usize,
     #[arg(long, help = "Refresh and persist source observations before auditing")]
@@ -97,12 +103,7 @@ pub enum CacheCommand {
         dat: Utf8PathBuf,
     },
     /// Refresh cached ROM-file rows for a source root.
-    Scan {
-        #[arg(value_name = "source", help = "ROM source directory to scan")]
-        source: Utf8PathBuf,
-        #[arg(short, long, default_value_t = 0, help = "Scan worker count")]
-        jobs: usize,
-    },
+    Scan(CacheScanArgs),
     /// Build from DAT and source rows already present in the cache.
     Build(CacheBuildArgs),
 }
@@ -113,6 +114,12 @@ pub struct BuildArgs {
     pub dat: Utf8PathBuf,
     #[arg(value_name = "source", help = "ROM source directory to scan")]
     pub source: Utf8PathBuf,
+    #[arg(
+        long = "source-root",
+        value_name = "DIR",
+        help = "Additional ordered source root (repeatable)"
+    )]
+    pub additional_source_roots: Vec<Utf8PathBuf>,
     #[arg(value_name = "out", help = "Destination directory for output ZIPs")]
     pub out: Utf8PathBuf,
     #[arg(short, long, default_value_t = 0, help = "Scan worker count")]
@@ -130,10 +137,30 @@ pub struct CacheBuildArgs {
     pub dat: Utf8PathBuf,
     #[arg(value_name = "source", help = "Previously scanned source directory")]
     pub source: Utf8PathBuf,
+    #[arg(
+        long = "source-root",
+        value_name = "DIR",
+        help = "Additional ordered source root (repeatable)"
+    )]
+    pub additional_source_roots: Vec<Utf8PathBuf>,
     #[arg(value_name = "out", help = "Destination directory for output ZIPs")]
     pub out: Utf8PathBuf,
     #[command(flatten)]
     pub options: BuildOptions,
+}
+
+#[derive(Clone, Debug, Args)]
+pub struct CacheScanArgs {
+    #[arg(value_name = "source", help = "ROM source directory to scan")]
+    pub source: Utf8PathBuf,
+    #[arg(
+        long = "source-root",
+        value_name = "DIR",
+        help = "Additional ordered source root (repeatable)"
+    )]
+    pub additional_source_roots: Vec<Utf8PathBuf>,
+    #[arg(short, long, default_value_t = 0, help = "Scan worker count")]
+    pub jobs: usize,
 }
 
 #[derive(Clone, Debug, Args)]
