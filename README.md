@@ -56,6 +56,14 @@ Building from archive members stages selected bytes on disk before assembling
 each output ZIP. Its private staging directory is created beside the output,
 so ensure that filesystem has up to 16 GiB of free space for one output ZIP.
 
+Logical output paths use a conservative portable naming profile: ASCII only,
+case-insensitive collision checks, no trailing spaces or dots, path traversal,
+Windows-reserved device names, or platform-forbidden characters. Unicode names
+are rejected rather than relying on filesystem-specific normalization. The
+one-shot workflow rejects source and destination roots that are equal, nested,
+or aliased through existing symlinks; it checks before scanning and again before
+writing. Sources are never modified.
+
 Source scans intentionally skip hidden files and directories below the source
 root. Non-UTF-8 paths and traversal or archive-read errors fail the scan, so an
 incomplete inventory cannot replace the last successful cache contents.
