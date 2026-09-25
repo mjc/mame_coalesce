@@ -5,9 +5,9 @@ use crate::{
     build::{planner::plan_build, write_plan_with_compression},
     database::Database,
     domain::{
-        BuildMode, BuildReport, BuildRequest, CatalogKey, CatalogScope, ImportRunKey,
-        MatchingPolicy, MissingContentPolicy, PlanOutcome, PublishingSourceKey, ScanRunKey,
-        SnapshotKey, SourceRoot, ZipCompression,
+        ArtifactOutcome, ArtifactResult, BuildMode, BuildReport, BuildRequest, CatalogKey,
+        CatalogScope, ImportRunKey, MatchingPolicy, MissingContentPolicy, PlanOutcome,
+        PublishingSourceKey, ScanRunKey, SnapshotKey, SourceRoot, ZipCompression,
     },
     operations,
     storage::repositories::{BuildRepository, DataFileSelector, SourceRepository},
@@ -107,6 +107,7 @@ pub struct BuildWorkflowRequest {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BuildWorkflowReport {
     pub written_paths: Vec<Utf8PathBuf>,
+    pub artifact_results: Vec<ArtifactResult>,
     pub build_report: BuildReport,
     pub exit_code: i32,
     pub mode: BuildMode,
@@ -198,18 +199,47 @@ pub fn build(
         PlanOutcome::Blocked(_) => 2,
     };
     let build_report = plan.report.clone();
-    let written_paths = if request.dry_run || exit_code != 0 {
-        Vec::new()
+    let (written_paths, artifact_results) = if request.dry_run || exit_code != 0 {
+        (
+            Vec::new(),
+            plan.groups
+                .iter()
+                .map(|group| ArtifactResult {
+                    path: request
+                        .destination_path
+                        .join(format!("{}.zip", group.path.as_str()))
+                        .to_string(),
+                    outcome: ArtifactOutcome::Unattempted,
+                })
+                .collect(),
+        )
     } else {
         crate::build::validation::ensure_sources_disjoint_from_destination(
             &[source_root.as_path()],
             &request.destination_path,
         )?;
-        write_plan_with_compression(&plan, &request.destination_path, request.compression)?
+        let results =
+            write_plan_with_compression(&plan, &request.destination_path, request.compression)?;
+        let paths = results
+            .iter()
+            .filter(|result| result.outcome == ArtifactOutcome::Completed)
+            .map(|result| Utf8PathBuf::from(&result.path))
+            .collect::<Vec<_>>();
+        (paths, results)
     };
+    let exit_code = if artifact_results
+        .iter()
+        .any(|result| matches!(&result.outcome, ArtifactOutcome::Failed { .. }))
+    {
+        1
+    } else {
+        exit_code
+    };
+    report_artifact_outcomes(&artifact_results);
 
     Ok(BuildWorkflowReport {
         written_paths,
+        artifact_results,
         build_report,
         exit_code,
         mode: request.mode,
@@ -318,5 +348,19 @@ fn report_build_outcome(report: &BuildReport) {
 
     for issue in &report.validation_issues {
         warn!("build plan validation: {issue}");
+    }
+}
+
+fn report_artifact_outcomes(results: &[ArtifactResult]) {
+    for result in results {
+        match &result.outcome {
+            ArtifactOutcome::Completed => info!("completed output artifact: {}", result.path),
+            ArtifactOutcome::Failed { error } => {
+                warn!("failed output artifact: {}: {error}", result.path);
+            }
+            ArtifactOutcome::Unattempted => {
+                warn!("output artifact was not attempted: {}", result.path);
+            }
+        }
     }
 }

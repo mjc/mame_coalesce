@@ -868,6 +868,19 @@ pub struct BuildReport {
     pub outcome: PlanOutcome,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ArtifactOutcome {
+    Completed,
+    Failed { error: String },
+    Unattempted,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactResult {
+    pub path: String,
+    pub outcome: ArtifactOutcome,
+}
+
 impl Default for BuildReport {
     fn default() -> Self {
         Self {

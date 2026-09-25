@@ -29,6 +29,9 @@ pub enum Error {
     #[error("Invalid path: {0}")]
     InvalidPath(String),
 
+    #[error("source changed since planning: {path}: {reason}")]
+    SourceChanged { path: String, reason: String },
+
     #[error("Invalid hash: {0}")]
     InvalidHash(String),
 
