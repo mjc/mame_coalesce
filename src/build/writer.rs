@@ -18,8 +18,8 @@ use camino::{Utf8Path, Utf8PathBuf};
 use zip::{ZipWriter, write::SimpleFileOptions};
 
 use crate::domain::{
-    ArchiveBackend, ArchiveMemberSelector, BuildPlan, SourceLocation, ZipCompression, ZipEntrySpec,
-    ZipSpec,
+    ArchiveBackend, ArchiveMemberSelector, BuildPlan, LogicalEntry, OutputGroup, PlanOutcome,
+    SourceLocation, ZipCompression,
 };
 
 #[cfg(test)]
@@ -32,18 +32,18 @@ pub fn write_plan_with_compression(
     destination: &Utf8Path,
     compression: ZipCompression,
 ) -> crate::Result<Vec<Utf8PathBuf>> {
-    if !plan.writes_files() {
+    if plan.report.outcome != PlanOutcome::Ready || !plan.has_outputs() {
         return Ok(Vec::new());
     }
 
     validate_plan_paths(plan)?;
     let options = file_options(compression);
     create_dir_all(destination)?;
-    let mut written_paths = Vec::with_capacity(plan.zips.len());
-    plan.zips.iter().try_for_each(|zip_spec| {
-        let zip_path = destination.join(&zip_spec.file_name);
+    let mut written_paths = Vec::with_capacity(plan.groups.len());
+    plan.groups.iter().try_for_each(|group| {
+        let zip_path = destination.join(format!("{}.zip", group.path.as_str()));
         let mut writer = open_destination_zip(&zip_path)?;
-        write_zip_spec(zip_spec, &mut writer, options, destination)?;
+        write_zip_group(group, &mut writer, options, destination)?;
         writer.finish()?;
         written_paths.push(zip_path);
         Ok::<_, crate::Error>(())
@@ -61,22 +61,23 @@ fn file_options(compression: ZipCompression) -> SimpleFileOptions {
 
 fn validate_plan_paths(plan: &BuildPlan) -> crate::Result<()> {
     let mut output_file_names = BTreeSet::new();
-    plan.zips.iter().try_for_each(|zip_spec| {
-        validate_output_file_name(&zip_spec.file_name)?;
-        if !output_file_names.insert(zip_spec.file_name.as_str()) {
+    plan.groups.iter().try_for_each(|group| {
+        validate_output_file_name(group.path.as_str())?;
+        if !output_file_names.insert(group.path.as_str()) {
             return Err(crate::Error::InvalidPath(format!(
                 "duplicate output zip file name: {}",
-                zip_spec.file_name
+                group.path.as_str()
             )));
         }
 
         let mut entry_names = BTreeSet::new();
-        zip_spec.entries.iter().try_for_each(|entry| {
-            validate_zip_entry_name(&entry.output_name)?;
-            if !entry_names.insert(entry.output_name.as_str()) {
+        group.entries.iter().try_for_each(|entry| {
+            validate_zip_entry_name(entry.path.as_str())?;
+            if !entry_names.insert(entry.path.as_str()) {
                 return Err(crate::Error::InvalidPath(format!(
                     "duplicate zip entry name in {}: {}",
-                    zip_spec.file_name, entry.output_name
+                    group.path.as_str(),
+                    entry.path.as_str()
                 )));
             }
             Ok(())
@@ -132,13 +133,13 @@ fn open_destination_zip(zip_file_path: &Utf8Path) -> crate::Result<ZipWriter<Buf
     Ok(zip_writer)
 }
 
-fn write_zip_spec(
-    zip_spec: &ZipSpec,
+fn write_zip_group(
+    group: &OutputGroup,
     zip_writer: &mut ZipWriter<BufWriter<File>>,
     options: SimpleFileOptions,
     spool_parent: &Utf8Path,
 ) -> crate::Result<()> {
-    let resolved = zip_spec
+    let resolved = group
         .entries
         .iter()
         .map(resolve_source)
@@ -183,8 +184,8 @@ fn write_zip_spec(
         )?;
     }
 
-    for (entry, source) in zip_spec.entries.iter().zip(resolved) {
-        zip_writer.start_file(&entry.output_name, options)?;
+    for (entry, source) in group.entries.iter().zip(resolved) {
+        zip_writer.start_file(entry.path.as_str(), options)?;
         match source {
             ResolvedSource::Bare { path } => {
                 crate::sources::stream_file(Utf8Path::new(&path), zip_writer)?;
@@ -251,7 +252,7 @@ enum ResolvedSource {
     },
 }
 
-fn resolve_source(entry: &ZipEntrySpec) -> crate::Result<ResolvedSource> {
+fn resolve_source(entry: &LogicalEntry) -> crate::Result<ResolvedSource> {
     match &entry.source.location {
         SourceLocation::BareFile { path } => Ok(ResolvedSource::Bare { path: path.clone() }),
         SourceLocation::ArchiveMember {
@@ -408,7 +409,10 @@ mod tests {
 
     use proptest::prelude::*;
 
-    use crate::domain::{BuildReport, SourceFile, ZipSpec};
+    use crate::domain::{
+        BuildReport, CatalogKey, ExpectedEvidence, LogicalEntry, LogicalPath, MatchingPolicy,
+        OutputGroup, RequirementKey, SelectionProvenance, SetKey, SourceFile,
+    };
 
     #[derive(Clone, Copy)]
     enum SourceKind {
@@ -459,6 +463,23 @@ mod tests {
             fingerprint: None,
             scan_run: None,
             scan_provenance: None,
+        }
+    }
+
+    fn logical_entry(path: &str, source: SourceFile) -> LogicalEntry {
+        LogicalEntry {
+            path: LogicalPath::new(path),
+            source,
+            requirement: RequirementKey::new(
+                SetKey::new(CatalogKey::new("writer-test"), path),
+                path,
+            ),
+            expected: ExpectedEvidence::default(),
+            selection: SelectionProvenance {
+                policy: MatchingPolicy::Sha1Compatibility,
+                strength: crate::resolution::MatchStrength::Sha1,
+                assessments: Vec::new(),
+            },
         }
     }
 
@@ -555,15 +576,14 @@ mod tests {
         kind: SourceKind,
     ) -> BuildPlan {
         BuildPlan {
-            zips: vec![ZipSpec {
-                file_name: "safe.zip".to_owned(),
-                entries: vec![ZipEntrySpec {
-                    output_name: output_name.to_owned(),
-                    source: archive_source_file(archive_path, Some(entry_name), kind),
-                }],
+            groups: vec![OutputGroup {
+                path: LogicalPath::new("safe"),
+                entries: vec![logical_entry(
+                    output_name,
+                    archive_source_file(archive_path, Some(entry_name), kind),
+                )],
             }],
             report: BuildReport::default(),
-            dry_run: false,
         }
     }
 
@@ -652,28 +672,18 @@ mod tests {
 
         for plan in [
             BuildPlan {
-                zips: vec![ZipSpec {
-                    file_name: "safe.zip".to_owned(),
-                    entries: Vec::new(),
-                }],
-                report: BuildReport::default(),
-                dry_run: true,
-            },
-            BuildPlan {
-                zips: vec![ZipSpec {
-                    file_name: "safe.zip".to_owned(),
+                groups: vec![OutputGroup {
+                    path: LogicalPath::new("safe"),
                     entries: Vec::new(),
                 }],
                 report: BuildReport {
-                    exit_code: 2,
+                    outcome: PlanOutcome::Blocked(crate::domain::PlanBlockReason::MissingContent),
                     ..BuildReport::default()
                 },
-                dry_run: false,
             },
             BuildPlan {
-                zips: Vec::new(),
+                groups: Vec::new(),
                 report: BuildReport::default(),
-                dry_run: false,
             },
         ] {
             assert!(write_plan(&plan, &destination)?.is_empty());
@@ -688,12 +698,11 @@ mod tests {
         let temp_dir = tempfile::tempdir()?;
         let destination = utf8_path(temp_dir.path())?.join("output");
         let plan = BuildPlan {
-            zips: vec![ZipSpec {
-                file_name: "../escape.zip".to_owned(),
+            groups: vec![OutputGroup {
+                path: LogicalPath::new("../escape"),
                 entries: Vec::new(),
             }],
             report: BuildReport::default(),
-            dry_run: false,
         };
 
         let message = error_message(write_plan(&plan, &destination))?;
@@ -710,15 +719,11 @@ mod tests {
         std::fs::write(&source_path, b"rom")?;
         let destination = utf8_path(temp_dir.path())?.join("output");
         let plan = BuildPlan {
-            zips: vec![ZipSpec {
-                file_name: "safe.zip".to_owned(),
-                entries: vec![ZipEntrySpec {
-                    output_name: "../evil.rom".to_owned(),
-                    source: source_file(&source_path),
-                }],
+            groups: vec![OutputGroup {
+                path: LogicalPath::new("safe"),
+                entries: vec![logical_entry("../evil.rom", source_file(&source_path))],
             }],
             report: BuildReport::default(),
-            dry_run: false,
         };
 
         let message = error_message(write_plan(&plan, &destination))?;
@@ -734,18 +739,17 @@ mod tests {
         let temp_dir = tempfile::tempdir()?;
         let destination = utf8_path(temp_dir.path())?.join("output");
         let plan = BuildPlan {
-            zips: vec![
-                ZipSpec {
-                    file_name: "safe.zip".to_owned(),
+            groups: vec![
+                OutputGroup {
+                    path: LogicalPath::new("safe"),
                     entries: Vec::new(),
                 },
-                ZipSpec {
-                    file_name: "safe.zip".to_owned(),
+                OutputGroup {
+                    path: LogicalPath::new("safe"),
                     entries: Vec::new(),
                 },
             ],
             report: BuildReport::default(),
-            dry_run: false,
         };
 
         let message = error_message(write_plan(&plan, &destination))?;
@@ -762,21 +766,14 @@ mod tests {
         std::fs::write(&source_path, b"rom")?;
         let destination = utf8_path(temp_dir.path())?.join("output");
         let plan = BuildPlan {
-            zips: vec![ZipSpec {
-                file_name: "safe.zip".to_owned(),
+            groups: vec![OutputGroup {
+                path: LogicalPath::new("safe"),
                 entries: vec![
-                    ZipEntrySpec {
-                        output_name: "same.rom".to_owned(),
-                        source: source_file(&source_path),
-                    },
-                    ZipEntrySpec {
-                        output_name: "same.rom".to_owned(),
-                        source: source_file(&source_path),
-                    },
+                    logical_entry("same.rom", source_file(&source_path)),
+                    logical_entry("same.rom", source_file(&source_path)),
                 ],
             }],
             report: BuildReport::default(),
-            dry_run: false,
         };
 
         let message = error_message(write_plan(&plan, &destination))?;
@@ -793,15 +790,11 @@ mod tests {
         std::fs::write(&source_path, b"rom")?;
         let destination = utf8_path(temp_dir.path())?.join("output");
         let plan = BuildPlan {
-            zips: vec![ZipSpec {
-                file_name: "safe.zip".to_owned(),
-                entries: vec![ZipEntrySpec {
-                    output_name: "nested/game.rom".to_owned(),
-                    source: source_file(&source_path),
-                }],
+            groups: vec![OutputGroup {
+                path: LogicalPath::new("safe"),
+                entries: vec![logical_entry("nested/game.rom", source_file(&source_path))],
             }],
             report: BuildReport::default(),
-            dry_run: false,
         };
 
         let mut written_paths = write_plan(&plan, &destination)?;
@@ -861,29 +854,20 @@ mod tests {
         )?;
         let destination = utf8_path(temp_dir.path())?.join("output");
         let plan = BuildPlan {
-            zips: vec![ZipSpec {
-                file_name: "ordered.zip".to_owned(),
+            groups: vec![OutputGroup {
+                path: LogicalPath::new("ordered"),
                 entries: vec![
-                    ZipEntrySpec {
-                        output_name: "logical-first.rom".to_owned(),
-                        source: archive_source_file(
-                            &archive_path,
-                            Some("second.rom"),
-                            SourceKind::Zip,
-                        ),
-                    },
-                    ZipEntrySpec {
-                        output_name: "logical-second.rom".to_owned(),
-                        source: archive_source_file(
-                            &archive_path,
-                            Some("first.rom"),
-                            SourceKind::Zip,
-                        ),
-                    },
+                    logical_entry(
+                        "logical-first.rom",
+                        archive_source_file(&archive_path, Some("second.rom"), SourceKind::Zip),
+                    ),
+                    logical_entry(
+                        "logical-second.rom",
+                        archive_source_file(&archive_path, Some("first.rom"), SourceKind::Zip),
+                    ),
                 ],
             }],
             report: BuildReport::default(),
-            dry_run: false,
         };
 
         let written = write_plan(&plan, &destination)?;
@@ -932,15 +916,14 @@ mod tests {
         std::fs::write(&archive_path, b"not inspected before entry-name validation")?;
         let destination = utf8_path(temp_dir.path())?.join("output");
         let plan = BuildPlan {
-            zips: vec![ZipSpec {
-                file_name: "safe.zip".to_owned(),
-                entries: vec![ZipEntrySpec {
-                    output_name: "game.rom".to_owned(),
-                    source: archive_source_file(&archive_path, None, SourceKind::Archive),
-                }],
+            groups: vec![OutputGroup {
+                path: LogicalPath::new("safe"),
+                entries: vec![logical_entry(
+                    "game.rom",
+                    archive_source_file(&archive_path, None, SourceKind::Archive),
+                )],
             }],
             report: BuildReport::default(),
-            dry_run: false,
         };
 
         let message = error_message(write_plan(&plan, &destination))?;
@@ -957,15 +940,11 @@ mod tests {
         std::fs::write(&source_path, b"rom")?;
         let destination = utf8_path(temp_dir.path())?.join("output");
         let plan = BuildPlan {
-            zips: vec![ZipSpec {
-                file_name: "safe.zip".to_owned(),
-                entries: vec![ZipEntrySpec {
-                    output_name: "game.rom".to_owned(),
-                    source: source_file(&source_path),
-                }],
+            groups: vec![OutputGroup {
+                path: LogicalPath::new("safe"),
+                entries: vec![logical_entry("game.rom", source_file(&source_path))],
             }],
             report: BuildReport::default(),
-            dry_run: false,
         };
 
         let written_paths =
@@ -1020,29 +999,28 @@ mod tests {
         std::fs::write(&archive_path, archive_data)?;
         let destination = utf8_path(temp_dir.path())?.join("output");
         let plan = BuildPlan {
-            zips: vec![ZipSpec {
-                file_name: "safe.zip".to_owned(),
+            groups: vec![OutputGroup {
+                path: LogicalPath::new("safe"),
                 entries: vec![
-                    ZipEntrySpec {
-                        output_name: "game.rom".to_owned(),
-                        source: archive_source_file(
+                    logical_entry(
+                        "game.rom",
+                        archive_source_file(
                             &archive_path,
                             Some("nested/game.rom"),
                             SourceKind::Archive,
                         ),
-                    },
-                    ZipEntrySpec {
-                        output_name: "second.rom".to_owned(),
-                        source: archive_source_file(
+                    ),
+                    logical_entry(
+                        "second.rom",
+                        archive_source_file(
                             &archive_path,
                             Some("nested/second.rom"),
                             SourceKind::Archive,
                         ),
-                    },
+                    ),
                 ],
             }],
             report: BuildReport::default(),
-            dry_run: false,
         };
 
         let written_paths = write_plan(&plan, &destination)?;
