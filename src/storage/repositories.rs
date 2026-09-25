@@ -147,7 +147,7 @@ impl<'pool> BuildRepository<'pool> {
 }
 
 fn source_file_from_model(rom_file: RomFile) -> crate::Result<SourceFile> {
-    let location = source_location_from_model(&rom_file);
+    let location = source_location_from_model(&rom_file)?;
     let sha1 = sha1_digest_from_db(rom_file.sha1, "rom_files.sha1", &rom_file.name)?;
     let xxh3 = digest_from_db::<8>(Some(rom_file.xxhash3), "rom_files.xxhash3", &rom_file.name)?
         .ok_or_else(|| {
@@ -171,15 +171,50 @@ fn source_file_from_model(rom_file: RomFile) -> crate::Result<SourceFile> {
     })
 }
 
-fn source_location_from_model(rom_file: &RomFile) -> SourceLocation {
+fn source_location_from_model(rom_file: &RomFile) -> crate::Result<SourceLocation> {
     if !rom_file.in_archive {
-        return SourceLocation::BareFile {
+        if rom_file.archive_backend.is_some() || rom_file.archive_member_index.is_some() {
+            return Err(crate::Error::InvalidPath(format!(
+                "bare source {} has archive member identity",
+                rom_file.path
+            )));
+        }
+        return Ok(SourceLocation::BareFile {
             path: rom_file.path.clone(),
-        };
+        });
     }
-    SourceLocation::LegacyUnknown {
-        path: rom_file.path.clone(),
-        member_name: Some(rom_file.name.clone()),
+    match (&rom_file.archive_backend, rom_file.archive_member_index) {
+        (Some(backend), Some(index)) => {
+            let backend =
+                crate::domain::ArchiveBackend::from_storage_key(backend).ok_or_else(|| {
+                    crate::Error::InvalidPath(format!(
+                        "archive source {} has unknown backend {backend:?}",
+                        rom_file.path
+                    ))
+                })?;
+            let index = u64::try_from(index).map_err(|_| {
+                crate::Error::InvalidPath(format!(
+                    "archive source {} has negative member index {index}",
+                    rom_file.path
+                ))
+            })?;
+            Ok(SourceLocation::ArchiveMember {
+                path: rom_file.path.clone(),
+                backend,
+                selector: crate::domain::ArchiveMemberSelector::IndexAndName {
+                    index,
+                    name: rom_file.name.clone(),
+                },
+            })
+        }
+        (None, None) => Ok(SourceLocation::LegacyUnknown {
+            path: rom_file.path.clone(),
+            member_name: Some(rom_file.name.clone()),
+        }),
+        _ => Err(crate::Error::InvalidPath(format!(
+            "archive source {} has incomplete member identity",
+            rom_file.path
+        ))),
     }
 }
 
@@ -210,6 +245,58 @@ mod tests {
 
     use super::*;
 
+    fn rom_file_location(
+        in_archive: bool,
+        archive_backend: Option<&str>,
+        archive_member_index: Option<i64>,
+    ) -> RomFile {
+        RomFile {
+            id: 1,
+            parent_path: "/roms".to_owned(),
+            parent_game_name: None,
+            path: "/roms/set.zip".to_owned(),
+            name: "nested/game.rom".to_owned(),
+            crc: None,
+            sha1: vec![0; 20],
+            md5: None,
+            xxhash3: vec![0; 8],
+            in_archive,
+            archive_backend: archive_backend.map(str::to_owned),
+            archive_member_index,
+            rom_id: None,
+        }
+    }
+
+    #[test]
+    fn source_location_restores_typed_archive_identity() -> crate::Result<()> {
+        let location = source_location_from_model(&rom_file_location(true, Some("zip"), Some(3)))?;
+        assert_eq!(
+            location,
+            SourceLocation::ArchiveMember {
+                path: "/roms/set.zip".to_owned(),
+                backend: crate::domain::ArchiveBackend::Zip,
+                selector: crate::domain::ArchiveMemberSelector::IndexAndName {
+                    index: 3,
+                    name: "nested/game.rom".to_owned(),
+                },
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn source_location_keeps_legacy_archive_identity_unknown() -> crate::Result<()> {
+        let location = source_location_from_model(&rom_file_location(true, None, None))?;
+        assert_eq!(
+            location,
+            SourceLocation::LegacyUnknown {
+                path: "/roms/set.zip".to_owned(),
+                member_name: Some("nested/game.rom".to_owned()),
+            }
+        );
+        Ok(())
+    }
+
     const SIMPLE_DAT: &str = r#"<?xml version="1.0"?>
 <datafile>
   <header>
@@ -234,10 +321,22 @@ mod tests {
             sha1: crate::hashes::sha1_bytes(b"abc"),
             xxhash3: crate::hashes::xxhash3_bytes(b"abc"),
             in_archive: false,
+            archive_backend: None,
+            archive_member_index: None,
             rom_id: None,
         };
         let associated = SourceRepository::new(&pool).import_rom_files(&[rom_file])?;
         assert_eq!(associated, 1);
+        let archived_rom = NewRomFile::from_archive(
+            camino::Utf8Path::new("/source/repo-game.zip"),
+            std::path::Path::new("repo.rom"),
+            crate::hashes::sha1_bytes(b"abc"),
+            crate::hashes::xxhash3_bytes(b"abc"),
+            crate::domain::ArchiveBackend::Zip,
+            4,
+        )
+        .ok_or("expected archive source model")?;
+        SourceRepository::new(&pool).import_rom_files(&[archived_rom])?;
 
         let dat_roms =
             BuildRepository::new(&pool).load_dat_roms(DataFileSelector::Name("Repository Test"))?;
@@ -249,11 +348,22 @@ mod tests {
             dat_roms[0].set_metadata.rebuild_to.as_deref(),
             Some("repo-target")
         );
-        assert_eq!(source_files.len(), 1);
-        assert!(matches!(
-            source_files[0].location,
-            SourceLocation::BareFile { .. }
-        ));
+        assert_eq!(source_files.len(), 2);
+        assert!(
+            matches!(source_files[0].location, SourceLocation::BareFile { .. })
+                || matches!(source_files[1].location, SourceLocation::BareFile { .. })
+        );
+        assert!(source_files.iter().any(|source| matches!(
+            &source.location,
+            SourceLocation::ArchiveMember {
+                backend: crate::domain::ArchiveBackend::Zip,
+                selector: crate::domain::ArchiveMemberSelector::IndexAndName {
+                    index: 4,
+                    name,
+                },
+                ..
+            } if name == "repo.rom"
+        )));
         Ok(())
     }
 
