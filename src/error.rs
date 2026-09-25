@@ -19,6 +19,13 @@ pub enum Error {
         source: Box<Self>,
     },
 
+    #[error("multi-root run workflow failed after scanning sources: {source}")]
+    RunWorkflowWithRoots {
+        scan_reports: Vec<crate::app::SourceScanReport>,
+        #[source]
+        source: Box<Self>,
+    },
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 

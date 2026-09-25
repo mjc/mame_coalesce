@@ -279,6 +279,12 @@ fn collect_walked_files(
         .into_iter()
         .map(|entry| source_path_from_path_buf(entry.into_path()))
         .collect::<crate::Result<Vec<_>>>()?;
+    let mut paths = paths
+        .into_iter()
+        .map(|path| path.canonicalize_utf8())
+        .collect::<std::io::Result<Vec<_>>>()?;
+    paths.sort_unstable();
+    paths.dedup();
     Ok(paths
         .into_iter()
         .filter(|path| {

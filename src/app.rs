@@ -108,6 +108,28 @@ pub struct SourceScanRequest {
     pub jobs: usize,
 }
 
+/// Ordered root paths supplied by a caller. The first path retains the legacy positional-root
+/// role; additional paths are considered in the order supplied.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceRootSelection {
+    pub primary: Utf8PathBuf,
+    pub additional: Vec<Utf8PathBuf>,
+}
+
+impl SourceRootSelection {
+    #[must_use]
+    pub const fn single(primary: Utf8PathBuf) -> Self {
+        Self {
+            primary,
+            additional: Vec::new(),
+        }
+    }
+
+    fn paths(&self) -> impl Iterator<Item = &Utf8PathBuf> {
+        std::iter::once(&self.primary).chain(self.additional.iter())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 /// Counts and identity for one completed source scan.
 pub struct SourceScanReport {
@@ -142,6 +164,8 @@ pub struct BuildWorkflowReport {
     pub written_paths: Vec<Utf8PathBuf>,
     pub artifact_results: Vec<ArtifactResult>,
     pub build_report: BuildReport,
+    /// Scan results for every selected root. `scan_report` is retained as the legacy primary-root view.
+    pub scan_reports: Vec<SourceScanReport>,
     pub scan_report: Option<SourceScanReport>,
 }
 
@@ -664,20 +688,79 @@ pub fn scan_source_with_progress(
 ///
 /// Artifact-level failures are returned in the report. Once planning succeeds, output
 /// setup and execution errors carry the partial report in [`crate::Error::BuildWorkflow`].
+/// Scan every distinct canonical root before replacing any cached scope. If any scan fails,
+/// none of the requested roots are refreshed. Successful scans commit together in one DB tx.
+pub fn scan_sources_with_progress(
+    database: &Database,
+    selection: &SourceRootSelection,
+    jobs: usize,
+    progress: &(impl Fn(ScanProgressEvent) + Sync),
+) -> crate::Result<Vec<SourceScanReport>> {
+    let roots = canonical_roots(selection)?;
+    let excluded_paths = crate::storage::db::database_file_paths(database.pool())?;
+    let mut completed_scans = Vec::with_capacity(roots.len());
+    for (path, _) in &roots {
+        let scan = operations::scan::source_with_progress(path, jobs, &excluded_paths, &|event| {
+            progress(match event {
+                operations::scan::ScanProgress::Started { files } => {
+                    ScanProgressEvent::Started { files }
+                }
+                operations::scan::ScanProgress::Advanced => ScanProgressEvent::Advanced,
+            });
+        })?;
+        completed_scans.push(scan);
+    }
+    let associated =
+        SourceRepository::new(database.pool()).replace_completed_scans(&completed_scans)?;
+    Ok(completed_scans
+        .iter()
+        .zip(associated)
+        .map(|(scan, associated_rom_count)| SourceScanReport {
+            source_path: Utf8PathBuf::from(scan.source_root().as_str()),
+            scan_run: scan.scan_run(),
+            observation_count: scan.observations().len(),
+            associated_rom_count,
+        })
+        .collect())
+}
+
+pub fn scan_sources(
+    database: &Database,
+    selection: &SourceRootSelection,
+    jobs: usize,
+) -> crate::Result<Vec<SourceScanReport>> {
+    scan_sources_with_progress(database, selection, jobs, &|_| {})
+}
 pub fn build(
     database: &Database,
     request: &BuildWorkflowRequest,
 ) -> crate::Result<BuildWorkflowReport> {
-    let source_root = request.source_path.canonicalize_utf8()?;
+    build_with_roots(
+        database,
+        request,
+        &SourceRootSelection::single(request.source_path.clone()),
+    )
+}
+
+pub fn build_with_roots(
+    database: &Database,
+    request: &BuildWorkflowRequest,
+    selection: &SourceRootSelection,
+) -> crate::Result<BuildWorkflowReport> {
+    let roots = canonical_roots(selection)?;
+    let canonical_paths = roots
+        .iter()
+        .map(|(path, _)| path.as_path())
+        .collect::<Vec<_>>();
     crate::build::validation::ensure_sources_disjoint_from_destination(
-        &[source_root.as_path()],
+        &canonical_paths,
         &request.destination_path,
     )?;
-    let plan = plan_build(
+    let plan = plan_build_with_roots(
         database,
         &BuildPlanRequest {
             dat_path: request.dat_path.clone(),
-            source_path: request.source_path.clone(),
+            source_path: selection.primary.clone(),
             mode: request.mode,
             matching_policy: MatchingPolicy::Sha1Compatibility,
             missing_policy: if request.strict {
@@ -686,6 +769,7 @@ pub fn build(
                 MissingContentPolicy::AllowPartial
             },
         },
+        selection,
     )?;
     let unattempted = || {
         plan.groups
@@ -704,9 +788,8 @@ pub fn build(
         Ok((Vec::new(), unattempted()))
     } else {
         (|| {
-            let source_root = request.source_path.canonicalize_utf8()?;
             crate::build::validation::ensure_sources_disjoint_from_destination(
-                &[source_root.as_path()],
+                &canonical_paths,
                 &request.destination_path,
             )?;
             let results =
@@ -732,6 +815,7 @@ pub fn build(
                     written_paths: Vec::new(),
                     artifact_results: unattempted(),
                     build_report,
+                    scan_reports: Vec::new(),
                     scan_report: None,
                 }),
                 source: Box::new(source),
@@ -743,6 +827,7 @@ pub fn build(
         written_paths,
         artifact_results,
         build_report,
+        scan_reports: Vec::new(),
         scan_report: None,
     })
 }
@@ -752,23 +837,44 @@ pub fn plan_build(
     database: &Database,
     request: &BuildPlanRequest,
 ) -> crate::Result<crate::domain::BuildPlan> {
+    plan_build_with_roots(
+        database,
+        request,
+        &SourceRootSelection::single(request.source_path.clone()),
+    )
+}
+
+pub fn plan_build_with_roots(
+    database: &Database,
+    request: &BuildPlanRequest,
+    selection: &SourceRootSelection,
+) -> crate::Result<crate::domain::BuildPlan> {
     let dat_selector = resolve_dat_selector(&request.dat_path);
-    let source_root = request.source_path.canonicalize_utf8()?;
+    let roots = canonical_roots(selection)?;
+    let source_roots = roots
+        .iter()
+        .map(|(_, root)| root.clone())
+        .collect::<Vec<_>>();
     let dat_roms =
         BuildRepository::new(database.pool()).load_dat_roms(dat_selector.repository_selector())?;
-    let source_files = SourceRepository::new(database.pool())
-        .load_source_files_for_root(&SourceRoot::new(source_root.to_string()))?;
-    Ok(build_plan(
+    let repository = SourceRepository::new(database.pool());
+    let source_files = if let [source_root] = source_roots.as_slice() {
+        repository.load_source_files_for_root(source_root)?
+    } else {
+        repository.load_source_files_for_roots(&source_roots)?
+    };
+    let plan = build_plan(
         &dat_roms,
         &source_files,
         &BuildRequest {
             dat_name: dat_selector.value().to_owned(),
-            source_root: SourceRoot::new(source_root.to_string()),
+            source_roots,
             mode: request.mode,
             matching_policy: request.matching_policy,
             missing_policy: request.missing_policy,
         },
-    ))
+    );
+    Ok(plan)
 }
 
 pub fn audit(database: &Database, request: &AuditRequest) -> crate::Result<AuditReport> {
@@ -780,31 +886,59 @@ pub fn audit_with_progress(
     request: &AuditRequest,
     progress: &(impl Fn(ScanProgressEvent) + Sync),
 ) -> crate::Result<AuditReport> {
+    audit_with_roots_and_progress(
+        database,
+        request,
+        &SourceRootSelection::single(request.source_path.clone()),
+        progress,
+    )
+}
+
+pub fn audit_with_roots(
+    database: &Database,
+    request: &AuditRequest,
+    selection: &SourceRootSelection,
+) -> crate::Result<AuditReport> {
+    audit_with_roots_and_progress(database, request, selection, &|_| {})
+}
+
+pub fn audit_with_roots_and_progress(
+    database: &Database,
+    request: &AuditRequest,
+    selection: &SourceRootSelection,
+    progress: &(impl Fn(ScanProgressEvent) + Sync),
+) -> crate::Result<AuditReport> {
     let observation_basis = match request.refresh {
         AuditRefresh::Cached => ObservationBasis::Cached,
         AuditRefresh::Refresh => {
-            let scan = scan_source_with_progress(
-                database,
-                &SourceScanRequest {
-                    source_path: request.source_path.clone(),
-                    jobs: request.jobs,
-                },
-                progress,
-            )?;
-            ObservationBasis::FreshScan {
-                scan_run: scan.scan_run,
+            let scans = scan_sources_with_progress(database, selection, request.jobs, progress)?;
+            if let [scan] = scans.as_slice() {
+                ObservationBasis::FreshScan {
+                    scan_run: scan.scan_run,
+                }
+            } else {
+                ObservationBasis::FreshScans {
+                    scan_runs: scans
+                        .into_iter()
+                        .map(|scan| crate::domain::RootScanRun {
+                            source_root: SourceRoot::new(scan.source_path.to_string()),
+                            scan_run: scan.scan_run,
+                        })
+                        .collect(),
+                }
             }
         }
     };
-    let plan = plan_build(
+    let plan = plan_build_with_roots(
         database,
         &BuildPlanRequest {
             dat_path: request.dat_path.clone(),
-            source_path: request.source_path.clone(),
+            source_path: selection.primary.clone(),
             mode: BuildMode::ParentBundles,
             matching_policy: request.matching_policy,
             missing_policy: MissingContentPolicy::AllowPartial,
         },
+        selection,
     )?;
     Ok(AuditReport::new(observation_basis, plan.report))
 }
@@ -823,8 +957,35 @@ pub fn run_with_progress(
     request: &RunWorkflowRequest,
     progress: &(impl Fn(ScanProgressEvent) + Sync),
 ) -> crate::Result<BuildWorkflowReport> {
+    run_with_roots_and_progress(
+        database,
+        request,
+        &SourceRootSelection::single(request.source_path.clone()),
+        progress,
+    )
+}
+
+pub fn run_with_roots(
+    database: &Database,
+    request: &RunWorkflowRequest,
+    selection: &SourceRootSelection,
+) -> crate::Result<BuildWorkflowReport> {
+    run_with_roots_and_progress(database, request, selection, &|_| {})
+}
+
+pub fn run_with_roots_and_progress(
+    database: &Database,
+    request: &RunWorkflowRequest,
+    selection: &SourceRootSelection,
+    progress: &(impl Fn(ScanProgressEvent) + Sync),
+) -> crate::Result<BuildWorkflowReport> {
+    let roots = canonical_roots(selection)?;
+    let canonical_paths = roots
+        .iter()
+        .map(|(path, _)| path.as_path())
+        .collect::<Vec<_>>();
     crate::build::validation::ensure_sources_disjoint_from_destination(
-        &[request.source_path.as_path()],
+        &canonical_paths,
         &request.destination_path,
     )?;
     import_dat(
@@ -833,19 +994,34 @@ pub fn run_with_progress(
             dat_path: request.dat_path.clone(),
         },
     )?;
-    let scan_report =
-        scan_source_with_progress(database, &source_scan_request_from_run(request), progress)?;
-    match build(database, &build_workflow_request_from_run(request)) {
+    let scan_reports = scan_sources_with_progress(database, selection, request.jobs, progress)?;
+    let scan_report = scan_reports.first().cloned().ok_or_else(|| {
+        crate::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "at least one source root is required",
+        ))
+    })?;
+    match build_with_roots(
+        database,
+        &build_workflow_request_from_run(request),
+        selection,
+    ) {
         Ok(mut report) => {
             report.scan_report = Some(scan_report);
+            report.scan_reports = scan_reports;
             Ok(report)
         }
         Err(crate::Error::BuildWorkflow { mut report, source }) => {
             report.scan_report = Some(scan_report);
+            report.scan_reports = scan_reports;
             Err(crate::Error::BuildWorkflow { report, source })
         }
-        Err(source) => Err(crate::Error::RunWorkflow {
+        Err(source) if scan_reports.len() == 1 => Err(crate::Error::RunWorkflow {
             scan_report,
+            source: Box::new(source),
+        }),
+        Err(source) => Err(crate::Error::RunWorkflowWithRoots {
+            scan_reports,
             source: Box::new(source),
         }),
     }
@@ -1076,13 +1252,6 @@ fn resolve_dat_selector(dat_path: &Utf8PathBuf) -> BuildDatSelector {
     )
 }
 
-fn source_scan_request_from_run(request: &RunWorkflowRequest) -> SourceScanRequest {
-    SourceScanRequest {
-        source_path: request.source_path.clone(),
-        jobs: request.jobs,
-    }
-}
-
 fn build_workflow_request_from_run(request: &RunWorkflowRequest) -> BuildWorkflowRequest {
     BuildWorkflowRequest {
         dat_path: request.dat_path.clone(),
@@ -1093,4 +1262,24 @@ fn build_workflow_request_from_run(request: &RunWorkflowRequest) -> BuildWorkflo
         dry_run: request.dry_run,
         strict: request.strict,
     }
+}
+
+fn canonical_roots(
+    selection: &SourceRootSelection,
+) -> crate::Result<Vec<(Utf8PathBuf, SourceRoot)>> {
+    let mut roots = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for path in selection.paths() {
+        let canonical_path = path.canonicalize_utf8()?;
+        let root = SourceRoot::new(canonical_path.to_string());
+        if seen.insert(root.clone()) {
+            roots.push((canonical_path, root));
+        }
+    }
+    if roots.is_empty() {
+        return Err(crate::Error::InvalidPath(
+            "at least one source root is required".to_owned(),
+        ));
+    }
+    Ok(roots)
 }
