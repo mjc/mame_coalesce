@@ -1,7 +1,7 @@
 use diesel::{Associations, Insertable, Queryable};
 
 use crate::{
-    domain::{ArchiveMemberSelector, SourceLocation, SourceObservation},
+    domain::{ArchiveMemberSelector, ScanProvenance, SourceLocation, SourceObservation},
     hashes::{Sha1Digest, Xxh3Digest},
     storage::schema::rom_files,
 };
@@ -27,6 +27,8 @@ pub struct RomFile {
     pub observed_size: Option<i64>,
     pub source_fingerprint: Option<Vec<u8>>,
     pub scan_provenance: Option<String>,
+    pub bare_file_cache_stamp: Option<Vec<u8>>,
+    pub cache_reused: bool,
     pub rom_id: Option<i32>,
 }
 
@@ -48,6 +50,8 @@ pub struct New {
     pub observed_size: Option<i64>,
     pub source_fingerprint: Option<Vec<u8>>,
     pub scan_provenance: Option<String>,
+    pub bare_file_cache_stamp: Option<Vec<u8>>,
+    pub cache_reused: bool,
     pub rom_id: Option<i32>,
 }
 
@@ -91,6 +95,11 @@ impl New {
                 ));
             }
         };
+        if in_archive && observation.bare_file_cache_stamp.is_some() {
+            return Err(crate::Error::InvalidPath(
+                "archive observation cannot carry a bare-file cache stamp".to_owned(),
+            ));
+        }
 
         Ok(Self {
             parent_path: parent_path.as_str().to_owned(),
@@ -107,7 +116,11 @@ impl New {
             scan_run: Some(observation.scan_run.to_storage_key()),
             observed_size: Some(observed_size),
             source_fingerprint: Some(observation.fingerprint.digest().to_vec()),
-            scan_provenance: Some(observation.scan_provenance.storage_key().to_owned()),
+            scan_provenance: Some(ScanProvenance::StreamedSha1Xxh3V1.storage_key().to_owned()),
+            bare_file_cache_stamp: observation
+                .bare_file_cache_stamp
+                .map(|stamp| stamp.as_bytes().to_vec()),
+            cache_reused: observation.scan_provenance == ScanProvenance::ReusedStatValidatedV1,
             rom_id: None,
         })
     }

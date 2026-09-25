@@ -67,6 +67,12 @@ parser-internal representations the public contract.
   before mutation, then replace their inventory scopes in one SQLite
   transaction. A failed root scan leaves all requested scopes untouched. A
   single-root scan has the same scan-completely-before-replace rule.
+- Incremental reuse is explicit and single-root only. The default always
+  rehashes; opted-in reuse is restricted to bare files whose persisted Unix
+  identity/size/mtime/ctime stamp matches, while archives always get rescanned.
+  Missing or changed stamps and `--force-rehash` paths hash normally. The stamp
+  is a freshness hint, never a content digest; build-time source-byte
+  verification remains authoritative, and unsupported platforms disable reuse.
 - Outputs are not a single transaction across groups. Each ZIP is written to a
   sibling temporary file, synced, then replaced atomically on Unix. Each
   directory is built in a private sibling stage; replacement backs up an

@@ -318,6 +318,8 @@ diesel::table! {
         observed_size -> Nullable<BigInt>,
         source_fingerprint -> Nullable<Binary>,
         scan_provenance -> Nullable<Text>,
+        bare_file_cache_stamp -> Nullable<Binary>,
+        cache_reused -> Bool,
         rom_id -> Nullable<Integer>,
     }
 }

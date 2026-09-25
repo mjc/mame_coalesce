@@ -40,6 +40,8 @@ Explicit cache maintenance commands are available for advanced workflows:
 ```sh
 mame_coalesce --cache /tmp/coalesce.db cache import fixtures/test.dat
 mame_coalesce --cache /tmp/coalesce.db cache scan /path/to/roms --jobs 8
+mame_coalesce --cache /tmp/coalesce.db cache scan /path/to/roms --reuse-unchanged
+mame_coalesce --cache /tmp/coalesce.db cache scan /path/to/roms --reuse-unchanged --force-rehash /path/to/roms/suspect.rom
 mame_coalesce --cache /tmp/coalesce.db cache build "DAT Header Name" /path/to/roms /path/to/out
 mame_coalesce --cache /tmp/coalesce.db audit "DAT Header Name" /path/to/roms
 mame_coalesce --cache /tmp/coalesce.db audit "DAT Header Name" /path/to/roms --format json
@@ -60,6 +62,17 @@ For example, `mame_coalesce build catalog.dat /roms/primary out
 --source-root /roms/secondary --source-root /roms/overrides` searches the
 primary tree first, followed by secondary and overrides. Repeat the same ordered
 options for `audit` or `cache scan` to use the same scope and precedence.
+
+Cache scans rehash every source by default. For a single source root, the
+explicit `cache scan --reuse-unchanged` option may reuse observations for bare
+files when their persisted Unix file identity, size, modification time, and
+change time still match. Archives are always read and fingerprinted. Use the
+repeatable `--force-rehash FILE` option to bypass reuse for selected files;
+files with absent or mismatched cache stamps also fall back to a full hash.
+This metadata check is an opt-in performance heuristic, not integrity evidence:
+privileged metadata manipulation or filesystem behavior outside the platform
+stamp can make it stale. Builds still verify source bytes against catalog
+evidence before writing output. Non-Unix platforms safely disable reuse.
 
 The reusable library operations in `app` do not initialize logging or terminal
 progress. `plan_build` reads the selected catalog and cached scan observations
