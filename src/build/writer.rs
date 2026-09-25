@@ -137,17 +137,32 @@ fn write_entry(
         SourceLocation::ArchiveMember {
             path,
             backend,
-            selector: ArchiveMemberSelector::IndexAndName { name, .. },
+            selector: ArchiveMemberSelector::IndexAndName { index, name },
         } => match backend {
-            ArchiveBackend::Zip => {
-                copy_from_zip_entry(path, name, &entry.output_name, zip_writer, options)
-            }
-            ArchiveBackend::SevenZip => {
-                copy_from_7z_entry(path, name, &entry.output_name, zip_writer, options)
-            }
-            ArchiveBackend::Rar => {
-                copy_from_rar_entry(path, name, &entry.output_name, zip_writer, options)
-            }
+            ArchiveBackend::Zip => copy_from_zip_entry_at_index(
+                path,
+                *index,
+                name,
+                &entry.output_name,
+                zip_writer,
+                options,
+            ),
+            ArchiveBackend::SevenZip => copy_from_7z_entry_at_index(
+                path,
+                *index,
+                name,
+                &entry.output_name,
+                zip_writer,
+                options,
+            ),
+            ArchiveBackend::Rar => copy_from_rar_entry_at_index(
+                path,
+                *index,
+                name,
+                &entry.output_name,
+                zip_writer,
+                options,
+            ),
         },
         SourceLocation::LegacyUnknown { path, member_name } => {
             let name = member_name.as_deref().ok_or_else(|| {
@@ -211,6 +226,30 @@ fn copy_from_zip_entry(
             "archive entry not found: {path}:{entry_name}"
         )))
     }
+}
+
+fn copy_from_zip_entry_at_index(
+    path: &str,
+    index: u64,
+    entry_name: &str,
+    destination_name: &str,
+    zip_writer: &mut ZipWriter<BufWriter<File>>,
+    options: SimpleFileOptions,
+) -> crate::Result<()> {
+    let index = usize::try_from(index)
+        .map_err(|_| crate::Error::InvalidPath(format!("invalid zip member index: {index}")))?;
+    let input_file = File::open(path)?;
+    let input_reader = BufReader::new(input_file);
+    let mut archive = zip::ZipArchive::new(input_reader)?;
+    let mut file = archive.by_index(index)?;
+    if file.is_dir() || !zip_entry_enclosed_name_matches(&file, Path::new(entry_name))? {
+        return Err(crate::Error::InvalidPath(format!(
+            "archive entry not found or selector mismatch at zip index {index}: {path}:{entry_name}"
+        )));
+    }
+    zip_writer.start_file(destination_name, options)?;
+    std::io::copy(&mut file, zip_writer)?;
+    Ok(())
 }
 
 fn copy_zip_entry_by_enclosed_name<R: Read + Seek>(
@@ -283,6 +322,39 @@ fn copy_from_rar_entry(
     )))
 }
 
+fn copy_from_rar_entry_at_index(
+    path: &str,
+    index: u64,
+    entry_name: &str,
+    destination_name: &str,
+    zip_writer: &mut ZipWriter<BufWriter<File>>,
+    options: SimpleFileOptions,
+) -> crate::Result<()> {
+    let requested_path = safe_rar_entry_path(entry_name)?;
+    let mut archive = unrar::Archive::new(Path::new(path)).open_for_processing()?;
+    let mut current_index = 0_u64;
+    while let Some(header) = archive.read_header()? {
+        let selected = current_index == index;
+        current_index += 1;
+        if selected {
+            if !rar_header_matches_entry(header.entry(), &requested_path)? {
+                return Err(crate::Error::InvalidPath(format!(
+                    "archive entry not found or selector mismatch at RAR index {index}: {path}:{entry_name}"
+                )));
+            }
+            let (data, _rest) = header.read()?;
+            zip_writer.start_file(destination_name, options)?;
+            zip_writer.write_all(&data)?;
+            return Ok(());
+        }
+        archive = header.skip()?;
+    }
+
+    Err(crate::Error::InvalidPath(format!(
+        "archive entry not found at RAR index {index}: {path}:{entry_name}"
+    )))
+}
+
 fn rar_header_matches_entry(
     header: &unrar::FileHeader,
     requested_path: &Path,
@@ -340,6 +412,34 @@ fn copy_from_7z_entry(
     Ok(())
 }
 
+fn copy_from_7z_entry_at_index(
+    path: &str,
+    index: u64,
+    entry_name: &str,
+    destination_name: &str,
+    zip_writer: &mut ZipWriter<BufWriter<File>>,
+    options: SimpleFileOptions,
+) -> crate::Result<()> {
+    let index = usize::try_from(index)
+        .map_err(|_| crate::Error::InvalidPath(format!("invalid 7z member index: {index}")))?;
+    let archive = r7z::Archive::open(Path::new(path))?;
+    let Some(entry) = archive.entry(index) else {
+        return Err(crate::Error::InvalidPath(format!(
+            "archive entry not found at 7z index {index}: {path}:{entry_name}"
+        )));
+    };
+    let safe_name = r7z::safe_archive_name(entry_name).ok();
+    let name_matches = entry.name == entry_name || entry.safe_path() == safe_name.as_deref();
+    if !entry.is_file() || !name_matches {
+        return Err(crate::Error::InvalidPath(format!(
+            "archive entry not found or selector mismatch at 7z index {index}: {path}:{entry_name}"
+        )));
+    }
+    zip_writer.start_file(destination_name, options)?;
+    archive.extract_to_writer(index, zip_writer)?;
+    Ok(())
+}
+
 fn has_extractable_7z_entry(archive: &r7z::Archive, entry_name: &str) -> bool {
     if archive
         .entries()
@@ -361,7 +461,7 @@ mod tests {
 
     use proptest::prelude::*;
 
-    use crate::domain::{BuildReport, SourceFile, ZipSpec};
+    use crate::domain::{ArchiveMemberSelector, BuildReport, SourceFile, SourceLocation, ZipSpec};
 
     #[derive(Clone, Copy)]
     enum SourceKind {
@@ -747,12 +847,20 @@ mod tests {
             ],
         )?;
         let destination = utf8_path(temp_dir.path())?.join("output");
-        let plan = single_zip_entry_plan(
+        let mut plan = single_zip_entry_plan(
             &archive_path,
             "nested/target.rom",
             "copied.rom",
             SourceKind::Zip,
         );
+        let SourceLocation::ArchiveMember {
+            selector: ArchiveMemberSelector::IndexAndName { index, .. },
+            ..
+        } = &mut plan.zips[0].entries[0].source.location
+        else {
+            return Err("expected typed archive-member source".into());
+        };
+        *index = 1;
 
         let written_paths = write_plan(&plan, &destination)?;
         let zip_path = written_paths
@@ -765,6 +873,33 @@ mod tests {
         entry.read_to_end(&mut contents)?;
 
         assert_eq!(contents, b"target");
+        Ok(())
+    }
+
+    #[test]
+    fn zip_source_entry_rejects_selector_index_name_mismatch()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let archive_path = utf8_path(temp_dir.path())?.join("source.zip");
+        write_source_zip(
+            &archive_path,
+            &[("first.rom", b"first"), ("second.rom", b"second")],
+        )?;
+        let destination = utf8_path(temp_dir.path())?.join("output");
+        let plan =
+            single_zip_entry_plan(&archive_path, "second.rom", "copied.rom", SourceKind::Zip);
+        let SourceLocation::ArchiveMember {
+            selector: ArchiveMemberSelector::IndexAndName { index, .. },
+            ..
+        } = &plan.zips[0].entries[0].source.location
+        else {
+            return Err("expected typed archive-member source".into());
+        };
+        assert_eq!(*index, 0);
+
+        let result = write_plan(&plan, &destination);
+
+        assert!(result.is_err(), "a mismatched index and name must fail");
         Ok(())
     }
 
@@ -909,6 +1044,33 @@ mod tests {
     }
 
     #[test]
+    fn seven_zip_source_rejects_out_of_range_member_index() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let temp_dir = tempfile::tempdir()?;
+        let archive_path = utf8_path(temp_dir.path())?.join("source.7z");
+        let archive_data = r7z::ArchiveBuilder::new()
+            .add_file("game.rom", b"rom")
+            .build()?;
+        std::fs::write(&archive_path, archive_data)?;
+        let destination = utf8_path(temp_dir.path())?.join("output");
+        let mut plan =
+            single_zip_entry_plan(&archive_path, "game.rom", "game.rom", SourceKind::Archive);
+        let SourceLocation::ArchiveMember {
+            selector: ArchiveMemberSelector::IndexAndName { index, .. },
+            ..
+        } = &mut plan.zips[0].entries[0].source.location
+        else {
+            return Err("expected typed archive-member source".into());
+        };
+        *index = 1;
+
+        let message = error_message(write_plan(&plan, &destination))?;
+
+        assert!(message.contains("archive entry not found"));
+        Ok(())
+    }
+
+    #[test]
     fn archive_source_entry_writes_rar_content() -> Result<(), Box<dyn std::error::Error>> {
         let temp_dir = tempfile::tempdir()?;
         let archive_path = utf8_path(temp_dir.path())?.join("source.rar");
@@ -926,6 +1088,28 @@ mod tests {
         entry.read_to_end(&mut contents)?;
 
         assert_eq!(contents, b"unrar-0.4.0");
+        Ok(())
+    }
+
+    #[test]
+    fn rar_source_rejects_out_of_range_member_index() -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let archive_path = utf8_path(temp_dir.path())?.join("source.rar");
+        write_version_rar(&archive_path)?;
+        let destination = utf8_path(temp_dir.path())?.join("output");
+        let mut plan = single_zip_entry_plan(&archive_path, "VERSION", "game.rom", SourceKind::Rar);
+        let SourceLocation::ArchiveMember {
+            selector: ArchiveMemberSelector::IndexAndName { index, .. },
+            ..
+        } = &mut plan.zips[0].entries[0].source.location
+        else {
+            return Err("expected typed archive-member source".into());
+        };
+        *index = 1;
+
+        let message = error_message(write_plan(&plan, &destination))?;
+
+        assert!(message.contains("archive entry not found"));
         Ok(())
     }
 
