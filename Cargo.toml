@@ -74,6 +74,8 @@ serde-xml-rs = "0.8"
 serde_json = { version = "1", features = ["raw_value"] }
 
 zip = { version = "8.5", features = ["deflate", "bzip2", "zstd"] }
+crc32fast = "1.5"
+md-5 = "0.10"
 r7z = { version = "0.1.0", git = "https://github.com/mjc/r7z.git", rev = "bfef3198696add8045ad34581dd977d671ae9daa" }
 unrar = "0.5.8"
 
