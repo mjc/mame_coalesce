@@ -162,6 +162,13 @@ fn write_zip_spec(
     for ((path, backend), selectors) in groups {
         let source_path = Utf8Path::new(&path);
         let selectors = selectors.into_iter().collect::<Vec<_>>();
+        if backend == ArchiveBackend::SevenZip && selectors.len() == 1 {
+            let spool = spool.as_ref().ok_or_else(|| {
+                crate::Error::InvalidPath("archive staging was not initialized".to_owned())
+            })?;
+            stage_single_7z_member(&path, source_path, &selectors[0], spool, &mut staged)?;
+            continue;
+        }
         crate::sources::stream_archive(
             source_path,
             backend,
@@ -217,6 +224,43 @@ fn write_zip_spec(
             }
         }
     }
+    Ok(())
+}
+
+fn stage_single_7z_member(
+    path: &str,
+    source_path: &Utf8Path,
+    selector: &crate::sources::ArchiveMemberSelector,
+    spool: &ArchiveSpool,
+    staged: &mut BTreeMap<
+        (
+            String,
+            ArchiveBackend,
+            crate::sources::ArchiveMemberSelector,
+        ),
+        PathBuf,
+    >,
+) -> crate::Result<()> {
+    let member = crate::sources::resolve_7z_member(source_path, selector)?;
+    let remaining = spool.remaining_bytes();
+    if member.size > remaining {
+        return Err(crate::Error::InvalidPath(format!(
+            "selected archive members exceed the {} GiB staging limit",
+            MAX_ARCHIVE_STAGING_BYTES / (1024 * 1024 * 1024)
+        )));
+    }
+    let staged_path = spool.next_path()?;
+    let file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&staged_path)?;
+    let mut writer = ArchiveSpoolWriter::new(file, remaining);
+    crate::sources::extract_7z_member_to(source_path, &member, remaining, &mut writer)?;
+    spool.record_bytes(writer.written_bytes())?;
+    staged.insert(
+        (path.to_owned(), ArchiveBackend::SevenZip, member.selector),
+        staged_path,
+    );
     Ok(())
 }
 

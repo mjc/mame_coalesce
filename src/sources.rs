@@ -154,6 +154,26 @@ where
     Ok(inventory)
 }
 
+pub fn resolve_7z_member(
+    path: &Utf8Path,
+    selector: &ArchiveMemberSelector,
+) -> Result<ArchiveMember> {
+    let inventory = enumerate(path, ArchiveBackend::SevenZip)?;
+    resolve_selection(&inventory, Some(std::slice::from_ref(selector)))?
+        .pop()
+        .ok_or_else(|| Error::InvalidPath("7z member selector resolved empty".to_owned()))
+}
+
+pub fn extract_7z_member_to(
+    path: &Utf8Path,
+    member: &ArchiveMember,
+    max_bytes: u64,
+    writer: &mut dyn Write,
+) -> Result<()> {
+    let limit = max_bytes.min(SEVEN_Z_MAX_SELECTED_MEMBER_SIZE);
+    extract_7z_member_to_known(path, member, limit, writer)
+}
+
 fn resolve_selection(
     inventory: &[ArchiveMember],
     selected: Option<&[ArchiveMemberSelector]>,
@@ -452,48 +472,15 @@ fn stream_7z<F>(path: &Utf8Path, members: &[ArchiveMember], callback: &mut F) ->
 where
     F: FnMut(&ArchiveMember, &mut dyn Read) -> Result<()>,
 {
-    let archive = r7z::Archive::open(path.as_std_path())?;
-    if members.len() == 1 {
-        let member = &members[0];
-        let entry = archive
-            .entry(member.selector.index)
-            .ok_or_else(|| Error::InvalidPath("7z selector index disappeared".to_owned()))?;
-        let name = normalize_member_name(&entry.name)?;
-        let listing = archive.listing(None)?;
-        let size = listing
-            .entries
-            .get(member.selector.index)
-            .and_then(|listed| listed.size)
-            .ok_or_else(|| Error::InvalidPath("7z member size is unavailable".to_owned()))?;
-        if !entry.is_file() || name != member.selector.name || size != member.size {
-            return Err(Error::InvalidPath(format!(
-                "7z member changed after enumeration at index {}: {}",
-                member.selector.index, member.selector.name
-            )));
-        }
-        if size > SEVEN_Z_MAX_SELECTED_MEMBER_SIZE {
+    for member in members {
+        if member.size > SEVEN_Z_MAX_SELECTED_MEMBER_SIZE {
             return Err(Error::InvalidPath(format!(
                 "7z member {} exceeds the 16 GiB selected-member limit",
                 member.selector.name
             )));
         }
-        let directory = crate::private_temp::PrivateTempDir::create("mame-coalesce-7z-")?;
-        let output_path = directory.path().join("member.data");
-        let output = File::create(&output_path)?;
-        let mut writer = BoundedFileWriter::new(output, size);
-        let extracted_size = archive.extract_to_writer(member.selector.index, &mut writer)?;
-        if extracted_size != size || writer.written != size {
-            return Err(Error::InvalidPath(format!(
-                "7z member size changed while reading: {}",
-                member.selector.name
-            )));
-        }
-        drop(writer);
-        let mut reader: &mut dyn Read = &mut File::open(output_path)?;
-        callback(member, &mut reader)?;
-        io::copy(&mut reader, &mut io::sink())?;
-        return Ok(());
     }
+    let archive = r7z::Archive::open(path.as_std_path())?;
     let selected = members
         .iter()
         .map(|member| (member.selector.index, member))
@@ -508,13 +495,19 @@ where
         if member.selector.name != name {
             return Err(r7z::R7zError::UnsafePath(entry.name.clone()));
         }
-        if let Err(error) = callback(member, reader) {
+        let mut bounded = BoundedMemberReader::new(reader, member.size);
+        if let Err(error) = callback(member, &mut bounded) {
             callback_error = Some(error);
             return Err(r7z::R7zError::Io(io::Error::other(
                 "source callback failed",
             )));
         }
-        io::copy(reader, &mut io::sink()).map_err(r7z::R7zError::Io)?;
+        io::copy(&mut bounded, &mut io::sink()).map_err(r7z::R7zError::Io)?;
+        if bounded.read != member.size {
+            return Err(r7z::R7zError::Io(io::Error::other(
+                "7z member size changed while reading",
+            )));
+        }
         Ok(())
     });
     if let Some(error) = callback_error {
@@ -524,23 +517,63 @@ where
     Ok(())
 }
 
-struct BoundedFileWriter {
-    file: File,
+fn extract_7z_member_to_known(
+    path: &Utf8Path,
+    member: &ArchiveMember,
+    limit: u64,
+    writer: &mut dyn Write,
+) -> Result<()> {
+    if member.size > limit {
+        return Err(Error::InvalidPath(format!(
+            "7z member {} exceeds the available staging limit",
+            member.selector.name
+        )));
+    }
+    let archive = r7z::Archive::open(path.as_std_path())?;
+    let entry = archive
+        .entry(member.selector.index)
+        .ok_or_else(|| Error::InvalidPath("7z selector index disappeared".to_owned()))?;
+    let name = normalize_member_name(&entry.name)?;
+    let listing = archive.listing(None)?;
+    let size = listing
+        .entries
+        .get(member.selector.index)
+        .and_then(|listed| listed.size)
+        .ok_or_else(|| Error::InvalidPath("7z member size is unavailable".to_owned()))?;
+    if !entry.is_file() || name != member.selector.name || size != member.size {
+        return Err(Error::InvalidPath(format!(
+            "7z member changed after enumeration at index {}: {}",
+            member.selector.index, member.selector.name
+        )));
+    }
+    let mut bounded = BoundedMemberWriter::new(writer, size);
+    let extracted = archive.extract_to_writer(member.selector.index, &mut bounded)?;
+    if extracted != size || bounded.written != size {
+        return Err(Error::InvalidPath(format!(
+            "7z member size changed while reading: {}",
+            member.selector.name
+        )));
+    }
+    Ok(())
+}
+
+struct BoundedMemberWriter<'a> {
+    writer: &'a mut dyn Write,
     written: u64,
     limit: u64,
 }
 
-impl BoundedFileWriter {
-    const fn new(file: File, limit: u64) -> Self {
+impl<'a> BoundedMemberWriter<'a> {
+    const fn new(writer: &'a mut dyn Write, limit: u64) -> Self {
         Self {
-            file,
+            writer,
             written: 0,
             limit,
         }
     }
 }
 
-impl Write for BoundedFileWriter {
+impl Write for BoundedMemberWriter<'_> {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
         if buffer.is_empty() {
             return Ok(0);
@@ -550,7 +583,7 @@ impl Write for BoundedFileWriter {
             return Err(io::Error::other("7z member exceeded declared size"));
         }
         let allowed = usize::try_from(remaining).unwrap_or(usize::MAX);
-        let written = self.file.write(&buffer[..buffer.len().min(allowed)])?;
+        let written = self.writer.write(&buffer[..buffer.len().min(allowed)])?;
         self.written = self
             .written
             .checked_add(u64::try_from(written).map_err(io::Error::other)?)
@@ -559,7 +592,47 @@ impl Write for BoundedFileWriter {
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.file.flush()
+        self.writer.flush()
+    }
+}
+
+struct BoundedMemberReader<'a> {
+    reader: &'a mut dyn Read,
+    read: u64,
+    limit: u64,
+}
+
+impl<'a> BoundedMemberReader<'a> {
+    const fn new(reader: &'a mut dyn Read, limit: u64) -> Self {
+        Self {
+            reader,
+            read: 0,
+            limit,
+        }
+    }
+}
+
+impl Read for BoundedMemberReader<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if buffer.is_empty() {
+            return Ok(0);
+        }
+        let remaining = self.limit.saturating_sub(self.read);
+        if remaining == 0 {
+            let mut extra = [0; 1];
+            return match self.reader.read(&mut extra)? {
+                0 => Ok(0),
+                _ => Err(io::Error::other("7z member exceeded declared size")),
+            };
+        }
+        let allowed = usize::try_from(remaining).unwrap_or(usize::MAX);
+        let read_len = buffer.len().min(allowed);
+        let read = self.reader.read(&mut buffer[..read_len])?;
+        self.read = self
+            .read
+            .checked_add(u64::try_from(read).map_err(io::Error::other)?)
+            .ok_or_else(|| io::Error::other("7z member byte count overflowed"))?;
+        Ok(read)
     }
 }
 
