@@ -677,12 +677,15 @@ fn parse_number_at(node: &Element, record: &str, field: &str, value: &str) -> cr
 }
 
 fn parse_number(value: &str) -> crate::Result<u64> {
-    let parsed = value
+    let parsed = match value
         .strip_prefix("0x")
-        .or_else(|| value.strip_prefix("0X"));
-    let parsed = parsed
-        .map_or_else(|| value.parse(), |hex| u64::from_str_radix(hex, 16))
-        .map_err(|_| crate::Error::XmlValidation(format!("invalid unsigned integer {value:?}")))?;
+        .or_else(|| value.strip_prefix("0X"))
+    {
+        Some(hex) => u64::from_str_radix(hex, 16),
+        None if value.len() > 1 && value.starts_with('0') => u64::from_str_radix(value, 8),
+        None => value.parse(),
+    }
+    .map_err(|_| crate::Error::XmlValidation(format!("invalid unsigned integer {value:?}")))?;
     i64::try_from(parsed).map_err(|_| {
         crate::Error::XmlValidation(format!("integer exceeds supported storage range {value:?}"))
     })?;
@@ -697,6 +700,9 @@ fn parse_digest<const N: usize>(
     let Some(value) = node.attributes.get(field) else {
         return Ok(None);
     };
+    if value.is_empty() {
+        return Ok(None);
+    }
     let bytes = hex::decode(value).map_err(|_| invalid_value(node, record, field, value))?;
     let digest: [u8; N] = bytes
         .try_into()
@@ -1057,6 +1063,24 @@ mod tests {
         );
         assert_eq!(disk(at(&areas[2].components, 0)?)?.writeable, None);
         assert_eq!(disk(at(&areas[2].components, 1)?)?.writeable, Some(false));
+        Ok(())
+    }
+
+    #[test]
+    fn parser_uses_mame_number_bases_and_treats_empty_hashes_as_absent() -> crate::Result<()> {
+        let xml = br#"<softwarelist name="one"><software name="game"><description>Game</description><year>2000</year><publisher>Pub</publisher><part name="cart" interface="cart"><dataarea name="rom" size="010"><rom name="missing.bin" size="010" offset="010" status="nodump" crc="" sha1=""/></dataarea></part></software></softwarelist>"#;
+        let catalog = SoftwareListCatalog::parse(xml)?;
+        let area = at(&at(&at(&catalog.lists, 0)?.items, 0)?.parts, 0)?;
+        let area = at(&area.areas, 0)?;
+        assert_eq!(area.declared_size, Some(8));
+        let rom = as_rom(at(&area.components, 0)?)?;
+        assert_eq!(rom.size, Some(8));
+        assert_eq!(rom.offset, Some(8));
+        assert_eq!(rom.crc, None);
+        assert_eq!(rom.sha1, None);
+        assert_eq!(rom.status, Some(DumpStatus::NoDump));
+        assert_eq!(parse_number("0x10")?, 16);
+        assert!(parse_number("08").is_err());
         Ok(())
     }
 

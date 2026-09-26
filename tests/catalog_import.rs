@@ -588,6 +588,37 @@ fn imports_repeated_area_names_without_merging_components_or_defaults()
 }
 
 #[test]
+fn imports_mame_numeric_bases_and_empty_nodump_hashes() -> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, mut connection) = setup()?;
+    let path = directory.path().join("octal-software-nodump.xml");
+    std::fs::write(
+        &path,
+        br#"<softwarelist name="one"><software name="game"><description>Game</description><year>2000</year><publisher>Pub</publisher><part name="cart" interface="cart"><dataarea name="rom" size="010"><rom name="missing.bin" size="010" offset="010" status="nodump" crc="" sha1=""/></dataarea></part></software></softwarelist>"#,
+    )?;
+    let mut request = mame_softwarelist_request()?;
+    request.document_path =
+        Utf8PathBuf::from_path_buf(path).map_err(|_| "non-UTF8 fixture path")?;
+    request.catalog_key = CatalogKey::new("octal-software-nodump");
+    request.catalog_display_name = "Octal software sizes".into();
+    let report = app::import_catalog(&database, &request)?;
+    assert_eq!(report.status, app::CatalogImportStatus::Succeeded);
+    let area_size = sql_query("SELECT declared_size AS value FROM software_areas")
+        .get_result::<NullableIntegerRow>(&mut connection)?;
+    let rom_size = sql_query("SELECT size AS value FROM software_components")
+        .get_result::<NullableIntegerRow>(&mut connection)?;
+    let offset = sql_query("SELECT offset AS value FROM software_components")
+        .get_result::<NullableIntegerRow>(&mut connection)?;
+    let no_hash =
+        sql_query("SELECT crc IS NULL AND sha1 IS NULL AS value FROM software_components")
+            .get_result::<IntegerRow>(&mut connection)?;
+    assert_eq!(area_size.value, Some(8));
+    assert_eq!(rom_size.value, Some(8));
+    assert_eq!(offset.value, Some(8));
+    assert_eq!(no_hash.value, 1);
+    Ok(())
+}
+
+#[test]
 fn imports_empty_software_list_export_as_an_empty_snapshot()
 -> Result<(), Box<dyn std::error::Error>> {
     let (directory, database, mut connection) = setup()?;
