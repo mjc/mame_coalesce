@@ -58,6 +58,28 @@ pub enum CacheCommand {
     },
     /// Build from DAT and source rows already present in the cache.
     Build(CacheBuildArgs),
+    /// Audit imported disk requirements against a previously scanned source.
+    Audit(DiskAuditArgs),
+}
+
+#[derive(Clone, Debug, Args)]
+pub struct DiskAuditArgs {
+    #[arg(value_name = "catalog-key", help = "Imported catalog key")]
+    pub catalog: String,
+    #[arg(
+        value_name = "source",
+        help = "Previously scanned disk source directory"
+    )]
+    pub source: Utf8PathBuf,
+    #[arg(long, value_enum, default_value_t = ReportFormatArg::Text, help = "Audit report format")]
+    pub format: ReportFormatArg,
+}
+
+#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+pub enum ReportFormatArg {
+    #[default]
+    Text,
+    Json,
 }
 
 #[derive(Clone, Debug, Args)]

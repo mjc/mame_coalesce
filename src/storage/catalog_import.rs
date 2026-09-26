@@ -159,19 +159,36 @@ impl SnapshotData {
                     .into_iter()
                     .map(|asset| {
                         extensions.extend(asset.extensions.into_iter().map(stored_extension));
+                        let evidence_scope = asset
+                            .disk_requirement
+                            .as_ref()
+                            .map_or("whole_asset", |requirement| {
+                                requirement.digest_scope().as_str()
+                            });
+                        let sha1 = asset
+                            .disk_requirement
+                            .as_ref()
+                            .and_then(crate::disk::DiskRequirement::expected_sha1)
+                            .map(|digest| digest.as_bytes().to_vec())
+                            .or(asset.sha1);
+                        let merge = asset
+                            .disk_requirement
+                            .as_ref()
+                            .and_then(crate::disk::DiskRequirement::parent)
+                            .map(|name| name.as_str().to_owned());
                         SnapshotAsset {
                             name: asset.name,
-                            role: asset.role,
+                            role: match asset.role {
+                                crate::domain::AssetRole::Rom => "rom",
+                                crate::domain::AssetRole::Disk => "disk",
+                                crate::domain::AssetRole::Other => "other",
+                            },
                             size: asset.size,
                             crc: asset.crc,
                             md5: asset.md5,
-                            sha1: asset.sha1,
-                            evidence_scope: if asset.role == "disk" {
-                                "disk_data"
-                            } else {
-                                "whole_asset"
-                            },
-                            merge: asset.merge_name,
+                            sha1,
+                            evidence_scope,
+                            merge: merge.or(asset.merge_name),
                             dump_status: asset.dump_status,
                             serial: None,
                             date: None,
@@ -985,34 +1002,39 @@ fn insert_software_component(
     component_order: usize,
     component: &crate::mame_softwarelist::SoftwareComponent,
 ) -> crate::Result<()> {
-    let (name, size, crc, sha1, offset, value, status, writeable, load) = match component {
-        crate::mame_softwarelist::SoftwareComponent::Rom(rom) => (
-            rom.name
-                .as_ref()
-                .map(crate::mame_softwarelist::ComponentName::as_str),
-            rom.size,
-            rom.crc.map(|digest| digest.to_vec()),
-            rom.sha1.map(|digest| digest.to_vec()),
-            rom.offset,
-            rom.value.as_deref(),
-            rom.status.as_ref().map(|status| status.as_str()),
-            None,
-            rom.load
-                .as_ref()
-                .map(crate::mame_softwarelist::LoadInstruction::as_str),
-        ),
-        crate::mame_softwarelist::SoftwareComponent::Disk(disk) => (
-            Some(disk.name.as_str()),
-            None,
-            None,
-            disk.sha1.map(|digest| digest.to_vec()),
-            None,
-            None,
-            disk.status.as_ref().map(|status| status.as_str()),
-            disk.writeable.map(i64::from),
-            None,
-        ),
-    };
+    let (name, size, crc, sha1, evidence_scope, offset, value, status, writeable, load) =
+        match component {
+            crate::mame_softwarelist::SoftwareComponent::Rom(rom) => (
+                rom.name
+                    .as_ref()
+                    .map(crate::mame_softwarelist::ComponentName::as_str),
+                rom.size,
+                rom.crc.map(|digest| digest.to_vec()),
+                rom.sha1.map(|digest| digest.to_vec()),
+                "whole_asset",
+                rom.offset,
+                rom.value.as_deref(),
+                rom.status.as_ref().map(|status| status.as_str()),
+                None,
+                rom.load
+                    .as_ref()
+                    .map(crate::mame_softwarelist::LoadInstruction::as_str),
+            ),
+            crate::mame_softwarelist::SoftwareComponent::Disk(disk) => (
+                Some(disk.requirement.name().as_str()),
+                None,
+                None,
+                disk.requirement
+                    .expected_sha1()
+                    .map(|digest| digest.as_bytes().to_vec()),
+                disk.requirement.digest_scope().as_str(),
+                None,
+                None,
+                disk.status.as_ref().map(|status| status.as_str()),
+                disk.writeable.map(i64::from),
+                None,
+            ),
+        };
     let size = size
         .map(i64::try_from)
         .transpose()
@@ -1024,9 +1046,9 @@ fn insert_software_component(
     sql_query(
         "INSERT INTO software_components \
          (snapshot_key, list_name, item_name, part_name, area_order, area_kind, area_name, component_order, \
-          component_kind, component_name, size, crc, sha1, offset, value, dump_status, writeable, \
+          component_kind, component_name, size, crc, sha1, evidence_scope, offset, value, dump_status, writeable, \
           load_instruction, source_line, source_column) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind::<Text, _>(part.item.snapshot_key.as_str())
     .bind::<Text, _>(part.item.list_name)
@@ -1041,6 +1063,7 @@ fn insert_software_component(
     .bind::<Nullable<BigInt>, _>(size)
     .bind::<Nullable<Binary>, _>(crc)
     .bind::<Nullable<Binary>, _>(sha1)
+    .bind::<Text, _>(evidence_scope)
     .bind::<Nullable<BigInt>, _>(offset)
     .bind::<Nullable<Text>, _>(value)
     .bind::<Nullable<Text>, _>(status)

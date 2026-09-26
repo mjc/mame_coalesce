@@ -170,8 +170,7 @@ pub struct SoftwareRom {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SoftwareDisk {
-    pub name: ComponentName,
-    pub sha1: Option<[u8; 20]>,
+    pub requirement: crate::disk::DiskRequirement,
     pub status: Option<DumpStatus>,
     pub writeable: Option<bool>,
     pub location: RecordLocation,
@@ -601,9 +600,14 @@ fn parse_disk(
         Some("yes") => Some(true),
         Some(other) => return Err(invalid_value(node, record, "writeable", other)),
     };
+    let name = required(node, "name")?;
+    let sha1 = parse_digest(node, record, "sha1")?;
     Ok(SoftwareDisk {
-        name: ComponentName::new(required(node, "name")?),
-        sha1: parse_digest(node, record, "sha1")?,
+        requirement: crate::disk::DiskRequirement::new(
+            crate::disk::DiskName::new(name),
+            sha1.map(crate::disk::DiskIdentitySha1::new),
+            crate::disk::DiskDigestScope::ChdHeaderSha1,
+        ),
         status: parse_status(node, record)?,
         writeable,
         location: node.location,

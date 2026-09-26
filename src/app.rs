@@ -1,9 +1,20 @@
 use camino::Utf8PathBuf;
+use diesel::{
+    QueryableByName,
+    prelude::*,
+    sql_query,
+    sql_types::{Binary, Nullable, Text},
+};
 use log::{info, warn};
+use serde::Serialize;
 
 use crate::{
     build::{planner::plan_build, writer::write_plan_with_compression},
     database::Database,
+    disk::{
+        self, DiskDigestScope, DiskIdentitySha1, DiskName, DiskObservation, DiskRequirement,
+        DiskVerificationState, ParentDiskName,
+    },
     domain::{
         BuildMode, BuildReport, BuildRequest, CatalogKey, CatalogScope, ImportRunKey,
         PublishingSourceKey, SnapshotKey, ZipCompression,
@@ -122,6 +133,183 @@ pub struct RunWorkflowRequest {
     pub jobs: usize,
     pub dry_run: bool,
     pub strict: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiskAuditRequest {
+    pub catalog_key: String,
+    pub source_path: Utf8PathBuf,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct DiskAuditReport {
+    pub schema_version: u32,
+    pub catalog_key: String,
+    pub snapshot_key: String,
+    pub source_path: Utf8PathBuf,
+    pub disks: Vec<DiskAuditEntry>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct DiskAuditEntry {
+    pub set_name: String,
+    pub disk_name: String,
+    pub parent_disk: Option<String>,
+    pub expected_logical_sha1: Option<String>,
+    pub state: DiskAuditState,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiskAuditState {
+    Missing,
+    UnknownDigestScope,
+    IdentityNotDeclared,
+    UnverifiedContainer,
+    UnsupportedContainer,
+    VerifiedLogicalIdentity,
+    LogicalIdentityMismatch,
+}
+
+impl From<DiskVerificationState> for DiskAuditState {
+    fn from(state: DiskVerificationState) -> Self {
+        match state {
+            DiskVerificationState::Missing => Self::Missing,
+            DiskVerificationState::UnknownDigestScope => Self::UnknownDigestScope,
+            DiskVerificationState::IdentityNotDeclared => Self::IdentityNotDeclared,
+            DiskVerificationState::UnverifiedContainer => Self::UnverifiedContainer,
+            DiskVerificationState::UnsupportedContainer => Self::UnsupportedContainer,
+            DiskVerificationState::VerifiedLogicalIdentity => Self::VerifiedLogicalIdentity,
+            DiskVerificationState::LogicalIdentityMismatch => Self::LogicalIdentityMismatch,
+        }
+    }
+}
+
+#[derive(QueryableByName)]
+struct PublishedDiskSnapshotRow {
+    #[diesel(sql_type = Text)]
+    snapshot_key: String,
+}
+
+#[derive(QueryableByName)]
+struct DiskRequirementRow {
+    #[diesel(sql_type = Text)]
+    set_name: String,
+    #[diesel(sql_type = Text)]
+    asset_name: String,
+    #[diesel(sql_type = Nullable<Binary>)]
+    sha1: Option<Vec<u8>>,
+    #[diesel(sql_type = Text)]
+    evidence_scope: String,
+    #[diesel(sql_type = Nullable<Text>)]
+    merge_name: Option<String>,
+}
+
+/// Audit disk requirements from the latest published catalog snapshot against a scanned source.
+/// Scanned SHA-1 values are deliberately ignored: they identify container bytes, not CHD identity.
+pub fn audit_disks(
+    database: &Database,
+    request: &DiskAuditRequest,
+) -> crate::Result<DiskAuditReport> {
+    let source_path = request.source_path.canonicalize_utf8()?;
+    let mut conn = database.pool().get()?;
+    let snapshot = sql_query(
+        "SELECT publication.snapshot_key FROM snapshot_publications AS publication \
+         WHERE publication.catalog_key = ? \
+         ORDER BY publication.published_at DESC, publication.snapshot_key DESC LIMIT 1",
+    )
+    .bind::<Text, _>(&request.catalog_key)
+    .get_result::<PublishedDiskSnapshotRow>(&mut conn)?;
+    let requirements = sql_query(
+        "SELECT asset.set_name, asset.asset_name, asset.sha1, asset.evidence_scope, asset.merge_name \
+         FROM asset_requirements AS asset \
+         WHERE asset.snapshot_key = ? AND asset.role = 'disk' \
+         ORDER BY asset.set_name, asset.component_order",
+    )
+    .bind::<Text, _>(&snapshot.snapshot_key)
+    .load::<DiskRequirementRow>(&mut conn)?;
+    drop(conn);
+
+    let source_files = SourceRepository::new(database.pool()).load_source_files()?;
+    let disks = requirements
+        .into_iter()
+        .map(|row| {
+            let expected = row
+                .sha1
+                .map(|bytes| {
+                    bytes.try_into().map_err(|bytes: Vec<u8>| {
+                        crate::Error::InvalidHash(format!(
+                            "disk identity SHA-1 for {} has length {}; expected 20 bytes",
+                            row.asset_name,
+                            bytes.len()
+                        ))
+                    })
+                })
+                .transpose()?;
+            let scope = match row.evidence_scope.as_str() {
+                "chd_header_sha1" => DiskDigestScope::ChdHeaderSha1,
+                _ => DiskDigestScope::Unknown,
+            };
+            let mut requirement = DiskRequirement::new(
+                DiskName::new(row.asset_name.clone()),
+                expected.map(DiskIdentitySha1::new),
+                scope,
+            );
+            if let Some(parent) = row.merge_name.as_deref() {
+                requirement = requirement.with_parent(ParentDiskName::new(parent));
+            }
+            let matching_file = source_files
+                .iter()
+                .filter_map(|file| {
+                    let crate::domain::SourceLocation::BareFile { path } = &file.location else {
+                        return None;
+                    };
+                    let path = camino::Utf8Path::new(path);
+                    if !path.starts_with(&source_path) {
+                        return None;
+                    }
+                    let file_name = path.file_name()?;
+                    let matches = file_name.eq_ignore_ascii_case(&row.asset_name)
+                        || file_name.eq_ignore_ascii_case(&format!("{}.chd", row.asset_name));
+                    matches.then_some((file, file_name.to_owned()))
+                })
+                .min_by_key(|(file, file_name)| {
+                    (
+                        u8::from(!file_name.to_ascii_lowercase().ends_with(".chd")),
+                        file.location.path().to_owned(),
+                    )
+                })
+                .map(|(file, _)| file);
+            let observation = matching_file.map_or(DiskObservation::Missing, |file| {
+                let file_name = camino::Utf8Path::new(file.location.path())
+                    .file_name()
+                    .unwrap_or_default();
+                if file_name.to_ascii_lowercase().ends_with(".chd") {
+                    DiskObservation::ContainerPresent { byte_sha1: None }
+                } else {
+                    DiskObservation::UnsupportedContainer
+                }
+            });
+            let state = DiskAuditState::from(disk::audit_disk(&requirement, observation));
+            Ok(DiskAuditEntry {
+                set_name: row.set_name,
+                disk_name: row.asset_name,
+                parent_disk: requirement
+                    .parent()
+                    .map(|parent| parent.as_str().to_owned()),
+                expected_logical_sha1: expected.map(hex::encode),
+                state,
+            })
+        })
+        .collect::<crate::Result<Vec<_>>>()?;
+
+    Ok(DiskAuditReport {
+        schema_version: 1,
+        catalog_key: request.catalog_key.clone(),
+        snapshot_key: snapshot.snapshot_key,
+        source_path,
+        disks,
+    })
 }
 
 pub fn import_dat(

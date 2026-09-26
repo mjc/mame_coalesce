@@ -8,7 +8,7 @@
     <biosset name="demo_bios" description="Demo BIOS" default="yes" />
       <rom name="demo_bios.bin" size="16" crc="12345678" sha1="0123456789abcdef0123456789abcdef01234567" region="maincpu" bios="demo_bios" />
       <rom name="demo_video.bin" size="32" crc="87654321" region="video" />
-      <disk name="demo_disk" sha1="1123456789abcdef0123456789abcdef01234567" region="disk" />
+      <disk name="demo_disk" sha1="1123456789abcdef0123456789abcdef01234567" merge="parent_disk" region="disk" />
       <device_ref name="demo_sound" />
       <feature type="protection" status="imperfect" />
   </machine>
