@@ -408,12 +408,6 @@ fn parse_item(
             _ => extensions.push(extension("software_item", Some(&record), child)?),
         }
     }
-    if parts.is_empty() {
-        return Err(crate::Error::XmlValidation(format!(
-            "software item {:?} has no parts",
-            name.as_str()
-        )));
-    }
     Ok(SoftwareItem {
         name,
         clone_of,
@@ -972,6 +966,14 @@ mod tests {
     fn parser_rejects_duplicate_notes_instead_of_dropping_the_first() {
         let xml = br#"<softwarelist name="one"><software name="game"><description>Game</description><year>2000</year><publisher>Pub</publisher><notes>First</notes><notes>Second</notes><part name="cart" interface="cart"/></software></softwarelist>"#;
         assert!(SoftwareListCatalog::parse(xml).is_err());
+    }
+
+    #[test]
+    fn parser_accepts_metadata_only_software_without_parts() -> crate::Result<()> {
+        let xml = br#"<softwarelist name="one"><software name="game"><description>Game</description><year>2000</year><publisher>Pub</publisher></software></softwarelist>"#;
+        let catalog = SoftwareListCatalog::parse(xml)?;
+        assert!(at(&at(&catalog.lists, 0)?.items, 0)?.parts.is_empty());
+        Ok(())
     }
 
     #[test]
