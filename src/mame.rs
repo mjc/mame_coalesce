@@ -18,6 +18,7 @@ pub struct MameCatalog {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Machine {
     pub name: String,
+    pub parent: Option<String>,
     pub location: RecordLocation,
     pub metadata: BTreeMap<String, serde_json::Value>,
     pub assets: Vec<MachineAsset>,
@@ -32,6 +33,8 @@ pub struct MachineAsset {
     pub crc: Option<Vec<u8>>,
     pub md5: Option<Vec<u8>>,
     pub sha1: Option<Vec<u8>>,
+    pub merge_name: Option<String>,
+    pub dump_status: Option<String>,
     pub location: RecordLocation,
     pub metadata: BTreeMap<String, serde_json::Value>,
     pub extensions: Vec<XmlExtension>,
@@ -223,6 +226,7 @@ fn parse_xml_element(bytes: &[u8]) -> crate::Result<Element> {
 
 fn parse_machine(node: &Element) -> crate::Result<Machine> {
     let name = required(node, "name")?;
+    let parent = node.attributes.get("cloneof").cloned();
     let mut metadata = BTreeMap::new();
     metadata.insert(
         "sourcefile".into(),
@@ -267,7 +271,9 @@ fn parse_machine(node: &Element) -> crate::Result<Machine> {
             _ => extensions.push(extension("machine", Some(name), child)?),
         }
         for (key, val) in &child.attributes {
-            if !known_child_attribute(&child.name, key) {
+            if !matches!(child.name.as_str(), "rom" | "disk")
+                && !known_child_attribute(&child.name, key)
+            {
                 let (field_name, namespace_uri) = attribute_name(key);
                 extensions.push(XmlExtension {
                     record_kind: child.name.clone(),
@@ -291,6 +297,7 @@ fn parse_machine(node: &Element) -> crate::Result<Machine> {
             "isbios",
             "ismechanical",
             "isconsumable",
+            "cloneof",
         ]
         .contains(&key.as_str())
         {
@@ -307,6 +314,7 @@ fn parse_machine(node: &Element) -> crate::Result<Machine> {
     }
     Ok(Machine {
         name: name.into(),
+        parent,
         location: node.location,
         metadata,
         assets,
@@ -340,10 +348,16 @@ fn parse_asset(node: &Element) -> crate::Result<MachineAsset> {
         .get("md5")
         .map(|digest| decode_hex_sized(digest, 32))
         .transpose()?;
+    let merge_name = node.attributes.get("merge").cloned();
+    let dump_status = node.attributes.get("status").cloned();
     let metadata = node
         .attributes
         .iter()
-        .filter(|(key, _)| !["name", "size", "sha1"].contains(&key.as_str()))
+        .filter(|(key, _)| {
+            known_asset_attribute(&node.name, key)
+                && !["name", "size", "sha1", "crc", "md5", "merge", "status"]
+                    .contains(&key.as_str())
+        })
         .map(|(key, val)| (key.clone(), serde_json::json!(val)))
         .collect();
     let mut extensions = Vec::new();
@@ -351,26 +365,7 @@ fn parse_asset(node: &Element) -> crate::Result<MachineAsset> {
         extensions.push(extension(node.name.as_str(), Some(name), child)?);
     }
     for (key, val) in &node.attributes {
-        if ![
-            "name",
-            "size",
-            "sha1",
-            "crc",
-            "md5",
-            "merge",
-            "region",
-            "bios",
-            "status",
-            "offset",
-            "optional",
-            "writable",
-            "writeable",
-            "mcd",
-            "flip",
-            "soundonly",
-        ]
-        .contains(&key.as_str())
-        {
+        if !known_asset_attribute(&node.name, key) {
             let (field_name, namespace_uri) = attribute_name(key);
             extensions.push(XmlExtension {
                 record_kind: node.name.clone(),
@@ -389,6 +384,8 @@ fn parse_asset(node: &Element) -> crate::Result<MachineAsset> {
         crc,
         md5,
         sha1,
+        merge_name,
+        dump_status,
         location: node.location,
         metadata,
         extensions,
@@ -411,6 +408,45 @@ fn known_child_attribute(element: &str, attribute: &str) -> bool {
     match element {
         "biosset" => ["name", "description", "default"].contains(&attribute),
         "device_ref" => ["name"].contains(&attribute),
+        "rom" => [
+            "name",
+            "size",
+            "sha1",
+            "crc",
+            "md5",
+            "merge",
+            "region",
+            "bios",
+            "status",
+            "offset",
+            "optional",
+            "soundonly",
+            "dispose",
+            "loadflag",
+            "value",
+            "inverted",
+            "ovha",
+            "nothread",
+        ]
+        .contains(&attribute),
+        "disk" => [
+            "name",
+            "sha1",
+            "merge",
+            "region",
+            "index",
+            "writable",
+            "writeable",
+            "status",
+            "optional",
+        ]
+        .contains(&attribute),
+        _ => false,
+    }
+}
+
+fn known_asset_attribute(element: &str, attribute: &str) -> bool {
+    match element {
         "rom" => [
             "name",
             "size",

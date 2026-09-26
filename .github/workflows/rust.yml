@@ -36,27 +36,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y \
-            cmake \
-            libarchive-dev \
-            liblz4-dev \
-            libsqlite3-dev \
-            pkg-config \
-            zlib1g-dev
+      - uses: cachix/install-nix-action@v31
+      - uses: cachix/cachix-action@v16
+        with:
+          name: devenv
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install maintenance tools
-        run: |
-          cargo install --locked cargo-audit
-          cargo install --locked cargo-deny
+      - name: Install devenv
+        run: nix profile add github:cachix/devenv/2418e1b43797c44de5166176622c8d8fa0149871#devenv
 
       - name: Audit dependencies
-        run: cargo audit
+        run: devenv --profile maintenance shell -- cargo audit
 
       - name: Check dependency policy
-        run: cargo deny check
+        run: devenv --profile maintenance shell -- cargo deny check

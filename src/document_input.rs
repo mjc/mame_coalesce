@@ -54,6 +54,18 @@ mod tests {
     }
 
     #[test]
+    fn retained_document_limit_rejects_the_first_excess_byte() {
+        assert_eq!(MAX_DOCUMENT_BYTES, 64 * 1024 * 1024);
+        let input = std::io::repeat(0).take((MAX_DOCUMENT_BYTES + 1) as u64);
+        assert!(matches!(
+            read_bounded(input, MAX_DOCUMENT_BYTES),
+            Err(crate::Error::DocumentTooLarge {
+                limit: MAX_DOCUMENT_BYTES
+            })
+        ));
+    }
+
+    #[test]
     fn malformed_gzip_is_a_structured_input_error() {
         assert!(matches!(
             decode_xml(&[0x1f, 0x8b, 0x00]),

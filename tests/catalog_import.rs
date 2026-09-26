@@ -340,6 +340,69 @@ fn imports_mame_machine_rom_disk_bios_and_device_semantics_loss_aware()
 }
 
 #[test]
+fn imports_mame_relationship_asset_fields_extensions_and_format_hint()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (_directory, database, mut connection) = setup()?;
+    let mut request = request(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/catalog/mame/semantics.xml"),
+        "mame-semantics",
+        "mame-semantics",
+        "MAME semantics",
+    )?;
+    request.format = CatalogDocumentFormat::MameListXml;
+    let report = app::import_catalog(&database, &request)?;
+    let snapshot = report.snapshot_key.ok_or("MAME snapshot missing")?;
+
+    let parent = sql_query(
+        "SELECT parent_name AS value FROM snapshot_sets \
+         WHERE snapshot_key = ? AND set_name = 'clone'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<NullableTextRow>(&mut connection)?;
+    assert_eq!(parent.value.as_deref(), Some("parent"));
+
+    let rom_fields = sql_query(
+        "SELECT merge_name || ':' || dump_status AS value FROM asset_requirements \
+         WHERE snapshot_key = ? AND asset_name = 'clone.rom'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(&mut connection)?;
+    assert_eq!(rom_fields.value, "parent.rom:baddump");
+    let disk_fields = sql_query(
+        "SELECT merge_name || ':' || dump_status AS value FROM asset_requirements \
+         WHERE snapshot_key = ? AND asset_name = 'clone.disk'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(&mut connection)?;
+    assert_eq!(disk_fields.value, "parent.disk:nodump");
+
+    let asset_extension_count = sql_query(
+        "SELECT COUNT(*) AS count FROM snapshot_extensions \
+         WHERE snapshot_key = ? AND record_kind = 'rom' AND field_name = 'flag'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<CountRow>(&mut connection)?
+    .count;
+    assert_eq!(asset_extension_count, 1);
+    let asset_metadata = sql_query(
+        "SELECT metadata_json AS value FROM asset_requirements \
+         WHERE snapshot_key = ? AND asset_name = 'clone.rom'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(&mut connection)?;
+    assert!(!asset_metadata.value.contains("future:flag"));
+
+    let format_hint = sql_query(
+        "SELECT documents.format_hint AS value FROM documents \
+         JOIN catalog_snapshots USING (document_key) WHERE snapshot_key = ?",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<NullableTextRow>(&mut connection)?;
+    assert_eq!(format_hint.value.as_deref(), Some("mame-listxml"));
+    Ok(())
+}
+
+#[test]
 fn malformed_mame_xml_records_failed_run_without_snapshot() -> Result<(), Box<dyn std::error::Error>>
 {
     let (directory, database, mut connection) = setup()?;

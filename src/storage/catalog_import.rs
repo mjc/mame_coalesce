@@ -166,8 +166,8 @@ impl SnapshotData {
                             } else {
                                 "whole_asset"
                             },
-                            merge: None,
-                            dump_status: None,
+                            merge: asset.merge_name,
+                            dump_status: asset.dump_status,
                             serial: None,
                             date: None,
                             metadata: serde_json::json!(asset.metadata),
@@ -177,7 +177,7 @@ impl SnapshotData {
                     .collect();
                 SnapshotSet {
                     name: machine.name,
-                    parent: None,
+                    parent: machine.parent,
                     metadata: serde_json::json!(machine.metadata),
                     location: machine.location,
                     assets,
@@ -211,7 +211,7 @@ pub fn import(pool: &Pool, request: &CatalogImportRequest) -> crate::Result<Cata
             documents.retain_path(request.source_key.clone(), &request.document_path)?
         }
         CatalogDocumentFormat::MameListXml => {
-            documents.retain_path_raw(request.source_key.clone(), &request.document_path)?
+            documents.retain_path_mame(request.source_key.clone(), &request.document_path)?
         }
     };
     let bytes = documents.load(&retained.document_key)?;

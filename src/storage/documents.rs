@@ -29,6 +29,8 @@ pub struct AcquisitionMetadata {
 enum FormatHint {
     LogiqxXml,
     LogiqxXmlGzip,
+    MameListXml,
+    MameListXmlGzip,
 }
 
 impl FormatHint {
@@ -36,6 +38,8 @@ impl FormatHint {
         match self {
             Self::LogiqxXml => "logiqx+xml",
             Self::LogiqxXmlGzip => "logiqx+xml+gzip",
+            Self::MameListXml => "mame-listxml",
+            Self::MameListXmlGzip => "mame-listxml+gzip",
         }
     }
 
@@ -164,22 +168,23 @@ impl DocumentStore {
         source_key: PublishingSourceKey,
         path: &Utf8Path,
     ) -> crate::Result<RetainedDocument> {
-        self.retain_path_with_validation(source_key, path, true)
+        self.retain_path_with_options(source_key, path, true, None)
     }
 
-    pub(crate) fn retain_path_raw(
+    pub(crate) fn retain_path_mame(
         &self,
         source_key: PublishingSourceKey,
         path: &Utf8Path,
     ) -> crate::Result<RetainedDocument> {
-        self.retain_path_with_validation(source_key, path, false)
+        self.retain_path_with_options(source_key, path, false, Some(FormatHint::MameListXml))
     }
 
-    fn retain_path_with_validation(
+    fn retain_path_with_options(
         &self,
         source_key: PublishingSourceKey,
         path: &Utf8Path,
         validate_xml: bool,
+        requested_format: Option<FormatHint>,
     ) -> crate::Result<RetainedDocument> {
         let mut metadata = AcquisitionMetadata {
             source_key,
@@ -205,11 +210,12 @@ impl DocumentStore {
         }
         metadata.source_uri = Some(canonical_path.to_string_lossy().into_owned());
         match File::open(&canonical_path) {
-            Ok(file) => self.retain_with_limit_and_validation(
+            Ok(file) => self.retain_with_options(
                 &metadata,
                 file,
                 MAX_DOCUMENT_BYTES,
                 validate_xml,
+                requested_format,
             ),
             Err(error) => {
                 self.record_failed_attempt(&metadata, "io", &error.to_string())?;
@@ -273,6 +279,17 @@ impl DocumentStore {
         limit: usize,
         validate_xml: bool,
     ) -> crate::Result<RetainedDocument> {
+        self.retain_with_options(metadata, reader, limit, validate_xml, None)
+    }
+
+    fn retain_with_options<R: Read>(
+        &self,
+        metadata: &AcquisitionMetadata,
+        reader: R,
+        limit: usize,
+        validate_xml: bool,
+        requested_format: Option<FormatHint>,
+    ) -> crate::Result<RetainedDocument> {
         let transport_metadata = metadata
             .transport_metadata
             .as_ref()
@@ -299,8 +316,14 @@ impl DocumentStore {
             return Err(error);
         }
 
-        let result =
-            self.persist_retained(metadata, transport_metadata.as_deref(), &raw, key, limit);
+        let result = self.persist_retained(
+            metadata,
+            transport_metadata.as_deref(),
+            &raw,
+            key,
+            limit,
+            requested_format,
+        );
         match result {
             Ok(retained) => Ok(retained),
             Err(error) => {
@@ -317,6 +340,7 @@ impl DocumentStore {
         raw: &[u8],
         key: DocumentKey,
         limit: usize,
+        requested_format: Option<FormatHint>,
     ) -> crate::Result<RetainedDocument> {
         let verification_status = if metadata.expected_sha256.is_some() {
             "verified"
@@ -326,7 +350,19 @@ impl DocumentStore {
         let sha1 = sha1(raw);
         let byte_length =
             i64::try_from(raw.len()).map_err(|_| crate::Error::DocumentTooLarge { limit })?;
-        let format_hint = FormatHint::for_bytes(raw);
+        let format_hint = requested_format.map_or_else(
+            || FormatHint::for_bytes(raw),
+            |hint| match (hint, raw.starts_with(&[0x1f, 0x8b])) {
+                (FormatHint::MameListXml | FormatHint::MameListXmlGzip, false) => {
+                    FormatHint::MameListXml
+                }
+                (FormatHint::MameListXml | FormatHint::MameListXmlGzip, true) => {
+                    FormatHint::MameListXmlGzip
+                }
+                (_, false) => FormatHint::LogiqxXml,
+                (_, true) => FormatHint::LogiqxXmlGzip,
+            },
+        );
         let acquisition_key = AcquisitionKey::fresh();
         let attempt_key = uuid::Uuid::new_v4().to_string();
         let acquisition_key_string = acquisition_key.to_string();
