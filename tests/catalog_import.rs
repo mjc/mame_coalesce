@@ -770,7 +770,7 @@ fn imports_mame_machine_rom_disk_bios_and_device_semantics_loss_aware()
     assert!(region.value.contains("demo_bios"));
     let disk_scope = sql_query("SELECT evidence_scope AS value FROM asset_requirements WHERE snapshot_key = ? AND asset_name = 'demo_disk'")
         .bind::<Text, _>(snapshot.as_str()).get_result::<TextRow>(&mut connection)?;
-    assert_eq!(disk_scope.value, "disk_data");
+    assert_eq!(disk_scope.value, "chd_header_sha1");
     let disk_identity = sql_query("SELECT sha1 AS value FROM asset_requirements WHERE snapshot_key = ? AND asset_name = 'demo_disk'")
         .bind::<Text, _>(snapshot.as_str()).get_result::<BytesRow>(&mut connection)?;
     assert_eq!(
@@ -1199,6 +1199,13 @@ fn assert_software_list_components(
     assert!(disk.dump_status.is_none());
     assert!(disk.sha1.is_some());
     assert_eq!(disk.writeable, Some(1));
+    let disk_scope = sql_query(
+        "SELECT evidence_scope AS value FROM software_components \
+         WHERE snapshot_key = ? AND component_name = 'demo-disk'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(connection)?;
+    assert_eq!(disk_scope.value, "chd_header_sha1");
 
     let absent_status = sql_query(
         "SELECT dump_status, NULL AS sha1, NULL AS load_instruction, writeable, source_line \

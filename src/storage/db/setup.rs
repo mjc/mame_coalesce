@@ -698,6 +698,92 @@ mod tests {
     }
 
     #[test]
+    fn chd_scope_migration_relabels_existing_disk_evidence_without_touching_roms()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut conn = SqliteConnection::establish(":memory:")?;
+        conn.batch_execute("PRAGMA foreign_keys = ON")?;
+        conn.run_pending_migrations(MIGRATIONS)?;
+        let chd_scope_migration = MIGRATIONS
+            .migrations()?
+            .into_iter()
+            .find(|migration| migration.name().to_string() == "2026-09-26-000000_chd_digest_scope")
+            .ok_or("CHD scope migration not found")?;
+        conn.revert_migration(chd_scope_migration.as_ref())?;
+        conn.batch_execute(
+            "INSERT INTO publishing_sources (source_key, display_name)
+                 VALUES ('source', 'Source');
+             INSERT INTO catalogs (catalog_key, source_key, display_name)
+                 VALUES ('catalog', 'source', 'Catalog');
+             INSERT INTO documents (document_key) VALUES ('document');
+             INSERT INTO parser_interpretations (interpretation_key, format)
+                 VALUES ('interpretation', 'mame');
+             INSERT INTO catalog_snapshots
+                 (snapshot_key, catalog_key, document_key, interpretation_key, scope_kind)
+                 VALUES ('snapshot', 'catalog', 'document', 'interpretation', 'unknown');
+             INSERT INTO snapshot_sets
+                 (snapshot_key, set_name, metadata_json, source_line, source_column)
+                 VALUES ('snapshot', 'set', '{}', 1, 1);
+             INSERT INTO asset_requirements
+                 (snapshot_key, set_name, component_order, asset_name, role,
+                  evidence_scope, evidence_provenance, source_line, source_column)
+                 VALUES ('snapshot', 'set', 0, 'rom.bin', 'rom', 'whole_asset',
+                         'source_declared', 2, 3),
+                        ('snapshot', 'set', 1, 'disk.chd', 'disk', 'disk_data',
+                         'source_declared', 4, 5);
+             INSERT INTO software_lists
+                 (snapshot_key, list_name, list_order, source_line, source_column)
+                 VALUES ('snapshot', 'list', 0, 1, 1);
+             INSERT INTO software_items
+                 (snapshot_key, list_name, item_name, item_order, description, year,
+                  publisher, info_json, shared_features_json, source_line, source_column)
+                 VALUES ('snapshot', 'list', 'item', 0, 'Item', '2000', 'Publisher',
+                         '[]', '[]', 1, 1);
+             INSERT INTO software_parts
+                 (snapshot_key, list_name, item_name, part_name, part_order,
+                  interface, features_json, source_line, source_column)
+                 VALUES ('snapshot', 'list', 'item', 'part', 0, 'disk', '[]', 1, 1);
+             INSERT INTO software_areas
+                 (snapshot_key, list_name, item_name, part_name, area_name,
+                  area_kind, area_order, source_line, source_column)
+                 VALUES ('snapshot', 'list', 'item', 'part', 'media', 'disk', 0, 1, 1);
+             INSERT INTO software_components
+                 (snapshot_key, list_name, item_name, part_name, area_order,
+                  area_kind, area_name, component_order, component_kind,
+                  component_name, source_line, source_column)
+                 VALUES ('snapshot', 'list', 'item', 'part', 0, 'disk', 'media',
+                         0, 'disk', 'software.chd', 2, 3);",
+        )?;
+        conn.run_pending_migrations(MIGRATIONS)?;
+        let rom = sql_query(
+            "SELECT evidence_scope AS value FROM asset_requirements WHERE asset_name = 'rom.bin'",
+        )
+        .get_result::<TextRow>(&mut conn)?;
+        let disk = sql_query(
+            "SELECT evidence_scope AS value FROM asset_requirements WHERE asset_name = 'disk.chd'",
+        )
+        .get_result::<TextRow>(&mut conn)?;
+        let software_disk = sql_query(
+            "SELECT evidence_scope AS value FROM software_components \
+             WHERE component_name = 'software.chd'",
+        )
+        .get_result::<TextRow>(&mut conn)?;
+        assert_eq!(rom.value, "whole_asset");
+        assert_eq!(disk.value, "chd_header_sha1");
+        assert_eq!(software_disk.value, "chd_header_sha1");
+        assert!(sql_fails(
+            &mut conn,
+            "UPDATE asset_requirements SET evidence_scope = 'unknown' WHERE role = 'disk'"
+        ));
+        conn.revert_migration(chd_scope_migration.as_ref())?;
+        let rolled_back_disk = sql_query(
+            "SELECT evidence_scope AS value FROM asset_requirements WHERE asset_name = 'disk.chd'",
+        )
+        .get_result::<TextRow>(&mut conn)?;
+        assert_eq!(rolled_back_disk.value, "disk_data");
+        Ok(())
+    }
+
+    #[test]
     fn identity_keys_separate_names_versions_interpretations_and_runs()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut conn = SqliteConnection::establish(":memory:")?;

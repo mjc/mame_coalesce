@@ -428,7 +428,7 @@ fn parse_disk_requirement(
     let requirement = DiskRequirement::new(
         DiskName::new(name),
         expected_sha1,
-        DiskDigestScope::LogicalDiskData,
+        DiskDigestScope::ChdHeaderSha1,
     );
     Ok(Some(match node.attributes.get("merge") {
         Some(parent) => requirement.with_parent(ParentDiskName::new(parent.clone())),
