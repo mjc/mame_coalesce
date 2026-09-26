@@ -122,7 +122,7 @@ const REQUIRED_FIXTURES: &[(&str, &str, &str)] = &[
     (
         "no-intro-pc-xml-synthetic",
         "no-intro-pc-xml",
-        "assessment-only",
+        "no-intro-synthetic-supported",
     ),
     (
         "tosec-logiqx-xml-synthetic",
@@ -220,8 +220,10 @@ fn assert_fixture_content(fixture: &Fixture, bytes: &[u8]) {
     let required: &[&str] = match fixture.id.as_str() {
         "no-intro-pc-xml-synthetic" => &[
             "clone=\"P\"",
-            "clone=\"1042\"",
-            "mergeof=\"opaque-related-id-88\"",
+            "clone=\"1041\"",
+            "mergeof=\"1042\"",
+            "namealt=\"合成カートリッジ (日本)\"",
+            "version=\"1.0\"",
             "region=\"World\"",
             "region=\"Japan\"",
             "languages=\"En,Ja\"",
@@ -315,6 +317,10 @@ fn assert_fixture_parser_status(fixture: &Fixture) -> Result<(), Box<dyn std::er
                     .iter()
                     .any(|field| field == "comments")
             );
+        }
+        "no-intro-synthetic-supported" => {
+            assert_eq!(fixture.format, "no-intro-pc-xml");
+            assert!(fixture.provenance.contains("not an upstream export"));
         }
         "fixture-only" => {
             assert!(fixture.expected.is_none(), "{}", fixture.id);
