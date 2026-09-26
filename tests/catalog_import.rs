@@ -438,21 +438,34 @@ fn imports_no_intro_pc_xml_metadata_without_inventing_title_relationships()
     .get_result::<TextRow>(&mut connection)?;
     assert_eq!(retained_unknown.value, "\"retained\"");
 
+    assert_no_intro_retained_document(
+        &mut connection,
+        snapshot.as_str(),
+        request.document_path.as_std_path(),
+    )?;
+
+    Ok(())
+}
+
+fn assert_no_intro_retained_document(
+    connection: &mut SqliteConnection,
+    snapshot: &str,
+    path: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
     let document = sql_query(
         "SELECT payload AS value FROM documents \
          JOIN catalog_snapshots USING (document_key) WHERE snapshot_key = ?",
     )
-    .bind::<Text, _>(snapshot.as_str())
-    .get_result::<BytesRow>(&mut connection)?;
-    assert_eq!(document.value, std::fs::read(&request.document_path)?);
+    .bind::<Text, _>(snapshot)
+    .get_result::<BytesRow>(connection)?;
+    assert_eq!(document.value, std::fs::read(path)?);
     let format_hint = sql_query(
         "SELECT documents.format_hint AS value FROM documents \
          JOIN catalog_snapshots USING (document_key) WHERE snapshot_key = ?",
     )
-    .bind::<Text, _>(snapshot.as_str())
-    .get_result::<NullableTextRow>(&mut connection)?;
+    .bind::<Text, _>(snapshot)
+    .get_result::<NullableTextRow>(connection)?;
     assert_eq!(format_hint.value.as_deref(), Some("no-intro-pc-xml"));
-
     Ok(())
 }
 
@@ -565,6 +578,122 @@ fn malformed_no_intro_xml_does_not_publish_a_snapshot() -> Result<(), Box<dyn st
         .get_result::<DiagnosticLocationRow>(&mut connection)?;
     assert!(location.source_line.is_some_and(|line| line > 0));
     assert!(location.source_column.is_some_and(|column| column > 0));
+    Ok(())
+}
+
+#[test]
+fn structured_no_intro_header_fails_with_location_and_no_snapshot()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, mut connection) = setup()?;
+    for (file_name, xml) in [
+        (
+            "attributed-header.xml",
+            br#"<datafile><header><version source="export">v1</version></header><game name="set"/></datafile>"#.as_slice(),
+        ),
+        (
+            "nested-header.xml",
+            br#"<datafile><header><description><revision>v2</revision></description></header><game name="set"/></datafile>"#.as_slice(),
+        ),
+    ] {
+        let path = directory.path().join(file_name);
+        std::fs::write(&path, xml)?;
+        let mut request = no_intro_request()?;
+        request.document_path = Utf8PathBuf::from_path_buf(path).map_err(|_| "non-UTF8 fixture path")?;
+        let report = app::import_catalog(&database, &request)?;
+        assert_eq!(report.status, app::CatalogImportStatus::Failed);
+        assert!(report.snapshot_key.is_none());
+    }
+    assert_eq!(count(&mut connection, "catalog_snapshots")?, 0);
+    let located = sql_query(
+        "SELECT COUNT(*) AS count FROM import_diagnostics \
+         WHERE record_kind = 'header' AND record_name IS NOT NULL \
+         AND source_line IS NOT NULL AND source_column IS NOT NULL",
+    )
+    .get_result::<CountRow>(&mut connection)?;
+    assert_eq!(located.count, 2);
+    Ok(())
+}
+
+#[test]
+fn no_intro_unknown_rom_fields_keep_the_rom_record_identity()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, mut connection) = setup()?;
+    let path = directory.path().join("rom-extensions.xml");
+    std::fs::write(
+        &path,
+        br#"<datafile><game name="set"><rom name="a.bin" future="A"><future-child value="a"/></rom><rom name="b.bin" future="B"/></game></datafile>"#,
+    )?;
+    let mut request = no_intro_request()?;
+    request.document_path =
+        Utf8PathBuf::from_path_buf(path).map_err(|_| "non-UTF8 fixture path")?;
+    let report = app::import_catalog(&database, &request)?;
+    assert_eq!(report.status, app::CatalogImportStatus::Succeeded);
+    let first = sql_query(
+        "SELECT raw_value_json AS value FROM snapshot_extensions \
+         WHERE record_kind = 'rom' AND record_name = 'a.bin' AND field_name = 'future'",
+    )
+    .get_result::<TextRow>(&mut connection)?;
+    let second = sql_query(
+        "SELECT raw_value_json AS value FROM snapshot_extensions \
+         WHERE record_kind = 'rom' AND record_name = 'b.bin' AND field_name = 'future'",
+    )
+    .get_result::<TextRow>(&mut connection)?;
+    let nested = sql_query(
+        "SELECT COUNT(*) AS count FROM snapshot_extensions \
+         WHERE record_kind = 'rom' AND record_name = 'a.bin' AND field_name = 'element:future-child'",
+    )
+    .get_result::<CountRow>(&mut connection)?;
+    assert_eq!(first.value, "\"A\"");
+    assert_eq!(second.value, "\"B\"");
+    assert_eq!(nested.count, 1);
+    Ok(())
+}
+
+#[test]
+fn no_intro_record_text_fails_instead_of_disappearing() -> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, mut connection) = setup()?;
+    for (file_name, xml, kind) in [
+        (
+            "root-text.xml",
+            br#"<datafile>unexpected<game name="set"/></datafile>"#.as_slice(),
+            "document",
+        ),
+        (
+            "header-text.xml",
+            br#"<datafile><header>unexpected</header><game name="set"/></datafile>"#.as_slice(),
+            "header",
+        ),
+        (
+            "game-text.xml",
+            br#"<datafile><game name="set">unexpected</game></datafile>"#.as_slice(),
+            "game",
+        ),
+        (
+            "rom-text.xml",
+            br#"<datafile><game name="set"><rom name="a.bin">unexpected</rom></game></datafile>"#
+                .as_slice(),
+            "rom",
+        ),
+    ] {
+        let path = directory.path().join(file_name);
+        std::fs::write(&path, xml)?;
+        let mut request = no_intro_request()?;
+        request.document_path =
+            Utf8PathBuf::from_path_buf(path).map_err(|_| "non-UTF8 fixture path")?;
+        let report = app::import_catalog(&database, &request)?;
+        assert_eq!(report.status, app::CatalogImportStatus::Failed);
+        assert!(report.snapshot_key.is_none());
+        let located = sql_query(
+            "SELECT COUNT(*) AS count FROM import_diagnostics \
+             WHERE run_key = ? AND record_kind = ? \
+             AND source_line IS NOT NULL AND source_column IS NOT NULL",
+        )
+        .bind::<Text, _>(report.run_key.to_string())
+        .bind::<Text, _>(kind)
+        .get_result::<CountRow>(&mut connection)?;
+        assert_eq!(located.count, 1, "missing located diagnostic for {kind}");
+    }
+    assert_eq!(count(&mut connection, "catalog_snapshots")?, 0);
     Ok(())
 }
 
