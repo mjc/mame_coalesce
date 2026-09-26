@@ -28,6 +28,12 @@ struct ExistingSnapshot {
 }
 
 #[derive(QueryableByName)]
+struct ComponentOrderRow {
+    #[diesel(sql_type = BigInt)]
+    component_order: i64,
+}
+
+#[derive(QueryableByName)]
 struct IdentityRow {
     #[diesel(sql_type = Text)]
     first_value: String,
@@ -750,7 +756,13 @@ fn insert_snapshot_contents(
             .bind::<BigInt, _>(asset.location.line)
             .bind::<BigInt, _>(asset.location.column)
             .execute(conn)?;
+        }
+    }
 
+    for set in &snapshot_data.sets {
+        for (order, asset) in set.assets.iter().enumerate() {
+            let component_order = i64::try_from(order)
+                .map_err(|_| crate::Error::InvalidPath("too many catalog assets".into()))?;
             persist_asset_merge_relationship(conn, snapshot_key, set, asset, component_order)?;
         }
     }
@@ -827,6 +839,19 @@ fn persist_asset_merge_relationship(
     let (Some(parent), Some(merged_name)) = (&set.parent, &asset.merge) else {
         return Ok(());
     };
+    let parent_orders = sql_query(
+        "SELECT component_order FROM asset_requirements \
+         WHERE snapshot_key = ? AND set_name = ? AND asset_name = ? \
+         ORDER BY component_order LIMIT 2",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .bind::<Text, _>(parent)
+    .bind::<Text, _>(merged_name)
+    .load::<ComponentOrderRow>(conn)?;
+    let target_key = match parent_orders.as_slice() {
+        [target] => format!("{parent}/{merged_name}#{}", target.component_order),
+        _ => format!("{parent}/{merged_name}"),
+    };
     insert_source_assertion(
         conn,
         SourceRelationshipDraft {
@@ -839,7 +864,7 @@ fn persist_asset_merge_relationship(
             target: CatalogRecordRef::new(
                 snapshot.clone(),
                 CatalogRecordKind::AssetRequirement,
-                format!("{parent}/{merged_name}"),
+                target_key,
             ),
             source_field: "merge".to_owned(),
             source_location: Some(DocumentLocation {

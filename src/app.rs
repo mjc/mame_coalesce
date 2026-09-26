@@ -1,5 +1,6 @@
 use camino::Utf8PathBuf;
 
+use crate::reconciliation::CatalogReconciliation;
 use crate::{
     build::{planner::plan_build as build_plan, write_plan_with_container},
     database::Database,
@@ -245,6 +246,15 @@ pub fn catalog_snapshot_history(
     catalog: &CatalogKey,
 ) -> crate::Result<Vec<CatalogSnapshotEntry>> {
     crate::storage::snapshot_history::history(database.pool(), catalog)
+}
+
+/// Reconcile two explicit published snapshots without consulting local inventory.
+pub fn reconcile_catalog_snapshots(
+    database: &Database,
+    left: &SnapshotKey,
+    right: &SnapshotKey,
+) -> crate::Result<CatalogReconciliation> {
+    crate::storage::catalog_reconciliation::reconcile(database.pool(), left, right)
 }
 
 pub fn scan_source(
