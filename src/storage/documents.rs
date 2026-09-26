@@ -1232,7 +1232,7 @@ mod tests {
         conn.revert_migration(migrations[snapshot_index].as_ref())?;
         let snapshot_tables = sql_query(
             "SELECT COUNT(*) AS count FROM sqlite_master \
-             WHERE type = 'table' AND name IN ('snapshot_sets', 'asset_requirements', \
+             WHERE type = 'table' AND name IN ('snapshot_publications', 'snapshot_sets', 'asset_requirements', \
                  'snapshot_extensions', 'import_diagnostics')",
         )
         .get_result::<CountRow>(&mut conn)?

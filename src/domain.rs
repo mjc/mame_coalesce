@@ -232,6 +232,22 @@ impl SnapshotKey {
         ))
     }
 
+    #[must_use]
+    pub fn new_publication(
+        catalog: &CatalogKey,
+        document: &DocumentKey,
+        interpretation: &ParserInterpretationKey,
+    ) -> Self {
+        Self(stable_key(
+            "catalog-snapshot-publication-v1",
+            &[
+                catalog.as_str(),
+                &document.to_string(),
+                interpretation.as_str(),
+            ],
+        ))
+    }
+
     pub(crate) const fn from_persisted(value: String) -> Self {
         Self(value)
     }

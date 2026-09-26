@@ -60,6 +60,16 @@ diesel::table! {
 }
 
 diesel::table! {
+    snapshot_publications (catalog_key, document_key, interpretation_key) {
+        catalog_key -> Text,
+        document_key -> Text,
+        interpretation_key -> Text,
+        snapshot_key -> Text,
+        published_at -> Timestamp,
+    }
+}
+
+diesel::table! {
     snapshot_sets (snapshot_key, set_name) {
         snapshot_key -> Text,
         set_name -> Text,
@@ -272,4 +282,5 @@ diesel::allow_tables_to_appear_in_same_query!(
     roms,
     snapshot_extensions,
     snapshot_sets,
+    snapshot_publications,
 );

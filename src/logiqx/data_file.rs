@@ -58,7 +58,7 @@ impl DataFile {
         // historical size behavior. `from_reader` remains deliberately bounded.
         let mmap = hashes::mmap_path(path)?;
         let raw = mmap.as_slice();
-        let (mut data_file, _) = Self::parse_bytes(&raw)?;
+        let (mut data_file, _) = Self::parse_bytes(raw)?;
         data_file.file_name = path
             .canonicalize()
             .ok()
@@ -155,7 +155,9 @@ fn validate_xml(bytes: &[u8]) -> crate::Result<XmlSourceMap> {
         .allow_multiple_root_elements(false);
     let mut reader = config.create_reader(bytes);
     let mut source_map = XmlSourceMap::default();
-    let mut current_game = None;
+    let mut element_depth = 0_usize;
+    let mut datafile_root = false;
+    let mut current_game: Option<(usize, usize)> = None;
     loop {
         let event = reader.next();
         match event {
@@ -163,6 +165,9 @@ fn validate_xml(bytes: &[u8]) -> crate::Result<XmlSourceMap> {
                 name, attributes, ..
             }) => {
                 let local_name = name.local_name;
+                if element_depth == 0 {
+                    datafile_root = local_name == "datafile";
+                }
                 let position = reader.position();
                 let location = RecordLocation {
                     line: i64::try_from(position.row.saturating_add(1)).unwrap_or(i64::MAX),
@@ -173,18 +178,22 @@ fn validate_xml(bytes: &[u8]) -> crate::Result<XmlSourceMap> {
                     .find(|attribute| attribute.name.local_name == "name")
                     .map(|attribute| attribute.value.clone());
                 match local_name.as_str() {
-                    "game" => {
-                        current_game = Some(source_map.game_locations.len());
+                    "game" if datafile_root && element_depth == 1 => {
+                        let game_index = source_map.game_locations.len();
+                        current_game = Some((game_index, element_depth));
                         source_map.game_locations.push(location);
                         source_map.rom_locations.push(Vec::new());
                     }
-                    "rom" => {
-                        if let Some(index) = current_game {
+                    "rom" if element_depth == 2 => {
+                        if let Some((index, game_depth)) = current_game
+                            && game_depth + 1 == element_depth
+                        {
                             source_map.rom_locations[index].push(location);
                         }
                     }
                     _ => {}
                 }
+                element_depth = element_depth.saturating_add(1);
                 for attribute in &attributes {
                     if attribute.name.namespace.is_some()
                         || !known_attribute(&local_name, &attribute.name.local_name)
@@ -208,9 +217,12 @@ fn validate_xml(bytes: &[u8]) -> crate::Result<XmlSourceMap> {
                 }
             }
             Ok(XmlEvent::EndElement { name }) => {
-                if name.local_name == "game" {
+                if name.local_name == "game"
+                    && current_game.is_some_and(|(_, game_depth)| game_depth + 1 == element_depth)
+                {
                     current_game = None;
                 }
+                element_depth = element_depth.saturating_sub(1);
             }
             Ok(XmlEvent::EndDocument) => break,
             // xml-rs reports declarations without fetching external subsets.
@@ -454,6 +466,34 @@ mod tests {
         assert_eq!(source_map.unsupported_attributes.len(), 2);
         assert_eq!(source_map.unsupported_attributes[0].field_name, "future");
         assert_eq!(source_map.unsupported_attributes[1].value, "unknown");
+        Ok(())
+    }
+
+    #[test]
+    fn parser_source_map_ignores_nested_games_and_roms() -> Result<(), Box<dyn std::error::Error>> {
+        let xml = br#"<datafile>
+  <header>
+    <name>Source map</name>
+    <extension>
+      <game name="ignored">
+        <rom name="ignored.bin" size="1"/>
+      </game>
+    </extension>
+  </header>
+  <game name="real">
+    <rom name="real.bin" size="1"/>
+  </game>
+</datafile>"#;
+
+        let (data_file, source_map) = DataFile::from_reader_with_source_map(xml.as_slice())?;
+
+        assert_eq!(data_file.games().len(), 1);
+        assert_eq!(data_file.games()[0].name(), "real");
+        assert_eq!(source_map.game_locations.len(), 1);
+        assert_eq!(source_map.game_locations[0].line, 10);
+        assert_eq!(source_map.rom_locations.len(), 1);
+        assert_eq!(source_map.rom_locations[0].len(), 1);
+        assert_eq!(source_map.rom_locations[0][0].line, 11);
         Ok(())
     }
 

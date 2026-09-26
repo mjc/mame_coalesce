@@ -11,9 +11,23 @@ use crate::{
 };
 
 #[derive(QueryableByName)]
-struct ExistingSnapshot {
+struct PublishedSnapshot {
     #[diesel(sql_type = Text)]
     snapshot_key: String,
+}
+
+#[derive(QueryableByName)]
+struct IdentityOnlySnapshot {
+    #[diesel(sql_type = Text)]
+    snapshot_key: String,
+    #[diesel(sql_type = Nullable<Text>)]
+    declared_version: Option<String>,
+    #[diesel(sql_type = Text)]
+    scope_kind: String,
+    #[diesel(sql_type = Nullable<Text>)]
+    scope_json: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    acquisition_source: Option<String>,
 }
 
 #[derive(QueryableByName)]
@@ -126,43 +140,19 @@ fn publish_snapshot(
     source_map: &XmlSourceMap,
 ) -> crate::Result<CatalogImportReport> {
     let interpretation = ParserInterpretationKey::logiqx_v1(&request.scope);
-    let snapshot_key = SnapshotKey::new(&request.catalog_key, &document_key, &interpretation);
     let run_key = ImportRunKey::fresh();
-    let (scope_kind, scope_json) = request.scope.as_storage();
     let mut conn = pool.get()?;
     conn.immediate_transaction::<_, crate::Error, _>(|conn| {
         ensure_identities(conn, request, &interpretation)?;
-        let existing = sql_query(
-            "SELECT snapshot_key FROM catalog_snapshots \
-             WHERE catalog_key = ? AND document_key = ? AND interpretation_key = ? \
-             ORDER BY snapshot_key LIMIT 1",
-        )
-        .bind::<Text, _>(request.catalog_key.as_str())
-        .bind::<Text, _>(document_key.to_string())
-        .bind::<Text, _>(interpretation.as_str())
-        .get_result::<ExistingSnapshot>(conn)
-        .optional()?;
-        let snapshot_key = if let Some(existing) = existing {
-            SnapshotKey::from_persisted(existing.snapshot_key)
-        } else {
-            sql_query(
-                "INSERT INTO catalog_snapshots \
-                 (snapshot_key, catalog_key, document_key, interpretation_key, acquisition_key, \
-                  declared_version, scope_kind, scope_json) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            )
-            .bind::<Text, _>(snapshot_key.as_str())
-            .bind::<Text, _>(request.catalog_key.as_str())
-            .bind::<Text, _>(document_key.to_string())
-            .bind::<Text, _>(interpretation.as_str())
-            .bind::<Nullable<Text>, _>(Some(acquisition_key.to_owned()))
-            .bind::<Nullable<Text>, _>(data_file.header().version().cloned())
-            .bind::<Text, _>(scope_kind)
-            .bind::<Nullable<Text>, _>(scope_json.clone())
-            .execute(conn)?;
-            insert_snapshot_contents(conn, &snapshot_key, data_file, source_map)?;
-            snapshot_key
-        };
+        let snapshot_key = ensure_snapshot_publication(
+            conn,
+            request,
+            &document_key,
+            acquisition_key,
+            &interpretation,
+            data_file,
+            source_map,
+        )?;
 
         insert_import_run(
             conn,
@@ -201,6 +191,89 @@ fn publish_snapshot(
             diagnostic_count: source_map.unsupported_attributes.len(),
         })
     })
+}
+
+fn ensure_snapshot_publication(
+    conn: &mut SqliteConnection,
+    request: &CatalogImportRequest,
+    document_key: &DocumentKey,
+    acquisition_key: &str,
+    interpretation: &ParserInterpretationKey,
+    data_file: &DataFile,
+    source_map: &XmlSourceMap,
+) -> crate::Result<SnapshotKey> {
+    let published = sql_query(
+        "SELECT snapshot_key FROM snapshot_publications \
+         WHERE catalog_key = ? AND document_key = ? AND interpretation_key = ? \
+         LIMIT 1",
+    )
+    .bind::<Text, _>(request.catalog_key.as_str())
+    .bind::<Text, _>(document_key.to_string())
+    .bind::<Text, _>(interpretation.as_str())
+    .get_result::<PublishedSnapshot>(conn)
+    .optional()?;
+    if let Some(published) = published {
+        return Ok(SnapshotKey::from_persisted(published.snapshot_key));
+    }
+
+    let (scope_kind, scope_json) = request.scope.as_storage();
+    let identity_rows = sql_query(
+        "SELECT snapshot.snapshot_key, snapshot.declared_version, snapshot.scope_kind, \
+                snapshot.scope_json, acquisition.source_key AS acquisition_source \
+         FROM catalog_snapshots AS snapshot \
+         LEFT JOIN acquisitions AS acquisition \
+           ON acquisition.acquisition_key = snapshot.acquisition_key \
+         WHERE snapshot.catalog_key = ? AND snapshot.document_key = ? \
+           AND snapshot.interpretation_key = ? \
+         ORDER BY snapshot.snapshot_key",
+    )
+    .bind::<Text, _>(request.catalog_key.as_str())
+    .bind::<Text, _>(document_key.to_string())
+    .bind::<Text, _>(interpretation.as_str())
+    .load::<IdentityOnlySnapshot>(conn)?;
+    let matching_identity = identity_rows.iter().find(|row| {
+        row.declared_version.as_deref() == data_file.header().version().map(String::as_str)
+            && row.scope_kind == scope_kind
+            && row.scope_json.as_deref() == scope_json.as_deref()
+            && row.acquisition_source.as_deref() == Some(request.source_key.as_str())
+    });
+    let snapshot_key = if let Some(existing) = matching_identity {
+        SnapshotKey::from_persisted(existing.snapshot_key.clone())
+    } else {
+        let snapshot_key = if identity_rows.is_empty() {
+            SnapshotKey::new(&request.catalog_key, document_key, interpretation)
+        } else {
+            SnapshotKey::new_publication(&request.catalog_key, document_key, interpretation)
+        };
+        sql_query(
+            "INSERT INTO catalog_snapshots \
+             (snapshot_key, catalog_key, document_key, interpretation_key, acquisition_key, \
+              declared_version, scope_kind, scope_json) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind::<Text, _>(snapshot_key.as_str())
+        .bind::<Text, _>(request.catalog_key.as_str())
+        .bind::<Text, _>(document_key.to_string())
+        .bind::<Text, _>(interpretation.as_str())
+        .bind::<Nullable<Text>, _>(Some(acquisition_key.to_owned()))
+        .bind::<Nullable<Text>, _>(data_file.header().version().cloned())
+        .bind::<Text, _>(scope_kind)
+        .bind::<Nullable<Text>, _>(scope_json)
+        .execute(conn)?;
+        snapshot_key
+    };
+    insert_snapshot_contents(conn, &snapshot_key, data_file, source_map)?;
+    sql_query(
+        "INSERT INTO snapshot_publications \
+         (catalog_key, document_key, interpretation_key, snapshot_key) \
+         VALUES (?, ?, ?, ?)",
+    )
+    .bind::<Text, _>(request.catalog_key.as_str())
+    .bind::<Text, _>(document_key.to_string())
+    .bind::<Text, _>(interpretation.as_str())
+    .bind::<Text, _>(snapshot_key.as_str())
+    .execute(conn)?;
+    Ok(snapshot_key)
 }
 
 fn ensure_identities(

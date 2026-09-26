@@ -141,7 +141,7 @@ mod tests {
             "INSERT INTO catalog_snapshots \
                  (snapshot_key, catalog_key, document_key, interpretation_key, \
                   parent_snapshot_key, scope_kind) \
-             VALUES ('snapshot-a4', 'catalog-a', 'document-a', 'logiqx-v1', \
+             VALUES ('snapshot-a4', 'catalog-a', 'document-b', 'logiqx-v2', \
                      'snapshot-a1', 'unknown')",
         )?;
         assert_eq!(
@@ -161,6 +161,36 @@ mod tests {
                   parent_snapshot_key, scope_kind) \
              VALUES ('snapshot-cross-catalog-parent', 'catalog-b', 'document-b', \
                      'logiqx-v1', 'snapshot-a1', 'unknown')",
+        ));
+        Ok(())
+    }
+
+    fn assert_snapshot_publication_identity_is_unique(
+        conn: &mut SqliteConnection,
+    ) -> QueryResult<()> {
+        sql_query(
+            "INSERT INTO catalog_snapshots \
+             (snapshot_key, catalog_key, document_key, interpretation_key, scope_kind) \
+             VALUES ('snapshot-a2', 'catalog-a', 'document-a', 'logiqx-v1', 'unknown')",
+        )
+        .execute(conn)?;
+        sql_query(
+            "INSERT INTO snapshot_publications \
+             (catalog_key, document_key, interpretation_key, snapshot_key) \
+             VALUES ('catalog-a', 'document-a', 'logiqx-v1', 'snapshot-a1')",
+        )
+        .execute(conn)?;
+        assert!(sql_fails(
+            conn,
+            "INSERT INTO snapshot_publications \
+                 (catalog_key, document_key, interpretation_key, snapshot_key) \
+             VALUES ('catalog-a', 'document-a', 'logiqx-v1', 'snapshot-a2')",
+        ));
+        assert!(sql_fails(
+            conn,
+            "INSERT OR REPLACE INTO snapshot_publications \
+                 (catalog_key, document_key, interpretation_key, snapshot_key) \
+             VALUES ('catalog-a', 'document-a', 'logiqx-v1', 'snapshot-a2')",
         ));
         Ok(())
     }
@@ -646,12 +676,7 @@ mod tests {
             1
         );
         assert_snapshot_parent_is_catalog_scoped(&mut conn)?;
-        assert!(sql_fails(
-            &mut conn,
-            "INSERT INTO catalog_snapshots \
-                 (snapshot_key, catalog_key, document_key, interpretation_key, scope_kind) \
-             VALUES ('duplicate-snapshot', 'catalog-a', 'document-a', 'logiqx-v1', 'unknown')",
-        ));
+        assert_snapshot_publication_identity_is_unique(&mut conn)?;
         assert!(sql_fails(
             &mut conn,
             "INSERT INTO catalogs (catalog_key, source_key, display_name) \
@@ -704,6 +729,54 @@ mod tests {
                   acquisition_key, status) \
                  VALUES ('run-mismatched-acquisition', 'catalog-a', 'document-a', \
                          'logiqx-v1', 'acquisition-b', 'succeeded')",
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn snapshot_publication_migration_preserves_duplicate_legacy_identities()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut conn = SqliteConnection::establish(":memory:")?;
+        conn.batch_execute("PRAGMA foreign_keys = ON")?;
+        let migrations = MIGRATIONS.migrations()?;
+        let snapshot_index = migrations
+            .iter()
+            .position(|migration| {
+                migration.name().to_string() == "2026-09-24-000002_publish_logiqx_snapshots"
+            })
+            .ok_or("snapshot migration not found")?;
+        conn.applied_migrations()?;
+        for migration in &migrations[..snapshot_index] {
+            conn.run_migration(migration.as_ref())?;
+        }
+        conn.batch_execute(
+            "INSERT INTO publishing_sources (source_key, display_name) \
+                 VALUES ('legacy-source', 'Legacy source'); \
+             INSERT INTO catalogs (catalog_key, source_key, display_name) \
+                 VALUES ('legacy-catalog', 'legacy-source', 'Legacy catalog'); \
+             INSERT INTO documents (document_key) VALUES ('legacy-document'); \
+             INSERT INTO parser_interpretations (interpretation_key, format) \
+                 VALUES ('legacy-logiqx', 'logiqx'); \
+             INSERT INTO catalog_snapshots \
+                 (snapshot_key, catalog_key, document_key, interpretation_key) \
+                 VALUES ('legacy-snapshot-a', 'legacy-catalog', 'legacy-document', 'legacy-logiqx'), \
+                        ('legacy-snapshot-b', 'legacy-catalog', 'legacy-document', 'legacy-logiqx');",
+        )?;
+
+        conn.run_pending_migrations(MIGRATIONS)?;
+        assert_eq!(count(&mut conn, "catalog_snapshots")?, 2);
+        assert_eq!(count(&mut conn, "snapshot_publications")?, 0);
+        sql_query(
+            "INSERT INTO snapshot_publications \
+             (catalog_key, document_key, interpretation_key, snapshot_key) \
+             VALUES ('legacy-catalog', 'legacy-document', 'legacy-logiqx', 'legacy-snapshot-a')",
+        )
+        .execute(&mut conn)?;
+        assert!(sql_fails(
+            &mut conn,
+            "INSERT INTO snapshot_publications \
+                 (catalog_key, document_key, interpretation_key, snapshot_key) \
+             VALUES ('legacy-catalog', 'legacy-document', 'legacy-logiqx', 'legacy-snapshot-b')",
         ));
         Ok(())
     }

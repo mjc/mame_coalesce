@@ -13,7 +13,7 @@ use diesel::{
 use mame_coalesce::{
     app::{self, CatalogImportRequest},
     database::Database,
-    domain::{CatalogKey, CatalogScope, PublishingSourceKey},
+    domain::{CatalogKey, CatalogScope, DocumentKey, ParserInterpretationKey, PublishingSourceKey},
 };
 
 #[derive(QueryableByName)]
@@ -115,6 +115,7 @@ fn imports_overlapping_catalogs_and_reimports_idempotently()
     assert_eq!(count(&mut connection, "snapshot_sets")?, 2);
     assert_eq!(count(&mut connection, "asset_requirements")?, 4);
     assert_eq!(count(&mut connection, "import_runs")?, 3);
+    assert_eq!(count(&mut connection, "snapshot_publications")?, 2);
 
     let unknown_attribute = sql_query(
         "SELECT field_name AS value FROM snapshot_extensions WHERE field_name = 'future-policy'",
@@ -153,6 +154,120 @@ fn imports_overlapping_catalogs_and_reimports_idempotently()
     )
     .get_result::<NullableTextRow>(&mut connection)?;
     assert_eq!(namespace.value.as_deref(), Some("urn:vendor"));
+    Ok(())
+}
+
+#[test]
+fn publishing_completes_a_matching_identity_only_snapshot() -> Result<(), Box<dyn std::error::Error>>
+{
+    let (directory, database, mut connection) = setup()?;
+    let path = directory.path().join("identity-only.dat");
+    let bytes = br#"<datafile><header><name>Legacy</name></header><game name="set"><rom name="asset.bin" crc="12345678"/></game></datafile>"#;
+    std::fs::write(&path, bytes)?;
+    let request = request(path, "legacy-publisher", "legacy-catalog", "Legacy")?;
+    let document_key = DocumentKey::from_bytes(bytes).to_string();
+    let interpretation = ParserInterpretationKey::logiqx_v1(&request.scope);
+    sql_query("INSERT INTO publishing_sources (source_key, display_name) VALUES (?, ?)")
+        .bind::<Text, _>(request.source_key.as_str())
+        .bind::<Text, _>(&request.source_display_name)
+        .execute(&mut connection)?;
+    sql_query("INSERT INTO catalogs (catalog_key, source_key, display_name) VALUES (?, ?, ?)")
+        .bind::<Text, _>(request.catalog_key.as_str())
+        .bind::<Text, _>(request.source_key.as_str())
+        .bind::<Text, _>(&request.catalog_display_name)
+        .execute(&mut connection)?;
+    sql_query("INSERT INTO documents (document_key) VALUES (?)")
+        .bind::<Text, _>(&document_key)
+        .execute(&mut connection)?;
+    sql_query(
+        "INSERT INTO acquisitions (acquisition_key, source_key, document_key) \
+         VALUES ('legacy-acquisition', ?, ?)",
+    )
+    .bind::<Text, _>(request.source_key.as_str())
+    .bind::<Text, _>(&document_key)
+    .execute(&mut connection)?;
+    sql_query(
+        "INSERT INTO parser_interpretations (interpretation_key, format) VALUES (?, 'logiqx')",
+    )
+    .bind::<Text, _>(interpretation.as_str())
+    .execute(&mut connection)?;
+    sql_query(
+        "INSERT INTO catalog_snapshots \
+         (snapshot_key, catalog_key, document_key, interpretation_key, acquisition_key) \
+         VALUES ('identity-only-snapshot', ?, ?, ?, 'legacy-acquisition')",
+    )
+    .bind::<Text, _>(request.catalog_key.as_str())
+    .bind::<Text, _>(&document_key)
+    .bind::<Text, _>(interpretation.as_str())
+    .execute(&mut connection)?;
+
+    let report = app::import_catalog(&database, &request)?;
+    assert_eq!(
+        report
+            .snapshot_key
+            .as_ref()
+            .map(ToString::to_string)
+            .as_deref(),
+        Some("identity-only-snapshot")
+    );
+    assert_eq!(count(&mut connection, "catalog_snapshots")?, 1);
+    assert_eq!(count(&mut connection, "snapshot_sets")?, 1);
+    assert_eq!(count(&mut connection, "asset_requirements")?, 1);
+    assert_eq!(count(&mut connection, "snapshot_publications")?, 1);
+    Ok(())
+}
+
+#[test]
+fn stale_identity_only_metadata_is_not_published_as_current()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, mut connection) = setup()?;
+    let path = directory.path().join("stale-identity.dat");
+    let bytes = br#"<datafile><header><name>Legacy</name><version>2.0</version></header><game name="set"/></datafile>"#;
+    std::fs::write(&path, bytes)?;
+    let request = request(path, "legacy-publisher", "legacy-catalog", "Legacy")?;
+    let document_key = DocumentKey::from_bytes(bytes).to_string();
+    let interpretation = ParserInterpretationKey::logiqx_v1(&request.scope);
+    sql_query("INSERT INTO publishing_sources (source_key, display_name) VALUES (?, ?)")
+        .bind::<Text, _>(request.source_key.as_str())
+        .bind::<Text, _>(&request.source_display_name)
+        .execute(&mut connection)?;
+    sql_query("INSERT INTO catalogs (catalog_key, source_key, display_name) VALUES (?, ?, ?)")
+        .bind::<Text, _>(request.catalog_key.as_str())
+        .bind::<Text, _>(request.source_key.as_str())
+        .bind::<Text, _>(&request.catalog_display_name)
+        .execute(&mut connection)?;
+    sql_query("INSERT INTO documents (document_key) VALUES (?)")
+        .bind::<Text, _>(&document_key)
+        .execute(&mut connection)?;
+    sql_query(
+        "INSERT INTO parser_interpretations (interpretation_key, format) VALUES (?, 'logiqx')",
+    )
+    .bind::<Text, _>(interpretation.as_str())
+    .execute(&mut connection)?;
+    sql_query(
+        "INSERT INTO catalog_snapshots \
+         (snapshot_key, catalog_key, document_key, interpretation_key, declared_version, scope_kind) \
+         VALUES ('stale-identity-snapshot', ?, ?, ?, '1.0', 'complete')",
+    )
+    .bind::<Text, _>(request.catalog_key.as_str())
+    .bind::<Text, _>(&document_key)
+    .bind::<Text, _>(interpretation.as_str())
+    .execute(&mut connection)?;
+
+    let report = app::import_catalog(&database, &request)?;
+    let published_key = report
+        .snapshot_key
+        .as_ref()
+        .map(ToString::to_string)
+        .ok_or_else(|| io::Error::other("valid import publishes a snapshot"))?;
+    assert_ne!(published_key, "stale-identity-snapshot");
+    assert_eq!(count(&mut connection, "catalog_snapshots")?, 2);
+    assert_eq!(count(&mut connection, "snapshot_publications")?, 1);
+    let version =
+        sql_query("SELECT declared_version AS value FROM catalog_snapshots WHERE snapshot_key = ?")
+            .bind::<Text, _>(published_key)
+            .get_result::<NullableTextRow>(&mut connection)?;
+    assert_eq!(version.value.as_deref(), Some("2.0"));
     Ok(())
 }
 
