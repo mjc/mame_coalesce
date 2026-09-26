@@ -1,9 +1,7 @@
-use std::{
-    fs::File,
-    io::{Cursor, Read},
-};
+use std::io::{Cursor, Read};
 
 use camino::Utf8Path;
+use fmmap::MmapFileExt;
 use serde::Deserialize;
 use xml::reader::{ParserConfig, XmlEvent};
 
@@ -31,14 +29,16 @@ impl DataFile {
     }
 
     pub fn from_path(path: &Utf8Path) -> crate::Result<Self> {
-        let raw =
-            document_input::read_bounded(File::open(path)?, document_input::MAX_DOCUMENT_BYTES)?;
-        let mut data_file = Self::from_bytes(&raw)?;
+        // Keep large path-based DATs out of the eager heap while preserving their
+        // historical size behavior. `from_reader` remains deliberately bounded.
+        let mmap = hashes::mmap_path(path)?;
+        let raw = mmap.as_slice();
+        let mut data_file = Self::from_bytes(raw)?;
         data_file.file_name = path
             .canonicalize()
             .ok()
             .map(|p| p.to_string_lossy().into_owned());
-        data_file.sha1 = Some(hashes::sha1_bytes(&raw).to_vec());
+        data_file.sha1 = Some(hashes::sha1_bytes(raw).to_vec());
         Ok(data_file)
     }
 
@@ -102,7 +102,9 @@ impl DataFile {
 }
 
 fn validate_xml(bytes: &[u8]) -> crate::Result<()> {
-    if contains_entity_declaration(bytes) {
+    if contains_entity_declaration(bytes)
+        .map_err(|()| crate::Error::XmlValidation("malformed UTF-16 encoding".into()))?
+    {
         return Err(crate::Error::XmlEntityNotAllowed);
     }
     let config = ParserConfig::new()
@@ -124,7 +126,9 @@ fn validate_xml(bytes: &[u8]) -> crate::Result<()> {
     Ok(())
 }
 
-fn contains_entity_declaration(bytes: &[u8]) -> bool {
+fn contains_entity_declaration(bytes: &[u8]) -> Result<bool, ()> {
+    let decoded = utf16_inspection_bytes(bytes)?;
+    let bytes = decoded.as_deref().unwrap_or(bytes);
     let mut index = 0;
     while index < bytes.len() {
         if bytes[index..].starts_with(b"<!--") {
@@ -134,18 +138,61 @@ fn contains_entity_declaration(bytes: &[u8]) -> bool {
         } else if bytes[index..].starts_with(b"<?") {
             index = after_markup(bytes, index + b"<?".len(), b"?>");
         } else if bytes[index..].starts_with(b"<!DOCTYPE") {
-            if doctype_contains_entity_declaration(bytes, index + b"<!DOCTYPE".len()) {
-                return true;
+            let (has_entity, end) =
+                doctype_contains_entity_declaration(bytes, index + b"<!DOCTYPE".len());
+            if has_entity {
+                return Ok(true);
             }
-            index += b"<!DOCTYPE".len();
+            index = end;
         } else {
             index += 1;
         }
     }
-    false
+    Ok(false)
 }
 
-fn doctype_contains_entity_declaration(bytes: &[u8], mut index: usize) -> bool {
+/// Return a byte-oriented inspection view for UTF-16, preserving ASCII markup
+/// while replacing non-ASCII characters with non-markup bytes.
+fn utf16_inspection_bytes(bytes: &[u8]) -> Result<Option<Vec<u8>>, ()> {
+    let (encoding, start) = if bytes.starts_with(&[0xFE, 0xFF]) {
+        (Some(true), 2)
+    } else if bytes.starts_with(&[0xFF, 0xFE]) {
+        (Some(false), 2)
+    } else if bytes.starts_with(b"<\0?\0") {
+        (Some(false), 0)
+    } else if bytes.starts_with(b"\0<\0?") {
+        (Some(true), 0)
+    } else {
+        (None, 0)
+    };
+    let Some(big_endian) = encoding else {
+        return Ok(None);
+    };
+    let encoded = bytes.get(start..).ok_or(())?;
+    let (pairs, remainder) = encoded.as_chunks::<2>();
+    if !remainder.is_empty() {
+        return Err(());
+    }
+    let units = pairs.iter().map(|pair| {
+        if big_endian {
+            u16::from_be_bytes([pair[0], pair[1]])
+        } else {
+            u16::from_le_bytes([pair[0], pair[1]])
+        }
+    });
+    let mut inspection = Vec::with_capacity(encoded.len() / 2);
+    for character in char::decode_utf16(units) {
+        let character = character.map_err(|_| ())?;
+        inspection.push(if character.is_ascii() {
+            character as u8
+        } else {
+            0x80
+        });
+    }
+    Ok(Some(inspection))
+}
+
+fn doctype_contains_entity_declaration(bytes: &[u8], mut index: usize) -> (bool, usize) {
     let mut subset_depth = 0_usize;
     let mut quote = None;
     while index < bytes.len() {
@@ -159,19 +206,19 @@ fn doctype_contains_entity_declaration(bytes: &[u8], mut index: usize) -> bool {
         } else if bytes[index..].starts_with(b"<?") {
             index = after_markup(bytes, index + b"<?".len(), b"?>");
         } else if bytes[index..].starts_with(b"<!ENTITY") && subset_depth > 0 {
-            return true;
+            return (true, index + b"<!ENTITY".len());
         } else {
             match bytes[index] {
                 b'\'' | b'"' => quote = Some(bytes[index]),
                 b'[' => subset_depth += 1,
                 b']' => subset_depth = subset_depth.saturating_sub(1),
-                b'>' if subset_depth == 0 => return false,
+                b'>' if subset_depth == 0 => return (false, index + 1),
                 _ => {}
             }
             index += 1;
         }
     }
-    false
+    (false, bytes.len())
 }
 
 fn after_markup(bytes: &[u8], mut index: usize, terminator: &[u8]) -> usize {
@@ -187,7 +234,7 @@ fn after_markup(bytes: &[u8], mut index: usize, terminator: &[u8]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io;
+    use std::io::{self, Write};
 
     const SIMPLE_DAT: &str = r#"<?xml version="1.0"?>
 <datafile>
@@ -280,6 +327,104 @@ mod tests {
             DataFile::from_reader(dat.as_slice()),
             Err(crate::Error::XmlEntityNotAllowed)
         ));
+    }
+
+    #[test]
+    fn detects_entities_in_bom_prefixed_utf16_and_parses_normal_documents()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for big_endian in [false, true] {
+            let entity = concat!(
+                "<?xml version=\"1.0\" encoding=\"UTF-16\"?>",
+                "<!DOCTYPE datafile [<!ENTITY local \"value\">]>",
+                "<datafile><header><name>&local;</name></header></datafile>"
+            );
+            let mut entity_bytes = utf16_bytes(entity, big_endian);
+            entity_bytes.splice(
+                0..0,
+                if big_endian {
+                    [0xFE, 0xFF]
+                } else {
+                    [0xFF, 0xFE]
+                },
+            );
+            assert!(matches!(
+                DataFile::from_reader(entity_bytes.as_slice()),
+                Err(crate::Error::XmlEntityNotAllowed)
+            ));
+
+            let document = format!(
+                "<?xml version=\"1.0\" encoding=\"UTF-16\"?>{}",
+                SIMPLE_DAT.replacen("<?xml version=\"1.0\"?>", "", 1)
+            );
+            let mut document_bytes = utf16_bytes(&document, big_endian);
+            document_bytes.splice(
+                0..0,
+                if big_endian {
+                    [0xFE, 0xFF]
+                } else {
+                    [0xFF, 0xFE]
+                },
+            );
+            let parsed = DataFile::from_reader(document_bytes.as_slice())?;
+            assert_eq!(parsed.header().name(), "Test Set");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn detects_entities_with_utf16_xml_signature_without_bom() {
+        for big_endian in [false, true] {
+            let entity = concat!(
+                "<?xml version=\"1.0\" encoding=\"UTF-16\"?>",
+                "<!DOCTYPE datafile [<!ENTITY local \"value\">]>",
+                "<datafile><header><name>&local;</name></header></datafile>"
+            );
+            let bytes = utf16_bytes(entity, big_endian);
+            assert!(matches!(
+                DataFile::from_reader(bytes.as_slice()),
+                Err(crate::Error::XmlEntityNotAllowed)
+            ));
+        }
+    }
+
+    #[test]
+    fn rejects_malformed_utf16_before_declaration_inspection_can_be_bypassed() {
+        assert!(matches!(
+            contains_entity_declaration(&[0xFF, 0xFE, b'<']),
+            Err(())
+        ));
+        assert!(matches!(
+            DataFile::from_reader([0xFF, 0xFE, b'<'].as_slice()),
+            Err(crate::Error::XmlValidation(_))
+        ));
+    }
+
+    #[test]
+    fn malformed_repeated_doctype_prefixes_are_scanned_once_and_fail_xml_validation() {
+        let prefix = b"<!DOCTYPE";
+        let mut malformed = Vec::with_capacity(prefix.len() * 4096);
+        for _ in 0..4096 {
+            malformed.extend_from_slice(prefix);
+        }
+        let (_, end) = doctype_contains_entity_declaration(&malformed, prefix.len());
+        assert_eq!(end, malformed.len());
+        assert!(matches!(
+            DataFile::from_reader(malformed.as_slice()),
+            Err(crate::Error::XmlValidation(_))
+        ));
+    }
+
+    fn utf16_bytes(value: &str, big_endian: bool) -> Vec<u8> {
+        value
+            .encode_utf16()
+            .flat_map(|unit| {
+                if big_endian {
+                    unit.to_be_bytes()
+                } else {
+                    unit.to_le_bytes()
+                }
+            })
+            .collect()
     }
 
     #[test]
@@ -474,6 +619,32 @@ mod tests {
             );
             assert!(!df.games().is_empty());
         }
+        Ok(())
+    }
+
+    #[test]
+    fn from_path_accepts_valid_documents_larger_than_reader_limit()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("large.dat");
+        let mut file = std::fs::File::create(&path)?;
+        file.write_all(b"<datafile><header><name>Large</name></header>")?;
+        let padding = vec![b' '; 64 * 1024];
+        let mut remaining = document_input::MAX_DOCUMENT_BYTES + 1;
+        while remaining > 0 {
+            let chunk_len = remaining.min(padding.len());
+            file.write_all(b"<!--")?;
+            file.write_all(&padding[..chunk_len])?;
+            file.write_all(b"-->")?;
+            remaining -= chunk_len;
+        }
+        file.write_all(b"</datafile>")?;
+        drop(file);
+
+        let path = Utf8Path::from_path(&path).ok_or("temporary path is not UTF-8")?;
+        let data_file = DataFile::from_path(path)?;
+        assert_eq!(data_file.header().name(), "Large");
+        assert!(data_file.sha1().is_some());
         Ok(())
     }
 }
