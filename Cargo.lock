@@ -1089,6 +1089,7 @@ dependencies = [
  "rayon",
  "serde",
  "serde-xml-rs",
+ "serde_json",
  "sha-1",
  "simplelog",
  "tempfile",

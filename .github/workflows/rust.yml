@@ -22,7 +22,7 @@ jobs:
           name: devenv
 
       - name: Install devenv
-        run: nix profile add nixpkgs#devenv
+        run: nix profile add github:cachix/devenv/2418e1b43797c44de5166176622c8d8fa0149871#devenv
 
       - name: Run the pinned development environment gate
         run: devenv --no-tui test

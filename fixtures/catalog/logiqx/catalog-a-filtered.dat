@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<datafile>
+  <header>
+    <name>Synthetic Catalog A filtered export</name>
+    <description>Fixture scope: only the alpha set; omitted sets are outside this export.</description>
+    <version>snapshot-2-filter-alpha</version>
+  </header>
+  <game name="alpha" cloneof="parent" sourcefile="alpha.cpp">
+    <description>Alpha fixture set</description>
+    <year>1998</year>
+    <manufacturer>Example Works</manufacturer>
+    <rom name="a-cart.bin" size="16" crc="12345678" sha1="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" />
+  </game>
+</datafile>

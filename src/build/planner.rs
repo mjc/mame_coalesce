@@ -436,6 +436,44 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_matches_prefer_legacy_zip_over_7z_sources() {
+        let dat_roms = [rom("parent", None, "dup.rom", "sha1-dup")];
+        let mut zip = source(
+            "/src-a",
+            "/src-a/a.zip",
+            Some("dup.rom"),
+            "sha1-dup",
+            SourceKind::ArchiveEntry,
+        );
+        zip.location = crate::domain::SourceLocation::LegacyUnknown {
+            path: "/src-a/a.zip".to_owned(),
+            member_name: Some("dup.rom".to_owned()),
+        };
+        let mut seven_zip = source(
+            "/src-a",
+            "/src-a/b.7z",
+            Some("dup.rom"),
+            "sha1-dup",
+            SourceKind::ArchiveEntry,
+        );
+        seven_zip.location = crate::domain::SourceLocation::LegacyUnknown {
+            path: "/src-a/b.7z".to_owned(),
+            member_name: Some("dup.rom".to_owned()),
+        };
+
+        let plan = plan_build(
+            &dat_roms,
+            &[seven_zip, zip],
+            &request(BuildMode::ParentBundles),
+        );
+
+        assert_eq!(
+            plan.report.duplicate_matches[0].selected.location.path(),
+            "/src-a/a.zip"
+        );
+    }
+
+    #[test]
     fn duplicate_matches_use_full_source_priority_order() {
         let dat_roms = [rom("parent", None, "dup.rom", "sha1-dup")];
         let source_files = [

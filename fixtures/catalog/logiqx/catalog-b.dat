@@ -1,0 +1,9 @@
+<?xml version="1.0"?>
+<datafile>
+  <header><name>Synthetic Catalog B</name><version>snapshot-1</version></header>
+  <game name="alpha-alias" future-policy="retain-or-report">
+    <description>Overlapping fixture set with a different local name</description>
+    <rom name="localized-cart.bin" size="16" crc="12345678" sha1="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" />
+    <rom name="disputed.bin" size="32" crc="33333333" sha1="3333333333333333333333333333333333333333" status="good" />
+  </game>
+</datafile>

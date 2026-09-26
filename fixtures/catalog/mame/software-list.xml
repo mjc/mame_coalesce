@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<!DOCTYPE softwarelists>
+<softwarelists>
+  <softwarelist name="demo_cart" description="Synthetic cartridge list">
+    <software name="demo_game">
+      <description>Synthetic Game</description>
+      <year>2000</year>
+      <publisher>Example</publisher>
+      <part name="cart" interface="demo_cart">
+        <dataarea name="rom" size="16">
+          <rom name="program.bin" size="16" crc="12345678" sha1="0123456789abcdef0123456789abcdef01234567" />
+        </dataarea>
+      </part>
+    </software>
+  </softwarelist>
+</softwarelists>

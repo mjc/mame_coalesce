@@ -1,5 +1,4 @@
 use crate::hashes::Sha1Digest;
-use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -366,15 +365,17 @@ impl SourceLocation {
                 backend: ArchiveBackend::Rar,
                 ..
             } => 3,
-            Self::LegacyUnknown { path, .. } => match Path::new(path)
-                .extension()
-                .and_then(std::ffi::OsStr::to_str)
-                .map(str::to_ascii_lowercase)
-                .as_deref()
-            {
-                Some("zip") => 1,
-                _ => 2,
-            },
+            Self::LegacyUnknown { path, .. } => {
+                let extension = std::path::Path::new(path)
+                    .extension()
+                    .and_then(std::ffi::OsStr::to_str);
+                match extension {
+                    Some(extension) if extension.eq_ignore_ascii_case("zip") => 1,
+                    Some(extension) if extension.eq_ignore_ascii_case("7z") => 2,
+                    Some(extension) if extension.eq_ignore_ascii_case("rar") => 3,
+                    _ => u8::MAX,
+                }
+            }
         }
     }
 
