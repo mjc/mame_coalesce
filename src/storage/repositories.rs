@@ -368,7 +368,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_archive_models_keep_known_backend_priority() {
+    fn legacy_archive_models_keep_known_backend_priority() -> crate::Result<()> {
         let archived_file = |path: &str| RomFile {
             id: 1,
             parent_path: "/source".to_owned(),
@@ -380,13 +380,16 @@ mod tests {
             md5: None,
             xxhash3: crate::hashes::xxhash3_bytes(b"content").to_vec(),
             in_archive: true,
+            archive_backend: None,
+            archive_member_index: None,
             rom_id: None,
         };
 
-        let zip = source_location_from_model(&archived_file("/source/z.zip"));
-        let seven_zip = source_location_from_model(&archived_file("/source/a.7z"));
+        let zip = source_location_from_model(&archived_file("/source/z.zip"))?;
+        let seven_zip = source_location_from_model(&archived_file("/source/a.7z"))?;
 
         assert!(zip.priority() < seven_zip.priority());
+        Ok(())
     }
 
     #[test]

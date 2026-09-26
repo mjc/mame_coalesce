@@ -570,7 +570,20 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut conn = SqliteConnection::establish(":memory:")?;
         conn.batch_execute("PRAGMA foreign_keys = ON")?;
-        conn.run_pending_migrations(MIGRATIONS)?;
+        let migrations = MIGRATIONS.migrations()?;
+        let scoped_names_index = migrations
+            .iter()
+            .position(|migration| {
+                migration
+                    .name()
+                    .to_string()
+                    .starts_with(SCOPED_NAMES_MIGRATION)
+            })
+            .ok_or("scoped names migration not found")?;
+        conn.applied_migrations()?;
+        for migration in &migrations[..=scoped_names_index] {
+            conn.run_migration(migration.as_ref())?;
+        }
         conn.batch_execute(
             "INSERT INTO data_files (id, name, version) VALUES (17, 'Legacy DAT', 'v1');
              INSERT INTO games (id, name, data_file_id) VALUES (23, 'legacy-set', 17);
@@ -582,17 +595,7 @@ mod tests {
                  VALUES (41, '/roms', '/roms/legacy.rom', 'legacy.rom', X'02', X'04', 0, 31);",
         )?;
 
-        let migrations = MIGRATIONS.migrations()?;
-        let scoped_names_migration = migrations
-            .iter()
-            .find(|migration| {
-                migration
-                    .name()
-                    .to_string()
-                    .starts_with(SCOPED_NAMES_MIGRATION)
-            })
-            .ok_or("scoped names migration not found")?;
-        conn.revert_migration(scoped_names_migration.as_ref())?;
+        conn.revert_migration(migrations[scoped_names_index].as_ref())?;
 
         assert_eq!(count(&mut conn, "data_files")?, 1);
         assert_eq!(count(&mut conn, "games")?, 1);
@@ -632,20 +635,22 @@ mod tests {
     fn scoped_names_revert_preserves_autoincrement_high_water_marks()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut conn = SqliteConnection::establish(":memory:")?;
-        conn.run_pending_migrations(MIGRATIONS)?;
-        seed_then_delete_high_rebuilt_ids(&mut conn)?;
-        let scoped_names_migration = MIGRATIONS
-            .migrations()?
-            .into_iter()
-            .find(|migration| {
+        let migrations = MIGRATIONS.migrations()?;
+        let scoped_names_index = migrations
+            .iter()
+            .position(|migration| {
                 migration
                     .name()
                     .to_string()
                     .starts_with(SCOPED_NAMES_MIGRATION)
             })
             .ok_or("scoped names migration not found")?;
-
-        conn.revert_migration(scoped_names_migration.as_ref())?;
+        conn.applied_migrations()?;
+        for migration in &migrations[..=scoped_names_index] {
+            conn.run_migration(migration.as_ref())?;
+        }
+        seed_then_delete_high_rebuilt_ids(&mut conn)?;
+        conn.revert_migration(migrations[scoped_names_index].as_ref())?;
         assert_rebuilt_ids_advance_past(&mut conn)?;
         Ok(())
     }
