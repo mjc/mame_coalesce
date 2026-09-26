@@ -150,7 +150,20 @@
         "The export contains alpha and a-cart.bin only.",
         "disputed.bin is omitted by filter scope and must not imply catalog-wide removal."
       ],
-      "retained_raw_fields": ["header.name", "header.description", "header.version", "game.name", "rom.name", "rom.size", "rom.crc", "rom.sha1"],
+      "retained_raw_fields": [
+        "header.name",
+        "header.description",
+        "header.version",
+        "game.name",
+        "game.cloneof",
+        "game.sourcefile",
+        "game.year",
+        "game.manufacturer",
+        "rom.name",
+        "rom.size",
+        "rom.crc",
+        "rom.sha1"
+      ],
       "expected_adapter_fields": [],
       "unsupported_semantics": ["The Logiqx parser does not assign durable filtered-export scope; this fixture records it for later import work."],
       "expected_diagnostics": [],
