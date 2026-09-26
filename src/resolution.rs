@@ -57,6 +57,80 @@ impl AvailableEvidence {
     }
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct EvidenceFieldComparison {
+    pub agreements: Vec<EvidenceField>,
+    pub contradictions: Vec<EvidenceField>,
+    pub comparable: bool,
+}
+
+pub(crate) fn compare_expected_fields(
+    left: &crate::domain::ExpectedEvidence,
+    right: &crate::domain::ExpectedEvidence,
+) -> EvidenceFieldComparison {
+    let mut result = EvidenceFieldComparison::default();
+    for (field, agrees) in [
+        (
+            EvidenceField::Sha1,
+            compare_expected_field(
+                left.sha1,
+                right.sha1,
+                EvidenceField::Sha1,
+                &mut result.contradictions,
+            ),
+        ),
+        (
+            EvidenceField::Md5,
+            compare_expected_field(
+                left.md5,
+                right.md5,
+                EvidenceField::Md5,
+                &mut result.contradictions,
+            ),
+        ),
+        (
+            EvidenceField::Crc,
+            compare_expected_field(
+                left.crc,
+                right.crc,
+                EvidenceField::Crc,
+                &mut result.contradictions,
+            ),
+        ),
+        (
+            EvidenceField::Size,
+            compare_expected_field(
+                left.size,
+                right.size,
+                EvidenceField::Size,
+                &mut result.contradictions,
+            ),
+        ),
+    ] {
+        if agrees {
+            result.agreements.push(field);
+        }
+    }
+    result.comparable = !result.agreements.is_empty() || !result.contradictions.is_empty();
+    result
+}
+
+fn compare_expected_field<T: PartialEq>(
+    left: Option<T>,
+    right: Option<T>,
+    field: EvidenceField,
+    contradictions: &mut Vec<EvidenceField>,
+) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) if left == right => true,
+        (Some(_), Some(_)) => {
+            contradictions.push(field);
+            false
+        }
+        _ => false,
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MissingReason {
     NoExpectedContentEvidence,
