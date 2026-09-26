@@ -256,7 +256,7 @@ fn known_attribute(element: &str, attribute: &str) -> bool {
     known.contains(&attribute)
 }
 
-fn contains_entity_declaration(bytes: &[u8]) -> Result<bool, ()> {
+pub fn contains_entity_declaration(bytes: &[u8]) -> Result<bool, ()> {
     let decoded = utf16_inspection_bytes(bytes)?;
     let bytes = decoded.as_deref().unwrap_or(bytes);
     let mut index = 0;
@@ -288,9 +288,9 @@ fn utf16_inspection_bytes(bytes: &[u8]) -> Result<Option<Vec<u8>>, ()> {
         (Some(true), 2)
     } else if bytes.starts_with(&[0xFF, 0xFE]) {
         (Some(false), 2)
-    } else if bytes.starts_with(b"<\0?\0") {
+    } else if bytes.starts_with(b"<\0") {
         (Some(false), 0)
-    } else if bytes.starts_with(b"\0<\0?") {
+    } else if bytes.starts_with(b"\0<") {
         (Some(true), 0)
     } else {
         (None, 0)

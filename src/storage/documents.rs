@@ -31,6 +31,8 @@ enum FormatHint {
     LogiqxXmlGzip,
     MameListXml,
     MameListXmlGzip,
+    MameSoftwareListXml,
+    MameSoftwareListXmlGzip,
     ClrMameProText,
     ClrMameProTextGzip,
 }
@@ -42,6 +44,8 @@ impl FormatHint {
             Self::LogiqxXmlGzip => "logiqx+xml+gzip",
             Self::MameListXml => "mame-listxml",
             Self::MameListXmlGzip => "mame-listxml+gzip",
+            Self::MameSoftwareListXml => "mame-softwarelist-xml",
+            Self::MameSoftwareListXmlGzip => "mame-softwarelist-xml+gzip",
             Self::ClrMameProText => "clrmamepro-text",
             Self::ClrMameProTextGzip => "clrmamepro-text+gzip",
         }
@@ -189,6 +193,19 @@ impl DocumentStore {
         path: &Utf8Path,
     ) -> crate::Result<RetainedDocument> {
         self.retain_path_with_options(source_key, path, false, Some(FormatHint::ClrMameProText))
+    }
+
+    pub(crate) fn retain_path_mame_softwarelist(
+        &self,
+        source_key: PublishingSourceKey,
+        path: &Utf8Path,
+    ) -> crate::Result<RetainedDocument> {
+        self.retain_path_with_options(
+            source_key,
+            path,
+            false,
+            Some(FormatHint::MameSoftwareListXml),
+        )
     }
 
     fn retain_path_with_options(
@@ -370,6 +387,12 @@ impl DocumentStore {
                 }
                 (FormatHint::MameListXml | FormatHint::MameListXmlGzip, true) => {
                     FormatHint::MameListXmlGzip
+                }
+                (FormatHint::MameSoftwareListXml | FormatHint::MameSoftwareListXmlGzip, false) => {
+                    FormatHint::MameSoftwareListXml
+                }
+                (FormatHint::MameSoftwareListXml | FormatHint::MameSoftwareListXmlGzip, true) => {
+                    FormatHint::MameSoftwareListXmlGzip
                 }
                 (FormatHint::ClrMameProText | FormatHint::ClrMameProTextGzip, false) => {
                     FormatHint::ClrMameProText
@@ -1265,7 +1288,8 @@ mod tests {
     }
 
     #[test]
-    fn down_migrations_remove_snapshot_and_document_retention_extensions() -> TestResult {
+    fn down_migrations_remove_software_list_snapshot_and_document_retention_extensions()
+    -> TestResult {
         let mut conn = SqliteConnection::establish(":memory:")?;
         conn.batch_execute("PRAGMA foreign_keys = ON")?;
         let migrations = crate::storage::db::MIGRATIONS.migrations()?;
@@ -1293,6 +1317,12 @@ mod tests {
                 migration.name().to_string() == "2026-09-24-000003_mame_machine_asset_semantics"
             })
             .ok_or("machine asset migration not found")?;
+        let software_list_index = migrations
+            .iter()
+            .position(|migration| {
+                migration.name().to_string() == "2026-09-24-000004_mame_softwarelist_semantics"
+            })
+            .ok_or("software-list migration not found")?;
         assert!(document_retention_index < legacy_retention_index);
         conn.applied_migrations()?;
         for migration in &migrations[..=legacy_retention_index] {
@@ -1312,7 +1342,17 @@ mod tests {
         )
         .execute(&mut conn)?;
 
-        conn.revert_migration(migrations[legacy_retention_index].as_ref())?;
+        conn.revert_migration(migrations[software_list_index].as_ref())?;
+        let software_list_tables = sql_query(
+            "SELECT COUNT(*) AS count FROM sqlite_master \
+             WHERE type = 'table' AND name IN ('software_lists', 'software_items', \
+                 'software_parts', 'software_areas', 'software_components', \
+                 'software_item_dependencies')",
+        )
+        .get_result::<CountRow>(&mut conn)?
+        .count;
+        assert_eq!(software_list_tables, 0);
+
         conn.revert_migration(migrations[machine_asset_index].as_ref())?;
         let snapshot_tables_after_asset_revert = sql_query(
             "SELECT COUNT(*) AS count FROM sqlite_master \
@@ -1331,6 +1371,7 @@ mod tests {
         .get_result::<CountRow>(&mut conn)?
         .count;
         assert_eq!(snapshot_tables, 0);
+        conn.revert_migration(migrations[legacy_retention_index].as_ref())?;
         conn.revert_migration(migrations[document_retention_index].as_ref())?;
         sql_query(
             "UPDATE acquisitions SET source_uri = 'restored' \
