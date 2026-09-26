@@ -248,6 +248,17 @@ pub fn catalog_snapshot_history(
     crate::storage::snapshot_history::history(database.pool(), catalog)
 }
 
+/// Resolve expected MAME machine requirements for one explicit catalog snapshot.
+/// This operation reads catalog metadata only and never requires ROM inventory.
+pub fn resolve_machine_dependencies(
+    database: &Database,
+    snapshot: &SnapshotKey,
+    root: &crate::domain::SetName,
+) -> crate::Result<crate::machine_dependencies::DependencyClosure> {
+    let catalog = crate::storage::machine_dependencies::load_catalog(database.pool(), snapshot)?;
+    Ok(catalog.resolve(root))
+}
+
 /// Reconcile two explicit published snapshots without consulting local inventory.
 pub fn reconcile_catalog_snapshots(
     database: &Database,
