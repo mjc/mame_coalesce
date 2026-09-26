@@ -539,6 +539,28 @@ fn imports_metadata_only_software_without_parts() -> Result<(), Box<dyn std::err
     Ok(())
 }
 
+#[test]
+fn imports_empty_software_list_export_as_an_empty_snapshot()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, mut connection) = setup()?;
+    let path = directory.path().join("empty-softwarelists.xml");
+    std::fs::write(&path, b"<softwarelists/>")?;
+    let mut request = mame_softwarelist_request()?;
+    request.document_path =
+        Utf8PathBuf::from_path_buf(path).map_err(|_| "non-UTF8 empty fixture path")?;
+    request.catalog_key = CatalogKey::new("empty-softwarelists");
+    request.catalog_display_name = "Empty software-list export".into();
+    let report = app::import_catalog(&database, &request)?;
+    assert_eq!(report.status, app::CatalogImportStatus::Succeeded);
+    assert!(report.snapshot_key.is_some());
+    assert_eq!(count(&mut connection, "catalog_snapshots")?, 1);
+    assert_eq!(count(&mut connection, "software_lists")?, 0);
+    assert_eq!(count(&mut connection, "software_items")?, 0);
+    let repeated = app::import_catalog(&database, &request)?;
+    assert_eq!(repeated.snapshot_key, report.snapshot_key);
+    Ok(())
+}
+
 fn assert_software_list_identity_and_dependencies(
     connection: &mut SqliteConnection,
     snapshot: &mame_coalesce::domain::SnapshotKey,

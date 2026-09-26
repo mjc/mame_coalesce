@@ -259,11 +259,6 @@ impl SoftwareListCatalog {
                 )));
             }
         };
-        if lists.is_empty() {
-            return Err(crate::Error::XmlValidation(
-                "software-list document has no lists".into(),
-            ));
-        }
         let mut names = HashSet::new();
         for list in &lists {
             if !names.insert(list.name.as_str()) {
@@ -973,6 +968,14 @@ mod tests {
         let xml = br#"<softwarelist name="one"><software name="game"><description>Game</description><year>2000</year><publisher>Pub</publisher></software></softwarelist>"#;
         let catalog = SoftwareListCatalog::parse(xml)?;
         assert!(at(&at(&catalog.lists, 0)?.items, 0)?.parts.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn parser_accepts_empty_aggregate_but_not_empty_individual_lists() -> crate::Result<()> {
+        let catalog = SoftwareListCatalog::parse(b"<softwarelists/>")?;
+        assert!(catalog.lists.is_empty());
+        assert!(SoftwareListCatalog::parse(b"<softwarelist name=\"empty\"/>").is_err());
         Ok(())
     }
 
