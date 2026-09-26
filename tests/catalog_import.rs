@@ -84,6 +84,18 @@ struct SoftwareComponentRow {
     source_line: i64,
 }
 
+#[derive(QueryableByName)]
+struct FailedLocationRow {
+    #[diesel(sql_type = Nullable<Text>)]
+    record_kind: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    record_name: Option<String>,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    source_line: Option<i64>,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    source_column: Option<i64>,
+}
+
 fn setup() -> Result<(tempfile::TempDir, Database, SqliteConnection), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("catalog.sqlite");
@@ -600,6 +612,17 @@ fn assert_software_list_nesting(
     assert_eq!(area.width, Some(16));
     assert_eq!(area.endianness.as_deref(), Some("big"));
     assert!(item.source_line < area.source_line);
+
+    let sparse_area = sql_query(
+        "SELECT declared_size, width, endianness, source_line FROM software_areas \
+         WHERE snapshot_key = ? AND list_name = 'demo_cart' AND item_name = 'demo_game' \
+         AND part_name = 'manual' AND area_name = 'text' AND area_kind = 'data'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<SoftwareAreaRow>(connection)?;
+    assert_eq!(sparse_area.declared_size, Some(16));
+    assert_eq!(sparse_area.width, None);
+    assert_eq!(sparse_area.endianness, None);
     Ok(())
 }
 
@@ -730,7 +753,7 @@ fn assert_malformed_software_list_fails(
         &oversized_path,
         b"<softwarelist name=\"range\"><software name=\"game\"><description>Game</description><year>2000</year><publisher>Pub</publisher><part name=\"cart\" interface=\"cart\"><dataarea name=\"rom\" size=\"9223372036854775808\"><rom name=\"game.bin\"/></dataarea></part></software></softwarelist>",
     )?;
-    let mut oversized_request = request;
+    let mut oversized_request = request.clone();
     oversized_request.document_path = Utf8PathBuf::from_path_buf(oversized_path)
         .map_err(|_| "non-UTF8 oversized fixture path")?;
     oversized_request.catalog_key = CatalogKey::new("oversized-softwarelist");
@@ -739,6 +762,35 @@ fn assert_malformed_software_list_fails(
     assert_eq!(failed.status, app::CatalogImportStatus::Failed);
     assert!(failed.snapshot_key.is_none());
     assert_eq!(count(connection, "catalog_snapshots")?, 1);
+
+    let invalid_path = temp_dir.join("invalid-softwarelist-load.xml");
+    let fixture = include_str!("../fixtures/catalog/mame/software-list.xml");
+    std::fs::write(
+        &invalid_path,
+        fixture.replacen("loadflag=\"continue\"", "loadflag=\"unknown\"", 1),
+    )?;
+    let mut invalid_request = request;
+    invalid_request.document_path =
+        Utf8PathBuf::from_path_buf(invalid_path).map_err(|_| "non-UTF8 invalid fixture path")?;
+    invalid_request.catalog_key = CatalogKey::new("invalid-softwarelist-load");
+    invalid_request.catalog_display_name = "Invalid software-list load".into();
+    let failed = app::import_catalog(database, &invalid_request)?;
+    assert_eq!(failed.status, app::CatalogImportStatus::Failed);
+    assert!(failed.snapshot_key.is_none());
+    assert_eq!(count(connection, "catalog_snapshots")?, 1);
+    let location = sql_query(
+        "SELECT record_kind, record_name, source_line, source_column \
+         FROM import_diagnostics WHERE run_key = ?",
+    )
+    .bind::<Text, _>(failed.run_key.to_string())
+    .get_result::<FailedLocationRow>(connection)?;
+    assert_eq!(location.record_kind.as_deref(), Some("rom"));
+    assert_eq!(
+        location.record_name.as_deref(),
+        Some("demo_cart:demo_game:cart:data:program")
+    );
+    assert!(location.source_line.is_some_and(|line| line > 0));
+    assert!(location.source_column.is_some_and(|column| column > 0));
     Ok(())
 }
 

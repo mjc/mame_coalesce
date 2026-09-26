@@ -340,7 +340,7 @@ fn parse_item(
         Some("partial") => SupportedStatus::Partial,
         Some("no") => SupportedStatus::No,
         Some(other) => {
-            return Err(invalid_value("software", name.as_str(), "supported", other));
+            return Err(invalid_value(node, &record, "supported", other));
         }
     };
     let mut description = None;
@@ -504,8 +504,14 @@ fn parse_area(
     let (declared_size, width, endianness, component_name) = match kind {
         AreaKind::Data => (
             Some(parse_number(&required(node, "size")?)?),
-            Some(parse_width(node.attributes.get("width"))?),
-            Some(parse_endianness(node.attributes.get("endianness"))?),
+            node.attributes
+                .get("width")
+                .map(|value| parse_width(value))
+                .transpose()?,
+            node.attributes
+                .get("endianness")
+                .map(|value| parse_endianness(value))
+                .transpose()?,
             "rom",
         ),
         AreaKind::Disk => (None, None, None, "disk"),
@@ -578,12 +584,8 @@ fn parse_rom(
         sha1: parse_digest(node, "sha1")?,
         offset: parse_optional_number(node, "offset")?,
         value: node.attributes.get("value").cloned(),
-        status: parse_status(node.attributes.get("status"), "rom")?,
-        load: node
-            .attributes
-            .get("loadflag")
-            .map(|value| parse_load(value))
-            .transpose()?,
+        status: parse_status(node, record)?,
+        load: parse_load(node, record)?,
         location: node.location,
     })
 }
@@ -604,53 +606,57 @@ fn parse_disk(
     let writeable = match node.attributes.get("writeable").map(String::as_str) {
         None | Some("no") => false,
         Some("yes") => true,
-        Some(other) => return Err(invalid_value("disk", "?", "writeable", other)),
+        Some(other) => return Err(invalid_value(node, record, "writeable", other)),
     };
     Ok(SoftwareDisk {
         name: ComponentName::new(required(node, "name")?),
         sha1: parse_digest(node, "sha1")?,
-        status: parse_status(node.attributes.get("status"), "disk")?,
+        status: parse_status(node, record)?,
         writeable,
         location: node.location,
     })
 }
 
-fn parse_status(value: Option<&String>, kind: &str) -> crate::Result<Option<DumpStatus>> {
-    match value.map(String::as_str) {
+fn parse_status(node: &Element, record: &str) -> crate::Result<Option<DumpStatus>> {
+    match node.attributes.get("status").map(String::as_str) {
         None => Ok(None),
         Some("good") => Ok(Some(DumpStatus::Good)),
         Some("baddump") => Ok(Some(DumpStatus::BadDump)),
         Some("nodump") => Ok(Some(DumpStatus::NoDump)),
-        Some(other) => Err(invalid_value(kind, "?", "status", other)),
+        Some(other) => Err(invalid_value(node, record, "status", other)),
     }
 }
 
-fn parse_load(value: &str) -> crate::Result<LoadInstruction> {
-    match value {
-        "load16_byte" => Ok(LoadInstruction::Load16Byte),
-        "load16_word" => Ok(LoadInstruction::Load16Word),
-        "load16_word_swap" => Ok(LoadInstruction::Load16WordSwap),
-        "load32_byte" => Ok(LoadInstruction::Load32Byte),
-        "load32_word" => Ok(LoadInstruction::Load32Word),
-        "load32_word_swap" => Ok(LoadInstruction::Load32WordSwap),
-        "load32_dword" => Ok(LoadInstruction::Load32Dword),
-        "load64_word" => Ok(LoadInstruction::Load64Word),
-        "load64_word_swap" => Ok(LoadInstruction::Load64WordSwap),
-        "reload" => Ok(LoadInstruction::Reload),
-        "fill" => Ok(LoadInstruction::Fill),
-        "continue" => Ok(LoadInstruction::Continue),
-        "reload_plain" => Ok(LoadInstruction::ReloadPlain),
-        "ignore" => Ok(LoadInstruction::Ignore),
-        other => Err(invalid_value("rom", "?", "loadflag", other)),
-    }
+fn parse_load(node: &Element, record: &str) -> crate::Result<Option<LoadInstruction>> {
+    node.attributes
+        .get("loadflag")
+        .map(|value| {
+            let load = match value.as_str() {
+                "load16_byte" => LoadInstruction::Load16Byte,
+                "load16_word" => LoadInstruction::Load16Word,
+                "load16_word_swap" => LoadInstruction::Load16WordSwap,
+                "load32_byte" => LoadInstruction::Load32Byte,
+                "load32_word" => LoadInstruction::Load32Word,
+                "load32_word_swap" => LoadInstruction::Load32WordSwap,
+                "load32_dword" => LoadInstruction::Load32Dword,
+                "load64_word" => LoadInstruction::Load64Word,
+                "load64_word_swap" => LoadInstruction::Load64WordSwap,
+                "reload" => LoadInstruction::Reload,
+                "fill" => LoadInstruction::Fill,
+                "continue" => LoadInstruction::Continue,
+                "reload_plain" => LoadInstruction::ReloadPlain,
+                "ignore" => LoadInstruction::Ignore,
+                other => return Err(invalid_value(node, record, "loadflag", other)),
+            };
+            Ok(load)
+        })
+        .transpose()
 }
 
-fn parse_width(value: Option<&String>) -> crate::Result<u8> {
-    let width = value.map_or(Ok(8), |value| {
-        value
-            .parse::<u8>()
-            .map_err(|_| crate::Error::XmlValidation(format!("invalid dataarea width {value:?}")))
-    })?;
+fn parse_width(value: &str) -> crate::Result<u8> {
+    let width = value
+        .parse::<u8>()
+        .map_err(|_| crate::Error::XmlValidation(format!("invalid dataarea width {value:?}")))?;
     if matches!(width, 8 | 16 | 32 | 64) {
         Ok(width)
     } else {
@@ -660,11 +666,11 @@ fn parse_width(value: Option<&String>) -> crate::Result<u8> {
     }
 }
 
-fn parse_endianness(value: Option<&String>) -> crate::Result<Endianness> {
-    match value.map(String::as_str) {
-        None | Some("little") => Ok(Endianness::Little),
-        Some("big") => Ok(Endianness::Big),
-        Some(other) => Err(crate::Error::XmlValidation(format!(
+fn parse_endianness(value: &str) -> crate::Result<Endianness> {
+    match value {
+        "little" => Ok(Endianness::Little),
+        "big" => Ok(Endianness::Big),
+        other => Err(crate::Error::XmlValidation(format!(
             "invalid dataarea endianness {other:?}"
         ))),
     }
@@ -784,10 +790,17 @@ fn required(node: &Element, field: &str) -> crate::Result<String> {
         })
 }
 
-fn invalid_value(kind: &str, record: &str, field: &str, value: &str) -> crate::Error {
-    crate::Error::XmlValidation(format!(
-        "invalid {field} value {value:?} on {kind} {record:?}"
-    ))
+fn invalid_value(node: &Element, record: &str, field: &str, value: &str) -> crate::Error {
+    crate::Error::CatalogParse {
+        message: format!(
+            "invalid {field} value {value:?} on <{}> {record:?}",
+            node.name
+        ),
+        record_kind: Some(node.name.clone()),
+        record_name: Some(record.to_owned()),
+        line: Some(node.location.line),
+        column: Some(node.location.column),
+    }
 }
 
 fn extension(
@@ -913,6 +926,9 @@ mod tests {
         let media = at(&cart.areas, 1)?;
         let disk = disk(at(&media.components, 0)?)?;
         assert!(disk.writeable);
+        let manual_area = at(&at(&item.parts, 1)?.areas, 0)?;
+        assert_eq!(manual_area.width, None);
+        assert_eq!(manual_area.endianness, None);
         assert!(item.location.line < cart.location.line);
         assert!(cart.location.line < rom.location.line);
         let second_list = at(&catalog.lists, 1)?;
@@ -1016,5 +1032,50 @@ mod tests {
 
         let invalid_hash = br#"<softwarelist name="one"><software name="game"><description>Game</description><year>2000</year><publisher>Pub</publisher><part name="cart" interface="cart"><dataarea name="rom" size="16"><rom name="game.bin" crc="not-hex"/></dataarea></part></software></softwarelist>"#;
         assert!(SoftwareListCatalog::parse(invalid_hash).is_err());
+    }
+
+    #[test]
+    fn invalid_enumerated_values_report_the_record_and_source_location() {
+        let source =
+            String::from_utf8_lossy(include_bytes!("../fixtures/catalog/mame/software-list.xml"));
+        for (original, replacement, expected_kind, expected_record) in [
+            (
+                "supported=\"partial\"",
+                "supported=\"unsupported\"",
+                "software",
+                "demo_cart:demo_game",
+            ),
+            (
+                "status=\"nodump\"",
+                "status=\"unknown\"",
+                "rom",
+                "demo_cart:demo_game:cart:data:program",
+            ),
+            (
+                "loadflag=\"continue\"",
+                "loadflag=\"unknown\"",
+                "rom",
+                "demo_cart:demo_game:cart:data:program",
+            ),
+            (
+                "writeable=\"yes\"",
+                "writeable=\"unknown\"",
+                "disk",
+                "demo_cart:demo_game:cart:disk:media",
+            ),
+        ] {
+            let xml = source.replacen(original, replacement, 1);
+            let result = SoftwareListCatalog::parse(xml.as_bytes());
+            assert!(matches!(
+                result,
+                Err(crate::Error::CatalogParse {
+                    record_kind: Some(kind),
+                    record_name: Some(record),
+                    line: Some(line),
+                    column: Some(column),
+                    ..
+                }) if kind == expected_kind && record == expected_record && line > 0 && column > 0
+            ));
+        }
     }
 }
