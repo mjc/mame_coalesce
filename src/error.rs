@@ -32,6 +32,27 @@ pub enum Error {
     #[error("Invalid hash: {0}")]
     InvalidHash(String),
 
+    #[error("document exceeds the configured {limit}-byte input limit")]
+    DocumentTooLarge { limit: usize },
+
+    #[error("XML entity declarations are not allowed")]
+    XmlEntityNotAllowed,
+
+    #[error("XML validation failed: {0}")]
+    XmlValidation(String),
+
+    #[error("different source bytes produced an existing document digest")]
+    DocumentDigestCollision,
+
+    #[error("acquired document bytes do not match the source-provided digest")]
+    DocumentDigestMismatch,
+
+    #[error("document {0} does not have retained payload bytes")]
+    DocumentUnavailable(String),
+
+    #[error("transport metadata serialization failed: {0}")]
+    Json(#[from] serde_json::Error),
+
     #[error("ROM size cannot be stored in SQLite: {0}")]
     InvalidRomSize(u64),
 

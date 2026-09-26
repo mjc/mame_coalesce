@@ -1,5 +1,143 @@
 use crate::hashes::Sha1Digest;
+use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicU64, Ordering};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DocumentKey([u8; 32]);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DocumentDigest([u8; 32]);
+
+impl DocumentDigest {
+    #[must_use]
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        Self(Sha256::digest(bytes).into())
+    }
+
+    pub fn from_hex(value: &str) -> crate::Result<Self> {
+        if value.len() != 64 {
+            return Err(crate::Error::InvalidHash(format!(
+                "SHA-256 digest must contain exactly 64 hexadecimal characters, got {}",
+                value.len()
+            )));
+        }
+
+        let bytes = hex::decode(value).map_err(|error| {
+            crate::Error::InvalidHash(format!("invalid SHA-256 digest: {error}"))
+        })?;
+        let digest = bytes.try_into().map_err(|bytes: Vec<u8>| {
+            crate::Error::InvalidHash(format!(
+                "SHA-256 digest decoded to {} bytes; expected 32",
+                bytes.len()
+            ))
+        })?;
+        Ok(Self(digest))
+    }
+
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+impl std::str::FromStr for DocumentDigest {
+    type Err = crate::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::from_hex(value)
+    }
+}
+
+impl DocumentKey {
+    #[must_use]
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        Self(DocumentDigest::from_bytes(bytes).0)
+    }
+
+    #[must_use]
+    pub const fn from_digest(digest: DocumentDigest) -> Self {
+        Self(digest.0)
+    }
+
+    #[must_use]
+    pub const fn digest(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+impl std::str::FromStr for DocumentKey {
+    type Err = crate::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let digest = value.strip_prefix("sha256:").ok_or_else(|| {
+            crate::Error::InvalidHash("document key must start with `sha256:`".into())
+        })?;
+        Ok(Self::from_digest(DocumentDigest::from_hex(digest)?))
+    }
+}
+
+impl std::fmt::Display for DocumentKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "sha256:{}", hex::encode(self.0))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PublishingSourceKey(String);
+
+impl PublishingSourceKey {
+    #[must_use]
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PublishingSource {
+    key: PublishingSourceKey,
+    display_name: String,
+}
+
+impl PublishingSource {
+    #[must_use]
+    pub fn new(key: impl Into<String>, display_name: impl Into<String>) -> Self {
+        Self {
+            key: PublishingSourceKey::new(key),
+            display_name: display_name.into(),
+        }
+    }
+
+    #[must_use]
+    pub const fn key(&self) -> &PublishingSourceKey {
+        &self.key
+    }
+
+    #[must_use]
+    pub fn display_name(&self) -> &str {
+        &self.display_name
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct AcquisitionKey(uuid::Uuid);
+
+impl AcquisitionKey {
+    #[must_use]
+    pub fn fresh() -> Self {
+        Self(uuid::Uuid::new_v4())
+    }
+}
+
+impl std::fmt::Display for AcquisitionKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CatalogKey(u64);
@@ -469,6 +607,28 @@ pub struct DuplicateMatch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn document_key_display_round_trips_and_rejects_invalid_values() -> crate::Result<()> {
+        let key = DocumentKey::from_bytes(b"catalog");
+        let serialized = key.to_string();
+        let restored: DocumentKey = serialized.parse()?;
+        assert_eq!(restored, key);
+        assert_eq!(
+            DocumentKey::from_digest(DocumentDigest::from_bytes(b"catalog")),
+            key
+        );
+
+        for malformed in [
+            "sha256:not-hex",
+            "sha256:00",
+            "sha1:0000000000000000000000000000000000000000000000000000000000000000",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+        ] {
+            assert!(malformed.parse::<DocumentKey>().is_err(), "{malformed}");
+        }
+        Ok(())
+    }
 
     #[test]
     fn parser_conversion_keeps_partial_evidence_scope_metadata_and_component_order()

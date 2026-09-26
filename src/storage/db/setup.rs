@@ -16,7 +16,7 @@ impl diesel::r2d2::CustomizeConnection<SqliteConnection, diesel::r2d2::Error>
     for EnableForeignKeys
 {
     fn on_acquire(&self, conn: &mut SqliteConnection) -> Result<(), diesel::r2d2::Error> {
-        conn.batch_execute("PRAGMA foreign_keys = ON")
+        conn.batch_execute("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000")
             .map_err(diesel::r2d2::Error::QueryError)
     }
 }
@@ -66,6 +66,7 @@ mod tests {
         sql_types::{BigInt, Integer},
     };
 
+    const IDENTITY_MIGRATION: &str = "2026-09-24-000000_create_catalog_identity_schema";
     const SCOPED_NAMES_MIGRATION: &str = "2026-04-22-153500_scope_game_and_rom_names";
 
     #[derive(QueryableByName)]
@@ -171,8 +172,12 @@ mod tests {
         conn.batch_execute("PRAGMA foreign_keys = ON")?;
         let migrations = MIGRATIONS.migrations()?;
         assert!(!migrations.is_empty());
+        let identity_migration_index = migrations
+            .iter()
+            .position(|migration| migration.name().to_string() == IDENTITY_MIGRATION)
+            .ok_or("identity migration not found")?;
         conn.applied_migrations()?;
-        for migration in &migrations[..migrations.len() - 1] {
+        for migration in &migrations[..identity_migration_index] {
             conn.run_migration(migration.as_ref())?;
         }
         conn.batch_execute(
@@ -707,11 +712,15 @@ mod tests {
         conn.batch_execute("PRAGMA foreign_keys = ON")?;
         let migrations = MIGRATIONS.migrations()?;
         assert!(!migrations.is_empty());
+        let identity_migration_index = migrations
+            .iter()
+            .position(|migration| migration.name().to_string() == IDENTITY_MIGRATION)
+            .ok_or("identity migration not found")?;
         conn.applied_migrations()?;
-        for migration in &migrations[..migrations.len() - 1] {
+        for migration in &migrations[..identity_migration_index] {
             conn.run_migration(migration.as_ref())?;
         }
-        let identity_migration = migrations.last().ok_or("identity migration not found")?;
+        let identity_migration = &migrations[identity_migration_index];
         conn.run_migration(identity_migration.as_ref())?;
         conn.batch_execute(
             "INSERT INTO publishing_sources (source_key, display_name)
