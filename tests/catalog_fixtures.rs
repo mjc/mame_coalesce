@@ -1,6 +1,7 @@
 use serde::Deserialize;
 use sha1::{Digest, Sha1};
 use std::{collections::HashSet, fs, path::Path};
+use walkdir::WalkDir;
 
 #[derive(Debug, Deserialize)]
 struct Matrix {
@@ -19,6 +20,9 @@ struct Fixture {
     license: String,
     provenance: String,
     sha1: String,
+    size_bytes: usize,
+    #[serde(default)]
+    content_contains: Vec<String>,
     parser_status: String,
     scope: String,
     normalized_facts: Vec<String>,
@@ -106,9 +110,34 @@ const REQUIRED_FIXTURES: &[(&str, &str, &str)] = &[
         "mame-listxml-supported",
     ),
     (
+        "mame-machine-asset-semantics",
+        "mame-listxml",
+        "mame-listxml-supported",
+    ),
+    (
         "clrmamepro-synthetic-subset",
         "clrmamepro-dat",
         "clrmamepro-supported",
+    ),
+    (
+        "no-intro-pc-xml-synthetic",
+        "no-intro-pc-xml",
+        "assessment-only",
+    ),
+    (
+        "tosec-logiqx-xml-synthetic",
+        "tosec-logiqx-xml",
+        "assessment-only",
+    ),
+    (
+        "redump-track-dat-synthetic",
+        "redump-logiqx-xml",
+        "assessment-only",
+    ),
+    (
+        "redump-cue-companion-synthetic",
+        "redump-cue",
+        "assessment-only",
     ),
     (
         "mame-software-list-parts",
@@ -131,6 +160,13 @@ fn assert_required_fixtures(matrix: &Matrix) -> Result<(), Box<dyn std::error::E
 }
 
 fn assert_fixture_record(fixture: &Fixture) -> Result<(), Box<dyn std::error::Error>> {
+    assert_fixture_metadata(fixture);
+    let bytes = assert_fixture_bytes(fixture)?;
+    assert_fixture_content(fixture, &bytes);
+    assert_fixture_parser_status(fixture)
+}
+
+fn assert_fixture_metadata(fixture: &Fixture) {
     assert!(fixture.version.is_some(), "missing version: {}", fixture.id);
     assert_eq!(fixture.license, "CC0-1.0", "{}", fixture.id);
     assert!(
@@ -140,6 +176,11 @@ fn assert_fixture_record(fixture: &Fixture) -> Result<(), Box<dyn std::error::Er
     );
     assert!(!fixture.dialect.is_empty(), "{}", fixture.id);
     assert!(!fixture.source_reference.is_empty(), "{}", fixture.id);
+    assert!(
+        fixture.source_reference.starts_with("https://"),
+        "non-HTTPS source reference: {}",
+        fixture.id
+    );
     assert!(!fixture.scope.is_empty(), "{}", fixture.id);
     assert!(!fixture.normalized_facts.is_empty(), "{}", fixture.id);
     assert!(
@@ -154,17 +195,72 @@ fn assert_fixture_record(fixture: &Fixture) -> Result<(), Box<dyn std::error::Er
             .iter()
             .all(|semantics| !semantics.is_empty())
     );
+}
 
+fn assert_fixture_bytes(fixture: &Fixture) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(&fixture.path);
     let bytes = fs::read(path)?;
     assert!(bytes.len() < 16 * 1024, "fixture too large: {}", fixture.id);
+    assert_eq!(
+        bytes.len(),
+        fixture.size_bytes,
+        "fixture size changed without updating manifest: {}",
+        fixture.id
+    );
     assert_eq!(
         hex::encode(Sha1::digest(&bytes)),
         fixture.sha1,
         "fixture bytes changed without updating manifest: {}",
         fixture.id
     );
+    Ok(bytes)
+}
 
+fn assert_fixture_content(fixture: &Fixture, bytes: &[u8]) {
+    let required: &[&str] = match fixture.id.as_str() {
+        "no-intro-pc-xml-synthetic" => &[
+            "clone=\"P\"",
+            "clone=\"1042\"",
+            "mergeof=\"opaque-related-id-88\"",
+            "region=\"World\"",
+            "region=\"Japan\"",
+            "languages=\"En,Ja\"",
+            "languages=\"Ja\"",
+            "bios=\"0\"",
+        ],
+        "redump-cue-companion-synthetic" => &[
+            "FILE \"synthetic-disc (Track 1).bin\" BINARY",
+            "FILE \"synthetic-disc (Track 2).bin\" BINARY",
+        ],
+        _ => &[],
+    };
+    for expected in required {
+        assert!(
+            fixture
+                .content_contains
+                .iter()
+                .any(|declared| declared == expected),
+            "manifest {} is missing required content assertion {expected:?}",
+            fixture.id
+        );
+    }
+    for expected in &fixture.content_contains {
+        assert!(
+            !expected.is_empty(),
+            "empty content assertion: {}",
+            fixture.id
+        );
+        assert!(
+            bytes
+                .windows(expected.len())
+                .any(|window| window == expected.as_bytes()),
+            "fixture {} is missing declared content {expected:?}",
+            fixture.id
+        );
+    }
+}
+
+fn assert_fixture_parser_status(fixture: &Fixture) -> Result<(), Box<dyn std::error::Error>> {
     match fixture.parser_status.as_str() {
         "logiqx-supported" => {
             assert_eq!(fixture.format, "logiqx");
@@ -218,6 +314,25 @@ fn assert_fixture_record(fixture: &Fixture) -> Result<(), Box<dyn std::error::Er
                 fixture.id
             );
         }
+        "assessment-only" => {
+            assert!(fixture.expected.is_none(), "{}", fixture.id);
+            assert!(fixture.expected_error_contains.is_none(), "{}", fixture.id);
+            assert!(!fixture.retained_raw_fields.is_empty(), "{}", fixture.id);
+            assert!(
+                !fixture.expected_adapter_fields.is_empty(),
+                "{}",
+                fixture.id
+            );
+            assert!(!fixture.expected_diagnostics.is_empty(), "{}", fixture.id);
+            assert!(
+                fixture
+                    .unsupported_semantics
+                    .iter()
+                    .any(|semantics| !semantics.is_empty()),
+                "{}",
+                fixture.id
+            );
+        }
         "malformed-logiqx" => {
             assert_eq!(fixture.format, "logiqx");
             assert!(fixture.expected_error_contains.is_some(), "{}", fixture.id);
@@ -246,12 +361,27 @@ fn fixture_manifest_is_complete_and_byte_pinned() -> Result<(), Box<dyn std::err
             fixture.id
         );
         assert!(
-            paths.insert(&fixture.path),
+            paths.insert(fixture.path.clone()),
             "duplicate fixture path: {}",
             fixture.path
         );
         assert_fixture_record(fixture)?;
     }
+    let repository_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let catalog_root = repository_root.join("fixtures/catalog");
+    let mut on_disk = HashSet::new();
+    for entry in WalkDir::new(&catalog_root) {
+        let entry = entry?;
+        if !entry.file_type().is_file() || entry.path() == catalog_root.join("manifest.json") {
+            continue;
+        }
+        let path = entry.path().strip_prefix(repository_root)?;
+        on_disk.insert(path.to_string_lossy().replace('\\', "/"));
+    }
+    assert_eq!(
+        paths, on_disk,
+        "manifest paths must exactly cover catalog fixtures"
+    );
     Ok(())
 }
 
