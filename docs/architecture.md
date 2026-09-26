@@ -57,6 +57,28 @@ parser-internal representations the public contract.
   record acquisitions/import runs and normalized snapshots; an import's
   snapshot publication is transactional, so a failed parse or persistence
   operation does not publish a partial snapshot.
+- Catalog and version selection is explicit. `CatalogKey` is a caller-supplied
+  stable source/catalog identity, not a display name, header name, or declared
+  version. Multiple catalogs with the same human-readable name remain distinct
+  when they have different keys.
+- A `SnapshotKey` identifies one catalog, retained document, and parser
+  interpretation. Re-importing the same document under the same interpretation
+  is idempotent; changed bytes or a changed interpretation produce a separate
+  immutable snapshot and import history. Earlier snapshots are retained rather
+  than silently replaced.
+- A declared version is descriptive source metadata, not a unique key or an
+  ordering rule. It may be absent or repeated. Callers choose the exact
+  `SnapshotKey` to inspect or compare; there is no implicit “latest version”
+  selection and no change to the existing caller-supplied `CatalogKey`
+  behavior.
+- Snapshot history and cross-catalog comparison are separate operations.
+  History diffs compare snapshots of the same `CatalogKey` and use catalog
+  scope to distinguish removals from unknown absence. Requirement
+  reconciliation accepts two explicit, distinct snapshots, including snapshots
+  from different catalog keys; it compares expected asset evidence and related
+  source assertions without consulting local inventory or asserting possession.
+  Incompatible evidence scopes remain unknown, weak matches remain candidates,
+  and shared assets do not imply that their containing sets are identical.
 - `plan_build` and audit consume the selected catalog plus cached scan evidence
   without writing output. Audit is cached by default; explicit refresh scans
   and persists first. A one-shot build (including dry-run or strict-missing)
