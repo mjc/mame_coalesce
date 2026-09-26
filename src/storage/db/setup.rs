@@ -643,7 +643,14 @@ mod tests {
         let mut conn = SqliteConnection::establish(":memory:")?;
         conn.batch_execute("PRAGMA foreign_keys = ON")?;
         conn.run_pending_migrations(MIGRATIONS)?;
-        conn.revert_last_migration(MIGRATIONS)?;
+        let machine_asset_migration = MIGRATIONS
+            .migrations()?
+            .into_iter()
+            .find(|migration| {
+                migration.name().to_string() == "2026-09-24-000003_mame_machine_asset_semantics"
+            })
+            .ok_or("machine asset migration not found")?;
+        conn.revert_migration(machine_asset_migration.as_ref())?;
         conn.batch_execute(
             "INSERT INTO publishing_sources (source_key, display_name)
                  VALUES ('source', 'Source');
