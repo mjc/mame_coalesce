@@ -272,6 +272,7 @@ fn parse_machine(node: &Element) -> crate::Result<Machine> {
     if let Some(parent) = &parent {
         metadata.insert("cloneof".into(), serde_json::json!(parent));
     }
+    copy_machine_relationship_metadata(node, &mut metadata);
     for flag in [
         "isdevice",
         "runnable",
@@ -334,6 +335,8 @@ fn parse_machine(node: &Element) -> crate::Result<Machine> {
             "name",
             "sourcefile",
             "cloneof",
+            "romof",
+            "sampleof",
             "isdevice",
             "runnable",
             "isbios",
@@ -362,6 +365,17 @@ fn parse_machine(node: &Element) -> crate::Result<Machine> {
         device_refs,
         extensions,
     })
+}
+
+fn copy_machine_relationship_metadata(
+    node: &Element,
+    metadata: &mut BTreeMap<String, serde_json::Value>,
+) {
+    for relationship in ["romof", "sampleof"] {
+        if let Some(target) = node.attributes.get(relationship) {
+            metadata.insert(relationship.into(), serde_json::json!(target));
+        }
+    }
 }
 
 fn parse_asset(node: &Element) -> crate::Result<MachineAsset> {

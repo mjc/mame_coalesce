@@ -610,6 +610,85 @@ fn mame_relationships_resolve_component_keys_and_keep_device_locations()
 }
 
 #[test]
+fn resolves_machine_runtime_closure_without_traversing_clone_ancestry()
+-> Result<(), Box<dyn std::error::Error>> {
+    use mame_coalesce::machine_dependencies::{DependencyDiagnostic, MachineDependencyKind};
+
+    let (directory, database, mut connection) = setup()?;
+    let document = directory.path().join("machine-dependencies.xml");
+    std::fs::write(
+        &document,
+        br#"<mame build="fixture">
+          <machine name="game" cloneof="parent" romof="bios" sampleof="samples">
+            <device_ref name="sound"/>
+          </machine>
+          <machine name="bios" isbios="yes"/>
+          <machine name="sound" isdevice="yes"/>
+          <machine name="parent"/>
+          <machine name="samples"/>
+        </mame>"#,
+    )?;
+    let mut import = request(
+        document,
+        "mame-fixture",
+        "machine-dependencies",
+        "Machine dependencies",
+    )?;
+    import.format = CatalogDocumentFormat::MameListXml;
+    import.scope = CatalogScope::Complete;
+    let imported = app::import_catalog(&database, &import)?;
+    let snapshot = imported.snapshot_key.ok_or("machine snapshot missing")?;
+
+    let closure = app::resolve_machine_dependencies(
+        &database,
+        &snapshot,
+        &mame_coalesce::domain::SetName::new("game"),
+    )?;
+    assert_eq!(
+        closure
+            .sets
+            .iter()
+            .map(mame_coalesce::domain::SetName::as_str)
+            .collect::<Vec<_>>(),
+        ["bios", "game", "sound"]
+    );
+    assert!(closure.edges.iter().any(|edge| {
+        edge.kind == MachineDependencyKind::RomOf
+            && edge.to.as_str() == "bios"
+            && edge.target_is_bios
+    }));
+    assert!(closure.edges.iter().any(|edge| {
+        edge.kind == MachineDependencyKind::DeviceReference
+            && edge.to.as_str() == "sound"
+            && edge.target_is_device
+    }));
+    assert!(
+        closure
+            .diagnostics
+            .contains(&DependencyDiagnostic::UnsupportedRelationship {
+                set: mame_coalesce::domain::SetName::new("game"),
+                field: "sampleof".into(),
+                target: mame_coalesce::domain::SetName::new("samples"),
+            })
+    );
+    assert!(
+        !closure
+            .sets
+            .contains(&mame_coalesce::domain::SetName::new("parent"))
+    );
+
+    let source_assertions = sql_query(
+        "SELECT COUNT(*) AS count FROM relationship_assertions \
+         WHERE source_snapshot_key = ? AND subject_key = 'game' \
+           AND source_field IN ('cloneof', 'romof', 'device_ref', 'sampleof')",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<CountRow>(&mut connection)?;
+    assert_eq!(source_assertions.count, 4);
+    Ok(())
+}
+
+#[test]
 fn software_item_relationship_keys_do_not_collide_on_slashes()
 -> Result<(), Box<dyn std::error::Error>> {
     let (directory, database, mut connection) = setup()?;
@@ -637,6 +716,48 @@ fn software_item_relationship_keys_do_not_collide_on_slashes()
     assert_eq!(keys.len(), 2);
     assert_eq!(keys[0].value, "[\"a\",\"b/c\"]");
     assert_eq!(keys[1].value, "[\"a/b\",\"c\"]");
+    Ok(())
+}
+
+#[test]
+fn dependency_absence_respects_filtered_snapshot_scope() -> Result<(), Box<dyn std::error::Error>> {
+    use mame_coalesce::machine_dependencies::DependencyDiagnostic;
+
+    let (directory, database, _) = setup()?;
+    let document = directory.path().join("filtered-machine.xml");
+    std::fs::write(
+        &document,
+        br#"<mame build="fixture"><machine name="root" romof="outside"/></mame>"#,
+    )?;
+    let mut import = request(
+        document,
+        "mame-filtered",
+        "filtered-machines",
+        "Filtered machines",
+    )?;
+    import.format = CatalogDocumentFormat::MameListXml;
+    import.scope = CatalogScope::Filtered(serde_json::json!({"sets": ["root"]}));
+    let imported = app::import_catalog(&database, &import)?;
+    let snapshot = imported.snapshot_key.ok_or("filtered snapshot missing")?;
+    let closure = app::resolve_machine_dependencies(
+        &database,
+        &snapshot,
+        &mame_coalesce::domain::SetName::new("root"),
+    )?;
+    assert!(
+        closure
+            .diagnostics
+            .contains(&DependencyDiagnostic::OutOfScopeSet {
+                name: mame_coalesce::domain::SetName::new("outside"),
+                required_by: Some(mame_coalesce::domain::SetName::new("root")),
+            })
+    );
+    assert_eq!(
+        closure.completeness,
+        mame_coalesce::machine_dependencies::SnapshotCompleteness::Filtered(Some(
+            std::collections::BTreeSet::from([mame_coalesce::domain::SetName::new("root")])
+        ))
+    );
     Ok(())
 }
 
@@ -1873,11 +1994,11 @@ fn source_relationship_assertions_keep_snapshot_and_field_provenance()
     let runtime_claims = sql_query(
         "SELECT COUNT(*) AS count FROM relationship_assertions \
          WHERE source_snapshot_key = ? AND relation_type = 'runtime_dependency' \
-           AND source_field IN ('romof', 'sampleof')",
+           AND source_field IN ('romof', 'sampleof', 'device_ref')",
     )
     .bind::<Text, _>(snapshot_key.as_str())
     .get_result::<CountRow>(&mut connection)?;
-    assert_eq!(runtime_claims.count, 2);
+    assert_eq!(runtime_claims.count, 3);
 
     // An identical reimport reuses the immutable snapshot rather than duplicating its claims.
     app::import_catalog(
