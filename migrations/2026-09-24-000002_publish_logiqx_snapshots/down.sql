@@ -1,0 +1,20 @@
+DROP TRIGGER snapshot_extensions_are_immutable_delete;
+DROP TRIGGER snapshot_extensions_are_immutable_update;
+DROP TRIGGER snapshot_publications_are_immutable_delete;
+DROP TRIGGER snapshot_publications_are_immutable_insert;
+DROP TRIGGER snapshot_publications_are_immutable_update;
+DROP TRIGGER asset_requirements_are_immutable_delete;
+DROP TRIGGER asset_requirements_are_immutable_update;
+DROP TRIGGER snapshot_sets_are_immutable_delete;
+DROP TRIGGER snapshot_sets_are_immutable_update;
+
+DROP INDEX diagnostics_run_index;
+DROP INDEX extensions_snapshot_index;
+DROP INDEX requirements_asset_name_index;
+DROP INDEX snapshot_sets_snapshot_index;
+
+DROP TABLE import_diagnostics;
+DROP TABLE snapshot_publications;
+DROP TABLE snapshot_extensions;
+DROP TABLE asset_requirements;
+DROP TABLE snapshot_sets;
