@@ -2,6 +2,7 @@ pub mod catalog_import;
 pub mod catalog_reconciliation;
 pub mod db;
 pub mod documents;
+pub mod machine_dependencies;
 pub mod models;
 pub mod relationships;
 pub mod repositories;

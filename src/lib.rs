@@ -8,6 +8,7 @@ pub mod domain;
 pub mod error;
 pub mod hashes;
 pub mod logiqx;
+pub mod machine_dependencies;
 pub(crate) mod mame;
 pub(crate) mod mame_softwarelist;
 mod no_intro_pc_xml;
