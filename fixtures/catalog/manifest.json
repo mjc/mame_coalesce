@@ -238,7 +238,7 @@
       "id": "mame-software-list-parts",
       "path": "fixtures/catalog/mame/software-list.xml",
       "format": "mame-softwarelist-xml",
-      "dialect": "MAME software-list XML synthetic subset",
+      "dialect": "MAME -listsoftware XML output synthetic subset",
       "version": "synthetic-v1",
       "source_reference": "https://docs.mamedev.org/contributing/softlist.html",
       "license": "CC0-1.0",
