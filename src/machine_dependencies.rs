@@ -78,11 +78,12 @@ pub enum SnapshotCompleteness {
 }
 
 impl MachineDependencyCatalog {
+    /// Builds a graph with unknown completeness; callers must opt in to confirmed absence.
     #[must_use]
     pub const fn new(snapshot: SnapshotKey, sets: Vec<MachineSet>) -> Self {
         Self {
             snapshot,
-            completeness: SnapshotCompleteness::Complete,
+            completeness: SnapshotCompleteness::Unknown,
             sets,
         }
     }
@@ -292,7 +293,7 @@ mod tests {
     use super::*;
 
     fn catalog(sets: Vec<MachineSet>) -> MachineDependencyCatalog {
-        MachineDependencyCatalog::new(
+        MachineDependencyCatalog::with_completeness(
             SnapshotKey::new(
                 &crate::domain::CatalogKey::new("test"),
                 &crate::domain::DocumentKey::from_bytes(b"dependencies"),
@@ -301,6 +302,7 @@ mod tests {
                     &crate::domain::CatalogScope::Unknown,
                 ),
             ),
+            SnapshotCompleteness::Complete,
             sets,
         )
     }
@@ -381,6 +383,20 @@ mod tests {
                     required_by: Some(SetName::new("root")),
                 })
         );
+
+        let mut incomplete_root = MachineSet::new("root");
+        incomplete_root.dependencies = vec![edge(MachineDependencyKind::RomOf, "absent")];
+        let unknown =
+            MachineDependencyCatalog::new(catalog(Vec::new()).snapshot, vec![incomplete_root])
+                .resolve(&SetName::new("root"));
+        assert!(
+            unknown
+                .diagnostics
+                .contains(&DependencyDiagnostic::UnknownSet {
+                    name: SetName::new("absent"),
+                    required_by: Some(SetName::new("root")),
+                })
+        );
         assert!(
             result
                 .diagnostics
@@ -426,7 +442,7 @@ mod tests {
         let mut root = MachineSet::new("root");
         root.dependencies = vec![edge(MachineDependencyKind::RomOf, "bios")];
         let first = catalog(vec![root.clone(), MachineSet::new("bios")]);
-        let second = MachineDependencyCatalog::new(
+        let second = MachineDependencyCatalog::with_completeness(
             SnapshotKey::new(
                 &crate::domain::CatalogKey::new("other"),
                 &crate::domain::DocumentKey::from_bytes(b"other"),
@@ -435,6 +451,7 @@ mod tests {
                     &crate::domain::CatalogScope::Unknown,
                 ),
             ),
+            SnapshotCompleteness::Complete,
             vec![root],
         );
         assert_ne!(first.snapshot, second.snapshot);
