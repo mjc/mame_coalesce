@@ -943,8 +943,14 @@ mod tests {
         conn.batch_execute("PRAGMA foreign_keys = ON")?;
         let migrations = crate::storage::db::MIGRATIONS.migrations()?;
         assert!(migrations.len() > 1);
+        let retain_source_documents_index = migrations
+            .iter()
+            .position(|migration| {
+                migration.name().to_string() == "2026-09-24-000001_retain_source_documents"
+            })
+            .ok_or("retain_source_documents migration not found")?;
         conn.applied_migrations()?;
-        for migration in &migrations[..migrations.len() - 1] {
+        for migration in &migrations[..retain_source_documents_index] {
             conn.run_migration(migration.as_ref())?;
         }
         sql_query(
@@ -1180,7 +1186,25 @@ mod tests {
     fn down_migration_removes_new_triggers_and_columns() -> TestResult {
         let mut conn = SqliteConnection::establish(":memory:")?;
         conn.batch_execute("PRAGMA foreign_keys = ON")?;
-        conn.run_pending_migrations(crate::storage::db::MIGRATIONS)?;
+        let migrations = crate::storage::db::MIGRATIONS.migrations()?;
+        let document_retention_index = migrations
+            .iter()
+            .position(|migration| {
+                migration.name().to_string() == "2026-09-24-000001_retain_source_documents"
+            })
+            .ok_or("document retention migration not found")?;
+        let legacy_retention_index = migrations
+            .iter()
+            .position(|migration| {
+                migration.name().to_string() == "2026-09-25-000000_allow_legacy_document_retention"
+            })
+            .ok_or("legacy document retention migration not found")?;
+        assert!(document_retention_index < legacy_retention_index);
+        conn.applied_migrations()?;
+        for migration in &migrations[..=legacy_retention_index] {
+            conn.run_migration(migration.as_ref())?;
+        }
+
         sql_query(
             "INSERT INTO publishing_sources (source_key, display_name) VALUES ('legacy', 'Legacy')",
         )
@@ -1193,8 +1217,8 @@ mod tests {
         )
         .execute(&mut conn)?;
 
-        conn.revert_last_migration(crate::storage::db::MIGRATIONS)?;
-        conn.revert_last_migration(crate::storage::db::MIGRATIONS)?;
+        conn.revert_migration(migrations[legacy_retention_index].as_ref())?;
+        conn.revert_migration(migrations[document_retention_index].as_ref())?;
         sql_query(
             "UPDATE acquisitions SET source_uri = 'restored' \
              WHERE acquisition_key = 'legacy-acquisition'",
