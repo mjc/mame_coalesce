@@ -109,6 +109,16 @@ CLI: tests use temporary SQLite databases and synthetic archive fixtures.
 The older `nix develop -c ...` entrypoint remains available for compatibility,
 but devenv is the primary development and CI gate.
 
+## MAME listxml import
+
+The MAME adapter imports machine records, clone relationships, ROM and disk
+declarations, selected machine metadata, BIOS sets, device references, and
+preserves unrecognized XML as extensions. Import currently accepts retained
+documents up to 64 MiB, gzip-expanded XML up to 128 MiB, at most 200,000 XML
+elements, and nesting up to 256 levels. These limits are enforced to bound the
+retained input and in-memory XML tree; larger exports are rejected. The adapter
+does not currently import MAME software-list catalogs.
+
 ### CPU Flamegraphs
 
 The profiling helpers mirror the workflow used in `nntp-proxy`, with

@@ -1,0 +1,10 @@
+<mame build="synthetic" xmlns:future="urn:future">
+  <machine name="parent">
+    <rom name="parent.rom" size="1" crc="12345678" />
+    <disk name="parent.disk" sha1="0123456789abcdef0123456789abcdef01234567" />
+  </machine>
+  <machine name="clone" cloneof="parent">
+    <rom name="clone.rom" size="1" merge="parent.rom" status="baddump" future:flag="retained" />
+    <disk name="clone.disk" merge="parent.disk" status="nodump" />
+  </machine>
+</mame>

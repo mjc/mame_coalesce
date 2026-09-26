@@ -29,6 +29,8 @@ pub struct AcquisitionMetadata {
 enum FormatHint {
     LogiqxXml,
     LogiqxXmlGzip,
+    MameListXml,
+    MameListXmlGzip,
 }
 
 impl FormatHint {
@@ -36,6 +38,8 @@ impl FormatHint {
         match self {
             Self::LogiqxXml => "logiqx+xml",
             Self::LogiqxXmlGzip => "logiqx+xml+gzip",
+            Self::MameListXml => "mame-listxml",
+            Self::MameListXmlGzip => "mame-listxml+gzip",
         }
     }
 
@@ -156,13 +160,31 @@ impl DocumentStore {
         metadata: &AcquisitionMetadata,
         reader: R,
     ) -> crate::Result<RetainedDocument> {
-        self.retain_with_limit(metadata, reader, MAX_DOCUMENT_BYTES)
+        self.retain_with_limit_and_validation(metadata, reader, MAX_DOCUMENT_BYTES, true)
     }
 
     pub fn retain_path(
         &self,
         source_key: PublishingSourceKey,
         path: &Utf8Path,
+    ) -> crate::Result<RetainedDocument> {
+        self.retain_path_with_options(source_key, path, true, None)
+    }
+
+    pub(crate) fn retain_path_mame(
+        &self,
+        source_key: PublishingSourceKey,
+        path: &Utf8Path,
+    ) -> crate::Result<RetainedDocument> {
+        self.retain_path_with_options(source_key, path, false, Some(FormatHint::MameListXml))
+    }
+
+    fn retain_path_with_options(
+        &self,
+        source_key: PublishingSourceKey,
+        path: &Utf8Path,
+        validate_xml: bool,
+        requested_format: Option<FormatHint>,
     ) -> crate::Result<RetainedDocument> {
         let mut metadata = AcquisitionMetadata {
             source_key,
@@ -188,7 +210,13 @@ impl DocumentStore {
         }
         metadata.source_uri = Some(canonical_path.to_string_lossy().into_owned());
         match File::open(&canonical_path) {
-            Ok(file) => self.retain(&metadata, file),
+            Ok(file) => self.retain_with_options(
+                &metadata,
+                file,
+                MAX_DOCUMENT_BYTES,
+                validate_xml,
+                requested_format,
+            ),
             Err(error) => {
                 self.record_failed_attempt(&metadata, "io", &error.to_string())?;
                 Err(error.into())
@@ -244,11 +272,23 @@ impl DocumentStore {
         Ok(payload)
     }
 
-    fn retain_with_limit<R: Read>(
+    fn retain_with_limit_and_validation<R: Read>(
         &self,
         metadata: &AcquisitionMetadata,
         reader: R,
         limit: usize,
+        validate_xml: bool,
+    ) -> crate::Result<RetainedDocument> {
+        self.retain_with_options(metadata, reader, limit, validate_xml, None)
+    }
+
+    fn retain_with_options<R: Read>(
+        &self,
+        metadata: &AcquisitionMetadata,
+        reader: R,
+        limit: usize,
+        validate_xml: bool,
+        requested_format: Option<FormatHint>,
     ) -> crate::Result<RetainedDocument> {
         let transport_metadata = metadata
             .transport_metadata
@@ -271,13 +311,19 @@ impl DocumentStore {
             self.record_failed_attempt(metadata, error_code(&error), &error.to_string())?;
             return Err(error);
         }
-        if let Err(error) = DataFile::validate_document_bytes(&raw) {
+        if validate_xml && let Err(error) = DataFile::validate_document_bytes(&raw) {
             self.record_failed_attempt(metadata, error_code(&error), &error.to_string())?;
             return Err(error);
         }
 
-        let result =
-            self.persist_retained(metadata, transport_metadata.as_deref(), &raw, key, limit);
+        let result = self.persist_retained(
+            metadata,
+            transport_metadata.as_deref(),
+            &raw,
+            key,
+            limit,
+            requested_format,
+        );
         match result {
             Ok(retained) => Ok(retained),
             Err(error) => {
@@ -294,6 +340,7 @@ impl DocumentStore {
         raw: &[u8],
         key: DocumentKey,
         limit: usize,
+        requested_format: Option<FormatHint>,
     ) -> crate::Result<RetainedDocument> {
         let verification_status = if metadata.expected_sha256.is_some() {
             "verified"
@@ -303,7 +350,19 @@ impl DocumentStore {
         let sha1 = sha1(raw);
         let byte_length =
             i64::try_from(raw.len()).map_err(|_| crate::Error::DocumentTooLarge { limit })?;
-        let format_hint = FormatHint::for_bytes(raw);
+        let format_hint = requested_format.map_or_else(
+            || FormatHint::for_bytes(raw),
+            |hint| match (hint, raw.starts_with(&[0x1f, 0x8b])) {
+                (FormatHint::MameListXml | FormatHint::MameListXmlGzip, false) => {
+                    FormatHint::MameListXml
+                }
+                (FormatHint::MameListXml | FormatHint::MameListXmlGzip, true) => {
+                    FormatHint::MameListXmlGzip
+                }
+                (_, false) => FormatHint::LogiqxXml,
+                (_, true) => FormatHint::LogiqxXmlGzip,
+            },
+        );
         let acquisition_key = AcquisitionKey::fresh();
         let attempt_key = uuid::Uuid::new_v4().to_string();
         let acquisition_key_string = acquisition_key.to_string();
@@ -758,7 +817,8 @@ mod tests {
     fn oversized_stream_is_recorded_as_a_failed_attempt() -> TestResult {
         let (_directory, store) = setup_store()?;
         let oversized = io::Cursor::new(VALID_DAT);
-        let result = store.retain_with_limit(&acquisition("source-a"), oversized, 8);
+        let result =
+            store.retain_with_limit_and_validation(&acquisition("source-a"), oversized, 8, true);
         assert!(matches!(
             result,
             Err(crate::Error::DocumentTooLarge { limit: 8 })
@@ -1209,6 +1269,12 @@ mod tests {
                 migration.name().to_string() == "2026-09-24-000002_publish_logiqx_snapshots"
             })
             .ok_or("snapshot migration not found")?;
+        let machine_asset_index = migrations
+            .iter()
+            .position(|migration| {
+                migration.name().to_string() == "2026-09-24-000003_mame_machine_asset_semantics"
+            })
+            .ok_or("machine asset migration not found")?;
         assert!(document_retention_index < legacy_retention_index);
         conn.applied_migrations()?;
         for migration in &migrations[..=legacy_retention_index] {
@@ -1229,6 +1295,15 @@ mod tests {
         .execute(&mut conn)?;
 
         conn.revert_migration(migrations[legacy_retention_index].as_ref())?;
+        conn.revert_migration(migrations[machine_asset_index].as_ref())?;
+        let snapshot_tables_after_asset_revert = sql_query(
+            "SELECT COUNT(*) AS count FROM sqlite_master \
+             WHERE type = 'table' AND name IN ('snapshot_publications', 'snapshot_sets', 'asset_requirements', \
+                 'snapshot_extensions', 'import_diagnostics')",
+        )
+        .get_result::<CountRow>(&mut conn)?
+        .count;
+        assert_eq!(snapshot_tables_after_asset_revert, 5);
         conn.revert_migration(migrations[snapshot_index].as_ref())?;
         let snapshot_tables = sql_query(
             "SELECT COUNT(*) AS count FROM sqlite_master \

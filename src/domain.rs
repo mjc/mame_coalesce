@@ -196,11 +196,16 @@ impl std::fmt::Display for CatalogKey {
 impl ParserInterpretationKey {
     #[must_use]
     pub fn logiqx_v1(scope: &CatalogScope) -> Self {
+        Self::for_format("logiqx", scope)
+    }
+
+    #[must_use]
+    pub fn for_format(format: &str, scope: &CatalogScope) -> Self {
         let (scope_kind, scope_details) = scope.as_storage();
         Self(stable_key(
             "parser-interpretation-v1",
             &[
-                "logiqx",
+                format,
                 env!("CARGO_PKG_VERSION"),
                 "normalization-v1",
                 scope_kind,

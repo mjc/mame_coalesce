@@ -11,7 +11,7 @@ use diesel::{
     sql_types::{BigInt, Nullable, Text},
 };
 use mame_coalesce::{
-    app::{self, CatalogImportRequest},
+    app::{self, CatalogDocumentFormat, CatalogImportRequest},
     database::Database,
     domain::{CatalogKey, CatalogScope, DocumentKey, ParserInterpretationKey, PublishingSourceKey},
 };
@@ -75,12 +75,24 @@ fn request(
     })?;
     Ok(CatalogImportRequest {
         document_path,
+        format: CatalogDocumentFormat::Logiqx,
         source_key: PublishingSourceKey::new(source),
         source_display_name: format!("Publisher {source}"),
         catalog_key: CatalogKey::new(catalog),
         catalog_display_name: name.to_owned(),
         scope: CatalogScope::Unknown,
     })
+}
+
+fn mame_request() -> Result<CatalogImportRequest, Box<dyn std::error::Error>> {
+    let mut request = request(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/catalog/mame/machine.xml"),
+        "mame",
+        "mame-machine-fixture",
+        "Synthetic MAME machine catalog",
+    )?;
+    request.format = CatalogDocumentFormat::MameListXml;
+    Ok(request)
 }
 
 fn count(connection: &mut SqliteConnection, table: &str) -> Result<i64, diesel::result::Error> {
@@ -268,6 +280,142 @@ fn stale_identity_only_metadata_is_not_published_as_current()
             .bind::<Text, _>(published_key)
             .get_result::<NullableTextRow>(&mut connection)?;
     assert_eq!(version.value.as_deref(), Some("2.0"));
+    Ok(())
+}
+
+#[test]
+fn imports_mame_machine_rom_disk_bios_and_device_semantics_loss_aware()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (_directory, database, mut connection) = setup()?;
+    let report = app::import_catalog(&database, &mame_request()?)?;
+    let repeated = app::import_catalog(&database, &mame_request()?)?;
+    assert_eq!(report.status, app::CatalogImportStatus::Succeeded);
+    let snapshot = report.snapshot_key.ok_or("MAME snapshot missing")?;
+    assert_eq!(Some(snapshot.clone()), repeated.snapshot_key);
+    assert_eq!(count(&mut connection, "catalog_snapshots")?, 1);
+
+    let machine = sql_query("SELECT metadata_json AS value FROM snapshot_sets WHERE snapshot_key = ? AND set_name = 'demo_machine'")
+        .bind::<Text, _>(snapshot.as_str()).get_result::<TextRow>(&mut connection)?;
+    assert!(machine.value.contains("Synthetic Machine"));
+    assert!(machine.value.contains("demo_bios"));
+    assert!(machine.value.contains("demo_sound"));
+    assert!(machine.value.contains("2000"));
+    let device = sql_query("SELECT metadata_json AS value FROM snapshot_sets WHERE snapshot_key = ? AND set_name = 'demo_sound'")
+        .bind::<Text, _>(snapshot.as_str()).get_result::<TextRow>(&mut connection)?;
+    assert!(device.value.contains("isdevice"));
+    assert!(device.value.contains("yes"));
+
+    let assets = sql_query("SELECT GROUP_CONCAT(role || ':' || asset_name, ',') AS value FROM (SELECT role, asset_name FROM asset_requirements WHERE snapshot_key = ? AND set_name = 'demo_machine' ORDER BY component_order)")
+        .bind::<Text, _>(snapshot.as_str()).get_result::<TextRow>(&mut connection)?;
+    assert_eq!(
+        assets.value,
+        "rom:demo_bios.bin,rom:demo_video.bin,disk:demo_disk"
+    );
+    let region = sql_query("SELECT metadata_json AS value FROM asset_requirements WHERE snapshot_key = ? AND asset_name = 'demo_bios.bin'")
+        .bind::<Text, _>(snapshot.as_str()).get_result::<TextRow>(&mut connection)?;
+    assert!(region.value.contains("maincpu"));
+    assert!(region.value.contains("demo_bios"));
+    let disk_scope = sql_query("SELECT evidence_scope AS value FROM asset_requirements WHERE snapshot_key = ? AND asset_name = 'demo_disk'")
+        .bind::<Text, _>(snapshot.as_str()).get_result::<TextRow>(&mut connection)?;
+    assert_eq!(disk_scope.value, "disk_data");
+    let version =
+        sql_query("SELECT declared_version AS value FROM catalog_snapshots WHERE snapshot_key = ?")
+            .bind::<Text, _>(snapshot.as_str())
+            .get_result::<TextRow>(&mut connection)?;
+    assert_eq!(version.value, "0.216-synthetic");
+    assert!(count(&mut connection, "snapshot_extensions")? >= 2);
+    assert!(report.diagnostic_count >= 2);
+    let namespace = sql_query(
+        "SELECT namespace_uri AS value FROM snapshot_extensions WHERE field_name = 'flag'",
+    )
+    .get_result::<NullableTextRow>(&mut connection)?;
+    assert_eq!(namespace.value.as_deref(), Some("urn:mame:future"));
+    let feature = sql_query("SELECT raw_value_json AS value FROM snapshot_extensions WHERE field_name = 'element:feature'")
+        .get_result::<TextRow>(&mut connection)?;
+    assert!(feature.value.contains("protection"));
+    assert!(sql_query("SELECT COUNT(*) AS count FROM import_diagnostics WHERE run_key = ? AND code = 'unsupported_element'")
+        .bind::<Text, _>(report.run_key.to_string())
+        .get_result::<CountRow>(&mut connection)?.count > 0);
+    Ok(())
+}
+
+#[test]
+fn imports_mame_relationship_asset_fields_extensions_and_format_hint()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (_directory, database, mut connection) = setup()?;
+    let mut request = request(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/catalog/mame/semantics.xml"),
+        "mame-semantics",
+        "mame-semantics",
+        "MAME semantics",
+    )?;
+    request.format = CatalogDocumentFormat::MameListXml;
+    let report = app::import_catalog(&database, &request)?;
+    let snapshot = report.snapshot_key.ok_or("MAME snapshot missing")?;
+
+    let parent = sql_query(
+        "SELECT parent_name AS value FROM snapshot_sets \
+         WHERE snapshot_key = ? AND set_name = 'clone'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<NullableTextRow>(&mut connection)?;
+    assert_eq!(parent.value.as_deref(), Some("parent"));
+
+    let rom_fields = sql_query(
+        "SELECT merge_name || ':' || dump_status AS value FROM asset_requirements \
+         WHERE snapshot_key = ? AND asset_name = 'clone.rom'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(&mut connection)?;
+    assert_eq!(rom_fields.value, "parent.rom:baddump");
+    let disk_fields = sql_query(
+        "SELECT merge_name || ':' || dump_status AS value FROM asset_requirements \
+         WHERE snapshot_key = ? AND asset_name = 'clone.disk'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(&mut connection)?;
+    assert_eq!(disk_fields.value, "parent.disk:nodump");
+
+    let asset_extension_count = sql_query(
+        "SELECT COUNT(*) AS count FROM snapshot_extensions \
+         WHERE snapshot_key = ? AND record_kind = 'rom' AND field_name = 'flag'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<CountRow>(&mut connection)?
+    .count;
+    assert_eq!(asset_extension_count, 1);
+    let asset_metadata = sql_query(
+        "SELECT metadata_json AS value FROM asset_requirements \
+         WHERE snapshot_key = ? AND asset_name = 'clone.rom'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(&mut connection)?;
+    assert!(!asset_metadata.value.contains("future:flag"));
+
+    let format_hint = sql_query(
+        "SELECT documents.format_hint AS value FROM documents \
+         JOIN catalog_snapshots USING (document_key) WHERE snapshot_key = ?",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<NullableTextRow>(&mut connection)?;
+    assert_eq!(format_hint.value.as_deref(), Some("mame-listxml"));
+    Ok(())
+}
+
+#[test]
+fn malformed_mame_xml_records_failed_run_without_snapshot() -> Result<(), Box<dyn std::error::Error>>
+{
+    let (directory, database, mut connection) = setup()?;
+    let path = directory.path().join("malformed.xml");
+    std::fs::write(&path, b"<mame build='broken'><machine name='unfinished'>")?;
+    let mut request = request(path, "mame", "malformed-mame", "Malformed MAME")?;
+    request.format = CatalogDocumentFormat::MameListXml;
+    let report = app::import_catalog(&database, &request)?;
+    assert_eq!(report.status, app::CatalogImportStatus::Failed);
+    assert!(report.snapshot_key.is_none());
+    assert_eq!(count(&mut connection, "catalog_snapshots")?, 0);
+    assert_eq!(count(&mut connection, "import_runs")?, 1);
+    assert_eq!(count(&mut connection, "import_diagnostics")?, 1);
     Ok(())
 }
 
