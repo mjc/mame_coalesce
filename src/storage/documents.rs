@@ -10,7 +10,7 @@ use sha1::{Digest as _, Sha1};
 
 use crate::{
     document_input::{self, MAX_DOCUMENT_BYTES},
-    domain::{AcquisitionKey, DocumentDigest, DocumentKey, PublishingSourceKey},
+    domain::{AcquisitionKey, DocumentDigest, DocumentKey, PublishingSource, PublishingSourceKey},
     hashes::Sha1Digest,
     logiqx::DataFile,
     storage::db::{Pool, create_db_pool},
@@ -74,6 +74,14 @@ struct RetainedPayload {
     payload: Vec<u8>,
 }
 
+#[derive(QueryableByName)]
+struct PublishingSourceRow {
+    #[diesel(sql_type = Text)]
+    source_key: String,
+    #[diesel(sql_type = Text)]
+    display_name: String,
+}
+
 impl DocumentStore {
     pub fn open(database_url: &str) -> crate::Result<Self> {
         Ok(Self {
@@ -81,9 +89,30 @@ impl DocumentStore {
         })
     }
 
-    #[cfg(test)]
-    const fn new(pool: Pool) -> Self {
-        Self { pool }
+    pub fn register_source(&self, source: &PublishingSource) -> crate::Result<()> {
+        let mut conn = self.pool.get()?;
+        sql_query(
+            "INSERT INTO publishing_sources (source_key, display_name) VALUES (?, ?) \
+             ON CONFLICT (source_key) DO UPDATE SET display_name = excluded.display_name",
+        )
+        .bind::<Text, _>(source.key().as_str())
+        .bind::<Text, _>(source.display_name())
+        .execute(&mut conn)?;
+        Ok(())
+    }
+
+    pub fn resolve_source(
+        &self,
+        key: &PublishingSourceKey,
+    ) -> crate::Result<Option<PublishingSource>> {
+        let mut conn = self.pool.get()?;
+        let source = sql_query(
+            "SELECT source_key, display_name FROM publishing_sources WHERE source_key = ?",
+        )
+        .bind::<Text, _>(key.as_str())
+        .get_result::<PublishingSourceRow>(&mut conn)
+        .optional()?;
+        Ok(source.map(|source| PublishingSource::new(source.source_key, source.display_name)))
     }
 
     pub fn retain<R: Read>(
@@ -363,14 +392,10 @@ mod tests {
     fn setup_store() -> TestResult<(TempDir, DocumentStore)> {
         let directory = tempfile::tempdir()?;
         let database_path = directory.path().join("catalog.sqlite");
-        let pool = create_db_pool(&database_path.to_string_lossy())?;
-        let mut conn = pool.get()?;
-        conn.batch_execute(
-            "INSERT INTO publishing_sources (source_key, display_name) \
-             VALUES ('source-a', 'Publisher A'), ('source-b', 'Publisher B');",
-        )?;
-        drop(conn);
-        Ok((directory, DocumentStore::new(pool)))
+        let store = DocumentStore::open(&database_path.to_string_lossy())?;
+        store.register_source(&PublishingSource::new("source-a", "Publisher A"))?;
+        store.register_source(&PublishingSource::new("source-b", "Publisher B"))?;
+        Ok((directory, store))
     }
 
     fn acquisition(source_key: &str) -> AcquisitionMetadata {
@@ -400,6 +425,62 @@ mod tests {
             DocumentKey::from_bytes(b"catalog"),
             DocumentKey::from_bytes(b"changed")
         );
+    }
+
+    #[test]
+    fn fresh_store_registers_and_resolves_source_before_successful_retention() -> TestResult {
+        let directory = tempfile::tempdir()?;
+        let database_path = directory.path().join("fresh.sqlite");
+        let store = DocumentStore::open(&database_path.to_string_lossy())?;
+        store.register_source(&PublishingSource::new("fresh-source", "Fresh Publisher"))?;
+
+        let source = store
+            .resolve_source(&PublishingSourceKey::new("fresh-source"))?
+            .ok_or("registered source did not resolve")?;
+        assert_eq!(source.key().as_str(), "fresh-source");
+        assert_eq!(source.display_name(), "Fresh Publisher");
+        assert!(
+            store
+                .resolve_source(&PublishingSourceKey::new("missing-source"))?
+                .is_none()
+        );
+        let retained = store.retain(&acquisition("fresh-source"), VALID_DAT)?;
+        assert_eq!(store.load(&retained.document_key)?, VALID_DAT);
+        assert_eq!(count(&store, "acquisitions")?, 1);
+        assert_eq!(count(&store, "acquisition_attempts")?, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn fresh_store_persists_failed_attempt_after_source_registration() -> TestResult {
+        let directory = tempfile::tempdir()?;
+        let database_path = directory.path().join("fresh-failure.sqlite");
+        let store = DocumentStore::open(&database_path.to_string_lossy())?;
+        store.register_source(&PublishingSource::new("fresh-source", "Fresh Publisher"))?;
+
+        let mut failed = acquisition("fresh-source");
+        failed.expected_sha256 = Some(DocumentDigest::from_hex(&"00".repeat(32))?);
+        assert!(matches!(
+            store.retain(&failed, VALID_DAT),
+            Err(crate::Error::DocumentDigestMismatch)
+        ));
+
+        let mut conn = store.pool.get()?;
+        let attempt = sql_query(
+            "SELECT outcome, diagnostic FROM acquisition_attempts WHERE source_key = 'fresh-source'",
+        )
+        .get_result::<FailedAttemptRow>(&mut conn)?;
+        assert_eq!(attempt.outcome, "failed");
+        assert!(
+            attempt
+                .diagnostic
+                .as_deref()
+                .is_some_and(|diagnostic| diagnostic.starts_with("digest_mismatch:"))
+        );
+        assert_eq!(count(&store, "documents")?, 0);
+        assert_eq!(count(&store, "acquisitions")?, 0);
+        assert_eq!(count(&store, "acquisition_attempts")?, 1);
+        Ok(())
     }
 
     #[test]
@@ -558,10 +639,13 @@ mod tests {
     fn verifies_source_digest_when_available_and_rejects_mismatches() -> TestResult {
         let (_directory, store) = setup_store()?;
         let mut verified = acquisition("source-a");
-        verified.expected_sha256 = Some(DocumentDigest::from_bytes(VALID_DAT));
+        verified.expected_sha256 = Some(DocumentDigest::from_hex(
+            "0cad48a4d2d1c1427572ab458f1ed2f927d58b85852ea0d4a4ef28e6bc554e88",
+        )?);
         let retained = store.retain(&verified, VALID_DAT)?;
         let mut mismatched = acquisition("source-b");
-        mismatched.expected_sha256 = Some(DocumentDigest::from_bytes(b"other bytes"));
+        let mismatch_digest = DocumentDigest::from_hex(&"00".repeat(32))?;
+        mismatched.expected_sha256 = Some(mismatch_digest);
         assert!(matches!(
             store.retain(&mismatched, VALID_DAT),
             Err(crate::Error::DocumentDigestMismatch)
@@ -586,14 +670,7 @@ mod tests {
             sql_query("SELECT expected_sha256 FROM acquisition_attempts WHERE outcome = 'failed'")
                 .get_result::<ExpectedDigestRow>(&mut conn)?
                 .expected_sha256;
-        assert_eq!(
-            failed_digest,
-            Some(
-                DocumentDigest::from_bytes(b"other bytes")
-                    .as_bytes()
-                    .to_vec()
-            )
-        );
+        assert_eq!(failed_digest, Some(mismatch_digest.as_bytes().to_vec()));
         assert_eq!(count(&store, "documents")?, 1);
         assert_eq!(count(&store, "acquisitions")?, 1);
         assert_eq!(count(&store, "acquisition_attempts")?, 2);
@@ -604,7 +681,9 @@ mod tests {
     fn rejects_digest_mismatch_before_parsing_and_records_digest_failure() -> TestResult {
         let (_directory, store) = setup_store()?;
         let mut metadata = acquisition("source-a");
-        metadata.expected_sha256 = Some(DocumentDigest::from_bytes(VALID_DAT));
+        metadata.expected_sha256 = Some(DocumentDigest::from_hex(
+            "0cad48a4d2d1c1427572ab458f1ed2f927d58b85852ea0d4a4ef28e6bc554e88",
+        )?);
         assert!(matches!(
             store.retain(&metadata, b"malformed XML".as_slice()),
             Err(crate::Error::DocumentDigestMismatch)
@@ -618,10 +697,26 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn malformed_source_digest_is_rejected() {
+        assert!(DocumentDigest::from_hex("not-a-sha256-digest").is_err());
+        assert!(DocumentDigest::from_hex("00").is_err());
+        assert!(DocumentDigest::from_hex(&"gg".repeat(32)).is_err());
+        assert!("g".repeat(64).parse::<DocumentDigest>().is_err());
+    }
+
     #[derive(QueryableByName)]
     struct DiagnosticRow {
         #[diesel(sql_type = Text)]
         diagnostic: String,
+    }
+
+    #[derive(QueryableByName)]
+    struct FailedAttemptRow {
+        #[diesel(sql_type = Text)]
+        outcome: String,
+        #[diesel(sql_type = Nullable<Text>)]
+        diagnostic: Option<String>,
     }
 
     #[test]

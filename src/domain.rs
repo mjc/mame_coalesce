@@ -14,9 +14,37 @@ impl DocumentDigest {
         Self(Sha256::digest(bytes).into())
     }
 
+    pub fn from_hex(value: &str) -> crate::Result<Self> {
+        if value.len() != 64 {
+            return Err(crate::Error::InvalidHash(format!(
+                "SHA-256 digest must contain exactly 64 hexadecimal characters, got {}",
+                value.len()
+            )));
+        }
+
+        let bytes = hex::decode(value).map_err(|error| {
+            crate::Error::InvalidHash(format!("invalid SHA-256 digest: {error}"))
+        })?;
+        let digest = bytes.try_into().map_err(|bytes: Vec<u8>| {
+            crate::Error::InvalidHash(format!(
+                "SHA-256 digest decoded to {} bytes; expected 32",
+                bytes.len()
+            ))
+        })?;
+        Ok(Self(digest))
+    }
+
     #[must_use]
     pub const fn as_bytes(&self) -> &[u8; 32] {
         &self.0
+    }
+}
+
+impl std::str::FromStr for DocumentDigest {
+    type Err = crate::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::from_hex(value)
     }
 }
 
@@ -50,6 +78,32 @@ impl PublishingSourceKey {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PublishingSource {
+    key: PublishingSourceKey,
+    display_name: String,
+}
+
+impl PublishingSource {
+    #[must_use]
+    pub fn new(key: impl Into<String>, display_name: impl Into<String>) -> Self {
+        Self {
+            key: PublishingSourceKey::new(key),
+            display_name: display_name.into(),
+        }
+    }
+
+    #[must_use]
+    pub const fn key(&self) -> &PublishingSourceKey {
+        &self.key
+    }
+
+    #[must_use]
+    pub fn display_name(&self) -> &str {
+        &self.display_name
     }
 }
 

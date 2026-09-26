@@ -10,6 +10,7 @@ mod operations;
 mod progress;
 mod storage;
 
+pub use domain::PublishingSource;
 pub use error::Error;
 pub use storage::documents::{AcquisitionMetadata, DocumentStore, RetainedDocument};
 pub type Result<T> = std::result::Result<T, Error>;
