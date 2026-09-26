@@ -125,10 +125,18 @@ impl SnapshotData {
             sets.push(SnapshotSet {
                 name: game.name().into(), parent: game.cloneof().map(str::to_owned),
                 parent_field: game.cloneof().map(|_| "cloneof".to_owned()),
+                // Keep adapter-specific device edges as source assertions too.
                 runtime_dependencies: [
                     game.romof_opt().map(|name| ("romof".to_owned(), name.to_owned())),
                     game.sampleof_opt().map(|name| ("sampleof".to_owned(), name.to_owned())),
-                ].into_iter().flatten().collect(),
+                ]
+                .into_iter()
+                .flatten()
+                .chain(
+                    game.device_refs()
+                        .map(|name| ("device_ref".to_owned(), name.to_owned())),
+                )
+                .collect(),
                 metadata: serde_json::json!({"source_file": game.sourcefile_opt(), "is_bios": game.isbios_opt(), "rom_of": game.romof_opt(), "sample_of": game.sampleof_opt(), "board": game.board_opt(), "rebuild_to": game.rebuildto_opt(), "description": game.description_opt(), "year": game.year_opt(), "manufacturer": game.manufacturer_opt(), "device_refs": game.device_refs().collect::<Vec<_>>()}),
                 location, assets,
             });
@@ -172,6 +180,21 @@ impl SnapshotData {
                             .and_then(serde_json::Value::as_str)
                             .map(|name| ("device_ref".to_owned(), name.to_owned()))
                     })
+                    .collect::<Vec<_>>();
+                let runtime_dependencies = machine
+                    .metadata
+                    .get("romof")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|name| ("romof".to_owned(), name.to_owned()))
+                    .into_iter()
+                    .chain(runtime_dependencies)
+                    .chain(
+                        machine
+                            .metadata
+                            .get("sampleof")
+                            .and_then(serde_json::Value::as_str)
+                            .map(|name| ("sampleof".to_owned(), name.to_owned())),
+                    )
                     .collect();
                 let assets = machine
                     .assets
