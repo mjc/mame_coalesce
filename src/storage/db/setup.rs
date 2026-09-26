@@ -63,6 +63,35 @@ mod tests {
         sql_query(statement).execute(conn).is_err()
     }
 
+    fn assert_snapshot_parent_is_catalog_scoped(conn: &mut SqliteConnection) -> QueryResult<()> {
+        conn.batch_execute(
+            "INSERT INTO catalog_snapshots \
+                 (snapshot_key, catalog_key, document_key, interpretation_key, \
+                  parent_snapshot_key, scope_kind) \
+             VALUES ('snapshot-a4', 'catalog-a', 'document-a', 'logiqx-v1', \
+                     'snapshot-a1', 'unknown')",
+        )?;
+        assert_eq!(
+            sql_query(
+                "SELECT COUNT(*) AS count FROM catalog_snapshots \
+                 WHERE snapshot_key = 'snapshot-a4' \
+                   AND parent_snapshot_key = 'snapshot-a1'",
+            )
+            .get_result::<CountRow>(conn)?
+            .count,
+            1
+        );
+        assert!(sql_fails(
+            conn,
+            "INSERT INTO catalog_snapshots \
+                 (snapshot_key, catalog_key, document_key, interpretation_key, \
+                  parent_snapshot_key, scope_kind) \
+             VALUES ('snapshot-cross-catalog-parent', 'catalog-b', 'document-b', \
+                     'logiqx-v1', 'snapshot-a1', 'unknown')",
+        ));
+        Ok(())
+    }
+
     #[test]
     fn additive_migration_preserves_a_populated_legacy_cache()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -163,6 +192,7 @@ mod tests {
             .count,
             2
         );
+        assert_snapshot_parent_is_catalog_scoped(&mut conn)?;
         assert!(sql_fails(
             &mut conn,
             "INSERT INTO catalogs (catalog_key, source_key, display_name) \

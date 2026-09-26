@@ -45,9 +45,14 @@ CREATE TABLE catalog_snapshots (
     scope_kind          TEXT NOT NULL DEFAULT 'unknown'
                                 CHECK (scope_kind IN ('unknown', 'complete', 'filtered', 'partial')),
     scope_json          TEXT,
-    parent_snapshot_key TEXT REFERENCES catalog_snapshots (snapshot_key) ON DELETE RESTRICT,
+    parent_snapshot_key TEXT,
     CHECK (scope_kind NOT IN ('filtered', 'partial') OR scope_json IS NOT NULL),
+    CHECK (parent_snapshot_key IS NULL OR parent_snapshot_key <> snapshot_key),
+    UNIQUE (snapshot_key, catalog_key),
     UNIQUE (snapshot_key, catalog_key, document_key, interpretation_key),
+    FOREIGN KEY (parent_snapshot_key, catalog_key)
+        REFERENCES catalog_snapshots (snapshot_key, catalog_key)
+        ON DELETE RESTRICT,
     FOREIGN KEY (acquisition_key, document_key)
         REFERENCES acquisitions (acquisition_key, document_key)
         ON DELETE RESTRICT
