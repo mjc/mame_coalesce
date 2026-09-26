@@ -197,6 +197,7 @@ impl SnapshotData {
     }
 
     fn from_mame_softwarelist(catalog: SoftwareListCatalog) -> Self {
+        let version = catalog.build.clone();
         let extensions = catalog
             .extensions
             .iter()
@@ -204,7 +205,7 @@ impl SnapshotData {
             .map(stored_extension)
             .collect();
         Self {
-            version: None,
+            version,
             sets: Vec::new(),
             software_lists: Some(catalog),
             extensions,

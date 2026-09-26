@@ -494,6 +494,11 @@ fn imports_mame_softwarelists_with_nested_order_dependencies_and_load_claims()
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<NullableTextRow>(&mut connection)?;
     assert_eq!(format_hint.value.as_deref(), Some("mame-softwarelist-xml"));
+    let version =
+        sql_query("SELECT declared_version AS value FROM catalog_snapshots WHERE snapshot_key = ?")
+            .bind::<Text, _>(snapshot.as_str())
+            .get_result::<NullableTextRow>(&mut connection)?;
+    assert_eq!(version.value.as_deref(), Some("0.289-synthetic"));
 
     assert_eq!(count(&mut connection, "software_lists")?, 2);
     assert_eq!(count(&mut connection, "software_items")?, 3);
@@ -508,7 +513,7 @@ fn imports_mame_softwarelists_with_nested_order_dependencies_and_load_claims()
     assert_software_list_nesting(&mut connection, &snapshot)?;
     assert_software_list_components(&mut connection, &snapshot)?;
     assert_software_list_extensions(&mut connection, &snapshot)?;
-    assert_malformed_software_list_fails(directory.path(), &database, &mut connection, request)?;
+    assert_malformed_software_list_fails(directory.path(), &database, &mut connection, &request)?;
     Ok(())
 }
 
@@ -725,7 +730,7 @@ fn assert_malformed_software_list_fails(
     temp_dir: &Path,
     database: &Database,
     connection: &mut SqliteConnection,
-    request: CatalogImportRequest,
+    request: &CatalogImportRequest,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let malformed_path = temp_dir.join("malformed-softwarelist.xml");
     std::fs::write(
@@ -763,34 +768,50 @@ fn assert_malformed_software_list_fails(
     assert!(failed.snapshot_key.is_none());
     assert_eq!(count(connection, "catalog_snapshots")?, 1);
 
-    let invalid_path = temp_dir.join("invalid-softwarelist-load.xml");
     let fixture = include_str!("../fixtures/catalog/mame/software-list.xml");
-    std::fs::write(
-        &invalid_path,
-        fixture.replacen("loadflag=\"continue\"", "loadflag=\"unknown\"", 1),
-    )?;
-    let mut invalid_request = request;
-    invalid_request.document_path =
-        Utf8PathBuf::from_path_buf(invalid_path).map_err(|_| "non-UTF8 invalid fixture path")?;
-    invalid_request.catalog_key = CatalogKey::new("invalid-softwarelist-load");
-    invalid_request.catalog_display_name = "Invalid software-list load".into();
-    let failed = app::import_catalog(database, &invalid_request)?;
-    assert_eq!(failed.status, app::CatalogImportStatus::Failed);
-    assert!(failed.snapshot_key.is_none());
-    assert_eq!(count(connection, "catalog_snapshots")?, 1);
-    let location = sql_query(
-        "SELECT record_kind, record_name, source_line, source_column \
-         FROM import_diagnostics WHERE run_key = ?",
-    )
-    .bind::<Text, _>(failed.run_key.to_string())
-    .get_result::<FailedLocationRow>(connection)?;
-    assert_eq!(location.record_kind.as_deref(), Some("rom"));
-    assert_eq!(
-        location.record_name.as_deref(),
-        Some("demo_cart:demo_game:cart:data:program")
-    );
-    assert!(location.source_line.is_some_and(|line| line > 0));
-    assert!(location.source_column.is_some_and(|column| column > 0));
+    for (field, original, replacement, record_kind) in [
+        (
+            "load",
+            "loadflag=\"continue\"",
+            "loadflag=\"unknown\"",
+            "rom",
+        ),
+        ("width", "width=\"16\"", "width=\"7\"", "dataarea"),
+        (
+            "endianness",
+            "endianness=\"big\"",
+            "endianness=\"unknown\"",
+            "dataarea",
+        ),
+        ("size", "size=\"0x20\"", "size=\"unknown\"", "dataarea"),
+        ("crc", "crc=\"12345678\"", "crc=\"unknown\"", "rom"),
+    ] {
+        let invalid_path = temp_dir.join(format!("invalid-softwarelist-{field}.xml"));
+        assert!(fixture.contains(original));
+        std::fs::write(&invalid_path, fixture.replacen(original, replacement, 1))?;
+        let mut invalid_request = request.clone();
+        invalid_request.document_path = Utf8PathBuf::from_path_buf(invalid_path)
+            .map_err(|_| "non-UTF8 invalid fixture path")?;
+        invalid_request.catalog_key = CatalogKey::new(format!("invalid-softwarelist-{field}"));
+        invalid_request.catalog_display_name = format!("Invalid software-list {field}");
+        let failed = app::import_catalog(database, &invalid_request)?;
+        assert_eq!(failed.status, app::CatalogImportStatus::Failed);
+        assert!(failed.snapshot_key.is_none());
+        assert_eq!(count(connection, "catalog_snapshots")?, 1);
+        let location = sql_query(
+            "SELECT record_kind, record_name, source_line, source_column \
+             FROM import_diagnostics WHERE run_key = ?",
+        )
+        .bind::<Text, _>(failed.run_key.to_string())
+        .get_result::<FailedLocationRow>(connection)?;
+        assert_eq!(location.record_kind.as_deref(), Some(record_kind));
+        assert_eq!(
+            location.record_name.as_deref(),
+            Some("demo_cart:demo_game:cart:data:program")
+        );
+        assert!(location.source_line.is_some_and(|line| line > 0));
+        assert!(location.source_column.is_some_and(|column| column > 0));
+    }
     Ok(())
 }
 

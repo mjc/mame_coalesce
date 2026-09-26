@@ -55,6 +55,7 @@ pub struct NamedValue {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SoftwareListCatalog {
+    pub build: Option<String>,
     pub lists: Vec<SoftwareList>,
     pub extensions: Vec<XmlExtension>,
 }
@@ -236,11 +237,12 @@ impl LoadInstruction {
 impl SoftwareListCatalog {
     pub fn parse(bytes: &[u8]) -> crate::Result<Self> {
         let root = parse_xml_element(bytes)?;
+        let build = root.attributes.get("build").cloned();
         let mut extensions = Vec::new();
         let lists = match root.name.as_str() {
             "softwarelist" => vec![parse_list(&root, &mut extensions)?],
             "softwarelists" => {
-                retain_unknown_attributes(&root, &[], "document", None, &mut extensions);
+                retain_unknown_attributes(&root, &["build"], "document", None, &mut extensions);
                 let mut lists = Vec::new();
                 for child in root.children() {
                     if child.name == "softwarelist" {
@@ -271,7 +273,11 @@ impl SoftwareListCatalog {
                 )));
             }
         }
-        Ok(Self { lists, extensions })
+        Ok(Self {
+            build,
+            lists,
+            extensions,
+        })
     }
 }
 
@@ -357,7 +363,7 @@ fn parse_item(
             "year" => set_item_text(&mut year, child, &name, &record, extensions)?,
             "publisher" => set_item_text(&mut publisher, child, &name, &record, extensions)?,
             "notes" => {
-                notes = Some(child.direct_text());
+                set_once(&mut notes, child, &name)?;
                 retain_unknown_node_content(
                     child,
                     &[],
@@ -503,14 +509,19 @@ fn parse_area(
     );
     let (declared_size, width, endianness, component_name) = match kind {
         AreaKind::Data => (
-            Some(parse_number(&required(node, "size")?)?),
+            Some(parse_number_at(
+                node,
+                &record,
+                "size",
+                &required(node, "size")?,
+            )?),
             node.attributes
                 .get("width")
-                .map(|value| parse_width(value))
+                .map(|value| parse_width(node, &record, value))
                 .transpose()?,
             node.attributes
                 .get("endianness")
-                .map(|value| parse_endianness(value))
+                .map(|value| parse_endianness(node, &record, value))
                 .transpose()?,
             "rom",
         ),
@@ -579,10 +590,10 @@ fn parse_rom(
     }
     Ok(SoftwareRom {
         name: node.attributes.get("name").cloned().map(ComponentName::new),
-        size: parse_optional_number(node, "size")?,
-        crc: parse_digest(node, "crc")?,
-        sha1: parse_digest(node, "sha1")?,
-        offset: parse_optional_number(node, "offset")?,
+        size: parse_optional_number(node, record, "size")?,
+        crc: parse_digest(node, record, "crc")?,
+        sha1: parse_digest(node, record, "sha1")?,
+        offset: parse_optional_number(node, record, "offset")?,
         value: node.attributes.get("value").cloned(),
         status: parse_status(node, record)?,
         load: parse_load(node, record)?,
@@ -610,7 +621,7 @@ fn parse_disk(
     };
     Ok(SoftwareDisk {
         name: ComponentName::new(required(node, "name")?),
-        sha1: parse_digest(node, "sha1")?,
+        sha1: parse_digest(node, record, "sha1")?,
         status: parse_status(node, record)?,
         writeable,
         location: node.location,
@@ -653,34 +664,34 @@ fn parse_load(node: &Element, record: &str) -> crate::Result<Option<LoadInstruct
         .transpose()
 }
 
-fn parse_width(value: &str) -> crate::Result<u8> {
+fn parse_width(node: &Element, record: &str, value: &str) -> crate::Result<u8> {
     let width = value
         .parse::<u8>()
-        .map_err(|_| crate::Error::XmlValidation(format!("invalid dataarea width {value:?}")))?;
+        .map_err(|_| invalid_value(node, record, "width", value))?;
     if matches!(width, 8 | 16 | 32 | 64) {
         Ok(width)
     } else {
-        Err(crate::Error::XmlValidation(format!(
-            "unsupported dataarea width {width}"
-        )))
+        Err(invalid_value(node, record, "width", value))
     }
 }
 
-fn parse_endianness(value: &str) -> crate::Result<Endianness> {
+fn parse_endianness(node: &Element, record: &str, value: &str) -> crate::Result<Endianness> {
     match value {
         "little" => Ok(Endianness::Little),
         "big" => Ok(Endianness::Big),
-        other => Err(crate::Error::XmlValidation(format!(
-            "invalid dataarea endianness {other:?}"
-        ))),
+        other => Err(invalid_value(node, record, "endianness", other)),
     }
 }
 
-fn parse_optional_number(node: &Element, name: &str) -> crate::Result<Option<u64>> {
+fn parse_optional_number(node: &Element, record: &str, name: &str) -> crate::Result<Option<u64>> {
     node.attributes
         .get(name)
-        .map(|value| parse_number(value))
+        .map(|value| parse_number_at(node, record, name, value))
         .transpose()
+}
+
+fn parse_number_at(node: &Element, record: &str, field: &str, value: &str) -> crate::Result<u64> {
+    parse_number(value).map_err(|_| invalid_value(node, record, field, value))
 }
 
 fn parse_number(value: &str) -> crate::Result<u64> {
@@ -696,19 +707,18 @@ fn parse_number(value: &str) -> crate::Result<u64> {
     Ok(parsed)
 }
 
-fn parse_digest<const N: usize>(node: &Element, field: &str) -> crate::Result<Option<[u8; N]>> {
+fn parse_digest<const N: usize>(
+    node: &Element,
+    record: &str,
+    field: &str,
+) -> crate::Result<Option<[u8; N]>> {
     let Some(value) = node.attributes.get(field) else {
         return Ok(None);
     };
-    let bytes = hex::decode(value)
-        .map_err(|_| crate::Error::XmlValidation(format!("invalid {field} digest {value:?}")))?;
-    let digest: [u8; N] = bytes.try_into().map_err(|bytes: Vec<u8>| {
-        crate::Error::XmlValidation(format!(
-            "invalid {field} digest length {}, expected {}",
-            bytes.len(),
-            N
-        ))
-    })?;
+    let bytes = hex::decode(value).map_err(|_| invalid_value(node, record, field, value))?;
+    let digest: [u8; N] = bytes
+        .try_into()
+        .map_err(|_: Vec<u8>| invalid_value(node, record, field, value))?;
     Ok(Some(digest))
 }
 
@@ -882,6 +892,7 @@ mod tests {
     -> crate::Result<()> {
         let bytes = include_bytes!("../fixtures/catalog/mame/software-list.xml");
         let catalog = SoftwareListCatalog::parse(bytes)?;
+        assert_eq!(catalog.build.as_deref(), Some("0.289-synthetic"));
         assert_eq!(catalog.lists.len(), 2);
         let list = at(&catalog.lists, 0)?;
         assert_eq!(list.name.as_str(), "demo_cart");
@@ -955,6 +966,12 @@ mod tests {
         let duplicate = br#"<softwarelist name="one"><software name="game"><description>Game</description><year>2000</year><publisher>Pub</publisher><part name="cart" interface="cart"/></software><software name="game"><description>Game 2</description><year>2001</year><publisher>Pub</publisher><part name="cart" interface="cart"/></software></softwarelist>"#;
         assert!(SoftwareListCatalog::parse(duplicate).is_err());
         Ok(())
+    }
+
+    #[test]
+    fn parser_rejects_duplicate_notes_instead_of_dropping_the_first() {
+        let xml = br#"<softwarelist name="one"><software name="game"><description>Game</description><year>2000</year><publisher>Pub</publisher><notes>First</notes><notes>Second</notes><part name="cart" interface="cart"/></software></softwarelist>"#;
+        assert!(SoftwareListCatalog::parse(xml).is_err());
     }
 
     #[test]
@@ -1032,6 +1049,28 @@ mod tests {
 
         let invalid_hash = br#"<softwarelist name="one"><software name="game"><description>Game</description><year>2000</year><publisher>Pub</publisher><part name="cart" interface="cart"><dataarea name="rom" size="16"><rom name="game.bin" crc="not-hex"/></dataarea></part></software></softwarelist>"#;
         assert!(SoftwareListCatalog::parse(invalid_hash).is_err());
+
+        let encoded = "<?xml version=\"1.0\" encoding=\"UTF-16\"?><!DOCTYPE softwarelist [<!ENTITY secret \"expanded\">]><softwarelist name=\"one\"><software name=\"game\"><description>&secret;</description><year>2000</year><publisher>Pub</publisher><part name=\"cart\" interface=\"cart\"/></software></softwarelist>";
+        let mut utf16 = vec![0xff, 0xfe];
+        for unit in encoded.encode_utf16() {
+            utf16.extend_from_slice(&unit.to_le_bytes());
+        }
+        assert!(matches!(
+            SoftwareListCatalog::parse(&utf16),
+            Err(crate::Error::XmlEntityNotAllowed)
+        ));
+
+        let mut no_bom = Vec::new();
+        for unit in
+            "<!DOCTYPE softwarelist [<!ENTITY secret \"expanded\">]><softwarelist name=\"one\"/>"
+                .encode_utf16()
+        {
+            no_bom.extend_from_slice(&unit.to_le_bytes());
+        }
+        assert!(matches!(
+            SoftwareListCatalog::parse(&no_bom),
+            Err(crate::Error::XmlEntityNotAllowed)
+        ));
     }
 
     #[test]
@@ -1062,6 +1101,30 @@ mod tests {
                 "writeable=\"unknown\"",
                 "disk",
                 "demo_cart:demo_game:cart:disk:media",
+            ),
+            (
+                "width=\"16\"",
+                "width=\"7\"",
+                "dataarea",
+                "demo_cart:demo_game:cart:data:program",
+            ),
+            (
+                "endianness=\"big\"",
+                "endianness=\"middle\"",
+                "dataarea",
+                "demo_cart:demo_game:cart:data:program",
+            ),
+            (
+                "size=\"0x20\"",
+                "size=\"invalid\"",
+                "dataarea",
+                "demo_cart:demo_game:cart:data:program",
+            ),
+            (
+                "crc=\"12345678\"",
+                "crc=\"invalid\"",
+                "rom",
+                "demo_cart:demo_game:cart:data:program",
             ),
         ] {
             let xml = source.replacen(original, replacement, 1);

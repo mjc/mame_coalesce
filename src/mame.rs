@@ -6,7 +6,10 @@ use xml::{
     reader::{ParserConfig, XmlEvent},
 };
 
-use crate::{document_input, logiqx::RecordLocation};
+use crate::{
+    document_input,
+    logiqx::{RecordLocation, contains_entity_declaration},
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MameCatalog {
@@ -145,9 +148,8 @@ impl MameCatalog {
 
 pub fn parse_xml_element(bytes: &[u8]) -> crate::Result<Element> {
     let xml = document_input::decode_xml(bytes)?;
-    if xml
-        .windows(b"<!ENTITY".len())
-        .any(|marker| marker == b"<!ENTITY")
+    if contains_entity_declaration(&xml)
+        .map_err(|()| crate::Error::XmlValidation("malformed UTF-16 encoding".into()))?
     {
         return Err(crate::Error::XmlEntityNotAllowed);
     }
