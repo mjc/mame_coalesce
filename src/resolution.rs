@@ -34,6 +34,64 @@ pub enum EvidenceField {
     Size,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct EvidenceFieldComparison {
+    pub agreements: Vec<EvidenceField>,
+    pub contradictions: Vec<EvidenceField>,
+    pub comparable: bool,
+}
+
+pub(crate) fn compare_expected_fields(
+    left: &crate::domain::ExpectedEvidence,
+    right: &crate::domain::ExpectedEvidence,
+) -> EvidenceFieldComparison {
+    let mut result = EvidenceFieldComparison::default();
+    for (field, agrees) in [
+        (
+            EvidenceField::Sha1,
+            compare(
+                left.sha1,
+                right.sha1,
+                EvidenceField::Sha1,
+                &mut result.contradictions,
+            ),
+        ),
+        (
+            EvidenceField::Md5,
+            compare(
+                left.md5,
+                right.md5,
+                EvidenceField::Md5,
+                &mut result.contradictions,
+            ),
+        ),
+        (
+            EvidenceField::Crc,
+            compare(
+                left.crc,
+                right.crc,
+                EvidenceField::Crc,
+                &mut result.contradictions,
+            ),
+        ),
+        (
+            EvidenceField::Size,
+            compare(
+                left.size,
+                right.size,
+                EvidenceField::Size,
+                &mut result.contradictions,
+            ),
+        ),
+    ] {
+        if agrees {
+            result.agreements.push(field);
+        }
+    }
+    result.comparable = !result.agreements.is_empty() || !result.contradictions.is_empty();
+    result
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MissingReason {
     NoExpectedContentEvidence,
@@ -294,49 +352,23 @@ fn assess_source(
         };
     }
 
-    let mut conflicts = Vec::new();
-    let sha1_equal = compare(
-        expected.sha1,
-        observed.sha1,
-        EvidenceField::Sha1,
-        &mut conflicts,
-    );
-    let md5_equal = compare(
-        expected.md5,
-        observed.md5,
-        EvidenceField::Md5,
-        &mut conflicts,
-    );
-    let crc_equal = compare(
-        expected.crc,
-        observed.crc,
-        EvidenceField::Crc,
-        &mut conflicts,
-    );
-    let size_equal = compare(
-        expected.size,
-        observed.size,
-        EvidenceField::Size,
-        &mut conflicts,
-    );
-    let comparable = !conflicts.is_empty()
-        || expected.sha1.is_some() && observed.sha1.is_some()
-        || expected.md5.is_some() && observed.md5.is_some()
-        || expected.crc.is_some() && observed.crc.is_some()
-        || expected.size.is_some() && observed.size.is_some();
-    let mut agreements = Vec::new();
-    if sha1_equal {
-        agreements.push(EvidenceField::Sha1);
-    }
-    if md5_equal {
-        agreements.push(EvidenceField::Md5);
-    }
-    if crc_equal {
-        agreements.push(EvidenceField::Crc);
-    }
-    if size_equal {
-        agreements.push(EvidenceField::Size);
-    }
+    let observed_evidence = crate::domain::ExpectedEvidence {
+        scope: observed.scope,
+        provenance: observed.provenance,
+        size: observed.size,
+        crc: observed.crc,
+        md5: observed.md5,
+        sha1: observed.sha1,
+        ..crate::domain::ExpectedEvidence::default()
+    };
+    let comparison = compare_expected_fields(expected, &observed_evidence);
+    let agreements = comparison.agreements;
+    let conflicts = comparison.contradictions;
+    let sha1_equal = agreements.contains(&EvidenceField::Sha1);
+    let md5_equal = agreements.contains(&EvidenceField::Md5);
+    let crc_equal = agreements.contains(&EvidenceField::Crc);
+    let size_equal = agreements.contains(&EvidenceField::Size);
+    let comparable = comparison.comparable;
 
     let strength = if sha1_equal {
         Some(MatchStrength::Sha1)

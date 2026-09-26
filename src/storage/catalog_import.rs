@@ -28,6 +28,12 @@ struct ExistingSnapshot {
 }
 
 #[derive(QueryableByName)]
+struct ComponentOrderRow {
+    #[diesel(sql_type = BigInt)]
+    component_order: i64,
+}
+
+#[derive(QueryableByName)]
 struct IdentityRow {
     #[diesel(sql_type = Text)]
     first_value: String,
