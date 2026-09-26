@@ -55,8 +55,24 @@ impl DocumentKey {
     }
 
     #[must_use]
+    pub const fn from_digest(digest: DocumentDigest) -> Self {
+        Self(digest.0)
+    }
+
+    #[must_use]
     pub const fn digest(&self) -> &[u8; 32] {
         &self.0
+    }
+}
+
+impl std::str::FromStr for DocumentKey {
+    type Err = crate::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let digest = value.strip_prefix("sha256:").ok_or_else(|| {
+            crate::Error::InvalidHash("document key must start with `sha256:`".into())
+        })?;
+        Ok(Self::from_digest(DocumentDigest::from_hex(digest)?))
     }
 }
 
@@ -591,6 +607,28 @@ pub struct DuplicateMatch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn document_key_display_round_trips_and_rejects_invalid_values() -> crate::Result<()> {
+        let key = DocumentKey::from_bytes(b"catalog");
+        let serialized = key.to_string();
+        let restored: DocumentKey = serialized.parse()?;
+        assert_eq!(restored, key);
+        assert_eq!(
+            DocumentKey::from_digest(DocumentDigest::from_bytes(b"catalog")),
+            key
+        );
+
+        for malformed in [
+            "sha256:not-hex",
+            "sha256:00",
+            "sha1:0000000000000000000000000000000000000000000000000000000000000000",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+        ] {
+            assert!(malformed.parse::<DocumentKey>().is_err(), "{malformed}");
+        }
+        Ok(())
+    }
 
     #[test]
     fn parser_conversion_keeps_partial_evidence_scope_metadata_and_component_order()

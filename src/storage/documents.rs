@@ -598,12 +598,14 @@ mod tests {
     fn retained_bytes_and_provenance_survive_database_backup_restore() -> TestResult {
         let (directory, store) = setup_store()?;
         let retained = store.retain(&acquisition("source-a"), VALID_DAT)?;
+        let serialized_key = retained.document_key.to_string();
         let backup_path = directory.path().join("restored.sqlite");
         let original_path = directory.path().join("catalog.sqlite");
         drop(store);
         std::fs::copy(&original_path, &backup_path)?;
         let restored = DocumentStore::open(&backup_path.to_string_lossy())?;
-        assert_eq!(restored.load(&retained.document_key)?, VALID_DAT);
+        let restored_key = serialized_key.parse()?;
+        assert_eq!(restored.load(&restored_key)?, VALID_DAT);
         assert_eq!(count(&restored, "acquisitions")?, 1);
         assert_eq!(count(&restored, "acquisition_attempts")?, 1);
         Ok(())

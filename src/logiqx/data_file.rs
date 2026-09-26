@@ -48,6 +48,11 @@ impl DataFile {
         Ok(serde_xml_rs::SerdeXml::new()
             .parser(
                 ParserConfig::new()
+                    .trim_whitespace(true)
+                    .whitespace_to_characters(true)
+                    .cdata_to_characters(true)
+                    .ignore_comments(true)
+                    .coalesce_characters(true)
                     .max_entity_expansion_length(1024)
                     .max_entity_expansion_depth(4)
                     .max_name_length(4096)
@@ -97,10 +102,7 @@ impl DataFile {
 }
 
 fn validate_xml(bytes: &[u8]) -> crate::Result<()> {
-    if bytes
-        .windows(b"<!ENTITY".len())
-        .any(|marker| marker == b"<!ENTITY")
-    {
+    if contains_entity_declaration(bytes) {
         return Err(crate::Error::XmlEntityNotAllowed);
     }
     let config = ParserConfig::new()
@@ -120,6 +122,66 @@ fn validate_xml(bytes: &[u8]) -> crate::Result<()> {
         }
     }
     Ok(())
+}
+
+fn contains_entity_declaration(bytes: &[u8]) -> bool {
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index..].starts_with(b"<!--") {
+            index = after_markup(bytes, index + b"<!--".len(), b"-->");
+        } else if bytes[index..].starts_with(b"<![CDATA[") {
+            index = after_markup(bytes, index + b"<![CDATA[".len(), b"]]>");
+        } else if bytes[index..].starts_with(b"<?") {
+            index = after_markup(bytes, index + b"<?".len(), b"?>");
+        } else if bytes[index..].starts_with(b"<!DOCTYPE") {
+            if doctype_contains_entity_declaration(bytes, index + b"<!DOCTYPE".len()) {
+                return true;
+            }
+            index += b"<!DOCTYPE".len();
+        } else {
+            index += 1;
+        }
+    }
+    false
+}
+
+fn doctype_contains_entity_declaration(bytes: &[u8], mut index: usize) -> bool {
+    let mut subset_depth = 0_usize;
+    let mut quote = None;
+    while index < bytes.len() {
+        if let Some(delimiter) = quote {
+            if bytes[index] == delimiter {
+                quote = None;
+            }
+            index += 1;
+        } else if bytes[index..].starts_with(b"<!--") {
+            index = after_markup(bytes, index + b"<!--".len(), b"-->");
+        } else if bytes[index..].starts_with(b"<?") {
+            index = after_markup(bytes, index + b"<?".len(), b"?>");
+        } else if bytes[index..].starts_with(b"<!ENTITY") && subset_depth > 0 {
+            return true;
+        } else {
+            match bytes[index] {
+                b'\'' | b'"' => quote = Some(bytes[index]),
+                b'[' => subset_depth += 1,
+                b']' => subset_depth = subset_depth.saturating_sub(1),
+                b'>' if subset_depth == 0 => return false,
+                _ => {}
+            }
+            index += 1;
+        }
+    }
+    false
+}
+
+fn after_markup(bytes: &[u8], mut index: usize, terminator: &[u8]) -> usize {
+    while index < bytes.len() {
+        if bytes[index..].starts_with(terminator) {
+            return index + terminator.len();
+        }
+        index += 1;
+    }
+    bytes.len()
 }
 
 #[cfg(test)]
@@ -199,6 +261,25 @@ mod tests {
             "Standard"
         );
         Ok(())
+    }
+
+    #[test]
+    fn preserves_mixed_text_and_cdata_and_ignores_entity_text_in_comments_and_cdata()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dat = br#"<?note <!DOCTYPE datafile [<!ENTITY fake "value">]?>
+<datafile><!-- <!ENTITY comment "ignored"> --><header><name>Test <![CDATA[& stuff <!ENTITY literal>]]></name></header></datafile>"#;
+        let parsed = DataFile::from_reader(dat.as_slice())?;
+        assert_eq!(parsed.header().name(), "Test & stuff <!ENTITY literal>");
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_internal_entity_declarations() {
+        let dat = br#"<!DOCTYPE datafile [<!ENTITY local "value">]><datafile><header><name>&local;</name></header></datafile>"#;
+        assert!(matches!(
+            DataFile::from_reader(dat.as_slice()),
+            Err(crate::Error::XmlEntityNotAllowed)
+        ));
     }
 
     #[test]
