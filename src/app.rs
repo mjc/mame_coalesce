@@ -27,6 +27,7 @@ pub struct CatalogImportRequest {
 pub enum CatalogDocumentFormat {
     Logiqx,
     MameListXml,
+    ClrMamePro,
 }
 
 impl CatalogDocumentFormat {
@@ -35,6 +36,7 @@ impl CatalogDocumentFormat {
         match self {
             Self::Logiqx => "logiqx",
             Self::MameListXml => "mame-listxml",
+            Self::ClrMamePro => "clrmamepro-dat",
         }
     }
 }

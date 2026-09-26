@@ -41,6 +41,15 @@ pub enum Error {
     #[error("XML validation failed: {0}")]
     XmlValidation(String),
 
+    #[error("catalog parse failed: {message}")]
+    CatalogParse {
+        message: String,
+        record_kind: Option<String>,
+        record_name: Option<String>,
+        line: Option<i64>,
+        column: Option<i64>,
+    },
+
     #[error("different source bytes produced an existing document digest")]
     DocumentDigestCollision,
 

@@ -1,5 +1,6 @@
 pub mod app;
 mod build;
+mod clrmamepro;
 pub mod database;
 mod document_input;
 pub mod domain;

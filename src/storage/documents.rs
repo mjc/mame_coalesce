@@ -31,6 +31,8 @@ enum FormatHint {
     LogiqxXmlGzip,
     MameListXml,
     MameListXmlGzip,
+    ClrMameProText,
+    ClrMameProTextGzip,
 }
 
 impl FormatHint {
@@ -40,6 +42,8 @@ impl FormatHint {
             Self::LogiqxXmlGzip => "logiqx+xml+gzip",
             Self::MameListXml => "mame-listxml",
             Self::MameListXmlGzip => "mame-listxml+gzip",
+            Self::ClrMameProText => "clrmamepro-text",
+            Self::ClrMameProTextGzip => "clrmamepro-text+gzip",
         }
     }
 
@@ -177,6 +181,14 @@ impl DocumentStore {
         path: &Utf8Path,
     ) -> crate::Result<RetainedDocument> {
         self.retain_path_with_options(source_key, path, false, Some(FormatHint::MameListXml))
+    }
+
+    pub(crate) fn retain_path_clrmamepro(
+        &self,
+        source_key: PublishingSourceKey,
+        path: &Utf8Path,
+    ) -> crate::Result<RetainedDocument> {
+        self.retain_path_with_options(source_key, path, false, Some(FormatHint::ClrMameProText))
     }
 
     fn retain_path_with_options(
@@ -358,6 +370,12 @@ impl DocumentStore {
                 }
                 (FormatHint::MameListXml | FormatHint::MameListXmlGzip, true) => {
                     FormatHint::MameListXmlGzip
+                }
+                (FormatHint::ClrMameProText | FormatHint::ClrMameProTextGzip, false) => {
+                    FormatHint::ClrMameProText
+                }
+                (FormatHint::ClrMameProText | FormatHint::ClrMameProTextGzip, true) => {
+                    FormatHint::ClrMameProTextGzip
                 }
                 (_, false) => FormatHint::LogiqxXml,
                 (_, true) => FormatHint::LogiqxXmlGzip,
