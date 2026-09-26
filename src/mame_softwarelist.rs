@@ -72,7 +72,7 @@ pub struct SoftwareList {
 pub struct SoftwareItem {
     pub name: SoftwareItemName,
     pub clone_of: Option<SoftwareItemName>,
-    pub supported: SupportedStatus,
+    pub supported: Option<SupportedStatus>,
     pub description: String,
     pub year: String,
     pub publisher: String,
@@ -173,7 +173,7 @@ pub struct SoftwareDisk {
     pub name: ComponentName,
     pub sha1: Option<[u8; 20]>,
     pub status: Option<DumpStatus>,
-    pub writeable: bool,
+    pub writeable: Option<bool>,
     pub location: RecordLocation,
 }
 
@@ -337,9 +337,10 @@ fn parse_item(
         .cloned()
         .map(SoftwareItemName::new);
     let supported = match node.attributes.get("supported").map(String::as_str) {
-        None | Some("yes") => SupportedStatus::Yes,
-        Some("partial") => SupportedStatus::Partial,
-        Some("no") => SupportedStatus::No,
+        None => None,
+        Some("yes") => Some(SupportedStatus::Yes),
+        Some("partial") => Some(SupportedStatus::Partial),
+        Some("no") => Some(SupportedStatus::No),
         Some(other) => {
             return Err(invalid_value(node, &record, "supported", other));
         }
@@ -435,7 +436,6 @@ fn parse_part(
     );
     let mut features = Vec::new();
     let mut areas = Vec::new();
-    let mut area_names = HashSet::<(AreaKind, String)>::new();
     for child in node.children() {
         match child.name.as_str() {
             "feature" => {
@@ -451,14 +451,6 @@ fn parse_part(
             }
             "dataarea" | "diskarea" => {
                 let area = parse_area(child, &record, extensions)?;
-                if !area_names.insert((area.kind, area.name.as_str().to_owned())) {
-                    return Err(crate::Error::XmlValidation(format!(
-                        "duplicate {} area {:?} in part {:?}",
-                        area.kind.as_str(),
-                        area.name.as_str(),
-                        name.as_str()
-                    )));
-                }
                 areas.push(area);
             }
             _ => extensions.push(extension("software_part", Some(&record), child)?),
@@ -604,8 +596,9 @@ fn parse_disk(
     );
     retain_child_elements(node, "software_disk", Some(record), extensions)?;
     let writeable = match node.attributes.get("writeable").map(String::as_str) {
-        None | Some("no") => false,
-        Some("yes") => true,
+        None => None,
+        Some("no") => Some(false),
+        Some("yes") => Some(true),
         Some(other) => return Err(invalid_value(node, record, "writeable", other)),
     };
     Ok(SoftwareDisk {
@@ -892,7 +885,7 @@ mod tests {
             item.clone_of.as_ref().map(SoftwareItemName::as_str),
             Some("demo_original")
         );
-        assert_eq!(item.supported, SupportedStatus::Partial);
+        assert_eq!(item.supported, Some(SupportedStatus::Partial));
         assert_eq!(
             item.info
                 .iter()
@@ -925,7 +918,7 @@ mod tests {
         assert_eq!(no_dump.load, Some(LoadInstruction::Continue));
         let media = at(&cart.areas, 1)?;
         let disk = disk(at(&media.components, 0)?)?;
-        assert!(disk.writeable);
+        assert_eq!(disk.writeable, Some(true));
         let manual_area = at(&at(&item.parts, 1)?.areas, 0)?;
         assert_eq!(manual_area.width, None);
         assert_eq!(manual_area.endianness, None);
@@ -1041,6 +1034,29 @@ mod tests {
         );
         assert_eq!(at(&item.info, 0)?.value, None);
         assert_eq!(at(&item.shared_features, 0)?.value, None);
+        Ok(())
+    }
+
+    #[test]
+    fn parser_preserves_absent_defaults_and_repeated_area_names() -> crate::Result<()> {
+        let xml = br#"<softwarelist name="one"><software name="game"><description>Game</description><year>2000</year><publisher>Pub</publisher><part name="cart" interface="cart"><dataarea name="rom" size="1"><rom name="first.bin"/></dataarea><dataarea name="rom" size="2"><rom name="second.bin"/></dataarea><diskarea name="media"><disk name="implicit"/><disk name="explicit" writeable="no"/></diskarea></part></software></softwarelist>"#;
+        let catalog = SoftwareListCatalog::parse(xml)?;
+        let item = at(&at(&catalog.lists, 0)?.items, 0)?;
+        assert_eq!(item.supported, None);
+        let areas = &at(&item.parts, 0)?.areas;
+        assert_eq!(areas.len(), 3);
+        assert_eq!(areas[0].name, areas[1].name);
+        assert_eq!(areas[0].declared_size, Some(1));
+        assert_eq!(areas[1].declared_size, Some(2));
+        assert_eq!(
+            as_rom(at(&areas[1].components, 0)?)?
+                .name
+                .as_ref()
+                .map(ComponentName::as_str),
+            Some("second.bin")
+        );
+        assert_eq!(disk(at(&areas[2].components, 0)?)?.writeable, None);
+        assert_eq!(disk(at(&areas[2].components, 1)?)?.writeable, Some(false));
         Ok(())
     }
 

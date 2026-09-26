@@ -97,7 +97,7 @@ diesel::table! {
         list_name -> Text,
         item_name -> Text,
         item_order -> BigInt,
-        supported -> Text,
+        supported -> Nullable<Text>,
         description -> Text,
         year -> Text,
         publisher -> Text,
@@ -124,7 +124,7 @@ diesel::table! {
 }
 
 diesel::table! {
-    software_areas (snapshot_key, list_name, item_name, part_name, area_kind, area_name) {
+    software_areas (snapshot_key, list_name, item_name, part_name, area_order) {
         snapshot_key -> Text,
         list_name -> Text,
         item_name -> Text,
@@ -141,11 +141,12 @@ diesel::table! {
 }
 
 diesel::table! {
-    software_components (snapshot_key, list_name, item_name, part_name, area_kind, area_name, component_order) {
+    software_components (snapshot_key, list_name, item_name, part_name, area_order, component_order) {
         snapshot_key -> Text,
         list_name -> Text,
         item_name -> Text,
         part_name -> Text,
+        area_order -> BigInt,
         area_kind -> Text,
         area_name -> Text,
         component_order -> BigInt,

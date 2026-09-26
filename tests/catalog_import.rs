@@ -47,6 +47,12 @@ struct IntegerRow {
 }
 
 #[derive(QueryableByName)]
+struct NullableIntegerRow {
+    #[diesel(sql_type = Nullable<BigInt>)]
+    value: Option<i64>,
+}
+
+#[derive(QueryableByName)]
 struct SoftwareItemRow {
     #[diesel(sql_type = Text)]
     supported: String,
@@ -536,6 +542,48 @@ fn imports_metadata_only_software_without_parts() -> Result<(), Box<dyn std::err
     assert_eq!(count(&mut connection, "software_lists")?, 1);
     assert_eq!(count(&mut connection, "software_items")?, 1);
     assert_eq!(count(&mut connection, "software_parts")?, 0);
+    let supported = sql_query("SELECT supported AS value FROM software_items")
+        .get_result::<NullableTextRow>(&mut connection)?;
+    assert_eq!(supported.value, None);
+    Ok(())
+}
+
+#[test]
+fn imports_repeated_area_names_without_merging_components_or_defaults()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, mut connection) = setup()?;
+    let path = directory.path().join("repeated-software-areas.xml");
+    std::fs::write(
+        &path,
+        br#"<softwarelist name="one"><software name="game"><description>Game</description><year>2000</year><publisher>Pub</publisher><part name="cart" interface="cart"><dataarea name="rom" size="1"><rom name="first.bin"/></dataarea><dataarea name="rom" size="2"><rom name="second.bin"/></dataarea><diskarea name="media"><disk name="implicit"/><disk name="explicit" writeable="no"/></diskarea></part></software></softwarelist>"#,
+    )?;
+    let mut request = mame_softwarelist_request()?;
+    request.document_path =
+        Utf8PathBuf::from_path_buf(path).map_err(|_| "non-UTF8 fixture path")?;
+    request.catalog_key = CatalogKey::new("repeated-software-areas");
+    request.catalog_display_name = "Repeated software areas".into();
+    let report = app::import_catalog(&database, &request)?;
+    assert_eq!(report.status, app::CatalogImportStatus::Succeeded);
+    assert_eq!(count(&mut connection, "software_areas")?, 3);
+    assert_eq!(count(&mut connection, "software_components")?, 4);
+    let first =
+        sql_query("SELECT component_name AS value FROM software_components WHERE area_order = 0")
+            .get_result::<NullableTextRow>(&mut connection)?;
+    let second =
+        sql_query("SELECT component_name AS value FROM software_components WHERE area_order = 1")
+            .get_result::<NullableTextRow>(&mut connection)?;
+    assert_eq!(first.value.as_deref(), Some("first.bin"));
+    assert_eq!(second.value.as_deref(), Some("second.bin"));
+    let absent = sql_query(
+        "SELECT writeable AS value FROM software_components WHERE component_name = 'implicit'",
+    )
+    .get_result::<NullableIntegerRow>(&mut connection)?;
+    let explicit = sql_query(
+        "SELECT writeable AS value FROM software_components WHERE component_name = 'explicit'",
+    )
+    .get_result::<NullableIntegerRow>(&mut connection)?;
+    assert_eq!(absent.value, None);
+    assert_eq!(explicit.value, Some(0));
     Ok(())
 }
 

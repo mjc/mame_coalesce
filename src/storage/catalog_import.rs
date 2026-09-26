@@ -796,7 +796,10 @@ fn insert_software_item(
     .bind::<Text, _>(list_name)
     .bind::<Text, _>(item.name.as_str())
     .bind::<BigInt, _>(checked_order(item_order, "software items")?)
-    .bind::<Text, _>(item.supported.as_str())
+    .bind::<Nullable<Text>, _>(
+        item.supported
+            .map(crate::mame_softwarelist::SupportedStatus::as_str),
+    )
     .bind::<Text, _>(&item.description)
     .bind::<Text, _>(&item.year)
     .bind::<Text, _>(&item.publisher)
@@ -913,7 +916,7 @@ fn insert_software_area(
     .execute(conn)?;
 
     for (component_order, component) in area.components.iter().enumerate() {
-        insert_software_component(conn, part, area, component_order, component)?;
+        insert_software_component(conn, part, area, area_order, component_order, component)?;
     }
     Ok(())
 }
@@ -922,6 +925,7 @@ fn insert_software_component(
     conn: &mut SqliteConnection,
     part: SoftwarePartScope<'_>,
     area: &crate::mame_softwarelist::SoftwareArea,
+    area_order: usize,
     component_order: usize,
     component: &crate::mame_softwarelist::SoftwareComponent,
 ) -> crate::Result<()> {
@@ -949,7 +953,7 @@ fn insert_software_component(
             None,
             None,
             disk.status.as_ref().map(|status| status.as_str()),
-            Some(i64::from(disk.writeable)),
+            disk.writeable.map(i64::from),
             None,
         ),
     };
@@ -963,15 +967,16 @@ fn insert_software_component(
         .map_err(|_| crate::Error::InvalidRomSize(offset.unwrap_or_default()))?;
     sql_query(
         "INSERT INTO software_components \
-         (snapshot_key, list_name, item_name, part_name, area_kind, area_name, component_order, \
+         (snapshot_key, list_name, item_name, part_name, area_order, area_kind, area_name, component_order, \
           component_kind, component_name, size, crc, sha1, offset, value, dump_status, writeable, \
           load_instruction, source_line, source_column) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind::<Text, _>(part.item.snapshot_key.as_str())
     .bind::<Text, _>(part.item.list_name)
     .bind::<Text, _>(part.item.item_name)
     .bind::<Text, _>(part.part_name)
+    .bind::<BigInt, _>(checked_order(area_order, "software areas")?)
     .bind::<Text, _>(area.kind.as_str())
     .bind::<Text, _>(area.name.as_str())
     .bind::<BigInt, _>(checked_order(component_order, "software components")?)
