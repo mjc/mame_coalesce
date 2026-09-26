@@ -148,6 +148,85 @@ mod tests {
     }
 
     #[test]
+    fn scoped_names_migration_preserves_populated_legacy_rows_with_foreign_keys_enabled()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut conn = SqliteConnection::establish(":memory:")?;
+        conn.batch_execute("PRAGMA foreign_keys = ON")?;
+        let migrations = MIGRATIONS.migrations()?;
+        let scoped_names_index = migrations
+            .iter()
+            .position(|migration| {
+                migration
+                    .name()
+                    .to_string()
+                    .starts_with("2026-04-22-153500_scope_game_and_rom_names")
+            })
+            .ok_or("scoped names migration not found")?;
+
+        conn.applied_migrations()?;
+        for migration in &migrations[..scoped_names_index] {
+            conn.run_migration(migration.as_ref())?;
+        }
+        conn.batch_execute(
+            "INSERT INTO data_files (id, name, version) VALUES (17, 'Legacy DAT', 'v1');
+             INSERT INTO games (id, name, data_file_id) VALUES (23, 'legacy-set', 17);
+             INSERT INTO roms (id, name, size, md5, sha1, crc, game_id)
+                 VALUES (31, 'legacy.rom', 3, X'01', X'02', X'03', 23);
+             INSERT INTO archive_files (id, path, sha1) VALUES (37, '/legacy.zip', X'04');
+             UPDATE roms SET archive_file_id = 37 WHERE id = 31;
+             INSERT INTO rom_files
+                 (id, parent_path, path, name, sha1, xxhash3, in_archive, rom_id)
+                 VALUES (41, '/roms', '/roms/legacy.rom', 'legacy.rom', X'02', X'04', 0, 31);",
+        )?;
+
+        conn.run_pending_migrations(MIGRATIONS)?;
+        assert_eq!(count(&mut conn, "data_files")?, 1);
+        assert_eq!(count(&mut conn, "games")?, 1);
+        assert_eq!(count(&mut conn, "roms")?, 1);
+        assert_eq!(count(&mut conn, "archive_files")?, 1);
+        assert_eq!(count(&mut conn, "rom_files")?, 1);
+        assert_eq!(
+            sql_query("SELECT id FROM data_files WHERE id = 17")
+                .get_result::<IdRow>(&mut conn)?
+                .id,
+            17
+        );
+        assert_eq!(
+            sql_query("SELECT id FROM games WHERE id = 23 AND data_file_id = 17")
+                .get_result::<IdRow>(&mut conn)?
+                .id,
+            23
+        );
+        assert_eq!(
+            sql_query(
+                "SELECT id FROM roms WHERE id = 31 AND game_id = 23 AND archive_file_id = 37"
+            )
+            .get_result::<IdRow>(&mut conn)?
+            .id,
+            31
+        );
+        assert_eq!(
+            sql_query("SELECT id FROM archive_files WHERE id = 37")
+                .get_result::<IdRow>(&mut conn)?
+                .id,
+            37
+        );
+        assert_eq!(
+            sql_query("SELECT id FROM rom_files WHERE id = 41 AND rom_id = 31")
+                .get_result::<IdRow>(&mut conn)?
+                .id,
+            41
+        );
+        let foreign_keys_enabled =
+            sql_query("SELECT foreign_keys AS count FROM pragma_foreign_keys")
+                .get_result::<CountRow>(&mut conn)?
+                .count;
+        assert_eq!(foreign_keys_enabled, 1);
+        assert_eq!(count(&mut conn, "pragma_foreign_key_check")?, 0);
+        Ok(())
+    }
+
+    #[test]
     fn identity_keys_separate_names_versions_interpretations_and_runs()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut conn = SqliteConnection::establish(":memory:")?;
@@ -165,7 +244,8 @@ mod tests {
                  VALUES ('acquisition-a', 'source-a', 'document-a'),
                         ('acquisition-b', 'source-b', 'document-b');
              INSERT INTO parser_interpretations (interpretation_key, format)
-                 VALUES ('logiqx-v1', 'logiqx'), ('logiqx-v2', 'logiqx');
+                 VALUES ('logiqx-v1', 'logiqx'), ('logiqx-v2', 'logiqx'),
+                        ('logiqx-v3', 'logiqx');
              INSERT INTO catalog_snapshots
                  (snapshot_key, catalog_key, document_key, interpretation_key,
                   declared_version, scope_kind)
@@ -212,6 +292,15 @@ mod tests {
         ));
         assert!(sql_fails(
             &mut conn,
+            "UPDATE parser_interpretations SET parser_version = 'changed' \
+             WHERE interpretation_key = 'logiqx-v1'",
+        ));
+        conn.batch_execute(
+            "UPDATE parser_interpretations SET parser_version = 'initialized' \
+             WHERE interpretation_key = 'logiqx-v3'",
+        )?;
+        assert!(sql_fails(
+            &mut conn,
             "DELETE FROM catalog_snapshots WHERE snapshot_key = 'snapshot-a3'",
         ));
         assert!(sql_fails(
@@ -237,6 +326,54 @@ mod tests {
                  VALUES ('run-mismatched-acquisition', 'catalog-a', 'document-a', \
                          'logiqx-v1', 'acquisition-b', 'succeeded')",
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn identity_migration_reverts_with_parent_and_child_snapshots()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut conn = SqliteConnection::establish(":memory:")?;
+        conn.batch_execute("PRAGMA foreign_keys = ON")?;
+        let migrations = MIGRATIONS.migrations()?;
+        assert!(!migrations.is_empty());
+        conn.applied_migrations()?;
+        for migration in &migrations[..migrations.len() - 1] {
+            conn.run_migration(migration.as_ref())?;
+        }
+        let identity_migration = migrations.last().ok_or("identity migration not found")?;
+        conn.run_migration(identity_migration.as_ref())?;
+        conn.batch_execute(
+            "INSERT INTO publishing_sources (source_key, display_name)
+                 VALUES ('source-a', 'Publisher');
+             INSERT INTO catalogs (catalog_key, source_key, display_name)
+                 VALUES ('catalog-a', 'source-a', 'Catalog');
+             INSERT INTO documents (document_key) VALUES ('document-a');
+             INSERT INTO parser_interpretations (interpretation_key, format)
+                 VALUES ('logiqx-v1', 'logiqx');
+             INSERT INTO catalog_snapshots
+                 (snapshot_key, catalog_key, document_key, interpretation_key)
+                 VALUES ('snapshot-parent', 'catalog-a', 'document-a', 'logiqx-v1');
+             INSERT INTO catalog_snapshots
+                 (snapshot_key, catalog_key, document_key, interpretation_key, parent_snapshot_key)
+                 VALUES ('snapshot-child', 'catalog-a', 'document-a', 'logiqx-v1', 'snapshot-parent');",
+        )?;
+
+        conn.revert_migration(identity_migration.as_ref())?;
+        assert_eq!(
+            sql_query(
+                "SELECT COUNT(*) AS count FROM sqlite_master \
+                 WHERE type = 'table' AND name = 'catalog_snapshots'",
+            )
+            .get_result::<CountRow>(&mut conn)?
+            .count,
+            0
+        );
+        assert_eq!(
+            sql_query("SELECT foreign_keys AS count FROM pragma_foreign_keys")
+                .get_result::<CountRow>(&mut conn)?
+                .count,
+            1
+        );
         Ok(())
     }
 }

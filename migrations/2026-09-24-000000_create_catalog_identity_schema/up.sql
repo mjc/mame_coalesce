@@ -79,6 +79,29 @@ CREATE TABLE import_runs (
         ON DELETE RESTRICT
 );
 
+CREATE TRIGGER parser_interpretations_are_immutable_update
+BEFORE UPDATE ON parser_interpretations
+WHEN (
+    OLD.interpretation_key IS NOT NEW.interpretation_key
+    OR OLD.format IS NOT NEW.format
+    OR OLD.parser_name IS NOT NEW.parser_name
+    OR OLD.parser_version IS NOT NEW.parser_version
+    OR OLD.rules_version IS NOT NEW.rules_version
+    OR OLD.options_json IS NOT NEW.options_json
+) AND (
+    EXISTS (
+        SELECT 1 FROM catalog_snapshots
+        WHERE interpretation_key = OLD.interpretation_key
+    )
+    OR EXISTS (
+        SELECT 1 FROM import_runs
+        WHERE interpretation_key = OLD.interpretation_key
+    )
+)
+BEGIN
+    SELECT RAISE(ABORT, 'referenced parser interpretations are immutable');
+END;
+
 CREATE INDEX catalogs_source_key_index ON catalogs (source_key);
 CREATE INDEX documents_sha1_index ON documents (sha1);
 CREATE INDEX acquisitions_source_key_index ON acquisitions (source_key);
