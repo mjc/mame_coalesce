@@ -433,6 +433,13 @@ where
     let mut archive = zip::ZipArchive::new(File::open(path)?)?;
     for member in members {
         let mut entry = archive.by_index(member.selector.index)?;
+        let actual_name = normalize_member_name(entry.name())?;
+        if !entry.is_file() || actual_name != member.selector.name || entry.size() != member.size {
+            return Err(Error::InvalidPath(format!(
+                "ZIP member changed after enumeration at index {}: {}",
+                member.selector.index, member.selector.name
+            )));
+        }
         let mut reader: &mut dyn Read = &mut entry;
         callback(member, &mut reader)?;
         io::copy(&mut reader, &mut io::sink())?;
@@ -509,6 +516,14 @@ where
             if normalize_member_name(name)? != member.selector.name {
                 return Err(Error::InvalidPath("RAR selector name changed".to_owned()));
             }
+            if header.entry().unpacked_size != member.size
+                || header.entry().unpacked_size > max_member_size
+            {
+                return Err(Error::InvalidPath(format!(
+                    "RAR member changed after enumeration or exceeds the extraction limit: {}",
+                    member.selector.name
+                )));
+            }
             let temp_dir = crate::private_temp::PrivateTempDir::create("mame-coalesce-rar-")?;
             let output_path = temp_dir.path().join("member.data");
             archive = header.extract_to(&output_path)?;
@@ -540,7 +555,7 @@ mod tests {
 
     use super::{
         ArchiveBackend, ArchiveMember, ArchiveMemberSelector, RAR_MAX_MEMBER_SIZE, SourceKind,
-        capabilities, detect, enumerate, stream_archive, stream_file, stream_rar,
+        capabilities, detect, enumerate, stream_archive, stream_file, stream_rar, stream_zip,
         zip_central_entry_count,
     };
 
@@ -683,6 +698,34 @@ mod tests {
             return Err("oversized metadata was not rejected before extraction".into());
         };
         assert!(error.to_string().contains("128 MiB extraction limit"));
+        let mut stale = enumerate(&rar, ArchiveBackend::Rar)?[0].clone();
+        stale.size += 1;
+        let Err(error) = stream_rar(&rar, &[stale], &mut |_, _| Ok(())) else {
+            return Err("changed RAR member size was not rejected before extraction".into());
+        };
+        assert!(error.to_string().contains("changed after enumeration"));
+        Ok(())
+    }
+
+    #[test]
+    fn zip_member_changed_after_enumeration_is_not_read() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let directory = tempfile::tempdir()?;
+        let root = Utf8Path::from_path(directory.path())
+            .ok_or_else(|| io::Error::other("temporary path is not UTF-8"))?;
+        let path = root.join("source.zip");
+        write_zip(&path, &[("expected.rom", b"rom")])?;
+        let inventory = enumerate(&path, ArchiveBackend::Zip)?;
+        write_zip(&path, &[("replacement.rom", b"rom")])?;
+
+        let Err(error) = stream_zip(&path, &inventory, &mut |_, _| {
+            Err(crate::Error::InvalidPath(
+                "stale member reached callback".to_owned(),
+            ))
+        }) else {
+            return Err("changed ZIP member was not rejected".into());
+        };
+        assert!(error.to_string().contains("changed after enumeration"));
         Ok(())
     }
 
