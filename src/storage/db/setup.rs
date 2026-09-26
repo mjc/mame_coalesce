@@ -772,7 +772,11 @@ mod tests {
         assert_eq!(software_disk.value, "chd_header_sha1");
         assert!(sql_fails(
             &mut conn,
-            "UPDATE asset_requirements SET evidence_scope = 'unknown' WHERE role = 'disk'"
+            "INSERT INTO asset_requirements \
+                 (snapshot_key, set_name, component_order, asset_name, role, \
+                  evidence_scope, evidence_provenance, source_line, source_column) \
+             VALUES ('snapshot', 'set', 2, 'invalid-scope.chd', 'disk', 'bogus', \
+                     'source_declared', 6, 7)",
         ));
         conn.revert_migration(chd_scope_migration.as_ref())?;
         let rolled_back_disk = sql_query(

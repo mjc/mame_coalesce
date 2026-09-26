@@ -5,10 +5,14 @@ use clap::Parser;
 
 mod logger;
 mod options;
+mod report;
 use options::{CacheCommand, Cli, Command};
 
 use mame_coalesce::{
-    app::{self, BuildWorkflowRequest, DatImportRequest, RunWorkflowRequest, SourceScanRequest},
+    app::{
+        self, BuildWorkflowRequest, DatImportRequest, DiskAuditRequest, RunWorkflowRequest,
+        SourceScanRequest,
+    },
     database::Database,
 };
 
@@ -83,6 +87,19 @@ fn run() -> mame_coalesce::Result<ExitCode> {
                 },
             )?;
             Ok(exit_code(report.exit_code))
+        }
+        Command::Cache {
+            command: CacheCommand::Audit(args),
+        } => {
+            let report = app::audit_disks(
+                &database,
+                &DiskAuditRequest {
+                    catalog_key: args.catalog.clone(),
+                    source_path: args.source.clone(),
+                },
+            )?;
+            report::write_disk_audit(&report, args.format)?;
+            Ok(ExitCode::SUCCESS)
         }
     }
 }
