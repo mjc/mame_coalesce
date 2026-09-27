@@ -57,12 +57,12 @@ pub fn write_plan_with_compression(
     // delete-child rights that are not visible in mode bits, so reject it before
     // opening or creating any output directory. Non-Unix targets have the same
     // conservative boundary because replacement/containment are not implemented.
-    #[cfg(any(not(unix), target_os = "macos"))]
+    #[cfg(not(target_os = "linux"))]
     let _ = (compression, output_paths);
-    #[cfg(any(not(unix), target_os = "macos"))]
+    #[cfg(not(target_os = "linux"))]
     return Err(io::Error::other("secure output writing is supported only on Linux").into());
 
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(target_os = "linux")]
     {
         let options = file_options(compression);
         let mut written_paths = Vec::with_capacity(plan.groups.len());
@@ -982,7 +982,7 @@ impl Write for ArchiveSpoolWriter {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use std::{
         fs,
@@ -1442,40 +1442,6 @@ mod tests {
 
         assert!(result.is_err());
         assert!(!nested.join("set.zip").exists());
-        Ok(())
-    }
-
-    #[cfg(any(not(unix), target_os = "macos"))]
-    #[test]
-    fn unsupported_output_does_not_create_or_truncate_targets()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let temp_dir = tempfile::tempdir()?;
-        let plan = BuildPlan {
-            groups: vec![OutputGroup {
-                path: LogicalPath::new("nested/set"),
-                entries: Vec::new(),
-            }],
-            report: BuildReport::default(),
-        };
-        let absent_destination = utf8_path(temp_dir.path())?.join("not-created");
-        assert!(write_plan(&plan, &absent_destination).is_err());
-        assert!(!absent_destination.exists());
-
-        let destination = utf8_path(temp_dir.path())?.join("output");
-        let nested = destination.join("nested");
-        #[cfg(not(target_os = "macos"))]
-        fs::create_dir_all(&nested)?;
-        #[cfg(target_os = "macos")]
-        fs::create_dir(&nested)?;
-        let protected = nested.join("set.zip");
-        fs::write(&protected, b"must remain untouched")?;
-
-        assert!(write_plan(&plan, &destination).is_err());
-        assert_eq!(fs::read(protected)?, b"must remain untouched");
-        #[cfg(target_os = "macos")]
-        assert!(destination.is_dir());
-        #[cfg(not(target_os = "macos"))]
-        assert!(!destination.exists());
         Ok(())
     }
 
@@ -2025,6 +1991,43 @@ mod tests {
 
         assert!(message.contains("archive entry not found"));
         assert!(message.contains("missing.rom"));
+        Ok(())
+    }
+}
+
+#[cfg(all(test, not(target_os = "linux")))]
+mod unsupported_output_tests {
+    use super::*;
+
+    #[test]
+    fn unsupported_output_does_not_create_or_truncate_targets()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let plan = BuildPlan {
+            groups: vec![OutputGroup {
+                path: LogicalPath::new("nested/set"),
+                entries: Vec::new(),
+            }],
+            report: BuildReport::default(),
+        };
+        let absent_destination = Utf8Path::from_path(temp_dir.path())
+            .ok_or_else(|| io::Error::other("temporary path is not UTF-8"))?
+            .join("not-created");
+        assert!(
+            write_plan_with_compression(&plan, &absent_destination, ZipCompression::Deflate)
+                .is_err()
+        );
+        assert!(!absent_destination.exists());
+
+        let destination = absent_destination.with_file_name("output");
+        let nested = destination.join("nested");
+        fs::create_dir_all(&nested)?;
+        let protected = nested.join("set.zip");
+        fs::write(&protected, b"must remain untouched")?;
+
+        assert!(write_plan_with_compression(&plan, &destination, ZipCompression::Deflate).is_err());
+        assert_eq!(fs::read(protected)?, b"must remain untouched");
+        assert!(destination.is_dir());
         Ok(())
     }
 }
