@@ -7,6 +7,13 @@ use std::{
 
 const MAX_ARCHIVE_STAGING_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 
+type StagedArchiveKey = (
+    String,
+    ArchiveBackend,
+    crate::sources::ArchiveMemberSelector,
+);
+type StagedArchiveMembers = BTreeMap<StagedArchiveKey, PathBuf>;
+
 use camino::{Utf8Path, Utf8PathBuf};
 use zip::{ZipWriter, write::SimpleFileOptions};
 
@@ -158,7 +165,7 @@ fn write_zip_spec(
     } else {
         Some(ArchiveSpool::create()?)
     };
-    let mut staged = BTreeMap::new();
+    let mut staged = StagedArchiveMembers::new();
     for ((path, backend), selectors) in groups {
         let source_path = Utf8Path::new(&path);
         let selectors = selectors.into_iter().collect::<Vec<_>>();
@@ -177,26 +184,7 @@ fn write_zip_spec(
                 let spool = spool.as_ref().ok_or_else(|| {
                     crate::Error::InvalidPath("archive staging was not initialized".to_owned())
                 })?;
-                let staged_path = spool.next_path()?;
-                let remaining = spool.remaining_bytes();
-                if member.size > remaining {
-                    return Err(crate::Error::InvalidPath(format!(
-                        "selected archive members exceed the {} GiB staging limit",
-                        MAX_ARCHIVE_STAGING_BYTES / (1024 * 1024 * 1024)
-                    )));
-                }
-                let file = OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(&staged_path)?;
-                let mut file = ArchiveSpoolWriter::new(file, remaining);
-                std::io::copy(reader, &mut file)?;
-                spool.record_bytes(file.written_bytes())?;
-                staged.insert(
-                    (path.clone(), backend, member.selector.clone()),
-                    staged_path,
-                );
-                Ok(())
+                stage_archive_reader(&path, backend, member, reader, spool, &mut staged)
             },
         )?;
     }
@@ -227,19 +215,42 @@ fn write_zip_spec(
     Ok(())
 }
 
+fn stage_archive_reader(
+    path: &str,
+    backend: ArchiveBackend,
+    member: &crate::sources::ArchiveMember,
+    reader: &mut dyn io::Read,
+    spool: &ArchiveSpool,
+    staged: &mut StagedArchiveMembers,
+) -> crate::Result<()> {
+    let remaining = spool.remaining_bytes();
+    if member.size > remaining {
+        return Err(crate::Error::InvalidPath(format!(
+            "selected archive members exceed the {} GiB staging limit",
+            MAX_ARCHIVE_STAGING_BYTES / (1024 * 1024 * 1024)
+        )));
+    }
+    let staged_path = spool.next_path()?;
+    let file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&staged_path)?;
+    let mut file = ArchiveSpoolWriter::new(file, remaining);
+    std::io::copy(reader, &mut file)?;
+    spool.record_bytes(file.written_bytes())?;
+    staged.insert(
+        (path.to_owned(), backend, member.selector.clone()),
+        staged_path,
+    );
+    Ok(())
+}
+
 fn stage_single_7z_member(
     path: &str,
     source_path: &Utf8Path,
     selector: &crate::sources::ArchiveMemberSelector,
     spool: &ArchiveSpool,
-    staged: &mut BTreeMap<
-        (
-            String,
-            ArchiveBackend,
-            crate::sources::ArchiveMemberSelector,
-        ),
-        PathBuf,
-    >,
+    staged: &mut StagedArchiveMembers,
 ) -> crate::Result<()> {
     let member = crate::sources::resolve_7z_member(source_path, selector)?;
     let remaining = spool.remaining_bytes();
@@ -1020,20 +1031,40 @@ mod tests {
     }
 
     #[test]
-    fn archive_source_entry_writes_7z_content() -> Result<(), Box<dyn std::error::Error>> {
+    fn archive_source_entries_write_7z_content() -> Result<(), Box<dyn std::error::Error>> {
         let temp_dir = tempfile::tempdir()?;
         let archive_path = utf8_path(temp_dir.path())?.join("source.7z");
         let archive_data = r7z::ArchiveBuilder::new()
             .add_file("nested/game.rom", b"rom")
+            .add_file("nested/second.rom", b"second")
             .build()?;
         std::fs::write(&archive_path, archive_data)?;
         let destination = utf8_path(temp_dir.path())?.join("output");
-        let plan = single_zip_entry_plan(
-            &archive_path,
-            "nested/game.rom",
-            "game.rom",
-            SourceKind::Archive,
-        );
+        let plan = BuildPlan {
+            zips: vec![ZipSpec {
+                file_name: "safe.zip".to_owned(),
+                entries: vec![
+                    ZipEntrySpec {
+                        output_name: "game.rom".to_owned(),
+                        source: archive_source_file(
+                            &archive_path,
+                            Some("nested/game.rom"),
+                            SourceKind::Archive,
+                        ),
+                    },
+                    ZipEntrySpec {
+                        output_name: "second.rom".to_owned(),
+                        source: archive_source_file(
+                            &archive_path,
+                            Some("nested/second.rom"),
+                            SourceKind::Archive,
+                        ),
+                    },
+                ],
+            }],
+            report: BuildReport::default(),
+            dry_run: false,
+        };
 
         let written_paths = write_plan(&plan, &destination)?;
         let zip_path = written_paths
@@ -1043,8 +1074,12 @@ mod tests {
         let mut entry = zip.by_name("game.rom")?;
         let mut contents = Vec::new();
         entry.read_to_end(&mut contents)?;
-
         assert_eq!(contents, b"rom");
+        drop(entry);
+        let mut second = zip.by_name("second.rom")?;
+        contents.clear();
+        second.read_to_end(&mut contents)?;
+        assert_eq!(contents, b"second");
         Ok(())
     }
 

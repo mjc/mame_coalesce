@@ -52,7 +52,7 @@ pub const BACKEND_CAPABILITIES: [BackendCapabilities; 3] = [
     BackendCapabilities {
         backend: ArchiveBackend::SevenZip,
         selected_reads: "A single selected member is extracted by index; multiple selections share one sequential archive pass.",
-        limitation: "Multiple selections visit unrelated folders. The pinned r7z decoder also buffers packed ranges in memory for some multi-range/solid extraction paths.",
+        limitation: "Indexed selected reads stage one member at a time. The pinned r7z decoder may buffer packed ranges in memory for solid-folder extraction.",
         max_member_size: Some(SEVEN_Z_MAX_SELECTED_MEMBER_SIZE),
     },
     BackendCapabilities {
@@ -143,7 +143,9 @@ where
     let selected_members = resolve_selection(&inventory, selected)?;
     let result = match backend {
         ArchiveBackend::Zip => stream_zip(path, &selected_members, &mut callback),
-        ArchiveBackend::SevenZip => stream_7z(path, &selected_members, &mut callback),
+        ArchiveBackend::SevenZip => {
+            stream_7z(path, &selected_members, selected.is_none(), &mut callback)
+        }
         ArchiveBackend::Rar => stream_rar(path, &selected_members, &mut callback),
     };
     result.map_err(|error| {
@@ -468,7 +470,12 @@ where
     Ok(())
 }
 
-fn stream_7z<F>(path: &Utf8Path, members: &[ArchiveMember], callback: &mut F) -> Result<()>
+fn stream_7z<F>(
+    path: &Utf8Path,
+    members: &[ArchiveMember],
+    all_members: bool,
+    callback: &mut F,
+) -> Result<()>
 where
     F: FnMut(&ArchiveMember, &mut dyn Read) -> Result<()>,
 {
@@ -480,12 +487,31 @@ where
             )));
         }
     }
+    if members.is_empty() {
+        return Ok(());
+    }
+    if !all_members && members.len() == 1 {
+        let member = &members[0];
+        let temp_dir = crate::private_temp::PrivateTempDir::create("mame-coalesce-7z-")?;
+        let output_path = temp_dir.path().join("member.data");
+        let mut output = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&output_path)?;
+        extract_7z_member_to_known(path, member, SEVEN_Z_MAX_SELECTED_MEMBER_SIZE, &mut output)?;
+        drop(output);
+        let mut reader: &mut dyn Read = &mut File::open(output_path)?;
+        callback(member, &mut reader)?;
+        io::copy(&mut reader, &mut io::sink())?;
+        return Ok(());
+    }
     let archive = r7z::Archive::open(path.as_std_path())?;
     let selected = members
         .iter()
         .map(|member| (member.selector.index, member))
         .collect::<std::collections::BTreeMap<_, _>>();
     let mut callback_error = None;
+    let mut visited = BTreeSet::new();
     let result = archive.stream_files(|entry, reader| {
         let Some(member) = selected.get(&entry.index) else {
             return Ok(());
@@ -508,12 +534,18 @@ where
                 "7z member size changed while reading",
             )));
         }
+        visited.insert(member.selector.index);
         Ok(())
     });
     if let Some(error) = callback_error {
         return Err(error);
     }
     result?;
+    if visited.len() != members.len() {
+        return Err(Error::InvalidPath(
+            "a selected 7z member disappeared after enumeration".to_owned(),
+        ));
+    }
     Ok(())
 }
 
@@ -656,6 +688,7 @@ where
         .iter()
         .map(|member| (member.selector.index, member))
         .collect::<std::collections::BTreeMap<_, _>>();
+    let mut visited = BTreeSet::new();
     let mut archive = unrar::Archive::new(path.as_std_path()).open_for_processing()?;
     let mut index = 0;
     while let Some(header) = archive.read_header()? {
@@ -692,10 +725,16 @@ where
             let mut reader: &mut dyn Read = &mut File::open(output_path)?;
             callback(member, &mut reader)?;
             io::copy(&mut reader, &mut io::sink())?;
+            visited.insert(index);
         } else {
             archive = header.skip()?;
         }
         index += 1;
+    }
+    if visited.len() != members.len() {
+        return Err(Error::InvalidPath(
+            "a selected RAR member disappeared after enumeration".to_owned(),
+        ));
     }
     Ok(())
 }
@@ -709,8 +748,8 @@ mod tests {
 
     use super::{
         ArchiveBackend, ArchiveMember, ArchiveMemberSelector, RAR_MAX_MEMBER_SIZE, SourceKind,
-        capabilities, detect, enumerate, stream_archive, stream_file, stream_rar, stream_zip,
-        zip_central_entry_count,
+        capabilities, detect, enumerate, stream_7z, stream_archive, stream_file, stream_rar,
+        stream_zip, zip_central_entry_count,
     };
 
     #[cfg(unix)]
@@ -825,6 +864,61 @@ mod tests {
     }
 
     #[test]
+    fn seven_zip_selected_subset_extracts_only_the_requested_indices()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let root = Utf8Path::from_path(directory.path())
+            .ok_or_else(|| io::Error::other("temporary path is not UTF-8"))?;
+        let path = root.join("selected.7z");
+        std::fs::write(
+            &path,
+            r7z::ArchiveBuilder::new()
+                .add_file("first.rom", b"first")
+                .add_file("unselected.rom", b"unselected")
+                .add_file("last.rom", b"last")
+                .build()?,
+        )?;
+        let inventory = enumerate(&path, ArchiveBackend::SevenZip)?;
+        let selected = [inventory[0].selector.clone(), inventory[2].selector.clone()];
+        let mut observed = Vec::new();
+        stream_archive(
+            &path,
+            ArchiveBackend::SevenZip,
+            Some(&selected),
+            |member, reader| {
+                let mut bytes = Vec::new();
+                io::copy(reader, &mut bytes)?;
+                observed.push((member.selector.index, bytes));
+                Ok(())
+            },
+        )?;
+        assert_eq!(observed, [(0, b"first".to_vec()), (2, b"last".to_vec())]);
+        Ok(())
+    }
+
+    #[test]
+    fn selected_seven_zip_member_disappearing_is_an_error() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let directory = tempfile::tempdir()?;
+        let root = Utf8Path::from_path(directory.path())
+            .ok_or_else(|| io::Error::other("temporary path is not UTF-8"))?;
+        let path = root.join("selected.7z");
+        std::fs::write(
+            &path,
+            r7z::ArchiveBuilder::new()
+                .add_file("present.rom", b"present")
+                .build()?,
+        )?;
+        let mut member = enumerate(&path, ArchiveBackend::SevenZip)?[0].clone();
+        member.selector.index = 9;
+        let Err(error) = stream_7z(&path, &[member], true, &mut |_, _| Ok(())) else {
+            return Err("a selected index that was not visited must fail".into());
+        };
+        assert!(error.to_string().contains("disappeared after enumeration"));
+        Ok(())
+    }
+
+    #[test]
     fn rar_limit_is_checked_before_extraction() -> Result<(), Box<dyn std::error::Error>> {
         assert!(
             capabilities(ArchiveBackend::Rar)
@@ -858,6 +952,12 @@ mod tests {
             return Err("changed RAR member size was not rejected before extraction".into());
         };
         assert!(error.to_string().contains("changed after enumeration"));
+        let mut missing = enumerate(&rar, ArchiveBackend::Rar)?[0].clone();
+        missing.selector.index = 9;
+        let Err(error) = stream_rar(&rar, &[missing], &mut |_, _| Ok(())) else {
+            return Err("a selected RAR index that was not visited must fail".into());
+        };
+        assert!(error.to_string().contains("disappeared after enumeration"));
         Ok(())
     }
 
