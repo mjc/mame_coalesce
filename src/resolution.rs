@@ -1,6 +1,7 @@
 //! Pure, deterministic matching of catalog requirements to source observations.
 
 use camino::Utf8Path;
+use std::collections::HashMap;
 
 use crate::domain::{DatRom, EvidenceProvenance, EvidenceScope, SourceFile, SourceRoot};
 
@@ -99,24 +100,31 @@ pub fn resolve(
         .collect::<Vec<_>>();
     sources.sort_by(|left, right| source_order(left, right));
 
+    // Compatibility matching is SHA-1-only, so index each observed digest once instead of
+    // rescanning the complete source inventory for every catalog requirement.
+    let sha1_sources = (policy == MatchingPolicy::Sha1Compatibility).then(|| {
+        let mut index: HashMap<&[u8], Vec<&SourceFile>> = HashMap::new();
+        for source in &sources {
+            if let Some(sha1) = source.observed.sha1.as_ref() {
+                index.entry(sha1.as_slice()).or_default().push(*source);
+            }
+        }
+        index
+    });
+
     requirements
         .into_iter()
         .map(|requirement| RequirementResolution {
             requirement: requirement.clone(),
-            status: resolve_one(requirement, &sources, policy),
+            status: sha1_sources.as_ref().map_or_else(
+                || resolve_one(requirement, &sources),
+                |sha1_sources| resolve_sha1_compatibility(requirement, sha1_sources),
+            ),
         })
         .collect()
 }
 
-fn resolve_one(
-    requirement: &DatRom,
-    sources: &[&SourceFile],
-    policy: MatchingPolicy,
-) -> ResolutionStatus {
-    if policy == MatchingPolicy::Sha1Compatibility {
-        return resolve_sha1_compatibility(requirement, sources);
-    }
-
+fn resolve_one(requirement: &DatRom, sources: &[&SourceFile]) -> ResolutionStatus {
     let expected = &requirement.expected;
     if expected.scope != EvidenceScope::WholeAsset {
         return ResolutionStatus::Missing {
@@ -200,18 +208,22 @@ fn resolve_one(
     }
 }
 
-fn resolve_sha1_compatibility(requirement: &DatRom, sources: &[&SourceFile]) -> ResolutionStatus {
+fn resolve_sha1_compatibility(
+    requirement: &DatRom,
+    sha1_sources: &HashMap<&[u8], Vec<&SourceFile>>,
+) -> ResolutionStatus {
     let Some(expected_sha1) = requirement.sha1() else {
         return ResolutionStatus::Missing {
             reason: MissingReason::NoExpectedContentEvidence,
             assessments: Vec::new(),
         };
     };
-    let copies = sources
-        .iter()
-        .filter(|source| source.observed.sha1.as_ref() == Some(expected_sha1))
-        .map(|source| (*source).clone())
-        .collect::<Vec<_>>();
+    let Some(copies) = sha1_sources.get(expected_sha1.as_slice()) else {
+        return ResolutionStatus::Missing {
+            reason: MissingReason::NoMatchingSource,
+            assessments: Vec::new(),
+        };
+    };
     let Some(selected) = copies.first() else {
         return ResolutionStatus::Missing {
             reason: MissingReason::NoMatchingSource,
@@ -219,9 +231,9 @@ fn resolve_sha1_compatibility(requirement: &DatRom, sources: &[&SourceFile]) -> 
         };
     };
     ResolutionStatus::Matched {
-        selected: Box::new(selected.clone()),
+        selected: Box::new((**selected).clone()),
         strength: MatchStrength::Sha1,
-        equivalent_copies: copies,
+        equivalent_copies: copies.iter().map(|source| (**source).clone()).collect(),
         assessments: Vec::new(),
     }
 }
