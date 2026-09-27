@@ -579,6 +579,15 @@ fn preflight_7z_packed_folders(
         .iter()
         .filter_map(|&index| listing.entries.get(index).and_then(|entry| entry.block))
         .collect::<BTreeSet<_>>();
+    let mut packed_sizes_by_block = BTreeMap::new();
+    for entry in &listing.entries {
+        let (Some(block), Some(size)) = (entry.block, entry.packed_size) else {
+            continue;
+        };
+        if blocks.contains(&block) {
+            packed_sizes_by_block.entry(block).or_insert(size);
+        }
+    }
 
     let unpack_info = archive
         .streams_info()
@@ -601,16 +610,11 @@ fn preflight_7z_packed_folders(
         if packed_streams <= 1 {
             continue;
         }
-        let packed_size = listing
-            .entries
-            .iter()
-            .find(|entry| entry.block == Some(block) && entry.packed_size.is_some())
-            .and_then(|entry| entry.packed_size)
-            .ok_or_else(|| {
-                Error::InvalidPath(format!(
-                    "7z packed size is unavailable for folder {block}; refusing unbounded decode"
-                ))
-            })?;
+        let packed_size = packed_sizes_by_block.get(&block).copied().ok_or_else(|| {
+            Error::InvalidPath(format!(
+                "7z packed size is unavailable for folder {block}; refusing unbounded decode"
+            ))
+        })?;
         enforce_7z_packed_folder_limit(block, packed_streams, packed_size)?;
     }
     Ok(())
