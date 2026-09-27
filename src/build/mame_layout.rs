@@ -28,9 +28,61 @@ pub struct ResolvedMachineSet {
     pub name: SetName,
     /// Preserved source assertion; it does not add the parent to runtime closure.
     pub parent_clone: Option<SetName>,
-    pub entries: Vec<LogicalEntry>,
+    pub entries: Vec<ResolvedMachineAsset>,
     /// Requirements that did not resolve to local content.
-    pub missing_assets: Vec<RequirementKey>,
+    pub missing_assets: Vec<MissingMachineAsset>,
+}
+
+/// Exact immutable identity of one asset requirement in a catalog snapshot.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct AssetRequirementIdentity {
+    pub snapshot: SnapshotKey,
+    pub set: SetName,
+    pub asset: String,
+    pub component_order: i64,
+}
+
+/// Resolved bytes plus their source component identity and optional typed merge assertion.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolvedMachineAsset {
+    pub identity: AssetRequirementIdentity,
+    pub entry: LogicalEntry,
+    pub merge_target: Option<AssetRequirementIdentity>,
+}
+
+/// An unresolved requirement retains the same component identity as resolved assets.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MissingMachineAsset {
+    pub identity: AssetRequirementIdentity,
+    pub requirement: RequirementKey,
+}
+
+impl ResolvedMachineAsset {
+    #[must_use]
+    pub const fn new(identity: AssetRequirementIdentity, entry: LogicalEntry) -> Self {
+        Self {
+            identity,
+            entry,
+            merge_target: None,
+        }
+    }
+}
+
+impl AssetRequirementIdentity {
+    #[must_use]
+    pub fn new(
+        snapshot: SnapshotKey,
+        set: SetName,
+        asset: impl Into<String>,
+        component_order: i64,
+    ) -> Self {
+        Self {
+            snapshot,
+            set,
+            asset: asset.into(),
+            component_order,
+        }
+    }
 }
 
 impl ResolvedMachineSet {
@@ -118,6 +170,22 @@ pub enum MameLayoutDiagnostic {
         root: SetName,
         child: RequirementKey,
         target: LogicalPath,
+    },
+    AmbiguousMergeTarget {
+        root: SetName,
+        child: RequirementKey,
+        target: LogicalPath,
+    },
+    InvalidAssetIdentity {
+        root: SetName,
+        set: SetName,
+        identity: AssetRequirementIdentity,
+        requirement: RequirementKey,
+    },
+    DuplicateAssetIdentity {
+        root: SetName,
+        set: SetName,
+        identity: AssetRequirementIdentity,
     },
     MergeContentMismatch {
         root: SetName,
@@ -447,17 +515,44 @@ fn materialize_clone_lineage(
     lineage: Vec<&ResolvedMachineSet>,
     plan: &mut MameLayoutPlan,
 ) -> Vec<LogicalEntry> {
-    let mut entries = BTreeMap::<LogicalPath, Vec<LogicalEntry>>::new();
-    let mut missing_by_set = Vec::<(SetName, Vec<RequirementKey>)>::new();
-    let mut replaced_assets = BTreeSet::<String>::new();
+    let mut entries = BTreeMap::<LogicalPath, Vec<ResolvedMachineAsset>>::new();
+    let mut missing_by_set = Vec::<(SetName, Vec<MissingMachineAsset>)>::new();
+    let mut replaced_assets = BTreeSet::<AssetRequirementIdentity>::new();
     let mut is_base_set = true;
     for set in lineage.into_iter().rev() {
-        let mut layer = BTreeMap::<LogicalPath, Vec<LogicalEntry>>::new();
+        let mut layer = BTreeMap::<LogicalPath, Vec<ResolvedMachineAsset>>::new();
         let mut merges = MergeAccumulator::default();
-        if !set.missing_assets.is_empty() {
-            missing_by_set.push((set.name.clone(), set.missing_assets.clone()));
+        let mut seen_component_orders = BTreeSet::new();
+        let missing_assets = set
+            .missing_assets
+            .iter()
+            .filter(|missing| {
+                validate_asset_identity(
+                    root,
+                    set,
+                    &missing.identity,
+                    &missing.requirement,
+                    &mut seen_component_orders,
+                    &mut plan.diagnostics,
+                )
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if !missing_assets.is_empty() {
+            missing_by_set.push((set.name.clone(), missing_assets));
         }
-        for entry in &set.entries {
+        for resolved_asset in &set.entries {
+            let entry = &resolved_asset.entry;
+            if !validate_asset_identity(
+                root,
+                set,
+                &resolved_asset.identity,
+                &entry.requirement,
+                &mut seen_component_orders,
+                &mut plan.diagnostics,
+            ) {
+                continue;
+            }
             if entry.requirement.game_name() != set.name.as_str() {
                 plan.diagnostics
                     .insert(MameLayoutDiagnostic::RequirementSetMismatch {
@@ -468,19 +563,15 @@ fn materialize_clone_lineage(
                     });
                 continue;
             }
-            let preserve_inherited_path =
-                !is_base_set && merges.inspect(root, entry, &entries, &mut plan.diagnostics);
+            let preserve_inherited_path = !is_base_set
+                && merges.inspect(root, resolved_asset, &entries, &mut plan.diagnostics);
             if preserve_inherited_path {
                 continue;
-            }
-            // A clone declaration takes precedence over the inherited asset at that path.
-            if !is_base_set {
-                replaced_assets.insert(entry.path.as_str().to_owned());
             }
             layer
                 .entry(entry.path.clone())
                 .or_default()
-                .push(entry.clone());
+                .push(resolved_asset.clone());
         }
         merges.apply(
             root,
@@ -489,42 +580,17 @@ fn materialize_clone_lineage(
             &mut replaced_assets,
             &mut plan.diagnostics,
         );
-        for entries in layer.values_mut() {
-            entries.sort_by(|left, right| {
-                left.requirement
-                    .cmp(&right.requirement)
-                    .then_with(|| left.expected.cmp(&right.expected))
-                    .then_with(|| {
-                        left.source
-                            .location
-                            .priority()
-                            .cmp(&right.source.location.priority())
-                    })
-                    .then_with(|| left.source.location.cmp(&right.source.location))
-                    .then_with(|| left.source.source_root.cmp(&right.source.source_root))
-                    .then_with(|| left.source.observed.cmp(&right.source.observed))
-                    .then_with(|| left.source.fingerprint.cmp(&right.source.fingerprint))
-                    .then_with(|| left.source.scan_run.cmp(&right.source.scan_run))
-                    .then_with(|| {
-                        left.source
-                            .scan_provenance
-                            .cmp(&right.source.scan_provenance)
-                    })
-                    .then_with(|| {
-                        left.source
-                            .bare_file_cache_stamp
-                            .cmp(&right.source.bare_file_cache_stamp)
-                    })
-                    .then_with(|| left.selection.cmp(&right.selection))
-            });
+        for assets in layer.values_mut() {
+            sort_layer_assets(assets);
         }
         entries.extend(layer);
         is_base_set = false;
     }
-    for (set, requirements) in missing_by_set {
-        let mut requirements: Vec<_> = requirements
+    for (set, missing_assets) in missing_by_set {
+        let mut requirements: Vec<_> = missing_assets
             .into_iter()
-            .filter(|requirement| !replaced_assets.contains(requirement.rom_name()))
+            .filter(|missing| !replaced_assets.contains(&missing.identity))
+            .map(|missing| missing.requirement)
             .collect();
         if !requirements.is_empty() {
             requirements.sort();
@@ -536,24 +602,111 @@ fn materialize_clone_lineage(
                 });
         }
     }
-    entries.into_values().flatten().collect()
+    entries
+        .into_values()
+        .flatten()
+        .map(|asset| asset.entry)
+        .collect()
+}
+
+fn validate_asset_identity(
+    root: &SetName,
+    set: &ResolvedMachineSet,
+    identity: &AssetRequirementIdentity,
+    requirement: &RequirementKey,
+    seen: &mut BTreeSet<(SnapshotKey, SetName, i64)>,
+    diagnostics: &mut BTreeSet<MameLayoutDiagnostic>,
+) -> bool {
+    if identity.snapshot != set.snapshot
+        || !identity.set.as_str().eq(set.name.as_str())
+        || identity.asset != requirement.rom_name()
+        || identity.component_order < 0
+        || requirement.game_name() != set.name.as_str()
+    {
+        diagnostics.insert(MameLayoutDiagnostic::InvalidAssetIdentity {
+            root: root.clone(),
+            set: set.name.clone(),
+            identity: identity.clone(),
+            requirement: requirement.clone(),
+        });
+        return false;
+    }
+    if !seen.insert((
+        identity.snapshot.clone(),
+        identity.set.clone(),
+        identity.component_order,
+    )) {
+        diagnostics.insert(MameLayoutDiagnostic::DuplicateAssetIdentity {
+            root: root.clone(),
+            set: set.name.clone(),
+            identity: identity.clone(),
+        });
+        return false;
+    }
+    true
+}
+
+fn sort_layer_assets(assets: &mut [ResolvedMachineAsset]) {
+    assets.sort_by(|left, right| {
+        left.entry
+            .requirement
+            .cmp(&right.entry.requirement)
+            .then_with(|| left.entry.expected.cmp(&right.entry.expected))
+            .then_with(|| {
+                left.entry
+                    .source
+                    .location
+                    .priority()
+                    .cmp(&right.entry.source.location.priority())
+            })
+            .then_with(|| left.entry.source.location.cmp(&right.entry.source.location))
+            .then_with(|| {
+                left.entry
+                    .source
+                    .source_root
+                    .cmp(&right.entry.source.source_root)
+            })
+            .then_with(|| left.entry.source.observed.cmp(&right.entry.source.observed))
+            .then_with(|| {
+                left.entry
+                    .source
+                    .fingerprint
+                    .cmp(&right.entry.source.fingerprint)
+            })
+            .then_with(|| left.entry.source.scan_run.cmp(&right.entry.source.scan_run))
+            .then_with(|| {
+                left.entry
+                    .source
+                    .scan_provenance
+                    .cmp(&right.entry.source.scan_provenance)
+            })
+            .then_with(|| {
+                left.entry
+                    .source
+                    .bare_file_cache_stamp
+                    .cmp(&right.entry.source.bare_file_cache_stamp)
+            })
+            .then_with(|| left.entry.selection.cmp(&right.entry.selection))
+            .then_with(|| left.identity.cmp(&right.identity))
+    });
 }
 
 #[derive(Default)]
 struct MergeAccumulator {
-    accepted: BTreeSet<LogicalPath>,
-    rejected: BTreeSet<LogicalPath>,
-    deferred_entries: BTreeMap<LogicalPath, Vec<LogicalEntry>>,
+    accepted: BTreeMap<AssetRequirementIdentity, LogicalPath>,
+    rejected: BTreeSet<AssetRequirementIdentity>,
+    deferred_entries: BTreeMap<AssetRequirementIdentity, Vec<ResolvedMachineAsset>>,
 }
 
 impl MergeAccumulator {
     fn inspect(
         &mut self,
         root: &SetName,
-        entry: &LogicalEntry,
-        inherited_entries: &BTreeMap<LogicalPath, Vec<LogicalEntry>>,
+        resolved_asset: &ResolvedMachineAsset,
+        inherited_entries: &BTreeMap<LogicalPath, Vec<ResolvedMachineAsset>>,
         diagnostics: &mut BTreeSet<MameLayoutDiagnostic>,
     ) -> bool {
+        let entry = &resolved_asset.entry;
         let Some(merged_name) = &entry.expected.merge else {
             return false;
         };
@@ -566,29 +719,50 @@ impl MergeAccumulator {
             });
             return false;
         };
-        let mut conflicts: BTreeSet<_> = inherited
-            .iter()
-            .flat_map(|parent_entry| {
-                content_evidence_conflicts(&parent_entry.expected, &entry.expected)
-            })
-            .collect();
-        for (index, left) in inherited.iter().enumerate() {
-            for right in &inherited[index + 1..] {
-                conflicts.extend(content_evidence_conflicts(&left.expected, &right.expected));
+        let target_asset = resolved_asset.merge_target.as_ref().map_or_else(
+            || (inherited.len() == 1).then(|| &inherited[0]),
+            |asserted_target| {
+                inherited
+                    .iter()
+                    .find(|candidate| candidate.identity == *asserted_target)
+            },
+        );
+        let Some(target_asset) = target_asset else {
+            if resolved_asset.merge_target.is_none() && inherited.len() > 1 {
+                diagnostics.insert(MameLayoutDiagnostic::AmbiguousMergeTarget {
+                    root: root.clone(),
+                    child: entry.requirement.clone(),
+                    target,
+                });
+            } else {
+                diagnostics.insert(MameLayoutDiagnostic::MissingMergeTarget {
+                    root: root.clone(),
+                    child: entry.requirement.clone(),
+                    target,
+                });
             }
-        }
-        let has_matching_identity = inherited.iter().all(|parent_entry| {
-            has_matching_content_digest(&parent_entry.expected, &entry.expected)
-        });
+            return false;
+        };
+        let target_identity = resolved_asset
+            .merge_target
+            .clone()
+            .unwrap_or_else(|| target_asset.identity.clone());
+        let mut conflicts: BTreeSet<_> =
+            content_evidence_conflicts(&target_asset.entry.expected, &entry.expected)
+                .into_iter()
+                .collect();
+        let has_matching_identity =
+            has_matching_content_digest(&target_asset.entry.expected, &entry.expected);
         let same_path = entry.path == target;
         let merge_is_valid = conflicts.is_empty() && has_matching_identity;
         if merge_is_valid {
-            self.accepted.insert(target.clone());
+            self.accepted
+                .insert(target_identity.clone(), target.clone());
         } else {
             if !has_matching_identity {
                 conflicts.insert(ContentEvidenceConflict::InsufficientMatchEvidence);
             }
-            self.rejected.insert(target.clone());
+            self.rejected.insert(target_identity.clone());
             diagnostics.insert(MameLayoutDiagnostic::MergeContentMismatch {
                 root: root.clone(),
                 child: entry.requirement.clone(),
@@ -598,9 +772,9 @@ impl MergeAccumulator {
         }
         if same_path && merge_is_valid {
             self.deferred_entries
-                .entry(target)
+                .entry(target_identity)
                 .or_default()
-                .push(entry.clone());
+                .push(resolved_asset.clone());
         }
         same_path
     }
@@ -608,28 +782,46 @@ impl MergeAccumulator {
     fn apply(
         self,
         root: &SetName,
-        entries: &mut BTreeMap<LogicalPath, Vec<LogicalEntry>>,
-        layer: &mut BTreeMap<LogicalPath, Vec<LogicalEntry>>,
-        replaced_assets: &mut BTreeSet<String>,
+        entries: &mut BTreeMap<LogicalPath, Vec<ResolvedMachineAsset>>,
+        layer: &mut BTreeMap<LogicalPath, Vec<ResolvedMachineAsset>>,
+        replaced_assets: &mut BTreeSet<AssetRequirementIdentity>,
         diagnostics: &mut BTreeSet<MameLayoutDiagnostic>,
     ) {
-        for target in self.accepted.difference(&self.rejected) {
-            entries.remove(target);
-            replaced_assets.insert(target.as_str().to_owned());
-            if let Some(merged_entries) = self.deferred_entries.get(target) {
+        for (identity, path) in &self.accepted {
+            if self.rejected.contains(identity) {
+                continue;
+            }
+            if let Some(inherited) = entries.get_mut(path) {
+                inherited.retain(|asset| asset.identity != *identity);
+                if inherited.is_empty() {
+                    entries.remove(path);
+                }
+            }
+            replaced_assets.insert(identity.clone());
+            if let Some(merged_entries) = self.deferred_entries.get(identity) {
+                if let Some(remaining_inherited) = entries.remove(path) {
+                    layer
+                        .entry(path.clone())
+                        .or_default()
+                        .extend(remaining_inherited);
+                }
                 layer
-                    .entry(target.clone())
+                    .entry(path.clone())
                     .or_default()
                     .extend(merged_entries.iter().cloned());
             }
         }
-        for target in self.accepted.intersection(&self.rejected) {
-            if let Some(displaced_entries) = self.deferred_entries.get(target) {
+        for identity in self
+            .accepted
+            .keys()
+            .filter(|identity| self.rejected.contains(*identity))
+        {
+            if let Some(displaced_entries) = self.deferred_entries.get(identity) {
                 for entry in displaced_entries {
                     diagnostics.insert(MameLayoutDiagnostic::MergeContentMismatch {
                         root: root.clone(),
-                        child: entry.requirement.clone(),
-                        target: target.clone(),
+                        child: entry.entry.requirement.clone(),
+                        target: self.accepted[identity].clone(),
                         conflicts: vec![ContentEvidenceConflict::ConflictingSiblingDeclaration],
                     });
                 }
@@ -837,7 +1029,19 @@ mod tests {
 
     fn resolved(name: &str, entries: Vec<LogicalEntry>) -> ResolvedMachineSet {
         let mut set = ResolvedMachineSet::new(snapshot(), SetName::new(name));
-        set.entries = entries;
+        set.entries = entries
+            .into_iter()
+            .enumerate()
+            .map(|(component_order, entry)| {
+                let identity = AssetRequirementIdentity::new(
+                    set.snapshot.clone(),
+                    set.name.clone(),
+                    entry.requirement.rom_name(),
+                    i64::try_from(component_order).unwrap_or(i64::MAX),
+                );
+                ResolvedMachineAsset::new(identity, entry)
+            })
+            .collect();
         set
     }
 
@@ -1046,7 +1250,7 @@ mod tests {
     }
 
     #[test]
-    fn merge_does_not_hide_conflicts_between_inherited_entries() {
+    fn merge_without_component_assertion_is_ambiguous_for_duplicate_names() {
         let child = entry("clone", "clone-game.rom", Some(5), Some("parent-game.rom"));
         let mut first_parent = entry("parent", "first-parent.rom", Some(5), None);
         first_parent.path = LogicalPath::new("parent-game.rom");
@@ -1058,8 +1262,8 @@ mod tests {
         assert!(!plan.is_complete());
         assert!(plan.diagnostics.iter().any(|diagnostic| matches!(
             diagnostic,
-            MameLayoutDiagnostic::MergeContentMismatch { conflicts, .. }
-                if conflicts == &[ContentEvidenceConflict::Size]
+            MameLayoutDiagnostic::AmbiguousMergeTarget { target, .. }
+                if target.as_str() == "parent-game.rom"
         )));
         assert_eq!(
             plan.groups[0]
@@ -1073,6 +1277,110 @@ mod tests {
             diagnostic,
             MameLayoutDiagnostic::LogicalPathCollision { path, .. }
                 if path.as_str() == "parent-game.rom"
+        )));
+    }
+
+    #[test]
+    fn typed_merge_assertion_preserves_unrelated_same_path_components() {
+        let mut child_entry = entry("clone", "clone-game.rom", Some(5), Some("parent-game.rom"));
+        child_entry.path = LogicalPath::new("parent-game.rom");
+        child_entry.expected.size = Some(1);
+        let mut child = resolved("clone", vec![child_entry]);
+        child.parent_clone = Some(SetName::new("parent"));
+        child.entries[0].merge_target = Some(AssetRequirementIdentity::new(
+            snapshot(),
+            SetName::new("parent"),
+            "parent-game.rom",
+            0,
+        ));
+
+        let mut target = entry("parent", "parent-game.rom", Some(5), None);
+        target.expected.size = Some(1);
+        let mut sibling = entry("parent", "sibling.rom", Some(5), None);
+        sibling.path = LogicalPath::new("parent-game.rom");
+        sibling.expected.size = Some(2);
+        let parent = resolved("parent", vec![target, sibling]);
+        let mut clone_set = MachineSet::new("clone");
+        clone_set.parent_clone = Some(SetName::new("parent"));
+        let closure = MachineDependencyCatalog::new(snapshot(), vec![clone_set])
+            .resolve(&SetName::new("clone"));
+
+        let plan = plan_mame_layout(
+            MameSetLayoutPolicy::NonMerged,
+            &snapshot(),
+            &[SetName::new("clone")],
+            &[closure],
+            &[child, parent],
+        );
+
+        assert!(plan.diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic,
+            MameLayoutDiagnostic::LogicalPathCollision { path, existing, incoming, .. }
+                if path.as_str() == "parent-game.rom"
+                    && (existing.rom_name() == "sibling.rom"
+                        || incoming.rom_name() == "sibling.rom")
+        )));
+        assert!(!plan.diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic,
+            MameLayoutDiagnostic::MergeContentMismatch { .. }
+                | MameLayoutDiagnostic::AmbiguousMergeTarget { .. }
+        )));
+        assert!(!plan.is_complete());
+    }
+
+    #[test]
+    fn typed_merge_does_not_hide_same_named_missing_component() {
+        let mut child = resolved(
+            "clone",
+            vec![entry(
+                "clone",
+                "clone-game.rom",
+                Some(5),
+                Some("parent-game.rom"),
+            )],
+        );
+        child.parent_clone = Some(SetName::new("parent"));
+        child.entries[0].merge_target = Some(AssetRequirementIdentity::new(
+            snapshot(),
+            SetName::new("parent"),
+            "parent-game.rom",
+            0,
+        ));
+        let mut parent = resolved(
+            "parent",
+            vec![entry("parent", "parent-game.rom", Some(5), None)],
+        );
+        let missing_requirement = RequirementKey::new(
+            SetKey::new(CatalogKey::new("layout-fixture"), "parent"),
+            "parent-game.rom",
+        );
+        parent.missing_assets.push(MissingMachineAsset {
+            identity: AssetRequirementIdentity::new(
+                snapshot(),
+                SetName::new("parent"),
+                "parent-game.rom",
+                1,
+            ),
+            requirement: missing_requirement.clone(),
+        });
+        let mut clone_set = MachineSet::new("clone");
+        clone_set.parent_clone = Some(SetName::new("parent"));
+        let closure = MachineDependencyCatalog::new(snapshot(), vec![clone_set])
+            .resolve(&SetName::new("clone"));
+
+        let plan = plan_mame_layout(
+            MameSetLayoutPolicy::NonMerged,
+            &snapshot(),
+            &[SetName::new("clone")],
+            &[closure],
+            &[child, parent],
+        );
+
+        assert!(!plan.is_complete());
+        assert!(plan.diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic,
+            MameLayoutDiagnostic::MissingAssets { set, requirements, .. }
+                if set.as_str() == "parent" && requirements.contains(&missing_requirement)
         )));
     }
 
@@ -1265,7 +1573,8 @@ mod tests {
             std::slice::from_ref(&closure),
             std::slice::from_ref(&content),
         );
-        let reverse_content = resolved("root", content.entries.iter().cloned().rev().collect());
+        let mut reverse_content = content;
+        reverse_content.entries.reverse();
         let reversed = plan_mame_layout(
             MameSetLayoutPolicy::NonMerged,
             &snapshot(),
@@ -1314,6 +1623,38 @@ mod tests {
     }
 
     #[test]
+    fn rejects_mismatched_and_duplicate_component_identities() {
+        let closure = MachineDependencyCatalog::new(snapshot(), vec![MachineSet::new("root")])
+            .resolve(&SetName::new("root"));
+        let mut content = resolved(
+            "root",
+            vec![
+                entry("root", "first.rom", Some(1), None),
+                entry("root", "second.rom", Some(2), None),
+                entry("root", "third.rom", Some(3), None),
+            ],
+        );
+        content.entries[0].identity.snapshot = alternate_snapshot();
+        content.entries[2].identity.component_order = content.entries[1].identity.component_order;
+        let plan = plan_mame_layout(
+            MameSetLayoutPolicy::NonMerged,
+            &snapshot(),
+            &[SetName::new("root")],
+            &[closure],
+            &[content],
+        );
+        assert!(plan.diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic,
+            MameLayoutDiagnostic::InvalidAssetIdentity { .. }
+        )));
+        assert!(plan.diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic,
+            MameLayoutDiagnostic::DuplicateAssetIdentity { .. }
+        )));
+        assert!(!plan.is_complete());
+    }
+
+    #[test]
     fn reports_dependency_and_missing_asset_diagnostics_without_dropping_context() {
         let mut root = MachineSet::new("root");
         root.dependencies = vec![MachineDependency {
@@ -1327,10 +1668,19 @@ mod tests {
         )
         .resolve(&SetName::new("root"));
         let mut root_content = resolved("root", vec![]);
-        root_content.missing_assets.push(RequirementKey::new(
+        let requirement = RequirementKey::new(
             SetKey::new(CatalogKey::new("layout-fixture"), "root"),
             "required.rom",
-        ));
+        );
+        root_content.missing_assets.push(MissingMachineAsset {
+            identity: AssetRequirementIdentity::new(
+                snapshot(),
+                SetName::new("root"),
+                "required.rom",
+                0,
+            ),
+            requirement,
+        });
         let plan = plan_mame_layout(
             MameSetLayoutPolicy::NonMerged,
             &snapshot(),
