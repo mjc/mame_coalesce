@@ -1807,9 +1807,10 @@ mod tests {
         assert_eq!(std::fs::read(&second_artifact)?, previous_second);
         assert_eq!(std::fs::read(&third_artifact)?, previous_third);
         assert_eq!(std::fs::read_dir(&destination)?.count(), 3);
+        let expected_third = third_artifact.canonicalize_utf8()?;
         assert_eq!(
             results.last().map(|result| result.path.as_str()),
-            Some(third_artifact.as_str())
+            Some(expected_third.as_str())
         );
         Ok(())
     }

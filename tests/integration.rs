@@ -271,7 +271,10 @@ fn build_reports_partial_artifact_completion_when_a_later_source_disappears()
     )?;
 
     assert_eq!(report.exit_code, 1);
-    assert_eq!(report.written_paths, vec![output_path.join("a.zip")]);
+    assert_eq!(
+        report.written_paths,
+        vec![output_path.join("a.zip").canonicalize_utf8()?]
+    );
     let mut results = report.artifact_results.iter();
     assert_eq!(
         results.next().map(|result| &result.outcome),
