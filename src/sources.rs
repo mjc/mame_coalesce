@@ -333,6 +333,7 @@ fn zip_central_directory_location(
         })?)
         .and_then(|offset| offset.checked_add(u64::try_from(eocd).ok()?))
         .ok_or_else(|| Error::InvalidPath("ZIP end record offset overflowed".to_owned()))?;
+    let entries_on_disk = u16::from_le_bytes([tail[eocd + 8], tail[eocd + 9]]);
     let entries = u16::from_le_bytes([tail[eocd + 10], tail[eocd + 11]]);
     let size32 = u32::from_le_bytes(
         tail[eocd + 12..eocd + 16]
@@ -344,41 +345,77 @@ fn zip_central_directory_location(
             .try_into()
             .map_err(|_| Error::InvalidPath("invalid ZIP end record".to_owned()))?,
     );
-    let requires_zip64 = entries == u16::MAX || size32 == u32::MAX || offset32 == u32::MAX;
-    let zip64_location = if let Some(locator_offset) = eocd_offset.checked_sub(20) {
-        file.seek(SeekFrom::Start(locator_offset))?;
-        let mut locator = [0_u8; 20];
-        file.read_exact(&mut locator)?;
-        if &locator[..4] == ZIP64_LOCATOR_SIGNATURE {
-            let zip64_offset = u64::from_le_bytes(
-                locator[8..16]
-                    .try_into()
-                    .map_err(|_| Error::InvalidPath("invalid ZIP64 locator".to_owned()))?,
-            );
-            let zip64_end = zip64_offset.checked_add(56);
-            let file_len = file.metadata()?.len();
-            if zip64_end.is_some_and(|end| end <= file_len) {
-                file.seek(SeekFrom::Start(zip64_offset))?;
+    let requires_zip64 = entries_on_disk == u16::MAX
+        || entries == u16::MAX
+        || size32 == u32::MAX
+        || offset32 == u32::MAX;
+    let locator_offset = eocd_offset.checked_sub(20);
+    let zip64_location =
+        if let Some(locator_offset) = locator_offset {
+            file.seek(SeekFrom::Start(locator_offset))?;
+            let mut locator = [0_u8; 20];
+            file.read_exact(&mut locator)?;
+            if &locator[..4] == ZIP64_LOCATOR_SIGNATURE {
+                let zip64_offset = u64::from_le_bytes(
+                    locator[8..16]
+                        .try_into()
+                        .map_err(|_| Error::InvalidPath("invalid ZIP64 locator".to_owned()))?,
+                );
                 let mut zip64_eocd = [0_u8; 56];
-                file.read_exact(&mut zip64_eocd)?;
-                if &zip64_eocd[..4] == ZIP64_EOCD_SIGNATURE {
-                    let size =
-                        u64::from_le_bytes(zip64_eocd[40..48].try_into().map_err(|_| {
-                            Error::InvalidPath("invalid ZIP64 end record".to_owned())
-                        })?);
-                    Some((zip64_offset, size))
+                if zip64_offset
+                    .checked_add(56)
+                    .is_some_and(|end| end <= file_len)
+                {
+                    file.seek(SeekFrom::Start(zip64_offset))?;
+                    file.read_exact(&mut zip64_eocd)?;
                 } else {
-                    None
+                    return Ok((None, None));
                 }
+                if &zip64_eocd[..4] != ZIP64_EOCD_SIGNATURE {
+                    return Ok((None, None));
+                }
+                let record_size =
+                    u64::from_le_bytes(zip64_eocd[4..12].try_into().map_err(|_| {
+                        Error::InvalidPath("invalid ZIP64 end record size".to_owned())
+                    })?);
+                let record_end = zip64_offset
+                    .checked_add(12)
+                    .and_then(|start| start.checked_add(record_size));
+                if record_size < 44 || record_end != Some(locator_offset) {
+                    return Ok((None, None));
+                }
+                let zip64_entries_on_disk = u64::from_le_bytes(
+                    zip64_eocd[24..32]
+                        .try_into()
+                        .map_err(|_| Error::InvalidPath("invalid ZIP64 entry count".to_owned()))?,
+                );
+                let zip64_entries = u64::from_le_bytes(
+                    zip64_eocd[32..40]
+                        .try_into()
+                        .map_err(|_| Error::InvalidPath("invalid ZIP64 entry count".to_owned()))?,
+                );
+                let size =
+                    u64::from_le_bytes(zip64_eocd[40..48].try_into().map_err(|_| {
+                        Error::InvalidPath("invalid ZIP64 directory size".to_owned())
+                    })?);
+                let offset = u64::from_le_bytes(zip64_eocd[48..56].try_into().map_err(|_| {
+                    Error::InvalidPath("invalid ZIP64 directory offset".to_owned())
+                })?);
+                if (entries_on_disk != u16::MAX
+                    && u64::from(entries_on_disk) != zip64_entries_on_disk)
+                    || (entries != u16::MAX && u64::from(entries) != zip64_entries)
+                    || (size32 != u32::MAX && u64::from(size32) != size)
+                    || (offset32 != u32::MAX && u64::from(offset32) != offset)
+                {
+                    return Ok((None, None));
+                }
+                Some((zip64_offset, size))
             } else {
                 None
             }
         } else {
             None
-        }
-    } else {
-        None
-    };
+        };
     let (directory_end, directory_size) = match zip64_location {
         Some(location) => location,
         None if requires_zip64 => return Ok((None, None)),
@@ -1066,6 +1103,70 @@ mod tests {
         let members = enumerate(&path, ArchiveBackend::Zip)?;
         assert_eq!(members.len(), 1);
         assert_eq!(members[0].selector.name, "one.rom");
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_inconsistent_optional_zip64_directory_metadata()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let root = Utf8Path::from_path(directory.path())
+            .ok_or_else(|| io::Error::other("temporary path is not UTF-8"))?;
+        let ordinary = root.join("duplicates.zip");
+        let malformed = root.join("malformed-zip64.zip");
+        write_zip(&ordinary, &[("first.rom", b"one"), ("other.rom", b"two")])?;
+        let mut bytes = std::fs::read(ordinary)?;
+        let mut offset = 0;
+        while let Some(relative) = bytes[offset..]
+            .windows(b"other.rom".len())
+            .position(|window| window == b"other.rom")
+        {
+            offset += relative;
+            bytes[offset..offset + b"other.rom".len()].copy_from_slice(b"first.rom");
+            offset += b"other.rom".len();
+        }
+        let eocd = bytes
+            .windows(4)
+            .rposition(|window| window == b"PK\x05\x06")
+            .ok_or_else(|| io::Error::other("ZIP end record was not written"))?;
+        let directory_size = u32::from_le_bytes(
+            bytes[eocd + 12..eocd + 16]
+                .try_into()
+                .map_err(|_| io::Error::other("invalid ZIP end record"))?,
+        );
+        let first_central = u32::from_le_bytes(
+            bytes[eocd + 16..eocd + 20]
+                .try_into()
+                .map_err(|_| io::Error::other("invalid ZIP end record"))?,
+        ) as usize;
+        let first_name_len = usize::from(u16::from_le_bytes(
+            bytes[first_central + 28..first_central + 30]
+                .try_into()
+                .map_err(|_| io::Error::other("invalid central directory entry"))?,
+        ));
+        let first_extra_len = usize::from(u16::from_le_bytes(
+            bytes[first_central + 30..first_central + 32]
+                .try_into()
+                .map_err(|_| io::Error::other("invalid central directory entry"))?,
+        ));
+        let first_comment_len = usize::from(u16::from_le_bytes(
+            bytes[first_central + 32..first_central + 34]
+                .try_into()
+                .map_err(|_| io::Error::other("invalid central directory entry"))?,
+        ));
+        let first_entry_len = 46 + first_name_len + first_extra_len + first_comment_len;
+        let last_entry_len = u64::from(directory_size)
+            .checked_sub(u64::try_from(first_entry_len)?)
+            .ok_or_else(|| io::Error::other("invalid central directory size"))?;
+        let mut bytes = zip64_with_max_comment(&bytes, false)?;
+        let zip64_eocd = bytes
+            .windows(4)
+            .rposition(|window| window == b"PK\x06\x06")
+            .ok_or_else(|| io::Error::other("ZIP64 end record was not written"))?;
+        bytes[zip64_eocd + 40..zip64_eocd + 48].copy_from_slice(&last_entry_len.to_le_bytes());
+        std::fs::write(&malformed, bytes)?;
+
+        assert!(enumerate(&malformed, ArchiveBackend::Zip).is_err());
         Ok(())
     }
 
