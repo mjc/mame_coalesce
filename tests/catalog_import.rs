@@ -1068,6 +1068,27 @@ fn software_item_relationship_keys_do_not_collide_on_slashes()
 }
 
 #[test]
+fn machine_dependency_loader_rejects_software_list_snapshots()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (_directory, database, _) = setup()?;
+    let imported = app::import_catalog(&database, &mame_softwarelist_request()?)?;
+    let snapshot = imported
+        .snapshot_key
+        .ok_or("software-list snapshot missing")?;
+    let result = app::resolve_machine_dependencies(
+        &database,
+        &snapshot,
+        &mame_coalesce::domain::SetName::new("game"),
+    );
+    assert!(matches!(
+        result,
+        Err(mame_coalesce::Error::UnsupportedMachineDependencyFormat(format))
+            if format == "mame-softwarelist-xml"
+    ));
+    Ok(())
+}
+
+#[test]
 fn dependency_absence_respects_filtered_snapshot_scope() -> Result<(), Box<dyn std::error::Error>> {
     use mame_coalesce::machine_dependencies::DependencyDiagnostic;
 

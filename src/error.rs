@@ -55,6 +55,8 @@ pub enum Error {
 
     #[error("no published snapshot exists for catalog {0}")]
     CatalogNotFound(String),
+    #[error("catalog format is not supported for machine dependencies: {0}")]
+    UnsupportedMachineDependencyFormat(String),
 
     #[error("source changed since planning: {path}: {reason}")]
     SourceChanged { path: String, reason: String },
