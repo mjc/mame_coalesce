@@ -13,6 +13,7 @@ use crate::{Error, Result};
 
 const RAR_MAX_MEMBER_SIZE: u64 = 128 * 1024 * 1024;
 const SEVEN_Z_MAX_SELECTED_MEMBER_SIZE: u64 = 16 * 1024 * 1024 * 1024;
+const SEVEN_Z_MAX_PACKED_FOLDER_SIZE: u64 = 512 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ArchiveMemberSelector {
@@ -39,6 +40,7 @@ pub struct BackendCapabilities {
     pub selected_reads: &'static str,
     pub limitation: &'static str,
     pub max_member_size: Option<u64>,
+    pub max_packed_folder_size: Option<u64>,
 }
 
 /// Operational details of the backends pinned by this project.
@@ -48,18 +50,21 @@ pub const BACKEND_CAPABILITIES: [BackendCapabilities; 3] = [
         selected_reads: "Selected indices can be opened in caller order.",
         limitation: "The pinned ZIP reader collapses exact duplicate raw filenames, so those archives are rejected; distinct raw names that normalize identically remain selectable by index.",
         max_member_size: None,
+        max_packed_folder_size: None,
     },
     BackendCapabilities {
         backend: ArchiveBackend::SevenZip,
-        selected_reads: "A single selected member is extracted by index; multiple selections share one sequential archive pass.",
-        limitation: "The pinned r7z API has no packed-range byte ceiling; multi-range solid-folder decoding buffers packed ranges in memory, including for indexed extraction and sequential selected reads.",
+        selected_reads: "Selected members are extracted by index from one archive handle; later unselected folders are not visited.",
+        limitation: "Multi-range solid-folder decoding buffers packed ranges in memory, so folders with multiple ranges are preflighted against a 512 MiB packed-data limit. Selected members sharing a solid folder may cause that folder to be decoded more than once.",
         max_member_size: Some(SEVEN_Z_MAX_SELECTED_MEMBER_SIZE),
+        max_packed_folder_size: Some(SEVEN_Z_MAX_PACKED_FOLDER_SIZE),
     },
     BackendCapabilities {
         backend: ArchiveBackend::Rar,
         selected_reads: "Selected entries are extracted to a unique temporary directory, then read as a stream.",
         limitation: "Declared members larger than 128 MiB are rejected before extraction and actual size is checked afterward. The pinned unrar extract_to API has no streaming byte ceiling, so understated metadata can temporarily exceed the limit on disk.",
         max_member_size: Some(RAR_MAX_MEMBER_SIZE),
+        max_packed_folder_size: None,
     },
 ];
 
@@ -340,11 +345,17 @@ fn zip_central_directory_location(
     );
     let requires_zip64 = entries == u16::MAX || size32 == u32::MAX || offset32 == u32::MAX;
     let (directory_end, directory_size) = if requires_zip64 {
-        if eocd < 20 || &tail[eocd - 20..eocd - 16] != ZIP64_LOCATOR_SIGNATURE {
+        let Some(locator_offset) = eocd_offset.checked_sub(20) else {
+            return Ok((None, None));
+        };
+        file.seek(SeekFrom::Start(locator_offset))?;
+        let mut locator = [0_u8; 20];
+        file.read_exact(&mut locator)?;
+        if &locator[..4] != ZIP64_LOCATOR_SIGNATURE {
             return Ok((None, None));
         }
         let zip64_offset = u64::from_le_bytes(
-            tail[eocd - 12..eocd - 4]
+            locator[8..16]
                 .try_into()
                 .map_err(|_| Error::InvalidPath("invalid ZIP64 locator".to_owned()))?,
         );
@@ -490,22 +501,43 @@ where
     if members.is_empty() {
         return Ok(());
     }
-    if !all_members && members.len() == 1 {
-        let member = &members[0];
+    if !all_members {
+        let archive = r7z::Archive::open(path.as_std_path())?;
+        let listing = archive.listing(None)?;
+        let selected_indices = members
+            .iter()
+            .map(|member| member.selector.index)
+            .collect::<Vec<_>>();
+        preflight_7z_packed_folders(&archive, &listing, &selected_indices)?;
         let temp_dir = crate::private_temp::PrivateTempDir::create("mame-coalesce-7z-")?;
         let output_path = temp_dir.path().join("member.data");
-        let mut output = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&output_path)?;
-        extract_7z_member_to_known(path, member, SEVEN_Z_MAX_SELECTED_MEMBER_SIZE, &mut output)?;
-        drop(output);
-        let mut reader: &mut dyn Read = &mut File::open(output_path)?;
-        callback(member, &mut reader)?;
-        io::copy(&mut reader, &mut io::sink())?;
+        for member in members {
+            let mut output = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&output_path)?;
+            extract_7z_member_from_archive(
+                &archive,
+                &listing,
+                member,
+                SEVEN_Z_MAX_SELECTED_MEMBER_SIZE,
+                &mut output,
+            )?;
+            drop(output);
+            let mut reader: &mut dyn Read = &mut File::open(&output_path)?;
+            callback(member, &mut reader)?;
+            io::copy(&mut reader, &mut io::sink())?;
+        }
         return Ok(());
     }
     let archive = r7z::Archive::open(path.as_std_path())?;
+    let listing = archive.listing(None)?;
+    let selected_indices = members
+        .iter()
+        .map(|member| member.selector.index)
+        .collect::<Vec<_>>();
+    preflight_7z_packed_folders(&archive, &listing, &selected_indices)?;
     let selected = members
         .iter()
         .map(|member| (member.selector.index, member))
@@ -562,11 +594,28 @@ fn extract_7z_member_to_known(
         )));
     }
     let archive = r7z::Archive::open(path.as_std_path())?;
+    let listing = archive.listing(None)?;
+    preflight_7z_packed_folders(&archive, &listing, &[member.selector.index])?;
+    extract_7z_member_from_archive(&archive, &listing, member, limit, writer)
+}
+
+fn extract_7z_member_from_archive(
+    archive: &r7z::Archive,
+    listing: &r7z::ArchiveListing,
+    member: &ArchiveMember,
+    limit: u64,
+    writer: &mut dyn Write,
+) -> Result<()> {
+    if member.size > limit {
+        return Err(Error::InvalidPath(format!(
+            "7z member {} exceeds the available staging limit",
+            member.selector.name
+        )));
+    }
     let entry = archive
         .entry(member.selector.index)
         .ok_or_else(|| Error::InvalidPath("7z selector index disappeared".to_owned()))?;
     let name = normalize_member_name(&entry.name)?;
-    let listing = archive.listing(None)?;
     let size = listing
         .entries
         .get(member.selector.index)
@@ -584,6 +633,65 @@ fn extract_7z_member_to_known(
         return Err(Error::InvalidPath(format!(
             "7z member size changed while reading: {}",
             member.selector.name
+        )));
+    }
+    Ok(())
+}
+
+fn preflight_7z_packed_folders(
+    archive: &r7z::Archive,
+    listing: &r7z::ArchiveListing,
+    selected_indices: &[usize],
+) -> Result<()> {
+    let blocks = selected_indices
+        .iter()
+        .filter_map(|&index| listing.entries.get(index).and_then(|entry| entry.block))
+        .collect::<BTreeSet<_>>();
+
+    let unpack_info = archive
+        .streams_info()
+        .and_then(|streams| streams.unpack_info.as_ref());
+    for block in blocks {
+        let unpack_info = unpack_info.ok_or_else(|| {
+            Error::InvalidPath("7z packed folder metadata is unavailable".to_owned())
+        })?;
+        let folder = unpack_info.parse_folder(block)?;
+        let input_streams = folder.coders.iter().try_fold(0_u64, |total, coder| {
+            total
+                .checked_add(coder.num_in_streams)
+                .ok_or_else(|| Error::InvalidPath("7z packed stream count overflowed".to_owned()))
+        })?;
+        let bound_streams = u64::try_from(folder.bind_pairs.len())
+            .map_err(|_| Error::InvalidPath("7z bound stream count overflowed".to_owned()))?;
+        let packed_streams = input_streams
+            .checked_sub(bound_streams)
+            .ok_or_else(|| Error::InvalidPath("7z packed stream count underflowed".to_owned()))?;
+        if packed_streams <= 1 {
+            continue;
+        }
+        let packed_size = listing
+            .entries
+            .iter()
+            .find(|entry| entry.block == Some(block) && entry.packed_size.is_some())
+            .and_then(|entry| entry.packed_size)
+            .ok_or_else(|| {
+                Error::InvalidPath(format!(
+                    "7z packed size is unavailable for folder {block}; refusing unbounded decode"
+                ))
+            })?;
+        enforce_7z_packed_folder_limit(block, packed_streams, packed_size)?;
+    }
+    Ok(())
+}
+
+fn enforce_7z_packed_folder_limit(
+    block: usize,
+    packed_streams: u64,
+    packed_size: u64,
+) -> Result<()> {
+    if packed_streams > 1 && packed_size > SEVEN_Z_MAX_PACKED_FOLDER_SIZE {
+        return Err(Error::InvalidPath(format!(
+            "7z packed folder {block} requires {packed_size} bytes; limit is {SEVEN_Z_MAX_PACKED_FOLDER_SIZE}"
         )));
     }
     Ok(())
@@ -747,9 +855,10 @@ mod tests {
     use zip::{ZipWriter, write::SimpleFileOptions};
 
     use super::{
-        ArchiveBackend, ArchiveMember, ArchiveMemberSelector, RAR_MAX_MEMBER_SIZE, SourceKind,
-        capabilities, detect, enumerate, stream_7z, stream_archive, stream_file, stream_rar,
-        stream_zip, zip_central_entry_count,
+        ArchiveBackend, ArchiveMember, ArchiveMemberSelector, RAR_MAX_MEMBER_SIZE,
+        SEVEN_Z_MAX_PACKED_FOLDER_SIZE, SourceKind, capabilities, detect,
+        enforce_7z_packed_folder_limit, enumerate, stream_7z, stream_archive, stream_file,
+        stream_rar, stream_zip, zip_central_entry_count,
     };
 
     #[cfg(unix)]
@@ -770,6 +879,77 @@ mod tests {
             zip.write_all(data)?;
         }
         zip.finish()?;
+        Ok(())
+    }
+
+    fn zip64_with_max_comment(bytes: &[u8]) -> io::Result<Vec<u8>> {
+        let eocd = bytes
+            .windows(4)
+            .rposition(|window| window == b"PK\x05\x06")
+            .ok_or_else(|| io::Error::other("ZIP end record was not written"))?;
+        let entries = u16::from_le_bytes([bytes[eocd + 10], bytes[eocd + 11]]);
+        let directory_size = u32::from_le_bytes(
+            bytes[eocd + 12..eocd + 16]
+                .try_into()
+                .map_err(|_| io::Error::other("invalid ZIP end record"))?,
+        );
+        let directory_offset = u32::from_le_bytes(
+            bytes[eocd + 16..eocd + 20]
+                .try_into()
+                .map_err(|_| io::Error::other("invalid ZIP end record"))?,
+        );
+
+        let mut result = bytes[..eocd].to_vec();
+        let zip64_offset = u64::try_from(result.len())
+            .map_err(|_| io::Error::other("ZIP64 end record offset overflowed"))?;
+        result.extend_from_slice(b"PK\x06\x06");
+        result.extend_from_slice(&44_u64.to_le_bytes());
+        result.extend_from_slice(&45_u16.to_le_bytes());
+        result.extend_from_slice(&45_u16.to_le_bytes());
+        result.extend_from_slice(&0_u32.to_le_bytes());
+        result.extend_from_slice(&0_u32.to_le_bytes());
+        result.extend_from_slice(&u64::from(entries).to_le_bytes());
+        result.extend_from_slice(&u64::from(entries).to_le_bytes());
+        result.extend_from_slice(&u64::from(directory_size).to_le_bytes());
+        result.extend_from_slice(&u64::from(directory_offset).to_le_bytes());
+
+        result.extend_from_slice(b"PK\x06\x07");
+        result.extend_from_slice(&0_u32.to_le_bytes());
+        result.extend_from_slice(&zip64_offset.to_le_bytes());
+        result.extend_from_slice(&1_u32.to_le_bytes());
+
+        let mut standard_eocd = bytes[eocd..eocd + 22].to_vec();
+        standard_eocd[8..12].fill(u8::MAX);
+        standard_eocd[12..20].fill(u8::MAX);
+        standard_eocd[20..22].copy_from_slice(&u16::MAX.to_le_bytes());
+        result.extend_from_slice(&standard_eocd);
+        result.resize(result.len() + usize::from(u16::MAX), 0xA5);
+        Ok(result)
+    }
+
+    #[test]
+    fn seven_zip_packed_folder_preflight_limits_the_decoded_folders() {
+        assert!(enforce_7z_packed_folder_limit(0, 2, 4).is_ok());
+        assert!(enforce_7z_packed_folder_limit(0, 2, SEVEN_Z_MAX_PACKED_FOLDER_SIZE).is_ok());
+        assert!(enforce_7z_packed_folder_limit(1, 2, SEVEN_Z_MAX_PACKED_FOLDER_SIZE + 1).is_err());
+        assert!(enforce_7z_packed_folder_limit(1, 1, SEVEN_Z_MAX_PACKED_FOLDER_SIZE + 1).is_ok());
+    }
+
+    #[test]
+    fn zip64_locator_is_read_before_maximum_length_comment()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let root = Utf8Path::from_path(directory.path())
+            .ok_or_else(|| io::Error::other("temporary path is not UTF-8"))?;
+        let path = root.join("zip64-max-comment.zip");
+        let ordinary = root.join("ordinary.zip");
+        write_zip(&ordinary, &[("one.rom", b"rom")])?;
+        std::fs::write(&path, zip64_with_max_comment(&std::fs::read(ordinary)?)?)?;
+
+        assert_eq!(zip_central_entry_count(&path)?, Some(1));
+        let members = enumerate(&path, ArchiveBackend::Zip)?;
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0].selector.name, "one.rom");
         Ok(())
     }
 
@@ -893,6 +1073,62 @@ mod tests {
             },
         )?;
         assert_eq!(observed, [(0, b"first".to_vec()), (2, b"last".to_vec())]);
+        Ok(())
+    }
+
+    #[test]
+    fn selected_seven_zip_reads_ignore_corrupt_later_folders()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let root = Utf8Path::from_path(directory.path())
+            .ok_or_else(|| io::Error::other("temporary path is not UTF-8"))?;
+        let path = root.join("selected.7z");
+        let options = r7z::ArchiveOptions {
+            codec: r7z::Codec::Copy,
+            compression: r7z::CompressionOptions {
+                solid: r7z::SolidMode::NonSolid,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        std::fs::write(
+            &path,
+            r7z::ArchiveBuilder::new()
+                .options(options)
+                .add_file("first.rom", b"first-selected")
+                .add_file("second.rom", b"second-selected")
+                .add_file("later.rom", b"corrupt-later-folder")
+                .build()?,
+        )?;
+        let inventory = enumerate(&path, ArchiveBackend::SevenZip)?;
+        let mut bytes = std::fs::read(&path)?;
+        let later_offset = bytes
+            .windows(b"corrupt-later-folder".len())
+            .position(|window| window == b"corrupt-later-folder")
+            .ok_or_else(|| io::Error::other("stored later member bytes were not found"))?;
+        bytes[later_offset] ^= 0xFF;
+        std::fs::write(&path, bytes)?;
+
+        let selected = [inventory[0].selector.clone(), inventory[1].selector.clone()];
+        let mut observed = Vec::new();
+        stream_archive(
+            &path,
+            ArchiveBackend::SevenZip,
+            Some(&selected),
+            |member, reader| {
+                let mut data = Vec::new();
+                io::copy(reader, &mut data)?;
+                observed.push((member.selector.index, data));
+                Ok(())
+            },
+        )?;
+        assert_eq!(
+            observed,
+            [
+                (0, b"first-selected".to_vec()),
+                (1, b"second-selected".to_vec())
+            ]
+        );
         Ok(())
     }
 
