@@ -52,7 +52,7 @@ pub const BACKEND_CAPABILITIES: [BackendCapabilities; 3] = [
     BackendCapabilities {
         backend: ArchiveBackend::SevenZip,
         selected_reads: "A single selected member is extracted by index; multiple selections share one sequential archive pass.",
-        limitation: "Indexed selected reads stage one member at a time. The pinned r7z decoder may buffer packed ranges in memory for solid-folder extraction.",
+        limitation: "The pinned r7z API has no packed-range byte ceiling; multi-range solid-folder decoding buffers packed ranges in memory, including for indexed extraction and sequential selected reads.",
         max_member_size: Some(SEVEN_Z_MAX_SELECTED_MEMBER_SIZE),
     },
     BackendCapabilities {
