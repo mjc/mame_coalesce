@@ -9,7 +9,7 @@ use std::{
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 
-use crate::domain::{BuildPlan, ExpectedEvidence, LogicalPath};
+use crate::domain::{BuildPlan, ExpectedEvidence, LogicalPath, SourceLocation};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ContentRelation {
@@ -86,6 +86,23 @@ impl<'plan> ValidatedPlan<'plan> {
     #[must_use]
     pub const fn plan(&self) -> &'plan BuildPlan {
         self.plan
+    }
+}
+
+/// A destination proven disjoint from every declared root and actual plan source.
+#[derive(Debug)]
+pub(crate) struct CheckedPlanDestination {
+    path: Utf8PathBuf,
+    sources: Vec<Utf8PathBuf>,
+}
+
+impl CheckedPlanDestination {
+    pub(crate) fn path(&self) -> &Utf8Path {
+        &self.path
+    }
+
+    pub(crate) fn sources(&self) -> &[Utf8PathBuf] {
+        &self.sources
     }
 }
 
@@ -432,6 +449,47 @@ pub(crate) fn checked_destination(
         }
     }
     Ok(destination)
+}
+
+pub(crate) fn checked_plan_destination(
+    plan: &BuildPlan,
+    destination: &Utf8Path,
+) -> crate::Result<CheckedPlanDestination> {
+    let mut source_roots = BTreeSet::new();
+    let mut source_paths = BTreeSet::new();
+    for entry in plan.groups.iter().flat_map(|group| &group.entries) {
+        let declared_root = Utf8Path::new(entry.source.source_root.as_str()).canonicalize_utf8()?;
+        let source_path =
+            Utf8Path::new(source_location_path(&entry.source.location)).canonicalize_utf8()?;
+        if !source_path.starts_with(&declared_root) {
+            return Err(crate::Error::InvalidPath(format!(
+                "plan source is outside its declared source root: source={source_path} root={declared_root}"
+            )));
+        }
+        source_roots.insert(declared_root);
+        source_paths.insert(source_path);
+    }
+
+    let mut checked_sources = source_roots.clone();
+    checked_sources.extend(source_paths);
+    let checked_sources = checked_sources.into_iter().collect::<Vec<_>>();
+    let source_refs = checked_sources
+        .iter()
+        .map(Utf8PathBuf::as_path)
+        .collect::<Vec<_>>();
+    let path = checked_destination(&source_refs, destination)?;
+    Ok(CheckedPlanDestination {
+        path,
+        sources: source_roots.into_iter().collect(),
+    })
+}
+
+fn source_location_path(location: &SourceLocation) -> &str {
+    match location {
+        SourceLocation::BareFile { path }
+        | SourceLocation::ArchiveMember { path, .. }
+        | SourceLocation::LegacyUnknown { path, .. } => path,
+    }
 }
 
 pub(crate) fn canonicalize_destination(destination: &Utf8Path) -> crate::Result<Utf8PathBuf> {
