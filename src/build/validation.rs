@@ -140,18 +140,13 @@ pub(crate) fn inspect_plan(plan: &BuildPlan) -> Vec<PlanIssue> {
                     .then_with(|| left.expected.cmp(&right.expected))
                     .then_with(|| left.requirement.cmp(&right.requirement))
             });
-            for index in 0..duplicates.len() {
-                for duplicate_index in index + 1..duplicates.len() {
-                    let first = duplicates[index];
-                    let duplicate = duplicates[duplicate_index];
-                    issues.push(PlanIssue {
-                        kind: PlanIssueKind::DuplicateEntry(content_relation(
-                            &first.expected,
-                            &duplicate.expected,
-                        )),
-                        path: duplicate.path.clone(),
-                        conflicts_with: Some(first.path.clone()),
-                    });
+            // Report representative relations, with at most three issues for this name.
+            let mut reported = [false; 3];
+            for pair in duplicates.windows(2) {
+                push_entry_collision(&mut issues, &mut reported, pair[0], pair[1]);
+                push_entry_collision(&mut issues, &mut reported, duplicates[0], pair[1]);
+                if reported.iter().all(|&seen| seen) {
+                    break;
                 }
             }
         }
@@ -177,14 +172,12 @@ pub(crate) fn inspect_plan(plan: &BuildPlan) -> Vec<PlanIssue> {
 
     for duplicates in groups.values_mut() {
         duplicates.sort();
-        for index in 0..duplicates.len() {
-            for duplicate_index in index + 1..duplicates.len() {
-                issues.push(PlanIssue {
-                    kind: PlanIssueKind::DuplicateGroup,
-                    path: duplicates[duplicate_index].clone(),
-                    conflicts_with: Some(duplicates[index].clone()),
-                });
-            }
+        if let [first, duplicate, ..] = duplicates.as_slice() {
+            issues.push(PlanIssue {
+                kind: PlanIssueKind::DuplicateGroup,
+                path: (*duplicate).clone(),
+                conflicts_with: Some((*first).clone()),
+            });
         }
     }
 
@@ -196,6 +189,28 @@ pub(crate) fn inspect_plan(plan: &BuildPlan) -> Vec<PlanIssue> {
             .then_with(|| format!("{:?}", left.kind).cmp(&format!("{:?}", right.kind)))
     });
     issues
+}
+
+fn push_entry_collision(
+    issues: &mut Vec<PlanIssue>,
+    reported: &mut [bool; 3],
+    first: &crate::domain::LogicalEntry,
+    duplicate: &crate::domain::LogicalEntry,
+) {
+    let relation = content_relation(&first.expected, &duplicate.expected);
+    let slot = match relation {
+        ContentRelation::SameEstablishedContent => 0,
+        ContentRelation::DifferentContent => 1,
+        ContentRelation::UnknownContent => 2,
+    };
+    if !reported[slot] {
+        reported[slot] = true;
+        issues.push(PlanIssue {
+            kind: PlanIssueKind::DuplicateEntry(relation),
+            path: duplicate.path.clone(),
+            conflicts_with: Some(first.path.clone()),
+        });
+    }
 }
 
 fn group_artifact_conflicts(plan: &BuildPlan) -> Vec<PlanIssue> {
@@ -557,6 +572,68 @@ mod tests {
         ]));
 
         assert_eq!(reordered, original);
+    }
+
+    #[test]
+    fn large_casefolded_group_class_has_one_stable_diagnostic() {
+        let groups = (0..10_000)
+            .map(|bits| {
+                let name = (0..14)
+                    .map(|bit| if bits & (1 << bit) == 0 { 'a' } else { 'A' })
+                    .collect::<String>();
+                group(&name, Vec::new())
+            })
+            .collect::<Vec<_>>();
+        let original = empty_plan(groups.clone());
+        let reversed = empty_plan(groups.into_iter().rev().collect());
+
+        let issues = inspect_plan(&original);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].kind, PlanIssueKind::DuplicateGroup);
+        assert_eq!(inspect_plan(&reversed), issues);
+        assert!(validate_plan(&original).is_err());
+    }
+
+    #[test]
+    fn large_casefolded_entry_class_has_bounded_content_diagnostics() {
+        let expected = ExpectedEvidence {
+            scope: crate::domain::EvidenceScope::WholeAsset,
+            sha1: Some([1; 20]),
+            ..ExpectedEvidence::default()
+        };
+        let mut entries = vec![
+            entry("rom.bin", ExpectedEvidence::default()),
+            entry("rom.bin", expected.clone()),
+            entry(
+                "rom.bin",
+                ExpectedEvidence {
+                    sha1: Some([2; 20]),
+                    ..expected.clone()
+                },
+            ),
+        ];
+        entries.extend((0..9_997).map(|_| entry("rom.bin", expected.clone())));
+        let original = empty_plan(vec![group("set", entries.clone())]);
+        let reversed = empty_plan(vec![group("set", entries.into_iter().rev().collect())]);
+
+        let issues = inspect_plan(&original);
+        assert_eq!(issues.len(), 3);
+        for relation in [
+            ContentRelation::SameEstablishedContent,
+            ContentRelation::DifferentContent,
+            ContentRelation::UnknownContent,
+        ] {
+            assert!(issues.iter().any(|issue| {
+                issue.kind == PlanIssueKind::DuplicateEntry(relation)
+                    && issue.path.as_str() == "rom.bin"
+                    && issue
+                        .conflicts_with
+                        .as_ref()
+                        .is_some_and(|path| path.as_str() == "rom.bin")
+            }));
+        }
+        assert_eq!(inspect_plan(&reversed), issues);
+        assert!(validate_plan(&original).is_err());
     }
 
     #[test]
