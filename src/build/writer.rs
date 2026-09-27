@@ -53,14 +53,16 @@ pub fn write_plan_with_compression(
         .collect::<Vec<_>>();
     let destination = checked_destination(&sources, destination)?;
     let output_paths = zip_output_paths(plan, &destination)?;
-    // Atomic, handle-relative replacement and containment are implemented only on Unix.
-    // In particular, a Windows junction in a nested path can redirect a truncate open.
-    #[cfg(not(unix))]
+    // Secure handle-relative output is supported on Linux. macOS ACLs can grant
+    // delete-child rights that are not visible in mode bits, so reject it before
+    // opening or creating any output directory. Non-Unix targets have the same
+    // conservative boundary because replacement/containment are not implemented.
+    #[cfg(any(not(unix), target_os = "macos"))]
     let _ = (compression, output_paths);
-    #[cfg(not(unix))]
-    return Err(io::Error::other("output writing is supported only on Unix").into());
+    #[cfg(any(not(unix), target_os = "macos"))]
+    return Err(io::Error::other("secure output writing is supported only on Linux").into());
 
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "macos")))]
     {
         let options = file_options(compression);
         let mut written_paths = Vec::with_capacity(plan.groups.len());
@@ -1443,16 +1445,11 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(not(unix))]
+    #[cfg(any(not(unix), target_os = "macos"))]
     #[test]
-    fn unsupported_output_does_not_truncate_nested_target() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn unsupported_output_does_not_create_or_truncate_targets()
+    -> Result<(), Box<dyn std::error::Error>> {
         let temp_dir = tempfile::tempdir()?;
-        let destination = utf8_path(temp_dir.path())?.join("output");
-        let nested = destination.join("nested");
-        fs::create_dir_all(&nested)?;
-        let protected = nested.join("set.zip");
-        fs::write(&protected, b"must remain untouched")?;
         let plan = BuildPlan {
             groups: vec![OutputGroup {
                 path: LogicalPath::new("nested/set"),
@@ -1460,9 +1457,25 @@ mod tests {
             }],
             report: BuildReport::default(),
         };
+        let absent_destination = utf8_path(temp_dir.path())?.join("not-created");
+        assert!(write_plan(&plan, &absent_destination).is_err());
+        assert!(!absent_destination.exists());
+
+        let destination = utf8_path(temp_dir.path())?.join("output");
+        let nested = destination.join("nested");
+        #[cfg(not(target_os = "macos"))]
+        fs::create_dir_all(&nested)?;
+        #[cfg(target_os = "macos")]
+        fs::create_dir(&nested)?;
+        let protected = nested.join("set.zip");
+        fs::write(&protected, b"must remain untouched")?;
 
         assert!(write_plan(&plan, &destination).is_err());
         assert_eq!(fs::read(protected)?, b"must remain untouched");
+        #[cfg(target_os = "macos")]
+        assert!(destination.is_dir());
+        #[cfg(not(target_os = "macos"))]
+        assert!(!destination.exists());
         Ok(())
     }
 
