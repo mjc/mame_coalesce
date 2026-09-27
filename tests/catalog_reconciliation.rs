@@ -489,7 +489,7 @@ fn merge_assertion_targets_the_unique_asset_requirement_record()
         outcome
             .left
             .as_ref()
-            .is_some_and(|record| record.key.as_str() == "parent/parent_disk#0")
+            .is_some_and(|record| record.key.as_str() == r#"["parent","parent_disk",0]"#)
     });
     let outcome = parent_match.ok_or("parent asset requirement pair missing")?;
     assert!(outcome.relationship_evidence.iter().any(|explanation| {
