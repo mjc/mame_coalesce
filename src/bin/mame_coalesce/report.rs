@@ -24,10 +24,14 @@ fn render_disk_audit(report: &DiskAuditReport) -> String {
     }
     for disk in &report.disks {
         use std::fmt::Write as _;
+        let context = match (&disk.list_name, &disk.item_name, &disk.part_name) {
+            (Some(list), Some(item), Some(part)) => format!("{list} / {item} / {part}"),
+            _ => disk.set_name.clone(),
+        };
         let _ = writeln!(
             output,
             "{} / {}: {}{}",
-            disk.set_name,
+            context,
             disk.disk_name,
             state_label(disk.state),
             disk.parent_disk
@@ -44,6 +48,9 @@ fn render_disk_audit(report: &DiskAuditReport) -> String {
 const fn state_label(state: DiskAuditState) -> &'static str {
     match state {
         DiskAuditState::Missing => "missing",
+        DiskAuditState::AmbiguousLocation => {
+            "matching disk filename found outside its catalog set/list location"
+        }
         DiskAuditState::UnknownDigestScope => "present; digest scope unknown",
         DiskAuditState::IdentityNotDeclared => "present; logical identity not declared",
         DiskAuditState::UnverifiedContainer => "CHD container present; logical identity unverified",
@@ -72,6 +79,9 @@ mod tests {
             disks: vec![DiskAuditEntry {
                 set_name: "machine".to_owned(),
                 disk_name: "image".to_owned(),
+                list_name: None,
+                item_name: None,
+                part_name: None,
                 parent_disk: Some("parent".to_owned()),
                 expected_logical_sha1: Some("11".repeat(20)),
                 state: DiskAuditState::UnverifiedContainer,
@@ -90,6 +100,7 @@ mod tests {
     fn json_state_names_cover_all_disk_audit_outcomes() -> mame_coalesce::Result<()> {
         let states = [
             (DiskAuditState::Missing, "missing"),
+            (DiskAuditState::AmbiguousLocation, "ambiguous_location"),
             (DiskAuditState::UnknownDigestScope, "unknown_digest_scope"),
             (DiskAuditState::IdentityNotDeclared, "identity_not_declared"),
             (DiskAuditState::UnverifiedContainer, "unverified_container"),
@@ -123,6 +134,9 @@ mod tests {
             disks: vec![DiskAuditEntry {
                 set_name: "machine".to_owned(),
                 disk_name: "image".to_owned(),
+                list_name: None,
+                item_name: None,
+                part_name: None,
                 parent_disk: None,
                 expected_logical_sha1: None,
                 state: DiskAuditState::UnverifiedContainer,

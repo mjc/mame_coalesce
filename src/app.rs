@@ -1,3 +1,5 @@
+use std::collections::{HashMap, HashSet};
+
 use camino::Utf8PathBuf;
 use diesel::{
     QueryableByName,
@@ -154,6 +156,9 @@ pub struct DiskAuditReport {
 pub struct DiskAuditEntry {
     pub set_name: String,
     pub disk_name: String,
+    pub list_name: Option<String>,
+    pub item_name: Option<String>,
+    pub part_name: Option<String>,
     pub parent_disk: Option<String>,
     pub expected_logical_sha1: Option<String>,
     pub state: DiskAuditState,
@@ -163,6 +168,7 @@ pub struct DiskAuditEntry {
 #[serde(rename_all = "snake_case")]
 pub enum DiskAuditState {
     Missing,
+    AmbiguousLocation,
     UnknownDigestScope,
     IdentityNotDeclared,
     UnverifiedContainer,
@@ -191,7 +197,7 @@ struct PublishedDiskSnapshotRow {
     snapshot_key: String,
 }
 
-#[derive(QueryableByName)]
+#[derive(Clone, QueryableByName)]
 struct DiskRequirementRow {
     #[diesel(sql_type = Text)]
     set_name: String,
@@ -203,113 +209,347 @@ struct DiskRequirementRow {
     evidence_scope: String,
     #[diesel(sql_type = Nullable<Text>)]
     merge_name: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    list_name: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    item_name: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    part_name: Option<String>,
 }
 
-/// Audit disk requirements from the latest published catalog snapshot against a scanned source.
-/// Scanned SHA-1 values are deliberately ignored: they identify container bytes, not CHD identity.
+type DiskParentMap = HashMap<(Option<String>, String), String>;
+type DiskSourceIndex<'files> = HashMap<String, Vec<&'files camino::Utf8Path>>;
+type DiskRequirementsByEntity<'rows> =
+    HashMap<(Option<String>, String), Vec<&'rows DiskRequirementRow>>;
+
+#[derive(QueryableByName)]
+struct DiskParentRow {
+    #[diesel(sql_type = Nullable<Text>)]
+    list: Option<String>,
+    #[diesel(sql_type = Text)]
+    child: String,
+    #[diesel(sql_type = Text)]
+    parent: String,
+}
+
+/// Audit disk requirements against a source root without reading or hashing its CHD contents.
+/// Container-byte hashes cannot establish logical CHD identity.
 pub fn audit_disks(
     database: &Database,
     request: &DiskAuditRequest,
 ) -> crate::Result<DiskAuditReport> {
     let source_path = request.source_path.canonicalize_utf8()?;
-    let mut conn = database.pool().get()?;
-    let snapshot = sql_query(
-        "SELECT publication.snapshot_key FROM snapshot_publications AS publication \
-         WHERE publication.catalog_key = ? \
-         ORDER BY publication.published_at DESC, publication.snapshot_key DESC LIMIT 1",
-    )
-    .bind::<Text, _>(&request.catalog_key)
-    .get_result::<PublishedDiskSnapshotRow>(&mut conn)?;
-    let requirements = sql_query(
-        "SELECT asset.set_name, asset.asset_name, asset.sha1, asset.evidence_scope, asset.merge_name \
-         FROM asset_requirements AS asset \
-         WHERE asset.snapshot_key = ? AND asset.role = 'disk' \
-         ORDER BY asset.set_name, asset.component_order",
-    )
-    .bind::<Text, _>(&snapshot.snapshot_key)
-    .load::<DiskRequirementRow>(&mut conn)?;
-    drop(conn);
-
-    let source_files = SourceRepository::new(database.pool()).load_source_files()?;
+    let (snapshot_key, requirements, parent_map) =
+        load_published_disk_requirements(database, &request.catalog_key)?;
+    let source_paths = operations::list_source_paths(&source_path, database.pool())?;
+    let source_index = disk_source_index(&source_paths);
+    let requirements_by_entity = disk_requirements_by_entity(&requirements);
     let disks = requirements
-        .into_iter()
+        .iter()
+        .cloned()
         .map(|row| {
-            let expected = row
-                .sha1
-                .map(|bytes| {
-                    bytes.try_into().map_err(|bytes: Vec<u8>| {
-                        crate::Error::InvalidHash(format!(
-                            "disk identity SHA-1 for {} has length {}; expected 20 bytes",
-                            row.asset_name,
-                            bytes.len()
-                        ))
-                    })
-                })
-                .transpose()?;
-            let scope = match row.evidence_scope.as_str() {
-                "chd_header_sha1" => DiskDigestScope::ChdHeaderSha1,
-                _ => DiskDigestScope::Unknown,
-            };
-            let mut requirement = DiskRequirement::new(
-                DiskName::new(row.asset_name.clone()),
-                expected.map(DiskIdentitySha1::new),
-                scope,
-            );
-            if let Some(parent) = row.merge_name.as_deref() {
-                requirement = requirement.with_parent(ParentDiskName::new(parent));
-            }
-            let matching_file = source_files
-                .iter()
-                .filter_map(|file| {
-                    let crate::domain::SourceLocation::BareFile { path } = &file.location else {
-                        return None;
-                    };
-                    let path = camino::Utf8Path::new(path);
-                    if !path.starts_with(&source_path) {
-                        return None;
-                    }
-                    let file_name = path.file_name()?;
-                    let matches = file_name.eq_ignore_ascii_case(&row.asset_name)
-                        || file_name.eq_ignore_ascii_case(&format!("{}.chd", row.asset_name));
-                    matches.then_some((file, file_name.to_owned()))
-                })
-                .min_by_key(|(file, file_name)| {
-                    (
-                        u8::from(!file_name.to_ascii_lowercase().ends_with(".chd")),
-                        file.location.path().to_owned(),
-                    )
-                })
-                .map(|(file, _)| file);
-            let observation = matching_file.map_or(DiskObservation::Missing, |file| {
-                let file_name = camino::Utf8Path::new(file.location.path())
-                    .file_name()
-                    .unwrap_or_default();
-                if file_name.to_ascii_lowercase().ends_with(".chd") {
-                    DiskObservation::ContainerPresent { byte_sha1: None }
-                } else {
-                    DiskObservation::UnsupportedContainer
-                }
-            });
-            let state = DiskAuditState::from(disk::audit_disk(&requirement, observation));
-            Ok(DiskAuditEntry {
-                set_name: row.set_name,
-                disk_name: row.asset_name,
-                parent_disk: requirement
-                    .parent()
-                    .map(|parent| parent.as_str().to_owned()),
-                expected_logical_sha1: expected.map(hex::encode),
-                state,
-            })
+            audit_disk_requirement(
+                row,
+                &source_path,
+                &source_index,
+                &requirements_by_entity,
+                &parent_map,
+            )
         })
         .collect::<crate::Result<Vec<_>>>()?;
 
     Ok(DiskAuditReport {
         schema_version: 1,
         catalog_key: request.catalog_key.clone(),
-        snapshot_key: snapshot.snapshot_key,
+        snapshot_key,
         source_path,
         disks,
     })
+}
+
+fn load_published_disk_requirements(
+    database: &Database,
+    catalog_key: &str,
+) -> crate::Result<(String, Vec<DiskRequirementRow>, DiskParentMap)> {
+    let mut conn = database.pool().get()?;
+    let snapshot = sql_query(
+        "SELECT publication.snapshot_key FROM snapshot_publications AS publication \
+         WHERE publication.catalog_key = ? \
+         ORDER BY publication.rowid DESC LIMIT 1",
+    )
+    .bind::<Text, _>(catalog_key)
+    .get_result::<PublishedDiskSnapshotRow>(&mut conn)
+    .map_err(|error| match error {
+        diesel::result::Error::NotFound => crate::Error::CatalogNotFound(catalog_key.to_owned()),
+        error => error.into(),
+    })?;
+    let mut requirements = sql_query(
+        "SELECT asset.set_name, asset.asset_name, asset.sha1, asset.evidence_scope, \
+                asset.merge_name, NULL AS list_name, NULL AS item_name, NULL AS part_name \
+         FROM asset_requirements AS asset \
+         WHERE asset.snapshot_key = ? AND asset.role = 'disk' \
+         ORDER BY asset.set_name, asset.component_order",
+    )
+    .bind::<Text, _>(&snapshot.snapshot_key)
+    .load::<DiskRequirementRow>(&mut conn)?;
+    requirements.extend(
+        sql_query(
+            "SELECT component.item_name AS set_name, component.component_name AS asset_name, \
+                component.sha1, component.evidence_scope, NULL AS merge_name, \
+                component.list_name, component.item_name, component.part_name \
+         FROM software_components AS component \
+         JOIN software_items AS item \
+           ON item.snapshot_key = component.snapshot_key \
+          AND item.list_name = component.list_name AND item.item_name = component.item_name \
+         WHERE component.snapshot_key = ? AND component.component_kind = 'disk' \
+         ORDER BY component.list_name, component.item_name, component.part_name, \
+                  component.area_order, component.component_order",
+        )
+        .bind::<Text, _>(&snapshot.snapshot_key)
+        .load::<DiskRequirementRow>(&mut conn)?,
+    );
+    let mut parent_rows = sql_query(
+        "SELECT NULL AS list, set_name AS child, parent_name AS parent \
+         FROM snapshot_sets WHERE snapshot_key = ? AND parent_name IS NOT NULL",
+    )
+    .bind::<Text, _>(&snapshot.snapshot_key)
+    .load::<DiskParentRow>(&mut conn)?;
+    parent_rows.extend(
+        sql_query(
+            "SELECT dependency.list_name AS list, dependency.item_name AS child, \
+             dependency.target_item_name AS parent \
+             FROM software_item_dependencies AS dependency \
+             WHERE dependency.snapshot_key = ? AND dependency.dependency_kind = 'clone_of'",
+        )
+        .bind::<Text, _>(&snapshot.snapshot_key)
+        .load::<DiskParentRow>(&mut conn)?,
+    );
+    let parent_map = parent_rows
+        .into_iter()
+        .map(|row| ((row.list, row.child), row.parent))
+        .collect();
+    Ok((snapshot.snapshot_key, requirements, parent_map))
+}
+
+fn audit_disk_requirement(
+    row: DiskRequirementRow,
+    source_path: &camino::Utf8Path,
+    source_index: &DiskSourceIndex<'_>,
+    requirements_by_entity: &DiskRequirementsByEntity<'_>,
+    parent_map: &DiskParentMap,
+) -> crate::Result<DiskAuditEntry> {
+    let (requirement, expected_logical_sha1) = disk_requirement(&row)?;
+    let (observation, ambiguous) = disk_observation(
+        &row,
+        source_path,
+        source_index,
+        requirements_by_entity,
+        parent_map,
+    );
+    let state = if ambiguous {
+        DiskAuditState::AmbiguousLocation
+    } else {
+        DiskAuditState::from(disk::audit_disk(&requirement, observation))
+    };
+
+    Ok(DiskAuditEntry {
+        set_name: row.set_name,
+        disk_name: row.asset_name,
+        list_name: row.list_name,
+        item_name: row.item_name,
+        part_name: row.part_name,
+        parent_disk: requirement
+            .parent()
+            .map(|parent| parent.as_str().to_owned()),
+        expected_logical_sha1,
+        state,
+    })
+}
+
+fn disk_requirement(row: &DiskRequirementRow) -> crate::Result<(DiskRequirement, Option<String>)> {
+    let expected = row
+        .sha1
+        .as_ref()
+        .map(|bytes| {
+            <[u8; 20]>::try_from(bytes.as_slice()).map_err(|_| {
+                crate::Error::InvalidHash(format!(
+                    "disk identity SHA-1 for {} has length {}; expected 20 bytes",
+                    row.asset_name,
+                    bytes.len()
+                ))
+            })
+        })
+        .transpose()?;
+    let scope = match row.evidence_scope.as_str() {
+        "chd_header_sha1" => DiskDigestScope::ChdHeaderSha1,
+        _ => DiskDigestScope::Unknown,
+    };
+    let mut requirement = DiskRequirement::new(
+        DiskName::new(row.asset_name.clone()),
+        expected.map(DiskIdentitySha1::new),
+        scope,
+    );
+    if let Some(parent) = row.merge_name.as_deref() {
+        requirement = requirement.with_parent(ParentDiskName::new(parent));
+    }
+    Ok((requirement, expected.map(hex::encode)))
+}
+
+fn disk_observation(
+    row: &DiskRequirementRow,
+    source_path: &camino::Utf8Path,
+    source_index: &DiskSourceIndex<'_>,
+    requirements_by_entity: &DiskRequirementsByEntity<'_>,
+    parent_map: &DiskParentMap,
+) -> (DiskObservation, bool) {
+    let candidate_locations = disk_locations(row, source_path, requirements_by_entity, parent_map);
+    let matching_file = indexed_disk_candidates(&candidate_locations, source_index);
+    matching_file.map_or((DiskObservation::Missing, false), |(file, assigned)| {
+        if !assigned {
+            return (DiskObservation::Missing, true);
+        }
+        let file_name = file.file_name().unwrap_or_default();
+        if file_name.to_ascii_lowercase().ends_with(".chd") {
+            (DiskObservation::ContainerPresent { byte_sha1: None }, false)
+        } else {
+            (DiskObservation::UnsupportedContainer, false)
+        }
+    })
+}
+
+fn disk_locations(
+    row: &DiskRequirementRow,
+    source_path: &camino::Utf8Path,
+    requirements_by_entity: &DiskRequirementsByEntity<'_>,
+    parent_map: &DiskParentMap,
+) -> Vec<(Utf8PathBuf, Vec<String>)> {
+    let mut locations = Vec::new();
+    let initial_entity = (
+        row.list_name.clone(),
+        row.item_name
+            .clone()
+            .unwrap_or_else(|| row.set_name.clone()),
+    );
+    let direct_parent = parent_map
+        .get(&initial_entity)
+        .map(|parent| (initial_entity.0.clone(), parent.clone()));
+    let mut entity = initial_entity;
+    let mut ancestors = HashSet::new();
+    while ancestors.insert(entity.clone()) {
+        let mut names = vec![row.asset_name.clone()];
+        if direct_parent.as_ref() == Some(&entity)
+            && let Some(merge_name) = row.merge_name.as_deref()
+        {
+            names.push(merge_name.to_owned());
+        }
+        let entity_directories = std::iter::once(entity.0.as_deref().map_or_else(
+            || source_path.join(&entity.1),
+            |list| source_path.join(list).join(&entity.1),
+        ))
+        .chain(entity.0.is_some().then(|| source_path.join(&entity.1)));
+        for parent_disk in requirements_by_entity
+            .get(&entity)
+            .into_iter()
+            .flatten()
+            .filter(|candidate| same_declared_disk_identity(row, candidate))
+        {
+            if !names.contains(&parent_disk.asset_name) {
+                names.push(parent_disk.asset_name.clone());
+            }
+        }
+        for directory in entity_directories {
+            locations.push((directory, names.clone()));
+        }
+        let Some(parent) = parent_map.get(&entity).cloned() else {
+            break;
+        };
+        entity = (entity.0, parent);
+    }
+    locations
+}
+
+fn disk_requirements_by_entity(
+    requirements: &[DiskRequirementRow],
+) -> DiskRequirementsByEntity<'_> {
+    let mut index = DiskRequirementsByEntity::new();
+    for requirement in requirements {
+        let entity = (
+            requirement.list_name.clone(),
+            requirement
+                .item_name
+                .clone()
+                .unwrap_or_else(|| requirement.set_name.clone()),
+        );
+        index.entry(entity).or_default().push(requirement);
+    }
+    index
+}
+
+fn disk_source_index(source_files: &[Utf8PathBuf]) -> DiskSourceIndex<'_> {
+    let mut index = DiskSourceIndex::new();
+    for file in source_files {
+        if let Some(file_name) = file.file_name() {
+            index
+                .entry(file_name.to_owned())
+                .or_default()
+                .push(file.as_path());
+            if file
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("chd"))
+                && let Some(stem) = file.file_stem()
+            {
+                let normalized_name = format!("{stem}.chd");
+                if normalized_name != file_name {
+                    index
+                        .entry(normalized_name)
+                        .or_default()
+                        .push(file.as_path());
+                }
+            }
+        }
+    }
+    index
+}
+
+fn indexed_disk_candidates<'files>(
+    locations: &[(Utf8PathBuf, Vec<String>)],
+    source_index: &DiskSourceIndex<'files>,
+) -> Option<(&'files camino::Utf8Path, bool)> {
+    let mut candidates = Vec::new();
+    for (directory, names) in locations {
+        for name in names {
+            for expected_name in [name.clone(), format!("{name}.chd")] {
+                let Some(files) = source_index.get(&expected_name) else {
+                    continue;
+                };
+                for file in files {
+                    let assigned = file.parent() == Some(directory.as_path());
+                    candidates.push((*file, expected_name.clone(), assigned));
+                }
+            }
+        }
+    }
+    let matching_file = candidates
+        .into_iter()
+        .min_by_key(|(file, file_name, assigned)| {
+            (
+                u8::from(!assigned),
+                u8::from(
+                    !camino::Utf8Path::new(file_name)
+                        .extension()
+                        .is_some_and(|extension| extension.eq_ignore_ascii_case("chd")),
+                ),
+                file.as_str().to_owned(),
+            )
+        });
+    matching_file.map(|(file, _, assigned)| (file, assigned))
+}
+
+fn same_declared_disk_identity(left: &DiskRequirementRow, right: &DiskRequirementRow) -> bool {
+    left.evidence_scope == "chd_header_sha1"
+        && right.evidence_scope == left.evidence_scope
+        && left.sha1.is_some()
+        && left.sha1 == right.sha1
 }
 
 pub fn import_dat(
