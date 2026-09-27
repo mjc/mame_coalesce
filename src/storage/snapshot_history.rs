@@ -51,6 +51,8 @@ struct SetRow {
 struct RequirementRow {
     #[diesel(sql_type = Text)]
     set_name: String,
+    #[diesel(sql_type = BigInt)]
+    component_order: i64,
     #[diesel(sql_type = Text)]
     asset_name: String,
     #[diesel(sql_type = Text)]
@@ -85,6 +87,10 @@ struct ExtensionRow {
     record_kind: String,
     #[diesel(sql_type = Nullable<Text>)]
     record_name: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    owner_set_name: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    owner_component_order: Option<String>,
     #[diesel(sql_type = Text)]
     field_name: String,
     #[diesel(sql_type = Nullable<Text>)]
@@ -98,6 +104,7 @@ struct CatalogRecords {
     sets: BTreeMap<String, SetRow>,
     requirements: BTreeMap<String, BTreeMap<String, Vec<serde_json::Value>>>,
     extensions: BTreeMap<(String, String), Vec<serde_json::Value>>,
+    asset_extensions: BTreeMap<(String, String), Vec<serde_json::Value>>,
 }
 
 pub fn diff(
@@ -311,14 +318,14 @@ fn records(
     .bind::<Text, _>(key.as_str())
     .load::<SetRow>(conn)?;
     let requirements = sql_query(
-        "SELECT set_name, asset_name, role, size, crc, md5, sha1, evidence_scope, \
+        "SELECT set_name, component_order, asset_name, role, size, crc, md5, sha1, evidence_scope, \
          evidence_provenance, merge_name, dump_status, serial, date, metadata_json \
          FROM asset_requirements WHERE snapshot_key = ? ORDER BY set_name, asset_name, component_order",
     )
     .bind::<Text, _>(key.as_str())
     .load::<RequirementRow>(conn)?;
     let extensions = sql_query(
-        "SELECT record_kind, record_name, field_name, namespace_uri, raw_value_json \
+        "SELECT record_kind, record_name, owner_set_name, owner_component_order, field_name, namespace_uri, raw_value_json \
          FROM snapshot_extensions WHERE snapshot_key = ? \
          ORDER BY record_kind, record_name, field_name, namespace_uri, raw_value_json",
     )
@@ -330,16 +337,26 @@ fn records(
         result.sets.insert(set.set_name.clone(), set);
     }
     for extension in extensions {
-        if let Some(record_name) = extension.record_name {
-            result
-                .extensions
-                .entry((extension.record_kind, record_name))
+        let value = serde_json::json!({
+            "field": extension.field_name,
+            "namespace": extension.namespace_uri,
+            "value": json(&extension.raw_value_json),
+        });
+        match (extension.owner_set_name, extension.owner_component_order) {
+            (Some(set), Some(component_order)) => result
+                .asset_extensions
+                .entry((set, component_order))
                 .or_default()
-                .push(serde_json::json!({
-                    "field": extension.field_name,
-                    "namespace": extension.namespace_uri,
-                    "value": json(&extension.raw_value_json),
-                }));
+                .push(value),
+            _ => {
+                if let Some(record_name) = extension.record_name {
+                    result
+                        .extensions
+                        .entry((extension.record_kind, record_name))
+                        .or_default()
+                        .push(value);
+                }
+            }
         }
     }
     for extensions in result.extensions.values_mut() {
@@ -347,9 +364,8 @@ fn records(
     }
     for row in requirements {
         let source_extensions = result
-            .extensions
-            .get(&(row.role.clone(), row.asset_name.clone()))
-            .cloned()
+            .asset_extensions
+            .remove(&(row.set_name.clone(), row.component_order.to_string()))
             .unwrap_or_default();
         let value = serde_json::json!({
             "role": row.role,
