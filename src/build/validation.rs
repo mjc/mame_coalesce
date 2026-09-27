@@ -516,7 +516,21 @@ pub(crate) fn canonicalize_destination(destination: &Utf8Path) -> crate::Result<
                 match fs::canonicalize(&candidate) {
                     Ok(canonical) => resolved = canonical,
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                        resolved.push(name);
+                        match fs::symlink_metadata(&candidate) {
+                            Ok(metadata) if metadata.file_type().is_symlink() => {
+                                return Err(crate::Error::InvalidPath(format!(
+                                    "dangling symlink in path: {}",
+                                    candidate.display()
+                                )));
+                            }
+                            Err(metadata_error)
+                                if metadata_error.kind() == std::io::ErrorKind::NotFound =>
+                            {
+                                resolved.push(name);
+                            }
+                            Err(metadata_error) => return Err(metadata_error.into()),
+                            Ok(_) => return Err(error.into()),
+                        }
                     }
                     Err(error) => return Err(error.into()),
                 }
@@ -1007,6 +1021,45 @@ mod tests {
         let checked = checked_plan_destination(&plan, destination)?;
         assert_eq!(checked.path(), destination);
         assert_eq!(checked.sources(), &[source_root.to_path_buf()]);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn checked_plan_destination_rejects_a_dangling_source_symlink() -> crate::Result<()> {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir()?;
+        let source_dir = temp.path().join("input");
+        std::fs::create_dir_all(&source_dir)?;
+        let source_root = Utf8Path::from_path(&source_dir)
+            .ok_or_else(|| std::io::Error::other("temporary path is not UTF-8"))?;
+        let first_source = source_root.join("first.rom");
+        std::fs::write(&first_source, b"first")?;
+        let destination_path = temp.path().join("output");
+        let destination = Utf8Path::from_path(&destination_path)
+            .ok_or_else(|| std::io::Error::other("temporary path is not UTF-8"))?;
+        let dangling_source = source_root.join("generated.zip");
+        symlink(destination.join("first.zip"), &dangling_source)?;
+
+        let make_source = |path: &Utf8Path| {
+            let mut source = entry("game.rom", ExpectedEvidence::default()).source;
+            source.source_root = crate::domain::SourceRoot::new(source_root.as_str());
+            source.location = crate::domain::SourceLocation::BareFile {
+                path: path.to_string(),
+            };
+            source
+        };
+        let mut first = entry("first.rom", ExpectedEvidence::default());
+        first.source = make_source(&first_source);
+        let mut second = entry("second.rom", ExpectedEvidence::default());
+        second.source = make_source(&dangling_source);
+        let plan = empty_plan(vec![
+            group("first", vec![first]),
+            group("second", vec![second]),
+        ]);
+
+        assert!(checked_plan_destination(&plan, destination).is_err());
         Ok(())
     }
 }
