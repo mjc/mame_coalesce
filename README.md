@@ -62,7 +62,13 @@ Windows-reserved device names, or platform-forbidden characters. Unicode names
 are rejected rather than relying on filesystem-specific normalization. The
 one-shot workflow rejects source and destination roots that are equal, nested,
 or aliased through existing symlinks; it checks before scanning and again before
-writing. Sources are never modified.
+writing. Artifact writing currently requires Unix handle-relative filesystem
+operations; non-Unix output is rejected before creating or truncating artifacts.
+On Unix, output ancestry must be owned by root or the effective user and protected
+from writes by other UIDs. Linux POSIX ACLs on that ancestry are rejected because
+they can grant directory-entry access beyond the mode bits. Sources are never
+modified. On other Unix systems, protection is assessed from ownership, mode bits,
+and sticky-directory semantics; platform-specific ACLs are not inspected.
 
 Source scans intentionally skip hidden files and directories below the source
 root. Non-UTF-8 paths and traversal or archive-read errors fail the scan, so an
