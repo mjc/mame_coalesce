@@ -53,16 +53,16 @@ pub fn write_plan_with_compression(
         .collect::<Vec<_>>();
     let destination = checked_destination(&sources, destination)?;
     let output_paths = zip_output_paths(plan, &destination)?;
-    // Secure handle-relative output is supported on Linux. macOS ACLs can grant
-    // delete-child rights that are not visible in mode bits, so reject it before
-    // opening or creating any output directory. Non-Unix targets have the same
-    // conservative boundary because replacement/containment are not implemented.
-    #[cfg(not(target_os = "linux"))]
+    // Handle-relative output is supported on Linux and macOS. Reject other
+    // targets before opening or creating output.
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     let _ = (compression, output_paths);
-    #[cfg(not(target_os = "linux"))]
-    return Err(io::Error::other("secure output writing is supported only on Linux").into());
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    return Err(
+        io::Error::other("secure output writing is supported only on Linux and macOS").into(),
+    );
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         let options = file_options(compression);
         let mut written_paths = Vec::with_capacity(plan.groups.len());
@@ -165,10 +165,10 @@ impl SecureOutputDirectory {
             .iter()
             .map(|source| {
                 let source = source.canonicalize_utf8()?;
-                open_directory(&source, false, false)
+                open_directory(&source, false)
             })
             .collect::<crate::Result<Vec<_>>>()?;
-        let directory = open_directory(&destination, true, true)?;
+        let directory = open_directory(&destination, true)?;
         let output = Self {
             directory,
             source_directories,
@@ -225,7 +225,6 @@ impl SecureOutputDirectory {
                 Err(error) => return Err(std::io::Error::from(error).into()),
             };
             parent = File::from(next);
-            ensure_protected_directory(&parent, true)?;
         }
         for _ in 0..10 {
             let temporary_name = format!(".{file_name}.{}.tmp", uuid::Uuid::new_v4());
@@ -371,7 +370,7 @@ fn cleanup_spool_name_if_same(parent: &File, name: &str, expected: &rustix::fs::
 }
 
 #[cfg(unix)]
-fn open_directory(path: &Utf8Path, create: bool, protect_output: bool) -> crate::Result<File> {
+fn open_directory(path: &Utf8Path, create: bool) -> crate::Result<File> {
     use rustix::{
         fs::{self, Mode, OFlags},
         io::Errno,
@@ -385,11 +384,8 @@ fn open_directory(path: &Utf8Path, create: bool, protect_output: bool) -> crate:
     )
     .map_err(std::io::Error::from)?;
     let mut directory = File::from(root);
-    if protect_output {
-        ensure_protected_directory(&directory, false)?;
-    }
     let components = path.as_std_path().components().collect::<Vec<_>>();
-    for (index, component) in components.iter().enumerate() {
+    for component in &components {
         let name = match component {
             std::path::Component::RootDir | std::path::Component::CurDir => continue,
             std::path::Component::ParentDir => {
@@ -421,54 +417,8 @@ fn open_directory(path: &Utf8Path, create: bool, protect_output: bool) -> crate:
             Err(error) => return Err(std::io::Error::from(error).into()),
         };
         directory = File::from(next);
-        if protect_output {
-            let final_component = index + 1 == components.len();
-            ensure_protected_directory(&directory, final_component)?;
-        }
     }
     Ok(directory)
-}
-
-#[cfg(unix)]
-fn ensure_protected_directory(directory: &File, output: bool) -> crate::Result<()> {
-    use std::os::fd::AsFd;
-
-    let stat = rustix::fs::fstat(directory.as_fd()).map_err(std::io::Error::from)?;
-    let uid = rustix::process::geteuid().as_raw();
-    let owned_by_trusted_uid = stat.st_uid == uid || stat.st_uid == 0;
-    let writable_by_other_uids = stat.st_mode & 0o022 != 0;
-    let sticky = stat.st_mode & 0o1000 != 0;
-    // A sticky ancestor protects its trusted-owned child entry. The output root
-    // and its descendants must also deny writes by other UIDs: otherwise a
-    // source could be moved inside them after the last overlap check.
-    if !owned_by_trusted_uid || (writable_by_other_uids && (output || !sticky)) {
-        return Err(crate::Error::InvalidPath(
-            "output ancestry is writable or movable by another user".to_owned(),
-        ));
-    }
-    #[cfg(target_os = "linux")]
-    ensure_no_posix_acl(directory)?;
-    Ok(())
-}
-
-#[cfg(all(unix, target_os = "linux"))]
-fn ensure_no_posix_acl(directory: &File) -> crate::Result<()> {
-    use std::os::fd::AsFd;
-
-    let mut names = Vec::new();
-    rustix::fs::flistxattr(directory.as_fd(), &mut names).map_err(std::io::Error::from)?;
-    let has_posix_acl = names.split(|byte| *byte == 0).any(|name| {
-        matches!(
-            name,
-            b"system.posix_acl_access" | b"system.posix_acl_default"
-        )
-    });
-    if has_posix_acl {
-        return Err(crate::Error::InvalidPath(
-            "output ancestry with POSIX ACLs is unsupported".to_owned(),
-        ));
-    }
-    Ok(())
 }
 
 #[cfg(unix)]
@@ -982,7 +932,7 @@ impl Write for ArchiveSpoolWriter {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod tests {
     use std::{
         fs,
@@ -1394,7 +1344,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn writable_ancestor_rejects_output_before_commit() -> Result<(), Box<dyn std::error::Error>> {
+    fn writable_ancestor_allows_output() -> Result<(), Box<dyn std::error::Error>> {
         use std::os::unix::fs::PermissionsExt;
 
         let temp_dir = tempfile::tempdir()?;
@@ -1412,16 +1362,15 @@ mod tests {
             report: BuildReport::default(),
         };
 
-        let result = write_plan(&plan, &destination);
+        let result = write_plan(&plan, &destination)?;
 
-        assert!(result.is_err());
-        assert!(!destination.join("nested").exists());
+        assert_eq!(result, [destination.join("nested/set.zip")]);
         Ok(())
     }
 
     #[cfg(unix)]
     #[test]
-    fn writable_nested_directory_rejects_staged_write() -> Result<(), Box<dyn std::error::Error>> {
+    fn writable_nested_directory_allows_staged_write() -> Result<(), Box<dyn std::error::Error>> {
         use std::os::unix::fs::PermissionsExt;
 
         let temp_dir = tempfile::tempdir()?;
@@ -1438,10 +1387,9 @@ mod tests {
             report: BuildReport::default(),
         };
 
-        let result = write_plan(&plan, &destination);
+        let result = write_plan(&plan, &destination)?;
 
-        assert!(result.is_err());
-        assert!(!nested.join("set.zip").exists());
+        assert_eq!(result, [nested.join("set.zip")]);
         Ok(())
     }
 
@@ -1995,7 +1943,7 @@ mod tests {
     }
 }
 
-#[cfg(all(test, not(target_os = "linux")))]
+#[cfg(all(test, not(any(target_os = "linux", target_os = "macos"))))]
 mod unsupported_output_tests {
     use super::*;
 

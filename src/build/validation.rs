@@ -235,11 +235,17 @@ fn entry_collision_witnesses<'a>(
 
         for other_mask in 1_u8..16 {
             let shared = mask & other_mask;
-            if shared & 0b111 != 0
-                && let Some(first) =
-                    by_projection.get(&(other_mask, shared, evidence_projection(expected, shared)))
+            if let Some(first) =
+                by_projection.get(&(other_mask, shared, evidence_projection(expected, shared)))
             {
-                witnesses[0].get_or_insert((*first, *entry));
+                let witness = if shared & 0b011 != 0 {
+                    &mut witnesses[0]
+                } else if shared & 0b100 != 0 {
+                    &mut witnesses[2]
+                } else {
+                    continue;
+                };
+                witness.get_or_insert((*first, *entry));
             }
         }
 
@@ -373,7 +379,7 @@ fn content_relation(left: &ExpectedEvidence, right: &ExpectedEvidence) -> Conten
         return ContentRelation::UnknownContent;
     }
 
-    let mut comparable_digest = false;
+    let mut matching_strong_digest = false;
     macro_rules! compare {
         ($field:ident) => {
             if let (Some(left), Some(right)) = (&left.$field, &right.$field) {
@@ -384,20 +390,20 @@ fn content_relation(left: &ExpectedEvidence, right: &ExpectedEvidence) -> Conten
         };
     }
     macro_rules! compare_digest {
-        ($field:ident) => {
+        ($field:ident, $strong:expr) => {
             if let (Some(left), Some(right)) = (&left.$field, &right.$field) {
-                comparable_digest = true;
+                matching_strong_digest |= $strong;
                 if left != right {
                     return ContentRelation::DifferentContent;
                 }
             }
         };
     }
-    compare_digest!(sha1);
-    compare_digest!(md5);
-    compare_digest!(crc);
+    compare_digest!(sha1, true);
+    compare_digest!(md5, true);
+    compare_digest!(crc, false);
     compare!(size);
-    if comparable_digest {
+    if matching_strong_digest {
         ContentRelation::SameEstablishedContent
     } else {
         ContentRelation::UnknownContent
@@ -639,6 +645,84 @@ mod tests {
     }
 
     #[test]
+    fn matching_crc_without_stronger_digest_does_not_establish_content_identity() {
+        let left = ExpectedEvidence {
+            scope: crate::domain::EvidenceScope::WholeAsset,
+            crc: Some(crate::domain::Crc32Digest([1; 4])),
+            size: Some(1024),
+            ..ExpectedEvidence::default()
+        };
+        let right = left.clone();
+
+        assert_eq!(
+            content_relation(&left, &right),
+            ContentRelation::UnknownContent
+        );
+        assert_eq!(
+            content_relation(
+                &left,
+                &ExpectedEvidence {
+                    crc: Some(crate::domain::Crc32Digest([2; 4])),
+                    ..right
+                }
+            ),
+            ContentRelation::DifferentContent
+        );
+    }
+
+    #[test]
+    fn matching_crc_only_duplicates_are_reported_as_unknown_content() {
+        let expected = ExpectedEvidence {
+            scope: crate::domain::EvidenceScope::WholeAsset,
+            crc: Some(crate::domain::Crc32Digest([1; 4])),
+            size: Some(1024),
+            ..ExpectedEvidence::default()
+        };
+        let plan = empty_plan(vec![group(
+            "set",
+            vec![
+                entry("rom.bin", expected.clone()),
+                entry("rom.bin", expected),
+            ],
+        )]);
+
+        assert!(inspect_plan(&plan).iter().any(|issue| {
+            issue.kind == PlanIssueKind::DuplicateEntry(ContentRelation::UnknownContent)
+        }));
+        assert!(validate_plan(&plan).is_err());
+    }
+
+    #[test]
+    fn crc_only_match_does_not_consume_strong_identity_witness() {
+        let crc_only = ExpectedEvidence {
+            scope: crate::domain::EvidenceScope::WholeAsset,
+            crc: Some(crate::domain::Crc32Digest([1; 4])),
+            ..ExpectedEvidence::default()
+        };
+        let matching_md5 = ExpectedEvidence {
+            scope: crate::domain::EvidenceScope::WholeAsset,
+            md5: Some(crate::domain::Md5Digest([2; 16])),
+            ..ExpectedEvidence::default()
+        };
+        let entries = [
+            entry("rom.bin", crc_only.clone()),
+            entry("rom.bin", crc_only),
+            entry("rom.bin", matching_md5.clone()),
+            entry("rom.bin", matching_md5),
+        ];
+        let entries = entries.iter().collect::<Vec<_>>();
+
+        assert!(
+            entry_collision_witnesses(&entries)
+                .iter()
+                .any(|(left, right)| {
+                    content_relation(&left.expected, &right.expected)
+                        == ContentRelation::SameEstablishedContent
+                })
+        );
+    }
+
+    #[test]
     fn validation_diagnostics_are_stable_under_group_and_entry_permutations() {
         let expected = ExpectedEvidence {
             scope: crate::domain::EvidenceScope::WholeAsset,
@@ -751,6 +835,14 @@ mod tests {
                     scope: crate::domain::EvidenceScope::WholeAsset,
                     crc: Some(crate::domain::Crc32Digest([0; 4])),
                     md5: Some(crate::domain::Md5Digest([1; 16])),
+                    ..ExpectedEvidence::default()
+                },
+            ),
+            entry(
+                "rom.bin",
+                ExpectedEvidence {
+                    scope: crate::domain::EvidenceScope::WholeAsset,
+                    md5: Some(crate::domain::Md5Digest([0; 16])),
                     ..ExpectedEvidence::default()
                 },
             ),
