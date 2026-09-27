@@ -1360,11 +1360,7 @@ mod tests {
         )
         .execute(&mut conn)?;
 
-        // This test targets catalog/document rollback behavior; remove the newer
-        // ROM-scan extension before walking back those migrations.
-        conn.revert_last_migration(crate::storage::db::MIGRATIONS)?;
-        conn.revert_last_migration(crate::storage::db::MIGRATIONS)?;
-        conn.revert_last_migration(crate::storage::db::MIGRATIONS)?;
+        conn.revert_migration(migrations[software_list_index].as_ref())?;
         let software_list_tables = sql_query(
             "SELECT COUNT(*) AS count FROM sqlite_master \
              WHERE type = 'table' AND name IN ('software_lists', 'software_items', \

@@ -29,9 +29,18 @@ pub fn source(
     jobs: usize,
     excluded_paths: &[Utf8PathBuf],
 ) -> crate::Result<CompleteSourceScan> {
+    source_with_walk(path, jobs, excluded_paths, walk_for_files)
+}
+
+fn source_with_walk(
+    path: &Utf8Path,
+    jobs: usize,
+    excluded_paths: &[Utf8PathBuf],
+    walk: impl FnOnce(&Utf8Path, &[Utf8PathBuf]) -> crate::Result<Vec<Utf8PathBuf>>,
+) -> crate::Result<CompleteSourceScan> {
     let source_root = path.canonicalize_utf8()?;
     info!("Looking in path: {source_root}");
-    let file_list = walk_for_files(&source_root, excluded_paths)?;
+    let file_list = walk(&source_root, excluded_paths)?;
     let source_root = SourceRoot::new(source_root.to_string());
     let scan_run = ScanRunKey::fresh();
     let observations = get_all_observations(&file_list, jobs, &source_root, scan_run)?;
@@ -221,27 +230,6 @@ impl Write for RomHashWriter {
     }
 }
 
-fn archive_rom_file(
-    archive_path: &Utf8Path,
-    member_path: &Path,
-    sha1: Sha1Digest,
-    xxhash3: Xxh3Digest,
-    backend: crate::domain::ArchiveBackend,
-    index: u64,
-) -> std::io::Result<NewRomFile> {
-    NewRomFile::from_archive(archive_path, member_path, sha1, xxhash3, backend, index).ok_or_else(
-        || {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!(
-                    "couldn't represent archive member {} in {archive_path}",
-                    member_path.display()
-                ),
-            )
-        },
-    )
-}
-
 pub(super) fn walk_for_files(
     dir: &Utf8Path,
     excluded_paths: &[Utf8PathBuf],
@@ -318,7 +306,6 @@ fn optimize_file_order(mut dirs: Vec<DirEntry>) -> Vec<DirEntry> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::repositories::SourceRepository;
     use std::cell::Cell;
     use std::collections::BTreeSet;
     use std::io::{self, Write};
@@ -386,27 +373,14 @@ mod tests {
     }
 
     #[test]
-    fn failed_partial_walk_preserves_cached_source_rows() -> Result<(), Box<dyn std::error::Error>>
-    {
-        let database_dir = tempfile::tempdir()?;
-        let database_path = database_dir.path().join("cache.sqlite");
-        let pool = db::create_db_pool(
-            database_path
-                .to_str()
-                .ok_or_else(|| io::Error::other("database path is not UTF-8"))?,
-        )?;
+    fn failed_partial_walk_does_not_produce_a_completed_scan()
+    -> Result<(), Box<dyn std::error::Error>> {
         let source_dir = tempfile::tempdir()?;
         let root = Utf8Path::from_path(source_dir.path())
             .ok_or_else(|| io::Error::other("source path is not UTF-8"))?;
-        std::fs::write(root.join("a.rom"), b"cached")?;
-        source(root, 1, &pool)?;
-        let cached = SourceRepository::new(&pool).load_source_files()?;
-        assert_eq!(cached.len(), 1);
-
-        std::fs::remove_file(root.join("a.rom"))?;
         std::fs::write(root.join("b.rom"), b"new")?;
         let saw_file = Cell::new(false);
-        let result = source_with_walk(root, 1, &pool, |source_root, excluded_paths| {
+        let result = source_with_walk(root, 1, &[], |source_root, excluded_paths| {
             let missing_path = source_root.join("removed-during-scan");
             let Some(Err(walk_error)) = WalkDir::new(&missing_path).into_iter().next() else {
                 return Err(Error::InvalidPath(
@@ -437,7 +411,6 @@ mod tests {
             return Err("expected partial walk to fail".into());
         };
         assert!(error.to_string().contains("removed-during-scan"));
-        assert_eq!(SourceRepository::new(&pool).load_source_files()?, cached);
         Ok(())
     }
 

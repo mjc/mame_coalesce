@@ -5,7 +5,10 @@ use diesel::{
     Connection, QueryableByName, RunQueryDsl, SqliteConnection, sql_query, sql_types::Text,
 };
 use mame_coalesce::{
-    app::{self, CatalogDocumentFormat, CatalogImportRequest, DiskAuditRequest, DiskAuditState},
+    app::{
+        self, CatalogDocumentFormat, CatalogImportRequest, DiskAuditRequest, DiskAuditState,
+        SourceScanRequest,
+    },
     database::Database,
     domain::{CatalogKey, CatalogScope, PublishingSourceKey},
 };
@@ -80,6 +83,16 @@ fn disk_audit_reports_missing_then_unverified_without_exposing_container_hash()
         present.disks[0].expected_logical_sha1.as_deref(),
         Some("1123456789abcdef0123456789abcdef01234567")
     );
+    app::scan_source(
+        &database,
+        &SourceScanRequest {
+            source_path: request.source_path.clone(),
+            jobs: 1,
+        },
+    )?;
+    std::fs::remove_file(source_dir.path().join("demo_machine/demo_disk.chd"))?;
+    let removed = app::audit_disks(&database, &request)?;
+    assert_eq!(removed.disks[0].state, DiskAuditState::Missing);
     let json = serde_json::to_value(&present)?;
     assert!(json["disks"][0].get("observed_sha1").is_none());
     Ok(())

@@ -487,6 +487,11 @@ mod tests {
             in_archive: true,
             archive_backend: None,
             archive_member_index: None,
+            scan_root: None,
+            scan_run: None,
+            observed_size: None,
+            source_fingerprint: None,
+            scan_provenance: None,
             rom_id: None,
         };
 
