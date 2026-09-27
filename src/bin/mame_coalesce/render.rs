@@ -76,6 +76,16 @@ pub fn build_report(report: &BuildWorkflowReport) {
             );
         }
     }
+    for issue in &build.set_selection_issues {
+        match issue {
+            mame_coalesce::domain::SetSelectionIssue::UnknownSetName { name } => {
+                warn!(
+                    "selected set does not exist in the imported catalog: {}",
+                    name.as_str()
+                );
+            }
+        }
+    }
     if !build.duplicate_matches.is_empty() {
         warn!(
             "{} ROMs had duplicate source matches",
@@ -172,6 +182,7 @@ pub fn audit_report(report: &AuditReport) -> String {
             let _ = writeln!(output, "  validation issue: {issue}");
         }
     }
+    render_set_selection_issues(&mut output, &build.set_selection_issues);
     for resolution in &build.resolutions {
         render_audit_resolution(&mut output, resolution);
     }
@@ -265,6 +276,23 @@ fn render_omitted_candidates(output: &mut String, omitted: usize) {
     }
 }
 
+fn render_set_selection_issues(
+    output: &mut String,
+    issues: &[mame_coalesce::domain::SetSelectionIssue],
+) {
+    for issue in issues {
+        match issue {
+            mame_coalesce::domain::SetSelectionIssue::UnknownSetName { name } => {
+                let _ = writeln!(
+                    output,
+                    "Invalid selection: set {:?} does not exist in the imported catalog",
+                    name.as_str()
+                );
+            }
+        }
+    }
+}
+
 fn render_candidates(
     output: &mut String,
     candidates: &[mame_coalesce::resolution::SourceAssessment],
@@ -324,7 +352,10 @@ fn render_observed(output: &mut String, evidence: &mame_coalesce::domain::Observ
 }
 
 pub fn audit_exit_code(report: &AuditReport) -> std::process::ExitCode {
-    if report.report().missing_roms.is_empty() && report.report().outcome == PlanOutcome::Ready {
+    if report.report().missing_roms.is_empty()
+        && report.report().outcome == PlanOutcome::Ready
+        && report.report().set_selection_issues.is_empty()
+    {
         std::process::ExitCode::SUCCESS
     } else {
         std::process::ExitCode::from(1)
@@ -381,6 +412,24 @@ mod tests {
         let mut blocked = report();
         blocked.build_report.outcome = PlanOutcome::Blocked(PlanBlockReason::MissingContent);
         assert_eq!(exit_code(&blocked), std::process::ExitCode::from(2));
+
+        blocked.build_report.outcome = PlanOutcome::Blocked(PlanBlockReason::InvalidSetSelection);
+        assert_eq!(exit_code(&blocked), std::process::ExitCode::from(2));
+    }
+
+    #[test]
+    fn audit_names_unknown_sets_and_returns_failure() {
+        let mut build = mame_coalesce::domain::BuildReport::default();
+        build
+            .set_selection_issues
+            .push(mame_coalesce::domain::SetSelectionIssue::UnknownSetName {
+                name: mame_coalesce::domain::SetName::new("typo"),
+            });
+        build.outcome = PlanOutcome::Blocked(PlanBlockReason::InvalidSetSelection);
+        let audit = AuditReport::new(ObservationBasis::Cached, build);
+
+        assert_eq!(audit_exit_code(&audit), std::process::ExitCode::from(1));
+        assert!(audit_report(&audit).contains("set \"typo\" does not exist"));
     }
 
     #[test]
