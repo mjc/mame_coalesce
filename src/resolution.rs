@@ -394,37 +394,56 @@ fn tied_candidates_are_equivalent(
     strength: MatchStrength,
     candidates: &[&SourceAssessment],
 ) -> bool {
-    let complete_matching_sha1 = || {
-        let mut sha1s = candidates
-            .iter()
-            .map(|candidate| candidate.source.observed.sha1.as_ref());
-        matches!(sha1s.next(), Some(Some(first)) if sha1s.all(|sha1| sha1 == Some(first)))
-    };
-
+    let consistent = tied_candidates_have_consistent_evidence(candidates);
     match strength {
-        MatchStrength::Sha1 => tied_candidates_have_consistent_evidence(candidates),
-        MatchStrength::Md5 => {
-            complete_matching_sha1() && tied_candidates_have_consistent_evidence(candidates)
+        MatchStrength::Sha1 => consistent,
+        MatchStrength::Md5 | MatchStrength::CrcAndSize => {
+            consistent && tied_candidates_share_sha1(candidates)
         }
-        MatchStrength::CrcAndSize => false,
     }
 }
 
 fn tied_candidates_have_consistent_evidence(candidates: &[&SourceAssessment]) -> bool {
-    candidates.iter().enumerate().all(|(index, left)| {
-        candidates[index + 1..].iter().all(|right| {
-            let left = &left.source.observed;
-            let right = &right.source.observed;
-            evidence_agrees(left.size, right.size)
-                && evidence_agrees(left.crc.as_ref(), right.crc.as_ref())
-                && evidence_agrees(left.md5.as_ref(), right.md5.as_ref())
-                && evidence_agrees(left.sha1.as_ref(), right.sha1.as_ref())
-        })
-    })
+    evidence_is_consistent(
+        candidates
+            .iter()
+            .map(|candidate| candidate.source.observed.size.as_ref()),
+    ) && evidence_is_consistent(
+        candidates
+            .iter()
+            .map(|candidate| candidate.source.observed.crc.as_ref()),
+    ) && evidence_is_consistent(
+        candidates
+            .iter()
+            .map(|candidate| candidate.source.observed.md5.as_ref()),
+    ) && evidence_is_consistent(
+        candidates
+            .iter()
+            .map(|candidate| candidate.source.observed.sha1.as_ref()),
+    )
 }
 
-fn evidence_agrees<T: PartialEq>(left: Option<T>, right: Option<T>) -> bool {
-    !matches!((left, right), (Some(left), Some(right)) if left != right)
+fn evidence_is_consistent<'a, T: PartialEq + 'a>(
+    values: impl IntoIterator<Item = Option<&'a T>>,
+) -> bool {
+    let mut established = None;
+    for value in values.into_iter().flatten() {
+        if let Some(established) = established {
+            if established != value {
+                return false;
+            }
+        } else {
+            established = Some(value);
+        }
+    }
+    true
+}
+
+fn tied_candidates_share_sha1(candidates: &[&SourceAssessment]) -> bool {
+    let mut sha1s = candidates
+        .iter()
+        .map(|candidate| candidate.source.observed.sha1.as_ref());
+    matches!(sha1s.next(), Some(Some(first)) if sha1s.all(|sha1| sha1 == Some(first)))
 }
 
 fn is_conflicting_candidate(candidate: &SourceAssessment) -> bool {
@@ -942,6 +961,78 @@ mod tests {
         assert!(matches!(
             &resolutions[0].status,
             ResolutionStatus::Ambiguous { candidates } if candidates.len() == 2
+        ));
+    }
+
+    #[test]
+    fn crc_and_size_tie_with_matching_sha1_preserves_same_content_copies() {
+        let sha1 = crate::hashes::sha1_bytes(b"same content");
+        let rom = requirement(ExpectedEvidence {
+            size: Some(3),
+            crc: Some(crate::domain::Crc32Digest([0, 0, 0, 7])),
+            ..ExpectedEvidence::default()
+        });
+        let inventory = [
+            source(
+                "/roms/b.rom",
+                computed(Some(3), Some([0, 0, 0, 7]), None, Some(sha1)),
+            ),
+            source(
+                "/roms/a.rom",
+                computed(Some(3), Some([0, 0, 0, 7]), None, Some(sha1)),
+            ),
+        ];
+
+        let resolutions = resolve(
+            &[rom],
+            &inventory,
+            "catalog",
+            &SourceRoot::new("/roms"),
+            MatchingPolicy::EvidenceAware,
+        );
+
+        assert!(matches!(
+            &resolutions[0].status,
+            ResolutionStatus::Matched {
+                selected,
+                strength: MatchStrength::CrcAndSize,
+                equivalent_copies,
+                ..
+            } if selected.location.path() == "/roms/a.rom"
+                && equivalent_copies.len() == 2
+        ));
+    }
+
+    #[test]
+    fn large_crc_and_size_tie_with_shared_sha1_resolves_linearly() {
+        const COPY_COUNT: usize = 10_000;
+        let sha1 = crate::hashes::sha1_bytes(b"same content");
+        let rom = requirement(ExpectedEvidence {
+            size: Some(3),
+            crc: Some(crate::domain::Crc32Digest([0, 0, 0, 7])),
+            ..ExpectedEvidence::default()
+        });
+        let inventory = (0..COPY_COUNT)
+            .map(|index| {
+                source(
+                    &format!("/roms/{index:05}.rom"),
+                    computed(Some(3), Some([0, 0, 0, 7]), None, Some(sha1)),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let resolutions = resolve(
+            &[rom],
+            &inventory,
+            "catalog",
+            &SourceRoot::new("/roms"),
+            MatchingPolicy::EvidenceAware,
+        );
+
+        assert!(matches!(
+            &resolutions[0].status,
+            ResolutionStatus::Matched { equivalent_copies, .. }
+                if equivalent_copies.len() == COPY_COUNT
         ));
     }
 
