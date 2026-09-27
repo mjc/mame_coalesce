@@ -117,8 +117,8 @@ INSERT INTO relationship_assertions (
 )
 SELECT lower(hex(randomblob(16))),
        CASE dependency_kind WHEN 'clone_of' THEN 'source_parent_clone' ELSE 'runtime_dependency' END,
-       'source_assertion', snapshot_key, 'software_item', list_name || '/' || item_name,
-       snapshot_key, 'software_item', list_name || '/' || target_item_name,
+       'source_assertion', snapshot_key, 'software_item', json_array(list_name, item_name),
+       snapshot_key, 'software_item', json_array(list_name, target_item_name),
        snapshot_key, dependency_kind || ' (legacy normalized)', source_line, source_column,
        json_object('dependency_kind', dependency_kind, 'legacy_normalized', true)
 FROM software_item_dependencies;

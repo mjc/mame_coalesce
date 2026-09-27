@@ -45,6 +45,16 @@ struct QueryableAssertion {
 }
 
 #[derive(QueryableByName)]
+struct RelationshipKeyLocationRow {
+    #[diesel(sql_type = Text)]
+    subject_key: String,
+    #[diesel(sql_type = Text)]
+    target_key: String,
+    #[diesel(sql_type = BigInt)]
+    source_line: i64,
+}
+
+#[derive(QueryableByName)]
 struct TextRow {
     #[diesel(sql_type = Text)]
     value: String,
@@ -551,6 +561,78 @@ fn imports_mame_machine_rom_disk_bios_and_device_semantics_loss_aware()
     assert!(sql_query("SELECT COUNT(*) AS count FROM import_diagnostics WHERE run_key = ? AND code = 'unsupported_element'")
         .bind::<Text, _>(report.run_key.to_string())
         .get_result::<CountRow>(&mut connection)?.count > 0);
+    Ok(())
+}
+
+#[test]
+fn mame_relationships_resolve_component_keys_and_keep_device_locations()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, mut connection) = setup()?;
+    let path = directory.path().join("mame-relationship-identity.xml");
+    std::fs::write(
+        &path,
+        "<mame>\n<machine name=\"parent\">\n<rom name=\"shared.bin\" size=\"1\" crc=\"12345678\"/>\n</machine>\n<machine name=\"clone\" cloneof=\"parent\">\n<device_ref name=\"sound\"/>\n<rom name=\"shared.bin\" merge=\"shared.bin\" size=\"1\" crc=\"12345678\"/>\n</machine>\n<machine name=\"sound\"/>\n</mame>",
+    )?;
+    let mut request = request(
+        path,
+        "publisher-mame-relations",
+        "mame-relations",
+        "MAME relations",
+    )?;
+    request.format = CatalogDocumentFormat::MameListXml;
+    let report = app::import_catalog(&database, &request)?;
+    let snapshot = report.snapshot_key.ok_or("MAME snapshot missing")?;
+
+    let merge = sql_query(
+        "SELECT subject_key, target_key, source_line FROM relationship_assertions \
+         WHERE source_snapshot_key = ? AND source_field = 'merge'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<RelationshipKeyLocationRow>(&mut connection)?;
+    assert_eq!(merge.subject_key, "[\"clone\",\"shared.bin\",0]");
+    assert_eq!(merge.target_key, "[\"parent\",\"shared.bin\",0]");
+    assert_eq!(merge.source_line, 7);
+
+    let device = sql_query(
+        "SELECT subject_key, target_key, source_line FROM relationship_assertions \
+         WHERE source_snapshot_key = ? AND source_field = 'device_ref'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<RelationshipKeyLocationRow>(&mut connection)?;
+    assert_eq!(device.subject_key, "clone");
+    assert_eq!(device.target_key, "sound");
+    assert_eq!(device.source_line, 6);
+    Ok(())
+}
+
+#[test]
+fn software_item_relationship_keys_do_not_collide_on_slashes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, mut connection) = setup()?;
+    let path = directory.path().join("software-list-slash-identities.xml");
+    std::fs::write(
+        &path,
+        "<softwarelists><softwarelist name=\"a/b\"><software name=\"c\" cloneof=\"parent\"><description>c</description><year>2000</year><publisher>example</publisher><part name=\"cart\" interface=\"cart\"/></software><software name=\"parent\"><description>parent</description><year>2000</year><publisher>example</publisher><part name=\"cart\" interface=\"cart\"/></software></softwarelist><softwarelist name=\"a\"><software name=\"b/c\" cloneof=\"parent\"><description>b/c</description><year>2000</year><publisher>example</publisher><part name=\"cart\" interface=\"cart\"/></software><software name=\"parent\"><description>parent</description><year>2000</year><publisher>example</publisher><part name=\"cart\" interface=\"cart\"/></software></softwarelist></softwarelists>",
+    )?;
+    let mut request = request(path, "publisher-slash-keys", "slash-keys", "Slash keys")?;
+    request.format = CatalogDocumentFormat::MameSoftwareListXml;
+    let report = app::import_catalog(&database, &request)?;
+    let Some(snapshot) = report.snapshot_key.as_ref() else {
+        let diagnostic =
+            sql_query("SELECT message AS value FROM import_diagnostics WHERE run_key = ?")
+                .bind::<Text, _>(report.run_key.to_string())
+                .get_result::<TextRow>(&mut connection)?;
+        return Err(io::Error::other(diagnostic.value).into());
+    };
+    let keys = sql_query(
+        "SELECT subject_key AS value FROM relationship_assertions \
+         WHERE source_snapshot_key = ? AND source_field = 'cloneof' ORDER BY subject_key",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .load::<TextRow>(&mut connection)?;
+    assert_eq!(keys.len(), 2);
+    assert_eq!(keys[0].value, "[\"a\",\"b/c\"]");
+    assert_eq!(keys[1].value, "[\"a/b\",\"c\"]");
     Ok(())
 }
 
