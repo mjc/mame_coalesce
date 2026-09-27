@@ -1481,7 +1481,7 @@ dependencies = [
 [[package]]
 name = "r7z"
 version = "0.1.0"
-source = "git+https://github.com/mjc/r7z.git?rev=22c34c65a6c2a2faccd19d0ec6976deacc368831#22c34c65a6c2a2faccd19d0ec6976deacc368831"
+source = "git+https://github.com/mjc/r7z.git?rev=bfef3198696add8045ad34581dd977d671ae9daa#bfef3198696add8045ad34581dd977d671ae9daa"
 dependencies = [
  "aes 0.8.4",
  "arrayvec",
