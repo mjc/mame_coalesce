@@ -1,7 +1,7 @@
 //! Conservative, format-neutral validation for logical plans and their destinations.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fs,
     path::{Component, PathBuf},
 };
@@ -140,14 +140,16 @@ pub(crate) fn inspect_plan(plan: &BuildPlan) -> Vec<PlanIssue> {
                     .then_with(|| left.expected.cmp(&right.expected))
                     .then_with(|| left.requirement.cmp(&right.requirement))
             });
-            // Report representative relations, with at most three issues for this name.
-            let mut reported = [false; 3];
-            for pair in duplicates.windows(2) {
-                push_entry_collision(&mut issues, &mut reported, pair[0], pair[1]);
-                push_entry_collision(&mut issues, &mut reported, duplicates[0], pair[1]);
-                if reported.iter().all(|&seen| seen) {
-                    break;
-                }
+            // Find one witness of each possible relation in linear time. There are only
+            // four comparable evidence fields, so indexing every non-empty projection
+            // costs a fixed amount per entry rather than comparing every pair.
+            for (first, duplicate) in entry_collision_witnesses(duplicates) {
+                let relation = content_relation(&first.expected, &duplicate.expected);
+                issues.push(PlanIssue {
+                    kind: PlanIssueKind::DuplicateEntry(relation),
+                    path: duplicate.path.clone(),
+                    conflicts_with: Some(first.path.clone()),
+                });
             }
         }
 
@@ -191,26 +193,113 @@ pub(crate) fn inspect_plan(plan: &BuildPlan) -> Vec<PlanIssue> {
     issues
 }
 
-fn push_entry_collision(
-    issues: &mut Vec<PlanIssue>,
-    reported: &mut [bool; 3],
-    first: &crate::domain::LogicalEntry,
-    duplicate: &crate::domain::LogicalEntry,
-) {
-    let relation = content_relation(&first.expected, &duplicate.expected);
-    let slot = match relation {
-        ContentRelation::SameEstablishedContent => 0,
-        ContentRelation::DifferentContent => 1,
-        ContentRelation::UnknownContent => 2,
-    };
-    if !reported[slot] {
-        reported[slot] = true;
-        issues.push(PlanIssue {
-            kind: PlanIssueKind::DuplicateEntry(relation),
-            path: duplicate.path.clone(),
-            conflicts_with: Some(first.path.clone()),
-        });
+fn entry_collision_witnesses<'a>(
+    entries: &[&'a crate::domain::LogicalEntry],
+) -> Vec<(
+    &'a crate::domain::LogicalEntry,
+    &'a crate::domain::LogicalEntry,
+)> {
+    use crate::domain::EvidenceScope;
+
+    let mut witnesses = [None; 3];
+    let mut by_projection = HashMap::<(u8, u8, Vec<u8>), &crate::domain::LogicalEntry>::new();
+    let mut first_by_mask = [None; 16];
+    let mut first_by_field: [Option<(Vec<u8>, &'a crate::domain::LogicalEntry)>; 4] =
+        std::array::from_fn(|_| None);
+    let mut first_entry = None;
+    let mut first_non_whole = None;
+
+    for entry in entries {
+        let expected = &entry.expected;
+        if expected.scope != EvidenceScope::WholeAsset {
+            if let Some(first) = first_entry {
+                witnesses[2].get_or_insert((first, *entry));
+            }
+            first_non_whole.get_or_insert(*entry);
+            first_entry.get_or_insert(*entry);
+            continue;
+        }
+        if let Some(first) = first_non_whole {
+            witnesses[2].get_or_insert((first, *entry));
+        }
+        first_entry.get_or_insert(*entry);
+
+        let mask = evidence_mask(expected);
+        for other_mask in 0_u8..16 {
+            if mask & other_mask == 0
+                && let Some(first) = first_by_mask[usize::from(other_mask)]
+            {
+                witnesses[2].get_or_insert((first, *entry));
+            }
+        }
+
+        for other_mask in 1_u8..16 {
+            let shared = mask & other_mask;
+            if shared & 0b111 != 0
+                && let Some(first) =
+                    by_projection.get(&(other_mask, shared, evidence_projection(expected, shared)))
+            {
+                witnesses[0].get_or_insert((*first, *entry));
+            }
+        }
+
+        for (field, first_for_field) in first_by_field.iter_mut().enumerate() {
+            if mask & (1 << field) == 0 {
+                continue;
+            }
+            let value = evidence_projection(expected, 1 << field);
+            if let Some((first_value, first)) = first_for_field {
+                if first_value != &value {
+                    witnesses[1].get_or_insert((*first, *entry));
+                }
+            } else {
+                *first_for_field = Some((value, *entry));
+            }
+        }
+
+        first_by_mask[mask as usize].get_or_insert(*entry);
+        for projection in 1_u8..16 {
+            if mask & projection == projection {
+                by_projection
+                    .entry((mask, projection, evidence_projection(expected, projection)))
+                    .or_insert(*entry);
+            }
+        }
     }
+
+    witnesses.into_iter().flatten().collect()
+}
+
+fn evidence_mask(evidence: &ExpectedEvidence) -> u8 {
+    u8::from(evidence.sha1.is_some())
+        | (u8::from(evidence.md5.is_some()) << 1)
+        | (u8::from(evidence.crc.is_some()) << 2)
+        | (u8::from(evidence.size.is_some()) << 3)
+}
+
+fn evidence_projection(evidence: &ExpectedEvidence, mask: u8) -> Vec<u8> {
+    let mut key = Vec::with_capacity(40);
+    if mask & 1 != 0
+        && let Some(sha1) = evidence.sha1
+    {
+        key.extend_from_slice(&sha1);
+    }
+    if mask & 2 != 0
+        && let Some(md5) = evidence.md5
+    {
+        key.extend_from_slice(&md5.0);
+    }
+    if mask & 4 != 0
+        && let Some(crc) = evidence.crc
+    {
+        key.extend_from_slice(&crc.0);
+    }
+    if mask & 8 != 0
+        && let Some(size) = evidence.size
+    {
+        key.extend_from_slice(&size.to_be_bytes());
+    }
+    key
 }
 
 fn group_artifact_conflicts(plan: &BuildPlan) -> Vec<PlanIssue> {
@@ -634,6 +723,54 @@ mod tests {
         }
         assert_eq!(inspect_plan(&reversed), issues);
         assert!(validate_plan(&original).is_err());
+    }
+
+    #[test]
+    fn bounded_entry_diagnostics_find_relations_between_later_evidence_shapes() {
+        let entries = vec![
+            entry("rom.bin", ExpectedEvidence::default()),
+            entry(
+                "rom.bin",
+                ExpectedEvidence {
+                    scope: crate::domain::EvidenceScope::WholeAsset,
+                    md5: Some(crate::domain::Md5Digest([0; 16])),
+                    ..ExpectedEvidence::default()
+                },
+            ),
+            entry(
+                "rom.bin",
+                ExpectedEvidence {
+                    scope: crate::domain::EvidenceScope::WholeAsset,
+                    crc: Some(crate::domain::Crc32Digest([0; 4])),
+                    ..ExpectedEvidence::default()
+                },
+            ),
+            entry(
+                "rom.bin",
+                ExpectedEvidence {
+                    scope: crate::domain::EvidenceScope::WholeAsset,
+                    crc: Some(crate::domain::Crc32Digest([0; 4])),
+                    md5: Some(crate::domain::Md5Digest([1; 16])),
+                    ..ExpectedEvidence::default()
+                },
+            ),
+        ];
+        let plan = empty_plan(vec![group("set", entries)]);
+
+        let issues = inspect_plan(&plan);
+        assert_eq!(issues.len(), 3);
+        for relation in [
+            ContentRelation::SameEstablishedContent,
+            ContentRelation::DifferentContent,
+            ContentRelation::UnknownContent,
+        ] {
+            assert!(
+                issues
+                    .iter()
+                    .any(|issue| { issue.kind == PlanIssueKind::DuplicateEntry(relation) })
+            );
+        }
+        assert!(validate_plan(&plan).is_err());
     }
 
     #[test]
