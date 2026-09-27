@@ -219,6 +219,7 @@ fn one_shot_rejects_source_destination_overlap_before_catalog_import()
     Ok(())
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn build_reports_partial_artifact_completion_when_a_later_source_disappears()
 -> Result<(), Box<dyn std::error::Error>> {

@@ -71,11 +71,11 @@ artifacts. Sources are never modified.
 Each ZIP artifact is built in a temporary file beside its destination. Source
 bytes are streamed and checked against the selected catalog evidence and scanned
 source identity; archive fingerprints are checked before and after member reads.
-The finished ZIP is flushed and synced before replacement. On Unix, renaming that
-same-filesystem temporary file replaces one artifact atomically. A multi-artifact
-build is not atomic as a whole: execution stops at the first failure and reports
-which artifacts completed, failed, or were not attempted. Atomic replacement is
-currently supported on Unix only.
+The finished ZIP is flushed and synced before replacement. On Linux and macOS,
+renaming that same-filesystem temporary file replaces one artifact atomically. A
+multi-artifact build is not atomic as a whole: execution stops at the first
+failure and reports which artifacts completed, failed, or were not attempted.
+Atomic replacement is currently supported on Linux and macOS only.
 
 Source scans intentionally skip hidden files and directories below the source
 root. Non-UTF-8 paths and traversal or archive-read errors fail the scan, so an
