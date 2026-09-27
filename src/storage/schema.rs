@@ -229,6 +229,8 @@ diesel::table! {
         snapshot_key -> Text,
         record_kind -> Text,
         record_name -> Nullable<Text>,
+        owner_set_name -> Nullable<Text>,
+        owner_component_order -> Nullable<Text>,
         field_name -> Text,
         namespace_uri -> Nullable<Text>,
         raw_value_json -> Text,

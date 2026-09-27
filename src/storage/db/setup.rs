@@ -221,7 +221,7 @@ mod tests {
         conn.batch_execute("PRAGMA foreign_keys = ON")?;
         let migrations = MIGRATIONS.migrations()?;
         conn.applied_migrations()?;
-        for migration in &migrations[..migrations.len() - 1] {
+        for migration in &migrations[..migrations.len() - 2] {
             conn.run_migration(migration.as_ref())?;
         }
         conn.batch_execute(
@@ -277,6 +277,59 @@ mod tests {
             "UPDATE relationship_reviews SET note = 'overwritten'"
         ));
         assert!(sql_fails(&mut conn, "DELETE FROM relationship_reviews"));
+        Ok(())
+    }
+
+    #[test]
+    fn asset_extension_migration_backfills_ownership_from_source_locations()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut conn = SqliteConnection::establish(":memory:")?;
+        conn.batch_execute("PRAGMA foreign_keys = ON")?;
+        let migrations = MIGRATIONS.migrations()?;
+        conn.applied_migrations()?;
+        for migration in &migrations[..migrations.len() - 1] {
+            conn.run_migration(migration.as_ref())?;
+        }
+        conn.batch_execute(
+            "INSERT INTO publishing_sources (source_key, display_name) VALUES ('source', 'Source');
+             INSERT INTO catalogs (catalog_key, source_key, display_name)
+                 VALUES ('catalog', 'source', 'Catalog');
+             INSERT INTO documents (document_key) VALUES ('document');
+             INSERT INTO parser_interpretations (interpretation_key, format)
+                 VALUES ('interpretation', 'mame-listxml');
+             INSERT INTO catalog_snapshots
+                 (snapshot_key, catalog_key, document_key, interpretation_key, scope_kind)
+                 VALUES ('snapshot', 'catalog', 'document', 'interpretation', 'unknown');
+             INSERT INTO snapshot_sets
+                 (snapshot_key, set_name, metadata_json, source_line, source_column)
+                 VALUES ('snapshot', 'set', '{}', 1, 1);
+             INSERT INTO asset_requirements
+                 (snapshot_key, set_name, component_order, asset_name, role,
+                  evidence_scope, evidence_provenance, source_line, source_column)
+                 VALUES ('snapshot', 'set', 0, 'rom.bin', 'rom', 'whole_asset',
+                         'source_declared', 2, 3);
+             INSERT INTO snapshot_extensions
+                 (snapshot_key, record_kind, record_name, field_name, raw_value_json,
+                  source_line, source_column)
+                 VALUES ('snapshot', 'rom', 'set', 'future', '\"value\"', 2, 3);",
+        )?;
+        conn.run_pending_migrations(MIGRATIONS)?;
+
+        let owner = sql_query(
+            "SELECT owner_set_name AS value FROM snapshot_extensions WHERE field_name = 'future'",
+        )
+        .get_result::<TextRow>(&mut conn)?;
+        assert_eq!(owner.value, "set");
+        let component = sql_query(
+            "SELECT owner_component_order AS value FROM snapshot_extensions WHERE field_name = 'future'",
+        )
+        .get_result::<TextRow>(&mut conn)?;
+        assert_eq!(component.value, "0");
+        assert!(conn
+            .batch_execute(
+                "UPDATE snapshot_extensions SET raw_value_json = '\"changed\"' WHERE field_name = 'future';",
+            )
+            .is_err());
         Ok(())
     }
 

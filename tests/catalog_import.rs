@@ -1513,6 +1513,197 @@ fn snapshot_diff_does_not_attribute_device_ref_extensions_to_a_same_named_set()
 }
 
 #[test]
+fn snapshot_diff_keeps_asset_extensions_with_their_owning_set()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, mut connection) = setup()?;
+    let first_path = directory.path().join("asset-extension-v1.xml");
+    let second_path = directory.path().join("asset-extension-v2.xml");
+    for (path, changed_value) in [(&first_path, "one"), (&second_path, "two")] {
+        std::fs::write(
+            path,
+            format!(
+                "<mame><machine name=\"alpha\"><description>Alpha</description><rom name=\"shared.rom\" future=\"{changed_value}\"/></machine><machine name=\"beta\"><description>Beta</description><rom name=\"shared.rom\"/></machine></mame>"
+            ),
+        )?;
+    }
+    let mut first_request = request(
+        first_path,
+        "publisher-asset-extensions",
+        "asset-extensions",
+        "Asset extensions",
+    )?;
+    first_request.format = CatalogDocumentFormat::MameListXml;
+    first_request.scope = CatalogScope::Complete;
+    let first = app::import_catalog(&database, &first_request)?;
+    let mut second_request = request(
+        second_path,
+        "publisher-asset-extensions",
+        "asset-extensions",
+        "Asset extensions",
+    )?;
+    second_request.format = CatalogDocumentFormat::MameListXml;
+    second_request.scope = CatalogScope::Complete;
+    let second = app::import_catalog(&database, &second_request)?;
+    let diff = app::diff_catalog_snapshots(
+        &database,
+        first
+            .snapshot_key
+            .as_ref()
+            .ok_or("first asset-extension snapshot missing")?,
+        second
+            .snapshot_key
+            .as_ref()
+            .ok_or("second asset-extension snapshot missing")?,
+    )?;
+
+    let alpha = diff
+        .records
+        .iter()
+        .find(|record| record.set_name == "alpha")
+        .ok_or("alpha diff missing")?;
+    let alpha_asset = alpha
+        .requirement_changes
+        .iter()
+        .find(|change| change.asset_name == "shared.rom")
+        .ok_or("alpha asset extension change missing")?;
+    assert!(alpha_asset.other_evidence_changed);
+
+    let beta = diff
+        .records
+        .iter()
+        .find(|record| record.set_name == "beta")
+        .ok_or("beta diff missing")?;
+    assert_eq!(beta.status, SnapshotRecordStatus::Unchanged);
+    assert!(beta.requirement_changes.is_empty());
+
+    let metadata = sql_query(
+        "SELECT metadata_json AS value FROM asset_requirements WHERE snapshot_key = ? LIMIT 1",
+    )
+    .bind::<Text, _>(
+        second
+            .snapshot_key
+            .as_ref()
+            .ok_or("second snapshot missing")?
+            .as_str(),
+    )
+    .get_result::<TextRow>(&mut connection)?;
+    assert!(!metadata.value.contains("__mame_coalesce_extensions"));
+    Ok(())
+}
+
+#[test]
+fn snapshot_diff_attributes_no_intro_rom_extensions_to_their_asset()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, _connection) = setup()?;
+    let first_path = directory.path().join("no-intro-asset-extension-v1.xml");
+    let second_path = directory.path().join("no-intro-asset-extension-v2.xml");
+    for (path, changed_value) in [(&first_path, "one"), (&second_path, "two")] {
+        std::fs::write(
+            path,
+            format!(
+                "<datafile><header><name>Extensions</name></header><game name=\"alpha\"><rom name=\"shared.bin\" future=\"{changed_value}\"/></game><game name=\"beta\"><rom name=\"shared.bin\"/></game></datafile>"
+            ),
+        )?;
+    }
+    let mut first_request = request(
+        first_path,
+        "publisher-no-intro-extensions",
+        "no-intro-extensions",
+        "No-Intro extensions",
+    )?;
+    first_request.format = CatalogDocumentFormat::NoIntroPcXml;
+    first_request.scope = CatalogScope::Complete;
+    let first = app::import_catalog(&database, &first_request)?;
+    let mut second_request = request(
+        second_path,
+        "publisher-no-intro-extensions",
+        "no-intro-extensions",
+        "No-Intro extensions",
+    )?;
+    second_request.format = CatalogDocumentFormat::NoIntroPcXml;
+    second_request.scope = CatalogScope::Complete;
+    let second = app::import_catalog(&database, &second_request)?;
+    let diff = app::diff_catalog_snapshots(
+        &database,
+        first
+            .snapshot_key
+            .as_ref()
+            .ok_or("first snapshot missing")?,
+        second
+            .snapshot_key
+            .as_ref()
+            .ok_or("second snapshot missing")?,
+    )?;
+    assert!(diff.records.iter().any(|record| {
+        record.set_name == "alpha"
+            && record
+                .requirement_changes
+                .iter()
+                .any(|change| change.asset_name == "shared.bin" && change.other_evidence_changed)
+    }));
+    assert!(diff.records.iter().any(|record| {
+        record.set_name == "beta"
+            && record.status == SnapshotRecordStatus::Unchanged
+            && record.requirement_changes.is_empty()
+    }));
+    Ok(())
+}
+
+#[test]
+fn snapshot_diff_preserves_duplicate_asset_extension_occurrences()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, _connection) = setup()?;
+    let first_path = directory.path().join("duplicate-extension-v1.xml");
+    let second_path = directory.path().join("duplicate-extension-v2.xml");
+    for (path, count) in [(&first_path, 2), (&second_path, 1)] {
+        let children = "<future/>".repeat(count);
+        std::fs::write(
+            path,
+            format!(
+                "<mame><machine name=\"alpha\"><description>Alpha</description><rom name=\"shared.rom\">{children}</rom></machine></mame>"
+            ),
+        )?;
+    }
+    let mut first_request = request(
+        first_path,
+        "publisher-duplicate-extensions",
+        "duplicate-extensions",
+        "Duplicate extensions",
+    )?;
+    first_request.format = CatalogDocumentFormat::MameListXml;
+    first_request.scope = CatalogScope::Complete;
+    let first = app::import_catalog(&database, &first_request)?;
+    let mut second_request = request(
+        second_path,
+        "publisher-duplicate-extensions",
+        "duplicate-extensions",
+        "Duplicate extensions",
+    )?;
+    second_request.format = CatalogDocumentFormat::MameListXml;
+    second_request.scope = CatalogScope::Complete;
+    let second = app::import_catalog(&database, &second_request)?;
+    let diff = app::diff_catalog_snapshots(
+        &database,
+        first
+            .snapshot_key
+            .as_ref()
+            .ok_or("first snapshot missing")?,
+        second
+            .snapshot_key
+            .as_ref()
+            .ok_or("second snapshot missing")?,
+    )?;
+    assert!(diff.records.iter().any(|record| {
+        record.set_name == "alpha"
+            && record
+                .requirement_changes
+                .iter()
+                .any(|change| change.asset_name == "shared.rom" && change.other_evidence_changed)
+    }));
+    Ok(())
+}
+
+#[test]
 fn snapshot_diff_compares_duplicate_asset_fields_as_unordered_multisets()
 -> Result<(), Box<dyn std::error::Error>> {
     let (directory, database, _connection) = setup()?;
