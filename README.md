@@ -62,13 +62,16 @@ Windows-reserved device names, or platform-forbidden characters. Unicode names
 are rejected rather than relying on filesystem-specific normalization. The
 one-shot workflow rejects source and destination roots that are equal, nested,
 or aliased through existing symlinks; it checks before scanning and again before
-writing. Artifact writing currently requires Unix handle-relative filesystem
-operations; non-Unix output is rejected before creating or truncating artifacts.
-On Unix, output ancestry must be owned by root or the effective user and protected
-from writes by other UIDs. Linux POSIX ACLs on that ancestry are rejected because
-they can grant directory-entry access beyond the mode bits. Sources are never
-modified. On other Unix systems, protection is assessed from ownership, mode bits,
-and sticky-directory semantics; platform-specific ACLs are not inspected.
+writing. Linux is the only supported secure artifact-writing platform: output
+ancestry must be owned by root or the effective user and protected from writes by
+other UIDs, and Linux POSIX ACLs on that ancestry are rejected because they can
+grant directory-entry access beyond the mode bits. macOS artifact writing is
+rejected before opening or creating output directories: macOS ACLs can grant
+delete-child rights that are not represented by mode bits, and this program does
+not inspect those ACLs. Non-Unix output is likewise rejected before creating or
+truncating artifacts. Other Unix targets may have handle-relative writing, but
+their ACL models are not inspected and secure output is not supported there.
+Sources are never modified.
 
 Source scans intentionally skip hidden files and directories below the source
 root. Non-UTF-8 paths and traversal or archive-read errors fail the scan, so an
