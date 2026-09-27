@@ -952,6 +952,7 @@ pub enum PlanOutcome {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PlanBlockReason {
     MissingContent,
+    InvalidPlan,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

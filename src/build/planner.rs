@@ -41,6 +41,9 @@ pub fn plan_build(
         report,
     };
     plan.report.validation_issues = crate::build::validation::inspect_plan(&plan);
+    if !plan.report.validation_issues.is_empty() {
+        plan.report.outcome = PlanOutcome::Blocked(PlanBlockReason::InvalidPlan);
+    }
     plan
 }
 
@@ -317,6 +320,10 @@ mod tests {
         assert!(plan.report.validation_issues.iter().any(|issue| {
             issue.kind == crate::build::validation::PlanIssueKind::DuplicateGroup
         }));
+        assert_eq!(
+            plan.report.outcome,
+            PlanOutcome::Blocked(PlanBlockReason::InvalidPlan)
+        );
     }
 
     #[test]

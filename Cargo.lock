@@ -1087,6 +1087,7 @@ dependencies = [
  "proptest",
  "r7z",
  "rayon",
+ "rustix 1.1.4",
  "serde",
  "serde-xml-rs",
  "serde_json",
