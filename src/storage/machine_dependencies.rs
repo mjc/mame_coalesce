@@ -46,10 +46,7 @@ pub fn load_catalog(
         )));
     }
     let header = exists?;
-    if !matches!(
-        header.parser_format.as_str(),
-        "logiqx" | "mame-listxml" | "clrmamepro-dat" | "no-intro-pc-xml"
-    ) {
+    if !matches!(header.parser_format.as_str(), "logiqx" | "mame-listxml") {
         return Err(crate::Error::UnsupportedMachineDependencyFormat(
             header.parser_format,
         ));
