@@ -265,6 +265,9 @@ mod tests {
                 sha1: Some(digest(sha1)),
                 xxh3: [0; 8],
             },
+            fingerprint: None,
+            scan_run: None,
+            scan_provenance: None,
         }
     }
 

@@ -141,28 +141,12 @@ fn update_parent_links(conn: &mut SqliteConnection, data_file_id: i32) -> QueryR
     .execute(conn)
 }
 
-#[cfg(test)]
-pub fn import_rom_files(pool: &DbPool, new_rom_files: &[NewRomFile]) -> crate::Result<usize> {
-    use crate::storage::schema::rom_files::dsl::rom_files;
-    use diesel::replace_into;
-
-    let mut conn = pool.get()?;
-
-    Ok(conn.transaction::<_, DieselError, _>(|conn| {
-        new_rom_files
-            .iter()
-            .map(|new_rom_file| replace_into(rom_files).values(new_rom_file).execute(conn))
-            .collect::<QueryResult<Vec<usize>>>()?;
-        associate_rom_files(conn)
-    })?)
-}
-
 pub fn replace_rom_files_for_source_root(
     pool: &DbPool,
     source_root: &Utf8Path,
     new_rom_files: &[NewRomFile],
 ) -> crate::Result<usize> {
-    use crate::storage::schema::rom_files::dsl::rom_files;
+    use crate::storage::schema::rom_files::dsl as rom_files_dsl;
     use diesel::replace_into;
 
     let mut conn = pool.get()?;
@@ -171,9 +155,20 @@ pub fn replace_rom_files_for_source_root(
         delete_rom_files_for_source_root(conn, source_root.as_str())?;
         new_rom_files
             .iter()
-            .map(|new_rom_file| replace_into(rom_files).values(new_rom_file).execute(conn))
+            .map(|new_rom_file| {
+                replace_into(rom_files_dsl::rom_files)
+                    .values(new_rom_file)
+                    .execute(conn)
+            })
             .collect::<QueryResult<Vec<usize>>>()?;
-        associate_rom_files(conn)
+        associate_rom_files(conn)?;
+        let associated = rom_files_dsl::rom_files
+            .filter(rom_files_dsl::scan_root.eq(source_root.as_str()))
+            .filter(rom_files_dsl::rom_id.is_not_null())
+            .count()
+            .get_result::<i64>(conn)?;
+        usize::try_from(associated)
+            .map_err(|error| DieselError::DeserializationError(Box::new(error)))
     })?)
 }
 
@@ -212,11 +207,10 @@ fn delete_rom_files_for_source_root(
     sql_query(
         r"
         DELETE FROM rom_files
-        WHERE parent_path = ?
+        WHERE path = ?
             OR (
-                length(parent_path) > length(?)
-                AND substr(parent_path, 1, length(?)) = ?
-                AND substr(parent_path, length(?) + 1, 1) = '/'
+                substr(path, 1, length(?)) = ?
+                AND (substr(path, length(?) + 1, 1) = '/' OR ? = '/')
             )
         ",
     )

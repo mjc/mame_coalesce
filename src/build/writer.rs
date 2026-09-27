@@ -455,6 +455,9 @@ mod tests {
                 sha1: Some(crate::hashes::sha1_bytes(b"sha1")),
                 xxh3: [0; 8],
             },
+            fingerprint: None,
+            scan_run: None,
+            scan_provenance: None,
         }
     }
 
@@ -507,6 +510,9 @@ mod tests {
                 sha1: Some(crate::hashes::sha1_bytes(b"sha1")),
                 xxh3: [0; 8],
             },
+            fingerprint: None,
+            scan_run: None,
+            scan_provenance: None,
         }
     }
 

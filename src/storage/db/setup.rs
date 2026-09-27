@@ -95,6 +95,20 @@ mod tests {
         archive_member_index: Option<i64>,
     }
 
+    #[derive(QueryableByName)]
+    struct LegacyScanEvidenceRow {
+        #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Text>)]
+        scan_root: Option<String>,
+        #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Text>)]
+        scan_run: Option<String>,
+        #[diesel(sql_type = diesel::sql_types::Nullable<BigInt>)]
+        observed_size: Option<i64>,
+        #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Binary>)]
+        source_fingerprint: Option<Vec<u8>>,
+        #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Text>)]
+        scan_provenance: Option<String>,
+    }
+
     fn count(conn: &mut SqliteConnection, table: &str) -> QueryResult<i64> {
         sql_query(format!("SELECT COUNT(*) AS count FROM {table}"))
             .get_result::<CountRow>(conn)
@@ -267,8 +281,73 @@ mod tests {
                 .get_result::<LegacyArchiveIdentityRow>(&mut conn)?;
         assert_eq!(identity.archive_backend, None);
         assert_eq!(identity.archive_member_index, None);
+        let scan_evidence = sql_query(
+            "SELECT scan_root, scan_run, observed_size, source_fingerprint, scan_provenance \
+             FROM rom_files WHERE id = 41",
+        )
+        .get_result::<LegacyScanEvidenceRow>(&mut conn)?;
+        assert!(scan_evidence.scan_root.is_none());
+        assert!(scan_evidence.scan_run.is_none());
+        assert!(scan_evidence.observed_size.is_none());
+        assert!(scan_evidence.source_fingerprint.is_none());
+        assert!(scan_evidence.scan_provenance.is_none());
         assert_eq!(count(&mut conn, "publishing_sources")?, 0);
         assert!(conn.run_pending_migrations(MIGRATIONS)?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn scan_size_migration_repairs_triggers_on_databases_with_prior_migration()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut conn = SqliteConnection::establish(":memory:")?;
+        conn.applied_migrations()?;
+        let migrations = MIGRATIONS.migrations()?;
+        let enforce_size_index = migrations
+            .iter()
+            .position(|migration| {
+                migration
+                    .name()
+                    .to_string()
+                    .starts_with("2026-09-27-000000_enforce_observed_scan_size")
+            })
+            .ok_or("scan-size migration not found")?;
+
+        for migration in &migrations[..enforce_size_index] {
+            conn.run_migration(migration.as_ref())?;
+        }
+        conn.batch_execute(
+            "INSERT INTO rom_files \
+                 (parent_path, path, name, sha1, xxhash3, in_archive, scan_root, scan_run, \
+                  source_fingerprint, scan_provenance) \
+             VALUES ('/source', '/source/game.rom', 'game.rom', zeroblob(20), zeroblob(8), 0, \
+                     '/source', 'run-1', zeroblob(20), 'streamed_sha1_xxh3_v1');",
+        )?;
+
+        run_startup_migrations(&mut conn)?;
+        assert_eq!(count(&mut conn, "rom_files")?, 1);
+        let repaired = sql_query(
+            "SELECT scan_root, scan_run, observed_size, source_fingerprint, scan_provenance \
+             FROM rom_files WHERE path = '/source/game.rom'",
+        )
+        .get_result::<LegacyScanEvidenceRow>(&mut conn)?;
+        assert!(repaired.scan_root.is_none());
+        assert!(repaired.scan_run.is_none());
+        assert!(repaired.observed_size.is_none());
+        assert!(repaired.source_fingerprint.is_none());
+        assert!(repaired.scan_provenance.is_none());
+        conn.batch_execute(
+            "INSERT INTO rom_files \
+                 (parent_path, path, name, sha1, xxhash3, in_archive, scan_root, scan_run, \
+                  observed_size, source_fingerprint, scan_provenance) \
+             VALUES ('/source', '/source/new.rom', 'new.rom', zeroblob(20), zeroblob(8), 0, \
+                     '/source', 'run-2', 3, zeroblob(20), 'streamed_sha1_xxh3_v1');",
+        )?;
+        assert!(sql_fails(
+            &mut conn,
+            "UPDATE rom_files SET observed_size = NULL WHERE scan_root = '/source'",
+        ));
+        sql_query("UPDATE rom_files SET observed_size = 3 WHERE scan_root = '/source'")
+            .execute(&mut conn)?;
         Ok(())
     }
 
