@@ -86,14 +86,14 @@ fn write_plan_with_hook(
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
-        let output_root = SecureOutputDirectory::open(&destination, &sources)?;
+        let output_root = SecureOutputDirectory::open(destination, &sources)?;
         let mut results = Vec::with_capacity(plan.groups.len());
         for (index, (group, path)) in plan.groups.iter().zip(&output_paths).enumerate() {
             match write_artifact(
                 group,
                 path,
                 options,
-                &destination,
+                destination,
                 index,
                 hook,
                 #[cfg(unix)]
