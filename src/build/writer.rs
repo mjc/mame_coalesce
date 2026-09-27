@@ -63,7 +63,8 @@ fn validate_plan_paths(plan: &BuildPlan) -> crate::Result<()> {
     let mut output_file_names = BTreeSet::new();
     plan.groups.iter().try_for_each(|group| {
         validate_output_file_name(group.path.as_str())?;
-        if !output_file_names.insert(group.path.as_str()) {
+        let file_name = format!("{}.zip", group.path.as_str());
+        if !output_file_names.insert(output_file_name_key(&file_name)) {
             return Err(crate::Error::InvalidPath(format!(
                 "duplicate output zip file name: {}",
                 group.path.as_str()
@@ -96,6 +97,10 @@ fn validate_output_file_name(name: &str) -> crate::Result<()> {
     }
 }
 
+fn output_file_name_key(name: &str) -> String {
+    name.to_ascii_lowercase()
+}
+
 fn validate_zip_entry_name(name: &str) -> crate::Result<()> {
     if name.split('/').all(is_normal_relative_component) {
         Ok(())
@@ -107,18 +112,32 @@ fn validate_zip_entry_name(name: &str) -> crate::Result<()> {
 }
 
 fn is_normal_relative_component(component: &str) -> bool {
-    !component.is_empty()
-        && component != "."
-        && component != ".."
-        && !component.contains('/')
-        && !component.contains('\\')
-        && !component.contains('\0')
-        && !has_windows_drive_prefix(component)
-}
+    if component.is_empty()
+        || component == "."
+        || component == ".."
+        || component.contains('/')
+        || !component.is_ascii()
+        || component.ends_with(['.', ' '])
+        || component.chars().any(|ch| {
+            ch.is_control() || matches!(ch, '<' | '>' | ':' | '"' | '|' | '?' | '*' | '\\')
+        })
+    {
+        return false;
+    }
 
-const fn has_windows_drive_prefix(path: &str) -> bool {
-    let bytes = path.as_bytes();
-    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
+    let stem = component
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+    !matches!(
+        stem.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) && !["COM", "LPT"].into_iter().any(|prefix| {
+        stem.strip_prefix(prefix).is_some_and(|suffix| {
+            suffix.len() == 1 && suffix.as_bytes()[0].is_ascii_digit() && suffix != "0"
+        })
+    })
 }
 
 fn open_destination_zip(zip_file_path: &Utf8Path) -> crate::Result<ZipWriter<BufWriter<File>>> {
@@ -588,7 +607,10 @@ mod tests {
     }
 
     prop_compose! {
-        fn safe_component()(name in "[A-Za-z0-9][A-Za-z0-9._-]{0,15}") -> String {
+        fn safe_component()(name in prop_oneof![
+            "[A-Za-z0-9]",
+            "[A-Za-z0-9][A-Za-z0-9._-]{0,14}[A-Za-z0-9_-]",
+        ]) -> String {
             name
         }
     }
@@ -634,6 +656,18 @@ mod tests {
             "nested\\file.zip",
             "bad\0.zip",
             "C:bad.zip",
+            "game:stream",
+            "CON",
+            "con.txt",
+            "CONIN$",
+            "CONOUT$",
+            "PRN",
+            "AUX",
+            "NUL",
+            "COM1",
+            "LPT9",
+            "trailing.",
+            "trailing ",
         ] {
             assert!(
                 validate_output_file_name(name).is_err(),
@@ -755,6 +789,50 @@ mod tests {
         let message = error_message(write_plan(&plan, &destination))?;
 
         assert!(message.contains("duplicate output zip file name"));
+        assert!(!destination.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn write_plan_rejects_case_folded_output_names() -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let destination = utf8_path(temp_dir.path())?.join("output");
+        let plan = BuildPlan {
+            groups: vec![
+                OutputGroup {
+                    path: LogicalPath::new("game"),
+                    entries: Vec::new(),
+                },
+                OutputGroup {
+                    path: LogicalPath::new("GAME"),
+                    entries: Vec::new(),
+                },
+            ],
+            report: BuildReport::default(),
+        };
+
+        let message = error_message(write_plan(&plan, &destination))?;
+
+        assert!(message.contains("duplicate output zip file name"));
+        assert!(!destination.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn write_plan_rejects_non_ascii_output_names() -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let destination = utf8_path(temp_dir.path())?.join("output");
+        let plan = BuildPlan {
+            groups: vec![OutputGroup {
+                path: LogicalPath::new("café"),
+                entries: Vec::new(),
+            }],
+            report: BuildReport::default(),
+        };
+
+        let message = error_message(write_plan(&plan, &destination))?;
+
+        assert!(message.contains("unsafe output zip file name"));
         assert!(!destination.exists());
         Ok(())
     }
