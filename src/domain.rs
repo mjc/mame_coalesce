@@ -959,7 +959,7 @@ pub enum BuildMode {
     PerGame,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum MatchingPolicy {
     /// Match only SHA1, ignoring size/CRC/MD5 disagreements for historical compatibility.
     #[default]
@@ -1209,7 +1209,7 @@ impl SourcePhysicalPath {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct SourceFile {
     pub source_root: SourceRoot,
     pub location: SourceLocation,
@@ -1379,7 +1379,7 @@ pub struct LogicalEntry {
     pub selection: SelectionProvenance,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct SelectionProvenance {
     pub policy: MatchingPolicy,
     pub strength: crate::resolution::MatchStrength,

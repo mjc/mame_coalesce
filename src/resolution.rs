@@ -13,7 +13,7 @@ pub use crate::domain::MatchingPolicy;
 /// Per-category cap for evidence assessments and duplicate copies in one resolution result.
 pub const MAX_RETAINED_EVIDENCE_DETAILS_PER_KIND: usize = 256;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum MatchStrength {
     Sha1,
     Md5,
@@ -30,7 +30,7 @@ impl MatchStrength {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum EvidenceField {
     Sha1,
     Md5,
@@ -140,7 +140,7 @@ pub enum MissingReason {
     NoMatchingSource,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct SourceAssessment {
     pub source: SourceFile,
     pub strength: Option<MatchStrength>,
