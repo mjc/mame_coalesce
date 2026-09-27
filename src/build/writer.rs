@@ -1397,7 +1397,10 @@ mod tests {
 
         let result = write_plan(&plan, &destination)?;
 
-        assert_eq!(result, [destination.join("nested/set.zip")]);
+        assert_eq!(
+            result,
+            [destination.join("nested/set.zip").canonicalize_utf8()?]
+        );
         Ok(())
     }
 
@@ -1422,7 +1425,7 @@ mod tests {
 
         let result = write_plan(&plan, &destination)?;
 
-        assert_eq!(result, [nested.join("set.zip")]);
+        assert_eq!(result, [nested.join("set.zip").canonicalize_utf8()?]);
         Ok(())
     }
 
@@ -1602,7 +1605,7 @@ mod tests {
 
         let written = write_plan(&plan, &destination)?;
 
-        let expected_path = destination.join("nested/set.zip");
+        let expected_path = destination.join("nested/set.zip").canonicalize_utf8()?;
         assert_eq!(written, vec![expected_path.clone()]);
         assert!(expected_path.is_file());
         Ok(())

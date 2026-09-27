@@ -1019,8 +1019,8 @@ mod tests {
         let plan = empty_plan(vec![group("set", vec![planned_entry])]);
 
         let checked = checked_plan_destination(&plan, destination)?;
-        assert_eq!(checked.path(), destination);
-        assert_eq!(checked.sources(), &[source_root.to_path_buf()]);
+        assert_eq!(checked.path(), &canonicalize_destination(destination)?);
+        assert_eq!(checked.sources(), &[source_root.canonicalize_utf8()?]);
         Ok(())
     }
 

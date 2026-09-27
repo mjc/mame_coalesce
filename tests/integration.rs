@@ -279,7 +279,10 @@ fn run_workflow_writes_from_7z_archive() -> Result<(), Box<dyn std::error::Error
     assert_eq!(report.exit_code, 0);
     assert_eq!(report.build_report.matched_roms, 1);
     assert!(report.build_report.missing_roms.is_empty());
-    assert_eq!(report.written_paths, vec![output_path.join("shared.zip")]);
+    assert_eq!(
+        report.written_paths,
+        vec![output_path.join("shared.zip").canonicalize_utf8()?]
+    );
     assert_eq!(
         zip_entries(&output_path.join("shared.zip"))?
             .get("shared.rom")
@@ -323,7 +326,10 @@ fn run_workflow_writes_from_rar_archive() -> Result<(), Box<dyn std::error::Erro
     assert_eq!(report.exit_code, 0);
     assert_eq!(report.build_report.matched_roms, 1);
     assert!(report.build_report.missing_roms.is_empty());
-    assert_eq!(report.written_paths, vec![output_path.join("shared.zip")]);
+    assert_eq!(
+        report.written_paths,
+        vec![output_path.join("shared.zip").canonicalize_utf8()?]
+    );
     assert_eq!(
         zip_entries(&output_path.join("shared.zip"))?
             .get("shared.rom")
@@ -434,7 +440,10 @@ fn run_workflow_writes_parent_bundle_zip() -> Result<(), Box<dyn std::error::Err
     assert_eq!(report.build_report.matched_roms, 2);
     assert_eq!(report.build_report.missing_roms.len(), 1);
     assert_eq!(report.build_report.missing_roms[0].rom_name, "clone1.rom");
-    assert_eq!(report.written_paths, vec![output_path.join("parent.zip")]);
+    assert_eq!(
+        report.written_paths,
+        vec![output_path.join("parent.zip").canonicalize_utf8()?]
+    );
 
     let entries = zip_entries(&output_path.join("parent.zip"))?;
     assert_eq!(entries.len(), 2);
@@ -520,7 +529,10 @@ fn build_workflow_accepts_imported_dat_name() -> Result<(), Box<dyn std::error::
     assert_eq!(report.build_report.matched_roms, 2);
     assert_eq!(report.build_report.missing_roms.len(), 1);
     assert_eq!(report.build_report.missing_roms[0].rom_name, "clone1.rom");
-    assert_eq!(report.written_paths, vec![output_path.join("parent.zip")]);
+    assert_eq!(
+        report.written_paths,
+        vec![output_path.join("parent.zip").canonicalize_utf8()?]
+    );
 
     let entries = zip_entries(&output_path.join("parent.zip"))?;
     assert_eq!(entries.len(), 2);
@@ -579,7 +591,10 @@ fn build_matches_sources_scanned_from_noncanonical_path() -> Result<(), Box<dyn 
 
     assert_eq!(report.exit_code, 0);
     assert_eq!(report.build_report.matched_roms, 2);
-    assert_eq!(report.written_paths, vec![output_path.join("parent.zip")]);
+    assert_eq!(
+        report.written_paths,
+        vec![output_path.join("parent.zip").canonicalize_utf8()?]
+    );
     Ok(())
 }
 

@@ -447,10 +447,15 @@ mod tests {
         let rom_path = root.join("game.rom");
         std::fs::write(&rom_path, b"rom")?;
         let excluded_paths = crate::storage::db::database_file_paths(&pool)?;
+        let canonical_database_path = database_path.canonicalize_utf8()?;
 
-        assert!(excluded_paths.contains(&database_path.canonicalize_utf8()?));
-        assert!(excluded_paths.contains(&Utf8PathBuf::from(format!("{database_path}-wal"))));
-        assert!(excluded_paths.contains(&Utf8PathBuf::from(format!("{database_path}-shm"))));
+        assert!(excluded_paths.contains(&canonical_database_path));
+        assert!(
+            excluded_paths.contains(&Utf8PathBuf::from(format!("{canonical_database_path}-wal")))
+        );
+        assert!(
+            excluded_paths.contains(&Utf8PathBuf::from(format!("{canonical_database_path}-shm")))
+        );
         assert_eq!(walk_for_files(root, &excluded_paths)?, vec![rom_path]);
         Ok(())
     }
