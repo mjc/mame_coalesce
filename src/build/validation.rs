@@ -240,7 +240,7 @@ fn entry_collision_witnesses<'a>(
             {
                 let witness = if shared & 0b011 != 0 {
                     &mut witnesses[0]
-                } else if shared & 0b100 != 0 {
+                } else if shared & 0b1100 != 0 {
                     &mut witnesses[2]
                 } else {
                     continue;
@@ -675,6 +675,27 @@ mod tests {
         let expected = ExpectedEvidence {
             scope: crate::domain::EvidenceScope::WholeAsset,
             crc: Some(crate::domain::Crc32Digest([1; 4])),
+            size: Some(1024),
+            ..ExpectedEvidence::default()
+        };
+        let plan = empty_plan(vec![group(
+            "set",
+            vec![
+                entry("rom.bin", expected.clone()),
+                entry("rom.bin", expected),
+            ],
+        )]);
+
+        assert!(inspect_plan(&plan).iter().any(|issue| {
+            issue.kind == PlanIssueKind::DuplicateEntry(ContentRelation::UnknownContent)
+        }));
+        assert!(validate_plan(&plan).is_err());
+    }
+
+    #[test]
+    fn matching_size_only_duplicates_are_reported_as_unknown_content() {
+        let expected = ExpectedEvidence {
+            scope: crate::domain::EvidenceScope::WholeAsset,
             size: Some(1024),
             ..ExpectedEvidence::default()
         };
