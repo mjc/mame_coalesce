@@ -2,6 +2,7 @@ use diesel::{
     QueryableByName, RunQueryDsl, SqliteConnection, sql_query,
     sql_types::{BigInt, Binary, Nullable, Text},
 };
+use serde::Serialize;
 
 use crate::{
     domain::{
@@ -130,10 +131,7 @@ fn snapshot_requirements(
             record: CatalogRecordRef::new(
                 snapshot.clone(),
                 CatalogRecordKind::AssetRequirement,
-                format!(
-                    "{}/{}#{}",
-                    row.set_name, row.asset_name, row.component_order
-                ),
+                record_key(&(&row.set_name, &row.asset_name, row.component_order))?,
             ),
             owner: CatalogRecordRef::new(
                 snapshot.clone(),
@@ -184,26 +182,24 @@ fn software_requirements(
     .load::<SoftwareRequirementRow>(conn)?;
     rows.into_iter()
         .map(|row| {
-            let component_name = row.component_name.as_deref().unwrap_or("<unnamed>");
             Ok(ExpectedAssetRequirement {
                 record: CatalogRecordRef::new(
                     snapshot.clone(),
                     CatalogRecordKind::AssetRequirement,
-                    format!(
-                        "{}/{}/{}/{}/{}/{}#{}",
-                        row.list_name,
-                        row.item_name,
-                        row.part_name,
-                        row.area_kind,
-                        row.area_name,
-                        component_name,
-                        row.component_order
-                    ),
+                    record_key(&(
+                        &row.list_name,
+                        &row.item_name,
+                        &row.part_name,
+                        &row.area_kind,
+                        &row.area_name,
+                        &row.component_name,
+                        row.component_order,
+                    ))?,
                 ),
                 owner: CatalogRecordRef::new(
                     snapshot.clone(),
                     CatalogRecordKind::SoftwareItem,
-                    format!("{}/{}", row.list_name, row.item_name),
+                    record_key(&(&row.list_name, &row.item_name))?,
                 ),
                 role: parse_role(&row.component_kind),
                 expected: ExpectedEvidence {
@@ -231,6 +227,10 @@ fn software_requirements(
             })
         })
         .collect()
+}
+
+pub(super) fn record_key(value: &impl Serialize) -> crate::Result<String> {
+    Ok(serde_json::to_string(value)?)
 }
 
 fn digest<const N: usize>(value: Option<Vec<u8>>, name: &str) -> crate::Result<Option<[u8; N]>> {
@@ -269,5 +269,35 @@ fn parse_provenance(value: &str) -> EvidenceProvenance {
         "computed" => EvidenceProvenance::Computed,
         "legacy_cache" => EvidenceProvenance::LegacyCache,
         _ => EvidenceProvenance::Unknown,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::record_key;
+
+    #[test]
+    fn composite_record_keys_preserve_field_boundaries_and_optional_names() -> crate::Result<()> {
+        let split_asset = record_key(&("a/b", "c", 0_i64))?;
+        let split_set = record_key(&("a", "b/c", 0_i64))?;
+        assert_ne!(split_asset, split_set);
+
+        let split_software_item = record_key(&("list/item", "a"))?;
+        let split_software_list = record_key(&("list", "item/a"))?;
+        assert_ne!(split_software_item, split_software_list);
+
+        let named_component = record_key(&(
+            "list",
+            "item",
+            "part",
+            "rom",
+            "area",
+            Some("<unnamed>"),
+            0_i64,
+        ))?;
+        let unnamed_component =
+            record_key(&("list", "item", "part", "rom", "area", None::<&str>, 0_i64))?;
+        assert_ne!(named_component, unnamed_component);
+        Ok(())
     }
 }
