@@ -648,6 +648,7 @@ pub fn build(
         )?;
         let results =
             write_plan_with_compression(&plan, &request.destination_path, request.compression)?;
+        report_artifact_outcomes(&results);
         let paths = results
             .iter()
             .filter(|result| result.outcome == ArtifactOutcome::Completed)
@@ -663,7 +664,6 @@ pub fn build(
     } else {
         exit_code
     };
-    report_artifact_outcomes(&artifact_results);
 
     Ok(BuildWorkflowReport {
         written_paths,
