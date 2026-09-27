@@ -31,10 +31,14 @@ pub fn load_catalog(
     snapshot: &SnapshotKey,
 ) -> crate::Result<MachineDependencyCatalog> {
     let mut conn = pool.get()?;
-    let exists =
-        sql_query("SELECT scope_kind, scope_json FROM catalog_snapshots WHERE snapshot_key = ?")
-            .bind::<Text, _>(snapshot.as_str())
-            .get_result::<SnapshotExists>(&mut conn);
+    let exists = sql_query(
+        "SELECT s.scope_kind, s.scope_json, pi.format AS parser_format \
+         FROM catalog_snapshots s \
+         JOIN parser_interpretations pi ON pi.interpretation_key = s.interpretation_key \
+         WHERE s.snapshot_key = ?",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<SnapshotExists>(&mut conn);
     if matches!(&exists, Err(diesel::result::Error::NotFound)) {
         return Err(crate::Error::InvalidPath(format!(
             "catalog snapshot {} does not exist",
@@ -42,6 +46,14 @@ pub fn load_catalog(
         )));
     }
     let header = exists?;
+    if !matches!(
+        header.parser_format.as_str(),
+        "logiqx" | "mame-listxml" | "clrmamepro-dat" | "no-intro-pc-xml"
+    ) {
+        return Err(crate::Error::UnsupportedMachineDependencyFormat(
+            header.parser_format,
+        ));
+    }
     let completeness = match header.scope_kind.as_str() {
         "complete" => SnapshotCompleteness::Complete,
         "filtered" => {
@@ -100,6 +112,8 @@ struct SnapshotExists {
     scope_kind: String,
     #[diesel(sql_type = Nullable<Text>)]
     scope_json: Option<String>,
+    #[diesel(sql_type = Text)]
+    parser_format: String,
 }
 
 fn filtered_set_scope(scope_json: Option<&str>) -> Option<BTreeSet<SetName>> {
