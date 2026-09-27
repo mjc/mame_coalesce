@@ -14,6 +14,7 @@ use crate::{Error, Result};
 const RAR_MAX_MEMBER_SIZE: u64 = 128 * 1024 * 1024;
 const SEVEN_Z_MAX_SELECTED_MEMBER_SIZE: u64 = 16 * 1024 * 1024 * 1024;
 const SEVEN_Z_MAX_PACKED_FOLDER_SIZE: u64 = 512 * 1024 * 1024;
+const SEVEN_Z_MAX_DECODER_WORKING_SET_SIZE: u64 = 512 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ArchiveMemberSelector {
@@ -55,7 +56,7 @@ pub const BACKEND_CAPABILITIES: [BackendCapabilities; 3] = [
     BackendCapabilities {
         backend: ArchiveBackend::SevenZip,
         selected_reads: "Selected members are extracted by index from one archive handle; later unselected folders are not visited.",
-        limitation: "Multi-range solid-folder decoding buffers packed ranges in memory, so folders with multiple ranges are preflighted against a 512 MiB packed-data limit. Selected members sharing a solid folder may cause that folder to be decoded more than once.",
+        limitation: "Multi-range solid-folder decoding buffers packed ranges in memory, so folders with multiple ranges are preflighted against a 512 MiB packed-data limit. BCJ2 folders are preflighted against an estimated 512 MiB packed-plus-intermediate working set. Selected members sharing a solid folder may cause that folder to be decoded more than once.",
         max_member_size: Some(SEVEN_Z_MAX_SELECTED_MEMBER_SIZE),
         max_packed_folder_size: Some(SEVEN_Z_MAX_PACKED_FOLDER_SIZE),
     },
@@ -344,35 +345,44 @@ fn zip_central_directory_location(
             .map_err(|_| Error::InvalidPath("invalid ZIP end record".to_owned()))?,
     );
     let requires_zip64 = entries == u16::MAX || size32 == u32::MAX || offset32 == u32::MAX;
-    let (directory_end, directory_size) = if requires_zip64 {
-        let Some(locator_offset) = eocd_offset.checked_sub(20) else {
-            return Ok((None, None));
-        };
+    let zip64_location = if let Some(locator_offset) = eocd_offset.checked_sub(20) {
         file.seek(SeekFrom::Start(locator_offset))?;
         let mut locator = [0_u8; 20];
         file.read_exact(&mut locator)?;
-        if &locator[..4] != ZIP64_LOCATOR_SIGNATURE {
-            return Ok((None, None));
+        if &locator[..4] == ZIP64_LOCATOR_SIGNATURE {
+            let zip64_offset = u64::from_le_bytes(
+                locator[8..16]
+                    .try_into()
+                    .map_err(|_| Error::InvalidPath("invalid ZIP64 locator".to_owned()))?,
+            );
+            let zip64_end = zip64_offset.checked_add(56);
+            let file_len = file.metadata()?.len();
+            if zip64_end.is_some_and(|end| end <= file_len) {
+                file.seek(SeekFrom::Start(zip64_offset))?;
+                let mut zip64_eocd = [0_u8; 56];
+                file.read_exact(&mut zip64_eocd)?;
+                if &zip64_eocd[..4] == ZIP64_EOCD_SIGNATURE {
+                    let size =
+                        u64::from_le_bytes(zip64_eocd[40..48].try_into().map_err(|_| {
+                            Error::InvalidPath("invalid ZIP64 end record".to_owned())
+                        })?);
+                    Some((zip64_offset, size))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
         }
-        let zip64_offset = u64::from_le_bytes(
-            locator[8..16]
-                .try_into()
-                .map_err(|_| Error::InvalidPath("invalid ZIP64 locator".to_owned()))?,
-        );
-        file.seek(SeekFrom::Start(zip64_offset))?;
-        let mut zip64_eocd = [0_u8; 56];
-        file.read_exact(&mut zip64_eocd)?;
-        if &zip64_eocd[..4] != ZIP64_EOCD_SIGNATURE {
-            return Ok((None, None));
-        }
-        let size = u64::from_le_bytes(
-            zip64_eocd[40..48]
-                .try_into()
-                .map_err(|_| Error::InvalidPath("invalid ZIP64 end record".to_owned()))?,
-        );
-        (zip64_offset, size)
     } else {
-        (eocd_offset, u64::from(size32))
+        None
+    };
+    let (directory_end, directory_size) = match zip64_location {
+        Some(location) => location,
+        None if requires_zip64 => return Ok((None, None)),
+        None => (eocd_offset, u64::from(size32)),
     };
     Ok((Some(directory_end), Some(directory_size)))
 }
@@ -666,7 +676,11 @@ fn preflight_7z_packed_folders(
         let packed_streams = input_streams
             .checked_sub(bound_streams)
             .ok_or_else(|| Error::InvalidPath("7z packed stream count underflowed".to_owned()))?;
-        if packed_streams <= 1 {
+        let has_bcj2 = folder
+            .coders
+            .iter()
+            .any(|coder| coder.codec_id.as_slice() == r7z::CODEC_BCJ2);
+        if packed_streams <= 1 && !has_bcj2 {
             continue;
         }
         let packed_size = listing
@@ -679,7 +693,74 @@ fn preflight_7z_packed_folders(
                     "7z packed size is unavailable for folder {block}; refusing unbounded decode"
                 ))
             })?;
-        enforce_7z_packed_folder_limit(block, packed_streams, packed_size)?;
+        if packed_streams > 1 {
+            enforce_7z_packed_folder_limit(block, packed_streams, packed_size)?;
+        }
+        if has_bcj2 {
+            let coder_output_size = folder_coder_output_size(unpack_info, block, &folder)?;
+            enforce_7z_decoder_working_set_limit(block, packed_size, coder_output_size)?;
+        }
+    }
+    Ok(())
+}
+
+fn folder_coder_output_size(
+    unpack_info: &r7z::UnpackInfo,
+    block: usize,
+    folder: &r7z::Folder,
+) -> Result<u64> {
+    let mut first_output = 0_usize;
+    for previous in 0..block {
+        let previous_folder = unpack_info.parse_folder(previous)?;
+        let outputs = previous_folder
+            .coders
+            .iter()
+            .try_fold(0_usize, |sum, coder| {
+                let count = usize::try_from(coder.num_out_streams).map_err(|_| {
+                    Error::InvalidPath("7z coder output count does not fit in memory".to_owned())
+                })?;
+                sum.checked_add(count).ok_or_else(|| {
+                    Error::InvalidPath("7z coder output count overflowed".to_owned())
+                })
+            })?;
+        first_output = first_output
+            .checked_add(outputs)
+            .ok_or_else(|| Error::InvalidPath("7z coder output offset overflowed".to_owned()))?;
+    }
+    let output_count = folder.coders.iter().try_fold(0_usize, |sum, coder| {
+        let count = usize::try_from(coder.num_out_streams).map_err(|_| {
+            Error::InvalidPath("7z coder output count does not fit in memory".to_owned())
+        })?;
+        sum.checked_add(count)
+            .ok_or_else(|| Error::InvalidPath("7z coder output count overflowed".to_owned()))
+    })?;
+    let end_output = first_output
+        .checked_add(output_count)
+        .ok_or_else(|| Error::InvalidPath("7z coder output range overflowed".to_owned()))?;
+    unpack_info
+        .unpack_sizes
+        .get(first_output..end_output)
+        .ok_or_else(|| Error::InvalidPath("7z coder output sizes are unavailable".to_owned()))?
+        .iter()
+        .try_fold(0_u64, |sum, &size| {
+            sum.checked_add(size)
+                .ok_or_else(|| Error::InvalidPath("7z coder output size overflowed".to_owned()))
+        })
+}
+
+fn enforce_7z_decoder_working_set_limit(
+    block: usize,
+    packed_size: u64,
+    coder_output_size: u64,
+) -> Result<()> {
+    let working_set = packed_size
+        .checked_mul(2)
+        .and_then(|packed| packed.checked_add(coder_output_size))
+        .ok_or_else(|| Error::InvalidPath("7z decoder working set overflowed".to_owned()))?;
+    if working_set > SEVEN_Z_MAX_DECODER_WORKING_SET_SIZE {
+        return Err(Error::InvalidPath(format!(
+            "7z BCJ2 folder {block} requires an estimated {working_set} bytes of decoder memory; limit is {SEVEN_Z_MAX_DECODER_WORKING_SET_SIZE}"
+        )));
     }
     Ok(())
 }
@@ -856,9 +937,10 @@ mod tests {
 
     use super::{
         ArchiveBackend, ArchiveMember, ArchiveMemberSelector, RAR_MAX_MEMBER_SIZE,
-        SEVEN_Z_MAX_PACKED_FOLDER_SIZE, SourceKind, capabilities, detect,
-        enforce_7z_packed_folder_limit, enumerate, stream_7z, stream_archive, stream_file,
-        stream_rar, stream_zip, zip_central_entry_count,
+        SEVEN_Z_MAX_DECODER_WORKING_SET_SIZE, SEVEN_Z_MAX_PACKED_FOLDER_SIZE, SourceKind,
+        capabilities, detect, enforce_7z_decoder_working_set_limit, enforce_7z_packed_folder_limit,
+        enumerate, stream_7z, stream_archive, stream_file, stream_rar, stream_zip,
+        zip_central_entry_count,
     };
 
     #[cfg(unix)]
@@ -882,7 +964,7 @@ mod tests {
         Ok(())
     }
 
-    fn zip64_with_max_comment(bytes: &[u8]) -> io::Result<Vec<u8>> {
+    fn zip64_with_max_comment(bytes: &[u8], saturated_eocd_fields: bool) -> io::Result<Vec<u8>> {
         let eocd = bytes
             .windows(4)
             .rposition(|window| window == b"PK\x05\x06")
@@ -919,8 +1001,10 @@ mod tests {
         result.extend_from_slice(&1_u32.to_le_bytes());
 
         let mut standard_eocd = bytes[eocd..eocd + 22].to_vec();
-        standard_eocd[8..12].fill(u8::MAX);
-        standard_eocd[12..20].fill(u8::MAX);
+        if saturated_eocd_fields {
+            standard_eocd[8..12].fill(u8::MAX);
+            standard_eocd[12..20].fill(u8::MAX);
+        }
         standard_eocd[20..22].copy_from_slice(&u16::MAX.to_le_bytes());
         result.extend_from_slice(&standard_eocd);
         result.resize(result.len() + usize::from(u16::MAX), 0xA5);
@@ -936,6 +1020,14 @@ mod tests {
     }
 
     #[test]
+    fn seven_zip_bcj2_preflight_limits_intermediate_and_packed_buffers() {
+        let limit = SEVEN_Z_MAX_DECODER_WORKING_SET_SIZE;
+        assert!(enforce_7z_decoder_working_set_limit(0, 100, limit - 200).is_ok());
+        assert!(enforce_7z_decoder_working_set_limit(0, 100, limit - 199).is_err());
+        assert!(enforce_7z_decoder_working_set_limit(0, u64::MAX, 1).is_err());
+    }
+
+    #[test]
     fn zip64_locator_is_read_before_maximum_length_comment()
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
@@ -944,7 +1036,31 @@ mod tests {
         let path = root.join("zip64-max-comment.zip");
         let ordinary = root.join("ordinary.zip");
         write_zip(&ordinary, &[("one.rom", b"rom")])?;
-        std::fs::write(&path, zip64_with_max_comment(&std::fs::read(ordinary)?)?)?;
+        std::fs::write(
+            &path,
+            zip64_with_max_comment(&std::fs::read(ordinary)?, true)?,
+        )?;
+
+        assert_eq!(zip_central_entry_count(&path)?, Some(1));
+        let members = enumerate(&path, ArchiveBackend::Zip)?;
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0].selector.name, "one.rom");
+        Ok(())
+    }
+
+    #[test]
+    fn zip64_locator_is_used_when_ordinary_end_fields_fit() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let directory = tempfile::tempdir()?;
+        let root = Utf8Path::from_path(directory.path())
+            .ok_or_else(|| io::Error::other("temporary path is not UTF-8"))?;
+        let path = root.join("zip64-unsaturated.zip");
+        let ordinary = root.join("ordinary.zip");
+        write_zip(&ordinary, &[("one.rom", b"rom")])?;
+        std::fs::write(
+            &path,
+            zip64_with_max_comment(&std::fs::read(ordinary)?, false)?,
+        )?;
 
         assert_eq!(zip_central_entry_count(&path)?, Some(1));
         let members = enumerate(&path, ArchiveBackend::Zip)?;
