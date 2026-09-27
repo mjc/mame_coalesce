@@ -45,6 +45,7 @@ pub struct UnsupportedAttribute {
 pub struct XmlSourceMap {
     pub game_locations: Vec<RecordLocation>,
     pub rom_locations: Vec<Vec<RecordLocation>>,
+    pub device_ref_locations: Vec<Vec<RecordLocation>>,
     pub unsupported_attributes: Vec<UnsupportedAttribute>,
 }
 impl DataFile {
@@ -183,12 +184,18 @@ fn validate_xml(bytes: &[u8]) -> crate::Result<XmlSourceMap> {
                         current_game = Some((game_index, element_depth));
                         source_map.game_locations.push(location);
                         source_map.rom_locations.push(Vec::new());
+                        source_map.device_ref_locations.push(Vec::new());
                     }
                     "rom" if element_depth == 2 => {
                         if let Some((index, game_depth)) = current_game
                             && game_depth + 1 == element_depth
                         {
                             source_map.rom_locations[index].push(location);
+                        }
+                    }
+                    "device_ref" => {
+                        if let Some(index) = current_game {
+                            source_map.device_ref_locations[index].push(location);
                         }
                     }
                     _ => {}
@@ -457,13 +464,16 @@ mod tests {
         let xml = br#"<datafile>
   <header><name>Source map</name></header>
   <game name="set" future="preserve">
+    <device_ref name="sound"/>
     <rom name="asset.bin" size="4" future-hash="unknown"/>
   </game>
 </datafile>"#;
         let (data_file, source_map) = DataFile::from_reader_with_source_map(xml.as_slice())?;
         assert_eq!(data_file.games().len(), 1);
         assert_eq!(source_map.game_locations[0].line, 3);
-        assert_eq!(source_map.rom_locations[0][0].line, 4);
+        assert_eq!(source_map.device_ref_locations[0][0].line, 4);
+        assert_eq!(source_map.device_ref_locations[0][0].column, 5);
+        assert_eq!(source_map.rom_locations[0][0].line, 5);
         assert_eq!(source_map.unsupported_attributes.len(), 2);
         assert_eq!(source_map.unsupported_attributes[0].field_name, "future");
         assert_eq!(source_map.unsupported_attributes[1].value, "unknown");
