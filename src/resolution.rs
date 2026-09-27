@@ -394,16 +394,37 @@ fn tied_candidates_are_equivalent(
     strength: MatchStrength,
     candidates: &[&SourceAssessment],
 ) -> bool {
+    let complete_matching_sha1 = || {
+        let mut sha1s = candidates
+            .iter()
+            .map(|candidate| candidate.source.observed.sha1.as_ref());
+        matches!(sha1s.next(), Some(Some(first)) if sha1s.all(|sha1| sha1 == Some(first)))
+    };
+
     match strength {
-        MatchStrength::Sha1 => true,
+        MatchStrength::Sha1 => tied_candidates_have_consistent_evidence(candidates),
         MatchStrength::Md5 => {
-            let mut sha1s = candidates
-                .iter()
-                .map(|candidate| candidate.source.observed.sha1.as_ref());
-            matches!(sha1s.next(), Some(Some(first)) if sha1s.all(|sha1| sha1 == Some(first)))
+            complete_matching_sha1() && tied_candidates_have_consistent_evidence(candidates)
         }
         MatchStrength::CrcAndSize => false,
     }
+}
+
+fn tied_candidates_have_consistent_evidence(candidates: &[&SourceAssessment]) -> bool {
+    candidates.iter().enumerate().all(|(index, left)| {
+        candidates[index + 1..].iter().all(|right| {
+            let left = &left.source.observed;
+            let right = &right.source.observed;
+            evidence_agrees(left.size, right.size)
+                && evidence_agrees(left.crc.as_ref(), right.crc.as_ref())
+                && evidence_agrees(left.md5.as_ref(), right.md5.as_ref())
+                && evidence_agrees(left.sha1.as_ref(), right.sha1.as_ref())
+        })
+    })
+}
+
+fn evidence_agrees<T: PartialEq>(left: Option<T>, right: Option<T>) -> bool {
+    !matches!((left, right), (Some(left), Some(right)) if left != right)
 }
 
 fn is_conflicting_candidate(candidate: &SourceAssessment) -> bool {
@@ -1011,8 +1032,14 @@ mod tests {
             ..ExpectedEvidence::default()
         });
         let inventory = [
-            source("/roms/b.rom", computed(None, None, Some(md5.0), Some(sha1))),
-            source("/roms/a.rom", computed(None, None, Some(md5.0), Some(sha1))),
+            source(
+                "/roms/b.rom",
+                computed(Some(10), None, Some(md5.0), Some(sha1)),
+            ),
+            source(
+                "/roms/a.rom",
+                computed(Some(10), None, Some(md5.0), Some(sha1)),
+            ),
         ];
 
         let resolutions = resolve(
@@ -1032,6 +1059,39 @@ mod tests {
                 ..
             } if selected.location.path() == "/roms/a.rom"
                 && equivalent_copies.len() == 2
+        ));
+    }
+
+    #[test]
+    fn md5_tie_with_matching_sha1_but_different_sizes_is_ambiguous() {
+        let md5 = crate::domain::Md5Digest([10; 16]);
+        let sha1 = crate::hashes::sha1_bytes(b"content");
+        let rom = requirement(ExpectedEvidence {
+            md5: Some(md5),
+            ..ExpectedEvidence::default()
+        });
+        let inventory = [
+            source(
+                "/roms/a.rom",
+                computed(Some(10), None, Some(md5.0), Some(sha1)),
+            ),
+            source(
+                "/roms/b.rom",
+                computed(Some(11), None, Some(md5.0), Some(sha1)),
+            ),
+        ];
+
+        let resolutions = resolve(
+            &[rom],
+            &inventory,
+            "catalog",
+            &SourceRoot::new("/roms"),
+            MatchingPolicy::EvidenceAware,
+        );
+
+        assert!(matches!(
+            &resolutions[0].status,
+            ResolutionStatus::Ambiguous { candidates } if candidates.len() == 2
         ));
     }
 

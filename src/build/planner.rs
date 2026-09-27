@@ -645,6 +645,32 @@ mod tests {
     }
 
     #[test]
+    fn contradictory_md5_tie_is_reported_missing_and_not_planned() {
+        let md5 = crate::domain::Md5Digest([10; 16]);
+        let sha1 = "shared-sha1";
+        let mut requirement = rom("parent", None, "content.rom", sha1);
+        requirement.expected = ExpectedEvidence {
+            scope: crate::domain::EvidenceScope::WholeAsset,
+            md5: Some(md5),
+            ..ExpectedEvidence::default()
+        };
+        let mut first = source("/src-a", "/src-a/a.rom", None, sha1, SourceKind::BareFile);
+        first.observed.size = Some(10);
+        first.observed.md5 = Some(md5);
+        let mut second = source("/src-a", "/src-a/b.rom", None, sha1, SourceKind::BareFile);
+        second.observed.size = Some(11);
+        second.observed.md5 = Some(md5);
+        let mut build_request = request(BuildMode::ParentBundles);
+        build_request.matching_policy = MatchingPolicy::EvidenceAware;
+
+        let plan = plan_build(&[requirement], &[first, second], &build_request);
+
+        assert_eq!(plan.report.matched_roms, 0);
+        assert_eq!(plan.report.missing_roms.len(), 1);
+        assert!(plan.zips.is_empty());
+    }
+
+    #[test]
     fn per_game_mode_writes_one_zip_per_game() {
         let dat_roms = [
             rom("parent", None, "parent.rom", "sha1-parent"),
