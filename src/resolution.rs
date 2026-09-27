@@ -572,6 +572,7 @@ fn source_order(left: &SourceFile, right: &SourceFile) -> std::cmp::Ordering {
 fn source_in_root(source: &SourceFile, source_root: &SourceRoot) -> bool {
     let source_root = Utf8Path::new(source_root.as_str());
     Utf8Path::new(source.location.path()).starts_with(source_root)
+        || Utf8Path::new(source.source_root.as_str()) == source_root
 }
 
 #[cfg(test)]
@@ -1094,8 +1095,11 @@ mod tests {
         });
         rom.catalog_name = "catalog-a".to_owned();
         let other_catalog = requirement(rom.expected.clone());
+        let mut outside_source =
+            source("/roms-other/a.rom", computed(None, None, None, Some(sha1)));
+        outside_source.source_root = SourceRoot::new("/roms-other");
         let inventory = [
-            source("/roms-other/a.rom", computed(None, None, None, Some(sha1))),
+            outside_source,
             source("/roms/z.rom", computed(None, None, None, Some(sha1))),
             source("/roms/a.rom", computed(None, None, None, Some(sha1))),
         ];
@@ -1122,5 +1126,23 @@ mod tests {
             MatchingPolicy::Sha1Compatibility,
         );
         assert_eq!(resolutions, reordered);
+    }
+
+    #[test]
+    fn resolver_preserves_sources_with_matching_stored_root() {
+        let mut stored_root_source = source(
+            "/legacy/location/rom.rom",
+            computed(None, None, None, Some(crate::hashes::sha1_bytes(b"rom"))),
+        );
+        stored_root_source.source_root = SourceRoot::new("/roms");
+
+        assert!(source_in_root(
+            &stored_root_source,
+            &SourceRoot::new("/roms")
+        ));
+        assert!(!source_in_root(
+            &stored_root_source,
+            &SourceRoot::new("/other")
+        ));
     }
 }
