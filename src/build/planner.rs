@@ -320,8 +320,9 @@ mod tests {
     }
 
     #[test]
-    fn md5_tie_with_different_sha1_is_reported_missing_and_not_planned() {
+    fn md5_tie_with_matching_sha1_but_different_xxh3_is_not_planned() {
         let md5 = crate::domain::Md5Digest([5; 16]);
+        let sha1 = "sha1-shared";
         let dat_roms = [DatRom {
             catalog_name: "dat-a".to_owned(),
             key: RequirementKey::new(SetKey::new(CatalogKey::fresh(), "parent"), "dup.rom"),
@@ -335,22 +336,12 @@ mod tests {
                 ..ExpectedEvidence::default()
             },
         }];
-        let mut first = source(
-            "/src-a",
-            "/src-a/a.rom",
-            None,
-            "sha1-a",
-            SourceKind::BareFile,
-        );
+        let mut first = source("/src-a", "/src-a/a.rom", None, sha1, SourceKind::BareFile);
         first.observed.md5 = Some(md5);
-        let mut second = source(
-            "/src-a",
-            "/src-a/b.rom",
-            None,
-            "sha1-b",
-            SourceKind::BareFile,
-        );
+        let mut second = source("/src-a", "/src-a/b.rom", None, sha1, SourceKind::BareFile);
         second.observed.md5 = Some(md5);
+        first.observed.xxh3 = [1; 8];
+        second.observed.xxh3 = [2; 8];
         let mut build_request = request(BuildMode::ParentBundles);
         build_request.matching_policy = MatchingPolicy::EvidenceAware;
 

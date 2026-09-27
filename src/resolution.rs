@@ -420,6 +420,10 @@ fn tied_candidates_have_consistent_evidence(candidates: &[&SourceAssessment]) ->
         candidates
             .iter()
             .map(|candidate| candidate.source.observed.sha1.as_ref()),
+    ) && evidence_is_consistent(
+        candidates
+            .iter()
+            .map(|candidate| Some(&candidate.source.observed.xxh3)),
     )
 }
 
@@ -1150,6 +1154,33 @@ mod tests {
                 ..
             } if selected.location.path() == "/roms/a.rom"
                 && equivalent_copies.len() == 2
+        ));
+    }
+
+    #[test]
+    fn md5_tie_with_matching_sha1_but_different_xxh3_is_ambiguous() {
+        let md5 = crate::domain::Md5Digest([11; 16]);
+        let sha1 = crate::hashes::sha1_bytes(b"same reported evidence");
+        let rom = requirement(ExpectedEvidence {
+            md5: Some(md5),
+            ..ExpectedEvidence::default()
+        });
+        let mut first = source("/roms/a.rom", computed(None, None, Some(md5.0), Some(sha1)));
+        first.observed.xxh3 = [1; 8];
+        let mut second = source("/roms/b.rom", computed(None, None, Some(md5.0), Some(sha1)));
+        second.observed.xxh3 = [2; 8];
+
+        let resolutions = resolve(
+            &[rom],
+            &[first, second],
+            "catalog",
+            &SourceRoot::new("/roms"),
+            MatchingPolicy::EvidenceAware,
+        );
+
+        assert!(matches!(
+            &resolutions[0].status,
+            ResolutionStatus::Ambiguous { candidates } if candidates.len() == 2
         ));
     }
 
