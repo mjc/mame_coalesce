@@ -11,14 +11,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::domain::{BuildPlan, ExpectedEvidence, LogicalPath};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum ContentRelation {
     SameEstablishedContent,
     DifferentContent,
     UnknownContent,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum PlanIssueKind {
     UnsafeGroupPath,
     UnsafeEntryPath,
@@ -28,7 +28,7 @@ pub enum PlanIssueKind {
     EntryFileDirectoryConflict,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct PlanIssue {
     pub kind: PlanIssueKind,
     pub path: LogicalPath,
@@ -101,10 +101,14 @@ pub fn validate_plan(plan: &BuildPlan) -> Result<ValidatedPlan<'_>, PlanValidati
 }
 
 pub(crate) fn inspect_plan(plan: &BuildPlan) -> Vec<PlanIssue> {
-    let mut issues = Vec::new();
-    let mut groups = BTreeMap::<String, Vec<&LogicalPath>>::new();
+    inspect_groups(&plan.groups)
+}
 
-    for group in &plan.groups {
+pub(crate) fn inspect_groups(output_groups: &[crate::domain::OutputGroup]) -> Vec<PlanIssue> {
+    let mut issues = Vec::new();
+    let mut groups_by_key = BTreeMap::<String, Vec<&LogicalPath>>::new();
+
+    for group in output_groups {
         let path = group.path.as_str();
         if !is_safe_relative_path(path) {
             issues.push(PlanIssue {
@@ -115,7 +119,7 @@ pub(crate) fn inspect_plan(plan: &BuildPlan) -> Vec<PlanIssue> {
         }
 
         let folded = path.to_ascii_lowercase();
-        groups.entry(folded).or_default().push(&group.path);
+        groups_by_key.entry(folded).or_default().push(&group.path);
 
         for entry in &group.entries {
             if !is_safe_relative_path(entry.path.as_str()) {
@@ -175,7 +179,7 @@ pub(crate) fn inspect_plan(plan: &BuildPlan) -> Vec<PlanIssue> {
         }
     }
 
-    for duplicates in groups.values_mut() {
+    for duplicates in groups_by_key.values_mut() {
         duplicates.sort();
         for index in 0..duplicates.len() {
             for duplicate_index in index + 1..duplicates.len() {
@@ -188,7 +192,7 @@ pub(crate) fn inspect_plan(plan: &BuildPlan) -> Vec<PlanIssue> {
         }
     }
 
-    let group_paths = groups.keys().cloned().collect::<BTreeSet<_>>();
+    let group_paths = groups_by_key.keys().cloned().collect::<BTreeSet<_>>();
     for path in &group_paths {
         for slash in path.match_indices('/').map(|(index, _)| index) {
             let prefix = &path[..slash];

@@ -1,6 +1,6 @@
 # Architecture and compatibility
 
-This document describes the implementation at the MAMEC-16 evidence pass. It
+This document describes the implementation through the explicit MAME layout-policy increment. It
 supersedes the earlier proposed target architecture where the two differ. The
 crate remains pre-1.0; the compatibility promises here describe the command-line
 workflow and existing cache behavior, not a semver-stable public Rust API.
@@ -36,6 +36,15 @@ members once per source session, and writes ZIP or directory artifacts. The
 public `app` functions compose these layers without CLI logging, rendering, or
 process exits. The binary owns those presentation concerns.
 
+`build::mame_layout` is a separate pure operation over one snapshot's typed
+dependency closures and already-resolved set contents. Its explicit non-merged
+policy makes each selected machine group self-contained by including the
+resolved BIOS, device, and other runtime dependency contents, plus inherited
+parent ROMs with child merge declarations applied as overrides. Clone ancestry
+is not treated as a runtime-dependency edge. The planner reports incomplete
+dependencies, missing assets, and content/path conflicts before any writer is
+involved; neither legacy CLI layout is reinterpreted.
+
 The crate root deliberately exposes `app`, `build`, `database`, `disk`,
 `domain`, `error`, `hashes`, `logiqx`, and `resolution`, plus the retained
 document store types. Parsing adapters, scan operations, source backends, and
@@ -48,6 +57,9 @@ parser-internal representations the public contract.
 - Existing one-source CLI positionals and defaults remain: ZIP output,
   `parent-bundles`, deflate compression, and permissive missing-content
   reporting. Additional source roots and directory output are opt-in.
+- The library's snapshot-aware non-merged MAME policy is an explicit planning
+  operation and does not change the meanings or CLI availability of
+  `parent-bundles` and `per-game`.
 - The database runs embedded forward migrations when it is opened. The tested
   additive migrations preserve populated legacy DAT/game/ROM/source rows.
   Legacy source rows whose bytes or archive-member identity were never retained
@@ -111,7 +123,7 @@ parser-internal representations the public contract.
 | Add a catalog input format | Add an adapter and format hint/dispatch; map records into the common typed snapshot; add fixture coverage and import compatibility tests. | `storage::catalog_import` owns normalized persistence; test source locations, unsupported-extension retention, malformed input rollback, and idempotent import. |
 | Add a source/archive backend | Implement the backend in `sources`; keep discovery and selected-member identity in the scan/source model. | Exercise listing/read errors, identity/fingerprint changes, duplicate names, and writer verification; preserve scan-before-cache-replace. |
 | Change matching | Add typed evidence/policy behavior in `domain` and pure resolution logic in `resolution`. | Test permutations, partial/conflicting evidence, ambiguity, roots/catalog isolation, and audit/build agreement; keep SQL and CLI out unless their contracts actually change. |
-| Change logical layout | Change `build::planner` and layout types in `domain`. | Re-run portable-path validation, collision/overlap cases, and ZIP/directory equality for both layouts. |
+| Change logical layout | Add or evolve a pure policy in `build::mame_layout` or `build::planner`; keep MAME snapshot dependencies distinct from legacy build modes. | Test explicit group contents, dependency diagnostics, input permutations, path collisions, and provenance before writer integration. |
 | Add an output container | Add the container choice to `domain`, route it in `app`/CLI, and implement it behind the shared validation and verified writer boundary. | Test staging, replace/rollback failures, stale-source rejection, and byte-tree equivalence; document per-artifact and multi-artifact guarantees. |
 | Add a user workflow or frontend | Compose operations in `app`; keep terminal rendering and exit-code mapping in the CLI. | Test the public request/report behavior and ensure reusable operations do not initialize terminal state. |
 
