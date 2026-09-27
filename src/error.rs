@@ -29,6 +29,9 @@ pub enum Error {
     #[error("Invalid path: {0}")]
     InvalidPath(String),
 
+    #[error("catalog format is not supported for machine dependencies: {0}")]
+    UnsupportedMachineDependencyFormat(String),
+
     #[error("source changed since planning: {path}: {reason}")]
     SourceChanged { path: String, reason: String },
 

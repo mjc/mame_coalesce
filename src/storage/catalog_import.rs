@@ -109,6 +109,21 @@ impl SnapshotData {
             let rom_locations = source_map.rom_locations.get(game_index).ok_or_else(|| {
                 crate::Error::InvalidPath("Logiqx asset source locations are missing".into())
             })?;
+            let device_ref_locations =
+                source_map
+                    .device_ref_locations
+                    .get(game_index)
+                    .ok_or_else(|| {
+                        crate::Error::InvalidPath(
+                            "Logiqx device-reference source locations are missing".into(),
+                        )
+                    })?;
+            if game.device_refs().count() != device_ref_locations.len() {
+                return Err(crate::Error::InvalidPath(
+                    "Logiqx device-reference source locations do not match parsed references"
+                        .into(),
+                ));
+            }
             let mut assets = Vec::with_capacity(game.roms().len());
             for (index, rom) in game.roms().iter().enumerate() {
                 let expected = crate::domain::ExpectedEvidence::from_logiqx(rom)?;
@@ -133,6 +148,7 @@ impl SnapshotData {
             sets.push(SnapshotSet {
                 name: game.name().into(), parent: game.cloneof().map(str::to_owned),
                 parent_field: game.cloneof().map(|_| "cloneof".to_owned()),
+                // Keep adapter-specific device edges as source assertions too.
                 runtime_dependencies: [
                     game.romof_opt().map(|name| SnapshotDependency {
                         source_field: "romof".to_owned(),
@@ -144,7 +160,19 @@ impl SnapshotData {
                         target_name: name.to_owned(),
                         location,
                     }),
-                ].into_iter().flatten().collect(),
+                ]
+                .into_iter()
+                .flatten()
+                .chain(
+                    game.device_refs()
+                        .zip(device_ref_locations)
+                        .map(|(name, location)| SnapshotDependency {
+                            source_field: "device_ref".to_owned(),
+                            target_name: name.to_owned(),
+                            location: *location,
+                        }),
+                )
+                .collect(),
                 metadata: serde_json::json!({"source_file": game.sourcefile_opt(), "is_bios": game.isbios_opt(), "rom_of": game.romof_opt(), "sample_of": game.sampleof_opt(), "board": game.board_opt(), "rebuild_to": game.rebuildto_opt(), "description": game.description_opt(), "year": game.year_opt(), "manufacturer": game.manufacturer_opt(), "device_refs": game.device_refs().collect::<Vec<_>>()}),
                 location, assets,
             });
@@ -176,84 +204,7 @@ impl SnapshotData {
         let sets = catalog
             .machines
             .into_iter()
-            .map(|machine| {
-                let machine_name = machine.name.clone();
-                extensions.extend(machine.extensions.into_iter().map(stored_extension));
-                let runtime_dependencies = machine
-                    .device_refs
-                    .iter()
-                    .map(|reference| SnapshotDependency {
-                        source_field: "device_ref".to_owned(),
-                        target_name: reference.name.clone(),
-                        location: reference.location,
-                    })
-                    .collect();
-                let assets = machine
-                    .assets
-                    .into_iter()
-                    .enumerate()
-                    .map(|(component_order, asset)| {
-                        extensions.extend(asset.extensions.into_iter().map(|extension| {
-                            let mut extension = stored_extension(extension);
-                            extension.owner_set_name = Some(machine_name.clone());
-                            extension.owner_component_order = Some(component_order.to_string());
-                            extension
-                        }));
-                        let evidence_scope = asset
-                            .disk_requirement
-                            .as_ref()
-                            .map_or("whole_asset", |requirement| {
-                                requirement.digest_scope().as_str()
-                            });
-                        let sha1 = asset
-                            .disk_requirement
-                            .as_ref()
-                            .and_then(crate::disk::DiskRequirement::expected_sha1)
-                            .map(|digest| digest.as_bytes().to_vec())
-                            .or(asset.sha1);
-                        let merge = asset
-                            .metadata
-                            .get("merge")
-                            .and_then(serde_json::Value::as_str)
-                            .map(str::to_owned)
-                            .or_else(|| {
-                                asset
-                                    .disk_requirement
-                                    .as_ref()
-                                    .and_then(crate::disk::DiskRequirement::parent)
-                                    .map(|name| name.as_str().to_owned())
-                            });
-                        SnapshotAsset {
-                            name: asset.name,
-                            role: match asset.role {
-                                crate::domain::AssetRole::Rom => "rom",
-                                crate::domain::AssetRole::Disk => "disk",
-                                crate::domain::AssetRole::Other => "other",
-                            },
-                            size: asset.size,
-                            crc: asset.crc,
-                            md5: asset.md5,
-                            sha1,
-                            evidence_scope,
-                            merge,
-                            dump_status: None,
-                            serial: None,
-                            date: None,
-                            metadata: serde_json::json!(asset.metadata),
-                            location: asset.location,
-                        }
-                    })
-                    .collect();
-                SnapshotSet {
-                    name: machine.name,
-                    parent: machine.parent.clone(),
-                    parent_field: machine.parent.as_ref().map(|_| "cloneof".to_owned()),
-                    runtime_dependencies,
-                    metadata: serde_json::json!(machine.metadata),
-                    location: machine.location,
-                    assets,
-                }
-            })
+            .map(|machine| snapshot_mame_machine(machine, &mut extensions))
             .collect();
         Self {
             version: catalog.build,
@@ -393,6 +344,100 @@ impl SnapshotData {
             software_lists: None,
             extensions,
         }
+    }
+}
+
+fn snapshot_mame_machine(
+    machine: crate::mame::Machine,
+    extensions: &mut Vec<StoredExtension>,
+) -> SnapshotSet {
+    let machine_name = machine.name.clone();
+    extensions.extend(machine.extensions.into_iter().map(stored_extension));
+    let mut runtime_dependencies = Vec::new();
+    for field in ["romof", "sampleof"] {
+        if let Some(target_name) = machine
+            .metadata
+            .get(field)
+            .and_then(serde_json::Value::as_str)
+        {
+            runtime_dependencies.push(SnapshotDependency {
+                source_field: field.to_owned(),
+                target_name: target_name.to_owned(),
+                location: machine.location,
+            });
+        }
+    }
+    runtime_dependencies.extend(machine.device_refs.into_iter().map(|reference| {
+        SnapshotDependency {
+            source_field: "device_ref".to_owned(),
+            target_name: reference.name,
+            location: reference.location,
+        }
+    }));
+    let assets = machine
+        .assets
+        .into_iter()
+        .enumerate()
+        .map(|(component_order, asset)| {
+            extensions.extend(asset.extensions.into_iter().map(|extension| {
+                let mut extension = stored_extension(extension);
+                extension.owner_set_name = Some(machine_name.clone());
+                extension.owner_component_order = Some(component_order.to_string());
+                extension
+            }));
+            let evidence_scope = asset
+                .disk_requirement
+                .as_ref()
+                .map_or("whole_asset", |requirement| {
+                    requirement.digest_scope().as_str()
+                });
+            let sha1 = asset
+                .disk_requirement
+                .as_ref()
+                .and_then(crate::disk::DiskRequirement::expected_sha1)
+                .map(|digest| digest.as_bytes().to_vec())
+                .or(asset.sha1);
+            let merge = asset
+                .metadata
+                .get("merge")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .or_else(|| {
+                    asset
+                        .disk_requirement
+                        .as_ref()
+                        .and_then(crate::disk::DiskRequirement::parent)
+                        .map(|name| name.as_str().to_owned())
+                });
+            SnapshotAsset {
+                name: asset.name,
+                role: match asset.role {
+                    crate::domain::AssetRole::Rom => "rom",
+                    crate::domain::AssetRole::Disk => "disk",
+                    crate::domain::AssetRole::Other => "other",
+                },
+                size: asset.size,
+                crc: asset.crc,
+                md5: asset.md5,
+                sha1,
+                evidence_scope,
+                merge,
+                dump_status: None,
+                serial: None,
+                date: None,
+                metadata: serde_json::json!(asset.metadata),
+                location: asset.location,
+            }
+        })
+        .collect();
+    SnapshotSet {
+        name: machine.name,
+        parent: machine.parent.clone(),
+        parent_field: machine.parent.as_ref().map(|_| "cloneof".to_owned()),
+        runtime_dependencies,
+        metadata: serde_json::json!(machine.metadata),
+        location: machine.location,
+        assets,
     }
 }
 
