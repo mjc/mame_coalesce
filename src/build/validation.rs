@@ -3,7 +3,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    path::{Component, Path, PathBuf},
+    path::{Component, PathBuf},
 };
 
 use camino::{Utf8Path, Utf8PathBuf};
@@ -41,7 +41,7 @@ impl std::fmt::Display for PlanIssue {
             PlanIssueKind::UnsafeGroupPath => "unsafe output zip file name",
             PlanIssueKind::UnsafeEntryPath => "unsafe zip entry name",
             PlanIssueKind::DuplicateGroup => "duplicate output zip file name",
-            PlanIssueKind::GroupFileDirectoryConflict => "group file/directory path conflict",
+            PlanIssueKind::GroupFileDirectoryConflict => "ZIP artifact file/directory conflict",
             PlanIssueKind::DuplicateEntry(_) => "duplicate zip entry name",
             PlanIssueKind::EntryFileDirectoryConflict => "entry file/directory path conflict",
         };
@@ -188,25 +188,37 @@ pub(crate) fn inspect_plan(plan: &BuildPlan) -> Vec<PlanIssue> {
         }
     }
 
-    let group_paths = groups.keys().cloned().collect::<BTreeSet<_>>();
-    for path in &group_paths {
-        for slash in path.match_indices('/').map(|(index, _)| index) {
-            let prefix = &path[..slash];
-            if group_paths.contains(prefix) {
-                issues.push(PlanIssue {
-                    kind: PlanIssueKind::GroupFileDirectoryConflict,
-                    path: LogicalPath::new(path),
-                    conflicts_with: Some(LogicalPath::new(prefix)),
-                });
-            }
-        }
-    }
+    issues.extend(group_artifact_conflicts(plan));
 
     issues.sort_by(|left, right| {
         left.path
             .cmp(&right.path)
             .then_with(|| format!("{:?}", left.kind).cmp(&format!("{:?}", right.kind)))
     });
+    issues
+}
+
+fn group_artifact_conflicts(plan: &BuildPlan) -> Vec<PlanIssue> {
+    let artifact_paths = plan
+        .groups
+        .iter()
+        .map(|group| format!("{}.zip", group.path.as_str()).to_ascii_lowercase())
+        .collect::<BTreeSet<_>>();
+    let mut issues = Vec::new();
+    for path in &artifact_paths {
+        for slash in path.match_indices('/').map(|(index, _)| index) {
+            let prefix = &path[..slash];
+            if artifact_paths.contains(prefix) {
+                issues.push(PlanIssue {
+                    kind: PlanIssueKind::GroupFileDirectoryConflict,
+                    path: LogicalPath::new(path.strip_suffix(".zip").unwrap_or(path)),
+                    conflicts_with: Some(LogicalPath::new(
+                        prefix.strip_suffix(".zip").unwrap_or(prefix),
+                    )),
+                });
+            }
+        }
+    }
     issues
 }
 
@@ -257,22 +269,31 @@ fn content_relation(left: &ExpectedEvidence, right: &ExpectedEvidence) -> Conten
         return ContentRelation::UnknownContent;
     }
 
-    let mut comparable = false;
+    let mut comparable_digest = false;
     macro_rules! compare {
         ($field:ident) => {
             if let (Some(left), Some(right)) = (&left.$field, &right.$field) {
-                comparable = true;
                 if left != right {
                     return ContentRelation::DifferentContent;
                 }
             }
         };
     }
-    compare!(sha1);
-    compare!(md5);
-    compare!(crc);
+    macro_rules! compare_digest {
+        ($field:ident) => {
+            if let (Some(left), Some(right)) = (&left.$field, &right.$field) {
+                comparable_digest = true;
+                if left != right {
+                    return ContentRelation::DifferentContent;
+                }
+            }
+        };
+    }
+    compare_digest!(sha1);
+    compare_digest!(md5);
+    compare_digest!(crc);
     compare!(size);
-    if comparable {
+    if comparable_digest {
         ContentRelation::SameEstablishedContent
     } else {
         ContentRelation::UnknownContent
@@ -284,6 +305,13 @@ pub fn ensure_sources_disjoint_from_destination(
     sources: &[&Utf8Path],
     destination: &Utf8Path,
 ) -> crate::Result<()> {
+    checked_destination(sources, destination).map(drop)
+}
+
+pub(crate) fn checked_destination(
+    sources: &[&Utf8Path],
+    destination: &Utf8Path,
+) -> crate::Result<Utf8PathBuf> {
     let destination = canonicalize_destination(destination)?;
     for source in sources {
         let source = source.canonicalize_utf8()?;
@@ -293,58 +321,38 @@ pub fn ensure_sources_disjoint_from_destination(
             )));
         }
     }
-    Ok(())
+    Ok(destination)
 }
 
-fn canonicalize_destination(destination: &Utf8Path) -> crate::Result<Utf8PathBuf> {
+pub(crate) fn canonicalize_destination(destination: &Utf8Path) -> crate::Result<Utf8PathBuf> {
     let absolute = if destination.is_absolute() {
         destination.to_path_buf()
     } else {
         Utf8PathBuf::try_from(std::env::current_dir()?.join(destination))
             .map_err(|_| crate::Error::InvalidPath("destination path is not UTF-8".to_owned()))?
     };
-    let normalized = normalize_absolute(absolute.as_std_path())?;
-    let mut ancestor = normalized;
-    let mut suffix = Vec::<String>::new();
-    while match fs::symlink_metadata(&ancestor) {
-        Ok(_) => false,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
-        Err(error) => return Err(error.into()),
-    } {
-        let Some(name) = ancestor.file_name().map(str::to_owned) else {
-            return Err(crate::Error::InvalidPath(format!(
-                "destination has no existing ancestor: {destination}"
-            )));
-        };
-        suffix.push(name);
-        if !ancestor.pop() {
-            return Err(crate::Error::InvalidPath(format!(
-                "destination has no existing ancestor: {destination}"
-            )));
-        }
-    }
-
-    let mut canonical = ancestor.canonicalize_utf8()?;
-    for component in suffix.iter().rev() {
-        canonical.push(component);
-    }
-    Ok(canonical)
-}
-
-fn normalize_absolute(path: &Path) -> crate::Result<Utf8PathBuf> {
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
+    let mut resolved = PathBuf::new();
+    for component in absolute.as_std_path().components() {
         match component {
-            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
-            Component::RootDir => normalized.push(component.as_os_str()),
+            Component::Prefix(prefix) => resolved.push(prefix.as_os_str()),
+            Component::RootDir => resolved.push(component.as_os_str()),
             Component::CurDir => {}
             Component::ParentDir => {
-                normalized.pop();
+                resolved.pop();
             }
-            Component::Normal(name) => normalized.push(name),
+            Component::Normal(name) => {
+                let candidate = resolved.join(name);
+                match fs::canonicalize(&candidate) {
+                    Ok(canonical) => resolved = canonical,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        resolved.push(name);
+                    }
+                    Err(error) => return Err(error.into()),
+                }
+            }
         }
     }
-    Utf8PathBuf::try_from(normalized)
+    Utf8PathBuf::try_from(resolved)
         .map_err(|_| crate::Error::InvalidPath("destination path is not UTF-8".to_owned()))
 }
 
@@ -428,7 +436,7 @@ mod tests {
         let plan = empty_plan(vec![
             group("Games/Parent", Vec::new()),
             group("games/parent", Vec::new()),
-            group("games/parent/clone", Vec::new()),
+            group("games/parent.zip/clone", Vec::new()),
         ]);
 
         let issues = inspect_plan(&plan);
@@ -441,6 +449,46 @@ mod tests {
             issues
                 .iter()
                 .any(|issue| issue.kind == PlanIssueKind::GroupFileDirectoryConflict)
+        );
+    }
+
+    #[test]
+    fn validates_collisions_after_appending_zip_extension() {
+        let compatible = empty_plan(vec![group("a", Vec::new()), group("a/b", Vec::new())]);
+        assert!(
+            !inspect_plan(&compatible)
+                .iter()
+                .any(|issue| { issue.kind == PlanIssueKind::GroupFileDirectoryConflict })
+        );
+
+        let conflict = empty_plan(vec![group("a", Vec::new()), group("a.zip/b", Vec::new())]);
+        assert!(
+            inspect_plan(&conflict)
+                .iter()
+                .any(|issue| { issue.kind == PlanIssueKind::GroupFileDirectoryConflict })
+        );
+    }
+
+    #[test]
+    fn size_alone_does_not_establish_identical_content() {
+        let left = ExpectedEvidence {
+            scope: crate::domain::EvidenceScope::WholeAsset,
+            size: Some(123),
+            ..ExpectedEvidence::default()
+        };
+        let right = left.clone();
+        assert_eq!(
+            content_relation(&left, &right),
+            ContentRelation::UnknownContent
+        );
+
+        let different_size = ExpectedEvidence {
+            size: Some(124),
+            ..right
+        };
+        assert_eq!(
+            content_relation(&left, &different_size),
+            ContentRelation::DifferentContent
         );
     }
 
@@ -536,6 +584,14 @@ mod tests {
             symlink(source, &alias)?;
             let destination = alias.join("generated");
             assert!(ensure_sources_disjoint_from_destination(&[source], &destination).is_err());
+
+            let target = source.join("child");
+            std::fs::create_dir_all(&target)?;
+            let parent_alias = temp.path().join("parent-alias");
+            symlink(&target, &parent_alias)?;
+            let traversal = Utf8PathBuf::try_from(parent_alias.join("../new"))
+                .map_err(|_| std::io::Error::other("temporary path is not UTF-8"))?;
+            assert!(ensure_sources_disjoint_from_destination(&[source], &traversal).is_err());
         }
         Ok(())
     }
