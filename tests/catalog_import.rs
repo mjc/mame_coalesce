@@ -723,20 +723,48 @@ fn software_item_relationship_keys_do_not_collide_on_slashes()
 fn machine_dependency_loader_rejects_software_list_snapshots()
 -> Result<(), Box<dyn std::error::Error>> {
     let (_directory, database, _) = setup()?;
-    let imported = app::import_catalog(&database, &mame_softwarelist_request()?)?;
-    let snapshot = imported
-        .snapshot_key
-        .ok_or("software-list snapshot missing")?;
-    let result = app::resolve_machine_dependencies(
+    let requests = [
+        mame_softwarelist_request()?,
+        no_intro_request()?,
+        clrmamepro_request()?,
+    ];
+    for request in requests {
+        let format = request.format.as_str();
+        let imported = app::import_catalog(&database, &request)?;
+        let snapshot = imported.snapshot_key.ok_or("catalog snapshot missing")?;
+        let result = app::resolve_machine_dependencies(
+            &database,
+            &snapshot,
+            &mame_coalesce::domain::SetName::new("game"),
+        );
+        assert!(matches!(
+            result,
+            Err(mame_coalesce::Error::UnsupportedMachineDependencyFormat(actual))
+                if actual == format
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn machine_dependency_loader_accepts_logiqx_set_snapshots() -> Result<(), Box<dyn std::error::Error>>
+{
+    let (_directory, database, _) = setup()?;
+    let mut request = request(
+        fixture("catalog-a-v1.dat"),
+        "logiqx-machine",
+        "logiqx-machine-catalog",
+        "Logiqx machine fixture",
+    )?;
+    request.scope = CatalogScope::Complete;
+    let imported = app::import_catalog(&database, &request)?;
+    let snapshot = imported.snapshot_key.ok_or("Logiqx snapshot missing")?;
+    let closure = app::resolve_machine_dependencies(
         &database,
         &snapshot,
-        &mame_coalesce::domain::SetName::new("game"),
-    );
-    assert!(matches!(
-        result,
-        Err(mame_coalesce::Error::UnsupportedMachineDependencyFormat(format))
-            if format == "mame-softwarelist-xml"
-    ));
+        &mame_coalesce::domain::SetName::new("alpha"),
+    )?;
+    assert_eq!(closure.root.as_str(), "alpha");
     Ok(())
 }
 
