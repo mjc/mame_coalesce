@@ -330,6 +330,23 @@ fn parse_machine(node: &Element) -> crate::Result<Machine> {
         "device_refs".into(),
         device_reference_metadata(&device_refs),
     );
+    append_unknown_machine_attributes(node, name, &mut extensions);
+    Ok(Machine {
+        name: name.into(),
+        parent,
+        location: node.location,
+        metadata,
+        assets,
+        device_refs,
+        extensions,
+    })
+}
+
+fn append_unknown_machine_attributes(
+    node: &Element,
+    name: &str,
+    extensions: &mut Vec<XmlExtension>,
+) {
     for (key, val) in &node.attributes {
         if ![
             "name",
@@ -356,15 +373,6 @@ fn parse_machine(node: &Element) -> crate::Result<Machine> {
             });
         }
     }
-    Ok(Machine {
-        name: name.into(),
-        parent,
-        location: node.location,
-        metadata,
-        assets,
-        device_refs,
-        extensions,
-    })
 }
 
 fn copy_machine_relationship_metadata(
