@@ -441,7 +441,10 @@ pub(crate) fn checked_destination(
 ) -> crate::Result<Utf8PathBuf> {
     let destination = canonicalize_destination(destination)?;
     for source in sources {
-        let source = source.canonicalize_utf8()?;
+        // Source files may have disappeared since the plan was created. Resolve all
+        // existing path components (including symlinks), but preserve a missing
+        // suffix so the writer can report that artifact as a per-file failure.
+        let source = canonicalize_destination(source)?;
         if source.starts_with(&destination) || destination.starts_with(&source) {
             return Err(crate::Error::InvalidPath(format!(
                 "source/destination overlap is not allowed: source={source} destination={destination}"
@@ -460,7 +463,7 @@ pub(crate) fn checked_plan_destination(
     for entry in plan.groups.iter().flat_map(|group| &group.entries) {
         let declared_root = Utf8Path::new(entry.source.source_root.as_str()).canonicalize_utf8()?;
         let source_path =
-            Utf8Path::new(source_location_path(&entry.source.location)).canonicalize_utf8()?;
+            canonicalize_destination(Utf8Path::new(source_location_path(&entry.source.location)))?;
         if !source_path.starts_with(&declared_root) {
             return Err(crate::Error::InvalidPath(format!(
                 "plan source is outside its declared source root: source={source_path} root={declared_root}"
@@ -978,6 +981,32 @@ mod tests {
                 .map_err(|_| std::io::Error::other("temporary path is not UTF-8"))?;
             assert!(ensure_sources_disjoint_from_destination(&[source], &traversal).is_err());
         }
+        Ok(())
+    }
+
+    #[test]
+    fn checked_plan_destination_allows_a_missing_source_inside_its_root() -> crate::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let source_dir = temp.path().join("input");
+        std::fs::create_dir_all(&source_dir)?;
+        let source_root = Utf8Path::from_path(&source_dir)
+            .ok_or_else(|| std::io::Error::other("temporary path is not UTF-8"))?;
+        let missing_source = source_root.join("not-yet-present.rom");
+        let destination_path = temp.path().join("output");
+        let destination = Utf8Path::from_path(&destination_path)
+            .ok_or_else(|| std::io::Error::other("temporary path is not UTF-8"))?;
+        let mut source = entry("game.rom", ExpectedEvidence::default()).source;
+        source.source_root = crate::domain::SourceRoot::new(source_root.as_str());
+        source.location = crate::domain::SourceLocation::BareFile {
+            path: missing_source.to_string(),
+        };
+        let mut planned_entry = entry("game.rom", ExpectedEvidence::default());
+        planned_entry.source = source;
+        let plan = empty_plan(vec![group("set", vec![planned_entry])]);
+
+        let checked = checked_plan_destination(&plan, destination)?;
+        assert_eq!(checked.path(), destination);
+        assert_eq!(checked.sources(), &[source_root.to_path_buf()]);
         Ok(())
     }
 }
