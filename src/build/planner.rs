@@ -145,6 +145,7 @@ mod tests {
             role: crate::domain::AssetRole::Rom,
             component_order: Some(0),
             expected: ExpectedEvidence {
+                scope: crate::domain::EvidenceScope::WholeAsset,
                 sha1: Some(digest(sha1)),
                 ..ExpectedEvidence::default()
             },
@@ -605,6 +606,7 @@ mod tests {
                 role: crate::domain::AssetRole::Rom,
                 component_order: Some(0),
                 expected: ExpectedEvidence {
+                    scope: crate::domain::EvidenceScope::WholeAsset,
                     sha1: Some(digest("sha1-a")),
                     ..ExpectedEvidence::default()
                 },
@@ -617,6 +619,7 @@ mod tests {
                 role: crate::domain::AssetRole::Rom,
                 component_order: Some(0),
                 expected: ExpectedEvidence {
+                    scope: crate::domain::EvidenceScope::WholeAsset,
                     sha1: Some(digest("sha1-b")),
                     ..ExpectedEvidence::default()
                 },
@@ -648,6 +651,7 @@ mod tests {
                 role: crate::domain::AssetRole::Rom,
                 component_order: Some(0),
                 expected: ExpectedEvidence {
+                    scope: crate::domain::EvidenceScope::WholeAsset,
                     sha1: Some(digest("sha1-shared")),
                     ..ExpectedEvidence::default()
                 },
@@ -660,6 +664,7 @@ mod tests {
                 role: crate::domain::AssetRole::Rom,
                 component_order: Some(0),
                 expected: ExpectedEvidence {
+                    scope: crate::domain::EvidenceScope::WholeAsset,
                     sha1: Some(digest("sha1-shared")),
                     ..ExpectedEvidence::default()
                 },

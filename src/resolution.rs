@@ -32,6 +32,25 @@ pub enum EvidenceField {
     Size,
 }
 
+impl EvidenceField {
+    const fn bit(self) -> u8 {
+        1 << self as u8
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct AvailableEvidence(u8);
+
+impl AvailableEvidence {
+    const fn insert(&mut self, field: EvidenceField) {
+        self.0 |= field.bit();
+    }
+
+    const fn contains(self, field: EvidenceField) -> bool {
+        self.0 & field.bit() != 0
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MissingReason {
     NoExpectedContentEvidence,
@@ -76,6 +95,141 @@ pub struct RequirementResolution {
     pub status: ResolutionStatus,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct SourceIndex(usize);
+
+#[derive(Debug, Default)]
+struct CandidateSources(Vec<SourceIndex>);
+
+struct EvidenceIndex<'a> {
+    sha1: HashMap<&'a [u8], Vec<SourceIndex>>,
+    md5: HashMap<&'a [u8], Vec<SourceIndex>>,
+    crc: HashMap<&'a [u8], Vec<SourceIndex>>,
+    size: HashMap<u64, Vec<SourceIndex>>,
+    available: AvailableEvidence,
+}
+
+impl<'a> EvidenceIndex<'a> {
+    fn new(sources: &[&'a SourceFile]) -> Self {
+        let mut index = Self {
+            sha1: HashMap::new(),
+            md5: HashMap::new(),
+            crc: HashMap::new(),
+            size: HashMap::new(),
+            available: AvailableEvidence::default(),
+        };
+
+        for (source_index, source) in sources.iter().enumerate() {
+            if !has_comparable_evidence(source) {
+                continue;
+            }
+            let observed = &source.observed;
+            if let Some(sha1) = observed.sha1.as_ref() {
+                index
+                    .sha1
+                    .entry(sha1.as_slice())
+                    .or_default()
+                    .push(SourceIndex(source_index));
+                index.available.insert(EvidenceField::Sha1);
+            }
+            if let Some(md5) = observed.md5.as_ref() {
+                index
+                    .md5
+                    .entry(md5.0.as_slice())
+                    .or_default()
+                    .push(SourceIndex(source_index));
+                index.available.insert(EvidenceField::Md5);
+            }
+            if let Some(crc) = observed.crc.as_ref() {
+                index
+                    .crc
+                    .entry(crc.0.as_slice())
+                    .or_default()
+                    .push(SourceIndex(source_index));
+                index.available.insert(EvidenceField::Crc);
+            }
+            if observed.size.is_some() {
+                index.available.insert(EvidenceField::Size);
+                if let Some(size) = observed.size {
+                    index
+                        .size
+                        .entry(size)
+                        .or_default()
+                        .push(SourceIndex(source_index));
+                }
+            }
+        }
+        index
+    }
+
+    fn candidates(&self, expected: &crate::domain::ExpectedEvidence) -> CandidateSources {
+        let mut candidates = CandidateSources::default();
+        if let Some(sha1) = expected.sha1.as_ref() {
+            extend_candidates(&mut candidates.0, self.sha1.get(sha1.as_slice()));
+        }
+        if let Some(md5) = expected.md5.as_ref() {
+            extend_candidates(&mut candidates.0, self.md5.get(md5.0.as_slice()));
+        }
+        if let Some(crc) = expected.crc.as_ref() {
+            extend_candidates(&mut candidates.0, self.crc.get(crc.0.as_slice()));
+        }
+        candidates.0.sort_unstable();
+        candidates.0.dedup();
+        candidates
+    }
+
+    const fn has_comparable_field(&self, expected: &crate::domain::ExpectedEvidence) -> bool {
+        expected.sha1.is_some() && self.available.contains(EvidenceField::Sha1)
+            || expected.md5.is_some() && self.available.contains(EvidenceField::Md5)
+            || expected.crc.is_some() && self.available.contains(EvidenceField::Crc)
+            || expected.size.is_some() && self.available.contains(EvidenceField::Size)
+    }
+}
+
+const fn has_comparable_evidence(source: &SourceFile) -> bool {
+    matches!(source.observed.scope, EvidenceScope::WholeAsset)
+        && matches!(
+            source.observed.provenance,
+            EvidenceProvenance::Computed | EvidenceProvenance::SourceDeclared
+        )
+}
+
+fn extend_candidates(candidates: &mut Vec<SourceIndex>, matching: Option<&Vec<SourceIndex>>) {
+    if let Some(matching) = matching {
+        candidates.extend_from_slice(matching);
+    }
+}
+
+fn has_uncontradicted_size_match(
+    expected: &crate::domain::ExpectedEvidence,
+    sources: &[&SourceFile],
+    evidence_index: &EvidenceIndex<'_>,
+) -> bool {
+    let Some(size) = expected.size else {
+        return false;
+    };
+    evidence_index.size.get(&size).is_some_and(|candidates| {
+        candidates.iter().any(|&SourceIndex(index)| {
+            let observed = &sources[index].observed;
+            expected
+                .sha1
+                .as_ref()
+                .zip(observed.sha1.as_ref())
+                .is_none_or(|(expected, observed)| expected == observed)
+                && expected
+                    .md5
+                    .as_ref()
+                    .zip(observed.md5.as_ref())
+                    .is_none_or(|(expected, observed)| expected == observed)
+                && expected
+                    .crc
+                    .as_ref()
+                    .zip(observed.crc.as_ref())
+                    .is_none_or(|(expected, observed)| expected == observed)
+        })
+    })
+}
+
 /// Resolve one catalog's requirements against one already-selected source root.
 ///
 /// The result owns the requirement, candidates and selected source so callers may retain it
@@ -100,31 +254,46 @@ pub fn resolve(
         .collect::<Vec<_>>();
     sources.sort_by(|left, right| source_order(left, right));
 
-    // Compatibility matching is SHA-1-only, so index each observed digest once instead of
-    // rescanning the complete source inventory for every catalog requirement.
-    let sha1_sources = (policy == MatchingPolicy::Sha1Compatibility).then(|| {
-        let mut index: HashMap<&[u8], Vec<&SourceFile>> = HashMap::new();
-        for source in &sources {
-            if let Some(sha1) = source.observed.sha1.as_ref() {
-                index.entry(sha1.as_slice()).or_default().push(*source);
-            }
+    match policy {
+        MatchingPolicy::EvidenceAware => {
+            let evidence_index = EvidenceIndex::new(&sources);
+            requirements
+                .into_iter()
+                .map(|requirement| RequirementResolution {
+                    requirement: requirement.clone(),
+                    status: resolve_one(requirement, &sources, &evidence_index),
+                })
+                .collect()
         }
-        index
-    });
-
-    requirements
-        .into_iter()
-        .map(|requirement| RequirementResolution {
-            requirement: requirement.clone(),
-            status: sha1_sources.as_ref().map_or_else(
-                || resolve_one(requirement, &sources),
-                |sha1_sources| resolve_sha1_compatibility(requirement, sha1_sources),
-            ),
-        })
-        .collect()
+        MatchingPolicy::Sha1Compatibility => {
+            // Compatibility matching is SHA-1-only, but source scope is still authoritative.
+            let mut sha1_sources: HashMap<&[u8], Vec<&SourceFile>> = HashMap::new();
+            for source in &sources {
+                if source.observed.scope == EvidenceScope::WholeAsset
+                    && let Some(sha1) = source.observed.sha1.as_ref()
+                {
+                    sha1_sources
+                        .entry(sha1.as_slice())
+                        .or_default()
+                        .push(*source);
+                }
+            }
+            requirements
+                .into_iter()
+                .map(|requirement| RequirementResolution {
+                    requirement: requirement.clone(),
+                    status: resolve_sha1_compatibility(requirement, &sha1_sources),
+                })
+                .collect()
+        }
+    }
 }
 
-fn resolve_one(requirement: &DatRom, sources: &[&SourceFile]) -> ResolutionStatus {
+fn resolve_one(
+    requirement: &DatRom,
+    sources: &[&SourceFile],
+    evidence_index: &EvidenceIndex<'_>,
+) -> ResolutionStatus {
     let expected = &requirement.expected;
     if expected.scope != EvidenceScope::WholeAsset {
         return ResolutionStatus::Missing {
@@ -141,9 +310,11 @@ fn resolve_one(requirement: &DatRom, sources: &[&SourceFile]) -> ResolutionStatu
         };
     }
 
-    let assessments = sources
+    let candidates = evidence_index.candidates(expected);
+    let assessments = candidates
+        .0
         .iter()
-        .map(|source| assess_source(expected, source))
+        .map(|&SourceIndex(index)| assess_source(expected, sources[index]))
         .collect::<Vec<_>>();
     let mut matches = assessments
         .iter()
@@ -157,27 +328,38 @@ fn resolve_one(requirement: &DatRom, sources: &[&SourceFile]) -> ResolutionStatu
     });
 
     let Some((selected, strength)) = matches.first().copied() else {
-        if assessments
-            .iter()
-            .any(|candidate| !candidate.conflicts.is_empty())
-        {
+        if assessments.iter().any(is_conflicting_candidate) {
             return ResolutionStatus::Conflicting {
-                candidates: assessments,
+                candidates: assessments
+                    .into_iter()
+                    .filter(is_conflicting_candidate)
+                    .collect(),
             };
         }
-        let reason = if assessments.iter().any(|candidate| candidate.comparable) {
-            if assessments
-                .iter()
-                .any(|candidate| !candidate.agreements.is_empty())
-            {
-                MissingReason::InsufficientEvidence
-            } else {
+        let size_agrees = has_uncontradicted_size_match(expected, sources, evidence_index);
+        let reason = if assessments.is_empty() {
+            if sources.is_empty() {
                 MissingReason::NoMatchingSource
+            } else if size_agrees {
+                MissingReason::InsufficientEvidence
+            } else if evidence_index.has_comparable_field(expected) {
+                MissingReason::NoMatchingSource
+            } else {
+                MissingReason::NoComparableObservedEvidence
             }
-        } else if assessments.is_empty() {
-            MissingReason::NoMatchingSource
-        } else {
+        } else if assessments.iter().any(|candidate| {
+            candidate.agreements.iter().any(|field| {
+                matches!(
+                    field,
+                    EvidenceField::Sha1 | EvidenceField::Md5 | EvidenceField::Crc
+                )
+            })
+        }) {
+            MissingReason::InsufficientEvidence
+        } else if !evidence_index.has_comparable_field(expected) {
             MissingReason::NoComparableObservedEvidence
+        } else {
+            MissingReason::NoMatchingSource
         };
         return ResolutionStatus::Missing {
             reason,
@@ -208,10 +390,26 @@ fn resolve_one(requirement: &DatRom, sources: &[&SourceFile]) -> ResolutionStatu
     }
 }
 
+fn is_conflicting_candidate(candidate: &SourceAssessment) -> bool {
+    !candidate.conflicts.is_empty()
+        && candidate.agreements.iter().any(|field| {
+            matches!(
+                field,
+                EvidenceField::Sha1 | EvidenceField::Md5 | EvidenceField::Crc
+            )
+        })
+}
+
 fn resolve_sha1_compatibility(
     requirement: &DatRom,
     sha1_sources: &HashMap<&[u8], Vec<&SourceFile>>,
 ) -> ResolutionStatus {
+    if requirement.expected.scope != EvidenceScope::WholeAsset {
+        return ResolutionStatus::Missing {
+            reason: MissingReason::UnsupportedExpectedScope,
+            assessments: Vec::new(),
+        };
+    }
     let Some(expected_sha1) = requirement.sha1() else {
         return ResolutionStatus::Missing {
             reason: MissingReason::NoExpectedContentEvidence,
@@ -470,6 +668,102 @@ mod tests {
     }
 
     #[test]
+    fn compatibility_policy_rejects_non_whole_asset_evidence() {
+        let sha1 = crate::hashes::sha1_bytes(b"rom");
+        let mut rom = requirement(ExpectedEvidence {
+            sha1: Some(sha1),
+            ..ExpectedEvidence::default()
+        });
+        rom.expected.scope = EvidenceScope::Unknown;
+        let inventory = [source(
+            "/roms/disk.chd",
+            computed(None, None, None, Some(sha1)),
+        )];
+
+        let resolutions = resolve(
+            &[rom],
+            &inventory,
+            "catalog",
+            &SourceRoot::new("/roms"),
+            MatchingPolicy::Sha1Compatibility,
+        );
+
+        assert!(matches!(
+            resolutions[0].status,
+            ResolutionStatus::Missing {
+                reason: MissingReason::UnsupportedExpectedScope,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn compatibility_policy_ignores_non_whole_asset_observations() {
+        let sha1 = crate::hashes::sha1_bytes(b"rom");
+        let rom = requirement(ExpectedEvidence {
+            sha1: Some(sha1),
+            ..ExpectedEvidence::default()
+        });
+        let mut disk_observation = computed(None, None, None, Some(sha1));
+        disk_observation.scope = EvidenceScope::DiskData;
+        let mut unknown_observation = computed(None, None, None, Some(sha1));
+        unknown_observation.scope = EvidenceScope::Unknown;
+        let inventory = [
+            source("/roms/disk.chd", disk_observation),
+            source("/roms/unknown.bin", unknown_observation),
+        ];
+
+        let resolutions = resolve(
+            &[rom],
+            &inventory,
+            "catalog",
+            &SourceRoot::new("/roms"),
+            MatchingPolicy::Sha1Compatibility,
+        );
+
+        assert!(matches!(
+            resolutions[0].status,
+            ResolutionStatus::Missing {
+                reason: MissingReason::NoMatchingSource,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn unrelated_digest_conflicts_do_not_turn_a_miss_into_a_conflict() {
+        let rom = requirement(ExpectedEvidence {
+            sha1: Some(crate::hashes::sha1_bytes(b"expected")),
+            ..ExpectedEvidence::default()
+        });
+        let inventory = [source(
+            "/roms/unrelated.rom",
+            computed(
+                None,
+                None,
+                None,
+                Some(crate::hashes::sha1_bytes(b"unrelated")),
+            ),
+        )];
+
+        let resolutions = resolve(
+            &[rom],
+            &inventory,
+            "catalog",
+            &SourceRoot::new("/roms"),
+            MatchingPolicy::EvidenceAware,
+        );
+
+        assert!(matches!(
+            resolutions[0].status,
+            ResolutionStatus::Missing {
+                reason: MissingReason::NoMatchingSource,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn evidence_aware_policy_uses_md5_only_when_observed_sha1_does_not_contradict() {
         let md5 = [3; 16];
         let rom = requirement(ExpectedEvidence {
@@ -549,6 +843,15 @@ mod tests {
         let inventory = [
             source("/roms/z.rom", computed(None, None, None, Some(sha1))),
             source("/roms/a.rom", computed(None, None, None, Some(sha1))),
+            source(
+                "/roms/unrelated.rom",
+                computed(
+                    None,
+                    None,
+                    None,
+                    Some(crate::hashes::sha1_bytes(b"unrelated")),
+                ),
+            ),
         ];
 
         let resolutions = resolve(
@@ -564,8 +867,11 @@ mod tests {
             ResolutionStatus::Matched {
                 selected,
                 equivalent_copies,
+                assessments,
                 ..
-            } if selected.location.path() == "/roms/a.rom" && equivalent_copies.len() == 2
+            } if selected.location.path() == "/roms/a.rom"
+                && equivalent_copies.len() == 2
+                && assessments.len() == 2
         ));
     }
 
@@ -624,6 +930,66 @@ mod tests {
             &resolutions[0].status,
             ResolutionStatus::Missing {
                 reason: MissingReason::InsufficientEvidence,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn size_only_agreement_is_insufficient_not_a_content_match() {
+        let rom = requirement(ExpectedEvidence {
+            size: Some(3),
+            sha1: Some(crate::hashes::sha1_bytes(b"expected")),
+            ..ExpectedEvidence::default()
+        });
+        let inventory = [source("/roms/a.rom", computed(Some(3), None, None, None))];
+
+        let resolutions = resolve(
+            &[rom],
+            &inventory,
+            "catalog",
+            &SourceRoot::new("/roms"),
+            MatchingPolicy::EvidenceAware,
+        );
+
+        assert!(matches!(
+            resolutions[0].status,
+            ResolutionStatus::Missing {
+                reason: MissingReason::InsufficientEvidence,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn matching_size_does_not_override_a_conflicting_digest() {
+        let rom = requirement(ExpectedEvidence {
+            size: Some(3),
+            sha1: Some(crate::hashes::sha1_bytes(b"expected")),
+            ..ExpectedEvidence::default()
+        });
+        let inventory = [source(
+            "/roms/a.rom",
+            computed(
+                Some(3),
+                None,
+                None,
+                Some(crate::hashes::sha1_bytes(b"different")),
+            ),
+        )];
+
+        let resolutions = resolve(
+            &[rom],
+            &inventory,
+            "catalog",
+            &SourceRoot::new("/roms"),
+            MatchingPolicy::EvidenceAware,
+        );
+
+        assert!(matches!(
+            resolutions[0].status,
+            ResolutionStatus::Missing {
+                reason: MissingReason::NoMatchingSource,
                 ..
             }
         ));
