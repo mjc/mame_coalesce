@@ -1098,8 +1098,8 @@ dependencies = [
  "unrar",
  "uuid",
  "walkdir",
- "xxhash-rust",
  "xml",
+ "xxhash-rust",
  "zip",
 ]
 
@@ -1481,7 +1481,7 @@ dependencies = [
 [[package]]
 name = "r7z"
 version = "0.1.0"
-source = "git+https://github.com/mjc/r7z.git?rev=08f90bb068154b4b5999ea7cdf8361d1407ba024#08f90bb068154b4b5999ea7cdf8361d1407ba024"
+source = "git+https://github.com/mjc/r7z.git?rev=bfef3198696add8045ad34581dd977d671ae9daa#bfef3198696add8045ad34581dd977d671ae9daa"
 dependencies = [
  "aes 0.8.4",
  "arrayvec",

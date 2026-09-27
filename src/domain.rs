@@ -590,6 +590,16 @@ pub enum ArchiveBackend {
 
 impl ArchiveBackend {
     #[must_use]
+    pub fn from_storage_key(value: &str) -> Option<Self> {
+        match value {
+            "zip" => Some(Self::Zip),
+            "7z" => Some(Self::SevenZip),
+            "rar" => Some(Self::Rar),
+            _ => None,
+        }
+    }
+
+    #[must_use]
     pub const fn storage_key(self) -> &'static str {
         match self {
             Self::Zip => "zip",

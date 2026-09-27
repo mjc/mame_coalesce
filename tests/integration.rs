@@ -679,7 +679,7 @@ fn failed_archive_scan_preserves_cached_source_rows() -> Result<(), Box<dyn std:
     ) else {
         return Err("expected corrupt archive to fail the scan".into());
     };
-    assert!(error.to_string().contains("Zip error"));
+    assert!(error.to_string().contains("ZIP"), "{error}");
 
     let report = app::build(
         &database,

@@ -22,6 +22,8 @@ pub struct RomFile {
     pub md5: Option<Vec<u8>>,
     pub xxhash3: Vec<u8>,
     pub in_archive: bool,
+    pub archive_backend: Option<String>,
+    pub archive_member_index: Option<i64>,
     pub rom_id: Option<i32>,
 }
 
@@ -34,6 +36,8 @@ pub struct New {
     pub sha1: Sha1Digest,
     pub xxhash3: Xxh3Digest,
     pub in_archive: bool,
+    pub archive_backend: Option<String>,
+    pub archive_member_index: Option<i64>,
     pub rom_id: Option<i32>,
 }
 
@@ -54,6 +58,8 @@ impl New {
             sha1,
             xxhash3,
             in_archive: false,
+            archive_backend: None,
+            archive_member_index: None,
             rom_id: None,
         })
     }
@@ -64,10 +70,13 @@ impl New {
         name: &Path,
         sha1: Sha1Digest,
         xxhash3: Xxh3Digest,
+        backend: crate::domain::ArchiveBackend,
+        index: u64,
     ) -> Option<Self> {
         let parent_path = path.parent()?.to_string();
         let path = path.to_string();
         let name = name.to_str()?.to_owned();
+        let archive_member_index = i64::try_from(index).ok()?;
         Some(Self {
             parent_path,
             path,
@@ -75,6 +84,8 @@ impl New {
             sha1,
             xxhash3,
             in_archive: true,
+            archive_backend: Some(backend.storage_key().to_owned()),
+            archive_member_index: Some(archive_member_index),
             rom_id: None,
         })
     }
