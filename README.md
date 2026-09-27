@@ -53,10 +53,8 @@ Defaults:
 - duplicate source matches are resolved deterministically
 
 Building from archive members stages selected bytes on disk before assembling
-each output ZIP. The temporary staging directory uses the system temporary
-directory (`TMPDIR` on Unix-like systems). Selected 7z members are temporarily
-written before they enter the build spool, so peak staging space may reach 32
-GiB per output ZIP.
+each output ZIP. Its private staging directory is created beside the output,
+so ensure that filesystem has up to 16 GiB of free space for one output ZIP.
 
 Source scans intentionally skip hidden files and directories below the source
 root. Non-UTF-8 paths and traversal or archive-read errors fail the scan, so an

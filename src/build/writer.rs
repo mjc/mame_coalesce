@@ -43,7 +43,7 @@ pub fn write_plan_with_compression(
     plan.zips.iter().try_for_each(|zip_spec| {
         let zip_path = destination.join(&zip_spec.file_name);
         let mut writer = open_destination_zip(&zip_path)?;
-        write_zip_spec(zip_spec, &mut writer, options)?;
+        write_zip_spec(zip_spec, &mut writer, options, destination)?;
         writer.finish()?;
         written_paths.push(zip_path);
         Ok::<_, crate::Error>(())
@@ -136,6 +136,7 @@ fn write_zip_spec(
     zip_spec: &ZipSpec,
     zip_writer: &mut ZipWriter<BufWriter<File>>,
     options: SimpleFileOptions,
+    spool_parent: &Utf8Path,
 ) -> crate::Result<()> {
     let resolved = zip_spec
         .entries
@@ -163,19 +164,12 @@ fn write_zip_spec(
     let spool = if groups.is_empty() {
         None
     } else {
-        Some(ArchiveSpool::create()?)
+        Some(ArchiveSpool::create(spool_parent)?)
     };
     let mut staged = StagedArchiveMembers::new();
     for ((path, backend), selectors) in groups {
         let source_path = Utf8Path::new(&path);
         let selectors = selectors.into_iter().collect::<Vec<_>>();
-        if backend == ArchiveBackend::SevenZip && selectors.len() == 1 {
-            let spool = spool.as_ref().ok_or_else(|| {
-                crate::Error::InvalidPath("archive staging was not initialized".to_owned())
-            })?;
-            stage_single_7z_member(&path, source_path, &selectors[0], spool, &mut staged)?;
-            continue;
-        }
         crate::sources::stream_archive(
             source_path,
             backend,
@@ -240,36 +234,6 @@ fn stage_archive_reader(
     spool.record_bytes(file.written_bytes())?;
     staged.insert(
         (path.to_owned(), backend, member.selector.clone()),
-        staged_path,
-    );
-    Ok(())
-}
-
-fn stage_single_7z_member(
-    path: &str,
-    source_path: &Utf8Path,
-    selector: &crate::sources::ArchiveMemberSelector,
-    spool: &ArchiveSpool,
-    staged: &mut StagedArchiveMembers,
-) -> crate::Result<()> {
-    let member = crate::sources::resolve_7z_member(source_path, selector)?;
-    let remaining = spool.remaining_bytes();
-    if member.size > remaining {
-        return Err(crate::Error::InvalidPath(format!(
-            "selected archive members exceed the {} GiB staging limit",
-            MAX_ARCHIVE_STAGING_BYTES / (1024 * 1024 * 1024)
-        )));
-    }
-    let staged_path = spool.next_path()?;
-    let file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&staged_path)?;
-    let mut writer = ArchiveSpoolWriter::new(file, remaining);
-    crate::sources::extract_7z_member_to(source_path, &member, remaining, &mut writer)?;
-    spool.record_bytes(writer.written_bytes())?;
-    staged.insert(
-        (path.to_owned(), ArchiveBackend::SevenZip, member.selector),
         staged_path,
     );
     Ok(())
@@ -352,8 +316,11 @@ struct ArchiveSpool {
 }
 
 impl ArchiveSpool {
-    fn create() -> crate::Result<Self> {
-        let directory = crate::private_temp::PrivateTempDir::create("mame-coalesce-build-")?;
+    fn create(parent: &Utf8Path) -> crate::Result<Self> {
+        let directory = crate::private_temp::PrivateTempDir::create_in(
+            parent.as_std_path(),
+            "mame-coalesce-build-",
+        )?;
         let root = directory.path().to_path_buf();
         Ok(Self {
             _directory: directory,
@@ -461,7 +428,11 @@ mod tests {
     fn archive_spool_directory_is_private() -> Result<(), Box<dyn std::error::Error>> {
         use std::os::unix::fs::PermissionsExt;
 
-        let spool = ArchiveSpool::create()?;
+        let parent = tempfile::tempdir()?;
+        let parent_path = Utf8Path::from_path(parent.path())
+            .ok_or_else(|| io::Error::other("temporary path is not UTF-8"))?;
+        let spool = ArchiveSpool::create(parent_path)?;
+        assert_eq!(spool.root.parent(), Some(parent.path()));
         let mode = std::fs::metadata(&spool.root)?.permissions().mode();
         assert_eq!(mode & 0o077, 0);
         Ok(())

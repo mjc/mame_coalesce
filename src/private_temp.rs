@@ -10,8 +10,12 @@ pub struct PrivateTempDir {
 
 impl PrivateTempDir {
     pub fn create(prefix: &str) -> io::Result<Self> {
+        Self::create_in(&std::env::temp_dir(), prefix)
+    }
+
+    pub fn create_in(parent: &Path, prefix: &str) -> io::Result<Self> {
         for _ in 0..10 {
-            let path = std::env::temp_dir().join(format!("{prefix}{}", uuid::Uuid::new_v4()));
+            let path = parent.join(format!("{prefix}{}", uuid::Uuid::new_v4()));
             let mut builder = std::fs::DirBuilder::new();
             #[cfg(unix)]
             {
