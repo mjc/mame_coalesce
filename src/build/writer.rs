@@ -294,6 +294,19 @@ impl SecureOutputDirectory {
             let name = format!("mame-coalesce-build-{}", uuid::Uuid::new_v4());
             match fs::mkdirat(parent.as_fd(), name.as_str(), Mode::from_raw_mode(0o700)) {
                 Ok(()) => {
+                    let created_stat = fs::statat(
+                        parent.as_fd(),
+                        name.as_str(),
+                        rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+                    )
+                    .map_err(std::io::Error::from)?;
+                    let effective_uid = rustix::process::geteuid().as_raw();
+                    if !private_directory_owned_by(&created_stat, effective_uid) {
+                        cleanup_spool_name_if_same(&parent, &name, &created_stat);
+                        return Err(crate::Error::InvalidPath(
+                            "archive staging directory was replaced or is not private".to_owned(),
+                        ));
+                    }
                     let directory = match fs::openat(
                         parent.as_fd(),
                         name.as_str(),
@@ -302,14 +315,29 @@ impl SecureOutputDirectory {
                     ) {
                         Ok(directory) => directory,
                         Err(error) => {
-                            let _ = fs::unlinkat(
-                                parent.as_fd(),
-                                name.as_str(),
-                                rustix::fs::AtFlags::REMOVEDIR,
-                            );
+                            cleanup_spool_name_if_same(&parent, &name, &created_stat);
                             return Err(std::io::Error::from(error).into());
                         }
                     };
+                    let opened_stat = fs::fstat(&directory).map_err(std::io::Error::from)?;
+                    let named_stat = fs::statat(
+                        parent.as_fd(),
+                        name.as_str(),
+                        rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+                    )
+                    .map_err(std::io::Error::from)?;
+                    let same_directory = same_directory(&opened_stat, &created_stat)
+                        && same_directory(&opened_stat, &named_stat);
+                    let owned_private_directory =
+                        private_directory_owned_by(&opened_stat, effective_uid)
+                            && private_directory_owned_by(&named_stat, effective_uid);
+                    if !same_directory || !owned_private_directory {
+                        drop(directory);
+                        cleanup_spool_name_if_same(&parent, &name, &created_stat);
+                        return Err(crate::Error::InvalidPath(
+                            "archive staging directory was replaced or is not private".to_owned(),
+                        ));
+                    }
                     let source_directories = match self
                         .source_directories
                         .iter()
@@ -318,11 +346,7 @@ impl SecureOutputDirectory {
                     {
                         Ok(sources) => sources,
                         Err(error) => {
-                            let _ = fs::unlinkat(
-                                parent.as_fd(),
-                                name.as_str(),
-                                rustix::fs::AtFlags::REMOVEDIR,
-                            );
+                            cleanup_spool_name_if_same(&parent, &name, &created_stat);
                             return Err(error.into());
                         }
                     };
@@ -342,6 +366,33 @@ impl SecureOutputDirectory {
             "could not allocate a private archive staging directory",
         )
         .into())
+    }
+}
+
+#[cfg(unix)]
+const fn same_directory(left: &rustix::fs::Stat, right: &rustix::fs::Stat) -> bool {
+    left.st_dev == right.st_dev && left.st_ino == right.st_ino
+}
+
+#[cfg(unix)]
+const fn private_directory_owned_by(stat: &rustix::fs::Stat, uid: u32) -> bool {
+    stat.st_uid == uid
+        && stat.st_mode & 0o170_000 == 0o040_000
+        && stat.st_mode.trailing_zeros() >= 6
+}
+
+#[cfg(unix)]
+fn cleanup_spool_name_if_same(parent: &File, name: &str, expected: &rustix::fs::Stat) {
+    use rustix::fs::{self, AtFlags};
+    use std::os::fd::AsFd;
+
+    let Ok(current) = fs::statat(parent.as_fd(), name, AtFlags::SYMLINK_NOFOLLOW) else {
+        return;
+    };
+    if same_directory(&current, expected)
+        && private_directory_owned_by(&current, rustix::process::geteuid().as_raw())
+    {
+        let _ = fs::unlinkat(parent.as_fd(), name, AtFlags::REMOVEDIR);
     }
 }
 
@@ -484,6 +535,23 @@ impl SecureSpoolDirectory {
             }
         }
         Ok(())
+    }
+
+    fn is_still_named(&self) -> bool {
+        use rustix::fs::{self, AtFlags};
+        use std::os::fd::AsFd;
+
+        let Ok(opened) = fs::fstat(self.directory.as_fd()) else {
+            return false;
+        };
+        let Ok(named) = fs::statat(
+            self.parent.as_fd(),
+            self.name.as_str(),
+            AtFlags::SYMLINK_NOFOLLOW,
+        ) else {
+            return false;
+        };
+        opened.st_dev == named.st_dev && opened.st_ino == named.st_ino
     }
 }
 
@@ -835,11 +903,13 @@ impl Drop for ArchiveSpool {
             let name = format!("{index}.member");
             let _ = fs::unlinkat(directory.directory.as_fd(), name.as_str(), AtFlags::empty());
         }
-        let _ = fs::unlinkat(
-            directory.parent.as_fd(),
-            directory.name.as_str(),
-            AtFlags::REMOVEDIR,
-        );
+        if directory.is_still_named() {
+            let _ = fs::unlinkat(
+                directory.parent.as_fd(),
+                directory.name.as_str(),
+                AtFlags::REMOVEDIR,
+            );
+        }
     }
 }
 
