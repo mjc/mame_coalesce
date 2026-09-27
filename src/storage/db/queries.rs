@@ -146,7 +146,7 @@ pub fn replace_rom_files_for_source_root(
     source_root: &Utf8Path,
     new_rom_files: &[NewRomFile],
 ) -> crate::Result<usize> {
-    use crate::storage::schema::rom_files::dsl::rom_files;
+    use crate::storage::schema::rom_files::dsl as rom_files_dsl;
     use diesel::replace_into;
 
     let mut conn = pool.get()?;
@@ -155,9 +155,20 @@ pub fn replace_rom_files_for_source_root(
         delete_rom_files_for_source_root(conn, source_root.as_str())?;
         new_rom_files
             .iter()
-            .map(|new_rom_file| replace_into(rom_files).values(new_rom_file).execute(conn))
+            .map(|new_rom_file| {
+                replace_into(rom_files_dsl::rom_files)
+                    .values(new_rom_file)
+                    .execute(conn)
+            })
             .collect::<QueryResult<Vec<usize>>>()?;
-        associate_rom_files(conn)
+        associate_rom_files(conn)?;
+        let associated = rom_files_dsl::rom_files
+            .filter(rom_files_dsl::scan_root.eq(source_root.as_str()))
+            .filter(rom_files_dsl::rom_id.is_not_null())
+            .count()
+            .get_result::<i64>(conn)?;
+        usize::try_from(associated)
+            .map_err(|error| DieselError::DeserializationError(Box::new(error)))
     })?)
 }
 

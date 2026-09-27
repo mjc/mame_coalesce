@@ -469,6 +469,127 @@ mod tests {
                 ..
             } if name == "repo.rom"
         )));
+
+        Ok(())
+    }
+
+    #[test]
+    fn scan_metadata_requires_observed_size_on_insert_and_update()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (_temp_dir, pool) = file_backed_pool()?;
+        let root = SourceRoot::new("/source");
+        let run = ScanRunKey::fresh();
+        let observation = crate::domain::SourceObservation {
+            source_root: root.clone(),
+            scan_run: run,
+            location: SourceLocation::BareFile {
+                path: "/source/game.rom".to_owned(),
+            },
+            observed: ObservedContent {
+                scope: EvidenceScope::WholeAsset,
+                provenance: EvidenceProvenance::Computed,
+                size: Some(3),
+                crc: None,
+                md5: None,
+                sha1: Some(crate::hashes::sha1_bytes(b"abc")),
+                xxh3: crate::hashes::xxhash3_bytes(b"abc"),
+            },
+            fingerprint: SourceFingerprint::new([7; 20]),
+            scan_provenance: ScanProvenance::StreamedSha1Xxh3V1,
+        };
+        let scan = CompleteSourceScan::new(root.clone(), run, vec![observation.clone()])?;
+        SourceRepository::new(&pool).replace_completed_scan(&scan)?;
+
+        let mut malformed = NewRomFile::from_observation(&observation)?;
+        malformed.observed_size = None;
+        let result = db::replace_rom_files_for_source_root(
+            &pool,
+            camino::Utf8Path::new("/source"),
+            &[malformed],
+        );
+        let Err(error) = result else {
+            return Err("insert without observed_size unexpectedly succeeded".into());
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("scan metadata must be stored together")
+        );
+
+        let mut conn = pool.get()?;
+        let result = sql_query("UPDATE rom_files SET observed_size = NULL WHERE scan_root = ?")
+            .bind::<Text, _>(root.as_str())
+            .execute(&mut conn);
+        let Err(error) = result else {
+            return Err("update without observed_size unexpectedly succeeded".into());
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("scan metadata must be stored together")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn scan_association_count_ignores_other_source_roots() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (_temp_dir, pool) = file_backed_pool()?;
+        let data_file = logiqx::DataFile::from_reader(SIMPLE_DAT.as_bytes())?;
+        DatRepository::new(&pool).import(&data_file)?;
+
+        let matching_root = SourceRoot::new("/matching");
+        let matching_run = ScanRunKey::fresh();
+        let matching_observation = crate::domain::SourceObservation {
+            source_root: matching_root.clone(),
+            scan_run: matching_run,
+            location: SourceLocation::BareFile {
+                path: "/matching/repo.rom".to_owned(),
+            },
+            observed: ObservedContent {
+                scope: EvidenceScope::WholeAsset,
+                provenance: EvidenceProvenance::Computed,
+                size: Some(3),
+                crc: None,
+                md5: None,
+                sha1: Some(crate::hashes::sha1_bytes(b"abc")),
+                xxh3: crate::hashes::xxhash3_bytes(b"abc"),
+            },
+            fingerprint: SourceFingerprint::new([7; 20]),
+            scan_provenance: ScanProvenance::StreamedSha1Xxh3V1,
+        };
+        let matching_scan =
+            CompleteSourceScan::new(matching_root, matching_run, vec![matching_observation])?;
+        assert_eq!(
+            SourceRepository::new(&pool).replace_completed_scan(&matching_scan)?,
+            1
+        );
+
+        let other_root = SourceRoot::new("/other");
+        let other_run = ScanRunKey::fresh();
+        let other_observation = crate::domain::SourceObservation {
+            source_root: other_root.clone(),
+            scan_run: other_run,
+            location: SourceLocation::BareFile {
+                path: "/other/unmatched.rom".to_owned(),
+            },
+            observed: ObservedContent {
+                scope: EvidenceScope::WholeAsset,
+                provenance: EvidenceProvenance::Computed,
+                size: Some(9),
+                crc: None,
+                md5: None,
+                sha1: Some(crate::hashes::sha1_bytes(b"unmatched")),
+                xxh3: crate::hashes::xxhash3_bytes(b"unmatched"),
+            },
+            fingerprint: SourceFingerprint::new([8; 20]),
+            scan_provenance: ScanProvenance::StreamedSha1Xxh3V1,
+        };
+        let other_scan = CompleteSourceScan::new(other_root, other_run, vec![other_observation])?;
+        assert_eq!(
+            SourceRepository::new(&pool).replace_completed_scan(&other_scan)?,
+            0
+        );
         Ok(())
     }
 
