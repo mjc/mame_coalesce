@@ -1312,7 +1312,7 @@ fn cli_build_dry_run_exits_zero_and_writes_no_files() -> Result<(), Box<dyn std:
     let database_path = root.join("cli.db");
     let output_path = utf8_path(output_dir.path())?.join("dry-run-output");
 
-    cargo_command()
+    let output = cargo_command()
         .args(db_arg(&database_path))
         .args([
             "build",
@@ -1323,8 +1323,10 @@ fn cli_build_dry_run_exits_zero_and_writes_no_files() -> Result<(), Box<dyn std:
             "1",
             "--dry-run",
         ])
-        .assert()
-        .success();
+        .output()?;
+
+    assert!(output.status.success());
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("output artifact was not attempted"));
 
     assert!(!output_path.exists());
 
@@ -1357,7 +1359,7 @@ fn cli_build_missing_fail_exits_two_and_writes_no_files() -> Result<(), Box<dyn 
     let database_path = root.join("cli.db");
     let output_path = utf8_path(output_dir.path())?.join("strict-output");
 
-    cargo_command()
+    let output = cargo_command()
         .args(db_arg(&database_path))
         .args([
             "build",
@@ -1369,8 +1371,10 @@ fn cli_build_missing_fail_exits_two_and_writes_no_files() -> Result<(), Box<dyn 
             "--missing",
             "fail",
         ])
-        .assert()
-        .code(2);
+        .output()?;
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("output artifact was not attempted"));
 
     assert!(!output_path.exists());
 
