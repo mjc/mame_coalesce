@@ -20,7 +20,9 @@ type StagedArchiveMembers = BTreeMap<StagedArchiveKey, PathBuf>;
 use camino::{Utf8Path, Utf8PathBuf};
 use zip::{ZipWriter, write::SimpleFileOptions};
 
-use crate::build::validation::{is_safe_relative_path, validate_plan};
+use crate::build::validation::{
+    canonicalize_destination, checked_destination, is_safe_relative_path, validate_plan,
+};
 use crate::domain::{
     ArchiveBackend, ArchiveMemberSelector, BuildPlan, LogicalEntry, OutputGroup, PlanOutcome,
     SourceLocation, ZipCompression,
@@ -42,11 +44,22 @@ pub fn write_plan_with_compression(
 
     let validated = validate_plan(plan)?;
     let plan = validated.plan();
-    let output_paths = zip_output_paths(plan, destination)?;
+    let source_paths = plan
+        .groups
+        .iter()
+        .flat_map(|group| group.entries.iter())
+        .map(|entry| Utf8PathBuf::from(entry.source.source_root.as_str()))
+        .collect::<BTreeSet<_>>();
+    let sources = source_paths
+        .iter()
+        .map(Utf8PathBuf::as_path)
+        .collect::<Vec<_>>();
+    let destination = checked_destination(&sources, destination)?;
+    let output_paths = zip_output_paths(plan, &destination)?;
     let options = file_options(compression);
     let mut written_paths = Vec::with_capacity(plan.groups.len());
     #[cfg(unix)]
-    let output_root = SecureOutputDirectory::open(destination)?;
+    let output_root = SecureOutputDirectory::open(&destination, &sources)?;
     #[cfg(not(unix))]
     create_dir_all(destination)?;
     for (group, zip_path) in plan.groups.iter().zip(output_paths) {
@@ -65,7 +78,14 @@ pub fn write_plan_with_compression(
             }
             open_destination_zip(&zip_path)?
         };
-        write_zip_group(group, &mut writer, options, destination)?;
+        write_zip_group(
+            group,
+            &mut writer,
+            options,
+            &destination,
+            #[cfg(unix)]
+            &output_root,
+        )?;
         let mut output = writer.finish()?;
         output.flush()?;
         #[cfg(unix)]
@@ -161,66 +181,40 @@ fn open_destination_zip(zip_file_path: &Utf8Path) -> crate::Result<ZipWriter<Buf
 #[cfg(unix)]
 struct SecureOutputDirectory {
     directory: File,
+    source_directories: Vec<File>,
 }
 
 #[cfg(unix)]
 impl SecureOutputDirectory {
-    fn open(destination: &Utf8Path) -> crate::Result<Self> {
-        use rustix::{
-            fs::{self, Mode, OFlags},
-            io::Errno,
+    fn open(destination: &Utf8Path, sources: &[&Utf8Path]) -> crate::Result<Self> {
+        let destination = canonicalize_destination(destination)?;
+        let source_directories = sources
+            .iter()
+            .map(|source| {
+                let source = source.canonicalize_utf8()?;
+                open_directory(&source, false)
+            })
+            .collect::<crate::Result<Vec<_>>>()?;
+        let directory = open_directory(&destination, true)?;
+        let output = Self {
+            directory,
+            source_directories,
         };
-        use std::os::fd::AsFd;
+        output.ensure_disjoint()?;
+        Ok(output)
+    }
 
-        let absolute = if destination.is_absolute() {
-            destination.to_path_buf()
-        } else {
-            Utf8PathBuf::try_from(std::env::current_dir()?.join(destination)).map_err(|_| {
-                crate::Error::InvalidPath("destination path is not UTF-8".to_owned())
-            })?
-        };
-        let root = fs::open(
-            "/",
-            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
-            Mode::empty(),
-        )
-        .map_err(std::io::Error::from)?;
-        let mut directory = File::from(root);
-        for component in absolute.as_std_path().components() {
-            let name = match component {
-                std::path::Component::RootDir | std::path::Component::CurDir => continue,
-                std::path::Component::ParentDir => "..",
-                std::path::Component::Normal(name) => name.to_str().ok_or_else(|| {
-                    crate::Error::InvalidPath("destination path is not UTF-8".to_owned())
-                })?,
-                std::path::Component::Prefix(_) => {
-                    return Err(crate::Error::InvalidPath(
-                        "destination path prefixes are unsupported on Unix".to_owned(),
-                    ));
-                }
-            };
-            let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW;
-            let next = if name == ".." {
-                fs::openat(directory.as_fd(), name, flags, Mode::empty())
-                    .map_err(std::io::Error::from)?
-            } else {
-                match fs::openat(directory.as_fd(), name, flags, Mode::empty()) {
-                    Ok(next) => next,
-                    Err(error) if error == Errno::NOENT => {
-                        match fs::mkdirat(directory.as_fd(), name, Mode::from_raw_mode(0o755)) {
-                            Ok(()) => {}
-                            Err(error) if error == Errno::EXIST => {}
-                            Err(error) => return Err(std::io::Error::from(error).into()),
-                        }
-                        fs::openat(directory.as_fd(), name, flags, Mode::empty())
-                            .map_err(std::io::Error::from)?
-                    }
-                    Err(error) => return Err(std::io::Error::from(error).into()),
-                }
-            };
-            directory = File::from(next);
+    fn ensure_disjoint(&self) -> crate::Result<()> {
+        for source in &self.source_directories {
+            if directory_is_ancestor(source, &self.directory)?
+                || directory_is_ancestor(&self.directory, source)?
+            {
+                return Err(crate::Error::InvalidPath(
+                    "source/destination overlap is not allowed".to_owned(),
+                ));
+            }
         }
-        Ok(Self { directory })
+        Ok(())
     }
 
     fn stage_file(&self, relative: &str) -> crate::Result<(StagedZip, File)> {
@@ -230,6 +224,7 @@ impl SecureOutputDirectory {
         };
         use std::os::fd::AsFd;
 
+        self.ensure_disjoint()?;
         let components = relative.split('/').collect::<Vec<_>>();
         let Some(file_name) = components.last().copied() else {
             return Err(crate::Error::InvalidPath(format!(
@@ -281,6 +276,126 @@ impl SecureOutputDirectory {
         )
         .into())
     }
+
+    fn create_spool_directory(&self) -> crate::Result<SecureSpoolDirectory> {
+        use rustix::{
+            fs::{self, Mode, OFlags},
+            io::Errno,
+        };
+        use std::os::fd::AsFd;
+
+        self.ensure_disjoint()?;
+        for _ in 0..10 {
+            let name = format!("mame-coalesce-build-{}", uuid::Uuid::new_v4());
+            match fs::mkdirat(
+                self.directory.as_fd(),
+                name.as_str(),
+                Mode::from_raw_mode(0o700),
+            ) {
+                Ok(()) => {
+                    let directory = fs::openat(
+                        self.directory.as_fd(),
+                        name.as_str(),
+                        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+                        Mode::empty(),
+                    )
+                    .map_err(std::io::Error::from)?;
+                    return Ok(SecureSpoolDirectory {
+                        parent: self.directory.try_clone()?,
+                        name,
+                        directory: File::from(directory),
+                    });
+                }
+                Err(error) if error == Errno::EXIST => {}
+                Err(error) => return Err(std::io::Error::from(error).into()),
+            }
+        }
+        Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "could not allocate a private archive staging directory",
+        )
+        .into())
+    }
+}
+
+#[cfg(unix)]
+fn open_directory(path: &Utf8Path, create: bool) -> crate::Result<File> {
+    use rustix::{
+        fs::{self, Mode, OFlags},
+        io::Errno,
+    };
+    use std::os::fd::AsFd;
+
+    let root = fs::open(
+        "/",
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(std::io::Error::from)?;
+    let mut directory = File::from(root);
+    for component in path.as_std_path().components() {
+        let name = match component {
+            std::path::Component::RootDir | std::path::Component::CurDir => continue,
+            std::path::Component::ParentDir => {
+                return Err(crate::Error::InvalidPath(
+                    "directory path was not canonicalized".to_owned(),
+                ));
+            }
+            std::path::Component::Normal(name) => name.to_str().ok_or_else(|| {
+                crate::Error::InvalidPath("destination path is not UTF-8".to_owned())
+            })?,
+            std::path::Component::Prefix(_) => {
+                return Err(crate::Error::InvalidPath(
+                    "destination path prefixes are unsupported on Unix".to_owned(),
+                ));
+            }
+        };
+        let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW;
+        let next = match fs::openat(directory.as_fd(), name, flags, Mode::empty()) {
+            Ok(next) => next,
+            Err(error) if create && error == Errno::NOENT => {
+                match fs::mkdirat(directory.as_fd(), name, Mode::from_raw_mode(0o755)) {
+                    Ok(()) => {}
+                    Err(error) if error == Errno::EXIST => {}
+                    Err(error) => return Err(std::io::Error::from(error).into()),
+                }
+                fs::openat(directory.as_fd(), name, flags, Mode::empty())
+                    .map_err(std::io::Error::from)?
+            }
+            Err(error) => return Err(std::io::Error::from(error).into()),
+        };
+        directory = File::from(next);
+    }
+    Ok(directory)
+}
+
+#[cfg(unix)]
+fn directory_is_ancestor(ancestor: &File, descendant: &File) -> crate::Result<bool> {
+    use rustix::fs::{self, Mode, OFlags};
+    use std::os::fd::AsFd;
+
+    let ancestor_stat = fs::fstat(ancestor.as_fd()).map_err(std::io::Error::from)?;
+    let mut current = descendant.try_clone()?;
+    loop {
+        let current_stat = fs::fstat(current.as_fd()).map_err(std::io::Error::from)?;
+        if current_stat.st_dev == ancestor_stat.st_dev
+            && current_stat.st_ino == ancestor_stat.st_ino
+        {
+            return Ok(true);
+        }
+        let parent = fs::openat(
+            current.as_fd(),
+            "..",
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(std::io::Error::from)?;
+        let parent_stat = fs::fstat(&parent).map_err(std::io::Error::from)?;
+        if parent_stat.st_dev == current_stat.st_dev && parent_stat.st_ino == current_stat.st_ino {
+            return Ok(false);
+        }
+        current = File::from(parent);
+    }
 }
 
 #[cfg(unix)]
@@ -289,6 +404,44 @@ struct StagedZip {
     temporary_name: String,
     file_name: String,
     committed: bool,
+}
+
+#[cfg(unix)]
+struct SecureSpoolDirectory {
+    parent: File,
+    name: String,
+    directory: File,
+}
+
+#[cfg(unix)]
+impl SecureSpoolDirectory {
+    fn create_file(&self, name: &str) -> crate::Result<File> {
+        use rustix::fs::{self, Mode, OFlags};
+        use std::os::fd::AsFd;
+
+        let file = fs::openat(
+            self.directory.as_fd(),
+            name,
+            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::from_raw_mode(0o600),
+        )
+        .map_err(std::io::Error::from)?;
+        Ok(File::from(file))
+    }
+
+    fn open_file(&self, name: &str) -> crate::Result<File> {
+        use rustix::fs::{self, OFlags};
+        use std::os::fd::AsFd;
+
+        let file = fs::openat(
+            self.directory.as_fd(),
+            name,
+            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            rustix::fs::Mode::empty(),
+        )
+        .map_err(std::io::Error::from)?;
+        Ok(File::from(file))
+    }
 }
 
 #[cfg(unix)]
@@ -330,6 +483,7 @@ fn write_zip_group(
     zip_writer: &mut ZipWriter<BufWriter<File>>,
     options: SimpleFileOptions,
     spool_parent: &Utf8Path,
+    #[cfg(unix)] output_root: &SecureOutputDirectory,
 ) -> crate::Result<()> {
     let resolved = group
         .entries
@@ -357,7 +511,16 @@ fn write_zip_group(
     let spool = if groups.is_empty() {
         None
     } else {
-        Some(ArchiveSpool::create(spool_parent)?)
+        Some({
+            #[cfg(unix)]
+            {
+                ArchiveSpool::create_secure(spool_parent, output_root)?
+            }
+            #[cfg(not(unix))]
+            {
+                ArchiveSpool::create(spool_parent)?
+            }
+        })
     };
     let mut staged = StagedArchiveMembers::new();
     for ((path, backend), selectors) in groups {
@@ -395,7 +558,13 @@ fn write_zip_group(
                                 "selected archive member was not staged: {path}"
                             ))
                         })?;
-                std::io::copy(&mut File::open(staged_path)?, zip_writer)?;
+                let mut staged_file = spool
+                    .as_ref()
+                    .ok_or_else(|| {
+                        crate::Error::InvalidPath("archive staging was not initialized".to_owned())
+                    })?
+                    .open_file(staged_path)?;
+                std::io::copy(&mut staged_file, zip_writer)?;
             }
         }
     }
@@ -418,10 +587,7 @@ fn stage_archive_reader(
         )));
     }
     let staged_path = spool.next_path()?;
-    let file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&staged_path)?;
+    let file = spool.create_file(&staged_path)?;
     let mut file = ArchiveSpoolWriter::new(file, remaining);
     std::io::copy(reader, &mut file)?;
     spool.record_bytes(file.written_bytes())?;
@@ -502,13 +668,16 @@ fn resolve_source(entry: &LogicalEntry) -> crate::Result<ResolvedSource> {
 }
 
 struct ArchiveSpool {
-    _directory: crate::private_temp::PrivateTempDir,
+    _directory: Option<crate::private_temp::PrivateTempDir>,
+    #[cfg(unix)]
+    secure_directory: Option<SecureSpoolDirectory>,
     root: PathBuf,
     next: std::cell::Cell<u64>,
     staged_bytes: std::cell::Cell<u64>,
 }
 
 impl ArchiveSpool {
+    #[cfg(any(not(unix), test))]
     fn create(parent: &Utf8Path) -> crate::Result<Self> {
         let directory = crate::private_temp::PrivateTempDir::create_in(
             parent.as_std_path(),
@@ -516,8 +685,25 @@ impl ArchiveSpool {
         )?;
         let root = directory.path().to_path_buf();
         Ok(Self {
-            _directory: directory,
+            _directory: Some(directory),
+            #[cfg(unix)]
+            secure_directory: None,
             root,
+            next: std::cell::Cell::new(0),
+            staged_bytes: std::cell::Cell::new(0),
+        })
+    }
+
+    #[cfg(unix)]
+    fn create_secure(
+        parent: &Utf8Path,
+        output_root: &SecureOutputDirectory,
+    ) -> crate::Result<Self> {
+        let secure_directory = output_root.create_spool_directory()?;
+        Ok(Self {
+            _directory: None,
+            root: parent.join(&secure_directory.name).into_std_path_buf(),
+            secure_directory: Some(secure_directory),
             next: std::cell::Cell::new(0),
             staged_bytes: std::cell::Cell::new(0),
         })
@@ -529,6 +715,30 @@ impl ArchiveSpool {
             crate::Error::InvalidPath("archive staging file count overflowed".to_owned())
         })?);
         Ok(self.root.join(format!("{index}.member")))
+    }
+
+    fn create_file(&self, path: &std::path::Path) -> crate::Result<File> {
+        #[cfg(unix)]
+        if let Some(directory) = &self.secure_directory {
+            let name = path
+                .file_name()
+                .and_then(std::ffi::OsStr::to_str)
+                .ok_or_else(|| crate::Error::InvalidPath("invalid archive staging name".into()))?;
+            return directory.create_file(name);
+        }
+        Ok(OpenOptions::new().write(true).create_new(true).open(path)?)
+    }
+
+    fn open_file(&self, path: &std::path::Path) -> crate::Result<File> {
+        #[cfg(unix)]
+        if let Some(directory) = &self.secure_directory {
+            let name = path
+                .file_name()
+                .and_then(std::ffi::OsStr::to_str)
+                .ok_or_else(|| crate::Error::InvalidPath("invalid archive staging name".into()))?;
+            return directory.open_file(name);
+        }
+        Ok(File::open(path)?)
     }
 
     const fn remaining_bytes(&self) -> u64 {
@@ -547,6 +757,27 @@ impl ArchiveSpool {
         }
         self.staged_bytes.set(total);
         Ok(())
+    }
+}
+
+#[cfg(unix)]
+impl Drop for ArchiveSpool {
+    fn drop(&mut self) {
+        use rustix::fs::{self, AtFlags};
+        use std::os::fd::AsFd;
+
+        let Some(directory) = &self.secure_directory else {
+            return;
+        };
+        for index in 0..self.next.get() {
+            let name = format!("{index}.member");
+            let _ = fs::unlinkat(directory.directory.as_fd(), name.as_str(), AtFlags::empty());
+        }
+        let _ = fs::unlinkat(
+            directory.parent.as_fd(),
+            directory.name.as_str(),
+            AtFlags::REMOVEDIR,
+        );
     }
 }
 
@@ -637,12 +868,15 @@ mod tests {
         Ok(())
     }
 
+    #[allow(clippy::expect_used)]
     fn source_file(path: &Utf8Path) -> SourceFile {
+        let source_root = path
+            .parent()
+            .expect("test source file has a parent")
+            .join("fixture-source-root");
+        std::fs::create_dir_all(&source_root).expect("create disjoint test source root");
         SourceFile {
-            source_root: crate::domain::SourceRoot::new(
-                path.parent()
-                    .map_or_else(String::new, |parent| parent.as_str().to_owned()),
-            ),
+            source_root: crate::domain::SourceRoot::new(source_root.as_str()),
             location: SourceLocation::BareFile {
                 path: path.as_str().to_owned(),
             },
@@ -678,11 +912,17 @@ mod tests {
         }
     }
 
+    #[allow(clippy::expect_used)]
     fn archive_source_file(
         path: &Utf8Path,
         entry_name: Option<&str>,
         kind: SourceKind,
     ) -> SourceFile {
+        let source_root = path
+            .parent()
+            .expect("test archive source has a parent")
+            .join("fixture-source-root");
+        std::fs::create_dir_all(&source_root).expect("create disjoint test source root");
         let location = entry_name.map_or_else(
             || SourceLocation::LegacyUnknown {
                 path: path.as_str().to_owned(),
@@ -714,10 +954,7 @@ mod tests {
             },
         );
         SourceFile {
-            source_root: crate::domain::SourceRoot::new(
-                path.parent()
-                    .map_or_else(String::new, |parent| parent.as_str().to_owned()),
-            ),
+            source_root: crate::domain::SourceRoot::new(source_root.as_str()),
             location,
             observed: crate::domain::ObservedContent {
                 scope: crate::domain::EvidenceScope::WholeAsset,
@@ -996,6 +1233,69 @@ mod tests {
 
         assert!(result.is_err());
         assert_eq!(fs::read(protected)?, b"must remain untouched");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn destination_dotdot_is_resolved_before_creating_directories()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let root = utf8_path(temp_dir.path())?;
+        let source = root.join("source");
+        fs::create_dir(&source)?;
+        let destination = source.join("new/../../output");
+        let sources = [source.as_path()];
+        let checked = checked_destination(&sources, &destination)?;
+        let _output = SecureOutputDirectory::open(&checked, &sources)?;
+
+        assert!(!source.join("new").exists());
+        assert!(root.join("output").is_dir());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn disjoint_symlinked_destination_writes_through_its_resolved_path()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = tempfile::tempdir()?;
+        let root = utf8_path(temp_dir.path())?;
+        let actual = root.join("actual-output");
+        let alias = root.join("output-alias");
+        fs::create_dir(&actual)?;
+        symlink(&actual, &alias)?;
+        let plan = BuildPlan {
+            groups: vec![OutputGroup {
+                path: LogicalPath::new("safe"),
+                entries: Vec::new(),
+            }],
+            report: BuildReport::default(),
+        };
+
+        write_plan(&plan, &alias)?;
+
+        assert!(actual.join("safe.zip").is_file());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn output_handle_rechecks_overlap_after_source_directory_moves()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let root = utf8_path(temp_dir.path())?;
+        let source = root.join("source");
+        let destination = root.join("output");
+        fs::create_dir(&source)?;
+        fs::create_dir(&destination)?;
+        let sources = [source.as_path()];
+        let destination = checked_destination(&sources, &destination)?;
+        let output = SecureOutputDirectory::open(&destination, &sources)?;
+        fs::rename(&source, destination.join("moved-source"))?;
+
+        assert!(output.stage_file("safe.zip").is_err());
         Ok(())
     }
 
