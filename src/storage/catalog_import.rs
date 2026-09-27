@@ -109,6 +109,21 @@ impl SnapshotData {
             let rom_locations = source_map.rom_locations.get(game_index).ok_or_else(|| {
                 crate::Error::InvalidPath("Logiqx asset source locations are missing".into())
             })?;
+            let device_ref_locations =
+                source_map
+                    .device_ref_locations
+                    .get(game_index)
+                    .ok_or_else(|| {
+                        crate::Error::InvalidPath(
+                            "Logiqx device-reference source locations are missing".into(),
+                        )
+                    })?;
+            if game.device_refs().count() != device_ref_locations.len() {
+                return Err(crate::Error::InvalidPath(
+                    "Logiqx device-reference source locations do not match parsed references"
+                        .into(),
+                ));
+            }
             let mut assets = Vec::with_capacity(game.roms().len());
             for (index, rom) in game.roms().iter().enumerate() {
                 let expected = crate::domain::ExpectedEvidence::from_logiqx(rom)?;
@@ -148,11 +163,15 @@ impl SnapshotData {
                 ]
                 .into_iter()
                 .flatten()
-                .chain(game.device_refs().map(|name| SnapshotDependency {
-                    source_field: "device_ref".to_owned(),
-                    target_name: name.to_owned(),
-                    location,
-                }))
+                .chain(
+                    game.device_refs()
+                        .zip(device_ref_locations)
+                        .map(|(name, location)| SnapshotDependency {
+                            source_field: "device_ref".to_owned(),
+                            target_name: name.to_owned(),
+                            location: *location,
+                        }),
+                )
                 .collect(),
                 metadata: serde_json::json!({"source_file": game.sourcefile_opt(), "is_bios": game.isbios_opt(), "rom_of": game.romof_opt(), "sample_of": game.sampleof_opt(), "board": game.board_opt(), "rebuild_to": game.rebuildto_opt(), "description": game.description_opt(), "year": game.year_opt(), "manufacturer": game.manufacturer_opt(), "device_refs": game.device_refs().collect::<Vec<_>>()}),
                 location, assets,

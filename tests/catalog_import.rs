@@ -2049,6 +2049,17 @@ fn source_relationship_assertions_keep_snapshot_and_field_provenance()
     .get_result::<CountRow>(&mut connection)?;
     assert_eq!(runtime_claims.count, 3);
 
+    let device_claim = sql_query(
+        "SELECT relation_type, origin, source_snapshot_key, subject_key, target_key, \
+                source_field, source_line, source_column, rule_version \
+         FROM relationship_assertions \
+         WHERE source_snapshot_key = ? AND source_field = 'device_ref'",
+    )
+    .bind::<Text, _>(snapshot_key.as_str())
+    .get_result::<QueryableAssertion>(&mut connection)?;
+    assert_eq!(device_claim.source_line, Some(8));
+    assert_eq!(device_claim.source_column, Some(5));
+
     // An identical reimport reuses the immutable snapshot rather than duplicating its claims.
     app::import_catalog(
         &database,
