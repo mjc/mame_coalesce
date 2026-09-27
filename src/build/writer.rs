@@ -92,7 +92,7 @@ pub fn write_plan_with_compression(
         {
             output.get_ref().sync_all()?;
             drop(output);
-            staged.replace()?;
+            staged.replace(&output_root)?;
         }
         #[cfg(not(unix))]
         drop(output);
@@ -205,9 +205,13 @@ impl SecureOutputDirectory {
     }
 
     fn ensure_disjoint(&self) -> crate::Result<()> {
+        self.ensure_directory_disjoint(&self.directory)
+    }
+
+    fn ensure_directory_disjoint(&self, directory: &File) -> crate::Result<()> {
         for source in &self.source_directories {
-            if directory_is_ancestor(source, &self.directory)?
-                || directory_is_ancestor(&self.directory, source)?
+            if directory_is_ancestor(source, directory)?
+                || directory_is_ancestor(directory, source)?
             {
                 return Err(crate::Error::InvalidPath(
                     "source/destination overlap is not allowed".to_owned(),
@@ -285,25 +289,48 @@ impl SecureOutputDirectory {
         use std::os::fd::AsFd;
 
         self.ensure_disjoint()?;
+        let parent = self.directory.try_clone()?;
         for _ in 0..10 {
             let name = format!("mame-coalesce-build-{}", uuid::Uuid::new_v4());
-            match fs::mkdirat(
-                self.directory.as_fd(),
-                name.as_str(),
-                Mode::from_raw_mode(0o700),
-            ) {
+            match fs::mkdirat(parent.as_fd(), name.as_str(), Mode::from_raw_mode(0o700)) {
                 Ok(()) => {
-                    let directory = fs::openat(
-                        self.directory.as_fd(),
+                    let directory = match fs::openat(
+                        parent.as_fd(),
                         name.as_str(),
                         OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
                         Mode::empty(),
-                    )
-                    .map_err(std::io::Error::from)?;
+                    ) {
+                        Ok(directory) => directory,
+                        Err(error) => {
+                            let _ = fs::unlinkat(
+                                parent.as_fd(),
+                                name.as_str(),
+                                rustix::fs::AtFlags::REMOVEDIR,
+                            );
+                            return Err(std::io::Error::from(error).into());
+                        }
+                    };
+                    let source_directories = match self
+                        .source_directories
+                        .iter()
+                        .map(File::try_clone)
+                        .collect::<std::io::Result<Vec<_>>>()
+                    {
+                        Ok(sources) => sources,
+                        Err(error) => {
+                            let _ = fs::unlinkat(
+                                parent.as_fd(),
+                                name.as_str(),
+                                rustix::fs::AtFlags::REMOVEDIR,
+                            );
+                            return Err(error.into());
+                        }
+                    };
                     return Ok(SecureSpoolDirectory {
-                        parent: self.directory.try_clone()?,
+                        parent,
                         name,
                         directory: File::from(directory),
+                        source_directories,
                     });
                 }
                 Err(error) if error == Errno::EXIST => {}
@@ -411,6 +438,7 @@ struct SecureSpoolDirectory {
     parent: File,
     name: String,
     directory: File,
+    source_directories: Vec<File>,
 }
 
 #[cfg(unix)]
@@ -419,6 +447,7 @@ impl SecureSpoolDirectory {
         use rustix::fs::{self, Mode, OFlags};
         use std::os::fd::AsFd;
 
+        self.ensure_disjoint()?;
         let file = fs::openat(
             self.directory.as_fd(),
             name,
@@ -433,6 +462,7 @@ impl SecureSpoolDirectory {
         use rustix::fs::{self, OFlags};
         use std::os::fd::AsFd;
 
+        self.ensure_disjoint()?;
         let file = fs::openat(
             self.directory.as_fd(),
             name,
@@ -442,14 +472,28 @@ impl SecureSpoolDirectory {
         .map_err(std::io::Error::from)?;
         Ok(File::from(file))
     }
+
+    fn ensure_disjoint(&self) -> crate::Result<()> {
+        for source in &self.source_directories {
+            if directory_is_ancestor(source, &self.directory)?
+                || directory_is_ancestor(&self.directory, source)?
+            {
+                return Err(crate::Error::InvalidPath(
+                    "source/archive staging overlap is not allowed".to_owned(),
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(unix)]
 impl StagedZip {
-    fn replace(&mut self) -> crate::Result<()> {
+    fn replace(&mut self, output_root: &SecureOutputDirectory) -> crate::Result<()> {
         use rustix::fs;
         use std::os::fd::AsFd;
 
+        output_root.ensure_directory_disjoint(&self.parent)?;
         fs::renameat(
             self.parent.as_fd(),
             self.temporary_name.as_str(),
@@ -485,6 +529,8 @@ fn write_zip_group(
     spool_parent: &Utf8Path,
     #[cfg(unix)] output_root: &SecureOutputDirectory,
 ) -> crate::Result<()> {
+    #[cfg(unix)]
+    output_root.ensure_disjoint()?;
     let resolved = group
         .entries
         .iter()
@@ -495,6 +541,8 @@ fn write_zip_group(
         BTreeSet<crate::sources::ArchiveMemberSelector>,
     > = BTreeMap::new();
     for source in &resolved {
+        #[cfg(unix)]
+        output_root.ensure_disjoint()?;
         if let ResolvedSource::Archive {
             path,
             backend,
@@ -524,6 +572,8 @@ fn write_zip_group(
     };
     let mut staged = StagedArchiveMembers::new();
     for ((path, backend), selectors) in groups {
+        #[cfg(unix)]
+        output_root.ensure_disjoint()?;
         let source_path = Utf8Path::new(&path);
         let selectors = selectors.into_iter().collect::<Vec<_>>();
         crate::sources::stream_archive(
@@ -540,6 +590,8 @@ fn write_zip_group(
     }
 
     for (entry, source) in group.entries.iter().zip(resolved) {
+        #[cfg(unix)]
+        output_root.ensure_disjoint()?;
         zip_writer.start_file(entry.path.as_str(), options)?;
         match source {
             ResolvedSource::Bare { path } => {
@@ -587,9 +639,11 @@ fn stage_archive_reader(
         )));
     }
     let staged_path = spool.next_path()?;
+    spool.ensure_disjoint()?;
     let file = spool.create_file(&staged_path)?;
     let mut file = ArchiveSpoolWriter::new(file, remaining);
     std::io::copy(reader, &mut file)?;
+    spool.ensure_disjoint()?;
     spool.record_bytes(file.written_bytes())?;
     staged.insert(
         (path.to_owned(), backend, member.selector.clone()),
@@ -739,6 +793,14 @@ impl ArchiveSpool {
             return directory.open_file(name);
         }
         Ok(File::open(path)?)
+    }
+
+    fn ensure_disjoint(&self) -> crate::Result<()> {
+        #[cfg(unix)]
+        if let Some(directory) = &self.secure_directory {
+            return directory.ensure_disjoint();
+        }
+        Ok(())
     }
 
     const fn remaining_bytes(&self) -> u64 {
@@ -1293,9 +1355,11 @@ mod tests {
         let sources = [source.as_path()];
         let destination = checked_destination(&sources, &destination)?;
         let output = SecureOutputDirectory::open(&destination, &sources)?;
+        let (mut staged, file) = output.stage_file("safe.zip")?;
+        drop(file);
         fs::rename(&source, destination.join("moved-source"))?;
 
-        assert!(output.stage_file("safe.zip").is_err());
+        assert!(staged.replace(&output).is_err());
         Ok(())
     }
 
