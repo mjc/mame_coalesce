@@ -253,14 +253,14 @@ fn parent_claims_keep_their_adapter_specific_source_provenance()
         matches!(
             &claim.claim.target,
             RelationshipEndpoint::CatalogRecord(record)
-                if record.key.as_str() == "demo_cart/demo_original"
+                if record.key.as_str() == "[\"demo_cart\",\"demo_original\"]"
         )
     }));
     assert!(claims.iter().any(|claim| {
         matches!(
             &claim.claim.subject,
             RelationshipEndpoint::CatalogRecord(record)
-                if record.key.as_str() == "demo_cart/demo_game"
+                if record.key.as_str() == "[\"demo_cart\",\"demo_game\"]"
         )
     }));
     assert!(claims.iter().any(|claim| {

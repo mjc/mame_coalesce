@@ -27,7 +27,14 @@ pub struct Machine {
     pub location: RecordLocation,
     pub metadata: BTreeMap<String, serde_json::Value>,
     pub assets: Vec<MachineAsset>,
+    pub device_refs: Vec<DeviceReference>,
     pub extensions: Vec<XmlExtension>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeviceReference {
+    pub name: String,
+    pub location: RecordLocation,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -238,6 +245,23 @@ pub fn parse_xml_element(bytes: &[u8]) -> crate::Result<Element> {
     root.ok_or_else(|| crate::Error::XmlValidation("missing document root".into()))
 }
 
+fn device_reference_metadata(references: &[DeviceReference]) -> serde_json::Value {
+    serde_json::json!(
+        references
+            .iter()
+            .enumerate()
+            .map(|(order, reference)| serde_json::json!({"name": reference.name, "order": order}))
+            .collect::<Vec<_>>()
+    )
+}
+
+fn parse_device_reference(node: &Element) -> crate::Result<DeviceReference> {
+    Ok(DeviceReference {
+        name: required(node, "name")?.to_owned(),
+        location: node.location,
+    })
+}
+
 fn parse_machine(node: &Element) -> crate::Result<Machine> {
     let name = required(node, "name")?;
     let parent = node.attributes.get("cloneof").cloned();
@@ -283,7 +307,7 @@ fn parse_machine(node: &Element) -> crate::Result<Machine> {
                 }
             }
             "biosset" => biossets.push(serde_json::json!({"name": required(child, "name")?, "description": child.attributes.get("description"), "default": child.attributes.get("default")})),
-            "device_ref" => device_refs.push(serde_json::json!({"name": required(child, "name")?, "order": device_refs.len()})),
+            "device_ref" => device_refs.push(parse_device_reference(child)?),
             "rom" | "disk" => assets.push(parse_asset(child)?),
             _ => extensions.push(extension("machine", Some(name), child)?),
         }
@@ -304,7 +328,10 @@ fn parse_machine(node: &Element) -> crate::Result<Machine> {
         }
     }
     metadata.insert("biossets".into(), serde_json::json!(biossets));
-    metadata.insert("device_refs".into(), serde_json::json!(device_refs));
+    metadata.insert(
+        "device_refs".into(),
+        device_reference_metadata(&device_refs),
+    );
     for (key, val) in &node.attributes {
         if ![
             "name",
@@ -336,6 +363,7 @@ fn parse_machine(node: &Element) -> crate::Result<Machine> {
         location: node.location,
         metadata,
         assets,
+        device_refs,
         extensions,
     })
 }
