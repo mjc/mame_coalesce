@@ -5,7 +5,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    domain::{LogicalEntry, LogicalPath, OutputGroup, RequirementKey, SetName, SnapshotKey},
+    domain::{
+        EvidenceScope, ExpectedEvidence, LogicalEntry, LogicalPath, OutputGroup, RequirementKey,
+        SetName, SnapshotKey,
+    },
     machine_dependencies::{DependencyClosure, DependencyDiagnostic},
 };
 
@@ -47,8 +50,20 @@ impl ResolvedMachineSet {
 #[serde(rename_all = "snake_case")]
 pub enum PathCollisionEvidence {
     DifferentSha1,
+    ConflictingExpectedEvidence,
     InsufficientSha1,
     CaseInsensitivePath,
+}
+
+/// Expected-content fields that contradict one another.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContentEvidenceConflict {
+    Scope,
+    Size,
+    Crc,
+    Md5,
+    Sha1,
 }
 
 /// A conflict or incomplete input discovered while planning a MAME layout.
@@ -95,6 +110,17 @@ pub enum MameLayoutDiagnostic {
         root: SetName,
         child: SetName,
         parent: SetName,
+    },
+    MissingMergeTarget {
+        root: SetName,
+        child: RequirementKey,
+        target: LogicalPath,
+    },
+    MergeContentMismatch {
+        root: SetName,
+        child: RequirementKey,
+        target: LogicalPath,
+        conflicts: Vec<ContentEvidenceConflict>,
     },
     AmbiguousCloneParent {
         root: SetName,
@@ -242,6 +268,7 @@ fn plan_root_group(
 
     let group_path = LogicalPath::new(root.as_str());
     let mut entries = BTreeMap::<LogicalPath, LogicalEntry>::new();
+    let mut case_insensitive_paths = BTreeMap::<String, LogicalPath>::new();
     let mut provenance = BTreeMap::<LogicalPath, BTreeSet<RequirementKey>>::new();
     for set_name in &closure.sets {
         let key = (closure.snapshot.clone(), set_name.clone());
@@ -265,6 +292,7 @@ fn plan_root_group(
                 root,
                 &entry,
                 &mut entries,
+                &mut case_insensitive_paths,
                 &mut provenance,
                 &mut plan.diagnostics,
             );
@@ -426,11 +454,43 @@ fn materialize_clone_lineage(
                     });
                 continue;
             }
-            if let Some(merged_name) = &entry.expected.merge {
-                entries.remove(&LogicalPath::new(merged_name));
-                if !is_base_set {
-                    replaced_assets.insert(merged_name.clone());
+            let mut preserve_inherited_path = false;
+            if !is_base_set && let Some(merged_name) = &entry.expected.merge {
+                let target = LogicalPath::new(merged_name);
+                match entries.get(&target) {
+                    None => {
+                        plan.diagnostics
+                            .insert(MameLayoutDiagnostic::MissingMergeTarget {
+                                root: root.clone(),
+                                child: entry.requirement.clone(),
+                                target,
+                            });
+                    }
+                    Some(inherited) => {
+                        let conflicts: BTreeSet<_> = inherited
+                            .iter()
+                            .flat_map(|parent_entry| {
+                                content_evidence_conflicts(&parent_entry.expected, &entry.expected)
+                            })
+                            .collect();
+                        if conflicts.is_empty() {
+                            entries.remove(&target);
+                            replaced_assets.insert(merged_name.clone());
+                        } else {
+                            preserve_inherited_path = entry.path == target;
+                            plan.diagnostics
+                                .insert(MameLayoutDiagnostic::MergeContentMismatch {
+                                    root: root.clone(),
+                                    child: entry.requirement.clone(),
+                                    target,
+                                    conflicts: conflicts.into_iter().collect(),
+                                });
+                        }
+                    }
                 }
+            }
+            if preserve_inherited_path {
+                continue;
             }
             // A clone declaration takes precedence over the inherited asset at that path.
             if !is_base_set {
@@ -469,18 +529,51 @@ fn materialize_clone_lineage(
     entries.into_values().flatten().collect()
 }
 
+fn content_evidence_conflicts(
+    left: &ExpectedEvidence,
+    right: &ExpectedEvidence,
+) -> Vec<ContentEvidenceConflict> {
+    if left.scope != right.scope {
+        return vec![ContentEvidenceConflict::Scope];
+    }
+
+    let mut conflicts = Vec::new();
+    if matches!((left.size, right.size), (Some(left), Some(right)) if left != right) {
+        conflicts.push(ContentEvidenceConflict::Size);
+    }
+    if matches!((left.crc, right.crc), (Some(left), Some(right)) if left != right) {
+        conflicts.push(ContentEvidenceConflict::Crc);
+    }
+    if matches!((left.md5, right.md5), (Some(left), Some(right)) if left != right) {
+        conflicts.push(ContentEvidenceConflict::Md5);
+    }
+    if matches!((left.sha1, right.sha1), (Some(left), Some(right)) if left != right) {
+        conflicts.push(ContentEvidenceConflict::Sha1);
+    }
+    conflicts
+}
+
 fn insert_entry(
     root: &SetName,
     incoming: &LogicalEntry,
     entries: &mut BTreeMap<LogicalPath, LogicalEntry>,
+    case_insensitive_paths: &mut BTreeMap<String, LogicalPath>,
     provenance: &mut BTreeMap<LogicalPath, BTreeSet<RequirementKey>>,
     diagnostics: &mut BTreeSet<MameLayoutDiagnostic>,
 ) {
     let path = incoming.path.clone();
-    let Some((existing_path, existing)) = entries
-        .iter()
-        .find(|(existing_path, _)| existing_path.as_str().eq_ignore_ascii_case(path.as_str()))
-    else {
+    let folded_path = path.as_str().to_ascii_lowercase();
+    let Some(existing_path) = case_insensitive_paths.get(&folded_path) else {
+        case_insensitive_paths.insert(folded_path, path.clone());
+        entries.insert(path.clone(), incoming.clone());
+        provenance
+            .entry(path)
+            .or_default()
+            .insert(incoming.requirement.clone());
+        return;
+    };
+    let Some(existing) = entries.get(existing_path) else {
+        case_insensitive_paths.insert(folded_path, path.clone());
         entries.insert(path.clone(), incoming.clone());
         provenance
             .entry(path)
@@ -501,7 +594,12 @@ fn insert_entry(
     if existing.requirement == incoming.requirement && existing == incoming {
         return;
     }
-    if existing.expected.sha1.is_some() && existing.expected.sha1 == incoming.expected.sha1 {
+    let evidence_conflicts = content_evidence_conflicts(&existing.expected, &incoming.expected);
+    if existing.expected.scope != EvidenceScope::Unknown
+        && existing.expected.sha1.is_some()
+        && existing.expected.sha1 == incoming.expected.sha1
+        && evidence_conflicts.is_empty()
+    {
         if existing.requirement != incoming.requirement {
             let requirements = provenance.entry(path).or_default();
             requirements.insert(existing.requirement.clone());
@@ -519,6 +617,8 @@ fn insert_entry(
             && existing.expected.sha1 != incoming.expected.sha1
         {
             PathCollisionEvidence::DifferentSha1
+        } else if !evidence_conflicts.is_empty() {
+            PathCollisionEvidence::ConflictingExpectedEvidence
         } else {
             PathCollisionEvidence::InsufficientSha1
         },
@@ -530,9 +630,9 @@ mod tests {
     use super::*;
     use crate::{
         domain::{
-            ArchiveBackend, ArchiveMemberSelector, CatalogKey, EvidenceProvenance, EvidenceScope,
-            ExpectedEvidence, MatchingPolicy, ObservedContent, ScanProvenance, SelectionProvenance,
-            SetKey, SourceFile, SourceLocation, SourceRoot,
+            ArchiveBackend, ArchiveMemberSelector, CatalogKey, Crc32Digest, EvidenceProvenance,
+            EvidenceScope, ExpectedEvidence, MatchingPolicy, ObservedContent, ScanProvenance,
+            SelectionProvenance, SetKey, SourceFile, SourceLocation, SourceRoot,
         },
         machine_dependencies::{
             MachineDependency, MachineDependencyCatalog, MachineDependencyKind, MachineSet,
@@ -725,6 +825,108 @@ mod tests {
             plan.groups[0].entries[0].source.location.path(),
             "/roms/parent.zip"
         );
+    }
+
+    #[test]
+    fn diagnoses_missing_and_conflicting_merge_targets() {
+        let mut clone = MachineSet::new("clone");
+        clone.parent_clone = Some(SetName::new("parent"));
+        let closure =
+            MachineDependencyCatalog::new(snapshot(), vec![clone]).resolve(&SetName::new("clone"));
+
+        let child_entry = || {
+            let mut value = entry("clone", "clone-game.rom", Some(5), Some("parent-game.rom"));
+            value.expected.size = Some(2);
+            value.expected.crc = Some(Crc32Digest([2; 4]));
+            value
+        };
+        let mut child = resolved("clone", vec![child_entry()]);
+        child.parent_clone = Some(SetName::new("parent"));
+        let missing_target = plan_mame_layout(
+            MameSetLayoutPolicy::NonMerged,
+            &snapshot(),
+            &[SetName::new("clone")],
+            std::slice::from_ref(&closure),
+            &[child.clone(), resolved("parent", vec![])],
+        );
+        assert!(missing_target.diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic,
+            MameLayoutDiagnostic::MissingMergeTarget { target, .. }
+                if target.as_str() == "parent-game.rom"
+        )));
+
+        let mut parent_entry = entry("parent", "parent-game.rom", Some(5), None);
+        parent_entry.expected.size = Some(1);
+        parent_entry.expected.crc = Some(Crc32Digest([1; 4]));
+        let conflicting_target = plan_mame_layout(
+            MameSetLayoutPolicy::NonMerged,
+            &snapshot(),
+            &[SetName::new("clone")],
+            &[closure],
+            &[child, resolved("parent", vec![parent_entry])],
+        );
+        assert!(
+            conflicting_target
+                .diagnostics
+                .iter()
+                .any(|diagnostic| matches!(
+                    diagnostic,
+                    MameLayoutDiagnostic::MergeContentMismatch { conflicts, .. }
+                        if conflicts == &[
+                            ContentEvidenceConflict::Size,
+                            ContentEvidenceConflict::Crc,
+                        ]
+                ))
+        );
+        assert_eq!(
+            names(&conflicting_target, "clone"),
+            ["clone-game.rom", "parent-game.rom"]
+        );
+
+        let mut same_path_child =
+            entry("clone", "parent-game.rom", Some(5), Some("parent-game.rom"));
+        same_path_child.expected.size = Some(2);
+        let mut same_path_parent = entry("parent", "parent-game.rom", Some(5), None);
+        same_path_parent.expected.size = Some(1);
+        let same_path_mismatch = plan_mame_layout(
+            MameSetLayoutPolicy::NonMerged,
+            &snapshot(),
+            &[SetName::new("clone")],
+            &[MachineDependencyCatalog::new(
+                snapshot(),
+                vec![{
+                    let mut clone = MachineSet::new("clone");
+                    clone.parent_clone = Some(SetName::new("parent"));
+                    clone
+                }],
+            )
+            .resolve(&SetName::new("clone"))],
+            &[
+                {
+                    let mut child = resolved("clone", vec![same_path_child]);
+                    child.parent_clone = Some(SetName::new("parent"));
+                    child
+                },
+                resolved("parent", vec![same_path_parent]),
+            ],
+        );
+        assert!(
+            same_path_mismatch
+                .diagnostics
+                .iter()
+                .any(|diagnostic| matches!(
+                    diagnostic,
+                    MameLayoutDiagnostic::MergeContentMismatch { .. }
+                ))
+        );
+        let retained = same_path_mismatch
+            .groups
+            .iter()
+            .flat_map(|group| &group.entries)
+            .filter(|entry| entry.path.as_str() == "parent-game.rom")
+            .collect::<Vec<_>>();
+        assert_eq!(retained.len(), 1);
+        assert_eq!(retained[0].requirement.game_name(), "parent");
     }
 
     #[test]
@@ -961,7 +1163,7 @@ mod tests {
             MameSetLayoutPolicy::NonMerged,
             &snapshot(),
             &[SetName::new("root")],
-            &[closure],
+            std::slice::from_ref(&closure),
             &[
                 resolved("root", vec![entry("root", "shared.rom", None, None)]),
                 resolved("device", vec![entry("device", "shared.rom", None, None)]),
@@ -974,5 +1176,34 @@ mod tests {
                 ..
             }
         )));
+
+        let mut root_entry = entry("root", "shared.rom", Some(8), None);
+        root_entry.expected.size = Some(10);
+        root_entry.expected.crc = Some(Crc32Digest([1; 4]));
+        let mut device_entry = entry("device", "shared.rom", Some(8), None);
+        device_entry.expected.size = Some(11);
+        device_entry.expected.crc = Some(Crc32Digest([2; 4]));
+        let conflicting_metadata = plan_mame_layout(
+            MameSetLayoutPolicy::NonMerged,
+            &snapshot(),
+            &[SetName::new("root")],
+            std::slice::from_ref(&closure),
+            &[
+                resolved("root", vec![root_entry]),
+                resolved("device", vec![device_entry]),
+            ],
+        );
+        assert!(
+            conflicting_metadata
+                .diagnostics
+                .iter()
+                .any(|diagnostic| matches!(
+                    diagnostic,
+                    MameLayoutDiagnostic::LogicalPathCollision {
+                        evidence: PathCollisionEvidence::ConflictingExpectedEvidence,
+                        ..
+                    }
+                ))
+        );
     }
 }
