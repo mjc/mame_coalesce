@@ -71,7 +71,7 @@ rayon = "1.12"
 
 serde = { version = "1", features = ["derive"] }
 serde-xml-rs = "0.8"
-serde_json = "1"
+serde_json = { version = "1", features = ["raw_value"] }
 
 zip = { version = "8.5", features = ["deflate", "bzip2", "zstd"] }
 r7z = { version = "0.1.0", git = "https://github.com/mjc/r7z.git", rev = "bfef3198696add8045ad34581dd977d671ae9daa" }
@@ -81,7 +81,7 @@ hex = { version = "0.4", features = ["serde"] }
 sha-1 = { version = "0.10", features = ["asm"] }
 sha2 = "0.10"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
-uuid = { version = "1.23", features = ["v4"] }
+uuid = { version = "1.23", features = ["v4", "serde"] }
 xml = "1.2"
 
 fmmap = "0.4"

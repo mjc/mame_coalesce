@@ -1,4 +1,5 @@
 use crate::hashes::Sha1Digest;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -138,7 +139,7 @@ impl std::fmt::Display for AcquisitionKey {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct CatalogKey(String);
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -150,10 +151,10 @@ pub struct SnapshotKey(String);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ImportRunKey(uuid::Uuid);
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct SetName(String);
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct AssetName(String);
 
 impl SetName {
@@ -313,7 +314,7 @@ impl CatalogScope {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct SetKey {
     catalog: CatalogKey,
     name: SetName,
@@ -344,7 +345,7 @@ impl SetKey {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct RequirementKey {
     set: SetKey,
     asset: AssetName,
@@ -380,13 +381,15 @@ impl RequirementKey {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Crc32Digest(pub [u8; 4]);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Md5Digest(pub [u8; 16]);
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
 pub enum EvidenceScope {
     WholeAsset,
     DiskData,
@@ -395,7 +398,9 @@ pub enum EvidenceScope {
     Unknown,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
 pub enum EvidenceProvenance {
     SourceDeclared,
     Computed,
@@ -404,7 +409,7 @@ pub enum EvidenceProvenance {
     Unknown,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ExpectedEvidence {
     pub scope: EvidenceScope,
     pub provenance: EvidenceProvenance,
@@ -450,7 +455,7 @@ impl ExpectedEvidence {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ObservedContent {
     pub scope: EvidenceScope,
     pub provenance: EvidenceProvenance,
@@ -461,7 +466,7 @@ pub struct ObservedContent {
     pub xxh3: crate::hashes::Xxh3Digest,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct DatRom {
     pub catalog_name: String,
     pub key: RequirementKey,
@@ -472,7 +477,7 @@ pub struct DatRom {
     pub expected: ExpectedEvidence,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct SetMetadata {
     pub source_file: Option<String>,
     pub is_bios: Option<String>,
@@ -559,7 +564,9 @@ impl DatRom {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
 pub enum AssetRole {
     #[default]
     Rom,
@@ -567,14 +574,14 @@ pub enum AssetRole {
     Other,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BuildMode {
     #[default]
     ParentBundles,
     PerGame,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MatchingPolicy {
     /// Match only SHA1, ignoring size/CRC/MD5 disagreements for historical compatibility.
     #[default]
@@ -584,21 +591,21 @@ pub enum MatchingPolicy {
     EvidenceAware,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ZipCompression {
     #[default]
     Deflate,
     Store,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum ArchiveBackend {
     Zip,
     SevenZip,
     Rar,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct SourceRoot(String);
 
 impl SourceRoot {
@@ -613,7 +620,7 @@ impl SourceRoot {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct ScanRunKey(uuid::Uuid);
 
 impl ScanRunKey {
@@ -633,7 +640,7 @@ impl ScanRunKey {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct SourceFingerprint(Sha1Digest);
 
 impl SourceFingerprint {
@@ -648,7 +655,7 @@ impl SourceFingerprint {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum ScanProvenance {
     StreamedSha1Xxh3V1,
 }
@@ -691,12 +698,12 @@ impl ArchiveBackend {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum ArchiveMemberSelector {
     IndexAndName { index: u64, name: String },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum SourceLocation {
     BareFile {
         path: String,
@@ -765,7 +772,7 @@ impl SourceLocation {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceFile {
     pub source_root: SourceRoot,
     pub location: SourceLocation,
@@ -844,52 +851,138 @@ pub struct BuildRequest {
     pub source_root: SourceRoot,
     pub mode: BuildMode,
     pub matching_policy: MatchingPolicy,
-    pub dry_run: bool,
-    pub strict: bool,
+    pub missing_policy: MissingContentPolicy,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MissingContentPolicy {
+    #[default]
+    AllowPartial,
+    RequireComplete,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BuildPlan {
-    pub zips: Vec<ZipSpec>,
+    pub groups: Vec<OutputGroup>,
     pub report: BuildReport,
-    pub dry_run: bool,
 }
 
 impl BuildPlan {
     #[must_use]
-    pub const fn writes_files(&self) -> bool {
-        !self.dry_run && !self.zips.is_empty() && self.report.exit_code == 0
+    pub const fn has_outputs(&self) -> bool {
+        !self.groups.is_empty()
+    }
+
+    pub const SERIALIZATION_VERSION: u32 = 1;
+
+    /// Encode plan and report together with the schema version required to read them.
+    pub fn to_json(&self) -> crate::Result<Vec<u8>> {
+        #[derive(Serialize)]
+        struct Document<'a> {
+            version: u32,
+            plan: &'a BuildPlan,
+        }
+
+        Ok(serde_json::to_vec(&Document {
+            version: Self::SERIALIZATION_VERSION,
+            plan: self,
+        })?)
+    }
+
+    /// Decode only the current version; callers must re-resolve/revalidate before execution.
+    pub fn from_json(bytes: &[u8]) -> crate::Result<Self> {
+        #[derive(Deserialize)]
+        struct Document<'a> {
+            version: u32,
+            #[serde(borrow)]
+            plan: &'a serde_json::value::RawValue,
+        }
+
+        let document: Document<'_> = serde_json::from_slice(bytes)?;
+        if document.version != Self::SERIALIZATION_VERSION {
+            return Err(crate::Error::UnsupportedPlanVersion(document.version));
+        }
+        Ok(serde_json::from_str(document.plan.get())?)
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ZipSpec {
-    pub file_name: String,
-    pub entries: Vec<ZipEntrySpec>,
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct LogicalPath(String);
+
+impl LogicalPath {
+    #[must_use]
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ZipEntrySpec {
-    pub output_name: String,
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OutputGroup {
+    pub path: LogicalPath,
+    pub entries: Vec<LogicalEntry>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogicalEntry {
+    pub path: LogicalPath,
     pub source: SourceFile,
+    pub requirement: RequirementKey,
+    pub expected: ExpectedEvidence,
+    pub selection: SelectionProvenance,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SelectionProvenance {
+    pub policy: MatchingPolicy,
+    pub strength: crate::resolution::MatchStrength,
+    pub assessments: Vec<crate::resolution::SourceAssessment>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PlanOutcome {
+    Ready,
+    Blocked(PlanBlockReason),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PlanBlockReason {
+    MissingContent,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BuildReport {
     pub missing_roms: Vec<MissingRom>,
     pub duplicate_matches: Vec<DuplicateMatch>,
+    pub resolutions: Vec<crate::resolution::RequirementResolution>,
     pub matched_roms: usize,
-    pub exit_code: i32,
+    pub outcome: PlanOutcome,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+impl Default for BuildReport {
+    fn default() -> Self {
+        Self {
+            missing_roms: Vec::new(),
+            duplicate_matches: Vec::new(),
+            resolutions: Vec::new(),
+            matched_roms: 0,
+            outcome: PlanOutcome::Ready,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MissingRom {
     pub game_name: String,
     pub rom_name: String,
     pub sha1: Option<Sha1Digest>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DuplicateMatch {
     pub rom_name: String,
     pub selected: SourceFile,

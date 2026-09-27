@@ -11,7 +11,7 @@ use log::{info, warn};
 use serde::Serialize;
 
 use crate::{
-    build::{planner::plan_build, writer::write_plan_with_compression},
+    build::{planner::plan_build, write_plan_with_compression},
     database::Database,
     disk::{
         self, DiskDigestScope, DiskIdentitySha1, DiskName, DiskObservation, DiskRequirement,
@@ -19,7 +19,8 @@ use crate::{
     },
     domain::{
         BuildMode, BuildReport, BuildRequest, CatalogKey, CatalogScope, ImportRunKey,
-        MatchingPolicy, PublishingSourceKey, ScanRunKey, SnapshotKey, SourceRoot, ZipCompression,
+        MatchingPolicy, MissingContentPolicy, PlanOutcome, PublishingSourceKey, ScanRunKey,
+        SnapshotKey, SourceRoot, ZipCompression,
     },
     operations,
     storage::repositories::{BuildRepository, DataFileSelector, SourceRepository},
@@ -608,15 +609,24 @@ pub fn build(
             source_root: SourceRoot::new(source_root.to_string()),
             mode: request.mode,
             matching_policy: MatchingPolicy::Sha1Compatibility,
-            dry_run: request.dry_run,
-            strict: request.strict,
+            missing_policy: if request.strict {
+                MissingContentPolicy::RequireComplete
+            } else {
+                MissingContentPolicy::AllowPartial
+            },
         },
     );
     report_build_outcome(&plan.report);
-    let exit_code = plan.report.exit_code;
+    let exit_code = match plan.report.outcome {
+        PlanOutcome::Ready => 0,
+        PlanOutcome::Blocked(_) => 2,
+    };
     let build_report = plan.report.clone();
-    let written_paths =
-        write_plan_with_compression(&plan, &request.destination_path, request.compression)?;
+    let written_paths = if request.dry_run || exit_code != 0 {
+        Vec::new()
+    } else {
+        write_plan_with_compression(&plan, &request.destination_path, request.compression)?
+    };
 
     Ok(BuildWorkflowReport {
         written_paths,
