@@ -5,11 +5,16 @@ use clap::Parser;
 
 mod logger;
 mod options;
+mod report;
 use options::{CacheCommand, Cli, Command};
 
 use mame_coalesce::{
-    app::{self, BuildWorkflowRequest, DatImportRequest, RunWorkflowRequest, SourceScanRequest},
+    app::{
+        self, BuildWorkflowRequest, CatalogImportRequest, CatalogImportStatus, DatImportRequest,
+        DiskAuditRequest, RunWorkflowRequest, SourceScanRequest,
+    },
     database::Database,
+    domain::{CatalogKey, PublishingSourceKey},
 };
 
 fn main() -> ExitCode {
@@ -56,6 +61,31 @@ fn run() -> mame_coalesce::Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Command::Cache {
+            command: CacheCommand::CatalogImport(args),
+        } => {
+            let report = app::import_catalog(
+                &database,
+                &CatalogImportRequest {
+                    document_path: args.document.clone(),
+                    format: args.format.into(),
+                    source_key: PublishingSourceKey::new(args.source_key.clone()),
+                    source_display_name: args.source_name.clone(),
+                    catalog_key: CatalogKey::new(args.catalog_key.clone()),
+                    catalog_display_name: args.catalog_name.clone(),
+                    scope: args.scope.into(),
+                },
+            )?;
+            if report.status == CatalogImportStatus::Failed {
+                eprintln!(
+                    "catalog import failed ({} diagnostics)",
+                    report.diagnostic_count
+                );
+                Ok(ExitCode::FAILURE)
+            } else {
+                Ok(ExitCode::SUCCESS)
+            }
+        }
+        Command::Cache {
             command: CacheCommand::Scan { source, jobs },
         } => {
             app::scan_source(
@@ -83,6 +113,19 @@ fn run() -> mame_coalesce::Result<ExitCode> {
                 },
             )?;
             Ok(exit_code(report.exit_code))
+        }
+        Command::Cache {
+            command: CacheCommand::Audit(args),
+        } => {
+            let report = app::audit_disks(
+                &database,
+                &DiskAuditRequest {
+                    catalog_key: args.catalog.clone(),
+                    source_path: args.source.clone(),
+                },
+            )?;
+            report::write_disk_audit(&report, args.format)?;
+            Ok(ExitCode::SUCCESS)
         }
     }
 }

@@ -29,6 +29,9 @@ pub enum Error {
     #[error("Invalid path: {0}")]
     InvalidPath(String),
 
+    #[error("no published snapshot exists for catalog {0}")]
+    CatalogNotFound(String),
+
     #[error("Invalid hash: {0}")]
     InvalidHash(String),
 

@@ -250,7 +250,7 @@ fn archive_rom_file(
     })
 }
 
-fn walk_for_files(
+pub(super) fn walk_for_files(
     dir: &Utf8Path,
     excluded_paths: &[Utf8PathBuf],
 ) -> crate::Result<Vec<Utf8PathBuf>> {

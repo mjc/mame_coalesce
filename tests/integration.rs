@@ -1051,6 +1051,7 @@ fn cli_help_commands_render_successfully() {
         vec!["build", "--help"],
         vec!["cache", "--help"],
         vec!["cache", "import", "--help"],
+        vec!["cache", "catalog-import", "--help"],
         vec!["cache", "scan", "--help"],
         vec!["cache", "build", "--help"],
     ] {
@@ -1060,6 +1061,72 @@ fn cli_help_commands_render_successfully() {
             .success()
             .stdout(contains("Usage"));
     }
+}
+
+#[test]
+fn cli_catalog_imports_mame_xml_and_audits_each_catalog() -> Result<(), Box<dyn std::error::Error>>
+{
+    let work_dir = tempfile::tempdir()?;
+    let source_dir = tempfile::tempdir()?;
+    let root = utf8_path(work_dir.path())?;
+    let database_path = root.join("cli-catalog.db");
+    let source_path = utf8_path(source_dir.path())?;
+    let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/catalog/mame");
+
+    for (document, format, source_key, catalog_key, disk_name) in [
+        (
+            fixtures.join("machine.xml"),
+            "mame-listxml",
+            "cli-machine-source",
+            "cli-machine-catalog",
+            "demo_disk",
+        ),
+        (
+            fixtures.join("software-list.xml"),
+            "mame-softwarelist-xml",
+            "cli-software-source",
+            "cli-software-catalog",
+            "demo-disk",
+        ),
+    ] {
+        let document_path = utf8_path(&document)?;
+        cargo_command()
+            .args(db_arg(&database_path))
+            .args(["cache", "catalog-import", document_path.as_str()])
+            .args(["--format", format])
+            .args(["--source-key", source_key])
+            .args(["--source-name", source_key])
+            .args(["--catalog-key", catalog_key])
+            .args(["--catalog-name", catalog_key])
+            .assert()
+            .success();
+
+        let audit = cargo_command()
+            .args(db_arg(&database_path))
+            .args([
+                "cache",
+                "audit",
+                catalog_key,
+                source_path.as_str(),
+                "--format",
+                "json",
+            ])
+            .assert()
+            .success();
+        let report: serde_json::Value = serde_json::from_slice(&audit.get_output().stdout)?;
+        assert_eq!(report["catalog_key"], catalog_key);
+        assert!(report["disks"].is_array());
+        assert!(
+            report["disks"].as_array().is_some_and(|disks| {
+                disks
+                    .iter()
+                    .any(|disk| disk["disk_name"] == disk_name && disk["state"] == "missing")
+            }),
+            "unexpected audit report: {report}"
+        );
+    }
+
+    Ok(())
 }
 
 #[test]

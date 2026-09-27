@@ -1,6 +1,6 @@
 use camino::Utf8PathBuf;
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use mame_coalesce::domain::{BuildMode, ZipCompression};
+use mame_coalesce::domain::{BuildMode, CatalogScope, ZipCompression};
 
 #[derive(Parser)]
 #[command(name = "mame_coalesce")]
@@ -49,6 +49,8 @@ pub enum CacheCommand {
         #[arg(value_name = "dat", help = "Logiqx DAT file to import")]
         dat: Utf8PathBuf,
     },
+    /// Import a MAME machine or software-list XML catalog.
+    CatalogImport(CatalogImportArgs),
     /// Refresh cached ROM-file rows for a source root.
     Scan {
         #[arg(value_name = "source", help = "ROM source directory to scan")]
@@ -58,6 +60,80 @@ pub enum CacheCommand {
     },
     /// Build from DAT and source rows already present in the cache.
     Build(CacheBuildArgs),
+    /// Audit imported disk requirements against a source directory without hashing its contents.
+    Audit(DiskAuditArgs),
+}
+
+#[derive(Clone, Debug, Args)]
+pub struct CatalogImportArgs {
+    #[arg(value_name = "document", help = "MAME XML document to import")]
+    pub document: Utf8PathBuf,
+    #[arg(long, value_enum, help = "MAME XML document format")]
+    pub format: CatalogDocumentFormatArg,
+    #[arg(long, value_name = "key", help = "Stable publishing source key")]
+    pub source_key: String,
+    #[arg(long, value_name = "name", help = "Publishing source display name")]
+    pub source_name: String,
+    #[arg(
+        long,
+        value_name = "key",
+        help = "Stable catalog key used by cache audit"
+    )]
+    pub catalog_key: String,
+    #[arg(long, value_name = "name", help = "Catalog display name")]
+    pub catalog_name: String,
+    #[arg(long, value_enum, default_value_t = CatalogScopeArg::Complete, help = "Coverage represented by this import")]
+    pub scope: CatalogScopeArg,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum CatalogDocumentFormatArg {
+    #[value(name = "mame-listxml")]
+    MachineXml,
+    #[value(name = "mame-softwarelist-xml")]
+    SoftwareListXml,
+}
+
+impl From<CatalogDocumentFormatArg> for mame_coalesce::app::CatalogDocumentFormat {
+    fn from(format: CatalogDocumentFormatArg) -> Self {
+        match format {
+            CatalogDocumentFormatArg::MachineXml => Self::MameListXml,
+            CatalogDocumentFormatArg::SoftwareListXml => Self::MameSoftwareListXml,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+pub enum CatalogScopeArg {
+    #[default]
+    Complete,
+    Unknown,
+}
+
+impl From<CatalogScopeArg> for CatalogScope {
+    fn from(scope: CatalogScopeArg) -> Self {
+        match scope {
+            CatalogScopeArg::Complete => Self::Complete,
+            CatalogScopeArg::Unknown => Self::Unknown,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Args)]
+pub struct DiskAuditArgs {
+    #[arg(value_name = "catalog-key", help = "Imported catalog key")]
+    pub catalog: String,
+    #[arg(value_name = "source", help = "Disk source directory")]
+    pub source: Utf8PathBuf,
+    #[arg(long, value_enum, default_value_t = ReportFormatArg::Text, help = "Audit report format")]
+    pub format: ReportFormatArg,
+}
+
+#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+pub enum ReportFormatArg {
+    #[default]
+    Text,
+    Json,
 }
 
 #[derive(Clone, Debug, Args)]
