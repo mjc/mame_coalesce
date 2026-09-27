@@ -49,7 +49,7 @@ fn plan_zip_entries(
         .iter()
         .filter_map(|resolution| match &resolution.status {
             ResolutionStatus::Matched { selected, .. } => Some((&resolution.requirement, selected)),
-            ResolutionStatus::AmbiguousWeak { .. }
+            ResolutionStatus::Ambiguous { .. }
             | ResolutionStatus::Conflicting { .. }
             | ResolutionStatus::Missing { .. } => None,
         })
@@ -84,7 +84,7 @@ fn build_report(resolutions: &[RequirementResolution], strict: bool) -> BuildRep
                         });
                     }
                 }
-                ResolutionStatus::AmbiguousWeak { .. }
+                ResolutionStatus::Ambiguous { .. }
                 | ResolutionStatus::Conflicting { .. }
                 | ResolutionStatus::Missing { .. } => {
                     report.missing_roms.push(MissingRom {
@@ -316,6 +316,85 @@ mod tests {
         assert_eq!(
             plan.zips[0].entries[0].source.location.path(),
             "/src-a/bare-a.rom"
+        );
+    }
+
+    #[test]
+    fn md5_tie_with_different_sha1_is_reported_missing_and_not_planned() {
+        let md5 = crate::domain::Md5Digest([5; 16]);
+        let dat_roms = [DatRom {
+            catalog_name: "dat-a".to_owned(),
+            key: RequirementKey::new(SetKey::new(CatalogKey::fresh(), "parent"), "dup.rom"),
+            parent_name: None,
+            set_metadata: crate::domain::SetMetadata::default(),
+            role: crate::domain::AssetRole::Rom,
+            component_order: Some(0),
+            expected: ExpectedEvidence {
+                scope: crate::domain::EvidenceScope::WholeAsset,
+                md5: Some(md5),
+                ..ExpectedEvidence::default()
+            },
+        }];
+        let mut first = source(
+            "/src-a",
+            "/src-a/a.rom",
+            None,
+            "sha1-a",
+            SourceKind::BareFile,
+        );
+        first.observed.md5 = Some(md5);
+        let mut second = source(
+            "/src-a",
+            "/src-a/b.rom",
+            None,
+            "sha1-b",
+            SourceKind::BareFile,
+        );
+        second.observed.md5 = Some(md5);
+        let mut build_request = request(BuildMode::ParentBundles);
+        build_request.matching_policy = MatchingPolicy::EvidenceAware;
+
+        let plan = plan_build(&dat_roms, &[first, second], &build_request);
+
+        assert_eq!(plan.report.matched_roms, 0);
+        assert_eq!(plan.report.missing_roms.len(), 1);
+        assert!(plan.report.duplicate_matches.is_empty());
+        assert!(plan.zips.is_empty());
+    }
+
+    #[test]
+    fn md5_tie_with_matching_sha1_is_reported_as_duplicate_copies() {
+        let md5 = crate::domain::Md5Digest([6; 16]);
+        let sha1 = "sha1-same";
+        let dat_roms = [DatRom {
+            catalog_name: "dat-a".to_owned(),
+            key: RequirementKey::new(SetKey::new(CatalogKey::fresh(), "parent"), "dup.rom"),
+            parent_name: None,
+            set_metadata: crate::domain::SetMetadata::default(),
+            role: crate::domain::AssetRole::Rom,
+            component_order: Some(0),
+            expected: ExpectedEvidence {
+                scope: crate::domain::EvidenceScope::WholeAsset,
+                md5: Some(md5),
+                ..ExpectedEvidence::default()
+            },
+        }];
+        let mut first = source("/src-a", "/src-a/b.rom", None, sha1, SourceKind::BareFile);
+        first.observed.md5 = Some(md5);
+        let mut second = source("/src-a", "/src-a/a.rom", None, sha1, SourceKind::BareFile);
+        second.observed.md5 = Some(md5);
+        let mut build_request = request(BuildMode::ParentBundles);
+        build_request.matching_policy = MatchingPolicy::EvidenceAware;
+
+        let plan = plan_build(&dat_roms, &[first, second], &build_request);
+
+        assert_eq!(plan.report.matched_roms, 1);
+        assert!(plan.report.missing_roms.is_empty());
+        assert_eq!(plan.report.duplicate_matches.len(), 1);
+        assert_eq!(plan.report.duplicate_matches[0].candidates.len(), 2);
+        assert_eq!(
+            plan.zips[0].entries[0].source.location.path(),
+            "/src-a/a.rom"
         );
     }
 

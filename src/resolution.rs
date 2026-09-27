@@ -77,7 +77,7 @@ pub enum ResolutionStatus {
         equivalent_copies: Vec<SourceFile>,
         assessments: Vec<SourceAssessment>,
     },
-    AmbiguousWeak {
+    Ambiguous {
         candidates: Vec<SourceAssessment>,
     },
     Conflicting {
@@ -373,8 +373,8 @@ fn resolve_one(
         .map(|(candidate, _)| *candidate)
         .collect::<Vec<_>>();
 
-    if strength == MatchStrength::CrcAndSize && strongest.len() > 1 {
-        return ResolutionStatus::AmbiguousWeak {
+    if strongest.len() > 1 && !tied_candidates_are_equivalent(strength, &strongest) {
+        return ResolutionStatus::Ambiguous {
             candidates: strongest.into_iter().cloned().collect(),
         };
     }
@@ -387,6 +387,22 @@ fn resolve_one(
             .map(|candidate| candidate.source.clone())
             .collect(),
         assessments,
+    }
+}
+
+fn tied_candidates_are_equivalent(
+    strength: MatchStrength,
+    candidates: &[&SourceAssessment],
+) -> bool {
+    match strength {
+        MatchStrength::Sha1 => true,
+        MatchStrength::Md5 => {
+            let mut sha1s = candidates
+                .iter()
+                .map(|candidate| candidate.source.observed.sha1.as_ref());
+            matches!(sha1s.next(), Some(Some(first)) if sha1s.all(|sha1| sha1 == Some(first)))
+        }
+        MatchStrength::CrcAndSize => false,
     }
 }
 
@@ -877,7 +893,7 @@ mod tests {
     }
 
     #[test]
-    fn weak_crc_and_size_matches_are_ambiguous_not_content_identity() {
+    fn crc_and_size_matches_are_ambiguous_not_content_identity() {
         let rom = requirement(ExpectedEvidence {
             size: Some(3),
             crc: Some(crate::domain::Crc32Digest([0, 0, 0, 7])),
@@ -904,7 +920,118 @@ mod tests {
 
         assert!(matches!(
             &resolutions[0].status,
-            ResolutionStatus::AmbiguousWeak { candidates } if candidates.len() == 2
+            ResolutionStatus::Ambiguous { candidates } if candidates.len() == 2
+        ));
+    }
+
+    #[test]
+    fn md5_tie_with_different_sha1_is_ambiguous() {
+        let md5 = crate::domain::Md5Digest([7; 16]);
+        let rom = requirement(ExpectedEvidence {
+            md5: Some(md5),
+            ..ExpectedEvidence::default()
+        });
+        let inventory = [
+            source(
+                "/roms/a.rom",
+                computed(
+                    None,
+                    None,
+                    Some(md5.0),
+                    Some(crate::hashes::sha1_bytes(b"content a")),
+                ),
+            ),
+            source(
+                "/roms/b.rom",
+                computed(
+                    None,
+                    None,
+                    Some(md5.0),
+                    Some(crate::hashes::sha1_bytes(b"content b")),
+                ),
+            ),
+        ];
+
+        let resolutions = resolve(
+            &[rom],
+            &inventory,
+            "catalog",
+            &SourceRoot::new("/roms"),
+            MatchingPolicy::EvidenceAware,
+        );
+
+        assert!(matches!(
+            &resolutions[0].status,
+            ResolutionStatus::Ambiguous { candidates }
+                if candidates.len() == 2
+                    && candidates.iter().all(|candidate| candidate.strength == Some(MatchStrength::Md5))
+        ));
+    }
+
+    #[test]
+    fn md5_tie_without_complete_sha1_evidence_is_ambiguous() {
+        let md5 = crate::domain::Md5Digest([8; 16]);
+        let rom = requirement(ExpectedEvidence {
+            md5: Some(md5),
+            ..ExpectedEvidence::default()
+        });
+        let inventory = [
+            source(
+                "/roms/a.rom",
+                computed(
+                    None,
+                    None,
+                    Some(md5.0),
+                    Some(crate::hashes::sha1_bytes(b"content")),
+                ),
+            ),
+            source("/roms/b.rom", computed(None, None, Some(md5.0), None)),
+        ];
+
+        let resolutions = resolve(
+            &[rom],
+            &inventory,
+            "catalog",
+            &SourceRoot::new("/roms"),
+            MatchingPolicy::EvidenceAware,
+        );
+
+        assert!(matches!(
+            &resolutions[0].status,
+            ResolutionStatus::Ambiguous { candidates } if candidates.len() == 2
+        ));
+    }
+
+    #[test]
+    fn md5_tie_with_matching_sha1_preserves_same_content_copies() {
+        let md5 = crate::domain::Md5Digest([9; 16]);
+        let sha1 = crate::hashes::sha1_bytes(b"same content");
+        let rom = requirement(ExpectedEvidence {
+            md5: Some(md5),
+            ..ExpectedEvidence::default()
+        });
+        let inventory = [
+            source("/roms/b.rom", computed(None, None, Some(md5.0), Some(sha1))),
+            source("/roms/a.rom", computed(None, None, Some(md5.0), Some(sha1))),
+        ];
+
+        let resolutions = resolve(
+            &[rom],
+            &inventory,
+            "catalog",
+            &SourceRoot::new("/roms"),
+            MatchingPolicy::EvidenceAware,
+        );
+
+        assert!(matches!(
+            &resolutions[0].status,
+            ResolutionStatus::Matched {
+                selected,
+                strength: MatchStrength::Md5,
+                equivalent_copies,
+                ..
+            } if selected.location.path() == "/roms/a.rom"
+                && equivalent_copies.len() == 2
         ));
     }
 
