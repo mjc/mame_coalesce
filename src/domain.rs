@@ -913,6 +913,12 @@ pub enum PlanOutcome {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PlanBlockReason {
     MissingContent,
+    InvalidSetSelection,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SetSelectionIssue {
+    UnknownSetName { name: SetName },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -922,6 +928,9 @@ pub struct BuildReport {
     pub resolutions: Vec<crate::resolution::RequirementResolution>,
     /// Pure layout validation findings available before an output backend is invoked.
     pub validation_issues: Vec<crate::build::validation::PlanIssue>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub set_selection_issues: Vec<SetSelectionIssue>,
     pub matched_roms: usize,
     pub outcome: PlanOutcome,
 }
@@ -1016,6 +1025,7 @@ impl Default for BuildReport {
             duplicate_matches: Vec::new(),
             resolutions: Vec::new(),
             validation_issues: Vec::new(),
+            set_selection_issues: Vec::new(),
             matched_roms: 0,
             outcome: PlanOutcome::Ready,
         }

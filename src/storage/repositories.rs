@@ -211,6 +211,27 @@ impl<'pool> BuildRepository<'pool> {
             })
             .collect()
     }
+
+    pub fn load_set_names(
+        &self,
+        selector: DataFileSelector<'_>,
+    ) -> crate::Result<std::collections::BTreeSet<crate::domain::SetName>> {
+        let mut conn = self.pool.get()?;
+        let data_file = match selector {
+            DataFileSelector::FileName(value) => schema::data_files::dsl::data_files
+                .filter(schema::data_files::dsl::file_name.eq(value))
+                .first::<DataFile>(&mut conn)?,
+            DataFileSelector::Name(value) => schema::data_files::dsl::data_files
+                .filter(schema::data_files::dsl::name.eq(value))
+                .first::<DataFile>(&mut conn)?,
+        };
+        schema::games::dsl::games
+            .filter(schema::games::dsl::data_file_id.eq(data_file.id))
+            .select(schema::games::dsl::name)
+            .load::<String>(&mut conn)
+            .map(|names| names.into_iter().map(crate::domain::SetName::new).collect())
+            .map_err(Into::into)
+    }
 }
 
 fn source_file_from_model(rom_file: RomFile) -> crate::Result<SourceFile> {
