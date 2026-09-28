@@ -94,6 +94,7 @@ impl<'plan> ValidatedPlan<'plan> {
 pub(crate) struct CheckedPlanDestination {
     path: Utf8PathBuf,
     sources: Vec<Utf8PathBuf>,
+    source_paths: BTreeMap<String, Utf8PathBuf>,
 }
 
 impl CheckedPlanDestination {
@@ -103,6 +104,17 @@ impl CheckedPlanDestination {
 
     pub(crate) fn sources(&self) -> &[Utf8PathBuf] {
         &self.sources
+    }
+
+    pub(crate) fn source_path(&self, planned_path: &str) -> crate::Result<&Utf8Path> {
+        self.source_paths
+            .get(planned_path)
+            .map(Utf8PathBuf::as_path)
+            .ok_or_else(|| {
+                crate::Error::InvalidPath(format!(
+                    "plan source was not checked before writing: {planned_path}"
+                ))
+            })
     }
 }
 
@@ -459,22 +471,22 @@ pub(crate) fn checked_plan_destination(
     destination: &Utf8Path,
 ) -> crate::Result<CheckedPlanDestination> {
     let mut source_roots = BTreeSet::new();
-    let mut source_paths = BTreeSet::new();
+    let mut source_paths = BTreeMap::new();
     for entry in plan.groups.iter().flat_map(|group| &group.entries) {
         let declared_root = Utf8Path::new(entry.source.source_root.as_str()).canonicalize_utf8()?;
-        let source_path =
-            canonicalize_destination(Utf8Path::new(source_location_path(&entry.source.location)))?;
+        let planned_path = source_location_path(&entry.source.location);
+        let source_path = canonicalize_destination(Utf8Path::new(planned_path))?;
         if !source_path.starts_with(&declared_root) {
             return Err(crate::Error::InvalidPath(format!(
                 "plan source is outside its declared source root: source={source_path} root={declared_root}"
             )));
         }
         source_roots.insert(declared_root);
-        source_paths.insert(source_path);
+        source_paths.insert(planned_path.to_owned(), source_path);
     }
 
     let mut checked_sources = source_roots.clone();
-    checked_sources.extend(source_paths);
+    checked_sources.extend(source_paths.values().cloned());
     let checked_sources = checked_sources.into_iter().collect::<Vec<_>>();
     let source_refs = checked_sources
         .iter()
@@ -484,6 +496,7 @@ pub(crate) fn checked_plan_destination(
     Ok(CheckedPlanDestination {
         path,
         sources: source_roots.into_iter().collect(),
+        source_paths,
     })
 }
 

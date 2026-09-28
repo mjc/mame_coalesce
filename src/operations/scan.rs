@@ -234,8 +234,11 @@ pub(super) fn walk_for_files(
     dir: &Utf8Path,
     excluded_paths: &[Utf8PathBuf],
 ) -> crate::Result<Vec<Utf8PathBuf>> {
+    let dir = dir
+        .canonicalize_utf8()
+        .map_err(|error| Error::InvalidPath(format!("failed to traverse source path: {error}")))?;
     collect_walked_files(
-        WalkDir::new(dir)
+        WalkDir::new(&dir)
             .into_iter()
             .filter_entry(entry_is_relevant),
         excluded_paths,
@@ -456,7 +459,10 @@ mod tests {
         assert!(
             excluded_paths.contains(&Utf8PathBuf::from(format!("{canonical_database_path}-shm")))
         );
-        assert_eq!(walk_for_files(root, &excluded_paths)?, vec![rom_path]);
+        assert_eq!(
+            walk_for_files(root, &excluded_paths)?,
+            vec![rom_path.canonicalize_utf8()?]
+        );
         Ok(())
     }
 
