@@ -79,7 +79,7 @@ parser-internal representations the public contract.
   from different catalog keys; it compares expected asset evidence and related
   source assertions without consulting local inventory or asserting possession.
   Incompatible evidence scopes remain unknown; weak matches may be candidates
-  when unambiguous, while collisions remain ambiguous. Shared assets do not
+  when unambiguous, while unresolved collisions remain ambiguous. Shared assets do not
   imply that their containing sets are identical.
 - `plan_build` and audit consume the selected catalog plus cached scan evidence
   without writing output. Audit is cached by default; explicit refresh scans
