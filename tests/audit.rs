@@ -99,6 +99,8 @@ fn audit_uses_cached_observations_by_default_and_refresh_is_explicit()
     fs::write(fixture.source.join("copy.rom"), b"changed")?;
 
     let cached = app::audit(&fixture.database, &fixture.request(AuditRefresh::Cached))?;
+    let cached_again = app::audit(&fixture.database, &fixture.request(AuditRefresh::Cached))?;
+    assert_eq!(cached.to_json()?, cached_again.to_json()?);
     assert_eq!(cached.observation_basis(), &ObservationBasis::Cached);
     assert_eq!(cached.report().matched_roms, build_plan.report.matched_roms);
     assert_eq!(cached.report().missing_roms, build_plan.report.missing_roms);

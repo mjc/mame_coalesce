@@ -62,6 +62,10 @@ explicitly rescans and persists the selected source root before resolving;
 `--matching-policy evidence-aware` opts into the
 resolver's evidence-aware conflict/ambiguity classifications. Human reports
 include expected and observed evidence and the selected or competing sources.
+To keep adversarially large inventories from multiplying report memory by the
+number of requirements, resolution retains at most 256 detailed assessments and
+256 duplicate-source examples per operation; omitted counts remain explicit in
+JSON and human reports.
 `--format json` writes a versioned audit document to stdout and keeps logs and
 progress on stderr. Audit exits `0` when all requirements match and `1` when
 requirements remain unresolved (operational failures also exit `1`). These

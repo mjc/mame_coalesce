@@ -86,7 +86,7 @@ pub fn build_report(report: &BuildWorkflowReport) {
                 "duplicate ROM match: rom={} selected={} candidates={}",
                 duplicate.rom_name,
                 duplicate.selected.display_name(),
-                duplicate.candidates.len()
+                duplicate.candidates.len() + duplicate.omitted_candidates
             );
         }
     }
@@ -150,65 +150,96 @@ pub fn audit_report(report: &AuditReport) -> String {
         build.duplicate_matches.len()
     );
     for resolution in &build.resolutions {
-        let requirement = &resolution.requirement;
-        match &resolution.status {
-            ResolutionStatus::Matched {
-                selected,
-                strength,
-                equivalent_copies,
-                ..
-            } => {
-                let _ = writeln!(
-                    output,
-                    "Matched: {}/{} <- {} ({strength:?})",
-                    requirement.game_name(),
-                    requirement.rom_name(),
-                    selected.display_name()
-                );
-                render_expected(&mut output, &requirement.expected);
-                render_observed(&mut output, &selected.observed);
-                if equivalent_copies.len() > 1 {
-                    for copy in equivalent_copies {
-                        let _ = writeln!(output, "  equivalent copy: {}", copy.display_name());
-                    }
-                }
-            }
-            ResolutionStatus::AmbiguousWeak { candidates } => {
-                let _ = writeln!(
-                    output,
-                    "Ambiguous: {}/{}",
-                    requirement.game_name(),
-                    requirement.rom_name()
-                );
-                render_expected(&mut output, &requirement.expected);
-                render_candidates(&mut output, candidates);
-            }
-            ResolutionStatus::Conflicting { candidates } => {
-                let _ = writeln!(
-                    output,
-                    "Conflicting evidence: {}/{}",
-                    requirement.game_name(),
-                    requirement.rom_name()
-                );
-                render_expected(&mut output, &requirement.expected);
-                render_candidates(&mut output, candidates);
-            }
-            ResolutionStatus::Missing {
-                reason,
-                assessments,
-            } => {
-                let _ = writeln!(
-                    output,
-                    "Missing: {}/{} ({reason:?})",
-                    requirement.game_name(),
-                    requirement.rom_name()
-                );
-                render_expected(&mut output, &requirement.expected);
-                render_candidates(&mut output, assessments);
-            }
-        }
+        render_audit_resolution(&mut output, resolution);
     }
     output
+}
+
+fn render_audit_resolution(
+    output: &mut String,
+    resolution: &mame_coalesce::resolution::RequirementResolution,
+) {
+    let requirement = &resolution.requirement;
+    match &resolution.status {
+        ResolutionStatus::Matched {
+            selected,
+            strength,
+            equivalent_copies,
+            omitted_equivalent_copies,
+            omitted_assessments,
+            ..
+        } => {
+            let _ = writeln!(
+                output,
+                "Matched: {}/{} <- {} ({strength:?})",
+                requirement.game_name(),
+                requirement.rom_name(),
+                selected.display_name()
+            );
+            render_expected(output, &requirement.expected);
+            render_observed(output, &selected.observed);
+            if equivalent_copies.len() > 1 {
+                for copy in equivalent_copies {
+                    let _ = writeln!(output, "  equivalent copy: {}", copy.display_name());
+                }
+            }
+            if *omitted_equivalent_copies > 0 || *omitted_assessments > 0 {
+                let _ = writeln!(
+                    output,
+                    "  additional evidence details omitted: copies={omitted_equivalent_copies} assessments={omitted_assessments}"
+                );
+            }
+        }
+        ResolutionStatus::AmbiguousWeak {
+            candidates,
+            omitted_candidates,
+        } => {
+            let _ = writeln!(
+                output,
+                "Ambiguous: {}/{}",
+                requirement.game_name(),
+                requirement.rom_name()
+            );
+            render_expected(output, &requirement.expected);
+            render_candidates(output, candidates);
+            render_omitted_candidates(output, *omitted_candidates);
+        }
+        ResolutionStatus::Conflicting {
+            candidates,
+            omitted_candidates,
+        } => {
+            let _ = writeln!(
+                output,
+                "Conflicting evidence: {}/{}",
+                requirement.game_name(),
+                requirement.rom_name()
+            );
+            render_expected(output, &requirement.expected);
+            render_candidates(output, candidates);
+            render_omitted_candidates(output, *omitted_candidates);
+        }
+        ResolutionStatus::Missing {
+            reason,
+            assessments,
+            omitted_assessments,
+        } => {
+            let _ = writeln!(
+                output,
+                "Missing: {}/{} ({reason:?})",
+                requirement.game_name(),
+                requirement.rom_name()
+            );
+            render_expected(output, &requirement.expected);
+            render_candidates(output, assessments);
+            render_omitted_candidates(output, *omitted_assessments);
+        }
+    }
+}
+
+fn render_omitted_candidates(output: &mut String, omitted: usize) {
+    if omitted > 0 {
+        let _ = writeln!(output, "  additional evidence details omitted: {omitted}");
+    }
 }
 
 fn render_candidates(

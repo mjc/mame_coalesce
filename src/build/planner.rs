@@ -59,15 +59,23 @@ fn plan_logical_entries(
                 selected,
                 strength,
                 assessments,
+                omitted_assessments,
                 ..
-            } => Some((resolution, selected, strength, assessments)),
+            } => Some((
+                resolution,
+                selected,
+                strength,
+                assessments,
+                omitted_assessments,
+            )),
             ResolutionStatus::Ambiguous { .. }
             | ResolutionStatus::Conflicting { .. }
             | ResolutionStatus::Missing { .. } => None,
         })
         .fold(
             BTreeMap::new(),
-            |mut entries_by_group, (resolution, selected, strength, assessments)| {
+            |mut entries_by_group,
+             (resolution, selected, strength, assessments, omitted_assessments)| {
                 let requirement = &resolution.requirement;
                 entries_by_group
                     .entry(LogicalPath::new(requirement.bundle_name(mode)))
@@ -81,6 +89,7 @@ fn plan_logical_entries(
                             policy,
                             strength: *strength,
                             assessments: assessments.clone(),
+                            omitted_assessments: *omitted_assessments,
                         },
                     });
                 entries_by_group
@@ -99,14 +108,16 @@ fn build_report(
                 ResolutionStatus::Matched {
                     selected,
                     equivalent_copies,
+                    omitted_equivalent_copies,
                     ..
                 } => {
                     report.matched_roms += 1;
-                    if equivalent_copies.len() > 1 {
+                    if equivalent_copies.len() + omitted_equivalent_copies > 1 {
                         report.duplicate_matches.push(DuplicateMatch {
                             rom_name: resolution.requirement.rom_name().to_owned(),
                             selected: selected.as_ref().clone(),
                             candidates: equivalent_copies.clone(),
+                            omitted_candidates: *omitted_equivalent_copies,
                         });
                     }
                 }

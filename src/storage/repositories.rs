@@ -136,7 +136,9 @@ impl<'pool> BuildRepository<'pool> {
             .inner_join(schema::roms::dsl::roms)
             .load::<(crate::storage::models::Game, crate::storage::models::Rom)>(&mut conn)?;
 
-        let catalog_key = CatalogKey::fresh();
+        // Legacy DAT rows have no persisted catalog key, so use their stable database identity
+        // instead of generating a new requirement identity for each query.
+        let catalog_key = CatalogKey::new(format!("legacy-data-file:{}", data_file.id));
         rows.into_iter()
             .map(|(game, rom)| {
                 let size = u64::try_from(rom.size).map_err(|_| {

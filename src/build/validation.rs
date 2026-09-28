@@ -676,6 +676,7 @@ mod tests {
                 policy: crate::domain::MatchingPolicy::Sha1Compatibility,
                 strength: crate::resolution::MatchStrength::Sha1,
                 assessments: Vec::new(),
+                omitted_assessments: 0,
             },
         }
     }

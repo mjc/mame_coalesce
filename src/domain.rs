@@ -941,6 +941,8 @@ pub struct SelectionProvenance {
     pub policy: MatchingPolicy,
     pub strength: crate::resolution::MatchStrength,
     pub assessments: Vec<crate::resolution::SourceAssessment>,
+    #[serde(default)]
+    pub omitted_assessments: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1072,6 +1074,8 @@ pub struct DuplicateMatch {
     pub rom_name: String,
     pub selected: SourceFile,
     pub candidates: Vec<SourceFile>,
+    #[serde(default)]
+    pub omitted_candidates: usize,
 }
 
 #[cfg(test)]
