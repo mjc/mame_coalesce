@@ -996,7 +996,13 @@ mod tests {
         conn.batch_execute("PRAGMA foreign_keys = ON")?;
         let migrations = MIGRATIONS.migrations()?;
         conn.applied_migrations()?;
-        for migration in &migrations[..migrations.len() - 1] {
+        let asset_extension_migration = migrations
+            .iter()
+            .position(|migration| {
+                migration.name().to_string() == "2026-09-27-000009_asset_extension_ownership"
+            })
+            .ok_or("asset extension ownership migration not found")?;
+        for migration in &migrations[..asset_extension_migration] {
             conn.run_migration(migration.as_ref())?;
         }
         conn.batch_execute(
@@ -1041,7 +1047,9 @@ mod tests {
                   source_line, source_column)
                  VALUES ('no-intro-snapshot', 'rom', 'entry', 'element:future', '{}', 11, 4);",
         )?;
-        conn.run_pending_migrations(MIGRATIONS)?;
+        for migration in &migrations[asset_extension_migration..] {
+            conn.run_migration(migration.as_ref())?;
+        }
 
         let owner = sql_query(
             "SELECT owner_set_name AS value FROM snapshot_extensions \
