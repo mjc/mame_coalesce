@@ -1594,7 +1594,7 @@ fn remove_directory_at(parent: &File, name: &str, parent_path: &Utf8Path) -> io:
         // symlinks before staging; concurrent local filesystem changes are outside
         // the writer's threat model.
         let _ = parent;
-        return fs::remove_dir_all(parent_path.join(name));
+        fs::remove_dir_all(parent_path.join(name))
     }
     #[cfg(not(target_os = "macos"))]
     {
