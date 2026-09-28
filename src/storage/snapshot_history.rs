@@ -1,14 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use diesel::{
-    QueryableByName, RunQueryDsl, sql_query,
+    Connection, QueryableByName, RunQueryDsl, sql_query,
     sql_types::{BigInt, Binary, Nullable, Text},
 };
 
 use crate::domain::{
-    CatalogKey, CatalogRecordKind, CatalogScope, CatalogSnapshotDiff, CatalogSnapshotEntry,
-    RelationshipEndpoint, RelationshipExplanation, SnapshotKey, SnapshotRecordDiff,
-    SnapshotRecordStatus, SnapshotRequirementChange,
+    CatalogKey, CatalogScope, CatalogSnapshotDiff, CatalogSnapshotEntry, RelationshipEndpoint,
+    RelationshipExplanation, SnapshotKey, SnapshotRecordDiff, SnapshotRecordStatus,
+    SnapshotRequirementChange,
 };
 
 use super::db::Pool;
@@ -113,86 +113,122 @@ pub fn diff(
     current: &SnapshotKey,
 ) -> crate::Result<CatalogSnapshotDiff> {
     let mut conn = pool.get()?;
-    let previous_header = snapshot(&mut conn, previous)?;
-    let current_header = snapshot(&mut conn, current)?;
-    if previous_header.catalog_key != current_header.catalog_key {
-        return Err(crate::Error::InvalidPath(
-            "snapshot history can only compare snapshots from the same catalog".to_owned(),
-        ));
-    }
+    conn.transaction::<_, crate::Error, _>(|conn| {
+        let previous_header = snapshot(conn, previous)?;
+        let current_header = snapshot(conn, current)?;
+        if previous_header.catalog_key != current_header.catalog_key {
+            return Err(crate::Error::InvalidPath(
+                "snapshot history can only compare snapshots from the same catalog".to_owned(),
+            ));
+        }
 
-    let same_scope = comparable_scope(&previous_header, &current_header);
-    let previous_records = records(&mut conn, previous)?;
-    let current_records = records(&mut conn, current)?;
-    let explanations = super::relationships::explain_all(pool)?;
-    let mut names = BTreeSet::new();
-    names.extend(previous_records.sets.keys().cloned());
-    names.extend(current_records.sets.keys().cloned());
+        let same_scope = comparable_scope(&previous_header, &current_header);
+        let previous_records = records(conn, previous)?;
+        let current_records = records(conn, current)?;
+        let explanations =
+            super::relationships::explain_catalog_sets_for_snapshots(conn, previous, current)?;
+        let mut evidence_by_set = relationship_evidence_by_set(explanations, previous, current);
+        let mut names = BTreeSet::new();
+        names.extend(previous_records.sets.keys().cloned());
+        names.extend(current_records.sets.keys().cloned());
 
-    let records = names
-        .into_iter()
-        .map(|name| {
-            let before = previous_records.sets.get(&name);
-            let after = current_records.sets.get(&name);
-            let relationship_evidence = explanations
-                .iter()
-                .filter(|explanation| touches_set(explanation, previous, current, &name))
-                .cloned()
-                .collect();
-            let (status, metadata_changed, regrouped, requirement_changes) = match (before, after) {
-                (None, None) => unreachable!("name came from one of the set maps"),
-                (None, Some(_)) if scopes_cover_set(&previous_header, &current_header, &name) => (
-                    SnapshotRecordStatus::AddedWithinScope,
-                    false,
-                    false,
-                    Vec::new(),
-                ),
-                (Some(_), None) if scopes_cover_set(&previous_header, &current_header, &name) => (
-                    SnapshotRecordStatus::RemovedWithinScope,
-                    false,
-                    false,
-                    Vec::new(),
-                ),
-                (None, _) | (_, None) => (
-                    absence_status(&previous_header, &current_header, &name),
-                    false,
-                    false,
-                    Vec::new(),
-                ),
-                (Some(before), Some(after)) => {
-                    let metadata_changed = set_metadata(&previous_records, &name, before)
-                        != set_metadata(&current_records, &name, after);
-                    let regrouped = before.parent_name != after.parent_name;
-                    let requirement_changes = requirement_changes(
-                        previous_records.requirements.get(&name),
-                        current_records.requirements.get(&name),
-                    );
-                    let status = if metadata_changed || regrouped || !requirement_changes.is_empty()
-                    {
-                        SnapshotRecordStatus::Changed
-                    } else {
-                        SnapshotRecordStatus::Unchanged
+        let records = names
+            .into_iter()
+            .map(|name| {
+                let before = previous_records.sets.get(&name);
+                let after = current_records.sets.get(&name);
+                let relationship_evidence = evidence_by_set.remove(&name).unwrap_or_default();
+                let (status, metadata_changed, regrouped, requirement_changes) =
+                    match (before, after) {
+                        (None, None) => unreachable!("name came from one of the set maps"),
+                        (None, Some(_))
+                            if scopes_cover_set(&previous_header, &current_header, &name) =>
+                        {
+                            (
+                                SnapshotRecordStatus::AddedWithinScope,
+                                false,
+                                false,
+                                Vec::new(),
+                            )
+                        }
+                        (Some(_), None)
+                            if scopes_cover_set(&previous_header, &current_header, &name) =>
+                        {
+                            (
+                                SnapshotRecordStatus::RemovedWithinScope,
+                                false,
+                                false,
+                                Vec::new(),
+                            )
+                        }
+                        (None, _) | (_, None) => (
+                            absence_status(&previous_header, &current_header, &name),
+                            false,
+                            false,
+                            Vec::new(),
+                        ),
+                        (Some(before), Some(after)) => {
+                            let metadata_changed = set_metadata(&previous_records, &name, before)
+                                != set_metadata(&current_records, &name, after);
+                            let regrouped = before.parent_name != after.parent_name;
+                            let requirement_changes = requirement_changes(
+                                previous_records.requirements.get(&name),
+                                current_records.requirements.get(&name),
+                            );
+                            let status =
+                                if metadata_changed || regrouped || !requirement_changes.is_empty()
+                                {
+                                    SnapshotRecordStatus::Changed
+                                } else {
+                                    SnapshotRecordStatus::Unchanged
+                                };
+                            (status, metadata_changed, regrouped, requirement_changes)
+                        }
                     };
-                    (status, metadata_changed, regrouped, requirement_changes)
+                SnapshotRecordDiff {
+                    set_name: name,
+                    status,
+                    metadata_changed,
+                    regrouped,
+                    requirement_changes,
+                    relationship_evidence,
                 }
-            };
-            SnapshotRecordDiff {
-                set_name: name,
-                status,
-                metadata_changed,
-                regrouped,
-                requirement_changes,
-                relationship_evidence,
-            }
-        })
-        .collect();
+            })
+            .collect();
 
-    Ok(CatalogSnapshotDiff {
-        previous: previous.clone(),
-        current: current.clone(),
-        same_scope,
-        records,
+        Ok(CatalogSnapshotDiff {
+            previous: previous.clone(),
+            current: current.clone(),
+            same_scope,
+            records,
+        })
     })
+}
+
+fn relationship_evidence_by_set(
+    explanations: Vec<RelationshipExplanation>,
+    previous: &SnapshotKey,
+    current: &SnapshotKey,
+) -> BTreeMap<String, Vec<RelationshipExplanation>> {
+    let mut evidence_by_set = BTreeMap::<String, Vec<RelationshipExplanation>>::new();
+    for explanation in explanations {
+        let mut names = BTreeSet::new();
+        for endpoint in [&explanation.claim.subject, &explanation.claim.target] {
+            if let RelationshipEndpoint::CatalogRecord(record) = endpoint
+                && (&record.snapshot == previous || &record.snapshot == current)
+                && record.kind == crate::domain::CatalogRecordKind::Set
+            {
+                names.insert(record.key.as_str().to_owned());
+            }
+        }
+        for name in names {
+            evidence_by_set
+                .entry(name)
+                .or_default()
+                .push(explanation.clone());
+        }
+    }
+    evidence_by_set
 }
 
 pub fn history(pool: &Pool, catalog: &CatalogKey) -> crate::Result<Vec<CatalogSnapshotEntry>> {
@@ -506,21 +542,4 @@ fn set_metadata(records: &CatalogRecords, name: &str, set: &SetRow) -> serde_jso
             })
             .collect::<Vec<_>>(),
     })
-}
-
-fn touches_set(
-    explanation: &RelationshipExplanation,
-    previous: &SnapshotKey,
-    current: &SnapshotKey,
-    name: &str,
-) -> bool {
-    let endpoint_matches = |endpoint: &RelationshipEndpoint| match endpoint {
-        RelationshipEndpoint::CatalogRecord(record) => {
-            (&record.snapshot == previous || &record.snapshot == current)
-                && record.kind == CatalogRecordKind::Set
-                && record.key.as_str() == name
-        }
-        _ => false,
-    };
-    endpoint_matches(&explanation.claim.subject) || endpoint_matches(&explanation.claim.target)
 }

@@ -2433,6 +2433,7 @@ fn snapshot_diff_is_order_independent_and_rejects_cross_catalog_name_matching()
     let first_key = first.snapshot_key.ok_or("first snapshot missing")?;
     let second_key = second.snapshot_key.ok_or("second snapshot missing")?;
     let diff = app::diff_catalog_snapshots(&database, &first_key, &second_key)?;
+    assert_eq!(diff.records.len(), 2);
     assert!(
         diff.records
             .iter()

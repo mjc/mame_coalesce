@@ -350,6 +350,57 @@ pub fn explain_all(pool: &Pool) -> crate::Result<Vec<RelationshipExplanation>> {
          FROM relationship_reviews ORDER BY review_id",
     )
     .load::<ReviewRow>(&mut conn)?;
+    build_explanations(rows, reviews)
+}
+
+pub fn explain_catalog_sets_for_snapshots(
+    conn: &mut SqliteConnection,
+    previous: &SnapshotKey,
+    current: &SnapshotKey,
+) -> crate::Result<Vec<RelationshipExplanation>> {
+    let rows = sql_query(
+        "SELECT a.assertion_key, a.relation_type, a.origin, \
+                a.subject_snapshot_key, a.subject_kind, a.subject_key, \
+                a.target_snapshot_key, a.target_kind, a.target_key, \
+                a.source_snapshot_key, a.source_field, a.source_line, a.source_column, \
+                a.evidence_json, a.rule_version, a.supporting_assertion_keys_json, \
+                ps.source_key, ps.display_name AS source_name, \
+                s.document_key, s.declared_version, pi.parser_name, pi.parser_version, pi.rules_version \
+         FROM relationship_assertions a \
+         LEFT JOIN catalog_snapshots s ON s.snapshot_key = a.source_snapshot_key \
+         LEFT JOIN catalogs c ON c.catalog_key = s.catalog_key \
+         LEFT JOIN publishing_sources ps ON ps.source_key = c.source_key \
+         LEFT JOIN parser_interpretations pi ON pi.interpretation_key = s.interpretation_key \
+         WHERE (a.subject_kind = 'catalog_set' AND a.subject_snapshot_key IN (?, ?)) \
+            OR (a.target_kind = 'catalog_set' AND a.target_snapshot_key IN (?, ?)) \
+         ORDER BY a.relation_type, a.source_snapshot_key, a.subject_kind, a.subject_key, \
+                  a.target_kind, a.target_key, a.assertion_key",
+    )
+    .bind::<Text, _>(previous.as_str())
+    .bind::<Text, _>(current.as_str())
+    .bind::<Text, _>(previous.as_str())
+    .bind::<Text, _>(current.as_str())
+    .load::<ExplanationRow>(conn)?;
+    let reviews = sql_query(
+        "SELECT r.assertion_key, r.decision, r.note, r.superseded_by_assertion_key, r.created_at \
+         FROM relationship_reviews r \
+         JOIN relationship_assertions a ON a.assertion_key = r.assertion_key \
+         WHERE (a.subject_kind = 'catalog_set' AND a.subject_snapshot_key IN (?, ?)) \
+            OR (a.target_kind = 'catalog_set' AND a.target_snapshot_key IN (?, ?)) \
+         ORDER BY r.review_id",
+    )
+    .bind::<Text, _>(previous.as_str())
+    .bind::<Text, _>(current.as_str())
+    .bind::<Text, _>(previous.as_str())
+    .bind::<Text, _>(current.as_str())
+    .load::<ReviewRow>(conn)?;
+    build_explanations(rows, reviews)
+}
+
+fn build_explanations(
+    rows: Vec<ExplanationRow>,
+    reviews: Vec<ReviewRow>,
+) -> crate::Result<Vec<RelationshipExplanation>> {
     let mut history = std::collections::BTreeMap::<String, Vec<RelationshipReviewEvent>>::new();
     for review in reviews {
         history

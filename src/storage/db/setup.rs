@@ -1049,25 +1049,9 @@ mod tests {
                  VALUES ('snapshot', 'rom', 'rom.bin', 'future', '\"value\"', 2, 3),
                         ('snapshot', 'rom', 'rom.bin', 'future', '\"value\"', 2, 3),
                         ('snapshot', 'rom', 'rom.bin', 'element:future', '{}', 3, 4),
-                        ('snapshot', 'device_ref', 'target', 'future', '\"one\"', 4, 5);
-             INSERT INTO parser_interpretations (interpretation_key, format)
-                 VALUES ('no-intro-interpretation', 'no-intro-pc-xml');
-             INSERT INTO catalog_snapshots
-                 (snapshot_key, catalog_key, document_key, interpretation_key, scope_kind)
-                 VALUES ('no-intro-snapshot', 'catalog', 'document', 'no-intro-interpretation', 'unknown');
-             INSERT INTO snapshot_sets
-                 (snapshot_key, set_name, metadata_json, source_line, source_column)
-                 VALUES ('no-intro-snapshot', 'entry', '{}', 9, 1);
-             INSERT INTO asset_requirements
-                 (snapshot_key, set_name, component_order, asset_name, role,
-                  evidence_scope, evidence_provenance, source_line, source_column)
-                 VALUES ('no-intro-snapshot', 'entry', 0, 'no-intro.bin', 'rom', 'whole_asset',
-                         'source_declared', 10, 2);
-             INSERT INTO snapshot_extensions
-                 (snapshot_key, record_kind, record_name, field_name, raw_value_json,
-                  source_line, source_column)
-                 VALUES ('no-intro-snapshot', 'rom', 'entry', 'element:future', '{}', 11, 4);",
+                        ('snapshot', 'device_ref', 'target', 'future', '\"one\"', 4, 5);",
         )?;
+        insert_legacy_format_extension_fixtures(&mut conn)?;
         for migration in &migrations[asset_extension_migration..] {
             conn.run_migration(migration.as_ref())?;
         }
@@ -1094,17 +1078,69 @@ mod tests {
         .get_result::<CountRow>(&mut conn)?
         .count;
         assert_eq!(duplicate_owner_count, 2);
-        let no_intro_owner = sql_query(
-            "SELECT owner_set_name AS value FROM snapshot_extensions \
-             WHERE snapshot_key = 'no-intro-snapshot'",
-        )
-        .get_result::<TextRow>(&mut conn)?;
-        assert_eq!(no_intro_owner.value, "entry");
+        assert_legacy_format_extension_ownership(&mut conn)?;
         assert!(conn
             .batch_execute(
                 "UPDATE snapshot_extensions SET raw_value_json = '\"changed\"' WHERE field_name = 'future';",
             )
             .is_err());
+        Ok(())
+    }
+
+    fn insert_legacy_format_extension_fixtures(conn: &mut SqliteConnection) -> QueryResult<()> {
+        conn.batch_execute(
+            "INSERT INTO parser_interpretations (interpretation_key, format)
+                 VALUES ('no-intro-interpretation', 'no-intro-pc-xml');
+             INSERT INTO catalog_snapshots
+                 (snapshot_key, catalog_key, document_key, interpretation_key, scope_kind)
+                 VALUES ('no-intro-snapshot', 'catalog', 'document', 'no-intro-interpretation', 'unknown');
+             INSERT INTO snapshot_sets
+                 (snapshot_key, set_name, metadata_json, source_line, source_column)
+                 VALUES ('no-intro-snapshot', 'entry', '{}', 9, 1);
+             INSERT INTO asset_requirements
+                 (snapshot_key, set_name, component_order, asset_name, role,
+                  evidence_scope, evidence_provenance, source_line, source_column)
+                 VALUES ('no-intro-snapshot', 'entry', 0, 'no-intro.bin', 'rom', 'whole_asset',
+                         'source_declared', 10, 2);
+             INSERT INTO snapshot_extensions
+                 (snapshot_key, record_kind, record_name, field_name, raw_value_json,
+                  source_line, source_column)
+                 VALUES ('no-intro-snapshot', 'rom', 'no-intro.bin', 'element:future', '{}', 11, 4);
+             INSERT INTO parser_interpretations (interpretation_key, format)
+                 VALUES ('logiqx-interpretation', 'logiqx');
+             INSERT INTO catalog_snapshots
+                 (snapshot_key, catalog_key, document_key, interpretation_key, scope_kind)
+                 VALUES ('logiqx-snapshot', 'catalog', 'document', 'logiqx-interpretation', 'unknown');
+             INSERT INTO snapshot_sets
+                 (snapshot_key, set_name, metadata_json, source_line, source_column)
+                 VALUES ('logiqx-snapshot', 'owner', '{\"device_refs\":[\"target\"]}', 1, 1),
+                        ('logiqx-snapshot', 'target', '{}', 8, 1);
+             INSERT INTO snapshot_extensions
+                 (snapshot_key, record_kind, record_name, field_name, raw_value_json,
+                  source_line, source_column)
+                 VALUES ('logiqx-snapshot', 'document', 'target', 'future', '\"one\"', 4, 5);",
+        )
+    }
+
+    fn assert_legacy_format_extension_ownership(conn: &mut SqliteConnection) -> QueryResult<()> {
+        let no_intro_owner = sql_query(
+            "SELECT owner_set_name AS value FROM snapshot_extensions \
+             WHERE snapshot_key = 'no-intro-snapshot'",
+        )
+        .get_result::<TextRow>(conn)?;
+        assert_eq!(no_intro_owner.value, "entry");
+        let no_intro_component = sql_query(
+            "SELECT owner_component_order AS value FROM snapshot_extensions \
+             WHERE snapshot_key = 'no-intro-snapshot'",
+        )
+        .get_result::<TextRow>(conn)?;
+        assert_eq!(no_intro_component.value, "0");
+        let logiqx_owner = sql_query(
+            "SELECT owner_set_name AS value FROM snapshot_extensions \
+             WHERE snapshot_key = 'logiqx-snapshot'",
+        )
+        .get_result::<TextRow>(conn)?;
+        assert_eq!(logiqx_owner.value, "owner");
         Ok(())
     }
 
