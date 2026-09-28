@@ -109,10 +109,10 @@ and `2` strict-missing behavior.
 Evidence-aware matching ranks SHA1 above MD5 above CRC-plus-size. It may fall
 back to a weaker digest only when the observed stronger digest does not
 contradict the catalog; a stronger contradiction vetoes that candidate. A
-unique CRC-plus-size candidate is classified as weak evidence, while distinct
-candidates that stronger evidence cannot distinguish remain ambiguous. The
-default SHA1-compatibility policy is unchanged and does not use those fallback
-matches.
+unique CRC-plus-size candidate is classified as weak evidence, while collisions
+remain ambiguous unless consistent stronger evidence establishes equivalent
+copies. The default SHA1-compatibility policy is unchanged and does not use
+those fallback matches.
 
 ZIP compression defaults to deflate for compatibility. Use `--compression store`
 when profiling or when faster, larger ZIP output is preferred.
