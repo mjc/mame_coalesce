@@ -167,6 +167,7 @@ enum ArtifactPhase {
     Write,
     Finalize,
     Replace,
+    StagedDirectorySync,
     DirectorySync,
 }
 
@@ -620,7 +621,12 @@ impl SecureOutputDirectory {
         Ok((parent, name, parent_path))
     }
 
-    fn create_directory_file(&self, directory: &File, relative: &str) -> crate::Result<File> {
+    fn create_directory_file(
+        &self,
+        directory: &File,
+        relative: &str,
+        staged_directories: &mut BTreeMap<Utf8PathBuf, File>,
+    ) -> crate::Result<File> {
         use rustix::{
             fs::{self, Mode, OFlags},
             io::Errno,
@@ -635,6 +641,7 @@ impl SecureOutputDirectory {
             )));
         };
         let mut parent = directory.try_clone()?;
+        let mut parent_relative = Utf8PathBuf::new();
         for component in &components[..components.len() - 1] {
             let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW;
             let next = match fs::openat(parent.as_fd(), *component, flags, Mode::empty()) {
@@ -651,6 +658,10 @@ impl SecureOutputDirectory {
                 Err(error) => return Err(std::io::Error::from(error).into()),
             };
             parent = File::from(next);
+            parent_relative.push(component);
+            staged_directories
+                .entry(parent_relative.clone())
+                .or_insert(parent.try_clone()?);
         }
         let file = fs::openat(
             parent.as_fd(),
@@ -936,15 +947,25 @@ fn write_directory_group(
 ) -> crate::Result<()> {
     let session = SourceSession::open(&group.entries, artifact.checked_destination)?;
     let staged = stage_archive_sources(&session, artifact)?;
+    let mut staged_directories = BTreeMap::from([(Utf8PathBuf::new(), directory.try_clone()?)]);
     for (entry, source) in group.entries.iter().zip(session.resolved) {
         artifact.output_root.ensure_directory_disjoint(directory)?;
         (artifact.hook)(artifact.artifact_index, ArtifactPhase::Write)?;
-        let mut output = artifact
-            .output_root
-            .create_directory_file(directory, entry.path.as_str())?;
+        let mut output = artifact.output_root.create_directory_file(
+            directory,
+            entry.path.as_str(),
+            &mut staged_directories,
+        )?;
         write_entry_content(entry, source, &staged, &mut output, artifact)?;
         output.flush()?;
         output.sync_all()?;
+    }
+    let mut staged_directories = staged_directories.into_iter().collect::<Vec<_>>();
+    staged_directories
+        .sort_by_key(|(path, _)| std::cmp::Reverse(path.as_str().matches('/').count()));
+    for (_, directory) in staged_directories {
+        (artifact.hook)(artifact.artifact_index, ArtifactPhase::StagedDirectorySync)?;
+        directory.sync_all()?;
     }
     Ok(())
 }
@@ -2117,6 +2138,55 @@ mod tests {
         assert_eq!(results[0].outcome, ArtifactOutcome::Completed);
         assert_eq!(fs::read(existing_group.join("new.rom"))?, b"new bytes");
         assert!(!existing_group.join("old.rom").exists());
+        assert_eq!(fs::read_dir(destination.join("nested"))?.count(), 1);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn staged_directory_sync_failure_preserves_existing_output()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let root = utf8_path(temp_dir.path())?;
+        let source_root = root.join("sources");
+        fs::create_dir(&source_root)?;
+        let source_path = source_root.join("source.rom");
+        fs::write(&source_path, b"new bytes")?;
+
+        let destination = root.join("output");
+        let existing_group = destination.join("nested/set");
+        fs::create_dir_all(&existing_group)?;
+        fs::write(existing_group.join("old.rom"), b"old bytes")?;
+        let plan = BuildPlan {
+            groups: vec![OutputGroup {
+                path: LogicalPath::new("nested/set"),
+                entries: vec![logical_entry("subdir/new.rom", source_file(&source_path))],
+            }],
+            report: BuildReport::default(),
+        };
+        let mut hook = |_, phase| {
+            if phase == ArtifactPhase::StagedDirectorySync {
+                Err(io::Error::other("injected staged directory sync failure"))
+            } else {
+                Ok(())
+            }
+        };
+
+        let results = write_plan_with_hook(
+            &plan,
+            &destination,
+            OutputContainer::Directory,
+            file_options(ZipCompression::Deflate),
+            &mut hook,
+        )?;
+
+        assert!(matches!(
+            results.first().map(|result| &result.outcome),
+            Some(ArtifactOutcome::Failed { error })
+                if error.contains("injected staged directory sync failure")
+        ));
+        assert_eq!(fs::read(existing_group.join("old.rom"))?, b"old bytes");
+        assert!(!existing_group.join("subdir/new.rom").exists());
         assert_eq!(fs::read_dir(destination.join("nested"))?.count(), 1);
         Ok(())
     }
