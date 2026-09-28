@@ -176,11 +176,8 @@ impl SnapshotData {
                         source_field: "sampleof".to_owned(),
                         target_name: name.to_owned(),
                         location,
-                    }),
-                ]
-                .into_iter()
-                .flatten()
-                .chain(
+                    }))
+                    .chain(
                     game.device_refs()
                         .zip(device_ref_locations)
                         .map(|(name, location)| SnapshotDependency {
@@ -188,8 +185,8 @@ impl SnapshotData {
                             target_name: name.to_owned(),
                             location: *location,
                         }),
-                )
-                .collect(),
+                    )
+                    .collect(),
                 metadata: serde_json::json!({"source_file": game.sourcefile_opt(), "is_bios": game.isbios_opt(), "rom_of": game.romof_opt(), "sample_of": game.sampleof_opt(), "board": game.board_opt(), "rebuild_to": game.rebuildto_opt(), "description": game.description_opt(), "year": game.year_opt(), "manufacturer": game.manufacturer_opt(), "device_refs": game.device_refs().collect::<Vec<_>>()}),
                 location, assets,
             });

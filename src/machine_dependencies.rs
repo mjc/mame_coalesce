@@ -66,6 +66,12 @@ pub struct MachineDependencyCatalog {
     pub sets: Vec<MachineSet>,
 }
 
+struct DependencyTraversalFrame {
+    name: SetName,
+    dependencies: Vec<MachineDependency>,
+    next_dependency: usize,
+}
+
 /// How confidently absence from this snapshot can be interpreted.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "sets", rename_all = "snake_case")]
@@ -117,34 +123,88 @@ impl MachineDependencyCatalog {
             edges: BTreeSet::new(),
             diagnostics: BTreeSet::new(),
         };
-        let mut visiting = Vec::new();
+        let mut active = Vec::new();
+        let mut active_positions = BTreeMap::new();
         let mut visited = BTreeSet::new();
-        Self::visit(
-            root,
+        let mut frames = Vec::new();
+        if let Some(frame) = Self::enter(
+            root.clone(),
             &self.completeness,
             &by_name,
-            &mut visiting,
+            &mut active,
+            &mut active_positions,
             &mut visited,
             &mut result,
-        );
+        ) {
+            frames.push(frame);
+        }
+
+        while !frames.is_empty() {
+            let frame_complete = frames
+                .last()
+                .is_some_and(|frame| frame.next_dependency == frame.dependencies.len());
+            if frame_complete {
+                if let Some(frame) = frames.pop() {
+                    let active_name = active.pop();
+                    debug_assert_eq!(active_name.as_ref(), Some(&frame.name));
+                    active_positions.remove(&frame.name);
+                }
+                continue;
+            }
+
+            let (from, dependency) = {
+                let Some(frame) = frames.last_mut() else {
+                    break;
+                };
+                let Some(dependency) = frame.dependencies.get(frame.next_dependency).cloned()
+                else {
+                    continue;
+                };
+                frame.next_dependency += 1;
+                (frame.name.clone(), dependency)
+            };
+            result.edges.insert(ResolvedMachineDependency {
+                from,
+                to: dependency.target.clone(),
+                kind: dependency.kind,
+                target_is_bios: by_name
+                    .get(&dependency.target)
+                    .is_some_and(|targets| targets.len() == 1 && targets[0].is_bios),
+                target_is_device: by_name
+                    .get(&dependency.target)
+                    .is_some_and(|targets| targets.len() == 1 && targets[0].is_device),
+            });
+            if let Some(frame) = Self::enter(
+                dependency.target,
+                &self.completeness,
+                &by_name,
+                &mut active,
+                &mut active_positions,
+                &mut visited,
+                &mut result,
+            ) {
+                frames.push(frame);
+            }
+        }
         result
     }
 
-    fn visit(
-        name: &SetName,
+    fn enter(
+        name: SetName,
         completeness: &SnapshotCompleteness,
         by_name: &BTreeMap<&SetName, Vec<&MachineSet>>,
-        visiting: &mut Vec<SetName>,
+        active: &mut Vec<SetName>,
+        active_positions: &mut BTreeMap<SetName, usize>,
         visited: &mut BTreeSet<SetName>,
         result: &mut DependencyClosure,
-    ) {
-        let Some(matches) = by_name.get(name) else {
+    ) -> Option<DependencyTraversalFrame> {
+        let Some(matches) = by_name.get(&name) else {
             result.diagnostics.insert(absence_diagnostic(
                 completeness,
-                name,
-                visiting.last().cloned(),
+                &name,
+                active.last().cloned(),
             ));
-            return;
+            return None;
         };
         if matches.len() != 1 {
             result
@@ -152,25 +212,26 @@ impl MachineDependencyCatalog {
                 .insert(DependencyDiagnostic::AmbiguousSet {
                     name: name.clone(),
                     matches: matches.len(),
-                    required_by: visiting.last().cloned(),
+                    required_by: active.last().cloned(),
                 });
-            return;
+            return None;
         }
-        if let Some(cycle_start) = visiting.iter().position(|ancestor| ancestor == name) {
-            let mut cycle = visiting[cycle_start..].to_vec();
+        if let Some(&cycle_start) = active_positions.get(&name) {
+            let mut cycle = active[cycle_start..].to_vec();
             cycle.push(name.clone());
             result
                 .diagnostics
                 .insert(DependencyDiagnostic::Cycle { path: cycle });
-            return;
+            return None;
         }
         if !visited.insert(name.clone()) {
-            return;
+            return None;
         }
 
         let set = matches[0];
         result.sets.insert(name.clone());
-        visiting.push(name.clone());
+        active_positions.insert(name.clone(), active.len());
+        active.push(name.clone());
         for (field, target) in &set.unsupported_relationships {
             result
                 .diagnostics
@@ -182,28 +243,11 @@ impl MachineDependencyCatalog {
         }
         let mut dependencies = set.dependencies.clone();
         dependencies.sort();
-        for dependency in &dependencies {
-            result.edges.insert(ResolvedMachineDependency {
-                from: name.clone(),
-                to: dependency.target.clone(),
-                kind: dependency.kind,
-                target_is_bios: by_name
-                    .get(&dependency.target)
-                    .is_some_and(|targets| targets.len() == 1 && targets[0].is_bios),
-                target_is_device: by_name
-                    .get(&dependency.target)
-                    .is_some_and(|targets| targets.len() == 1 && targets[0].is_device),
-            });
-            Self::visit(
-                &dependency.target,
-                completeness,
-                by_name,
-                visiting,
-                visited,
-                result,
-            );
-        }
-        visiting.pop();
+        Some(DependencyTraversalFrame {
+            name,
+            dependencies,
+            next_dependency: 0,
+        })
     }
 }
 
@@ -357,6 +401,29 @@ mod tests {
             second_result.sets,
             BTreeSet::from([SetName::new("bios"), SetName::new("second")])
         );
+    }
+
+    #[test]
+    fn resolves_deep_dependency_chains_without_recursive_stack_growth() {
+        const DEPTH: usize = 16_384;
+
+        let sets = (0..DEPTH)
+            .map(|index| {
+                let mut set = MachineSet::new(format!("set-{index}"));
+                if index + 1 < DEPTH {
+                    set.dependencies.push(edge(
+                        MachineDependencyKind::RomOf,
+                        &format!("set-{}", index + 1),
+                    ));
+                }
+                set
+            })
+            .collect();
+
+        let result = catalog(sets).resolve(&SetName::new("set-0"));
+
+        assert_eq!(result.sets.len(), DEPTH);
+        assert!(result.diagnostics.is_empty());
     }
 
     #[test]

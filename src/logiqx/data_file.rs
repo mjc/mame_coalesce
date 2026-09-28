@@ -194,7 +194,9 @@ fn validate_xml(bytes: &[u8]) -> crate::Result<XmlSourceMap> {
                         }
                     }
                     "device_ref" => {
-                        if let Some(index) = current_game {
+                        if let Some((index, game_depth)) = current_game
+                            && game_depth + 1 == element_depth
+                        {
                             source_map.device_ref_locations[index].push(location);
                         }
                     }
