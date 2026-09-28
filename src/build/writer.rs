@@ -336,6 +336,7 @@ fn validate_zip_entry_name(name: &str) -> crate::Result<()> {
 #[cfg(unix)]
 struct SecureOutputDirectory {
     directory: File,
+    path: Utf8PathBuf,
     source_directories: Vec<File>,
 }
 
@@ -353,6 +354,7 @@ impl SecureOutputDirectory {
         let directory = open_directory(&destination, true)?;
         let output = Self {
             directory,
+            path: destination,
             source_directories,
         };
         output.ensure_disjoint()?;
@@ -531,7 +533,7 @@ impl SecureOutputDirectory {
         use std::os::fd::AsFd;
 
         self.ensure_disjoint()?;
-        let (parent, directory_name) = self.open_parent(relative, true)?;
+        let (parent, directory_name, parent_path) = self.open_parent(relative, true)?;
         for _ in 0..10 {
             let staging_name = format!(".{directory_name}.stage-{}", uuid::Uuid::new_v4());
             match fs::mkdirat(
@@ -556,11 +558,12 @@ impl SecureOutputDirectory {
                     })?;
                     let directory = File::from(directory);
                     if let Err(error) = self.ensure_directory_disjoint(&directory) {
-                        let _ = remove_directory_at(&parent, &staging_name);
+                        let _ = remove_directory_at(&parent, &staging_name, &parent_path);
                         return Err(error);
                     }
                     return Ok(StagedDirectory {
                         parent,
+                        parent_path,
                         staging_name,
                         directory_name: directory_name.to_owned(),
                         directory,
@@ -578,7 +581,11 @@ impl SecureOutputDirectory {
         .into())
     }
 
-    fn open_parent<'a>(&self, relative: &'a str, create: bool) -> crate::Result<(File, &'a str)> {
+    fn open_parent<'a>(
+        &self,
+        relative: &'a str,
+        create: bool,
+    ) -> crate::Result<(File, &'a str, Utf8PathBuf)> {
         use rustix::{
             fs::{self, Mode, OFlags},
             io::Errno,
@@ -609,7 +616,8 @@ impl SecureOutputDirectory {
             };
             parent = File::from(next);
         }
-        Ok((parent, name))
+        let parent_path = self.path.join(components[..components.len() - 1].join("/"));
+        Ok((parent, name, parent_path))
     }
 
     fn create_directory_file(&self, directory: &File, relative: &str) -> crate::Result<File> {
@@ -1332,6 +1340,7 @@ impl Drop for StagedArtifact {
 #[cfg(unix)]
 struct StagedDirectory {
     parent: File,
+    parent_path: Utf8PathBuf,
     staging_name: String,
     directory_name: String,
     directory: File,
@@ -1394,7 +1403,7 @@ impl StagedDirectory {
         })?;
 
         if let Some(backup) = backup
-            && let Err(error) = remove_directory_at(&self.parent, &backup.name)
+            && let Err(error) = remove_directory_at(&self.parent, &backup.name, &self.parent_path)
         {
             let backup_path = backup.display_path(destination);
             return Ok(ArtifactOutcome::CompletedWithWarning {
@@ -1538,17 +1547,31 @@ fn directory_durability_error(
 impl Drop for StagedDirectory {
     fn drop(&mut self) {
         if self.state == StagedDirectoryState::Staged {
-            let _ = remove_directory_at(&self.parent, &self.staging_name);
+            let _ = remove_directory_at(&self.parent, &self.staging_name, &self.parent_path);
         }
     }
 }
 
 #[cfg(unix)]
-fn remove_directory_at(parent: &File, name: &str) -> io::Result<()> {
-    use std::os::fd::AsRawFd;
+fn remove_directory_at(parent: &File, name: &str, parent_path: &Utf8Path) -> io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        // macOS does not support traversing into a directory through /dev/fd/N.
+        // The path was canonicalized and every component opened without following
+        // symlinks before staging; concurrent local filesystem changes are outside
+        // the writer's threat model.
+        let _ = parent;
+        return fs::remove_dir_all(parent_path.join(name));
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        use std::os::fd::AsRawFd;
 
-    let path = PathBuf::from(format!("/dev/fd/{}/{name}", parent.as_raw_fd()));
-    fs::remove_dir_all(path)
+        let _ = parent_path;
+
+        let path = PathBuf::from(format!("/dev/fd/{}/{name}", parent.as_raw_fd()));
+        fs::remove_dir_all(path)
+    }
 }
 
 #[cfg(not(unix))]
