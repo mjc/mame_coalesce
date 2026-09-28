@@ -246,12 +246,81 @@ pub enum MameLayoutDiagnostic {
     },
 }
 
+impl MameLayoutDiagnostic {
+    /// Return the selected machine root this diagnostic belongs to, when applicable.
+    #[must_use]
+    pub const fn selected_root(&self) -> Option<&SetName> {
+        match self {
+            Self::SnapshotMismatch { .. } | Self::OutputValidation { .. } => None,
+            Self::ResolvedSetSnapshotMismatch { root, .. }
+            | Self::ResolvedSetCatalogMismatch { root, .. }
+            | Self::Dependency { root, .. }
+            | Self::MissingClosure { root }
+            | Self::AmbiguousClosure { root, .. }
+            | Self::DuplicateRoot { root }
+            | Self::MissingCloneParent { root, .. }
+            | Self::MissingMergeTarget { root, .. }
+            | Self::AmbiguousMergeTarget { root, .. }
+            | Self::InvalidAssetIdentity { root, .. }
+            | Self::DuplicateAssetIdentity { root, .. }
+            | Self::MergeContentMismatch { root, .. }
+            | Self::AmbiguousCloneParent { root, .. }
+            | Self::CloneCycle { root, .. }
+            | Self::MissingAssets { root, .. }
+            | Self::RequirementSetMismatch { root, .. }
+            | Self::LogicalPathCollision { root, .. } => Some(root),
+            Self::MissingResolvedSet { required_by, .. }
+            | Self::AmbiguousResolvedSet { required_by, .. } => Some(required_by),
+        }
+    }
+}
+
 /// Multiple catalog requirements represented by one established identical output entry.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct CoalescedAssetProvenance {
     pub group: LogicalPath,
     pub path: LogicalPath,
-    pub requirements: BTreeSet<RequirementKey>,
+    pub requirements: Vec<CoalescedRequirementEvidence>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct CoalescedRequirementEvidence {
+    pub requirement: RequirementKey,
+    pub expected: ExpectedEvidence,
+}
+
+impl CoalescedAssetProvenance {
+    pub(crate) fn is_consistent_with(
+        &self,
+        entry: &LogicalEntry,
+        catalog: &crate::domain::CatalogKey,
+    ) -> bool {
+        if self.requirements.len() < 2 {
+            return false;
+        }
+        let Some(selected_evidence) = self
+            .requirements
+            .iter()
+            .find(|evidence| evidence.requirement == entry.requirement)
+        else {
+            return false;
+        };
+        if selected_evidence.expected != entry.expected {
+            return false;
+        }
+
+        let mut summary = EvidenceSummary::from_expected(&entry.expected);
+        for evidence in &self.requirements {
+            if evidence.requirement.set().catalog() != catalog
+                || !summary.supports_sha1_coalescing(&evidence.expected)
+                || !summary.conflicts_with(&evidence.expected).is_empty()
+            {
+                return false;
+            }
+            summary.include(&evidence.expected);
+        }
+        true
+    }
 }
 
 /// Format-neutral MAME set groups, coalescing provenance, and explicit diagnostics.
@@ -679,7 +748,8 @@ fn finish_grouped_entries(
         let mut entries = BTreeMap::<LogicalPath, LogicalEntry>::new();
         let mut case_insensitive_paths = BTreeMap::<String, LogicalPath>::new();
         let mut expected_evidence_by_path = BTreeMap::<LogicalPath, EvidenceSummary>::new();
-        let mut provenance = BTreeMap::<LogicalPath, BTreeSet<RequirementKey>>::new();
+        let mut provenance =
+            BTreeMap::<LogicalPath, BTreeMap<RequirementKey, ExpectedEvidence>>::new();
         for (root, entry) in contributions {
             insert_entry(
                 &root,
@@ -698,7 +768,13 @@ fn finish_grouped_entries(
                 .map(|(path, requirements)| CoalescedAssetProvenance {
                     group: group_path.clone(),
                     path,
-                    requirements,
+                    requirements: requirements
+                        .into_iter()
+                        .map(|(requirement, expected)| CoalescedRequirementEvidence {
+                            requirement,
+                            expected,
+                        })
+                        .collect(),
                 }),
         );
         plan.groups.push(OutputGroup {
@@ -730,7 +806,7 @@ fn plan_root_group(
     let mut entries = BTreeMap::<LogicalPath, LogicalEntry>::new();
     let mut case_insensitive_paths = BTreeMap::<String, LogicalPath>::new();
     let mut expected_evidence_by_path = BTreeMap::<LogicalPath, EvidenceSummary>::new();
-    let mut provenance = BTreeMap::<LogicalPath, BTreeSet<RequirementKey>>::new();
+    let mut provenance = BTreeMap::<LogicalPath, BTreeMap<RequirementKey, ExpectedEvidence>>::new();
     for set_name in &closure.sets {
         let key = (closure.snapshot.clone(), set_name.clone());
         let Some(matches) = sets_by_key.get(&key) else {
@@ -780,7 +856,13 @@ fn plan_root_group(
             .map(|(path, requirements)| CoalescedAssetProvenance {
                 group: group_path.clone(),
                 path,
-                requirements,
+                requirements: requirements
+                    .into_iter()
+                    .map(|(requirement, expected)| CoalescedRequirementEvidence {
+                        requirement,
+                        expected,
+                    })
+                    .collect(),
             }),
     );
     OutputGroup {
@@ -1321,35 +1403,27 @@ fn insert_entry(
     entries: &mut BTreeMap<LogicalPath, LogicalEntry>,
     case_insensitive_paths: &mut BTreeMap<String, LogicalPath>,
     expected_evidence_by_path: &mut BTreeMap<LogicalPath, EvidenceSummary>,
-    provenance: &mut BTreeMap<LogicalPath, BTreeSet<RequirementKey>>,
+    provenance: &mut BTreeMap<LogicalPath, BTreeMap<RequirementKey, ExpectedEvidence>>,
     diagnostics: &mut BTreeSet<MameLayoutDiagnostic>,
 ) {
     let path = incoming.path.clone();
     let folded_path = path.as_str().to_ascii_lowercase();
     let Some(existing_path) = case_insensitive_paths.get(&folded_path) else {
         case_insensitive_paths.insert(folded_path, path.clone());
-        entries.insert(path.clone(), incoming.clone());
+        entries.insert(path, incoming.clone());
         expected_evidence_by_path.insert(
-            path.clone(),
+            incoming.path.clone(),
             EvidenceSummary::from_expected(&incoming.expected),
         );
-        provenance
-            .entry(path)
-            .or_default()
-            .insert(incoming.requirement.clone());
         return;
     };
     let Some(existing) = entries.get(existing_path) else {
         case_insensitive_paths.insert(folded_path, path.clone());
-        entries.insert(path.clone(), incoming.clone());
+        entries.insert(path, incoming.clone());
         expected_evidence_by_path.insert(
-            path.clone(),
+            incoming.path.clone(),
             EvidenceSummary::from_expected(&incoming.expected),
         );
-        provenance
-            .entry(path)
-            .or_default()
-            .insert(incoming.requirement.clone());
         return;
     };
     if existing_path != &path {
@@ -1378,9 +1452,12 @@ fn insert_entry(
             .and_modify(|summary| summary.include(&incoming.expected))
             .or_insert_with(|| EvidenceSummary::from_expected(&incoming.expected));
         if existing.requirement != incoming.requirement {
-            let requirements = provenance.entry(path).or_default();
-            requirements.insert(existing.requirement.clone());
-            requirements.insert(incoming.requirement.clone());
+            let requirements = provenance.entry(existing_path.clone()).or_insert_with(|| {
+                BTreeMap::from([(existing.requirement.clone(), existing.expected.clone())])
+            });
+            requirements
+                .entry(incoming.requirement.clone())
+                .or_insert_with(|| incoming.expected.clone());
         }
         return;
     }
@@ -1406,6 +1483,7 @@ fn insert_entry(
 mod tests {
     use super::*;
     use crate::{
+        build::view_manifest::{TargetViewRequest, plan_view},
         domain::{
             ArchiveBackend, ArchiveMemberSelector, CatalogKey, Crc32Digest, EvidenceProvenance,
             EvidenceScope, ExpectedEvidence, MatchingPolicy, ObservedContent, ScanProvenance,
@@ -2100,6 +2178,47 @@ mod tests {
             &permuted_sets,
         );
         assert_eq!(plan, permuted_set_plan);
+    }
+
+    #[test]
+    fn pinned_view_manifest_is_stable_when_catalog_and_inventory_order_changes()
+    -> Result<(), crate::build::view_manifest::ViewManifestError> {
+        let (graph, sets) = merged_family_fixture();
+        let roots = [
+            SetName::new("clone-b"),
+            SetName::new("parent"),
+            SetName::new("clone-a"),
+        ];
+        let closures = roots
+            .iter()
+            .map(|root| graph.resolve(root))
+            .collect::<Vec<_>>();
+        let snapshot = snapshot();
+        let first = plan_view(TargetViewRequest::mame_0289(
+            &snapshot,
+            &roots,
+            MameSetLayoutPolicy::Merged,
+            &closures,
+            &sets,
+        ));
+
+        let reversed_roots = roots.iter().rev().cloned().collect::<Vec<_>>();
+        let reversed_closures = reversed_roots
+            .iter()
+            .map(|root| graph.resolve(root))
+            .collect::<Vec<_>>();
+        let reversed_sets = sets.iter().rev().cloned().collect::<Vec<_>>();
+        let second = plan_view(TargetViewRequest::mame_0289(
+            &snapshot,
+            &reversed_roots,
+            MameSetLayoutPolicy::Merged,
+            &reversed_closures,
+            &reversed_sets,
+        ));
+
+        assert_eq!(first, second);
+        assert_eq!(first.to_json()?, second.to_json()?);
+        Ok(())
     }
 
     #[test]

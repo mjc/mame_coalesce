@@ -1,6 +1,6 @@
 # Architecture and compatibility
 
-This document describes the implementation through the explicit MAME layout-policy increment. It
+This document describes the implementation through snapshot-pinned MAME target views. It
 supersedes the earlier proposed target architecture where the two differ. The
 crate remains pre-1.0; the compatibility promises here describe the command-line
 workflow and existing cache behavior, not a semver-stable public Rust API.
@@ -44,6 +44,14 @@ parent ROMs with child merge declarations applied as overrides. Clone ancestry
 is not treated as a runtime-dependency edge. The planner reports incomplete
 dependencies, missing assets, and content/path conflicts before any writer is
 involved; neither legacy CLI layout is reinterpreted.
+
+`build::view_manifest` captures a MAME 0.289 target profile, an exact catalog
+snapshot, selected roots, independently versioned policies, and the pure layout
+result in a versioned JSON envelope. Its layout remains format-neutral: ZIP or
+directory output is selected later by a materializer, not recorded as a layout
+rule. The existing `parent-bundles`/`per-game` request adapter and ZIP writer
+option retain their current meanings and remain separate from the snapshot-aware
+MAME policies. See [the MAME 0.289 target profile decision](target-profile-mame-0.289.md).
 
 The crate root deliberately exposes `app`, `build`, `database`, `disk`,
 `domain`, `error`, `hashes`, `logiqx`, and `resolution`, plus the retained

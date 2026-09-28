@@ -134,23 +134,33 @@ pub(crate) fn inspect_plan(plan: &BuildPlan) -> Vec<PlanIssue> {
 }
 
 pub(crate) fn inspect_groups(output_groups: &[crate::domain::OutputGroup]) -> Vec<PlanIssue> {
+    inspect_group_parts(
+        output_groups
+            .iter()
+            .map(|group| (&group.path, group.entries.as_slice())),
+    )
+}
+
+pub(crate) fn inspect_group_parts<'a>(
+    groups: impl Clone + Iterator<Item = (&'a LogicalPath, &'a [crate::domain::LogicalEntry])>,
+) -> Vec<PlanIssue> {
     let mut issues = Vec::new();
     let mut groups_by_key = BTreeMap::<String, Vec<&LogicalPath>>::new();
 
-    for group in output_groups {
-        let path = group.path.as_str();
+    for (group_path, group_entries) in groups.clone() {
+        let path = group_path.as_str();
         if !is_safe_relative_path(path) {
             issues.push(PlanIssue {
                 kind: PlanIssueKind::UnsafeGroupPath,
-                path: group.path.clone(),
+                path: (*group_path).clone(),
                 conflicts_with: None,
             });
         }
 
         let folded = path.to_ascii_lowercase();
-        groups_by_key.entry(folded).or_default().push(&group.path);
+        groups_by_key.entry(folded).or_default().push(group_path);
 
-        for entry in &group.entries {
+        for entry in group_entries {
             if !is_safe_relative_path(entry.path.as_str()) {
                 issues.push(PlanIssue {
                     kind: PlanIssueKind::UnsafeEntryPath,
@@ -161,7 +171,7 @@ pub(crate) fn inspect_groups(output_groups: &[crate::domain::OutputGroup]) -> Ve
         }
 
         let mut entries = BTreeMap::<String, Vec<&crate::domain::LogicalEntry>>::new();
-        for entry in &group.entries {
+        for entry in group_entries {
             let path = entry.path.as_str();
             let folded = path.to_ascii_lowercase();
             entries.entry(folded).or_default().push(entry);
@@ -186,8 +196,7 @@ pub(crate) fn inspect_groups(output_groups: &[crate::domain::OutputGroup]) -> Ve
             }
         }
 
-        let entry_paths = group
-            .entries
+        let entry_paths = group_entries
             .iter()
             .map(|entry| entry.path.as_str().to_ascii_lowercase())
             .collect::<BTreeSet<_>>();
@@ -216,7 +225,7 @@ pub(crate) fn inspect_groups(output_groups: &[crate::domain::OutputGroup]) -> Ve
         }
     }
 
-    issues.extend(group_artifact_conflicts(output_groups));
+    issues.extend(group_artifact_conflicts(groups.map(|(path, _)| path)));
 
     issues.sort_by(|left, right| {
         left.path
@@ -341,10 +350,12 @@ fn evidence_projection(evidence: &ExpectedEvidence, mask: u8) -> Vec<u8> {
     key
 }
 
-fn group_artifact_conflicts(groups: &[crate::domain::OutputGroup]) -> Vec<PlanIssue> {
+fn group_artifact_conflicts<'a>(
+    groups: impl IntoIterator<Item = &'a LogicalPath>,
+) -> Vec<PlanIssue> {
     let artifact_paths = groups
-        .iter()
-        .map(|group| format!("{}.zip", group.path.as_str()).to_ascii_lowercase())
+        .into_iter()
+        .map(|path| format!("{}.zip", path.as_str()).to_ascii_lowercase())
         .collect::<BTreeSet<_>>();
     let mut issues = Vec::new();
     for path in &artifact_paths {
