@@ -199,7 +199,7 @@ fn candidate_pairs(
     for (key, left_matches) in left_index {
         if let Some(right_matches) = right_index.get(&key) {
             let bucket_pairs = left_matches.len().saturating_mul(right_matches.len());
-            if pairs.len().saturating_add(bucket_pairs) > MAX_EXPANDED_MATCH_PAIRS {
+            if bucket_pairs > MAX_EXPANDED_MATCH_PAIRS {
                 let strength = fingerprint_strength(&key.fingerprint);
                 if let Some(first_left) = left_matches.first() {
                     for right_index in right_matches {

@@ -240,6 +240,56 @@ fn large_weak_collision_sets_produce_bounded_ambiguous_outcomes() {
 }
 
 #[test]
+fn many_unique_matches_remain_compatible_past_expansion_limit() {
+    let left_catalog = CatalogKey::new("publisher-one");
+    let right_catalog = CatalogKey::new("publisher-two");
+    let left_key = snapshot_key(&left_catalog, b"left unique set");
+    let right_key = snapshot_key(&right_catalog, b"right unique set");
+    let left = RequirementSnapshot {
+        catalog: left_catalog,
+        snapshot: left_key.clone(),
+        requirements: (0_u32..4_097)
+            .map(|index| {
+                let mut sha1 = [0; 20];
+                sha1[..4].copy_from_slice(&index.to_le_bytes());
+                asset(
+                    &left_key,
+                    "left",
+                    &format!("left-{index}.bin"),
+                    Some(index.to_le_bytes()),
+                    Some(sha1),
+                )
+            })
+            .collect(),
+    };
+    let right = RequirementSnapshot {
+        catalog: right_catalog,
+        snapshot: right_key.clone(),
+        requirements: (0_u32..4_097)
+            .map(|index| {
+                let mut sha1 = [0; 20];
+                sha1[..4].copy_from_slice(&index.to_le_bytes());
+                asset(
+                    &right_key,
+                    "right",
+                    &format!("right-{index}.bin"),
+                    Some(index.to_le_bytes()),
+                    Some(sha1),
+                )
+            })
+            .collect(),
+    };
+
+    let report = reconcile_requirements(&left, &right, &[]);
+
+    assert_eq!(report.outcomes.len(), 4_097);
+    assert!(report.outcomes.iter().all(|outcome| {
+        outcome.status == ReconciliationStatus::Compatible
+            && outcome.relationship_candidate().is_some()
+    }));
+}
+
+#[test]
 fn weak_partial_evidence_is_only_a_candidate_and_scope_mismatch_is_unknown() {
     let crc_only = ExpectedEvidence {
         scope: EvidenceScope::WholeAsset,
