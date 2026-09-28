@@ -903,6 +903,46 @@ fn opt_in_bare_file_reuse_supports_forced_rehash_and_detects_same_mtime_changes(
     Ok(())
 }
 
+#[cfg(unix)]
+#[test]
+fn forced_rehash_matches_walked_symlink_paths() -> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::symlink;
+
+    let database_dir = tempfile::tempdir()?;
+    let database = test_database(database_dir.path())?;
+    let source_dir = tempfile::tempdir()?;
+    let outside_dir = tempfile::tempdir()?;
+    let source_path = utf8_path(source_dir.path())?.to_path_buf();
+    let inside_target = source_dir.path().join("inside-target.rom");
+    let inside_link = source_dir.path().join("inside-link.rom");
+    let outside_target = outside_dir.path().join("outside-target.rom");
+    let outside_link = source_dir.path().join("outside-link.rom");
+    fs::write(&inside_target, b"inside")?;
+    fs::write(&outside_target, b"outside")?;
+    symlink(&inside_target, &inside_link)?;
+    symlink(&outside_target, &outside_link)?;
+    let request = SourceScanRequest {
+        source_path,
+        jobs: 1,
+    };
+
+    app::scan_source(&database, &request)?;
+    let forced = app::scan_source_with_policy(
+        &database,
+        &request,
+        ScanCachePolicy::ReuseUnchangedBareFiles {
+            force_rehash: vec![
+                utf8_path(&inside_link)?.to_path_buf(),
+                utf8_path(&outside_link)?.to_path_buf(),
+            ],
+        },
+    )?;
+
+    assert_eq!(forced.observation_count, 3);
+    assert_eq!(forced.reused_bare_files, 1);
+    Ok(())
+}
+
 #[test]
 fn parent_refresh_removes_stale_observations_owned_by_overlapping_root()
 -> Result<(), Box<dyn std::error::Error>> {

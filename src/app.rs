@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use diesel::{
     QueryableByName,
     prelude::*,
@@ -698,8 +698,19 @@ pub fn scan_source_with_policy_and_progress(
             let cached_files = repository.load_source_files_for_root(&source_root)?;
             let forced_paths = force_rehash
                 .into_iter()
-                .map(|path| path.canonicalize_utf8())
-                .collect::<std::io::Result<std::collections::BTreeSet<_>>>()?;
+                .map(|path| {
+                    let file_name = path.file_name().ok_or_else(|| {
+                        crate::Error::InvalidPath(format!(
+                            "forced rehash path is not a file: {path}"
+                        ))
+                    })?;
+                    let parent = path
+                        .parent()
+                        .unwrap_or_else(|| Utf8Path::new("."))
+                        .canonicalize_utf8()?;
+                    Ok(parent.join(file_name))
+                })
+                .collect::<crate::Result<std::collections::BTreeSet<_>>>()?;
             if forced_paths
                 .iter()
                 .any(|path| !path.starts_with(&source_root_path))

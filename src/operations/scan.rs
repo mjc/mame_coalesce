@@ -238,11 +238,11 @@ fn scan_bare_file(
     force_rehash: bool,
 ) -> crate::Result<Vec<SourceObservation>> {
     let physical_path = SourcePhysicalPath::capture(path)?;
-    let before = bare_file_cache_stamp(path)?;
+    let before = bare_file_cache_stamp(physical_path.as_path())?;
     if !force_rehash
         && let (Some(current), Some(cached)) = (before, cached_file)
         && cached.stamp == current
-        && bare_file_cache_stamp(path)? == Some(current)
+        && bare_file_cache_stamp(physical_path.as_path())? == Some(current)
     {
         let mut observed = cached.observed;
         observed.provenance = EvidenceProvenance::StatValidatedCache;
@@ -262,7 +262,7 @@ fn scan_bare_file(
     let mut hash_writer = RomHashWriter::default();
     crate::sources::stream_file(physical_path.as_path(), &mut hash_writer)?;
     let (size, sha1, xxhash3) = hash_writer.finish();
-    let after = bare_file_cache_stamp(path)?;
+    let after = bare_file_cache_stamp(physical_path.as_path())?;
     if before != after {
         return Err(Error::InvalidPath(format!(
             "bare source changed while it was being scanned: {path}"
