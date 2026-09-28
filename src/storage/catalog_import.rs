@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use diesel::{
     OptionalExtension, QueryableByName, RunQueryDsl, SqliteConnection, sql_query,
     sql_types::{BigInt, Binary, Nullable, Text},
@@ -97,6 +99,8 @@ struct SnapshotAsset {
 struct StoredExtension {
     record_kind: String,
     record_name: Option<String>,
+    owner_set_name: Option<String>,
+    owner_component_order: Option<String>,
     field_name: String,
     namespace_uri: Option<String>,
     value: serde_json::Value,
@@ -172,18 +176,7 @@ impl SnapshotData {
             version: data_file.header().version().cloned(),
             sets,
             software_lists: None,
-            extensions: source_map
-                .unsupported_attributes
-                .iter()
-                .map(|ext| StoredExtension {
-                    record_kind: ext.record_kind.clone(),
-                    record_name: ext.record_name.clone(),
-                    field_name: ext.field_name.clone(),
-                    namespace_uri: ext.namespace_uri.clone(),
-                    value: serde_json::json!(ext.value),
-                    location: ext.location,
-                })
-                .collect(),
+            extensions: stored_logiqx_extensions(data_file, source_map),
         })
     }
 
@@ -194,7 +187,8 @@ impl SnapshotData {
             .machines
             .into_iter()
             .map(|machine| {
-                extensions.extend(machine.extensions.into_iter().map(stored_extension));
+                let machine_name = machine.name.clone();
+                extensions.extend(stored_machine_extensions(&machine_name, machine.extensions));
                 let runtime_dependencies = machine
                     .device_refs
                     .iter()
@@ -217,8 +211,14 @@ impl SnapshotData {
                 let assets = machine
                     .assets
                     .into_iter()
-                    .map(|asset| {
-                        extensions.extend(asset.extensions.into_iter().map(stored_extension));
+                    .enumerate()
+                    .map(|(component_order, asset)| {
+                        extensions.extend(asset.extensions.into_iter().map(|extension| {
+                            let mut extension = stored_extension(extension);
+                            extension.owner_set_name = Some(machine_name.clone());
+                            extension.owner_component_order = Some(component_order.to_string());
+                            extension
+                        }));
                         let evidence_scope = asset
                             .disk_requirement
                             .as_ref()
@@ -368,11 +368,18 @@ impl SnapshotData {
             .into_iter()
             .map(|entry| {
                 extensions.extend(entry.extensions.into_iter().map(stored_extension));
+                let entry_name = entry.name;
                 let assets = entry
                     .assets
                     .into_iter()
-                    .map(|asset| {
-                        extensions.extend(asset.extensions.into_iter().map(stored_extension));
+                    .enumerate()
+                    .map(|(component_order, asset)| {
+                        extensions.extend(asset.extensions.into_iter().map(|extension| {
+                            let mut extension = stored_extension(extension);
+                            extension.owner_set_name = Some(entry_name.clone());
+                            extension.owner_component_order = Some(component_order.to_string());
+                            extension
+                        }));
                         SnapshotAsset {
                             name: asset.name,
                             role: "rom",
@@ -391,7 +398,7 @@ impl SnapshotData {
                     })
                     .collect();
                 SnapshotSet {
-                    name: entry.name,
+                    name: entry_name,
                     parent: None,
                     parent_field: None,
                     runtime_dependencies: Vec::new(),
@@ -414,6 +421,8 @@ fn stored_extension(ext: crate::mame::XmlExtension) -> StoredExtension {
     StoredExtension {
         record_kind: ext.record_kind,
         record_name: ext.record_name,
+        owner_set_name: None,
+        owner_component_order: None,
         field_name: ext.field_name,
         namespace_uri: ext.namespace_uri,
         value: ext.value,
@@ -421,10 +430,81 @@ fn stored_extension(ext: crate::mame::XmlExtension) -> StoredExtension {
     }
 }
 
+fn stored_logiqx_extensions(
+    data_file: &DataFile,
+    source_map: &XmlSourceMap,
+) -> Vec<StoredExtension> {
+    let mut rom_owners = HashMap::new();
+    for (game_index, locations) in source_map.rom_locations.iter().enumerate() {
+        for (component_order, location) in locations.iter().enumerate() {
+            rom_owners.insert(
+                (location.line, location.column),
+                (game_index, component_order),
+            );
+        }
+    }
+    source_map
+        .unsupported_attributes
+        .iter()
+        .map(|ext| {
+            let mut stored = StoredExtension {
+                record_kind: ext.record_kind.clone(),
+                record_name: ext.record_name.clone(),
+                owner_set_name: None,
+                owner_component_order: None,
+                field_name: ext.field_name.clone(),
+                namespace_uri: ext.namespace_uri.clone(),
+                value: serde_json::json!(ext.value),
+                location: ext.location,
+            };
+            if ext.record_kind == "rom" {
+                let owner = rom_owners
+                    .get(&(ext.location.line, ext.location.column))
+                    .copied();
+                if let Some((game_index, component_order)) = owner
+                    && let Some(game) = data_file.games().get(game_index)
+                {
+                    stored.owner_set_name = Some(game.name().to_owned());
+                    stored.owner_component_order = Some(component_order.to_string());
+                }
+            } else if ext.record_kind != "game" && ext.record_kind != "document" {
+                let owner_index = source_map
+                    .game_locations
+                    .partition_point(|location| {
+                        (location.line, location.column) <= (ext.location.line, ext.location.column)
+                    })
+                    .checked_sub(1);
+                if let Some(game) = owner_index.and_then(|index| data_file.games().get(index)) {
+                    stored.owner_set_name = Some(game.name().to_owned());
+                }
+            }
+            stored
+        })
+        .collect()
+}
+
+fn stored_machine_extensions(
+    machine_name: &str,
+    extensions: Vec<crate::mame::XmlExtension>,
+) -> Vec<StoredExtension> {
+    extensions
+        .into_iter()
+        .map(|extension| {
+            let mut extension = stored_extension(extension);
+            if extension.record_kind == "device_ref" {
+                extension.owner_set_name = Some(machine_name.to_owned());
+            }
+            extension
+        })
+        .collect()
+}
+
 fn stored_clrmamepro_extension(ext: crate::clrmamepro::Extension) -> StoredExtension {
     StoredExtension {
         record_kind: ext.record_kind,
         record_name: ext.record_name,
+        owner_set_name: None,
+        owner_component_order: None,
         field_name: ext.field_name,
         namespace_uri: None,
         value: ext.value,
@@ -884,12 +964,14 @@ fn insert_snapshot_contents(
     for extension in &snapshot_data.extensions {
         sql_query(
             "INSERT INTO snapshot_extensions \
-             (snapshot_key, record_kind, record_name, field_name, namespace_uri, raw_value_json, source_line, source_column) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+             (snapshot_key, record_kind, record_name, owner_set_name, owner_component_order, field_name, namespace_uri, raw_value_json, source_line, source_column) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind::<Text, _>(snapshot_key.as_str())
         .bind::<Text, _>(&extension.record_kind)
         .bind::<Nullable<Text>, _>(&extension.record_name)
+        .bind::<Nullable<Text>, _>(&extension.owner_set_name)
+        .bind::<Nullable<Text>, _>(&extension.owner_component_order)
         .bind::<Text, _>(&extension.field_name)
         .bind::<Nullable<Text>, _>(extension.namespace_uri.as_deref())
         .bind::<Text, _>(serde_json::to_string(&extension.value)?)
