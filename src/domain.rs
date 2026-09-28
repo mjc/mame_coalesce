@@ -183,6 +183,11 @@ impl CatalogKey {
     }
 
     #[must_use]
+    pub(crate) fn for_legacy_data_file(name: &str) -> Self {
+        Self(stable_key("legacy-data-file", &[name]))
+    }
+
+    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
