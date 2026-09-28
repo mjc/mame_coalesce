@@ -12,6 +12,7 @@ use std::{
 
 use rayon::prelude::*;
 use sha1::{Digest, Sha1};
+#[cfg(unix)]
 use sha2::Sha256;
 
 use walkdir::{DirEntry, WalkDir};
