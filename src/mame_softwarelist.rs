@@ -1,5 +1,7 @@
 use std::collections::HashSet;
 
+pub use crate::domain::media::SourceLoadInstruction as LoadInstruction;
+
 use crate::{
     logiqx::RecordLocation,
     mame::{Element, XmlExtension, parse_xml_element},
@@ -190,45 +192,6 @@ impl DumpStatus {
             Self::BadDump => "baddump",
             Self::NoDump => "nodump",
             Self::Good => "good",
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum LoadInstruction {
-    Load16Byte,
-    Load16Word,
-    Load16WordSwap,
-    Load32Byte,
-    Load32Word,
-    Load32WordSwap,
-    Load32Dword,
-    Load64Word,
-    Load64WordSwap,
-    Reload,
-    Fill,
-    Continue,
-    ReloadPlain,
-    Ignore,
-}
-
-impl LoadInstruction {
-    pub const fn as_str(&self) -> &'static str {
-        match self {
-            Self::Load16Byte => "load16_byte",
-            Self::Load16Word => "load16_word",
-            Self::Load16WordSwap => "load16_word_swap",
-            Self::Load32Byte => "load32_byte",
-            Self::Load32Word => "load32_word",
-            Self::Load32WordSwap => "load32_word_swap",
-            Self::Load32Dword => "load32_dword",
-            Self::Load64Word => "load64_word",
-            Self::Load64WordSwap => "load64_word_swap",
-            Self::Reload => "reload",
-            Self::Fill => "fill",
-            Self::Continue => "continue",
-            Self::ReloadPlain => "reload_plain",
-            Self::Ignore => "ignore",
         }
     }
 }
