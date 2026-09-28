@@ -185,6 +185,40 @@ fn db_arg(path: &camino::Utf8Path) -> [&str; 2] {
     ["--cache", path.as_str()]
 }
 
+#[test]
+fn one_shot_rejects_source_destination_overlap_before_catalog_import()
+-> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = tempfile::tempdir()?;
+    let database = test_database(temp_dir.path())?;
+    let source = temp_dir.path().join("source");
+    fs::create_dir_all(&source)?;
+    let source = utf8_path(&source)?.to_path_buf();
+    let missing_dat = utf8_path(&temp_dir.path().join("does-not-exist.dat"))?.to_path_buf();
+
+    let result = app::run(
+        &database,
+        &RunWorkflowRequest {
+            dat_path: missing_dat,
+            source_path: source.clone(),
+            destination_path: source,
+            mode: BuildMode::ParentBundles,
+            compression: ZipCompression::Deflate,
+            jobs: 1,
+            dry_run: false,
+            strict: false,
+        },
+    );
+    let Err(error) = result else {
+        return Err(io::Error::other(
+            "overlapping paths are rejected before attempting the missing DAT",
+        )
+        .into());
+    };
+
+    assert!(error.to_string().contains("source/destination overlap"));
+    Ok(())
+}
+
 // =====================================================================
 // DAT → DB insert
 // =====================================================================
@@ -245,7 +279,10 @@ fn run_workflow_writes_from_7z_archive() -> Result<(), Box<dyn std::error::Error
     assert_eq!(report.exit_code, 0);
     assert_eq!(report.build_report.matched_roms, 1);
     assert!(report.build_report.missing_roms.is_empty());
-    assert_eq!(report.written_paths, vec![output_path.join("shared.zip")]);
+    assert_eq!(
+        report.written_paths,
+        vec![output_path.join("shared.zip").canonicalize_utf8()?]
+    );
     assert_eq!(
         zip_entries(&output_path.join("shared.zip"))?
             .get("shared.rom")
@@ -289,7 +326,10 @@ fn run_workflow_writes_from_rar_archive() -> Result<(), Box<dyn std::error::Erro
     assert_eq!(report.exit_code, 0);
     assert_eq!(report.build_report.matched_roms, 1);
     assert!(report.build_report.missing_roms.is_empty());
-    assert_eq!(report.written_paths, vec![output_path.join("shared.zip")]);
+    assert_eq!(
+        report.written_paths,
+        vec![output_path.join("shared.zip").canonicalize_utf8()?]
+    );
     assert_eq!(
         zip_entries(&output_path.join("shared.zip"))?
             .get("shared.rom")
@@ -400,7 +440,10 @@ fn run_workflow_writes_parent_bundle_zip() -> Result<(), Box<dyn std::error::Err
     assert_eq!(report.build_report.matched_roms, 2);
     assert_eq!(report.build_report.missing_roms.len(), 1);
     assert_eq!(report.build_report.missing_roms[0].rom_name, "clone1.rom");
-    assert_eq!(report.written_paths, vec![output_path.join("parent.zip")]);
+    assert_eq!(
+        report.written_paths,
+        vec![output_path.join("parent.zip").canonicalize_utf8()?]
+    );
 
     let entries = zip_entries(&output_path.join("parent.zip"))?;
     assert_eq!(entries.len(), 2);
@@ -486,7 +529,10 @@ fn build_workflow_accepts_imported_dat_name() -> Result<(), Box<dyn std::error::
     assert_eq!(report.build_report.matched_roms, 2);
     assert_eq!(report.build_report.missing_roms.len(), 1);
     assert_eq!(report.build_report.missing_roms[0].rom_name, "clone1.rom");
-    assert_eq!(report.written_paths, vec![output_path.join("parent.zip")]);
+    assert_eq!(
+        report.written_paths,
+        vec![output_path.join("parent.zip").canonicalize_utf8()?]
+    );
 
     let entries = zip_entries(&output_path.join("parent.zip"))?;
     assert_eq!(entries.len(), 2);
@@ -545,7 +591,10 @@ fn build_matches_sources_scanned_from_noncanonical_path() -> Result<(), Box<dyn 
 
     assert_eq!(report.exit_code, 0);
     assert_eq!(report.build_report.matched_roms, 2);
-    assert_eq!(report.written_paths, vec![output_path.join("parent.zip")]);
+    assert_eq!(
+        report.written_paths,
+        vec![output_path.join("parent.zip").canonicalize_utf8()?]
+    );
     Ok(())
 }
 

@@ -234,8 +234,11 @@ pub(super) fn walk_for_files(
     dir: &Utf8Path,
     excluded_paths: &[Utf8PathBuf],
 ) -> crate::Result<Vec<Utf8PathBuf>> {
+    let dir = dir
+        .canonicalize_utf8()
+        .map_err(|error| Error::InvalidPath(format!("failed to traverse source path: {error}")))?;
     collect_walked_files(
-        WalkDir::new(dir)
+        WalkDir::new(&dir)
             .into_iter()
             .filter_entry(entry_is_relevant),
         excluded_paths,
@@ -299,7 +302,7 @@ fn optimize_file_order(mut dirs: Vec<DirEntry>) -> Vec<DirEntry> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn optimize_file_order(mut dirs: Vec<DirEntry>) -> Vec<DirEntry> {
+const fn optimize_file_order(dirs: Vec<DirEntry>) -> Vec<DirEntry> {
     dirs
 }
 
@@ -342,10 +345,11 @@ mod tests {
         std::fs::create_dir(root.join("visible-dir"))?;
         std::fs::write(root.join("visible-dir").join(".hidden.rom"), b"hidden file")?;
         std::fs::write(root.join("visible-dir").join("nested.rom"), b"nested")?;
+        let canonical_root = root.canonicalize_utf8()?;
 
         let files = walk_for_files(root, &[])?
             .into_iter()
-            .map(|path| path.strip_prefix(root).map(Utf8Path::to_owned))
+            .map(|path| path.strip_prefix(&canonical_root).map(Utf8Path::to_owned))
             .collect::<Result<BTreeSet<_>, _>>()?;
 
         assert_eq!(
@@ -447,11 +451,19 @@ mod tests {
         let rom_path = root.join("game.rom");
         std::fs::write(&rom_path, b"rom")?;
         let excluded_paths = crate::storage::db::database_file_paths(&pool)?;
+        let canonical_database_path = database_path.canonicalize_utf8()?;
 
-        assert!(excluded_paths.contains(&database_path.canonicalize_utf8()?));
-        assert!(excluded_paths.contains(&Utf8PathBuf::from(format!("{database_path}-wal"))));
-        assert!(excluded_paths.contains(&Utf8PathBuf::from(format!("{database_path}-shm"))));
-        assert_eq!(walk_for_files(root, &excluded_paths)?, vec![rom_path]);
+        assert!(excluded_paths.contains(&canonical_database_path));
+        assert!(
+            excluded_paths.contains(&Utf8PathBuf::from(format!("{canonical_database_path}-wal")))
+        );
+        assert!(
+            excluded_paths.contains(&Utf8PathBuf::from(format!("{canonical_database_path}-shm")))
+        );
+        assert_eq!(
+            walk_for_files(root, &excluded_paths)?,
+            vec![rom_path.canonicalize_utf8()?]
+        );
         Ok(())
     }
 
