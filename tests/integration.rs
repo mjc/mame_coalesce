@@ -1850,7 +1850,10 @@ fn directory_output_preserves_existing_group_when_cached_source_is_stale()
         OutputContainer::Directory,
         &|_| {},
     )?;
-    assert_eq!(initial.written_paths, vec![output_path.join("shared")]);
+    assert_eq!(
+        initial.written_paths,
+        vec![output_path.join("shared").canonicalize_utf8()?]
+    );
     fs::write(source_dir.path().join("shared.rom"), b"changed")?;
 
     let stale = app::build_with_roots_and_container(

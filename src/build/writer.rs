@@ -950,8 +950,6 @@ fn write_directory_group(
     let session = SourceSession::open(&group.entries, artifact.checked_destination)?;
     let staged = stage_archive_sources(&session, artifact)?;
     for (entry, source) in group.entries.iter().zip(session.resolved) {
-        #[cfg(unix)]
-        artifact.output_root.ensure_disjoint()?;
         (artifact.hook)(artifact.artifact_index, ArtifactPhase::Write)?;
         let path = directory.join(entry.path.as_str());
         let parent = path.parent().ok_or_else(|| {
@@ -1582,7 +1580,7 @@ impl StagedDirectory {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(not(unix), test))]
 fn replace_staged_directory(
     staged: &Utf8Path,
     destination: &Utf8Path,
