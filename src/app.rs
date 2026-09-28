@@ -668,7 +668,12 @@ pub fn build(
                 write_plan_with_compression(&plan, &request.destination_path, request.compression)?;
             let paths = results
                 .iter()
-                .filter(|result| result.outcome == ArtifactOutcome::Completed)
+                .filter(|result| {
+                    matches!(
+                        &result.outcome,
+                        ArtifactOutcome::Completed | ArtifactOutcome::ReplacedButNotDurable { .. }
+                    )
+                })
                 .map(|result| Utf8PathBuf::from(&result.path))
                 .collect::<Vec<_>>();
             Ok((paths, results))

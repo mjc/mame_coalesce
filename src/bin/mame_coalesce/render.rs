@@ -92,6 +92,12 @@ pub fn build_report(report: &BuildWorkflowReport) {
             ArtifactOutcome::Failed { error } => {
                 warn!("failed output artifact: {}: {error}", artifact.path);
             }
+            ArtifactOutcome::ReplacedButNotDurable { error } => {
+                warn!(
+                    "replaced output artifact, but durability is uncertain: {}: {error}",
+                    artifact.path
+                );
+            }
             ArtifactOutcome::Unattempted => {}
         }
     }
@@ -100,11 +106,12 @@ pub fn build_report(report: &BuildWorkflowReport) {
 pub fn exit_code(report: &BuildWorkflowReport) -> std::process::ExitCode {
     if report.build_report.outcome != PlanOutcome::Ready {
         std::process::ExitCode::from(2)
-    } else if report
-        .artifact_results
-        .iter()
-        .any(|artifact| matches!(&artifact.outcome, ArtifactOutcome::Failed { .. }))
-    {
+    } else if report.artifact_results.iter().any(|artifact| {
+        matches!(
+            &artifact.outcome,
+            ArtifactOutcome::Failed { .. } | ArtifactOutcome::ReplacedButNotDurable { .. }
+        )
+    }) {
         std::process::ExitCode::from(1)
     } else {
         std::process::ExitCode::SUCCESS
@@ -140,6 +147,17 @@ mod tests {
                 },
             });
         assert_eq!(exit_code(&partial), std::process::ExitCode::from(1));
+
+        let mut uncertain = report();
+        uncertain
+            .artifact_results
+            .push(mame_coalesce::domain::ArtifactResult {
+                path: "replaced.zip".to_owned(),
+                outcome: ArtifactOutcome::ReplacedButNotDurable {
+                    error: "sync failed".to_owned(),
+                },
+            });
+        assert_eq!(exit_code(&uncertain), std::process::ExitCode::from(1));
 
         let mut blocked = report();
         blocked.build_report.outcome = PlanOutcome::Blocked(PlanBlockReason::MissingContent);
