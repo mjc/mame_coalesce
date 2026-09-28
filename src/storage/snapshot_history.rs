@@ -251,11 +251,23 @@ fn comparable_scope(previous: &SnapshotRow, current: &SnapshotRow) -> bool {
     if previous.scope_kind == "complete" && current.scope_kind == "complete" {
         return true;
     }
-    previous.scope_kind == "filtered"
-        && current.scope_kind == "filtered"
-        && scope_policy(previous).is_some()
-        && scope_set_names(previous) == scope_set_names(current)
-        && scope_policy(previous) == scope_policy(current)
+    if previous.scope_kind != "filtered" || current.scope_kind != "filtered" {
+        return false;
+    }
+    match (
+        scope_set_names(previous),
+        scope_set_names(current),
+        scope_policy(previous),
+        scope_policy(current),
+    ) {
+        (
+            Some(previous_names),
+            Some(current_names),
+            Some(previous_policy),
+            Some(current_policy),
+        ) => previous_names == current_names && previous_policy == current_policy,
+        _ => false,
+    }
 }
 
 fn absence_status(

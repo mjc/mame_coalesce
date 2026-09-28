@@ -201,6 +201,7 @@ fn validate_xml(bytes: &[u8]) -> crate::Result<XmlSourceMap> {
                         let record_kind = match local_name.as_str() {
                             "game" => "game",
                             "rom" => "rom",
+                            _ if current_game.is_some() => local_name.as_str(),
                             _ => "document",
                         };
                         source_map

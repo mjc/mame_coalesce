@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use diesel::{
     OptionalExtension, QueryableByName, RunQueryDsl, SqliteConnection, sql_query,
     sql_types::{BigInt, Binary, Nullable, Text},
@@ -174,20 +176,7 @@ impl SnapshotData {
             version: data_file.header().version().cloned(),
             sets,
             software_lists: None,
-            extensions: source_map
-                .unsupported_attributes
-                .iter()
-                .map(|ext| StoredExtension {
-                    record_kind: ext.record_kind.clone(),
-                    record_name: ext.record_name.clone(),
-                    owner_set_name: None,
-                    owner_component_order: None,
-                    field_name: ext.field_name.clone(),
-                    namespace_uri: ext.namespace_uri.clone(),
-                    value: serde_json::json!(ext.value),
-                    location: ext.location,
-                })
-                .collect(),
+            extensions: stored_logiqx_extensions(data_file, source_map),
         })
     }
 
@@ -439,6 +428,59 @@ fn stored_extension(ext: crate::mame::XmlExtension) -> StoredExtension {
         value: ext.value,
         location: ext.location,
     }
+}
+
+fn stored_logiqx_extensions(
+    data_file: &DataFile,
+    source_map: &XmlSourceMap,
+) -> Vec<StoredExtension> {
+    let mut rom_owners = HashMap::new();
+    for (game_index, locations) in source_map.rom_locations.iter().enumerate() {
+        for (component_order, location) in locations.iter().enumerate() {
+            rom_owners.insert(
+                (location.line, location.column),
+                (game_index, component_order),
+            );
+        }
+    }
+    source_map
+        .unsupported_attributes
+        .iter()
+        .map(|ext| {
+            let mut stored = StoredExtension {
+                record_kind: ext.record_kind.clone(),
+                record_name: ext.record_name.clone(),
+                owner_set_name: None,
+                owner_component_order: None,
+                field_name: ext.field_name.clone(),
+                namespace_uri: ext.namespace_uri.clone(),
+                value: serde_json::json!(ext.value),
+                location: ext.location,
+            };
+            if ext.record_kind == "rom" {
+                let owner = rom_owners
+                    .get(&(ext.location.line, ext.location.column))
+                    .copied();
+                if let Some((game_index, component_order)) = owner
+                    && let Some(game) = data_file.games().get(game_index)
+                {
+                    stored.owner_set_name = Some(game.name().to_owned());
+                    stored.owner_component_order = Some(component_order.to_string());
+                }
+            } else if ext.record_kind != "game" && ext.record_kind != "document" {
+                let owner_index = source_map
+                    .game_locations
+                    .partition_point(|location| {
+                        (location.line, location.column) <= (ext.location.line, ext.location.column)
+                    })
+                    .checked_sub(1);
+                if let Some(game) = owner_index.and_then(|index| data_file.games().get(index)) {
+                    stored.owner_set_name = Some(game.name().to_owned());
+                }
+            }
+            stored
+        })
+        .collect()
 }
 
 fn stored_machine_extensions(

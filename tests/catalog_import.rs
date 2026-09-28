@@ -1944,6 +1944,36 @@ fn snapshot_diff_treats_filtered_absence_as_unknown_and_complete_absence_as_remo
 }
 
 #[test]
+fn snapshot_diff_requires_known_filtered_set_membership_to_compare_scopes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, _connection) = setup()?;
+    let mut snapshots = Vec::new();
+    for (filename, games) in [
+        ("filtered-alpha.dat", "<game name=\"alpha\"/>"),
+        (
+            "filtered-alpha-beta.dat",
+            "<game name=\"alpha\"/><game name=\"beta\"/>",
+        ),
+    ] {
+        let path = directory.path().join(filename);
+        std::fs::write(
+            &path,
+            format!("<datafile><header><name>Scope</name></header>{games}</datafile>"),
+        )?;
+        let mut import = request(path, "publisher-scope", "scope", "Scope")?;
+        import.scope = CatalogScope::Filtered(serde_json::json!({"source": "manual"}));
+        snapshots.push(
+            app::import_catalog(&database, &import)?
+                .snapshot_key
+                .ok_or("filtered snapshot without set names missing")?,
+        );
+    }
+    let diff = app::diff_catalog_snapshots(&database, &snapshots[0], &snapshots[1])?;
+    assert!(!diff.same_scope);
+    Ok(())
+}
+
+#[test]
 fn snapshot_diff_tracks_unknown_extensions_and_does_not_call_missing_hashes_changed()
 -> Result<(), Box<dyn std::error::Error>> {
     let (directory, database, _connection) = setup()?;
@@ -2023,6 +2053,65 @@ fn snapshot_diff_tracks_logiqx_game_extensions() -> Result<(), Box<dyn std::erro
             .ok_or("Logiqx second snapshot missing")?,
     )?;
     assert!(logiqx_diff.records[0].metadata_changed);
+    Ok(())
+}
+
+#[test]
+fn snapshot_diff_attributes_logiqx_extensions_to_their_asset_and_game()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, _connection) = setup()?;
+    let first_path = directory.path().join("logiqx-owned-extensions-v1.dat");
+    let second_path = directory.path().join("logiqx-owned-extensions-v2.dat");
+    for (path, value) in [(&first_path, "one"), (&second_path, "two")] {
+        std::fs::write(
+            path,
+            format!(
+                "<datafile><header><name>Owned extensions</name></header><game name=\"owner\"><rom name=\"shared.rom\" future=\"{value}\"/><device_ref name=\"target\" future=\"{value}\"/></game><game name=\"target\"/></datafile>"
+            ),
+        )?;
+    }
+    let mut first_request = request(
+        first_path,
+        "publisher-logiqx-owned-extensions",
+        "logiqx-owned-extensions",
+        "Owned extensions",
+    )?;
+    first_request.scope = CatalogScope::Complete;
+    let first = app::import_catalog(&database, &first_request)?;
+    let mut second_request = request(
+        second_path,
+        "publisher-logiqx-owned-extensions",
+        "logiqx-owned-extensions",
+        "Owned extensions",
+    )?;
+    second_request.scope = CatalogScope::Complete;
+    let second = app::import_catalog(&database, &second_request)?;
+    let diff = app::diff_catalog_snapshots(
+        &database,
+        &first.snapshot_key.ok_or("first snapshot missing")?,
+        &second.snapshot_key.ok_or("second snapshot missing")?,
+    )?;
+    let owner = diff
+        .records
+        .iter()
+        .find(|record| record.set_name == "owner")
+        .ok_or("owner diff missing")?;
+    assert_eq!(owner.status, SnapshotRecordStatus::Changed);
+    assert!(owner.metadata_changed);
+    let asset = owner
+        .requirement_changes
+        .iter()
+        .find(|change| change.asset_name == "shared.rom")
+        .ok_or("owned asset extension change missing")?;
+    assert!(asset.other_evidence_changed);
+
+    let target = diff
+        .records
+        .iter()
+        .find(|record| record.set_name == "target")
+        .ok_or("target diff missing")?;
+    assert_eq!(target.status, SnapshotRecordStatus::Unchanged);
+    assert!(!target.metadata_changed);
     Ok(())
 }
 
