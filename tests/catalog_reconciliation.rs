@@ -66,6 +66,40 @@ fn stronger_digest_conflict_blocks_matching_weaker_evidence() {
 }
 
 #[test]
+fn whole_asset_size_conflict_blocks_exact_content_identity() {
+    let left_catalog = CatalogKey::new("publisher-one");
+    let right_catalog = CatalogKey::new("publisher-two");
+    let left_key = snapshot_key(&left_catalog, b"left size conflict");
+    let right_key = snapshot_key(&right_catalog, b"right size conflict");
+    let mut left_requirement = asset(&left_key, "left", "same.bin", None, Some([4; 20]));
+    left_requirement.expected.size = Some(64);
+    let mut right_requirement = asset(&right_key, "right", "same.bin", None, Some([4; 20]));
+    right_requirement.expected.size = Some(65);
+    let left = RequirementSnapshot {
+        catalog: left_catalog,
+        snapshot: left_key,
+        requirements: vec![left_requirement],
+    };
+    let right = RequirementSnapshot {
+        catalog: right_catalog,
+        snapshot: right_key,
+        requirements: vec![right_requirement],
+    };
+
+    let report = reconcile_requirements(&left, &right, &[]);
+
+    assert_eq!(
+        report.outcomes[0].status,
+        ReconciliationStatus::Contradictory
+    );
+    assert!(report.outcomes[0].relationship_candidate().is_none());
+    assert_eq!(
+        report.outcomes[0].evidence.contradictions,
+        [EvidenceField::Size]
+    );
+}
+
+#[test]
 fn weak_partial_evidence_is_only_a_candidate_and_scope_mismatch_is_unknown() {
     let crc_only = ExpectedEvidence {
         scope: EvidenceScope::WholeAsset,

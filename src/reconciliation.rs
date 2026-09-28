@@ -76,7 +76,10 @@ pub fn compare_expected_evidence(
     result.agreements = comparison.agreements;
     result.contradictions = comparison.contradictions;
 
-    if result.contradictions.contains(&EvidenceField::Sha1) {
+    if (left.scope == crate::domain::EvidenceScope::WholeAsset
+        && result.contradictions.contains(&EvidenceField::Size))
+        || result.contradictions.contains(&EvidenceField::Sha1)
+    {
         result.status = ReconciliationStatus::Contradictory;
     } else if result.agreements.contains(&EvidenceField::Sha1) {
         result.status = ReconciliationStatus::Compatible;
