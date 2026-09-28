@@ -199,7 +199,7 @@ impl SnapshotData {
             .into_iter()
             .map(|machine| {
                 let machine_name = machine.name.clone();
-                extensions.extend(machine.extensions.into_iter().map(stored_extension));
+                extensions.extend(stored_machine_extensions(&machine_name, machine.extensions));
                 let runtime_dependencies = machine
                     .device_refs
                     .iter()
@@ -439,6 +439,22 @@ fn stored_extension(ext: crate::mame::XmlExtension) -> StoredExtension {
         value: ext.value,
         location: ext.location,
     }
+}
+
+fn stored_machine_extensions(
+    machine_name: &str,
+    extensions: Vec<crate::mame::XmlExtension>,
+) -> Vec<StoredExtension> {
+    extensions
+        .into_iter()
+        .map(|extension| {
+            let mut extension = stored_extension(extension);
+            if extension.record_kind == "device_ref" {
+                extension.owner_set_name = Some(machine_name.to_owned());
+            }
+            extension
+        })
+        .collect()
 }
 
 fn stored_clrmamepro_extension(ext: crate::clrmamepro::Extension) -> StoredExtension {

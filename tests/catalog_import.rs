@@ -2027,7 +2027,7 @@ fn snapshot_diff_tracks_logiqx_game_extensions() -> Result<(), Box<dyn std::erro
 }
 
 #[test]
-fn snapshot_diff_does_not_attribute_device_ref_extensions_to_a_same_named_set()
+fn snapshot_diff_attributes_device_ref_extensions_to_the_owning_set()
 -> Result<(), Box<dyn std::error::Error>> {
     let (directory, database, _connection) = setup()?;
     let device_ref_v1 = directory.path().join("device-ref-v1.xml");
@@ -2067,9 +2067,21 @@ fn snapshot_diff_does_not_attribute_device_ref_extensions_to_a_same_named_set()
             .snapshot_key
             .ok_or("device-ref second snapshot missing")?,
     )?;
-    assert!(device_ref_diff.records.iter().all(|record| {
-        record.status == SnapshotRecordStatus::Unchanged && !record.metadata_changed
-    }));
+    let owner = device_ref_diff
+        .records
+        .iter()
+        .find(|record| record.set_name == "owner")
+        .ok_or("owner diff missing")?;
+    assert_eq!(owner.status, SnapshotRecordStatus::Changed);
+    assert!(owner.metadata_changed);
+
+    let target = device_ref_diff
+        .records
+        .iter()
+        .find(|record| record.set_name == "target")
+        .ok_or("target diff missing")?;
+    assert_eq!(target.status, SnapshotRecordStatus::Unchanged);
+    assert!(!target.metadata_changed);
     Ok(())
 }
 

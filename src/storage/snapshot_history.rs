@@ -337,7 +337,11 @@ fn records(
         result.sets.insert(set.set_name.clone(), set);
     }
     for extension in extensions {
+        let record_kind = extension.record_kind.clone();
+        let record_name = extension.record_name.clone();
         let value = serde_json::json!({
+            "record_kind": record_kind,
+            "record_name": record_name,
             "field": extension.field_name,
             "namespace": extension.namespace_uri,
             "value": json(&extension.raw_value_json),
@@ -348,11 +352,16 @@ fn records(
                 .entry((set, component_order))
                 .or_default()
                 .push(value),
-            _ => {
-                if let Some(record_name) = extension.record_name {
+            (Some(set), None) => result
+                .extensions
+                .entry(("set".to_owned(), set))
+                .or_default()
+                .push(value),
+            (None, _) => {
+                if let Some(record_name) = record_name {
                     result
                         .extensions
-                        .entry((extension.record_kind, record_name))
+                        .entry((record_kind, record_name))
                         .or_default()
                         .push(value);
                 }

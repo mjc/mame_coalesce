@@ -138,6 +138,33 @@ WHERE owner_set_name IS NULL
         AND requirement.asset_name = snapshot_extensions.record_name
   ) = 1;
 
+UPDATE snapshot_extensions
+SET owner_set_name = (
+        SELECT sets.set_name
+        FROM snapshot_sets AS sets
+        WHERE sets.snapshot_key = snapshot_extensions.snapshot_key
+          AND (sets.source_line, sets.source_column)
+              <= (snapshot_extensions.source_line, snapshot_extensions.source_column)
+        ORDER BY sets.source_line DESC, sets.source_column DESC
+        LIMIT 1
+    )
+WHERE owner_set_name IS NULL
+  AND record_kind = 'device_ref'
+  AND (
+      SELECT interpretation.format
+      FROM catalog_snapshots AS snapshot
+      JOIN parser_interpretations AS interpretation
+        ON interpretation.interpretation_key = snapshot.interpretation_key
+      WHERE snapshot.snapshot_key = snapshot_extensions.snapshot_key
+  ) = 'mame-listxml'
+  AND EXISTS (
+      SELECT 1
+      FROM snapshot_sets AS sets
+      WHERE sets.snapshot_key = snapshot_extensions.snapshot_key
+        AND (sets.source_line, sets.source_column)
+            <= (snapshot_extensions.source_line, snapshot_extensions.source_column)
+  );
+
 CREATE TRIGGER snapshot_extensions_are_immutable_update
 BEFORE UPDATE ON snapshot_extensions
 BEGIN

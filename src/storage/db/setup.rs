@@ -119,6 +119,26 @@ mod tests {
         sql_query(statement).execute(conn).is_err()
     }
 
+    fn assert_device_ref_extension_ownership(
+        conn: &mut SqliteConnection,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let owner = sql_query(
+            "SELECT owner_set_name AS value FROM snapshot_extensions \
+             WHERE snapshot_key = 'snapshot' AND record_kind = 'device_ref'",
+        )
+        .get_result::<TextRow>(conn)?;
+        assert_eq!(owner.value, "set");
+        let component_count = sql_query(
+            "SELECT COUNT(*) AS count FROM snapshot_extensions \
+             WHERE snapshot_key = 'snapshot' AND record_kind = 'device_ref' \
+               AND owner_component_order IS NULL",
+        )
+        .get_result::<CountRow>(conn)?
+        .count;
+        assert_eq!(component_count, 1);
+        Ok(())
+    }
+
     fn seed_then_delete_high_rebuilt_ids(conn: &mut SqliteConnection) -> QueryResult<()> {
         conn.batch_execute(
             "INSERT INTO games (id, name) VALUES (23, 'surviving-game');
@@ -1028,7 +1048,8 @@ mod tests {
                   source_line, source_column)
                  VALUES ('snapshot', 'rom', 'rom.bin', 'future', '\"value\"', 2, 3),
                         ('snapshot', 'rom', 'rom.bin', 'future', '\"value\"', 2, 3),
-                        ('snapshot', 'rom', 'rom.bin', 'element:future', '{}', 3, 4);
+                        ('snapshot', 'rom', 'rom.bin', 'element:future', '{}', 3, 4),
+                        ('snapshot', 'device_ref', 'target', 'future', '\"one\"', 4, 5);
              INSERT INTO parser_interpretations (interpretation_key, format)
                  VALUES ('no-intro-interpretation', 'no-intro-pc-xml');
              INSERT INTO catalog_snapshots
@@ -1053,19 +1074,22 @@ mod tests {
 
         let owner = sql_query(
             "SELECT owner_set_name AS value FROM snapshot_extensions \
-             WHERE snapshot_key = 'snapshot' AND field_name = 'future' AND owner_set_name IS NOT NULL",
+             WHERE snapshot_key = 'snapshot' AND record_kind = 'rom' \
+               AND field_name = 'future' AND owner_set_name IS NOT NULL",
         )
         .get_result::<TextRow>(&mut conn)?;
         assert_eq!(owner.value, "set");
         let component = sql_query(
             "SELECT owner_component_order AS value FROM snapshot_extensions \
-             WHERE snapshot_key = 'snapshot' AND field_name = 'future' AND owner_set_name IS NOT NULL",
+             WHERE snapshot_key = 'snapshot' AND record_kind = 'rom' \
+               AND field_name = 'future' AND owner_set_name IS NOT NULL",
         )
         .get_result::<TextRow>(&mut conn)?;
         assert_eq!(component.value, "0");
+        assert_device_ref_extension_ownership(&mut conn)?;
         let duplicate_owner_count = sql_query(
             "SELECT COUNT(*) AS count FROM snapshot_extensions \
-             WHERE snapshot_key = 'snapshot' AND owner_set_name IS NOT NULL",
+             WHERE snapshot_key = 'snapshot' AND owner_component_order IS NOT NULL",
         )
         .get_result::<CountRow>(&mut conn)?
         .count;
