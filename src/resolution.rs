@@ -8,8 +8,8 @@ use crate::domain::{DatRom, EvidenceProvenance, EvidenceScope, SourceFile, Sourc
 
 pub use crate::domain::MatchingPolicy;
 
-/// Upper bound for evidence details retained across one resolution result.
-pub const MAX_RETAINED_EVIDENCE_DETAILS: usize = 256;
+/// Per-category cap for evidence assessments and duplicate copies in one resolution result.
+pub const MAX_RETAINED_EVIDENCE_DETAILS_PER_KIND: usize = 256;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MatchStrength {
@@ -276,8 +276,8 @@ pub fn resolve(
     match policy {
         MatchingPolicy::EvidenceAware => {
             let evidence_index = EvidenceIndex::new(&sources);
-            let mut assessment_budget = MAX_RETAINED_EVIDENCE_DETAILS;
-            let mut copy_budget = MAX_RETAINED_EVIDENCE_DETAILS;
+            let mut assessment_budget = MAX_RETAINED_EVIDENCE_DETAILS_PER_KIND;
+            let mut copy_budget = MAX_RETAINED_EVIDENCE_DETAILS_PER_KIND;
             requirements
                 .into_iter()
                 .map(|requirement| {
@@ -303,8 +303,8 @@ pub fn resolve(
                         .push(*source);
                 }
             }
-            let mut assessment_budget = MAX_RETAINED_EVIDENCE_DETAILS;
-            let mut copy_budget = MAX_RETAINED_EVIDENCE_DETAILS;
+            let mut assessment_budget = MAX_RETAINED_EVIDENCE_DETAILS_PER_KIND;
+            let mut copy_budget = MAX_RETAINED_EVIDENCE_DETAILS_PER_KIND;
             requirements
                 .into_iter()
                 .map(|requirement| {
@@ -1581,10 +1581,10 @@ mod tests {
                 },
             );
 
-        assert_eq!(retained_assessments, MAX_RETAINED_EVIDENCE_DETAILS);
+        assert_eq!(retained_assessments, MAX_RETAINED_EVIDENCE_DETAILS_PER_KIND);
         assert_eq!(
             omitted_assessments,
-            300 * 300 - MAX_RETAINED_EVIDENCE_DETAILS
+            300 * 300 - MAX_RETAINED_EVIDENCE_DETAILS_PER_KIND
         );
         let retained_copies = resolutions
             .iter()
@@ -1595,7 +1595,7 @@ mod tests {
                 _ => 0,
             })
             .sum::<usize>();
-        assert_eq!(retained_copies, MAX_RETAINED_EVIDENCE_DETAILS);
+        assert_eq!(retained_copies, MAX_RETAINED_EVIDENCE_DETAILS_PER_KIND);
         let omitted_copies = resolutions
             .iter()
             .map(|resolution| match &resolution.status {
@@ -1606,6 +1606,9 @@ mod tests {
                 _ => 0,
             })
             .sum::<usize>();
-        assert_eq!(omitted_copies, 300 * 300 - MAX_RETAINED_EVIDENCE_DETAILS);
+        assert_eq!(
+            omitted_copies,
+            300 * 300 - MAX_RETAINED_EVIDENCE_DETAILS_PER_KIND
+        );
     }
 }
