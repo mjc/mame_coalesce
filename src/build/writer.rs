@@ -303,7 +303,7 @@ impl SecureOutputDirectory {
                 Ok(next) => next,
                 Err(error) if error == Errno::NOENT => {
                     match fs::mkdirat(parent.as_fd(), *component, Mode::from_raw_mode(0o755)) {
-                        Ok(()) => {}
+                        Ok(()) => parent.sync_all()?,
                         Err(error) if error == Errno::EXIST => {}
                         Err(error) => return Err(std::io::Error::from(error).into()),
                     }
@@ -631,6 +631,7 @@ impl StagedZip {
             self.file_name.as_str(),
         )
         .map_err(std::io::Error::from)?;
+        self.parent.sync_all()?;
         self.committed = true;
         Ok(())
     }
