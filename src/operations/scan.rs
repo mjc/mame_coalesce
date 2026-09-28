@@ -241,6 +241,9 @@ fn scan_bare_file(
     let physical_path = SourcePhysicalPath::capture(path)?;
     let mut file = std::fs::File::open(physical_path.as_path())?;
     let before = bare_file_cache_stamp(&file.metadata()?);
+    #[cfg(not(unix))]
+    let _ = (cached_file, force_rehash);
+    #[cfg(unix)]
     if !force_rehash
         && let (BareFileCacheState::Available(current), Some(cached)) = (before, cached_file)
         && cached.stamp == current
@@ -328,6 +331,7 @@ fn bare_file_cache_stamp(_metadata: &std::fs::Metadata) -> BareFileCacheState {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BareFileCacheState {
+    #[cfg(unix)]
     Available(BareFileCacheStamp),
     #[cfg(not(unix))]
     Unavailable,
@@ -337,6 +341,7 @@ impl BareFileCacheState {
     #[cfg(not(unix))]
     const fn into_stamp(self) -> Option<BareFileCacheStamp> {
         match self {
+            #[cfg(unix)]
             Self::Available(stamp) => Some(stamp),
             #[cfg(not(unix))]
             Self::Unavailable => None,
