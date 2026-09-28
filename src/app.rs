@@ -10,7 +10,7 @@ use diesel::{
 use serde::Serialize;
 
 use crate::{
-    build::{planner::plan_build as build_plan, write_plan_with_container},
+    build::write_plan_with_container,
     database::Database,
     disk::{
         self, DiskDigestScope, DiskIdentitySha1, DiskName, DiskObservation, DiskRequirement,
@@ -20,7 +20,7 @@ use crate::{
         ArtifactOutcome, ArtifactResult, AuditReport, BuildMode, BuildReport, BuildRequest,
         CatalogKey, CatalogScope, ImportRunKey, MatchingPolicy, MissingContentPolicy,
         ObservationBasis, OutputContainer, PlanOutcome, PublishingSourceKey, ScanRunKey,
-        SnapshotKey, SourceRoot, ZipCompression,
+        SetSelection, SnapshotKey, SourceRoot, ZipCompression,
     },
     operations,
     storage::repositories::{BuildRepository, DataFileSelector, SourceRepository},
@@ -168,6 +168,7 @@ pub struct BuildWorkflowRequest {
     pub compression: ZipCompression,
     pub dry_run: bool,
     pub strict: bool,
+    pub set_selection: SetSelection,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -189,6 +190,7 @@ pub struct BuildPlanRequest {
     pub mode: BuildMode,
     pub matching_policy: MatchingPolicy,
     pub missing_policy: MissingContentPolicy,
+    pub set_selection: SetSelection,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -204,6 +206,7 @@ pub struct AuditRequest {
     pub refresh: AuditRefresh,
     pub matching_policy: MatchingPolicy,
     pub jobs: usize,
+    pub set_selection: SetSelection,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -217,6 +220,7 @@ pub struct RunWorkflowRequest {
     pub jobs: usize,
     pub dry_run: bool,
     pub strict: bool,
+    pub set_selection: SetSelection,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -864,6 +868,7 @@ pub fn build_with_roots_and_container(
             } else {
                 MissingContentPolicy::AllowPartial
             },
+            set_selection: request.set_selection.clone(),
         },
         selection,
     )?;
@@ -960,16 +965,19 @@ pub fn plan_build_with_roots(
         .iter()
         .map(|(_, root)| root.clone())
         .collect::<Vec<_>>();
-    let dat_roms =
-        BuildRepository::new(database.pool()).load_dat_roms(dat_selector.repository_selector())?;
+    let build_repository = BuildRepository::new(database.pool());
+    let available_set_names =
+        build_repository.load_set_names(dat_selector.repository_selector())?;
+    let dat_roms = build_repository.load_dat_roms(dat_selector.repository_selector())?;
     let repository = SourceRepository::new(database.pool());
     let source_files = if let [source_root] = source_roots.as_slice() {
         repository.load_source_files_for_root(source_root)?
     } else {
         repository.load_source_files_for_roots(&source_roots)?
     };
-    let plan = build_plan(
+    let plan = crate::build::planner::plan_build_with_set_names(
         &dat_roms,
+        &available_set_names,
         &source_files,
         &BuildRequest {
             dat_name: dat_selector.value().to_owned(),
@@ -977,6 +985,7 @@ pub fn plan_build_with_roots(
             mode: request.mode,
             matching_policy: request.matching_policy,
             missing_policy: request.missing_policy,
+            set_selection: request.set_selection.clone(),
         },
     );
     Ok(plan)
@@ -1013,6 +1022,15 @@ pub fn audit_with_roots_and_progress(
     selection: &SourceRootSelection,
     progress: &(impl Fn(ScanProgressEvent) + Sync),
 ) -> crate::Result<AuditReport> {
+    let selection_issues =
+        catalog_set_selection_issues(database, &request.dat_path, &request.set_selection)?;
+    if !selection_issues.is_empty() {
+        return Ok(AuditReport::new(
+            ObservationBasis::Cached,
+            invalid_set_selection_report(selection_issues),
+        ));
+    }
+
     let observation_basis = match request.refresh {
         AuditRefresh::Cached => ObservationBasis::Cached,
         AuditRefresh::Refresh => {
@@ -1042,6 +1060,7 @@ pub fn audit_with_roots_and_progress(
             mode: BuildMode::ParentBundles,
             matching_policy: request.matching_policy,
             missing_policy: MissingContentPolicy::AllowPartial,
+            set_selection: request.set_selection.clone(),
         },
         selection,
     )?;
@@ -1130,6 +1149,17 @@ pub fn run_with_roots_and_container_and_progress(
             dat_path: request.dat_path.clone(),
         },
     )?;
+    let selection_issues =
+        catalog_set_selection_issues(database, &request.dat_path, &request.set_selection)?;
+    if !selection_issues.is_empty() {
+        return Ok(BuildWorkflowReport {
+            written_paths: Vec::new(),
+            artifact_results: Vec::new(),
+            build_report: invalid_set_selection_report(selection_issues),
+            scan_reports: Vec::new(),
+            scan_report: None,
+        });
+    }
     let scan_reports = scan_sources_with_progress(database, selection, request.jobs, progress)?;
     let scan_report = scan_reports.first().cloned().ok_or_else(|| {
         crate::Error::Io(std::io::Error::new(
@@ -1161,6 +1191,32 @@ pub fn run_with_roots_and_container_and_progress(
             scan_reports,
             source: Box::new(source),
         }),
+    }
+}
+
+fn catalog_set_selection_issues(
+    database: &Database,
+    dat_path: &Utf8PathBuf,
+    selection: &SetSelection,
+) -> crate::Result<Vec<crate::domain::SetSelectionIssue>> {
+    if matches!(selection, SetSelection::All) {
+        return Ok(Vec::new());
+    }
+    let dat_selector = resolve_dat_selector(dat_path);
+    let available =
+        BuildRepository::new(database.pool()).load_set_names(dat_selector.repository_selector())?;
+    Ok(crate::build::planner::validate_set_selection(
+        selection, &available,
+    ))
+}
+
+fn invalid_set_selection_report(issues: Vec<crate::domain::SetSelectionIssue>) -> BuildReport {
+    BuildReport {
+        outcome: crate::domain::PlanOutcome::Blocked(
+            crate::domain::PlanBlockReason::InvalidSetSelection,
+        ),
+        set_selection_issues: issues,
+        ..BuildReport::default()
     }
 }
 
@@ -1197,6 +1253,7 @@ mod tests {
                 jobs: 1,
                 dry_run: false,
                 strict: false,
+                set_selection: SetSelection::All,
             },
         ) {
             Ok(_) => return Err("writing beneath a regular file unexpectedly succeeded".into()),
@@ -1228,6 +1285,7 @@ mod tests {
                 jobs: 1,
                 dry_run: true,
                 strict: false,
+                set_selection: SetSelection::All,
             },
         )?;
         let scan = report
@@ -1266,6 +1324,7 @@ mod tests {
                 jobs: 1,
                 dry_run: false,
                 strict: false,
+                set_selection: SetSelection::All,
             },
             &|event| {
                 if matches!(event, ScanProgressEvent::Advanced) {
@@ -1350,6 +1409,7 @@ mod tests {
                 mode: BuildMode::PerGame,
                 matching_policy: MatchingPolicy::Sha1Compatibility,
                 missing_policy: MissingContentPolicy::RequireComplete,
+                set_selection: SetSelection::All,
             },
         )?;
 
@@ -1357,6 +1417,109 @@ mod tests {
         assert_eq!(plan.report.matched_roms, 1);
         assert_eq!(plan.groups.len(), 1);
         assert!(!destination_path.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn set_selection_uses_empty_catalog_sets_and_rejects_typos_before_scanning()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let root = Utf8PathBuf::try_from(temp.path().to_path_buf())?;
+        let dat_path = root.join("catalog.dat");
+        let source_path = root.join("roms");
+        std::fs::create_dir(&source_path)?;
+        std::fs::write(
+            &dat_path,
+            r#"<?xml version="1.0"?><datafile><header><name>Fixture</name></header><game name="empty-set"><description>Empty</description></game></datafile>"#,
+        )?;
+        let database = Database::in_memory()?;
+        import_dat(
+            &database,
+            &DatImportRequest {
+                dat_path: dat_path.clone(),
+            },
+        )?;
+
+        let empty_set_plan = plan_build(
+            &database,
+            &BuildPlanRequest {
+                dat_path: dat_path.clone(),
+                source_path: source_path.clone(),
+                mode: BuildMode::PerGame,
+                matching_policy: MatchingPolicy::Sha1Compatibility,
+                missing_policy: MissingContentPolicy::AllowPartial,
+                set_selection: SetSelection::exact_names([crate::domain::SetName::new(
+                    "empty-set",
+                )]),
+            },
+        )?;
+        assert_eq!(empty_set_plan.report.outcome, PlanOutcome::Ready);
+        assert!(empty_set_plan.report.set_selection_issues.is_empty());
+
+        let progress_events = std::sync::Mutex::new(Vec::new());
+        let request = RunWorkflowRequest {
+            dat_path: dat_path.clone(),
+            source_path: source_path.clone(),
+            destination_path: root.join("output"),
+            mode: BuildMode::PerGame,
+            compression: ZipCompression::Deflate,
+            jobs: 1,
+            dry_run: false,
+            strict: false,
+            set_selection: SetSelection::exact_names([crate::domain::SetName::new("typo")]),
+        };
+        let run_report = run_with_roots_and_progress(
+            &database,
+            &request,
+            &SourceRootSelection::single(source_path.clone()),
+            &|event| {
+                progress_events
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(event);
+            },
+        )?;
+        assert_eq!(
+            run_report.build_report.outcome,
+            PlanOutcome::Blocked(crate::domain::PlanBlockReason::InvalidSetSelection)
+        );
+        assert!(
+            progress_events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty()
+        );
+
+        let audit_progress_events = std::sync::Mutex::new(Vec::new());
+        let audit = audit_with_roots_and_progress(
+            &database,
+            &AuditRequest {
+                dat_path,
+                source_path: source_path.clone(),
+                refresh: AuditRefresh::Refresh,
+                matching_policy: MatchingPolicy::Sha1Compatibility,
+                jobs: 1,
+                set_selection: SetSelection::exact_names([crate::domain::SetName::new("typo")]),
+            },
+            &SourceRootSelection::single(source_path),
+            &|event| {
+                audit_progress_events
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(event);
+            },
+        )?;
+        assert_eq!(
+            audit.report().outcome,
+            PlanOutcome::Blocked(crate::domain::PlanBlockReason::InvalidSetSelection)
+        );
+        assert_eq!(audit.report().set_selection_issues.len(), 1);
+        assert!(
+            audit_progress_events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty()
+        );
         Ok(())
     }
 }
@@ -1398,6 +1561,7 @@ fn build_workflow_request_from_run(request: &RunWorkflowRequest) -> BuildWorkflo
         compression: request.compression,
         dry_run: request.dry_run,
         strict: request.strict,
+        set_selection: request.set_selection.clone(),
     }
 }
 

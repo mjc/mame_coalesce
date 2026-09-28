@@ -4,17 +4,53 @@ use crate::{
     domain::{
         BuildPlan, BuildReport, BuildRequest, DatRom, DuplicateMatch, LogicalEntry, LogicalPath,
         MissingContentPolicy, MissingRom, OutputGroup, PlanBlockReason, PlanOutcome,
-        SelectionProvenance, SourceFile,
+        SelectionProvenance, SetSelection, SetSelectionIssue, SourceFile,
     },
     resolution::{self, RequirementResolution, ResolutionStatus},
 };
 
+/// Plan after validating selected names against the catalog's complete set list.
 #[must_use]
-pub fn plan_build(
+pub fn plan_build_with_set_names(
+    dat_roms: &[DatRom],
+    available_set_names: &std::collections::BTreeSet<crate::domain::SetName>,
+    source_files: &[SourceFile],
+    request: &BuildRequest,
+) -> BuildPlan {
+    let set_selection_issues = validate_set_selection(&request.set_selection, available_set_names);
+    if !set_selection_issues.is_empty() {
+        let report = BuildReport {
+            outcome: PlanOutcome::Blocked(PlanBlockReason::InvalidSetSelection),
+            set_selection_issues,
+            ..BuildReport::default()
+        };
+        let mut plan = BuildPlan {
+            groups: Vec::new(),
+            report,
+        };
+        plan.report.validation_issues = crate::build::validation::inspect_plan(&plan);
+        return plan;
+    }
+
+    plan_build_selected(dat_roms, source_files, request)
+}
+
+fn plan_build_selected(
     dat_roms: &[DatRom],
     source_files: &[SourceFile],
     request: &BuildRequest,
 ) -> BuildPlan {
+    let selected_dat_roms = match &request.set_selection {
+        SetSelection::All => None,
+        SetSelection::ExactNames(_) => Some(
+            dat_roms
+                .iter()
+                .filter(|rom| request.set_selection.includes(rom.key.set()))
+                .cloned()
+                .collect::<Vec<_>>(),
+        ),
+    };
+    let dat_roms = selected_dat_roms.as_deref().unwrap_or(dat_roms);
     let resolutions = resolution::resolve_across_roots(
         dat_roms,
         source_files,
@@ -45,6 +81,22 @@ pub fn plan_build(
         plan.report.outcome = PlanOutcome::Blocked(PlanBlockReason::InvalidPlan);
     }
     plan
+}
+
+#[must_use]
+pub fn validate_set_selection(
+    selection: &SetSelection,
+    available_set_names: &std::collections::BTreeSet<crate::domain::SetName>,
+) -> Vec<SetSelectionIssue> {
+    match selection {
+        SetSelection::All => Vec::new(),
+        SetSelection::ExactNames(names) => names
+            .iter()
+            .filter(|name| !available_set_names.contains(*name))
+            .cloned()
+            .map(|name| SetSelectionIssue::UnknownSetName { name })
+            .collect(),
+    }
 }
 
 fn plan_logical_entries(
@@ -151,6 +203,14 @@ mod tests {
     };
     use proptest::prelude::*;
 
+    fn plan_build(
+        dat_roms: &[DatRom],
+        source_files: &[SourceFile],
+        request: &BuildRequest,
+    ) -> BuildPlan {
+        plan_build_selected(dat_roms, source_files, request)
+    }
+
     #[derive(Clone, Copy)]
     enum SourceKind {
         BareFile,
@@ -169,6 +229,7 @@ mod tests {
             mode,
             matching_policy: MatchingPolicy::Sha1Compatibility,
             missing_policy: MissingContentPolicy::AllowPartial,
+            set_selection: crate::domain::SetSelection::All,
         }
     }
 
@@ -285,6 +346,36 @@ mod tests {
         assert!(plan.report.missing_roms.is_empty());
         assert!(plan.groups.is_empty());
         assert!(!plan.has_outputs());
+    }
+
+    #[test]
+    fn unknown_exact_set_names_block_the_plan_with_actionable_diagnostics() {
+        let dat_roms = [rom("known-set", None, "game.rom", "sha1")];
+        let mut request = request(BuildMode::ParentBundles);
+        request.set_selection = SetSelection::exact_names([
+            crate::domain::SetName::new("known-set"),
+            crate::domain::SetName::new("misspelled-set"),
+        ]);
+
+        let plan = plan_build_with_set_names(
+            &dat_roms,
+            &[crate::domain::SetName::new("known-set")].into(),
+            &[],
+            &request,
+        );
+
+        assert_eq!(
+            plan.report.outcome,
+            PlanOutcome::Blocked(PlanBlockReason::InvalidSetSelection)
+        );
+        assert_eq!(
+            plan.report.set_selection_issues,
+            [SetSelectionIssue::UnknownSetName {
+                name: crate::domain::SetName::new("misspelled-set")
+            }]
+        );
+        assert!(plan.report.resolutions.is_empty());
+        assert!(plan.groups.is_empty());
     }
 
     #[test]

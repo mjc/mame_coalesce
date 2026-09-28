@@ -33,7 +33,22 @@ Common options:
 --missing warn
 --missing fail
 --dry-run
+--set "Game Set Name"
 ```
+
+Build and audit commands accept repeatable `--set NAME` options to restrict
+planning to exact set names in the selected DAT:
+
+```sh
+mame_coalesce build catalog.dat /roms /out --set "Game Set Name" --set "Another Set"
+mame_coalesce --cache /tmp/coalesce.db audit "DAT Header Name" /roms --set "Game Set Name"
+```
+
+Set names are the DAT game/set names, not the DAT header title. Matching is
+exact and case-sensitive, and selection is scoped to the chosen catalog even
+when another imported DAT contains the same set name. Omitting `--set` keeps
+the existing behavior and plans every set. Year, manufacturer, BIOS, and
+`romof` are retained as catalog metadata but are not currently planner filters.
 
 Explicit cache maintenance commands are available for advanced workflows:
 

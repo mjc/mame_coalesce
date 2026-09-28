@@ -7,7 +7,10 @@ use mame_coalesce::{
         RunWorkflowRequest, SourceRootSelection,
     },
     database::Database,
-    domain::{BuildMode, MatchingPolicy, MissingContentPolicy, ObservationBasis, ZipCompression},
+    domain::{
+        BuildMode, MatchingPolicy, MissingContentPolicy, ObservationBasis, SetSelection,
+        ZipCompression,
+    },
     resolution::ResolutionStatus,
 };
 
@@ -103,6 +106,7 @@ fn build_and_audit_resolve_across_ordered_canonical_roots_and_dedup_overlap()
     );
 
     let build_request = BuildWorkflowRequest {
+        set_selection: mame_coalesce::domain::SetSelection::All,
         dat_path: dat.clone(),
         source_path: outer.clone(),
         destination_path: root.join("output"),
@@ -133,6 +137,7 @@ fn build_and_audit_resolve_across_ordered_canonical_roots_and_dedup_overlap()
     let repeated_plan = app::plan_build_with_roots(
         &database,
         &BuildPlanRequest {
+            set_selection: mame_coalesce::domain::SetSelection::All,
             dat_path: dat.clone(),
             source_path: outer.clone(),
             mode: BuildMode::ParentBundles,
@@ -163,6 +168,7 @@ fn build_and_audit_resolve_across_ordered_canonical_roots_and_dedup_overlap()
     let audit = app::audit_with_roots_and_progress(
         &database,
         &AuditRequest {
+            set_selection: mame_coalesce::domain::SetSelection::All,
             dat_path: dat.clone(),
             source_path: outer.clone(),
             refresh: AuditRefresh::Refresh,
@@ -189,6 +195,7 @@ fn build_and_audit_resolve_across_ordered_canonical_roots_and_dedup_overlap()
     let reversed_plan = app::plan_build_with_roots(
         &database,
         &BuildPlanRequest {
+            set_selection: mame_coalesce::domain::SetSelection::All,
             dat_path: dat.clone(),
             source_path: nested.clone(),
             mode: BuildMode::ParentBundles,
@@ -235,6 +242,7 @@ fn build_and_audit_resolve_across_ordered_canonical_roots_and_dedup_overlap()
     let single_root_plan = app::plan_build(
         &database,
         &BuildPlanRequest {
+            set_selection: mame_coalesce::domain::SetSelection::All,
             dat_path: dat,
             source_path: outer,
             mode: BuildMode::ParentBundles,
@@ -276,6 +284,7 @@ fn failed_root_scan_preserves_every_requested_cached_scope()
     let cached = app::plan_build(
         &database,
         &BuildPlanRequest {
+            set_selection: mame_coalesce::domain::SetSelection::All,
             dat_path: dat.clone(),
             source_path: first,
             mode: BuildMode::ParentBundles,
@@ -287,6 +296,7 @@ fn failed_root_scan_preserves_every_requested_cached_scope()
     let cached_multi = app::audit_with_roots_and_progress(
         &database,
         &AuditRequest {
+            set_selection: mame_coalesce::domain::SetSelection::All,
             dat_path: dat,
             source_path: roots.primary.clone(),
             refresh: AuditRefresh::Cached,
@@ -328,6 +338,7 @@ fn one_shot_reports_every_root_and_deduplicates_cross_root_file_symlinks()
         jobs: 1,
         dry_run: false,
         strict: false,
+        set_selection: SetSelection::All,
     };
     let roots = selection(first.clone(), vec![second]);
     let report = app::run_with_roots(&database, &request, &roots)?;
@@ -410,6 +421,7 @@ fn cached_resolution_uses_physical_identity_captured_during_scan()
             mode: BuildMode::ParentBundles,
             matching_policy: MatchingPolicy::Sha1Compatibility,
             missing_policy: MissingContentPolicy::AllowPartial,
+            set_selection: SetSelection::All,
         },
         &roots,
     )?;

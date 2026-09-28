@@ -1,7 +1,7 @@
 use camino::Utf8PathBuf;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use mame_coalesce::domain::{
-    BuildMode, CatalogScope, MatchingPolicy, OutputContainer, ZipCompression,
+    BuildMode, CatalogScope, MatchingPolicy, OutputContainer, SetName, SetSelection, ZipCompression,
 };
 
 #[derive(Parser)]
@@ -72,6 +72,18 @@ pub struct AuditArgs {
     pub matching_policy: MatchingPolicyArg,
     #[arg(long, value_enum, default_value_t = AuditFormatArg::Human, help = "Audit report format")]
     pub format: AuditFormatArg,
+    #[arg(
+        long = "set",
+        value_name = "NAME",
+        help = "Select this exact set name (repeatable)"
+    )]
+    pub set_names: Vec<String>,
+}
+
+impl AuditArgs {
+    pub fn set_selection(&self) -> SetSelection {
+        set_selection(&self.set_names)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]
@@ -266,6 +278,26 @@ pub struct BuildOptions {
         help = "Plan and report without writing files"
     )]
     pub dry_run: bool,
+    #[arg(
+        long = "set",
+        value_name = "NAME",
+        help = "Select this exact set name (repeatable)"
+    )]
+    pub set_names: Vec<String>,
+}
+
+impl BuildOptions {
+    pub fn set_selection(&self) -> SetSelection {
+        set_selection(&self.set_names)
+    }
+}
+
+fn set_selection(names: &[String]) -> SetSelection {
+    if names.is_empty() {
+        SetSelection::All
+    } else {
+        SetSelection::exact_names(names.iter().cloned().map(SetName::new))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]
