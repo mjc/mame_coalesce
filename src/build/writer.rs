@@ -5,13 +5,14 @@ use std::{
     path::PathBuf,
 };
 
-#[cfg(not(unix))]
-use std::fs::{self, create_dir_all};
+use std::fs;
 const MAX_ARCHIVE_STAGING_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use md5::Md5;
 use sha1::{Digest, Sha1};
+#[cfg(all(unix, test))]
+use std::os::unix::fs::DirBuilderExt;
 use xxhash_rust::xxh3::Xxh3;
 use zip::{ZipWriter, write::SimpleFileOptions};
 
@@ -22,8 +23,8 @@ use crate::build::validation::{
 };
 use crate::domain::{
     ArchiveBackend, ArchiveMemberSelector as PlannedArchiveMemberSelector, ArtifactOutcome,
-    ArtifactResult, BuildPlan, LogicalEntry, OutputGroup, PlanOutcome, SourceFingerprint,
-    SourceLocation, ZipCompression,
+    ArtifactResult, BuildPlan, LogicalEntry, OutputContainer, OutputGroup, PlanOutcome,
+    SourceFingerprint, SourceLocation, ZipCompression,
 };
 
 #[cfg(test)]
@@ -32,6 +33,11 @@ pub fn write_plan(plan: &BuildPlan, destination: &Utf8Path) -> crate::Result<Vec
     for result in write_plan_with_compression(plan, destination, ZipCompression::Deflate)? {
         match result.outcome {
             ArtifactOutcome::Completed => written.push(
+                Utf8PathBuf::try_from(PathBuf::from(result.path)).map_err(|_| {
+                    crate::Error::InvalidPath("artifact path is not UTF-8".to_owned())
+                })?,
+            ),
+            ArtifactOutcome::CompletedWithWarning { .. } => written.push(
                 Utf8PathBuf::try_from(PathBuf::from(result.path)).map_err(|_| {
                     crate::Error::InvalidPath("artifact path is not UTF-8".to_owned())
                 })?,
@@ -48,9 +54,19 @@ pub fn write_plan(plan: &BuildPlan, destination: &Utf8Path) -> crate::Result<Vec
     Ok(written)
 }
 
-pub fn write_plan_with_compression(
+#[cfg(test)]
+fn write_plan_with_compression(
     plan: &BuildPlan,
     destination: &Utf8Path,
+    compression: ZipCompression,
+) -> crate::Result<Vec<ArtifactResult>> {
+    write_plan_with_container(plan, destination, OutputContainer::Zip, compression)
+}
+
+pub fn write_plan_with_container(
+    plan: &BuildPlan,
+    destination: &Utf8Path,
+    container: OutputContainer,
     compression: ZipCompression,
 ) -> crate::Result<Vec<ArtifactResult>> {
     if plan.report.outcome != PlanOutcome::Ready || !plan.has_outputs() {
@@ -59,14 +75,19 @@ pub fn write_plan_with_compression(
 
     let validated = validate_plan(plan)?;
     let plan = validated.plan();
-    write_plan_with_hook(plan, destination, file_options(compression), &mut |_, _| {
-        Ok(())
-    })
+    write_plan_with_hook(
+        plan,
+        destination,
+        container,
+        file_options(compression),
+        &mut |_, _| Ok(()),
+    )
 }
 
 fn write_plan_with_hook(
     plan: &BuildPlan,
     destination: &Utf8Path,
+    container: OutputContainer,
     options: SimpleFileOptions,
     hook: &mut impl FnMut(usize, ArtifactPhase) -> io::Result<()>,
 ) -> crate::Result<Vec<ArtifactResult>> {
@@ -77,11 +98,11 @@ fn write_plan_with_hook(
         .iter()
         .map(Utf8PathBuf::as_path)
         .collect::<Vec<_>>();
-    let output_paths = zip_output_paths(plan, destination)?;
+    let output_paths = output_paths(plan, destination, container)?;
     // Handle-relative output is supported on Linux and macOS. Reject other
     // targets before opening or creating output.
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    let _ = (options, output_paths);
+    let _ = (container, options, output_paths);
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     return Err(
         io::Error::other("secure output writing is supported only on Linux and macOS").into(),
@@ -101,10 +122,10 @@ fn write_plan_with_hook(
                 #[cfg(unix)]
                 output_root: &output_root,
             };
-            match write_artifact(group, path, &mut artifact) {
-                Ok(()) => results.push(ArtifactResult {
+            match write_artifact(group, path, container, &mut artifact) {
+                Ok(outcome) => results.push(ArtifactResult {
                     path: path.to_string(),
-                    outcome: ArtifactOutcome::Completed,
+                    outcome,
                 }),
                 Err(crate::Error::ArtifactReplacedNotDurable { error }) => {
                     results.push(ArtifactResult {
@@ -146,6 +167,7 @@ enum ArtifactPhase {
     Write,
     Finalize,
     Replace,
+    StagedDirectorySync { depth: usize },
     DirectorySync,
 }
 
@@ -161,9 +183,21 @@ struct ArtifactContext<'a> {
 
 fn write_artifact(
     group: &OutputGroup,
+    path: &Utf8Path,
+    container: OutputContainer,
+    artifact: &mut ArtifactContext<'_>,
+) -> crate::Result<ArtifactOutcome> {
+    match container {
+        OutputContainer::Zip => write_zip_artifact(group, path, artifact),
+        OutputContainer::Directory => write_directory_artifact(group, path, artifact),
+    }
+}
+
+fn write_zip_artifact(
+    group: &OutputGroup,
     _path: &Utf8Path,
     artifact: &mut ArtifactContext<'_>,
-) -> crate::Result<()> {
+) -> crate::Result<ArtifactOutcome> {
     #[cfg(unix)]
     let (mut staged, file) = artifact
         .output_root
@@ -173,7 +207,7 @@ fn write_artifact(
         let parent = _path.parent().ok_or_else(|| {
             crate::Error::InvalidPath(format!("artifact has no parent directory: {_path}"))
         })?;
-        create_dir_all(parent)?;
+        fs::create_dir_all(parent)?;
         StagedArtifact::create(_path)?
     };
     let mut zip_writer = ZipWriter::new(BufWriter::new(file));
@@ -189,25 +223,69 @@ fn write_artifact(
     staged.replace(artifact.output_root, artifact.hook, artifact.artifact_index)?;
     #[cfg(not(unix))]
     staged.replace(_path)?;
-    Ok(())
+    Ok(ArtifactOutcome::Completed)
 }
 
-fn zip_output_paths(plan: &BuildPlan, destination: &Utf8Path) -> crate::Result<Vec<Utf8PathBuf>> {
+fn write_directory_artifact(
+    group: &OutputGroup,
+    path: &Utf8Path,
+    artifact: &mut ArtifactContext<'_>,
+) -> crate::Result<ArtifactOutcome> {
+    #[cfg(unix)]
+    {
+        let mut staged = artifact.output_root.stage_directory(group.path.as_str())?;
+        write_directory_group(group, &staged.directory, artifact)?;
+        (artifact.hook)(artifact.artifact_index, ArtifactPhase::Finalize)?;
+        (artifact.hook)(artifact.artifact_index, ArtifactPhase::Replace)?;
+        staged.replace(
+            artifact.output_root,
+            path,
+            artifact.hook,
+            artifact.artifact_index,
+        )
+    }
+    #[cfg(not(unix))]
+    {
+        let parent = path.parent().ok_or_else(|| {
+            crate::Error::InvalidPath(format!("artifact has no parent directory: {path}"))
+        })?;
+        fs::create_dir_all(parent)?;
+        let staged = StagedDirectory::create(path)?;
+        write_directory_group(group, staged.path(), artifact)?;
+        (artifact.hook)(artifact.artifact_index, ArtifactPhase::Finalize)?;
+        (artifact.hook)(artifact.artifact_index, ArtifactPhase::Replace)?;
+        staged.replace(path)
+    }
+}
+
+fn output_paths(
+    plan: &BuildPlan,
+    destination: &Utf8Path,
+    container: OutputContainer,
+) -> crate::Result<Vec<Utf8PathBuf>> {
+    let extension = match container {
+        OutputContainer::Zip => ".zip",
+        OutputContainer::Directory => "",
+    };
+    let kind = match container {
+        OutputContainer::Zip => "ZIP artifact",
+        OutputContainer::Directory => "directory artifact",
+    };
     let relative_paths = plan
         .groups
         .iter()
-        .map(|group| format!("{}.zip", group.path.as_str()))
+        .map(|group| format!("{}{extension}", group.path.as_str()))
         .collect::<Vec<_>>();
     let mut folded_paths = BTreeSet::new();
     for path in &relative_paths {
         if !is_safe_relative_path(path) {
             return Err(crate::Error::InvalidPath(format!(
-                "unsafe ZIP artifact path: {path}"
+                "unsafe {kind} path: {path}"
             )));
         }
         if !folded_paths.insert(path.to_ascii_lowercase()) {
             return Err(crate::Error::InvalidPath(format!(
-                "duplicate ZIP artifact path: {path}"
+                "duplicate {kind} path: {path}"
             )));
         }
     }
@@ -215,7 +293,7 @@ fn zip_output_paths(plan: &BuildPlan, destination: &Utf8Path) -> crate::Result<V
         for slash in path.match_indices('/').map(|(index, _)| index) {
             if folded_paths.contains(&path[..slash].to_ascii_lowercase()) {
                 return Err(crate::Error::InvalidPath(format!(
-                    "ZIP artifact file/directory conflict: {path}"
+                    "{kind} file/directory conflict: {path}"
                 )));
             }
         }
@@ -259,6 +337,7 @@ fn validate_zip_entry_name(name: &str) -> crate::Result<()> {
 #[cfg(unix)]
 struct SecureOutputDirectory {
     directory: File,
+    path: Utf8PathBuf,
     source_directories: Vec<File>,
 }
 
@@ -276,6 +355,7 @@ impl SecureOutputDirectory {
         let directory = open_directory(&destination, true)?;
         let output = Self {
             directory,
+            path: destination,
             source_directories,
         };
         output.ensure_disjoint()?;
@@ -444,6 +524,153 @@ impl SecureOutputDirectory {
             "could not allocate a private archive staging directory",
         )
         .into())
+    }
+
+    fn stage_directory(&self, relative: &str) -> crate::Result<StagedDirectory> {
+        use rustix::{
+            fs::{self, Mode, OFlags},
+            io::Errno,
+        };
+        use std::os::fd::AsFd;
+
+        self.ensure_disjoint()?;
+        let (parent, directory_name, parent_path) = self.open_parent(relative, true)?;
+        for _ in 0..10 {
+            let staging_name = format!(".{directory_name}.stage-{}", uuid::Uuid::new_v4());
+            match fs::mkdirat(
+                parent.as_fd(),
+                staging_name.as_str(),
+                Mode::from_raw_mode(0o700),
+            ) {
+                Ok(()) => {
+                    let directory = fs::openat(
+                        parent.as_fd(),
+                        staging_name.as_str(),
+                        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+                        Mode::empty(),
+                    )
+                    .map_err(|error| {
+                        let _ = fs::unlinkat(
+                            parent.as_fd(),
+                            staging_name.as_str(),
+                            rustix::fs::AtFlags::REMOVEDIR,
+                        );
+                        std::io::Error::from(error)
+                    })?;
+                    let directory = File::from(directory);
+                    if let Err(error) = self.ensure_directory_disjoint(&directory) {
+                        let _ = remove_directory_at(&parent, &staging_name, &parent_path);
+                        return Err(error);
+                    }
+                    return Ok(StagedDirectory {
+                        parent,
+                        parent_path,
+                        staging_name,
+                        directory_name: directory_name.to_owned(),
+                        directory,
+                        state: StagedDirectoryState::Staged,
+                    });
+                }
+                Err(error) if error == Errno::EXIST => {}
+                Err(error) => return Err(std::io::Error::from(error).into()),
+            }
+        }
+        Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "could not allocate a staged directory beside its destination",
+        )
+        .into())
+    }
+
+    fn open_parent<'a>(
+        &self,
+        relative: &'a str,
+        create: bool,
+    ) -> crate::Result<(File, &'a str, Utf8PathBuf)> {
+        use rustix::{
+            fs::{self, Mode, OFlags},
+            io::Errno,
+        };
+        use std::os::fd::AsFd;
+
+        let components = relative.split('/').collect::<Vec<_>>();
+        let Some(name) = components.last().copied() else {
+            return Err(crate::Error::InvalidPath(format!(
+                "invalid output path: {relative}"
+            )));
+        };
+        let mut parent = self.directory.try_clone()?;
+        for component in &components[..components.len() - 1] {
+            let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW;
+            let next = match fs::openat(parent.as_fd(), *component, flags, Mode::empty()) {
+                Ok(next) => next,
+                Err(error) if create && error == Errno::NOENT => {
+                    match fs::mkdirat(parent.as_fd(), *component, Mode::from_raw_mode(0o755)) {
+                        Ok(()) => parent.sync_all()?,
+                        Err(error) if error == Errno::EXIST => {}
+                        Err(error) => return Err(std::io::Error::from(error).into()),
+                    }
+                    fs::openat(parent.as_fd(), *component, flags, Mode::empty())
+                        .map_err(std::io::Error::from)?
+                }
+                Err(error) => return Err(std::io::Error::from(error).into()),
+            };
+            parent = File::from(next);
+        }
+        let parent_path = self.path.join(components[..components.len() - 1].join("/"));
+        Ok((parent, name, parent_path))
+    }
+
+    fn create_directory_file(
+        &self,
+        directory: &File,
+        relative: &str,
+        staged_directories: &mut BTreeMap<Utf8PathBuf, File>,
+    ) -> crate::Result<File> {
+        use rustix::{
+            fs::{self, Mode, OFlags},
+            io::Errno,
+        };
+        use std::os::fd::AsFd;
+
+        self.ensure_directory_disjoint(directory)?;
+        let components = relative.split('/').collect::<Vec<_>>();
+        let Some(file_name) = components.last().copied() else {
+            return Err(crate::Error::InvalidPath(format!(
+                "invalid directory entry: {relative}"
+            )));
+        };
+        let mut parent = directory.try_clone()?;
+        let mut parent_relative = Utf8PathBuf::new();
+        for component in &components[..components.len() - 1] {
+            let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW;
+            let next = match fs::openat(parent.as_fd(), *component, flags, Mode::empty()) {
+                Ok(next) => next,
+                Err(error) if error == Errno::NOENT => {
+                    match fs::mkdirat(parent.as_fd(), *component, Mode::from_raw_mode(0o755)) {
+                        Ok(()) => parent.sync_all()?,
+                        Err(error) if error == Errno::EXIST => {}
+                        Err(error) => return Err(std::io::Error::from(error).into()),
+                    }
+                    fs::openat(parent.as_fd(), *component, flags, Mode::empty())
+                        .map_err(std::io::Error::from)?
+                }
+                Err(error) => return Err(std::io::Error::from(error).into()),
+            };
+            parent = File::from(next);
+            parent_relative.push(component);
+            staged_directories
+                .entry(parent_relative.clone())
+                .or_insert(parent.try_clone()?);
+        }
+        let file = fs::openat(
+            parent.as_fd(),
+            file_name,
+            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::from_raw_mode(0o600),
+        )
+        .map_err(std::io::Error::from)?;
+        Ok(File::from(file))
     }
 }
 
@@ -707,33 +934,113 @@ fn write_zip_group(
         artifact.output_root.ensure_disjoint()?;
         (artifact.hook)(artifact.artifact_index, ArtifactPhase::Write)?;
         zip_writer.start_file(entry.path.as_str(), artifact.options)?;
-        match source {
-            ResolvedSource::Bare { path } => {
-                (artifact.hook)(artifact.artifact_index, ArtifactPhase::Read)?;
-                let mut source = File::open(&path)?;
-                let mut content = ContentWriter::new(&mut *zip_writer);
-                io::copy(&mut source, &mut content)?;
-                verify_content(entry, content.finish())?;
-            }
-            ResolvedSource::Archive {
-                path,
-                backend,
-                selector,
-            } => {
-                let staged_path = staged
-                    .members
-                    .get(&(path.clone(), backend, selector))
-                    .ok_or_else(|| {
-                        crate::Error::InvalidPath(format!(
-                            "selected archive member was not staged: {path}"
-                        ))
-                    })?;
-                let spool = staged.spool.as_ref().ok_or_else(|| {
-                    crate::Error::InvalidPath("archive staging was not initialized".to_owned())
+        write_entry_content(entry, source, &staged, zip_writer, artifact)?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn write_directory_group(
+    group: &OutputGroup,
+    directory: &File,
+    artifact: &mut ArtifactContext<'_>,
+) -> crate::Result<()> {
+    let session = SourceSession::open(&group.entries, artifact.checked_destination)?;
+    let staged = stage_archive_sources(&session, artifact)?;
+    let mut staged_directories = BTreeMap::from([(Utf8PathBuf::new(), directory.try_clone()?)]);
+    for (entry, source) in group.entries.iter().zip(session.resolved) {
+        artifact.output_root.ensure_directory_disjoint(directory)?;
+        (artifact.hook)(artifact.artifact_index, ArtifactPhase::Write)?;
+        let mut output = artifact.output_root.create_directory_file(
+            directory,
+            entry.path.as_str(),
+            &mut staged_directories,
+        )?;
+        write_entry_content(entry, source, &staged, &mut output, artifact)?;
+        output.flush()?;
+        output.sync_all()?;
+    }
+    let mut staged_directories = staged_directories.into_iter().collect::<Vec<_>>();
+    staged_directories.sort_by_key(|(path, _)| std::cmp::Reverse(relative_path_depth(path)));
+    for (path, directory) in staged_directories {
+        (artifact.hook)(
+            artifact.artifact_index,
+            ArtifactPhase::StagedDirectorySync {
+                depth: relative_path_depth(&path),
+            },
+        )?;
+        directory.sync_all()?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn relative_path_depth(path: &Utf8Path) -> usize {
+    path.as_str()
+        .split('/')
+        .filter(|component| !component.is_empty())
+        .count()
+}
+
+#[cfg(not(unix))]
+fn write_directory_group(
+    group: &OutputGroup,
+    directory: &Utf8Path,
+    artifact: &mut ArtifactContext<'_>,
+) -> crate::Result<()> {
+    let session = SourceSession::open(&group.entries, artifact.checked_destination)?;
+    let staged = stage_archive_sources(&session, artifact)?;
+    for (entry, source) in group.entries.iter().zip(session.resolved) {
+        (artifact.hook)(artifact.artifact_index, ArtifactPhase::Write)?;
+        let path = directory.join(entry.path.as_str());
+        let parent = path.parent().ok_or_else(|| {
+            crate::Error::InvalidPath(format!("directory entry has no parent: {path}"))
+        })?;
+        fs::create_dir_all(parent)?;
+        let mut output = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)?;
+        write_entry_content(entry, source, &staged, &mut output, artifact)?;
+        output.flush()?;
+        output.sync_all()?;
+    }
+    Ok(())
+}
+
+fn write_entry_content(
+    entry: &LogicalEntry,
+    source: ResolvedSource,
+    staged: &StagedSources,
+    output: &mut dyn Write,
+    artifact: &mut ArtifactContext<'_>,
+) -> crate::Result<()> {
+    match source {
+        ResolvedSource::Bare { path } => {
+            (artifact.hook)(artifact.artifact_index, ArtifactPhase::Read)?;
+            let mut source = File::open(&path)?;
+            let mut content = ContentWriter::new(output);
+            io::copy(&mut source, &mut content)?;
+            verify_content(entry, content.finish())?;
+        }
+        ResolvedSource::Archive {
+            path,
+            backend,
+            selector,
+        } => {
+            let staged_path = staged
+                .members
+                .get(&(path.clone(), backend, selector))
+                .ok_or_else(|| {
+                    crate::Error::InvalidPath(format!(
+                        "selected archive member was not staged: {path}"
+                    ))
                 })?;
-                spool.ensure_disjoint()?;
-                io::copy(&mut spool.open_file(staged_path)?, zip_writer)?;
-            }
+            let spool = staged.spool.as_ref().ok_or_else(|| {
+                crate::Error::InvalidPath("archive staging was not initialized".to_owned())
+            })?;
+            spool.ensure_disjoint()?;
+            io::copy(&mut spool.open_file(staged_path)?, output)?;
         }
     }
     Ok(())
@@ -1063,6 +1370,353 @@ impl Drop for StagedArtifact {
     }
 }
 
+#[cfg(unix)]
+struct StagedDirectory {
+    parent: File,
+    parent_path: Utf8PathBuf,
+    staging_name: String,
+    directory_name: String,
+    directory: File,
+    state: StagedDirectoryState,
+}
+
+#[cfg(unix)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StagedDirectoryState {
+    Staged,
+    Replaced,
+}
+
+#[cfg(unix)]
+impl StagedDirectory {
+    fn replace(
+        &mut self,
+        output_root: &SecureOutputDirectory,
+        destination: &Utf8Path,
+        hook: &mut dyn FnMut(usize, ArtifactPhase) -> io::Result<()>,
+        artifact_index: usize,
+    ) -> crate::Result<ArtifactOutcome> {
+        use rustix::fs::{self, AtFlags};
+        use std::os::fd::AsFd;
+
+        output_root.ensure_directory_disjoint(&self.directory)?;
+        let existing = match fs::statat(
+            self.parent.as_fd(),
+            self.directory_name.as_str(),
+            AtFlags::SYMLINK_NOFOLLOW,
+        ) {
+            Ok(metadata) => Some(metadata),
+            Err(error) if error == rustix::io::Errno::NOENT => None,
+            Err(error) => return Err(std::io::Error::from(error).into()),
+        };
+        if let Some(metadata) = existing
+            && !rustix::fs::FileType::from_raw_mode(metadata.st_mode).is_dir()
+        {
+            return Err(crate::Error::InvalidPath(format!(
+                "directory output destination exists but is not a real directory: {destination}"
+            )));
+        }
+
+        let backup = if existing.is_some() {
+            Some(self.backup_existing()?)
+        } else {
+            None
+        };
+
+        if let Err(install_error) = self.install() {
+            return self.rollback(backup.as_ref(), destination, install_error);
+        }
+        self.state = StagedDirectoryState::Replaced;
+
+        (hook)(artifact_index, ArtifactPhase::DirectorySync).map_err(|error| {
+            directory_durability_error(destination, backup.as_ref(), error.to_string())
+        })?;
+        self.parent.sync_all().map_err(|error| {
+            directory_durability_error(destination, backup.as_ref(), error.to_string())
+        })?;
+
+        if let Some(backup) = backup
+            && let Err(error) = remove_directory_at(&self.parent, &backup.name, &self.parent_path)
+        {
+            let backup_path = backup.display_path(destination);
+            return Ok(ArtifactOutcome::CompletedWithWarning {
+                warning: format!(
+                    "new directory installed, but old output backup remains at {backup_path} (cleanup failed: {error})"
+                ),
+            });
+        }
+        Ok(ArtifactOutcome::Completed)
+    }
+
+    fn backup_existing(&self) -> crate::Result<DirectoryBackup> {
+        use rustix::fs::{self, Mode, OFlags};
+        use std::os::fd::AsFd;
+
+        for _ in 0..10 {
+            let name = format!(".{}.backup-{}", self.directory_name, uuid::Uuid::new_v4());
+            match fs::mkdirat(
+                self.parent.as_fd(),
+                name.as_str(),
+                Mode::from_raw_mode(0o700),
+            ) {
+                Ok(()) => {
+                    let directory = fs::openat(
+                        self.parent.as_fd(),
+                        name.as_str(),
+                        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+                        Mode::empty(),
+                    )
+                    .map_err(std::io::Error::from)?;
+                    let directory = File::from(directory);
+                    if let Err(error) = fs::renameat(
+                        self.parent.as_fd(),
+                        self.directory_name.as_str(),
+                        &directory,
+                        "previous-output",
+                    ) {
+                        let _ = fs::unlinkat(
+                            self.parent.as_fd(),
+                            name.as_str(),
+                            rustix::fs::AtFlags::REMOVEDIR,
+                        );
+                        return Err(std::io::Error::from(error).into());
+                    }
+                    return Ok(DirectoryBackup { name, directory });
+                }
+                Err(error) if error == rustix::io::Errno::EXIST => {}
+                Err(error) => return Err(std::io::Error::from(error).into()),
+            }
+        }
+        Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "could not allocate a private directory backup",
+        )
+        .into())
+    }
+
+    fn install(&self) -> io::Result<()> {
+        use rustix::fs::{self, RenameFlags};
+        use std::os::fd::AsFd;
+
+        fs::renameat_with(
+            self.parent.as_fd(),
+            self.staging_name.as_str(),
+            self.parent.as_fd(),
+            self.directory_name.as_str(),
+            RenameFlags::NOREPLACE,
+        )
+        .map_err(std::io::Error::from)
+    }
+
+    fn rollback(
+        &self,
+        backup: Option<&DirectoryBackup>,
+        destination: &Utf8Path,
+        install_error: io::Error,
+    ) -> crate::Result<ArtifactOutcome> {
+        use rustix::fs::{self, RenameFlags};
+        use std::os::fd::AsFd;
+
+        let Some(backup) = backup else {
+            return Err(install_error.into());
+        };
+        match fs::renameat_with(
+            &backup.directory,
+            "previous-output",
+            self.parent.as_fd(),
+            self.directory_name.as_str(),
+            RenameFlags::NOREPLACE,
+        ) {
+            Ok(()) => {
+                let _ = fs::unlinkat(
+                    self.parent.as_fd(),
+                    backup.name.as_str(),
+                    rustix::fs::AtFlags::REMOVEDIR,
+                );
+                Err(install_error.into())
+            }
+            Err(rollback_error) => Err(crate::Error::InvalidPath(format!(
+                "directory install failed ({install_error}); rollback failed ({rollback_error}); previous output preserved at {}",
+                backup.display_path(destination)
+            ))),
+        }
+    }
+}
+
+#[cfg(unix)]
+struct DirectoryBackup {
+    name: String,
+    directory: File,
+}
+
+#[cfg(unix)]
+impl DirectoryBackup {
+    fn display_path(&self, destination: &Utf8Path) -> Utf8PathBuf {
+        destination
+            .parent()
+            .unwrap_or_else(|| Utf8Path::new("."))
+            .join(&self.name)
+            .join("previous-output")
+    }
+}
+
+#[cfg(unix)]
+fn directory_durability_error(
+    destination: &Utf8Path,
+    backup: Option<&DirectoryBackup>,
+    error: String,
+) -> crate::Error {
+    let error = match backup {
+        Some(backup) => format!(
+            "{error}; previous output preserved at {}",
+            backup.display_path(destination)
+        ),
+        None => error,
+    };
+    crate::Error::ArtifactReplacedNotDurable { error }
+}
+
+#[cfg(unix)]
+impl Drop for StagedDirectory {
+    fn drop(&mut self) {
+        if self.state == StagedDirectoryState::Staged {
+            let _ = remove_directory_at(&self.parent, &self.staging_name, &self.parent_path);
+        }
+    }
+}
+
+#[cfg(unix)]
+fn remove_directory_at(parent: &File, name: &str, parent_path: &Utf8Path) -> io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        // macOS does not support traversing into a directory through /dev/fd/N.
+        // The path was canonicalized and every component opened without following
+        // symlinks before staging; concurrent local filesystem changes are outside
+        // the writer's threat model.
+        let _ = parent;
+        fs::remove_dir_all(parent_path.join(name))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        use std::os::fd::AsRawFd;
+
+        let _ = parent_path;
+
+        let path = PathBuf::from(format!("/dev/fd/{}/{name}", parent.as_raw_fd()));
+        fs::remove_dir_all(path)
+    }
+}
+
+#[cfg(not(unix))]
+struct StagedDirectory {
+    path: Utf8PathBuf,
+}
+
+#[cfg(not(unix))]
+impl StagedDirectory {
+    fn create(destination: &Utf8Path) -> crate::Result<Self> {
+        let parent = destination.parent().ok_or_else(|| {
+            crate::Error::InvalidPath(format!("artifact has no parent directory: {destination}"))
+        })?;
+        let name = destination.file_name().ok_or_else(|| {
+            crate::Error::InvalidPath(format!("artifact has no file name: {destination}"))
+        })?;
+        let path = create_private_directory(parent, &format!(".{name}.stage"))?;
+        Ok(Self { path })
+    }
+
+    fn path(&self) -> &Utf8Path {
+        &self.path
+    }
+
+    fn replace(self, destination: &Utf8Path) -> crate::Result<ArtifactOutcome> {
+        replace_staged_directory(&self.path, destination, &mut |from, to| {
+            fs::rename(from, to)
+        })
+    }
+}
+
+#[cfg(any(not(unix), test))]
+fn replace_staged_directory(
+    staged: &Utf8Path,
+    destination: &Utf8Path,
+    rename: &mut impl FnMut(&Utf8Path, &Utf8Path) -> io::Result<()>,
+) -> crate::Result<ArtifactOutcome> {
+    let metadata = match fs::symlink_metadata(destination) {
+        Ok(metadata) => Some(metadata),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.into()),
+    };
+    let Some(metadata) = metadata else {
+        rename(staged, destination)?;
+        return Ok(ArtifactOutcome::Completed);
+    };
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(crate::Error::InvalidPath(format!(
+            "directory output destination exists but is not a real directory: {destination}"
+        )));
+    }
+
+    let parent = destination.parent().ok_or_else(|| {
+        crate::Error::InvalidPath(format!("artifact has no parent directory: {destination}"))
+    })?;
+    let name = destination.file_name().ok_or_else(|| {
+        crate::Error::InvalidPath(format!("artifact has no file name: {destination}"))
+    })?;
+    let backup_root = create_private_directory(parent, &format!(".{name}.backup"))?;
+    let backup = backup_root.join("previous-output");
+    if let Err(error) = rename(destination, &backup) {
+        let _ = fs::remove_dir(&backup_root);
+        return Err(error.into());
+    }
+    if let Err(install_error) = rename(staged, destination) {
+        return match rename(&backup, destination) {
+            Ok(()) => {
+                let _ = fs::remove_dir(&backup_root);
+                Err(install_error.into())
+            }
+            Err(rollback_error) => Err(crate::Error::InvalidPath(format!(
+                "directory install failed ({install_error}); rollback failed ({rollback_error}); previous output preserved at {backup}"
+            ))),
+        };
+    }
+    if let Err(error) = fs::remove_dir_all(&backup_root) {
+        return Ok(ArtifactOutcome::CompletedWithWarning {
+            warning: format!(
+                "new directory installed, but old output backup remains at {backup} (cleanup failed: {error})"
+            ),
+        });
+    }
+    Ok(ArtifactOutcome::Completed)
+}
+
+#[cfg(not(unix))]
+impl Drop for StagedDirectory {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+#[cfg(any(not(unix), test))]
+fn create_private_directory(parent: &Utf8Path, prefix: &str) -> crate::Result<Utf8PathBuf> {
+    for _ in 0..10 {
+        let path = parent.join(format!("{prefix}-{}", uuid::Uuid::new_v4()));
+        let mut builder = fs::DirBuilder::new();
+        #[cfg(unix)]
+        builder.mode(0o700);
+        match builder.create(&path) {
+            Ok(()) => return Ok(path),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "could not allocate a private directory beside its destination",
+    )
+    .into())
+}
+
 #[derive(Clone, Debug)]
 enum ResolvedSource {
     Bare {
@@ -1345,6 +1999,338 @@ mod tests {
         let source_root = utf8_path(temp_dir.path())?.join("sources");
         fs::create_dir_all(&source_root)?;
         Ok(source_root.join(name))
+    }
+
+    #[test]
+    fn directory_output_reuses_unsafe_name_and_group_collision_validation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let root = utf8_path(temp_dir.path())?;
+        let source_root = root.join("sources");
+        fs::create_dir(&source_root)?;
+        let source_path = source_root.join("source.rom");
+        fs::write(&source_path, b"rom")?;
+        let entry = logical_entry("game.rom", source_file(&source_path));
+        let destination = root.join("output");
+
+        let unsafe_plan = BuildPlan {
+            groups: vec![OutputGroup {
+                path: LogicalPath::new("../escape"),
+                entries: vec![entry.clone()],
+            }],
+            report: BuildReport::default(),
+        };
+        let unsafe_result = write_plan_with_container(
+            &unsafe_plan,
+            &destination,
+            OutputContainer::Directory,
+            ZipCompression::Deflate,
+        );
+        let Err(error) = unsafe_result else {
+            return Err(io::Error::other("unsafe directory group paths must be rejected").into());
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("unsafe logical output group path")
+        );
+        assert!(!destination.exists());
+
+        let colliding_plan = BuildPlan {
+            groups: vec![
+                OutputGroup {
+                    path: LogicalPath::new("safe"),
+                    entries: vec![entry.clone()],
+                },
+                OutputGroup {
+                    path: LogicalPath::new("safe/nested"),
+                    entries: vec![entry],
+                },
+            ],
+            report: BuildReport::default(),
+        };
+        let collision_result = write_plan_with_container(
+            &colliding_plan,
+            &destination,
+            OutputContainer::Directory,
+            ZipCompression::Deflate,
+        );
+        let Err(error) = collision_result else {
+            return Err(io::Error::other("overlapping logical groups must be rejected").into());
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("directory artifact file/directory conflict"),
+            "{error}"
+        );
+        assert!(!destination.exists());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_output_rejects_symlinked_group_parent_without_touching_target()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = tempfile::tempdir()?;
+        let root = utf8_path(temp_dir.path())?;
+        let source_root = root.join("sources");
+        fs::create_dir(&source_root)?;
+        let source_path = source_root.join("source.rom");
+        fs::write(&source_path, b"rom")?;
+
+        let destination = root.join("output");
+        let output_parent = destination.join("nested");
+        fs::create_dir(&destination)?;
+        let outside = root.join("outside");
+        let outside_group = outside.join("set");
+        fs::create_dir_all(&outside_group)?;
+        let protected = outside_group.join("existing.rom");
+        fs::write(&protected, b"must remain untouched")?;
+        symlink(&outside, &output_parent)?;
+
+        let plan = BuildPlan {
+            groups: vec![OutputGroup {
+                path: LogicalPath::new("nested/set"),
+                entries: vec![logical_entry("game.rom", source_file(&source_path))],
+            }],
+            report: BuildReport::default(),
+        };
+
+        let results = write_plan_with_container(
+            &plan,
+            &destination,
+            OutputContainer::Directory,
+            ZipCompression::Deflate,
+        )?;
+
+        assert!(matches!(
+            results.first().map(|result| &result.outcome),
+            Some(ArtifactOutcome::Failed { .. })
+        ));
+        assert_eq!(fs::read(&protected)?, b"must remain untouched");
+        assert!(!outside_group.join("game.rom").exists());
+        assert_eq!(fs::read_link(output_parent)?, outside);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_output_replaces_existing_group_through_pinned_parent()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let root = utf8_path(temp_dir.path())?;
+        let source_root = root.join("sources");
+        fs::create_dir(&source_root)?;
+        let source_path = source_root.join("source.rom");
+        fs::write(&source_path, b"new bytes")?;
+
+        let destination = root.join("output");
+        let existing_group = destination.join("nested/set");
+        fs::create_dir_all(&existing_group)?;
+        fs::write(existing_group.join("old.rom"), b"old bytes")?;
+
+        let plan = BuildPlan {
+            groups: vec![OutputGroup {
+                path: LogicalPath::new("nested/set"),
+                entries: vec![logical_entry("new.rom", source_file(&source_path))],
+            }],
+            report: BuildReport::default(),
+        };
+
+        let results = write_plan_with_container(
+            &plan,
+            &destination,
+            OutputContainer::Directory,
+            ZipCompression::Deflate,
+        )?;
+
+        assert_eq!(results[0].outcome, ArtifactOutcome::Completed);
+        assert_eq!(fs::read(existing_group.join("new.rom"))?, b"new bytes");
+        assert!(!existing_group.join("old.rom").exists());
+        assert_eq!(fs::read_dir(destination.join("nested"))?.count(), 1);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn staged_directory_sync_failure_preserves_existing_output()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let root = utf8_path(temp_dir.path())?;
+        let source_root = root.join("sources");
+        fs::create_dir(&source_root)?;
+        let source_path = source_root.join("source.rom");
+        fs::write(&source_path, b"new bytes")?;
+
+        let destination = root.join("output");
+        let existing_group = destination.join("nested/set");
+        fs::create_dir_all(&existing_group)?;
+        fs::write(existing_group.join("old.rom"), b"old bytes")?;
+        let plan = BuildPlan {
+            groups: vec![OutputGroup {
+                path: LogicalPath::new("nested/set"),
+                entries: vec![
+                    logical_entry("subdir/nested/new.rom", source_file(&source_path)),
+                    logical_entry("other.rom", source_file(&source_path)),
+                ],
+            }],
+            report: BuildReport::default(),
+        };
+        let mut sync_depths = Vec::new();
+        let mut hook = |_, phase| match phase {
+            ArtifactPhase::StagedDirectorySync { depth } => {
+                sync_depths.push(depth);
+                if depth == 0 {
+                    Err(io::Error::other("injected staged directory sync failure"))
+                } else {
+                    Ok(())
+                }
+            }
+            _ => Ok(()),
+        };
+
+        let results = write_plan_with_hook(
+            &plan,
+            &destination,
+            OutputContainer::Directory,
+            file_options(ZipCompression::Deflate),
+            &mut hook,
+        )?;
+
+        assert!(matches!(
+            results.first().map(|result| &result.outcome),
+            Some(ArtifactOutcome::Failed { error })
+                if error.contains("injected staged directory sync failure")
+        ));
+        assert_eq!(sync_depths, vec![2, 1, 0]);
+        assert_eq!(fs::read(existing_group.join("old.rom"))?, b"old bytes");
+        assert!(!existing_group.join("subdir/nested/new.rom").exists());
+        assert_eq!(fs::read_dir(destination.join("nested"))?.count(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn directory_replace_rolls_back_existing_nonempty_output_on_install_failure()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let root = utf8_path(temp_dir.path())?;
+        let destination = root.join("output");
+        let staged = root.join(".output.stage");
+        fs::create_dir(&destination)?;
+        fs::write(destination.join("old.rom"), b"old")?;
+        fs::create_dir(&staged)?;
+        fs::write(staged.join("new.rom"), b"new")?;
+        let mut calls = 0;
+
+        let result = replace_staged_directory(&staged, &destination, &mut |from, to| {
+            calls += 1;
+            if calls == 2 {
+                Err(io::Error::other("injected install failure"))
+            } else {
+                fs::rename(from, to)
+            }
+        });
+
+        assert!(result.is_err());
+        assert_eq!(fs::read(destination.join("old.rom"))?, b"old");
+        assert!(!destination.join("new.rom").exists());
+        assert!(staged.join("new.rom").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn directory_replace_replaces_existing_nonempty_output_and_removes_backup()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let root = utf8_path(temp_dir.path())?;
+        let destination = root.join("output");
+        let staged = root.join(".output.stage");
+        fs::create_dir(&destination)?;
+        fs::write(destination.join("old.rom"), b"old")?;
+        fs::create_dir_all(staged.join("nested"))?;
+        fs::write(staged.join("nested/new.rom"), b"new")?;
+
+        let result =
+            replace_staged_directory(&staged, &destination, &mut |from, to| fs::rename(from, to))?;
+
+        assert_eq!(result, ArtifactOutcome::Completed);
+        assert!(!destination.join("old.rom").exists());
+        assert_eq!(fs::read(destination.join("nested/new.rom"))?, b"new");
+        assert_eq!(fs::read_dir(root)?.count(), 1);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_replace_refuses_to_follow_destination_symlinks()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = tempfile::tempdir()?;
+        let root = utf8_path(temp_dir.path())?;
+        let previous = root.join("previous");
+        let destination = root.join("output");
+        let staged = root.join(".output.stage");
+        fs::create_dir(&previous)?;
+        fs::write(previous.join("old.rom"), b"old")?;
+        symlink(&previous, &destination)?;
+        fs::create_dir(&staged)?;
+
+        let result =
+            replace_staged_directory(&staged, &destination, &mut |from, to| fs::rename(from, to));
+        let Err(error) = result else {
+            return Err(io::Error::other("destination symlinks must fail safely").into());
+        };
+
+        assert!(error.to_string().contains("not a real directory"));
+        assert!(destination.symlink_metadata()?.file_type().is_symlink());
+        assert_eq!(fs::read(previous.join("old.rom"))?, b"old");
+        Ok(())
+    }
+
+    #[test]
+    fn directory_replace_preserves_named_backup_when_rollback_fails()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let root = utf8_path(temp_dir.path())?;
+        let destination = root.join("output");
+        let staged = root.join(".output.stage");
+        fs::create_dir(&destination)?;
+        fs::write(destination.join("old.rom"), b"old")?;
+        fs::create_dir(&staged)?;
+        fs::write(staged.join("new.rom"), b"new")?;
+        let mut calls = 0;
+
+        let result = replace_staged_directory(&staged, &destination, &mut |from, to| {
+            calls += 1;
+            if calls >= 2 {
+                Err(io::Error::other("injected rename failure"))
+            } else {
+                fs::rename(from, to)
+            }
+        });
+        let Err(error) = result else {
+            return Err(io::Error::other("install and rollback are injected to fail").into());
+        };
+
+        assert!(error.to_string().contains("previous output preserved at"));
+        assert!(!destination.exists());
+        let backup_root = fs::read_dir(root)?
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with(".output.backup-"))
+            })
+            .ok_or_else(|| io::Error::other("recoverable backup directory missing"))?;
+        assert_eq!(
+            fs::read(backup_root.join("previous-output/old.rom"))?,
+            b"old"
+        );
+        Ok(())
     }
 
     #[cfg(unix)]
@@ -1737,6 +2723,7 @@ mod tests {
             let results = write_plan_with_hook(
                 &plan,
                 &destination,
+                OutputContainer::Zip,
                 file_options(ZipCompression::Deflate),
                 &mut hook,
             )?;
@@ -1780,6 +2767,7 @@ mod tests {
         let results = write_plan_with_hook(
             &plan,
             &destination,
+            OutputContainer::Zip,
             file_options(ZipCompression::Deflate),
             &mut hook,
         )?;
@@ -1794,6 +2782,68 @@ mod tests {
             Some(b"new artifact" as &[u8])
         );
         assert_eq!(std::fs::read_dir(&destination)?.count(), 1);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_sync_failure_reports_retained_backup_path()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let root = utf8_path(temp_dir.path())?;
+        let source_path = source_fixture_path(&temp_dir, "source.rom")?;
+        std::fs::write(&source_path, b"new output")?;
+        let destination = root.join("output");
+        let existing = destination.join("nested/set");
+        std::fs::create_dir_all(&existing)?;
+        std::fs::write(existing.join("old.rom"), b"previous output")?;
+        let plan = BuildPlan {
+            groups: vec![OutputGroup {
+                path: LogicalPath::new("nested/set"),
+                entries: vec![logical_entry("new.rom", source_file(&source_path))],
+            }],
+            report: BuildReport::default(),
+        };
+        let mut hook = |_, phase| {
+            if phase == ArtifactPhase::DirectorySync {
+                Err(io::Error::other("injected directory sync failure"))
+            } else {
+                Ok(())
+            }
+        };
+
+        let results = write_plan_with_hook(
+            &plan,
+            &destination,
+            OutputContainer::Directory,
+            file_options(ZipCompression::Deflate),
+            &mut hook,
+        )?;
+
+        let Some(ArtifactOutcome::ReplacedButNotDurable { error }) =
+            results.first().map(|result| &result.outcome)
+        else {
+            return Err("expected a nondurable replacement result".into());
+        };
+        let entries = std::fs::read_dir(destination.join("nested"))?
+            .map(|entry| entry.map(|entry| entry.path()))
+            .collect::<Result<Vec<_>, _>>()?;
+        let backup = entries
+            .iter()
+            .find(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(".set.backup-"))
+            })
+            .ok_or("expected a retained prior-output backup")?;
+        let backup_path = backup.join("previous-output");
+        assert!(error.contains("injected directory sync failure"));
+        assert!(error.contains(backup_path.to_string_lossy().as_ref()));
+        assert_eq!(
+            std::fs::read(backup_path.join("old.rom"))?,
+            b"previous output"
+        );
+        assert_eq!(std::fs::read(existing.join("new.rom"))?, b"new output");
         Ok(())
     }
 
@@ -2016,6 +3066,7 @@ mod tests {
         let results = write_plan_with_hook(
             &plan,
             &destination,
+            OutputContainer::Zip,
             file_options(ZipCompression::Deflate),
             &mut hook,
         )?;
@@ -2069,7 +3120,8 @@ mod tests {
     }
 
     #[test]
-    fn write_plan_rejects_unsafe_output_zip_file_name() -> Result<(), Box<dyn std::error::Error>> {
+    fn write_plan_rejects_unsafe_logical_output_group_path()
+    -> Result<(), Box<dyn std::error::Error>> {
         let temp_dir = tempfile::tempdir()?;
         let destination = utf8_path(temp_dir.path())?.join("output");
         let plan = BuildPlan {
@@ -2082,7 +3134,7 @@ mod tests {
 
         let message = error_message(write_plan(&plan, &destination))?;
 
-        assert!(message.contains("unsafe output zip file name"));
+        assert!(message.contains("unsafe logical output group path"));
         assert!(!destination.exists());
         Ok(())
     }
@@ -2161,14 +3213,14 @@ mod tests {
 
         let message = error_message(write_plan(&plan, &destination))?;
 
-        assert!(message.contains("unsafe zip entry name"));
+        assert!(message.contains("unsafe logical entry path"));
         assert!(!destination.exists());
         Ok(())
     }
 
     #[test]
-    fn write_plan_rejects_duplicate_output_zip_file_name() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn write_plan_rejects_duplicate_logical_output_group_path()
+    -> Result<(), Box<dyn std::error::Error>> {
         let temp_dir = tempfile::tempdir()?;
         let destination = utf8_path(temp_dir.path())?.join("output");
         let plan = BuildPlan {
@@ -2187,7 +3239,7 @@ mod tests {
 
         let message = error_message(write_plan(&plan, &destination))?;
 
-        assert!(message.contains("duplicate output zip file name"));
+        assert!(message.contains("duplicate logical output group path"));
         assert!(!destination.exists());
         Ok(())
     }
@@ -2403,7 +3455,7 @@ mod tests {
 
         let message = error_message(write_plan(&plan, &destination))?;
 
-        assert!(message.contains("duplicate output zip file name"));
+        assert!(message.contains("duplicate logical output group path"));
         assert!(!destination.exists());
         Ok(())
     }
@@ -2422,13 +3474,13 @@ mod tests {
 
         let message = error_message(write_plan(&plan, &destination))?;
 
-        assert!(message.contains("unsafe output zip file name"));
+        assert!(message.contains("unsafe logical output group path"));
         assert!(!destination.exists());
         Ok(())
     }
 
     #[test]
-    fn write_plan_rejects_duplicate_zip_entry_name() -> Result<(), Box<dyn std::error::Error>> {
+    fn write_plan_rejects_duplicate_logical_entry_path() -> Result<(), Box<dyn std::error::Error>> {
         let temp_dir = tempfile::tempdir()?;
         let source_path = source_fixture_path(&temp_dir, "source.rom")?;
         std::fs::write(&source_path, b"rom")?;
@@ -2446,7 +3498,7 @@ mod tests {
 
         let message = error_message(write_plan(&plan, &destination))?;
 
-        assert!(message.contains("duplicate zip entry name"));
+        assert!(message.contains("duplicate logical entry path"));
         assert!(!destination.exists());
         Ok(())
     }
@@ -2501,8 +3553,8 @@ mod tests {
     }
 
     #[test]
-    fn zip_extension_is_included_in_artifact_collision_validation()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn logical_group_file_directory_conflict_is_rejected() -> Result<(), Box<dyn std::error::Error>>
+    {
         let temp_dir = tempfile::tempdir()?;
         let destination = utf8_path(temp_dir.path())?.join("output");
         let plan = BuildPlan {
@@ -2520,7 +3572,10 @@ mod tests {
         };
 
         let message = error_message(write_plan(&plan, &destination))?;
-        assert!(message.contains("ZIP artifact file/directory conflict"));
+        assert!(
+            message.contains("group file/directory path conflict"),
+            "{message}"
+        );
         assert!(!destination.exists());
         Ok(())
     }
