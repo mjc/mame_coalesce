@@ -44,6 +44,12 @@ struct IdentityOnlySnapshot {
 }
 
 #[derive(QueryableByName)]
+struct ComponentOrderRow {
+    #[diesel(sql_type = BigInt)]
+    component_order: i64,
+}
+
+#[derive(QueryableByName)]
 struct IdentityRow {
     #[diesel(sql_type = Text)]
     first_value: String,
@@ -72,12 +78,6 @@ struct SnapshotDependency {
     source_field: String,
     target_name: String,
     location: crate::logiqx::RecordLocation,
-}
-
-#[derive(QueryableByName)]
-struct AssetComponentOrder {
-    #[diesel(sql_type = BigInt)]
-    component_order: i64,
 }
 
 struct SnapshotAsset {
@@ -1056,7 +1056,7 @@ fn persist_asset_merge_relationship(
     .bind::<Text, _>(parent)
     .bind::<Text, _>(merged_name)
     .bind::<Text, _>(asset.role)
-    .load::<AssetComponentOrder>(conn)?;
+    .load::<ComponentOrderRow>(conn)?;
     let [parent_component] = parent_components.as_slice() else {
         return Ok(());
     };
@@ -1067,12 +1067,20 @@ fn persist_asset_merge_relationship(
             subject: CatalogRecordRef::new(
                 snapshot.clone(),
                 CatalogRecordKind::AssetRequirement,
-                asset_requirement_key(&set.name, &asset.name, component_order),
+                super::catalog_reconciliation::record_key(&(
+                    &set.name,
+                    &asset.name,
+                    component_order,
+                ))?,
             ),
             target: CatalogRecordRef::new(
                 snapshot.clone(),
                 CatalogRecordKind::AssetRequirement,
-                asset_requirement_key(parent, merged_name, parent_component.component_order),
+                super::catalog_reconciliation::record_key(&(
+                    parent,
+                    merged_name,
+                    parent_component.component_order,
+                ))?,
             ),
             source_field: "merge".to_owned(),
             source_location: Some(DocumentLocation {
@@ -1089,14 +1097,6 @@ fn persist_asset_merge_relationship(
         },
     )?;
     Ok(())
-}
-
-fn asset_requirement_key(set_name: &str, asset_name: &str, component_order: i64) -> String {
-    serde_json::json!([set_name, asset_name, component_order]).to_string()
-}
-
-fn software_item_key(list_name: &str, item_name: &str) -> String {
-    serde_json::json!([list_name, item_name]).to_string()
 }
 
 fn insert_software_list_contents(
@@ -1186,12 +1186,12 @@ fn insert_software_item(
                 subject: CatalogRecordRef::new(
                     snapshot_key.clone(),
                     CatalogRecordKind::SoftwareItem,
-                    software_item_key(list_name, item.name.as_str()),
+                    super::catalog_reconciliation::record_key(&(list_name, item.name.as_str()))?,
                 ),
                 target: CatalogRecordRef::new(
                     snapshot_key.clone(),
                     CatalogRecordKind::SoftwareItem,
-                    software_item_key(list_name, parent.as_str()),
+                    super::catalog_reconciliation::record_key(&(list_name, parent.as_str()))?,
                 ),
                 source_field: "cloneof".to_owned(),
                 source_location: Some(DocumentLocation {

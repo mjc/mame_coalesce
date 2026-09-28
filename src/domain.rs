@@ -474,6 +474,7 @@ pub struct Md5Digest(pub [u8; 16]);
 pub enum EvidenceScope {
     WholeAsset,
     DiskData,
+    ChdHeaderSha1,
     Track,
     #[default]
     Unknown,
