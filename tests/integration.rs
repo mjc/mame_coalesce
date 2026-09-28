@@ -499,7 +499,32 @@ fn run_workflow_writes_from_rar_archive() -> Result<(), Box<dyn std::error::Erro
 }
 
 #[test]
-fn p7zip_extracts_r7z_builder_archive() -> Result<(), Box<dyn std::error::Error>> {
+fn r7z_reads_its_synthetic_builder_archive() -> Result<(), Box<dyn std::error::Error>> {
+    let work_dir = tempfile::tempdir()?;
+    let archive_path = work_dir.path().join("source.7z");
+    let archive_data = r7z::ArchiveBuilder::new()
+        .add_file("nested/shared.rom", b"abc")
+        .build()?;
+    fs::write(&archive_path, archive_data)?;
+
+    let archive = r7z::Archive::open(&archive_path)?;
+    let entries = archive.entries().collect::<Vec<_>>();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].name, "nested/shared.rom");
+    assert!(entries[0].is_file());
+
+    let mut contents = Vec::new();
+    archive.stream_selected_files(&[entries[0].index], |_, reader| {
+        reader.read_to_end(&mut contents)?;
+        Ok(())
+    })?;
+    assert_eq!(contents, b"abc");
+    Ok(())
+}
+
+#[test]
+#[ignore = "optional cross-implementation check; requires a 7z-compatible executable"]
+fn external_7z_extracts_r7z_builder_archive() -> Result<(), Box<dyn std::error::Error>> {
     let work_dir = tempfile::tempdir()?;
     let archive_path = work_dir.path().join("source.7z");
     let extract_dir = work_dir.path().join("extract");
@@ -508,7 +533,8 @@ fn p7zip_extracts_r7z_builder_archive() -> Result<(), Box<dyn std::error::Error>
         .build()?;
     fs::write(&archive_path, archive_data)?;
 
-    let output = ProcessCommand::new("7z")
+    let executable = std::env::var_os("MAME_COALESCE_7Z").unwrap_or_else(|| "7z".into());
+    let output = ProcessCommand::new(executable)
         .arg("x")
         .arg(&archive_path)
         .arg(format!("-o{}", extract_dir.display()))
@@ -517,7 +543,7 @@ fn p7zip_extracts_r7z_builder_archive() -> Result<(), Box<dyn std::error::Error>
 
     assert!(
         output.status.success(),
-        "7z failed:\nstdout:\n{}\nstderr:\n{}",
+        "external 7z decoder failed:\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );

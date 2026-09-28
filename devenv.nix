@@ -23,7 +23,6 @@ in {
     sccache
     shellcheck
     alejandra
-    p7zip
     git
     curl
     jq

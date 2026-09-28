@@ -24,8 +24,9 @@
   instead of silently dropping bad inputs.
 - Replaced libarchive-backed archive handling with `r7z` for 7z archives and
   the `unrar` crate for RAR archives.
-- Added end-to-end 7z workflow coverage, including p7zip extraction of archives
-  produced by `r7z`.
+- Added end-to-end 7z workflow coverage using synthetic archives generated and
+  read through `r7z`, without requiring a system 7z executable; retained
+  independent decoder interoperability as an opt-in test.
 - Validated build output ZIP file names and ZIP entry names before writing, and
   rejected duplicate output ZIP names and duplicate entry names.
 - Added a public-domain ROM smoke-test script and documentation for generating

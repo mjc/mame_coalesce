@@ -351,9 +351,20 @@ devenv --profile profiling shell -- sh -c 'perf script 2>/dev/null | bash script
 
 ## Verification
 
-Required local gate: `devenv test`. The p7zip interoperability test runs as
-part of the normal integration suite because devenv supplies `7z`. The component
-commands are:
+Required local gate: `devenv test`. The integration suite generates and reads
+synthetic 7z archives through `r7z`, pinned at revision
+`bfef3198696add8045ad34581dd977d671ae9daa`; it does not require an external
+`7z` executable. This verifies the pinned library's writer/reader and the
+application read path, not compatibility with every external encoder or codec.
+Independent cross-implementation checks are outside the default gate. To run the
+ignored interoperability test with a compatible executable installed, set
+`MAME_COALESCE_7Z` if its name is not `7z`:
+
+```sh
+devenv shell -- env MAME_COALESCE_7Z=7z cargo test --locked --test integration external_7z_extracts_r7z_builder_archive -- --ignored
+```
+
+The component commands are:
 
 ```sh
 devenv shell -- shellcheck scripts/fetch_public_domain_test_data.sh scripts/profile_flamegraph.sh scripts/benchmark_run.sh scripts/generate_synthetic_benchmark_corpus.sh scripts/parse_flamegraph scripts/parse_perfdata

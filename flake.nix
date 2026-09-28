@@ -40,7 +40,7 @@
         [
           rustToolchain
           pkg-config
-          cmake  # Required for zlib-ng feature in flate2
+          cmake # Required for zlib-ng feature in flate2
 
           # Code quality & linting
           cargo-deny
@@ -60,7 +60,6 @@
           # Utilities
           curl
           jq
-          p7zip
           tokei
           gh
 
@@ -74,7 +73,7 @@
         ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
           perf
           cargo-llvm-cov
-          mold  # Fast linker (Linux only)
+          mold # Fast linker (Linux only)
         ];
 
       buildInputs = with pkgs; [
@@ -83,11 +82,12 @@
         sqlite
       ];
 
-      pkgConfigPath = with pkgs; lib.concatStringsSep ":" [
-        "${openssl.dev}/lib/pkgconfig"
-        "${zlib.dev}/lib/pkgconfig"
-        "${sqlite.dev}/lib/pkgconfig"
-      ];
+      pkgConfigPath = with pkgs;
+        lib.concatStringsSep ":" [
+          "${openssl.dev}/lib/pkgconfig"
+          "${zlib.dev}/lib/pkgconfig"
+          "${sqlite.dev}/lib/pkgconfig"
+        ];
     in {
       devShells.default = pkgs.mkShell {
         inherit nativeBuildInputs buildInputs;
