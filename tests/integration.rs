@@ -1932,6 +1932,12 @@ fn cli_legacy_build_defaults_preserve_parent_bundle_deflated_zip_and_warn_missin
 
     let bundle_path = output_path.join("parent.zip");
     assert!(bundle_path.is_file());
+    let output_entries = fs::read_dir(&output_path)?.collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(
+        output_entries.len(),
+        1,
+        "expected exactly one parent bundle"
+    );
     assert!(!output_path.join("parent").exists());
 
     let mut archive = zip::ZipArchive::new(fs::File::open(bundle_path)?)?;
