@@ -127,18 +127,23 @@ fn run() -> mame_coalesce::Result<ExitCode> {
         }
         Command::Cache {
             command: CacheCommand::Audit(args),
-        } => {
-            let report = app::audit_disks(
-                &database,
-                &DiskAuditRequest {
-                    catalog_key: args.catalog.clone(),
-                    source_path: args.source.clone(),
-                },
-            )?;
-            report::write_disk_audit(&report, args.format)?;
-            Ok(ExitCode::SUCCESS)
-        }
+        } => run_disk_audit(&database, args),
     }
+}
+
+fn run_disk_audit(
+    database: &Database,
+    args: &options::DiskAuditArgs,
+) -> mame_coalesce::Result<ExitCode> {
+    let report = app::audit_disks(
+        database,
+        &DiskAuditRequest {
+            catalog_key: args.catalog.clone(),
+            source_path: args.source.clone(),
+        },
+    )?;
+    report::write_disk_audit(&report, args.format)?;
+    Ok(ExitCode::SUCCESS)
 }
 
 fn render_build_result(

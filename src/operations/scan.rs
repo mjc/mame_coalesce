@@ -26,14 +26,6 @@ pub enum ScanProgress {
     Advanced,
 }
 
-pub fn source(
-    path: &Utf8Path,
-    jobs: usize,
-    excluded_paths: &[Utf8PathBuf],
-) -> crate::Result<CompleteSourceScan> {
-    source_with_progress(path, jobs, excluded_paths, &|_| {})
-}
-
 pub fn source_with_progress(
     path: &Utf8Path,
     jobs: usize,
@@ -43,6 +35,7 @@ pub fn source_with_progress(
     source_with_walk_progress(path, jobs, excluded_paths, walk_for_files, progress)
 }
 
+#[cfg(test)]
 fn source_with_walk(
     path: &Utf8Path,
     jobs: usize,

@@ -7,8 +7,6 @@ use crate::{
 
 pub mod scan;
 
-pub use scan::source;
-
 pub fn list_source_paths(path: &Utf8Path, pool: &Pool) -> crate::Result<Vec<Utf8PathBuf>> {
     let source_root = path.canonicalize_utf8()?;
     let excluded_paths = db::database_file_paths(pool)?;

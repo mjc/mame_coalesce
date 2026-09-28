@@ -778,7 +778,7 @@ mod tests {
         std::fs::write(&destination_path, b"not a directory")?;
 
         let database = Database::in_memory()?;
-        let report = run(
+        let report = match run(
             &database,
             &RunWorkflowRequest {
                 dat_path: dat_path.clone(),
@@ -790,7 +790,11 @@ mod tests {
                 dry_run: false,
                 strict: false,
             },
-        )?;
+        ) {
+            Ok(_) => return Err("writing beneath a regular file unexpectedly succeeded".into()),
+            Err(crate::Error::BuildWorkflow { report, .. }) => *report,
+            Err(error) => return Err(error.into()),
+        };
         let scan = report
             .scan_report
             .as_ref()
@@ -799,10 +803,10 @@ mod tests {
         assert_eq!(scan.associated_rom_count, 1);
         assert_eq!(report.build_report.matched_roms, 1);
         assert_eq!(report.artifact_results.len(), 1);
-        assert!(matches!(
+        assert_eq!(
             report.artifact_results[0].outcome,
-            ArtifactOutcome::Failed { .. }
-        ));
+            ArtifactOutcome::Unattempted
+        );
 
         std::fs::write(source_path.join("game.rom"), b"different")?;
         let report = run(
