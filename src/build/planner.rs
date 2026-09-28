@@ -9,17 +9,7 @@ use crate::{
     resolution::{self, RequirementResolution, ResolutionStatus},
 };
 
-#[must_use]
-/// Plan from requirement rows only; set-name existence must be checked against the
-/// catalog's complete set list with [`plan_build_with_set_names`].
-pub fn plan_build(
-    dat_roms: &[DatRom],
-    source_files: &[SourceFile],
-    request: &BuildRequest,
-) -> BuildPlan {
-    plan_build_selected(dat_roms, source_files, request)
-}
-
+/// Plan after validating selected names against the catalog's complete set list.
 #[must_use]
 pub fn plan_build_with_set_names(
     dat_roms: &[DatRom],
@@ -42,7 +32,7 @@ pub fn plan_build_with_set_names(
         return plan;
     }
 
-    plan_build(dat_roms, source_files, request)
+    plan_build_selected(dat_roms, source_files, request)
 }
 
 fn plan_build_selected(
@@ -212,6 +202,14 @@ mod tests {
         ObservedContent, RequirementKey, SetKey, SourceLocation,
     };
     use proptest::prelude::*;
+
+    fn plan_build(
+        dat_roms: &[DatRom],
+        source_files: &[SourceFile],
+        request: &BuildRequest,
+    ) -> BuildPlan {
+        plan_build_selected(dat_roms, source_files, request)
+    }
 
     #[derive(Clone, Copy)]
     enum SourceKind {
