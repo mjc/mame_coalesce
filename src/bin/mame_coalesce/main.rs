@@ -165,6 +165,14 @@ fn render_build_result(
             eprintln!("{source}");
             Ok(ExitCode::from(1))
         }
+        Err(mame_coalesce::Error::RunWorkflow {
+            scan_report,
+            source,
+        }) => {
+            render::scan_report(&scan_report);
+            eprintln!("{source}");
+            Ok(ExitCode::from(1))
+        }
         Err(error) => Err(error),
     }
 }

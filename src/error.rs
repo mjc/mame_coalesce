@@ -12,6 +12,13 @@ pub enum Error {
         source: Box<Self>,
     },
 
+    #[error("run workflow failed after source scan: {source}")]
+    RunWorkflow {
+        scan_report: crate::app::SourceScanReport,
+        #[source]
+        source: Box<Self>,
+    },
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 

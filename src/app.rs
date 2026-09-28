@@ -753,7 +753,10 @@ pub fn run_with_progress(
             report.scan_report = Some(scan_report);
             Err(crate::Error::BuildWorkflow { report, source })
         }
-        Err(error) => Err(error),
+        Err(source) => Err(crate::Error::RunWorkflow {
+            scan_report,
+            source: Box::new(source),
+        }),
     }
 }
 
@@ -827,6 +830,62 @@ mod tests {
             .ok_or("successful run missing its scan report")?;
         assert_eq!(scan.observation_count, 1);
         assert_eq!(scan.associated_rom_count, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn run_preserves_scan_report_when_build_fails_before_planning()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let root = Utf8PathBuf::try_from(temp.path().to_path_buf())?;
+        let dat_path = root.join("catalog.dat");
+        let source_path = root.join("roms");
+        std::fs::create_dir(&source_path)?;
+        std::fs::write(source_path.join("game.rom"), b"abc")?;
+        std::fs::write(
+            &dat_path,
+            r#"<?xml version="1.0"?><datafile><header><name>Fixture</name></header><game name="game"><rom name="game.rom" size="3" crc="352441c2" md5="900150983cd24fb0d6963f7d28e17f72" sha1="a9993e364706816aba3e25717850c26c9cd0d89d"/></game></datafile>"#,
+        )?;
+
+        let database = Database::in_memory()?;
+        let removed = std::sync::atomic::AtomicBool::new(false);
+        let result = run_with_progress(
+            &database,
+            &RunWorkflowRequest {
+                dat_path,
+                source_path: source_path.clone(),
+                destination_path: root.join("output"),
+                mode: BuildMode::PerGame,
+                compression: ZipCompression::Deflate,
+                jobs: 1,
+                dry_run: false,
+                strict: false,
+            },
+            &|event| {
+                if matches!(event, ScanProgressEvent::Advanced) {
+                    removed.store(
+                        std::fs::remove_dir_all(&source_path).is_ok(),
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
+                }
+            },
+        );
+        let Err(error) = result else {
+            return Err("removing the source after scanning must fail planning".into());
+        };
+        assert!(removed.load(std::sync::atomic::Ordering::Relaxed));
+
+        match error {
+            crate::Error::RunWorkflow {
+                scan_report,
+                source,
+            } => {
+                assert_eq!(scan_report.observation_count, 1);
+                assert_eq!(scan_report.associated_rom_count, 1);
+                assert!(matches!(*source, crate::Error::Io(_)));
+            }
+            error => return Err(format!("unexpected error: {error}").into()),
+        }
         Ok(())
     }
 
