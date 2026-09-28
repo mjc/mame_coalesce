@@ -1,5 +1,5 @@
 use diesel::{
-    QueryableByName, RunQueryDsl, SqliteConnection, sql_query,
+    Connection, QueryableByName, RunQueryDsl, SqliteConnection, sql_query,
     sql_types::{BigInt, Binary, Nullable, Text},
 };
 use serde::Serialize;
@@ -98,10 +98,13 @@ pub fn reconcile(
         ));
     }
     let mut conn = pool.get()?;
-    let left = snapshot_requirements(&mut conn, left_key)?;
-    let right = snapshot_requirements(&mut conn, right_key)?;
-    let relationships =
-        super::relationships::explain_for_snapshots(&mut conn, left_key, right_key)?;
+    let (left, right, relationships) = conn.transaction::<_, crate::Error, _>(|conn| {
+        Ok((
+            snapshot_requirements(conn, left_key)?,
+            snapshot_requirements(conn, right_key)?,
+            super::relationships::explain_for_snapshots(conn, left_key, right_key)?,
+        ))
+    })?;
     Ok(reconcile_requirements(&left, &right, &relationships))
 }
 
