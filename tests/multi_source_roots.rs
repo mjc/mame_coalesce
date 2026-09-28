@@ -7,7 +7,10 @@ use mame_coalesce::{
         RunWorkflowRequest, SourceRootSelection,
     },
     database::Database,
-    domain::{BuildMode, MatchingPolicy, MissingContentPolicy, ObservationBasis, ZipCompression},
+    domain::{
+        BuildMode, MatchingPolicy, MissingContentPolicy, ObservationBasis, SetSelection,
+        ZipCompression,
+    },
     resolution::ResolutionStatus,
 };
 
@@ -335,6 +338,7 @@ fn one_shot_reports_every_root_and_deduplicates_cross_root_file_symlinks()
         jobs: 1,
         dry_run: false,
         strict: false,
+        set_selection: SetSelection::All,
     };
     let roots = selection(first.clone(), vec![second]);
     let report = app::run_with_roots(&database, &request, &roots)?;
@@ -417,6 +421,7 @@ fn cached_resolution_uses_physical_identity_captured_during_scan()
             mode: BuildMode::ParentBundles,
             matching_policy: MatchingPolicy::Sha1Compatibility,
             missing_policy: MissingContentPolicy::AllowPartial,
+            set_selection: SetSelection::All,
         },
         &roots,
     )?;

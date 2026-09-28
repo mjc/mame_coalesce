@@ -1156,6 +1156,8 @@ pub fn run_with_roots_and_container_and_progress(
             written_paths: Vec::new(),
             artifact_results: Vec::new(),
             build_report: invalid_set_selection_report(selection_issues),
+            scan_reports: Vec::new(),
+            scan_report: None,
         });
     }
     let scan_reports = scan_sources_with_progress(database, selection, request.jobs, progress)?;
@@ -1251,6 +1253,7 @@ mod tests {
                 jobs: 1,
                 dry_run: false,
                 strict: false,
+                set_selection: SetSelection::All,
             },
         ) {
             Ok(_) => return Err("writing beneath a regular file unexpectedly succeeded".into()),
@@ -1282,6 +1285,7 @@ mod tests {
                 jobs: 1,
                 dry_run: true,
                 strict: false,
+                set_selection: SetSelection::All,
             },
         )?;
         let scan = report
@@ -1320,6 +1324,7 @@ mod tests {
                 jobs: 1,
                 dry_run: false,
                 strict: false,
+                set_selection: SetSelection::All,
             },
             &|event| {
                 if matches!(event, ScanProgressEvent::Advanced) {
