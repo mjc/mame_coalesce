@@ -101,6 +101,17 @@ pub fn reconcile_requirements(
     right: &RequirementSnapshot,
     relationships: &[RelationshipExplanation],
 ) -> CatalogReconciliation {
+    let mut relationship_index = BTreeMap::<CatalogRecordRef, Vec<&RelationshipExplanation>>::new();
+    for explanation in relationships {
+        for endpoint in [&explanation.claim.subject, &explanation.claim.target] {
+            if let RelationshipEndpoint::CatalogRecord(record) = endpoint {
+                relationship_index
+                    .entry(record.clone())
+                    .or_default()
+                    .push(explanation);
+            }
+        }
+    }
     let mut left_requirements = left.requirements.iter().collect::<Vec<_>>();
     let mut right_requirements = right.requirements.iter().collect::<Vec<_>>();
     left_requirements.sort_by(|a, b| a.record.cmp(&b.record));
@@ -128,7 +139,7 @@ pub fn reconcile_requirements(
             pair_outcome(
                 left_requirements[*left_index],
                 right_requirements[*right_index],
-                relationships,
+                &relationship_index,
             )
         })
         .collect::<Vec<_>>();
@@ -144,12 +155,12 @@ pub fn reconcile_requirements(
         .collect::<BTreeSet<_>>();
     for (index, requirement) in left_requirements.iter().enumerate() {
         if !paired_left.contains(&index) {
-            outcomes.push(unmatched(requirement, true, relationships));
+            outcomes.push(unmatched(requirement, true, &relationship_index));
         }
     }
     for (index, requirement) in right_requirements.iter().enumerate() {
         if !paired_right.contains(&index) {
-            outcomes.push(unmatched(requirement, false, relationships));
+            outcomes.push(unmatched(requirement, false, &relationship_index));
         }
     }
     outcomes.sort_by(|a, b| a.left.cmp(&b.left).then_with(|| a.right.cmp(&b.right)));
@@ -276,7 +287,7 @@ impl EvidenceFingerprint {
 fn pair_outcome(
     left: &ExpectedAssetRequirement,
     right: &ExpectedAssetRequirement,
-    relationships: &[RelationshipExplanation],
+    relationships: &BTreeMap<CatalogRecordRef, Vec<&RelationshipExplanation>>,
 ) -> RequirementReconciliation {
     let evidence = compare_expected_evidence(&left.expected, &right.expected);
     let status = if left.role == right.role {
@@ -301,7 +312,7 @@ fn pair_outcome(
 fn unmatched(
     requirement: &ExpectedAssetRequirement,
     is_left: bool,
-    relationships: &[RelationshipExplanation],
+    relationships: &BTreeMap<CatalogRecordRef, Vec<&RelationshipExplanation>>,
 ) -> RequirementReconciliation {
     RequirementReconciliation {
         left: is_left.then(|| requirement.record.clone()),
@@ -322,24 +333,18 @@ fn unmatched(
 }
 
 fn related_assertions(
-    relationships: &[RelationshipExplanation],
+    relationships: &BTreeMap<CatalogRecordRef, Vec<&RelationshipExplanation>>,
     records: &[&CatalogRecordRef],
 ) -> Vec<RelationshipExplanation> {
-    let mut related = relationships
+    let mut related = records
         .iter()
-        .filter(|explanation| {
-            [&explanation.claim.subject, &explanation.claim.target]
-                .into_iter()
-                .any(|endpoint| {
-                    matches!(endpoint, RelationshipEndpoint::CatalogRecord(record)
-                    if records.contains(&record))
-                })
-        })
-        .cloned()
+        .filter_map(|record| relationships.get(*record))
+        .flatten()
+        .copied()
         .collect::<Vec<_>>();
     related.sort_by(|a, b| a.assertion_key.cmp(&b.assertion_key));
     related.dedup_by(|a, b| a.assertion_key == b.assertion_key);
-    related
+    related.into_iter().cloned().collect()
 }
 
 fn mark_ambiguous(outcomes: &mut [RequirementReconciliation]) {

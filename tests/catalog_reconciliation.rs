@@ -213,7 +213,8 @@ fn owner_assertions_are_context_only_and_never_support_asset_identity()
         None,
         Some([8; 20]),
     );
-    let parent = CatalogRecordRef::new(left_key.clone(), CatalogRecordKind::Set, "declared-parent");
+    let context_key = snapshot_key(&CatalogKey::new("third-publisher"), b"third document");
+    let parent = CatalogRecordRef::new(context_key, CatalogRecordKind::Set, "declared-parent");
     let source_assertion = RelationshipExplanation {
         assertion_key: RelationshipAssertionKey::new("source-parent-claim"),
         claim: RelationshipClaim {
@@ -447,6 +448,59 @@ fn software_list_requirements_keep_item_relationships_as_context()
             ..
         } if supporting_assertions.is_empty()
     ));
+    Ok(())
+}
+
+#[test]
+fn mame_software_disk_reconciliation_preserves_chd_header_scope()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let database_path =
+        camino::Utf8PathBuf::from_path_buf(directory.path().join("chd-scope.sqlite"))
+            .map_err(|path| std::io::Error::other(format!("non-UTF-8 path: {}", path.display())))?;
+    let database = Database::open(&database_path)?;
+    let document = camino::Utf8PathBuf::from(format!(
+        "{}/fixtures/catalog/mame/software-list.xml",
+        env!("CARGO_MANIFEST_DIR")
+    ));
+    let import = |catalog: &str| CatalogImportRequest {
+        document_path: document.clone(),
+        format: CatalogDocumentFormat::MameSoftwareListXml,
+        source_key: PublishingSourceKey::new(format!("{catalog}-publisher")),
+        source_display_name: catalog.to_owned(),
+        catalog_key: CatalogKey::new(catalog),
+        catalog_display_name: catalog.to_owned(),
+        scope: CatalogScope::Complete,
+    };
+    let left = app::import_catalog(&database, &import("chd-left"))?;
+    let right = app::import_catalog(&database, &import("chd-right"))?;
+    let report = app::reconcile_catalog_snapshots(
+        &database,
+        left.snapshot_key.as_ref().ok_or("left snapshot missing")?,
+        right
+            .snapshot_key
+            .as_ref()
+            .ok_or("right snapshot missing")?,
+    )?;
+
+    let disk = report
+        .outcomes
+        .iter()
+        .find(|outcome| {
+            outcome.left_expected.as_ref().is_some_and(|expected| {
+                expected.sha1
+                    == Some([
+                        0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32, 0x10, 0xfe, 0xdc, 0xba, 0x98,
+                        0x76, 0x54, 0x32, 0x10, 0xfe, 0xdc, 0xba, 0x98,
+                    ])
+            })
+        })
+        .ok_or("disk requirement missing from reconciliation")?;
+    assert_eq!(
+        disk.left_expected.as_ref().map(|expected| expected.scope),
+        Some(EvidenceScope::ChdHeaderSha1)
+    );
+    assert_eq!(disk.status, ReconciliationStatus::Compatible);
     Ok(())
 }
 

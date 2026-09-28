@@ -68,6 +68,8 @@ struct SoftwareRequirementRow {
     #[diesel(sql_type = Text)]
     area_name: String,
     #[diesel(sql_type = BigInt)]
+    area_order: i64,
+    #[diesel(sql_type = BigInt)]
     component_order: i64,
     #[diesel(sql_type = Text)]
     component_kind: String,
@@ -79,6 +81,8 @@ struct SoftwareRequirementRow {
     crc: Option<Vec<u8>>,
     #[diesel(sql_type = Nullable<Binary>)]
     sha1: Option<Vec<u8>>,
+    #[diesel(sql_type = Text)]
+    evidence_scope: String,
     #[diesel(sql_type = Nullable<Text>)]
     dump_status: Option<String>,
 }
@@ -93,14 +97,11 @@ pub fn reconcile(
             "catalog reconciliation requires two distinct snapshots".to_owned(),
         ));
     }
-    let (left, right) = {
-        let mut conn = pool.get()?;
-        (
-            snapshot_requirements(&mut conn, left_key)?,
-            snapshot_requirements(&mut conn, right_key)?,
-        )
-    };
-    let relationships = super::relationships::explain_all(pool)?;
+    let mut conn = pool.get()?;
+    let left = snapshot_requirements(&mut conn, left_key)?;
+    let right = snapshot_requirements(&mut conn, right_key)?;
+    let relationships =
+        super::relationships::explain_for_snapshots(&mut conn, left_key, right_key)?;
     Ok(reconcile_requirements(&left, &right, &relationships))
 }
 
@@ -108,16 +109,20 @@ fn snapshot_requirements(
     conn: &mut SqliteConnection,
     snapshot: &SnapshotKey,
 ) -> crate::Result<RequirementSnapshot> {
-    let identity = sql_query("SELECT catalog_key FROM catalog_snapshots WHERE snapshot_key = ?")
-        .bind::<Text, _>(snapshot.as_str())
-        .get_result::<SnapshotIdentityRow>(conn)
-        .map_err(|error| match error {
-            diesel::result::Error::NotFound => crate::Error::InvalidPath(format!(
-                "catalog snapshot {} does not exist",
-                snapshot.as_str()
-            )),
-            error => error.into(),
-        })?;
+    let identity = sql_query(
+        "SELECT snapshot.catalog_key FROM catalog_snapshots AS snapshot \
+         JOIN snapshot_publications AS publication USING (snapshot_key) \
+         WHERE snapshot.snapshot_key = ?",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<SnapshotIdentityRow>(conn)
+    .map_err(|error| match error {
+        diesel::result::Error::NotFound => crate::Error::InvalidPath(format!(
+            "catalog snapshot {} does not exist or has not been published",
+            snapshot.as_str()
+        )),
+        error => error.into(),
+    })?;
     let mut requirements = sql_query(
         "SELECT set_name, component_order, asset_name, role, size, crc, md5, sha1, \
          evidence_scope, evidence_provenance, merge_name, dump_status, serial, date \
@@ -174,8 +179,8 @@ fn software_requirements(
     snapshot: &SnapshotKey,
 ) -> crate::Result<Vec<ExpectedAssetRequirement>> {
     let rows = sql_query(
-        "SELECT list_name, item_name, part_name, area_kind, area_name, component_order, \
-         component_kind, component_name, size, crc, sha1, dump_status \
+        "SELECT list_name, item_name, part_name, area_kind, area_name, area_order, component_order, \
+         component_kind, component_name, size, crc, sha1, evidence_scope, dump_status \
          FROM software_components WHERE snapshot_key = ?",
     )
     .bind::<Text, _>(snapshot.as_str())
@@ -192,6 +197,7 @@ fn software_requirements(
                         &row.part_name,
                         &row.area_kind,
                         &row.area_name,
+                        row.area_order,
                         &row.component_name,
                         row.component_order,
                     ))?,
@@ -203,11 +209,7 @@ fn software_requirements(
                 ),
                 role: parse_role(&row.component_kind),
                 expected: ExpectedEvidence {
-                    scope: if row.component_kind == "disk" {
-                        EvidenceScope::DiskData
-                    } else {
-                        EvidenceScope::WholeAsset
-                    },
+                    scope: parse_scope(&row.evidence_scope),
                     provenance: EvidenceProvenance::SourceDeclared,
                     size: row
                         .size
@@ -258,6 +260,7 @@ fn parse_scope(value: &str) -> EvidenceScope {
     match value {
         "whole_asset" => EvidenceScope::WholeAsset,
         "disk_data" => EvidenceScope::DiskData,
+        "chd_header_sha1" => EvidenceScope::ChdHeaderSha1,
         "track" => EvidenceScope::Track,
         _ => EvidenceScope::Unknown,
     }
@@ -274,7 +277,11 @@ fn parse_provenance(value: &str) -> EvidenceProvenance {
 
 #[cfg(test)]
 mod tests {
-    use super::record_key;
+    use diesel::{Connection, RunQueryDsl, SqliteConnection, sql_query};
+
+    use crate::domain::SnapshotKey;
+
+    use super::{record_key, snapshot_requirements};
 
     #[test]
     fn composite_record_keys_preserve_field_boundaries_and_optional_names() -> crate::Result<()> {
@@ -298,6 +305,40 @@ mod tests {
         let unnamed_component =
             record_key(&("list", "item", "part", "rom", "area", None::<&str>, 0_i64))?;
         assert_ne!(named_component, unnamed_component);
+
+        let first_area_component = record_key(&(
+            "list", "item", "part", "rom", "program", 0_i64, "same.bin", 0_i64,
+        ))?;
+        let second_area_component = record_key(&(
+            "list", "item", "part", "rom", "program", 1_i64, "same.bin", 0_i64,
+        ))?;
+        assert_ne!(first_area_component, second_area_component);
+        Ok(())
+    }
+
+    #[test]
+    fn identity_only_snapshots_are_not_reconciliation_inputs()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut conn = SqliteConnection::establish(":memory:")?;
+        sql_query(
+            "CREATE TABLE catalog_snapshots (snapshot_key TEXT PRIMARY KEY, catalog_key TEXT NOT NULL)",
+        )
+        .execute(&mut conn)?;
+        sql_query("CREATE TABLE snapshot_publications (snapshot_key TEXT PRIMARY KEY)")
+            .execute(&mut conn)?;
+        sql_query(
+            "INSERT INTO catalog_snapshots (snapshot_key, catalog_key) VALUES ('identity-only', 'catalog')",
+        )
+        .execute(&mut conn)?;
+
+        let result = snapshot_requirements(
+            &mut conn,
+            &SnapshotKey::from_persisted("identity-only".to_owned()),
+        );
+
+        assert!(
+            matches!(result, Err(crate::Error::InvalidPath(message)) if message.contains("not been published"))
+        );
         Ok(())
     }
 }
