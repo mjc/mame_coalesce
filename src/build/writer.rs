@@ -167,7 +167,7 @@ enum ArtifactPhase {
     Write,
     Finalize,
     Replace,
-    StagedDirectorySync,
+    StagedDirectorySync { depth: usize },
     DirectorySync,
 }
 
@@ -961,13 +961,25 @@ fn write_directory_group(
         output.sync_all()?;
     }
     let mut staged_directories = staged_directories.into_iter().collect::<Vec<_>>();
-    staged_directories
-        .sort_by_key(|(path, _)| std::cmp::Reverse(path.as_str().matches('/').count()));
-    for (_, directory) in staged_directories {
-        (artifact.hook)(artifact.artifact_index, ArtifactPhase::StagedDirectorySync)?;
+    staged_directories.sort_by_key(|(path, _)| std::cmp::Reverse(relative_path_depth(path)));
+    for (path, directory) in staged_directories {
+        (artifact.hook)(
+            artifact.artifact_index,
+            ArtifactPhase::StagedDirectorySync {
+                depth: relative_path_depth(&path),
+            },
+        )?;
         directory.sync_all()?;
     }
     Ok(())
+}
+
+#[cfg(unix)]
+fn relative_path_depth(path: &Utf8Path) -> usize {
+    path.as_str()
+        .split('/')
+        .filter(|component| !component.is_empty())
+        .count()
 }
 
 #[cfg(not(unix))]
@@ -2160,16 +2172,24 @@ mod tests {
         let plan = BuildPlan {
             groups: vec![OutputGroup {
                 path: LogicalPath::new("nested/set"),
-                entries: vec![logical_entry("subdir/new.rom", source_file(&source_path))],
+                entries: vec![
+                    logical_entry("subdir/nested/new.rom", source_file(&source_path)),
+                    logical_entry("other.rom", source_file(&source_path)),
+                ],
             }],
             report: BuildReport::default(),
         };
-        let mut hook = |_, phase| {
-            if phase == ArtifactPhase::StagedDirectorySync {
-                Err(io::Error::other("injected staged directory sync failure"))
-            } else {
-                Ok(())
+        let mut sync_depths = Vec::new();
+        let mut hook = |_, phase| match phase {
+            ArtifactPhase::StagedDirectorySync { depth } => {
+                sync_depths.push(depth);
+                if depth == 0 {
+                    Err(io::Error::other("injected staged directory sync failure"))
+                } else {
+                    Ok(())
+                }
             }
+            _ => Ok(()),
         };
 
         let results = write_plan_with_hook(
@@ -2185,8 +2205,9 @@ mod tests {
             Some(ArtifactOutcome::Failed { error })
                 if error.contains("injected staged directory sync failure")
         ));
+        assert_eq!(sync_depths, vec![2, 1, 0]);
         assert_eq!(fs::read(existing_group.join("old.rom"))?, b"old bytes");
-        assert!(!existing_group.join("subdir/new.rom").exists());
+        assert!(!existing_group.join("subdir/nested/new.rom").exists());
         assert_eq!(fs::read_dir(destination.join("nested"))?.count(), 1);
         Ok(())
     }
