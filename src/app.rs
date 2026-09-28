@@ -7,11 +7,10 @@ use diesel::{
     sql_query,
     sql_types::{Binary, Nullable, Text},
 };
-use log::{info, warn};
 use serde::Serialize;
 
 use crate::{
-    build::{planner::plan_build, write_plan_with_compression},
+    build::{planner::plan_build as build_plan, write_plan_with_compression},
     database::Database,
     disk::{
         self, DiskDigestScope, DiskIdentitySha1, DiskName, DiskObservation, DiskRequirement,
@@ -27,6 +26,7 @@ use crate::{
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Inputs needed to import a catalog document into the local cache.
 pub struct CatalogImportRequest {
     pub document_path: Utf8PathBuf,
     pub format: CatalogDocumentFormat,
@@ -38,6 +38,7 @@ pub struct CatalogImportRequest {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Format of a supported catalog document.
 pub enum CatalogDocumentFormat {
     Logiqx,
     MameListXml,
@@ -47,6 +48,7 @@ pub enum CatalogDocumentFormat {
 }
 
 impl CatalogDocumentFormat {
+    /// Return the stable identifier used when reporting this document format.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -60,12 +62,14 @@ impl CatalogDocumentFormat {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Result status for a catalog import attempt.
 pub enum CatalogImportStatus {
     Succeeded,
     Failed,
 }
 
 impl CatalogImportStatus {
+    /// Return the stable lowercase identifier for this status.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -76,6 +80,7 @@ impl CatalogImportStatus {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Summary of a catalog import and its diagnostics.
 pub struct CatalogImportReport {
     pub snapshot_key: Option<SnapshotKey>,
     pub run_key: ImportRunKey,
@@ -84,29 +89,42 @@ pub struct CatalogImportReport {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Inputs needed to import a Logiqx DAT file.
 pub struct DatImportRequest {
     pub dat_path: Utf8PathBuf,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Identifies the imported DAT record in the cache.
 pub struct DatImportReport {
     pub data_file_id: i32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Inputs needed to scan a source directory or its supported archives.
 pub struct SourceScanRequest {
     pub source_path: Utf8PathBuf,
     pub jobs: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Counts and identity for one completed source scan.
 pub struct SourceScanReport {
     pub source_path: Utf8PathBuf,
     pub scan_run: ScanRunKey,
     pub observation_count: usize,
+    pub associated_rom_count: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Progress notifications emitted while scanning source files.
+pub enum ScanProgressEvent {
+    Started { files: u64 },
+    Advanced,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Inputs needed to plan and optionally write build artifacts.
 pub struct BuildWorkflowRequest {
     pub dat_path: Utf8PathBuf,
     pub source_path: Utf8PathBuf,
@@ -118,18 +136,25 @@ pub struct BuildWorkflowRequest {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Build diagnostics, artifact outcomes, and any paths visibly written.
 pub struct BuildWorkflowReport {
     pub written_paths: Vec<Utf8PathBuf>,
     pub artifact_results: Vec<ArtifactResult>,
     pub build_report: BuildReport,
-    pub exit_code: i32,
-    pub mode: BuildMode,
-    pub compression: ZipCompression,
-    pub dry_run: bool,
-    pub strict: bool,
+    pub scan_report: Option<SourceScanReport>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Inputs for planning a build from already-cached DAT and scan data.
+pub struct BuildPlanRequest {
+    pub dat_path: Utf8PathBuf,
+    pub source_path: Utf8PathBuf,
+    pub mode: BuildMode,
+    pub missing_policy: MissingContentPolicy,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+/// Inputs for the one-shot import, scan, plan, and build workflow.
 pub struct RunWorkflowRequest {
     pub dat_path: Utf8PathBuf,
     pub source_path: Utf8PathBuf,
@@ -142,12 +167,14 @@ pub struct RunWorkflowRequest {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Inputs for auditing declared disk requirements against a source tree.
 pub struct DiskAuditRequest {
     pub catalog_key: String,
     pub source_path: Utf8PathBuf,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+/// Serializable result of auditing all declared disks in a catalog snapshot.
 pub struct DiskAuditReport {
     pub schema_version: u32,
     pub catalog_key: String,
@@ -157,6 +184,7 @@ pub struct DiskAuditReport {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+/// Audit state and catalog identity for one declared disk requirement.
 pub struct DiskAuditEntry {
     pub set_name: String,
     pub disk_name: String,
@@ -170,6 +198,7 @@ pub struct DiskAuditEntry {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
+/// Verification state assigned to a disk requirement during an audit.
 pub enum DiskAuditState {
     Missing,
     AmbiguousLocation,
@@ -556,6 +585,7 @@ fn same_declared_disk_identity(left: &DiskRequirementRow, right: &DiskRequiremen
         && left.sha1 == right.sha1
 }
 
+/// Parse a Logiqx DAT file and store its contents in the database cache.
 pub fn import_dat(
     database: &Database,
     request: &DatImportRequest,
@@ -564,6 +594,7 @@ pub fn import_dat(
         .map(|data_file_id| DatImportReport { data_file_id })
 }
 
+/// Import a supported catalog document and report its snapshot and diagnostics.
 pub fn import_catalog(
     database: &Database,
     request: &CatalogImportRequest,
@@ -571,42 +602,145 @@ pub fn import_catalog(
     crate::storage::catalog_import::import(database.pool(), request)
 }
 
+/// Scan a source tree, hash discovered content, and persist the completed scan.
 pub fn scan_source(
     database: &Database,
     request: &SourceScanRequest,
 ) -> crate::Result<SourceScanReport> {
+    scan_source_with_progress(database, request, &|_| {})
+}
+
+/// Scan and persist a source tree while reporting file-count progress to the caller.
+pub fn scan_source_with_progress(
+    database: &Database,
+    request: &SourceScanRequest,
+    progress: &(impl Fn(ScanProgressEvent) + Sync),
+) -> crate::Result<SourceScanReport> {
     let excluded_paths = crate::storage::db::database_file_paths(database.pool())?;
-    let completed_scan = operations::source(&request.source_path, request.jobs, &excluded_paths)?;
+    let completed_scan = operations::scan::source_with_progress(
+        &request.source_path,
+        request.jobs,
+        &excluded_paths,
+        &|event| {
+            progress(match event {
+                operations::scan::ScanProgress::Started { files } => {
+                    ScanProgressEvent::Started { files }
+                }
+                operations::scan::ScanProgress::Advanced => ScanProgressEvent::Advanced,
+            });
+        },
+    )?;
     let source_path = Utf8PathBuf::from(completed_scan.source_root().as_str());
     let scan_run = completed_scan.scan_run();
     let observation_count = completed_scan.observations().len();
-    let associated_roms =
+    let associated_rom_count =
         SourceRepository::new(database.pool()).replace_completed_scan(&completed_scan)?;
-    if associated_roms == 0 && observation_count > 0 {
-        warn!("scanned {observation_count} ROM files, but none matched imported DAT ROMs");
-    }
     Ok(SourceScanReport {
         source_path,
         scan_run,
         observation_count,
+        associated_rom_count,
     })
 }
 
+/// Plan a build from cached data and write artifacts unless dry-run or blocked.
+///
+/// Artifact-level failures are returned in the report. Once planning succeeds, output
+/// setup and execution errors carry the partial report in [`crate::Error::BuildWorkflow`].
 pub fn build(
     database: &Database,
     request: &BuildWorkflowRequest,
 ) -> crate::Result<BuildWorkflowReport> {
-    let dat_selector = resolve_dat_selector(&request.dat_path);
     let source_root = request.source_path.canonicalize_utf8()?;
     crate::build::validation::ensure_sources_disjoint_from_destination(
         &[source_root.as_path()],
         &request.destination_path,
     )?;
+    let plan = plan_build(
+        database,
+        &BuildPlanRequest {
+            dat_path: request.dat_path.clone(),
+            source_path: request.source_path.clone(),
+            mode: request.mode,
+            missing_policy: if request.strict {
+                MissingContentPolicy::RequireComplete
+            } else {
+                MissingContentPolicy::AllowPartial
+            },
+        },
+    )?;
+    let unattempted = || {
+        plan.groups
+            .iter()
+            .map(|group| ArtifactResult {
+                path: request
+                    .destination_path
+                    .join(format!("{}.zip", group.path.as_str()))
+                    .to_string(),
+                outcome: ArtifactOutcome::Unattempted,
+            })
+            .collect::<Vec<_>>()
+    };
+    let build_report = plan.report.clone();
+    let execution = if request.dry_run || plan.report.outcome != PlanOutcome::Ready {
+        Ok((Vec::new(), unattempted()))
+    } else {
+        (|| {
+            let source_root = request.source_path.canonicalize_utf8()?;
+            crate::build::validation::ensure_sources_disjoint_from_destination(
+                &[source_root.as_path()],
+                &request.destination_path,
+            )?;
+            let results =
+                write_plan_with_compression(&plan, &request.destination_path, request.compression)?;
+            let paths = results
+                .iter()
+                .filter(|result| {
+                    matches!(
+                        &result.outcome,
+                        ArtifactOutcome::Completed | ArtifactOutcome::ReplacedButNotDurable { .. }
+                    )
+                })
+                .map(|result| Utf8PathBuf::from(&result.path))
+                .collect::<Vec<_>>();
+            Ok((paths, results))
+        })()
+    };
+    let (written_paths, artifact_results) = match execution {
+        Ok(execution) => execution,
+        Err(source) => {
+            return Err(crate::Error::BuildWorkflow {
+                report: Box::new(BuildWorkflowReport {
+                    written_paths: Vec::new(),
+                    artifact_results: unattempted(),
+                    build_report,
+                    scan_report: None,
+                }),
+                source: Box::new(source),
+            });
+        }
+    };
+
+    Ok(BuildWorkflowReport {
+        written_paths,
+        artifact_results,
+        build_report,
+        scan_report: None,
+    })
+}
+
+/// Create a build plan from cached DAT and source-scan data without writing outputs.
+pub fn plan_build(
+    database: &Database,
+    request: &BuildPlanRequest,
+) -> crate::Result<crate::domain::BuildPlan> {
+    let dat_selector = resolve_dat_selector(&request.dat_path);
+    let source_root = request.source_path.canonicalize_utf8()?;
     let dat_roms =
         BuildRepository::new(database.pool()).load_dat_roms(dat_selector.repository_selector())?;
     let source_files = SourceRepository::new(database.pool())
         .load_source_files_for_root(&SourceRoot::new(source_root.to_string()))?;
-    let plan = plan_build(
+    Ok(build_plan(
         &dat_roms,
         &source_files,
         &BuildRequest {
@@ -614,79 +748,24 @@ pub fn build(
             source_root: SourceRoot::new(source_root.to_string()),
             mode: request.mode,
             matching_policy: MatchingPolicy::Sha1Compatibility,
-            missing_policy: if request.strict {
-                MissingContentPolicy::RequireComplete
-            } else {
-                MissingContentPolicy::AllowPartial
-            },
+            missing_policy: request.missing_policy,
         },
-    );
-    report_build_outcome(&plan.report);
-    let exit_code = match plan.report.outcome {
-        PlanOutcome::Ready => 0,
-        PlanOutcome::Blocked(_) => 2,
-    };
-    let build_report = plan.report.clone();
-    let (written_paths, artifact_results) = if request.dry_run || exit_code != 0 {
-        (
-            Vec::new(),
-            plan.groups
-                .iter()
-                .map(|group| ArtifactResult {
-                    path: request
-                        .destination_path
-                        .join(format!("{}.zip", group.path.as_str()))
-                        .to_string(),
-                    outcome: ArtifactOutcome::Unattempted,
-                })
-                .collect(),
-        )
-    } else {
-        crate::build::validation::ensure_sources_disjoint_from_destination(
-            &[source_root.as_path()],
-            &request.destination_path,
-        )?;
-        let results =
-            write_plan_with_compression(&plan, &request.destination_path, request.compression)?;
-        report_artifact_outcomes(&results);
-        let paths = results
-            .iter()
-            .filter(|result| {
-                matches!(
-                    &result.outcome,
-                    ArtifactOutcome::Completed | ArtifactOutcome::ReplacedButNotDurable { .. }
-                )
-            })
-            .map(|result| Utf8PathBuf::from(&result.path))
-            .collect::<Vec<_>>();
-        (paths, results)
-    };
-    let exit_code = if artifact_results.iter().any(|result| {
-        matches!(
-            &result.outcome,
-            ArtifactOutcome::Failed { .. } | ArtifactOutcome::ReplacedButNotDurable { .. }
-        )
-    }) {
-        1
-    } else {
-        exit_code
-    };
-
-    Ok(BuildWorkflowReport {
-        written_paths,
-        artifact_results,
-        build_report,
-        exit_code,
-        mode: request.mode,
-        compression: request.compression,
-        dry_run: request.dry_run,
-        strict: request.strict,
-    })
+    ))
 }
 
+/// Import a DAT, scan its source, plan the build, and write eligible artifacts.
 pub fn run(
     database: &Database,
     request: &RunWorkflowRequest,
+) -> crate::Result<BuildWorkflowReport> {
+    run_with_progress(database, request, &|_| {})
+}
+
+/// Run the complete workflow and report source-scan progress to the caller.
+pub fn run_with_progress(
+    database: &Database,
+    request: &RunWorkflowRequest,
+    progress: &(impl Fn(ScanProgressEvent) + Sync),
 ) -> crate::Result<BuildWorkflowReport> {
     crate::build::validation::ensure_sources_disjoint_from_destination(
         &[request.source_path.as_path()],
@@ -698,8 +777,218 @@ pub fn run(
             dat_path: request.dat_path.clone(),
         },
     )?;
-    scan_source(database, &source_scan_request_from_run(request))?;
-    build(database, &build_workflow_request_from_run(request))
+    let scan_report =
+        scan_source_with_progress(database, &source_scan_request_from_run(request), progress)?;
+    match build(database, &build_workflow_request_from_run(request)) {
+        Ok(mut report) => {
+            report.scan_report = Some(scan_report);
+            Ok(report)
+        }
+        Err(crate::Error::BuildWorkflow { mut report, source }) => {
+            report.scan_report = Some(scan_report);
+            Err(crate::Error::BuildWorkflow { report, source })
+        }
+        Err(source) => Err(crate::Error::RunWorkflow {
+            scan_report,
+            source: Box::new(source),
+        }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verifies one-shot runs retain scan and plan diagnostics when artifact output fails.
+    #[test]
+    fn run_reports_scans_and_plan_diagnostics_when_an_artifact_fails()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let root = Utf8PathBuf::try_from(temp.path().to_path_buf())?;
+        let dat_path = root.join("catalog.dat");
+        let source_path = root.join("roms");
+        let destination_path = root.join("output-file");
+        std::fs::create_dir(&source_path)?;
+        std::fs::write(source_path.join("game.rom"), b"abc")?;
+        std::fs::write(
+            &dat_path,
+            r#"<?xml version="1.0"?><datafile><header><name>Fixture</name></header><game name="game"><rom name="game.rom" size="3" crc="352441c2" md5="900150983cd24fb0d6963f7d28e17f72" sha1="a9993e364706816aba3e25717850c26c9cd0d89d"/></game></datafile>"#,
+        )?;
+        std::fs::write(&destination_path, b"not a directory")?;
+
+        let database = Database::in_memory()?;
+        let report = match run(
+            &database,
+            &RunWorkflowRequest {
+                dat_path: dat_path.clone(),
+                source_path: source_path.clone(),
+                destination_path,
+                mode: BuildMode::PerGame,
+                compression: ZipCompression::Deflate,
+                jobs: 1,
+                dry_run: false,
+                strict: false,
+            },
+        ) {
+            Ok(_) => return Err("writing beneath a regular file unexpectedly succeeded".into()),
+            Err(crate::Error::BuildWorkflow { report, .. }) => *report,
+            Err(error) => return Err(error.into()),
+        };
+        let scan = report
+            .scan_report
+            .as_ref()
+            .ok_or("completed scan missing from artifact failure report")?;
+        assert_eq!(scan.observation_count, 1);
+        assert_eq!(scan.associated_rom_count, 1);
+        assert_eq!(report.build_report.matched_roms, 1);
+        assert_eq!(report.artifact_results.len(), 1);
+        assert_eq!(
+            report.artifact_results[0].outcome,
+            ArtifactOutcome::Unattempted
+        );
+
+        std::fs::write(source_path.join("game.rom"), b"different")?;
+        let report = run(
+            &database,
+            &RunWorkflowRequest {
+                dat_path,
+                source_path,
+                destination_path: root.join("dry-run-output"),
+                mode: BuildMode::PerGame,
+                compression: ZipCompression::Deflate,
+                jobs: 1,
+                dry_run: true,
+                strict: false,
+            },
+        )?;
+        let scan = report
+            .scan_report
+            .ok_or("successful run missing its scan report")?;
+        assert_eq!(scan.observation_count, 1);
+        assert_eq!(scan.associated_rom_count, 0);
+        Ok(())
+    }
+
+    /// Verifies completed scan results survive build failures before planning completes.
+    #[test]
+    fn run_preserves_scan_report_when_build_fails_before_planning()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let root = Utf8PathBuf::try_from(temp.path().to_path_buf())?;
+        let dat_path = root.join("catalog.dat");
+        let source_path = root.join("roms");
+        std::fs::create_dir(&source_path)?;
+        std::fs::write(source_path.join("game.rom"), b"abc")?;
+        std::fs::write(
+            &dat_path,
+            r#"<?xml version="1.0"?><datafile><header><name>Fixture</name></header><game name="game"><rom name="game.rom" size="3" crc="352441c2" md5="900150983cd24fb0d6963f7d28e17f72" sha1="a9993e364706816aba3e25717850c26c9cd0d89d"/></game></datafile>"#,
+        )?;
+
+        let database = Database::in_memory()?;
+        let removed = std::sync::atomic::AtomicBool::new(false);
+        let result = run_with_progress(
+            &database,
+            &RunWorkflowRequest {
+                dat_path,
+                source_path: source_path.clone(),
+                destination_path: root.join("output"),
+                mode: BuildMode::PerGame,
+                compression: ZipCompression::Deflate,
+                jobs: 1,
+                dry_run: false,
+                strict: false,
+            },
+            &|event| {
+                if matches!(event, ScanProgressEvent::Advanced) {
+                    removed.store(
+                        std::fs::remove_dir_all(&source_path).is_ok(),
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
+                }
+            },
+        );
+        let Err(error) = result else {
+            return Err("removing the source after scanning must fail planning".into());
+        };
+        assert!(removed.load(std::sync::atomic::Ordering::Relaxed));
+
+        match error {
+            crate::Error::RunWorkflow {
+                scan_report,
+                source,
+            } => {
+                assert_eq!(scan_report.observation_count, 1);
+                assert_eq!(scan_report.associated_rom_count, 1);
+                assert!(matches!(*source, crate::Error::Io(_)));
+            }
+            error => return Err(format!("unexpected error: {error}").into()),
+        }
+        Ok(())
+    }
+
+    /// Verifies the scan reports progress and in-memory planning creates no output files.
+    #[test]
+    fn planning_from_in_memory_cache_does_not_create_or_write_outputs()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let root = Utf8PathBuf::try_from(temp.path().to_path_buf())?;
+        let dat_path = root.join("catalog.dat");
+        let source_path = root.join("roms");
+        let destination_path = root.join("outputs");
+        std::fs::create_dir(&source_path)?;
+        std::fs::write(source_path.join("game.rom"), b"abc")?;
+        std::fs::write(
+            &dat_path,
+            r#"<?xml version="1.0"?><datafile><header><name>Fixture</name></header><game name="game"><rom name="game.rom" size="3" crc="352441c2" md5="900150983cd24fb0d6963f7d28e17f72" sha1="a9993e364706816aba3e25717850c26c9cd0d89d"/></game></datafile>"#,
+        )?;
+        let database = Database::in_memory()?;
+        import_dat(
+            &database,
+            &DatImportRequest {
+                dat_path: dat_path.clone(),
+            },
+        )?;
+        let progress_events = std::sync::Mutex::new(Vec::new());
+        scan_source_with_progress(
+            &database,
+            &SourceScanRequest {
+                source_path: source_path.clone(),
+                jobs: 1,
+            },
+            &|event| {
+                progress_events
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(event);
+            },
+        )?;
+        let progress_events = progress_events
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(
+            progress_events,
+            vec![
+                ScanProgressEvent::Started { files: 1 },
+                ScanProgressEvent::Advanced
+            ]
+        );
+
+        let plan = plan_build(
+            &database,
+            &BuildPlanRequest {
+                dat_path,
+                source_path,
+                mode: BuildMode::PerGame,
+                missing_policy: MissingContentPolicy::RequireComplete,
+            },
+        )?;
+
+        assert_eq!(plan.report.outcome, PlanOutcome::Ready);
+        assert_eq!(plan.report.matched_roms, 1);
+        assert_eq!(plan.groups.len(), 1);
+        assert!(!destination_path.exists());
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -746,62 +1035,5 @@ fn build_workflow_request_from_run(request: &RunWorkflowRequest) -> BuildWorkflo
         compression: request.compression,
         dry_run: request.dry_run,
         strict: request.strict,
-    }
-}
-
-fn report_build_outcome(report: &BuildReport) {
-    info!("matched {} ROMs", report.matched_roms);
-
-    if !report.missing_roms.is_empty() {
-        warn!("{} ROMs are missing", report.missing_roms.len());
-        for missing in &report.missing_roms {
-            warn!(
-                "missing ROM: game={} rom={} sha1={}",
-                missing.game_name,
-                missing.rom_name,
-                missing
-                    .sha1
-                    .map_or_else(|| "not supplied".to_owned(), hex::encode)
-            );
-        }
-    }
-
-    if !report.duplicate_matches.is_empty() {
-        warn!(
-            "{} ROMs had duplicate source matches",
-            report.duplicate_matches.len()
-        );
-        for duplicate in &report.duplicate_matches {
-            warn!(
-                "duplicate ROM match: rom={} selected={} candidates={}",
-                duplicate.rom_name,
-                duplicate.selected.display_name(),
-                duplicate.candidates.len()
-            );
-        }
-    }
-
-    for issue in &report.validation_issues {
-        warn!("build plan validation: {issue}");
-    }
-}
-
-fn report_artifact_outcomes(results: &[ArtifactResult]) {
-    for result in results {
-        match &result.outcome {
-            ArtifactOutcome::Completed => info!("completed output artifact: {}", result.path),
-            ArtifactOutcome::Failed { error } => {
-                warn!("failed output artifact: {}: {error}", result.path);
-            }
-            ArtifactOutcome::ReplacedButNotDurable { error } => {
-                warn!(
-                    "replaced output artifact, but durability is uncertain: {}: {error}",
-                    result.path
-                );
-            }
-            ArtifactOutcome::Unattempted => {
-                warn!("output artifact was not attempted: {}", result.path);
-            }
-        }
     }
 }

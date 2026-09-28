@@ -5,6 +5,7 @@ use clap::Parser;
 
 mod logger;
 mod options;
+mod render;
 mod report;
 use options::{CacheCommand, Cli, Command};
 
@@ -34,7 +35,9 @@ fn run() -> mame_coalesce::Result<ExitCode> {
 
     match cli.command() {
         Command::Build(args) => {
-            let report = app::run(
+            let progress = render::ScanProgressReporter::default();
+            let callback = |event| progress.update(event);
+            let result = app::run_with_progress(
                 &database,
                 &RunWorkflowRequest {
                     dat_path: args.dat.clone(),
@@ -46,18 +49,21 @@ fn run() -> mame_coalesce::Result<ExitCode> {
                     dry_run: args.options.dry_run,
                     strict: args.options.missing.strict(),
                 },
-            )?;
-            Ok(exit_code(report.exit_code))
+                &callback,
+            );
+            progress.finish();
+            render_build_result(result)
         }
         Command::Cache {
             command: CacheCommand::Import { dat },
         } => {
-            app::import_dat(
+            let report = app::import_dat(
                 &database,
                 &DatImportRequest {
                     dat_path: dat.clone(),
                 },
             )?;
+            log::info!("imported DAT as cache data file {}", report.data_file_id);
             Ok(ExitCode::SUCCESS)
         }
         Command::Cache {
@@ -88,19 +94,24 @@ fn run() -> mame_coalesce::Result<ExitCode> {
         Command::Cache {
             command: CacheCommand::Scan { source, jobs },
         } => {
-            app::scan_source(
+            let progress = render::ScanProgressReporter::default();
+            let callback = |event| progress.update(event);
+            let report = app::scan_source_with_progress(
                 &database,
                 &SourceScanRequest {
                     source_path: source.clone(),
                     jobs: *jobs,
                 },
+                &callback,
             )?;
+            progress.finish();
+            render::scan_report(&report);
             Ok(ExitCode::SUCCESS)
         }
         Command::Cache {
             command: CacheCommand::Build(args),
         } => {
-            let report = app::build(
+            let result = app::build(
                 &database,
                 &BuildWorkflowRequest {
                     dat_path: args.dat.clone(),
@@ -111,22 +122,58 @@ fn run() -> mame_coalesce::Result<ExitCode> {
                     dry_run: args.options.dry_run,
                     strict: args.options.missing.strict(),
                 },
-            )?;
-            Ok(exit_code(report.exit_code))
+            );
+            render_build_result(result)
         }
         Command::Cache {
             command: CacheCommand::Audit(args),
-        } => {
-            let report = app::audit_disks(
-                &database,
-                &DiskAuditRequest {
-                    catalog_key: args.catalog.clone(),
-                    source_path: args.source.clone(),
-                },
-            )?;
-            report::write_disk_audit(&report, args.format)?;
-            Ok(ExitCode::SUCCESS)
+        } => run_disk_audit(&database, args),
+    }
+}
+
+fn run_disk_audit(
+    database: &Database,
+    args: &options::DiskAuditArgs,
+) -> mame_coalesce::Result<ExitCode> {
+    let report = app::audit_disks(
+        database,
+        &DiskAuditRequest {
+            catalog_key: args.catalog.clone(),
+            source_path: args.source.clone(),
+        },
+    )?;
+    report::write_disk_audit(&report, args.format)?;
+    Ok(ExitCode::SUCCESS)
+}
+
+fn render_build_result(
+    result: mame_coalesce::Result<mame_coalesce::app::BuildWorkflowReport>,
+) -> mame_coalesce::Result<ExitCode> {
+    match result {
+        Ok(report) => {
+            if let Some(scan_report) = &report.scan_report {
+                render::scan_report(scan_report);
+            }
+            render::build_report(&report);
+            Ok(render::exit_code(&report))
         }
+        Err(mame_coalesce::Error::BuildWorkflow { report, source }) => {
+            if let Some(scan_report) = &report.scan_report {
+                render::scan_report(scan_report);
+            }
+            render::build_report(&report);
+            eprintln!("{source}");
+            Ok(ExitCode::from(1))
+        }
+        Err(mame_coalesce::Error::RunWorkflow {
+            scan_report,
+            source,
+        }) => {
+            render::scan_report(&scan_report);
+            eprintln!("{source}");
+            Ok(ExitCode::from(1))
+        }
+        Err(error) => Err(error),
     }
 }
 
@@ -147,12 +194,4 @@ fn default_cache_path() -> Utf8PathBuf {
             || Utf8PathBuf::from("coalesce.db"),
             |cache_root| cache_root.join("mame_coalesce").join("coalesce.db"),
         )
-}
-
-fn exit_code(code: i32) -> ExitCode {
-    match code {
-        0 => ExitCode::SUCCESS,
-        2 => ExitCode::from(2),
-        _ => ExitCode::from(1),
-    }
 }
