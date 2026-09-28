@@ -345,10 +345,11 @@ mod tests {
         std::fs::create_dir(root.join("visible-dir"))?;
         std::fs::write(root.join("visible-dir").join(".hidden.rom"), b"hidden file")?;
         std::fs::write(root.join("visible-dir").join("nested.rom"), b"nested")?;
+        let canonical_root = root.canonicalize_utf8()?;
 
         let files = walk_for_files(root, &[])?
             .into_iter()
-            .map(|path| path.strip_prefix(root).map(Utf8Path::to_owned))
+            .map(|path| path.strip_prefix(&canonical_root).map(Utf8Path::to_owned))
             .collect::<Result<BTreeSet<_>, _>>()?;
 
         assert_eq!(
