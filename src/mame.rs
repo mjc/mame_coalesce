@@ -24,10 +24,19 @@ pub struct MameCatalog {
 pub struct Machine {
     pub name: String,
     pub parent: Option<String>,
+    pub rom_of: Option<String>,
+    pub sample_of: Option<String>,
     pub location: RecordLocation,
     pub metadata: BTreeMap<String, serde_json::Value>,
     pub assets: Vec<MachineAsset>,
+    pub device_refs: Vec<DeviceReference>,
     pub extensions: Vec<XmlExtension>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeviceReference {
+    pub name: String,
+    pub location: RecordLocation,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -238,14 +247,68 @@ pub fn parse_xml_element(bytes: &[u8]) -> crate::Result<Element> {
     root.ok_or_else(|| crate::Error::XmlValidation("missing document root".into()))
 }
 
+fn device_reference_metadata(references: &[DeviceReference]) -> serde_json::Value {
+    serde_json::json!(
+        references
+            .iter()
+            .enumerate()
+            .map(|(order, reference)| serde_json::json!({"name": reference.name, "order": order}))
+            .collect::<Vec<_>>()
+    )
+}
+
+fn parse_device_reference(node: &Element) -> crate::Result<DeviceReference> {
+    Ok(DeviceReference {
+        name: required(node, "name")?.to_owned(),
+        location: node.location,
+    })
+}
+
+fn machine_attribute_extensions(name: &str, node: &Element) -> Vec<XmlExtension> {
+    node.attributes
+        .iter()
+        .filter(|(key, _)| {
+            ![
+                "name",
+                "sourcefile",
+                "cloneof",
+                "romof",
+                "sampleof",
+                "isdevice",
+                "runnable",
+                "isbios",
+                "ismechanical",
+                "isconsumable",
+            ]
+            .contains(&key.as_str())
+        })
+        .map(|(key, val)| {
+            let (field_name, namespace_uri) = attribute_name(key);
+            XmlExtension {
+                record_kind: "machine".into(),
+                record_name: Some(name.into()),
+                field_name,
+                namespace_uri,
+                value: serde_json::json!(val),
+                location: node.location,
+            }
+        })
+        .collect()
+}
+
 fn parse_machine(node: &Element) -> crate::Result<Machine> {
     let name = required(node, "name")?;
     let parent = node.attributes.get("cloneof").cloned();
+    let rom_of = node.attributes.get("romof").cloned();
+    let sample_of = node.attributes.get("sampleof").cloned();
     let mut metadata = BTreeMap::new();
     metadata.insert(
         "sourcefile".into(),
         value(node.attributes.get("sourcefile")),
     );
+    if let Some(parent) = &parent {
+        metadata.insert("cloneof".into(), serde_json::json!(parent));
+    }
     for flag in [
         "isdevice",
         "runnable",
@@ -280,7 +343,7 @@ fn parse_machine(node: &Element) -> crate::Result<Machine> {
                 }
             }
             "biosset" => biossets.push(serde_json::json!({"name": required(child, "name")?, "description": child.attributes.get("description"), "default": child.attributes.get("default")})),
-            "device_ref" => device_refs.push(serde_json::json!({"name": required(child, "name")?, "order": device_refs.len()})),
+            "device_ref" => device_refs.push(parse_device_reference(child)?),
             "rom" | "disk" => assets.push(parse_asset(child)?),
             _ => extensions.push(extension("machine", Some(name), child)?),
         }
@@ -301,37 +364,20 @@ fn parse_machine(node: &Element) -> crate::Result<Machine> {
         }
     }
     metadata.insert("biossets".into(), serde_json::json!(biossets));
-    metadata.insert("device_refs".into(), serde_json::json!(device_refs));
-    for (key, val) in &node.attributes {
-        if ![
-            "name",
-            "sourcefile",
-            "isdevice",
-            "runnable",
-            "isbios",
-            "ismechanical",
-            "isconsumable",
-            "cloneof",
-        ]
-        .contains(&key.as_str())
-        {
-            let (field_name, namespace_uri) = attribute_name(key);
-            extensions.push(XmlExtension {
-                record_kind: "machine".into(),
-                record_name: Some(name.into()),
-                field_name,
-                namespace_uri,
-                value: serde_json::json!(val),
-                location: node.location,
-            });
-        }
-    }
+    metadata.insert(
+        "device_refs".into(),
+        device_reference_metadata(&device_refs),
+    );
+    extensions.extend(machine_attribute_extensions(name, node));
     Ok(Machine {
         name: name.into(),
         parent,
+        rom_of,
+        sample_of,
         location: node.location,
         metadata,
         assets,
+        device_refs,
         extensions,
     })
 }

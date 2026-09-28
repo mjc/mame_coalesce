@@ -885,6 +885,111 @@ mod tests {
     }
 
     #[test]
+    fn relationship_migration_backfills_legacy_parent_claims_and_keeps_them_immutable()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut conn = SqliteConnection::establish(":memory:")?;
+        conn.batch_execute("PRAGMA foreign_keys = ON")?;
+        let migrations = MIGRATIONS.migrations()?;
+        conn.applied_migrations()?;
+        let relationship_migration = migrations
+            .iter()
+            .position(|migration| {
+                migration.name().to_string() == "2026-09-25-000008_typed_relationship_assertions"
+            })
+            .ok_or("relationship migration not found")?;
+        for migration in &migrations[..relationship_migration] {
+            conn.run_migration(migration.as_ref())?;
+        }
+        conn.batch_execute(
+            "INSERT INTO publishing_sources (source_key, display_name) VALUES ('source', 'Source');
+             INSERT INTO catalogs (catalog_key, source_key, display_name)
+                 VALUES ('catalog', 'source', 'Catalog');
+             INSERT INTO documents (document_key) VALUES ('document');
+             INSERT INTO parser_interpretations (interpretation_key, format)
+                 VALUES ('interpretation', 'logiqx');
+             INSERT INTO catalog_snapshots
+                 (snapshot_key, catalog_key, document_key, interpretation_key, scope_kind)
+                 VALUES ('snapshot', 'catalog', 'document', 'interpretation', 'unknown');
+             INSERT INTO snapshot_sets
+                 (snapshot_key, set_name, parent_name, metadata_json, source_line, source_column)
+                 VALUES ('snapshot', 'clone', 'clone-parent',
+                         '{\"rom_of\":\"rom-parent\",\"sample_of\":\"samples\",\
+                           \"device_refs\":[\"sound\"]}', 4, 3),
+                        ('snapshot', 'clone-parent', NULL, '{}', 1, 1),
+                        ('snapshot', 'rom-parent', NULL, '{}', 2, 1);
+             INSERT INTO asset_requirements
+                 (snapshot_key, set_name, component_order, asset_name, role, size,
+                  evidence_scope, evidence_provenance, merge_name, source_line, source_column)
+                 VALUES ('snapshot', 'clone', 0, 'clone.rom', 'rom', 1,
+                         'whole_asset', 'source_declared', 'shared.rom', 5, 7),
+                        ('snapshot', 'rom-parent', 0, 'shared.rom', 'rom', 1,
+                         'whole_asset', 'source_declared', NULL, 2, 8);",
+        )?;
+        for migration in &migrations[relationship_migration..] {
+            conn.run_migration(migration.as_ref())?;
+        }
+
+        let count = count(&mut conn, "relationship_assertions")?;
+        assert_eq!(count, 5);
+        let field = sql_query(
+            "SELECT source_field AS value FROM relationship_assertions WHERE assertion_key = \
+             (SELECT assertion_key FROM relationship_assertions \
+              WHERE source_field = 'parent_name (legacy normalized)' LIMIT 1)",
+        )
+        .get_result::<TextRow>(&mut conn)?;
+        assert_eq!(field.value, "parent_name (legacy normalized)");
+        let merge_target = sql_query(
+            "SELECT target_key AS value FROM relationship_assertions \
+             WHERE source_field = 'merge'",
+        )
+        .get_result::<TextRow>(&mut conn)?;
+        assert_eq!(merge_target.value, "[\"rom-parent\",\"shared.rom\",0]");
+        let runtime_edges = sql_query(
+            "SELECT source_field || ':' || target_key AS value \
+             FROM relationship_assertions WHERE relation_type = 'runtime_dependency' \
+             ORDER BY source_field",
+        )
+        .load::<TextRow>(&mut conn)?;
+        assert_eq!(
+            runtime_edges
+                .iter()
+                .map(|edge| edge.value.as_str())
+                .collect::<Vec<_>>(),
+            ["device_ref:sound", "romof:rom-parent", "sampleof:samples"]
+        );
+        assert!(sql_fails(
+            &mut conn,
+            "UPDATE relationship_assertions SET target_key = 'changed'"
+        ));
+        assert!(sql_fails(&mut conn, "DELETE FROM relationship_assertions"));
+        assert!(sql_fails(
+            &mut conn,
+            "INSERT OR REPLACE INTO relationship_assertions \
+             SELECT * FROM relationship_assertions LIMIT 1"
+        ));
+        let assertion =
+            sql_query("SELECT assertion_key AS value FROM relationship_assertions LIMIT 1")
+                .get_result::<TextRow>(&mut conn)?;
+        sql_query(
+            "INSERT INTO relationship_reviews (review_key, assertion_key, decision, note) \
+             VALUES ('review-key', ?, 'accepted', 'initial review')",
+        )
+        .bind::<diesel::sql_types::Text, _>(assertion.value)
+        .execute(&mut conn)?;
+        assert!(sql_fails(
+            &mut conn,
+            "INSERT OR REPLACE INTO relationship_reviews \
+             SELECT * FROM relationship_reviews LIMIT 1"
+        ));
+        assert!(sql_fails(
+            &mut conn,
+            "UPDATE relationship_reviews SET note = 'overwritten'"
+        ));
+        assert!(sql_fails(&mut conn, "DELETE FROM relationship_reviews"));
+        Ok(())
+    }
+
+    #[test]
     fn identity_keys_separate_names_versions_interpretations_and_runs()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut conn = SqliteConnection::establish(":memory:")?;

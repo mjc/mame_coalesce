@@ -23,6 +23,38 @@ struct CountRow {
 }
 
 #[derive(QueryableByName)]
+struct QueryableAssertion {
+    #[diesel(sql_type = Text)]
+    relation_type: String,
+    #[diesel(sql_type = Text)]
+    origin: String,
+    #[diesel(sql_type = Nullable<Text>)]
+    source_snapshot_key: Option<String>,
+    #[diesel(sql_type = Text)]
+    subject_key: String,
+    #[diesel(sql_type = Text)]
+    target_key: String,
+    #[diesel(sql_type = Nullable<Text>)]
+    source_field: Option<String>,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    source_line: Option<i64>,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    source_column: Option<i64>,
+    #[diesel(sql_type = Nullable<Text>)]
+    rule_version: Option<String>,
+}
+
+#[derive(QueryableByName)]
+struct RelationshipKeyLocationRow {
+    #[diesel(sql_type = Text)]
+    subject_key: String,
+    #[diesel(sql_type = Text)]
+    target_key: String,
+    #[diesel(sql_type = BigInt)]
+    source_line: i64,
+}
+
+#[derive(QueryableByName)]
 struct TextRow {
     #[diesel(sql_type = Text)]
     value: String,
@@ -861,7 +893,93 @@ fn imports_mame_relationship_asset_fields_extensions_and_format_hint()
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<NullableTextRow>(&mut connection)?;
     assert_eq!(format_hint.value.as_deref(), Some("mame-listxml"));
+    Ok(())
+}
 
+#[test]
+fn mame_relationships_resolve_component_keys_and_keep_device_locations()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, mut connection) = setup()?;
+    let path = directory.path().join("mame-relationship-identity.xml");
+    std::fs::write(
+        &path,
+        "<mame>\n<machine name=\"clone-parent\"/>\n<machine name=\"rom-parent\">\n<rom name=\"shared.bin\" size=\"1\" crc=\"12345678\"/>\n</machine>\n<machine name=\"clone\" cloneof=\"clone-parent\" romof=\"rom-parent\">\n<device_ref name=\"sound\"/>\n<rom name=\"shared.bin\" merge=\"shared.bin\" size=\"1\" crc=\"12345678\"/>\n</machine>\n<machine name=\"sound\"/>\n</mame>",
+    )?;
+    let mut request = request(
+        path,
+        "publisher-mame-relations",
+        "mame-relations",
+        "MAME relations",
+    )?;
+    request.format = CatalogDocumentFormat::MameListXml;
+    let report = app::import_catalog(&database, &request)?;
+    let snapshot = report.snapshot_key.ok_or("MAME snapshot missing")?;
+
+    let merge = sql_query(
+        "SELECT subject_key, target_key, source_line FROM relationship_assertions \
+         WHERE source_snapshot_key = ? AND source_field = 'merge'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<RelationshipKeyLocationRow>(&mut connection)?;
+    assert_eq!(merge.subject_key, "[\"clone\",\"shared.bin\",0]");
+    assert_eq!(merge.target_key, "[\"rom-parent\",\"shared.bin\",0]");
+    assert_eq!(merge.source_line, 8);
+
+    let device = sql_query(
+        "SELECT subject_key, target_key, source_line FROM relationship_assertions \
+         WHERE source_snapshot_key = ? AND source_field = 'device_ref'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<RelationshipKeyLocationRow>(&mut connection)?;
+    assert_eq!(device.subject_key, "clone");
+    assert_eq!(device.target_key, "sound");
+    assert_eq!(device.source_line, 7);
+
+    let dependencies = sql_query(
+        "SELECT source_field || ':' || target_key AS value FROM relationship_assertions \
+         WHERE source_snapshot_key = ? AND subject_kind = 'catalog_set' AND subject_key = 'clone' \
+         AND relation_type = 'runtime_dependency' ORDER BY source_field",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .load::<TextRow>(&mut connection)?;
+    assert_eq!(
+        dependencies
+            .iter()
+            .map(|dependency| dependency.value.as_str())
+            .collect::<Vec<_>>(),
+        ["device_ref:sound", "romof:rom-parent"]
+    );
+    Ok(())
+}
+
+#[test]
+fn software_item_relationship_keys_do_not_collide_on_slashes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, mut connection) = setup()?;
+    let path = directory.path().join("software-list-slash-identities.xml");
+    std::fs::write(
+        &path,
+        "<softwarelists><softwarelist name=\"a/b\"><software name=\"c\" cloneof=\"parent\"><description>c</description><year>2000</year><publisher>example</publisher><part name=\"cart\" interface=\"cart\"/></software><software name=\"parent\"><description>parent</description><year>2000</year><publisher>example</publisher><part name=\"cart\" interface=\"cart\"/></software></softwarelist><softwarelist name=\"a\"><software name=\"b/c\" cloneof=\"parent\"><description>b/c</description><year>2000</year><publisher>example</publisher><part name=\"cart\" interface=\"cart\"/></software><software name=\"parent\"><description>parent</description><year>2000</year><publisher>example</publisher><part name=\"cart\" interface=\"cart\"/></software></softwarelist></softwarelists>",
+    )?;
+    let mut request = request(path, "publisher-slash-keys", "slash-keys", "Slash keys")?;
+    request.format = CatalogDocumentFormat::MameSoftwareListXml;
+    let report = app::import_catalog(&database, &request)?;
+    let Some(snapshot) = report.snapshot_key.as_ref() else {
+        let diagnostic =
+            sql_query("SELECT message AS value FROM import_diagnostics WHERE run_key = ?")
+                .bind::<Text, _>(report.run_key.to_string())
+                .get_result::<TextRow>(&mut connection)?;
+        return Err(io::Error::other(diagnostic.value).into());
+    };
+    let keys = sql_query(
+        "SELECT subject_key AS value FROM relationship_assertions \
+         WHERE source_snapshot_key = ? AND source_field = 'cloneof' ORDER BY subject_key",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .load::<TextRow>(&mut connection)?;
+    assert_eq!(keys.len(), 2);
+    assert_eq!(keys[0].value, "[\"a\",\"b/c\"]");
+    assert_eq!(keys[1].value, "[\"a/b\",\"c\"]");
     Ok(())
 }
 
@@ -1678,6 +1796,80 @@ fn permuting_set_records_does_not_change_source_attributed_requirements()
     )
     .get_result::<CountRow>(&mut connection)?;
     assert_eq!(preserved_claims.count, 4);
+    Ok(())
+}
+
+#[test]
+fn source_relationship_assertions_keep_snapshot_and_field_provenance()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (_directory, database, mut connection) = setup()?;
+    let imported = app::import_catalog(
+        &database,
+        &request(
+            fixture("catalog-a-v1.dat"),
+            "publisher-a",
+            "catalog-a",
+            "Catalog A",
+        )?,
+    )?;
+    let snapshot_key = imported
+        .snapshot_key
+        .as_ref()
+        .ok_or_else(|| io::Error::other("successful import has no snapshot key"))?;
+    let assertion = sql_query(
+        "SELECT relation_type, origin, source_snapshot_key, subject_key, target_key, \
+                source_field, source_line, source_column, rule_version \
+         FROM relationship_assertions \
+         WHERE source_snapshot_key = ? AND source_field = 'cloneof'",
+    )
+    .bind::<Text, _>(snapshot_key.as_str())
+    .get_result::<QueryableAssertion>(&mut connection)?;
+    assert_eq!(assertion.relation_type, "source_parent_clone");
+    assert_eq!(assertion.origin, "source_assertion");
+    assert_eq!(assertion.subject_key, "alpha");
+    assert_eq!(assertion.target_key, "parent");
+    assert_eq!(assertion.source_field.as_deref(), Some("cloneof"));
+    assert_eq!(assertion.source_line, Some(4));
+    assert_eq!(assertion.source_column, Some(3));
+    assert!(assertion.rule_version.is_none());
+    assert_eq!(
+        assertion.source_snapshot_key.as_deref(),
+        Some(snapshot_key.as_str())
+    );
+
+    let runtime_claims = sql_query(
+        "SELECT COUNT(*) AS count FROM relationship_assertions \
+         WHERE source_snapshot_key = ? AND relation_type = 'runtime_dependency' \
+           AND source_field IN ('romof', 'sampleof', 'device_ref')",
+    )
+    .bind::<Text, _>(snapshot_key.as_str())
+    .get_result::<CountRow>(&mut connection)?;
+    assert_eq!(runtime_claims.count, 3);
+    let device_claim = sql_query(
+        "SELECT target_key AS value FROM relationship_assertions \
+         WHERE source_snapshot_key = ? AND source_field = 'device_ref'",
+    )
+    .bind::<Text, _>(snapshot_key.as_str())
+    .get_result::<TextRow>(&mut connection)?;
+    assert_eq!(device_claim.value, "fixture-sound");
+
+    // An identical reimport reuses the immutable snapshot rather than duplicating its claims.
+    app::import_catalog(
+        &database,
+        &request(
+            fixture("catalog-a-v1.dat"),
+            "publisher-a",
+            "catalog-a",
+            "Catalog A",
+        )?,
+    )?;
+    let claims = sql_query(
+        "SELECT COUNT(*) AS count FROM relationship_assertions \
+         WHERE source_snapshot_key = ? AND source_field = 'cloneof'",
+    )
+    .bind::<Text, _>(snapshot_key.as_str())
+    .get_result::<CountRow>(&mut connection)?;
+    assert_eq!(claims.count, 1);
     Ok(())
 }
 
