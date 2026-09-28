@@ -15,7 +15,7 @@ use crate::{
     domain::{
         ArchiveMemberSelector, CompleteSourceScan, EvidenceProvenance, EvidenceScope,
         ObservedContent, ScanProvenance, ScanRunKey, SourceFingerprint, SourceLocation,
-        SourceObservation, SourceRoot,
+        SourceObservation, SourcePhysicalPath, SourceRoot,
     },
     hashes::{Sha1Digest, Xxh3Digest},
 };
@@ -119,8 +119,9 @@ fn scan_bare_file(
     source_root: &SourceRoot,
     scan_run: ScanRunKey,
 ) -> crate::Result<Vec<SourceObservation>> {
+    let physical_path = SourcePhysicalPath::capture(path)?;
     let mut hash_writer = RomHashWriter::default();
-    crate::sources::stream_file(path, &mut hash_writer)?;
+    crate::sources::stream_file(physical_path.as_path(), &mut hash_writer)?;
     let (size, sha1, xxhash3) = hash_writer.finish();
     Ok(vec![SourceObservation {
         source_root: source_root.clone(),
@@ -128,6 +129,7 @@ fn scan_bare_file(
         location: SourceLocation::BareFile {
             path: path.to_string(),
         },
+        physical_path,
         observed: ObservedContent {
             scope: EvidenceScope::WholeAsset,
             provenance: EvidenceProvenance::Computed,
@@ -160,9 +162,11 @@ fn scan_archive(
     source_root: &SourceRoot,
     scan_run: ScanRunKey,
 ) -> crate::Result<Vec<SourceObservation>> {
-    let fingerprint = fingerprint_file(path)?;
+    let physical_path = SourcePhysicalPath::capture(path)?;
+    let resolved_path = physical_path.as_path();
+    let fingerprint = fingerprint_file(resolved_path)?;
     let mut observations = Vec::new();
-    crate::sources::stream_archive(path, backend, None, |member, reader| {
+    crate::sources::stream_archive(resolved_path, backend, None, |member, reader| {
         let mut hash_writer = RomHashWriter::default();
         std::io::copy(reader, &mut hash_writer)?;
         let (size, sha1, xxhash3) = hash_writer.finish();
@@ -179,6 +183,7 @@ fn scan_archive(
                     name: member.selector.name.clone(),
                 },
             },
+            physical_path: physical_path.clone(),
             observed: ObservedContent {
                 scope: EvidenceScope::WholeAsset,
                 provenance: EvidenceProvenance::Computed,
@@ -193,7 +198,7 @@ fn scan_archive(
         });
         Ok(())
     })?;
-    verify_archive_fingerprint(path, fingerprint)?;
+    verify_archive_fingerprint(resolved_path, fingerprint)?;
     Ok(observations)
 }
 

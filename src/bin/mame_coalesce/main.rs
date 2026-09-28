@@ -13,7 +13,7 @@ use mame_coalesce::{
     app::{
         self, AuditRefresh, AuditRequest, BuildWorkflowRequest, CatalogImportRequest,
         CatalogImportStatus, DatImportRequest, DiskAuditRequest, RunWorkflowRequest,
-        SourceScanRequest,
+        SourceRootSelection,
     },
     database::Database,
     domain::{CatalogKey, PublishingSourceKey},
@@ -38,7 +38,7 @@ fn run() -> mame_coalesce::Result<ExitCode> {
         Command::Build(args) => {
             let progress = render::ScanProgressReporter::default();
             let callback = |event| progress.update(event);
-            let result = app::run_with_progress(
+            let result = app::run_with_roots_and_progress(
                 &database,
                 &RunWorkflowRequest {
                     dat_path: args.dat.clone(),
@@ -49,6 +49,10 @@ fn run() -> mame_coalesce::Result<ExitCode> {
                     jobs: args.jobs,
                     dry_run: args.options.dry_run,
                     strict: args.options.missing.strict(),
+                },
+                &SourceRootSelection {
+                    primary: args.source.clone(),
+                    additional: args.additional_source_roots.clone(),
                 },
                 &callback,
             );
@@ -70,50 +74,31 @@ fn run() -> mame_coalesce::Result<ExitCode> {
         }
         Command::Cache {
             command: CacheCommand::CatalogImport(args),
-        } => {
-            let report = app::import_catalog(
-                &database,
-                &CatalogImportRequest {
-                    document_path: args.document.clone(),
-                    format: args.format.into(),
-                    source_key: PublishingSourceKey::new(args.source_key.clone()),
-                    source_display_name: args.source_name.clone(),
-                    catalog_key: CatalogKey::new(args.catalog_key.clone()),
-                    catalog_display_name: args.catalog_name.clone(),
-                    scope: args.scope.into(),
-                },
-            )?;
-            if report.status == CatalogImportStatus::Failed {
-                eprintln!(
-                    "catalog import failed ({} diagnostics)",
-                    report.diagnostic_count
-                );
-                Ok(ExitCode::FAILURE)
-            } else {
-                Ok(ExitCode::SUCCESS)
-            }
-        }
+        } => import_catalog_command(&database, args),
         Command::Cache {
-            command: CacheCommand::Scan { source, jobs },
+            command: CacheCommand::Scan(args),
         } => {
             let progress = render::ScanProgressReporter::default();
             let callback = |event| progress.update(event);
-            let report = app::scan_source_with_progress(
+            let reports = app::scan_sources_with_progress(
                 &database,
-                &SourceScanRequest {
-                    source_path: source.clone(),
-                    jobs: *jobs,
+                &SourceRootSelection {
+                    primary: args.source.clone(),
+                    additional: args.additional_source_roots.clone(),
                 },
+                args.jobs,
                 &callback,
             )?;
             progress.finish();
-            render::scan_report(&report);
+            for report in &reports {
+                render::scan_report(report);
+            }
             Ok(ExitCode::SUCCESS)
         }
         Command::Cache {
             command: CacheCommand::Build(args),
         } => {
-            let result = app::build(
+            let result = app::build_with_roots(
                 &database,
                 &BuildWorkflowRequest {
                     dat_path: args.dat.clone(),
@@ -123,6 +108,10 @@ fn run() -> mame_coalesce::Result<ExitCode> {
                     compression: args.options.compression.into(),
                     dry_run: args.options.dry_run,
                     strict: args.options.missing.strict(),
+                },
+                &SourceRootSelection {
+                    primary: args.source.clone(),
+                    additional: args.additional_source_roots.clone(),
                 },
             );
             render_build_result(result)
@@ -148,21 +137,44 @@ fn run_disk_audit(
     Ok(ExitCode::SUCCESS)
 }
 
+fn import_catalog_command(
+    database: &Database,
+    args: &options::CatalogImportArgs,
+) -> mame_coalesce::Result<ExitCode> {
+    let report = app::import_catalog(
+        database,
+        &CatalogImportRequest {
+            document_path: args.document.clone(),
+            format: args.format.into(),
+            source_key: PublishingSourceKey::new(args.source_key.clone()),
+            source_display_name: args.source_name.clone(),
+            catalog_key: CatalogKey::new(args.catalog_key.clone()),
+            catalog_display_name: args.catalog_name.clone(),
+            scope: args.scope.into(),
+        },
+    )?;
+    if report.status == CatalogImportStatus::Failed {
+        eprintln!(
+            "catalog import failed ({} diagnostics)",
+            report.diagnostic_count
+        );
+        Ok(ExitCode::FAILURE)
+    } else {
+        Ok(ExitCode::SUCCESS)
+    }
+}
+
 fn render_build_result(
     result: mame_coalesce::Result<mame_coalesce::app::BuildWorkflowReport>,
 ) -> mame_coalesce::Result<ExitCode> {
     match result {
         Ok(report) => {
-            if let Some(scan_report) = &report.scan_report {
-                render::scan_report(scan_report);
-            }
+            render_workflow_scans(&report);
             render::build_report(&report);
             Ok(render::exit_code(&report))
         }
         Err(mame_coalesce::Error::BuildWorkflow { report, source }) => {
-            if let Some(scan_report) = &report.scan_report {
-                render::scan_report(scan_report);
-            }
+            render_workflow_scans(&report);
             render::build_report(&report);
             eprintln!("{source}");
             Ok(ExitCode::from(1))
@@ -175,14 +187,36 @@ fn render_build_result(
             eprintln!("{source}");
             Ok(ExitCode::from(1))
         }
+        Err(mame_coalesce::Error::RunWorkflowWithRoots {
+            scan_reports,
+            source,
+        }) => {
+            for scan_report in &scan_reports {
+                render::scan_report(scan_report);
+            }
+            eprintln!("{source}");
+            Ok(ExitCode::from(1))
+        }
         Err(error) => Err(error),
+    }
+}
+
+fn render_workflow_scans(report: &mame_coalesce::app::BuildWorkflowReport) {
+    if report.scan_reports.is_empty() {
+        if let Some(scan_report) = &report.scan_report {
+            render::scan_report(scan_report);
+        }
+    } else {
+        for scan_report in &report.scan_reports {
+            render::scan_report(scan_report);
+        }
     }
 }
 
 fn audit_command(database: &Database, args: &AuditArgs) -> mame_coalesce::Result<ExitCode> {
     let progress = render::ScanProgressReporter::default();
     let callback = |event| progress.update(event);
-    let report = app::audit_with_progress(
+    let report = app::audit_with_roots_and_progress(
         database,
         &AuditRequest {
             dat_path: args.dat.clone(),
@@ -194,6 +228,10 @@ fn audit_command(database: &Database, args: &AuditArgs) -> mame_coalesce::Result
             },
             jobs: args.jobs,
             matching_policy: args.matching_policy.into(),
+        },
+        &SourceRootSelection {
+            primary: args.source.clone(),
+            additional: args.additional_source_roots.clone(),
         },
         &callback,
     )?;

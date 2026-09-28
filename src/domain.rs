@@ -1,4 +1,5 @@
 use crate::hashes::Sha1Digest;
+use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -151,7 +152,7 @@ pub struct SnapshotKey(String);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ImportRunKey(uuid::Uuid);
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct SetName(String);
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -777,10 +778,46 @@ impl SourceLocation {
     }
 }
 
+/// Canonical filesystem path captured when a source is scanned.
+///
+/// Unlike [`SourceLocation`], this identifies the target of a symlink at scan time while the
+/// location itself remains the path used for scope checks and later reads.
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SourcePhysicalPath(Utf8PathBuf);
+
+impl SourcePhysicalPath {
+    pub fn capture(path: &Utf8Path) -> std::io::Result<Self> {
+        path.canonicalize_utf8().map(Self)
+    }
+
+    #[must_use]
+    pub fn from_location(location: &SourceLocation) -> Self {
+        Self(Utf8PathBuf::from(location.path()))
+    }
+
+    #[must_use]
+    pub fn from_storage(value: String) -> Self {
+        Self(Utf8PathBuf::from(value))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+
+    #[must_use]
+    pub fn as_path(&self) -> &Utf8Path {
+        &self.0
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceFile {
     pub source_root: SourceRoot,
     pub location: SourceLocation,
+    #[serde(default)]
+    pub physical_path: SourcePhysicalPath,
     pub observed: ObservedContent,
     pub fingerprint: Option<SourceFingerprint>,
     pub scan_run: Option<ScanRunKey>,
@@ -792,6 +829,7 @@ pub struct SourceObservation {
     pub source_root: SourceRoot,
     pub scan_run: ScanRunKey,
     pub location: SourceLocation,
+    pub physical_path: SourcePhysicalPath,
     pub observed: ObservedContent,
     pub fingerprint: SourceFingerprint,
     pub scan_provenance: ScanProvenance,
@@ -853,7 +891,7 @@ impl SourceFile {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BuildRequest {
     pub dat_name: String,
-    pub source_root: SourceRoot,
+    pub source_roots: Vec<SourceRoot>,
     pub mode: BuildMode,
     pub matching_policy: MatchingPolicy,
     pub missing_policy: MissingContentPolicy,
@@ -977,6 +1015,13 @@ pub struct BuildReport {
 pub enum ObservationBasis {
     Cached,
     FreshScan { scan_run: ScanRunKey },
+    FreshScans { scan_runs: Vec<RootScanRun> },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RootScanRun {
+    pub source_root: SourceRoot,
+    pub scan_run: ScanRunKey,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

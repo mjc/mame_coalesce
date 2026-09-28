@@ -8,7 +8,8 @@ use crate::{
     domain::{
         CatalogKey, CompleteSourceScan, Crc32Digest, DatRom, EvidenceProvenance, EvidenceScope,
         ExpectedEvidence, Md5Digest, ObservedContent, RequirementKey, ScanProvenance, ScanRunKey,
-        SetKey, SetMetadata, SourceFile, SourceFingerprint, SourceLocation, SourceRoot,
+        SetKey, SetMetadata, SourceFile, SourceFingerprint, SourceLocation, SourcePhysicalPath,
+        SourceRoot,
     },
     hashes::Sha1Digest,
     storage::{
@@ -61,36 +62,71 @@ impl<'pool> SourceRepository<'pool> {
         )
     }
 
+    pub fn replace_completed_scans(
+        &self,
+        scans: &[CompleteSourceScan],
+    ) -> crate::Result<Vec<usize>> {
+        let rows = scans
+            .iter()
+            .map(|scan| {
+                scan.observations()
+                    .iter()
+                    .map(NewRomFile::from_observation)
+                    .collect::<crate::Result<Vec<_>>>()
+                    .map(|rows| (scan.source_root().as_str().to_owned(), rows))
+            })
+            .collect::<crate::Result<Vec<_>>>()?;
+        crate::storage::db::replace_rom_files_for_source_roots(self.pool, &rows)
+    }
+
     pub fn load_source_files_for_root(
         &self,
         source_root: &SourceRoot,
     ) -> crate::Result<Vec<SourceFile>> {
+        self.load_source_files_for_roots(std::slice::from_ref(source_root))
+    }
+
+    pub fn load_source_files_for_roots(
+        &self,
+        source_roots: &[SourceRoot],
+    ) -> crate::Result<Vec<SourceFile>> {
         let mut conn = self.pool.get()?;
-        let root = source_root.as_str();
-        let mut escaped_root = String::with_capacity(root.len());
-        for character in root.chars() {
-            match character {
-                '*' => escaped_root.push_str("[*]"),
-                '?' => escaped_root.push_str("[?]"),
-                '[' => escaped_root.push_str("[[]"),
-                ']' => escaped_root.push_str("[]]"),
-                _ => escaped_root.push(character),
+        let mut files = Vec::new();
+        for source_root in source_roots {
+            let root = source_root.as_str();
+            let mut escaped_root = String::with_capacity(root.len());
+            for character in root.chars() {
+                match character {
+                    '*' => escaped_root.push_str("[*]"),
+                    '?' => escaped_root.push_str("[?]"),
+                    '[' => escaped_root.push_str("[[]"),
+                    ']' => escaped_root.push_str("[]]"),
+                    _ => escaped_root.push(character),
+                }
             }
+            let pattern = if root == "/" {
+                "/*".to_owned()
+            } else {
+                format!("{escaped_root}/*")
+            };
+            let within_root =
+                schema::rom_files::dsl::scan_root
+                    .eq(root)
+                    .or(schema::rom_files::dsl::scan_root.is_null().and(
+                        schema::rom_files::dsl::path
+                            .eq(root)
+                            .or(sql::<Bool>("path GLOB ").bind::<Text, _>(pattern)),
+                    ));
+            files.extend(
+                schema::rom_files::dsl::rom_files
+                    .filter(within_root)
+                    .load::<RomFile>(&mut conn)?
+                    .into_iter()
+                    .map(source_file_from_model)
+                    .collect::<crate::Result<Vec<_>>>()?,
+            );
         }
-        let pattern = if root == "/" {
-            "/*".to_owned()
-        } else {
-            format!("{escaped_root}/*")
-        };
-        let within_root = sql::<Bool>("path = ")
-            .bind::<Text, _>(root)
-            .or(sql::<Bool>("path GLOB ").bind::<Text, _>(pattern));
-        schema::rom_files::dsl::rom_files
-            .filter(within_root)
-            .load::<RomFile>(&mut conn)?
-            .into_iter()
-            .map(source_file_from_model)
-            .collect()
+        Ok(files)
     }
 }
 
@@ -181,6 +217,10 @@ impl<'pool> BuildRepository<'pool> {
 
 fn source_file_from_model(rom_file: RomFile) -> crate::Result<SourceFile> {
     let location = source_location_from_model(&rom_file)?;
+    let physical_path = rom_file.physical_path.map_or_else(
+        || SourcePhysicalPath::from_location(&location),
+        SourcePhysicalPath::from_storage,
+    );
     let sha1 = sha1_digest_from_db(rom_file.sha1, "rom_files.sha1", &rom_file.name)?;
     let xxh3 = digest_from_db::<8>(Some(rom_file.xxhash3), "rom_files.xxhash3", &rom_file.name)?
         .ok_or_else(|| {
@@ -236,6 +276,7 @@ fn source_file_from_model(rom_file: RomFile) -> crate::Result<SourceFile> {
     Ok(SourceFile {
         source_root: SourceRoot::new(rom_file.scan_root.unwrap_or(rom_file.parent_path)),
         location,
+        physical_path,
         observed: ObservedContent {
             scope: EvidenceScope::WholeAsset,
             provenance: content_provenance,
@@ -349,6 +390,7 @@ mod tests {
             source_fingerprint: None,
             scan_provenance: None,
             rom_id: None,
+            physical_path: None,
         }
     }
 
@@ -402,21 +444,25 @@ mod tests {
         let run = ScanRunKey::fresh();
         let root = SourceRoot::new("/source");
         let content_sha1 = crate::hashes::sha1_bytes(b"abc");
-        let observation = |location| crate::domain::SourceObservation {
-            source_root: root.clone(),
-            scan_run: run,
-            location,
-            observed: ObservedContent {
-                scope: EvidenceScope::WholeAsset,
-                provenance: EvidenceProvenance::Computed,
-                size: Some(3),
-                crc: None,
-                md5: None,
-                sha1: Some(content_sha1),
-                xxh3: crate::hashes::xxhash3_bytes(b"abc"),
-            },
-            fingerprint: SourceFingerprint::new([7; 20]),
-            scan_provenance: ScanProvenance::StreamedSha1Xxh3V1,
+        let observation = |location| {
+            let physical_path = SourcePhysicalPath::from_location(&location);
+            crate::domain::SourceObservation {
+                source_root: root.clone(),
+                scan_run: run,
+                location,
+                physical_path,
+                observed: ObservedContent {
+                    scope: EvidenceScope::WholeAsset,
+                    provenance: EvidenceProvenance::Computed,
+                    size: Some(3),
+                    crc: None,
+                    md5: None,
+                    sha1: Some(content_sha1),
+                    xxh3: crate::hashes::xxhash3_bytes(b"abc"),
+                },
+                fingerprint: SourceFingerprint::new([7; 20]),
+                scan_provenance: ScanProvenance::StreamedSha1Xxh3V1,
+            }
         };
         let scan = CompleteSourceScan::new(
             root.clone(),
@@ -480,12 +526,14 @@ mod tests {
         let (_temp_dir, pool) = file_backed_pool()?;
         let root = SourceRoot::new("/source");
         let run = ScanRunKey::fresh();
+        let location = SourceLocation::BareFile {
+            path: "/source/game.rom".to_owned(),
+        };
         let observation = crate::domain::SourceObservation {
             source_root: root.clone(),
             scan_run: run,
-            location: SourceLocation::BareFile {
-                path: "/source/game.rom".to_owned(),
-            },
+            physical_path: SourcePhysicalPath::from_location(&location),
+            location,
             observed: ObservedContent {
                 scope: EvidenceScope::WholeAsset,
                 provenance: EvidenceProvenance::Computed,
@@ -541,12 +589,14 @@ mod tests {
 
         let matching_root = SourceRoot::new("/matching");
         let matching_run = ScanRunKey::fresh();
+        let matching_location = SourceLocation::BareFile {
+            path: "/matching/repo.rom".to_owned(),
+        };
         let matching_observation = crate::domain::SourceObservation {
             source_root: matching_root.clone(),
             scan_run: matching_run,
-            location: SourceLocation::BareFile {
-                path: "/matching/repo.rom".to_owned(),
-            },
+            physical_path: SourcePhysicalPath::from_location(&matching_location),
+            location: matching_location,
             observed: ObservedContent {
                 scope: EvidenceScope::WholeAsset,
                 provenance: EvidenceProvenance::Computed,
@@ -568,12 +618,14 @@ mod tests {
 
         let other_root = SourceRoot::new("/other");
         let other_run = ScanRunKey::fresh();
+        let other_location = SourceLocation::BareFile {
+            path: "/other/unmatched.rom".to_owned(),
+        };
         let other_observation = crate::domain::SourceObservation {
             source_root: other_root.clone(),
             scan_run: other_run,
-            location: SourceLocation::BareFile {
-                path: "/other/unmatched.rom".to_owned(),
-            },
+            physical_path: SourcePhysicalPath::from_location(&other_location),
+            location: other_location,
             observed: ObservedContent {
                 scope: EvidenceScope::WholeAsset,
                 provenance: EvidenceProvenance::Computed,
@@ -615,6 +667,7 @@ mod tests {
             source_fingerprint: None,
             scan_provenance: None,
             rom_id: None,
+            physical_path: None,
         };
 
         let zip = source_location_from_model(&archived_file("/source/z.zip"))?;

@@ -15,11 +15,11 @@ pub fn plan_build(
     source_files: &[SourceFile],
     request: &BuildRequest,
 ) -> BuildPlan {
-    let resolutions = resolution::resolve(
+    let resolutions = resolution::resolve_across_roots(
         dat_roms,
         source_files,
         &request.dat_name,
-        &request.source_root,
+        &request.source_roots,
         request.matching_policy,
     );
     let report = build_report(&resolutions, request.missing_policy);
@@ -165,7 +165,7 @@ mod tests {
     fn request(mode: BuildMode) -> BuildRequest {
         BuildRequest {
             dat_name: "dat-a".to_owned(),
-            source_root: crate::domain::SourceRoot::new("/src-a"),
+            source_roots: vec![crate::domain::SourceRoot::new("/src-a")],
             mode,
             matching_policy: MatchingPolicy::Sha1Compatibility,
             missing_policy: MissingContentPolicy::AllowPartial,
@@ -219,9 +219,11 @@ mod tests {
                 },
             },
         };
+        let physical_path = crate::domain::SourcePhysicalPath::from_location(&location);
         SourceFile {
             source_root: crate::domain::SourceRoot::new(root),
             location,
+            physical_path,
             observed: ObservedContent {
                 scope: crate::domain::EvidenceScope::WholeAsset,
                 provenance: crate::domain::EvidenceProvenance::Computed,
@@ -929,6 +931,23 @@ mod tests {
         assert_eq!(decoded, plan);
         assert_eq!(decoded.groups[0].path.as_str(), "parent");
         assert_eq!(decoded.report.resolutions.len(), 1);
+
+        let mut legacy_document: serde_json::Value = serde_json::from_slice(&json)?;
+        legacy_document["plan"]["groups"][0]["entries"][0]["source"]
+            .as_object_mut()
+            .ok_or_else(|| {
+                crate::Error::InvalidPath("serialized source is not an object".to_owned())
+            })?
+            .remove("physical_path");
+        let legacy_decoded =
+            crate::domain::BuildPlan::from_json(&serde_json::to_vec(&legacy_document)?)?;
+        assert!(
+            legacy_decoded.groups[0].entries[0]
+                .source
+                .physical_path
+                .as_str()
+                .is_empty()
+        );
         Ok(())
     }
 
