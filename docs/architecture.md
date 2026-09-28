@@ -68,8 +68,8 @@ parser-internal representations the public contract.
   transaction. A failed root scan leaves all requested scopes untouched. A
   single-root scan has the same scan-completely-before-replace rule.
 - Outputs are not a single transaction across groups. Each ZIP is written to a
-  sibling temporary file, synced, then replaced atomically on Unix. Each
-  directory is built in a private sibling stage; replacement backs up an
+  sibling temporary file, synced, then replaced atomically on Linux and macOS.
+  Each directory is built in a private sibling stage; replacement backs up an
   existing real directory and attempts rollback if installation fails. The
   report marks completed, failed, unattempted, and recoverable-backup outcomes.
   A process crash during directory replacement can leave the old tree under
@@ -134,13 +134,17 @@ module line coverage:
 - Adapter tests use synthetic fixtures to cover supported format records,
   source locations, extensions, malformed input, and catalog import behavior.
 
-The MAMEC-16 final `devenv test` gate passed after this document's changes:
+At the original MAMEC-16 verification tree (`f264943`), `devenv test` passed
 224 Rust tests (168 library, 1 CLI, 4 audit, 4 catalog-fixture, 13
 catalog-import, 32 integration, 2 multi-root), strict all-target/all-feature
 Clippy, repository formatting/script checks, and CLI help smoke. The explicit
 `cargo check --locked --workspace --all-targets --all-features` and
 `RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --all-features
---no-deps` checks also passed. `cargo-machete` reported four candidates:
+--no-deps` checks also passed. After directory-output hardening, the gate at
+`d2b07df` passed 352 Rust tests (269 library, 5 CLI, 4 audit, 4
+catalog-fixture, 23 catalog-import, 10 disk-audit, 33 integration, 4
+multi-root), including strict Clippy, formatting/script checks, and CLI help
+smoke; Linux and macOS CI passed. `cargo-machete` reported four candidates:
 `infer`, `libz-sys`, `md-5`, and `sha-1`. The latter three are expected naming
 or intentional-feature false positives (`libz-sys` is directly retained as a
 documented zlib-ng workaround); `infer` has no source reference and is a
@@ -155,8 +159,9 @@ the MAMEC-3 baseline (`1375390`) with the completed MAMEC-15 implementation
 runner, `parent-bundles`, `--missing fail`, and 5 runs per case (9 for the
 parallel deflate repeat). Baseline means were 157.4 ms (1 job/deflate), 162.7
 ms (1/store), 158.2 ms (8/store), and 161.9 ms (8/deflate, 9-run repeat).
-Current means were 719.7 ms, 712.7 ms, 654.0 ms, and 722.6 ms respectively;
-the last sample is the 9-run repeat (722.6 ± 61.9 ms, range 666.7–852.6 ms).
+Means at `f264943` were 719.7 ms, 712.7 ms, 654.0 ms, and 722.6 ms
+respectively; the last sample is the 9-run repeat (722.6 ± 61.9 ms, range
+666.7–852.6 ms).
 This small-corpus end-to-end result is roughly 4.0–4.6x slower and is a
 material performance regression, not evidence of a speedup. It measures
 startup, parsing/import, scan/cache, planning, and output together and does not
@@ -169,8 +174,8 @@ Prioritized follow-up gaps:
 
 1. Profile the measured small-corpus regression with phase-level timing before
    optimizing; retain the identical corpus and benchmark harness.
-2. Keep broader multi-platform directory replacement guarantees explicit; the
-   current atomic ZIP replacement statement is Unix-specific.
+2. Keep broader multi-platform directory replacement guarantees explicit; ZIP
+   atomic replacement is currently supported on Linux and macOS.
 3. Expand compatibility fixtures when additional real-world catalog dialects
    or archive backends are added. Current behavior is validated primarily with
    focused synthetic fixtures, not a broad external corpus.
