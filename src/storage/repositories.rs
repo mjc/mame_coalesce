@@ -136,7 +136,8 @@ impl<'pool> BuildRepository<'pool> {
             .inner_join(schema::roms::dsl::roms)
             .load::<(crate::storage::models::Game, crate::storage::models::Rom)>(&mut conn)?;
 
-        let catalog_key = CatalogKey::fresh();
+        // The unique DAT name survives SQLite REPLACE, unlike its autoincrement row ID.
+        let catalog_key = CatalogKey::for_legacy_data_file(data_file.name());
         rows.into_iter()
             .map(|(game, rom)| {
                 let size = u64::try_from(rom.size).map_err(|_| {

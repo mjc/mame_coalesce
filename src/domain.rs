@@ -183,6 +183,11 @@ impl CatalogKey {
     }
 
     #[must_use]
+    pub(crate) fn for_legacy_data_file(name: &str) -> Self {
+        Self(stable_key("legacy-data-file", &[name]))
+    }
+
+    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -941,6 +946,8 @@ pub struct SelectionProvenance {
     pub policy: MatchingPolicy,
     pub strength: crate::resolution::MatchStrength,
     pub assessments: Vec<crate::resolution::SourceAssessment>,
+    #[serde(default)]
+    pub omitted_assessments: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -964,6 +971,68 @@ pub struct BuildReport {
     pub validation_issues: Vec<crate::build::validation::PlanIssue>,
     pub matched_roms: usize,
     pub outcome: PlanOutcome,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ObservationBasis {
+    Cached,
+    FreshScan { scan_run: ScanRunKey },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct AuditReport {
+    schema_version: u32,
+    observation_basis: ObservationBasis,
+    report: BuildReport,
+}
+
+impl AuditReport {
+    pub const SCHEMA_VERSION: u32 = 1;
+
+    #[must_use]
+    pub const fn new(observation_basis: ObservationBasis, report: BuildReport) -> Self {
+        Self {
+            schema_version: Self::SCHEMA_VERSION,
+            observation_basis,
+            report,
+        }
+    }
+
+    #[must_use]
+    pub const fn schema_version(&self) -> u32 {
+        self.schema_version
+    }
+
+    #[must_use]
+    pub const fn observation_basis(&self) -> &ObservationBasis {
+        &self.observation_basis
+    }
+
+    #[must_use]
+    pub const fn report(&self) -> &BuildReport {
+        &self.report
+    }
+
+    pub fn to_json(&self) -> crate::Result<Vec<u8>> {
+        Ok(serde_json::to_vec_pretty(self)?)
+    }
+
+    pub fn from_json(bytes: &[u8]) -> crate::Result<Self> {
+        #[derive(Deserialize)]
+        struct Document {
+            schema_version: u32,
+            observation_basis: ObservationBasis,
+            report: BuildReport,
+        }
+
+        let document: Document = serde_json::from_slice(bytes)?;
+        if document.schema_version != Self::SCHEMA_VERSION {
+            return Err(crate::Error::UnsupportedAuditVersion(
+                document.schema_version,
+            ));
+        }
+        Ok(Self::new(document.observation_basis, document.report))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1010,6 +1079,8 @@ pub struct DuplicateMatch {
     pub rom_name: String,
     pub selected: SourceFile,
     pub candidates: Vec<SourceFile>,
+    #[serde(default)]
+    pub omitted_candidates: usize,
 }
 
 #[cfg(test)]

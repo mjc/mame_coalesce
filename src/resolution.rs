@@ -8,6 +8,9 @@ use crate::domain::{DatRom, EvidenceProvenance, EvidenceScope, SourceFile, Sourc
 
 pub use crate::domain::MatchingPolicy;
 
+/// Per-category cap for evidence assessments and duplicate copies in one resolution result.
+pub const MAX_RETAINED_EVIDENCE_DETAILS_PER_KIND: usize = 256;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MatchStrength {
     Sha1,
@@ -77,16 +80,31 @@ pub enum ResolutionStatus {
         strength: MatchStrength,
         equivalent_copies: Vec<SourceFile>,
         assessments: Vec<SourceAssessment>,
+        /// Matching duplicate sources omitted by the global detail budget.
+        #[serde(default)]
+        omitted_equivalent_copies: usize,
+        /// Per-source evidence records omitted by the global detail budget.
+        #[serde(default)]
+        omitted_assessments: usize,
     },
     Ambiguous {
         candidates: Vec<SourceAssessment>,
+        /// Candidate records omitted by the global detail budget.
+        #[serde(default)]
+        omitted_candidates: usize,
     },
     Conflicting {
         candidates: Vec<SourceAssessment>,
+        /// Candidate records omitted by the global detail budget.
+        #[serde(default)]
+        omitted_candidates: usize,
     },
     Missing {
         reason: MissingReason,
         assessments: Vec<SourceAssessment>,
+        /// Per-source evidence records omitted by the global detail budget.
+        #[serde(default)]
+        omitted_assessments: usize,
     },
 }
 
@@ -99,8 +117,29 @@ pub struct RequirementResolution {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct SourceIndex(usize);
 
-#[derive(Debug, Default)]
-struct CandidateSources(Vec<SourceIndex>);
+#[derive(Clone)]
+struct CandidateSources<'a> {
+    postings: [&'a [SourceIndex]; 3],
+}
+
+impl Iterator for CandidateSources<'_> {
+    type Item = SourceIndex;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let next = self
+            .postings
+            .iter()
+            .filter_map(|posting| posting.first())
+            .min()
+            .copied()?;
+        for posting in &mut self.postings {
+            if posting.first() == Some(&next) {
+                *posting = &posting[1..];
+            }
+        }
+        Some(next)
+    }
+}
 
 struct EvidenceIndex<'a> {
     sha1: HashMap<&'a [u8], Vec<SourceIndex>>,
@@ -163,20 +202,26 @@ impl<'a> EvidenceIndex<'a> {
         index
     }
 
-    fn candidates(&self, expected: &crate::domain::ExpectedEvidence) -> CandidateSources {
-        let mut candidates = CandidateSources::default();
-        if let Some(sha1) = expected.sha1.as_ref() {
-            extend_candidates(&mut candidates.0, self.sha1.get(sha1.as_slice()));
+    fn candidates(&self, expected: &crate::domain::ExpectedEvidence) -> CandidateSources<'_> {
+        CandidateSources {
+            postings: [
+                expected
+                    .sha1
+                    .as_ref()
+                    .and_then(|sha1| self.sha1.get(sha1.as_slice()))
+                    .map_or(&[], Vec::as_slice),
+                expected
+                    .md5
+                    .as_ref()
+                    .and_then(|md5| self.md5.get(md5.0.as_slice()))
+                    .map_or(&[], Vec::as_slice),
+                expected
+                    .crc
+                    .as_ref()
+                    .and_then(|crc| self.crc.get(crc.0.as_slice()))
+                    .map_or(&[], Vec::as_slice),
+            ],
         }
-        if let Some(md5) = expected.md5.as_ref() {
-            extend_candidates(&mut candidates.0, self.md5.get(md5.0.as_slice()));
-        }
-        if let Some(crc) = expected.crc.as_ref() {
-            extend_candidates(&mut candidates.0, self.crc.get(crc.0.as_slice()));
-        }
-        candidates.0.sort_unstable();
-        candidates.0.dedup();
-        candidates
     }
 
     const fn has_comparable_field(&self, expected: &crate::domain::ExpectedEvidence) -> bool {
@@ -193,12 +238,6 @@ const fn has_comparable_evidence(source: &SourceFile) -> bool {
             source.observed.provenance,
             EvidenceProvenance::Computed | EvidenceProvenance::SourceDeclared
         )
-}
-
-fn extend_candidates(candidates: &mut Vec<SourceIndex>, matching: Option<&Vec<SourceIndex>>) {
-    if let Some(matching) = matching {
-        candidates.extend_from_slice(matching);
-    }
 }
 
 fn has_uncontradicted_size_match(
@@ -258,11 +297,22 @@ pub fn resolve(
     match policy {
         MatchingPolicy::EvidenceAware => {
             let evidence_index = EvidenceIndex::new(&sources);
+            let mut assessment_budget = MAX_RETAINED_EVIDENCE_DETAILS_PER_KIND;
+            let mut copy_budget = MAX_RETAINED_EVIDENCE_DETAILS_PER_KIND;
             requirements
                 .into_iter()
-                .map(|requirement| RequirementResolution {
-                    requirement: requirement.clone(),
-                    status: resolve_one(requirement, &sources, &evidence_index),
+                .map(|requirement| {
+                    let status = resolve_one(
+                        requirement,
+                        &sources,
+                        &evidence_index,
+                        &mut assessment_budget,
+                        &mut copy_budget,
+                    );
+                    RequirementResolution {
+                        requirement: requirement.clone(),
+                        status,
+                    }
                 })
                 .collect()
         }
@@ -279,27 +329,56 @@ pub fn resolve(
                         .push(*source);
                 }
             }
+            let mut copy_budget = MAX_RETAINED_EVIDENCE_DETAILS_PER_KIND;
             requirements
                 .into_iter()
-                .map(|requirement| RequirementResolution {
-                    requirement: requirement.clone(),
-                    status: resolve_sha1_compatibility(requirement, &sha1_sources),
+                .map(|requirement| {
+                    let status =
+                        resolve_sha1_compatibility(requirement, &sha1_sources, &mut copy_budget);
+                    RequirementResolution {
+                        requirement: requirement.clone(),
+                        status,
+                    }
                 })
                 .collect()
         }
     }
 }
 
+fn retain_count(total: usize, budget: &mut usize) -> (usize, usize) {
+    let retained = total.min(*budget);
+    *budget -= retained;
+    (retained, total - retained)
+}
+
+#[derive(Clone, Copy)]
+struct ResolutionContext<'a, 'sources> {
+    expected: &'a crate::domain::ExpectedEvidence,
+    sources: &'a [&'sources SourceFile],
+    evidence_index: &'a EvidenceIndex<'sources>,
+}
+
+#[derive(Clone, Copy)]
+struct BestMatch {
+    selected_index: usize,
+    strength: MatchStrength,
+    strongest_count: usize,
+    candidate_count: usize,
+}
+
 fn resolve_one(
     requirement: &DatRom,
     sources: &[&SourceFile],
     evidence_index: &EvidenceIndex<'_>,
+    assessment_budget: &mut usize,
+    copy_budget: &mut usize,
 ) -> ResolutionStatus {
     let expected = &requirement.expected;
     if expected.scope != EvidenceScope::WholeAsset {
         return ResolutionStatus::Missing {
             reason: MissingReason::UnsupportedExpectedScope,
             assessments: Vec::new(),
+            omitted_assessments: 0,
         };
     }
     let has_expected_digest =
@@ -308,94 +387,202 @@ fn resolve_one(
         return ResolutionStatus::Missing {
             reason: MissingReason::NoExpectedContentEvidence,
             assessments: Vec::new(),
+            omitted_assessments: 0,
         };
     }
 
-    let candidates = evidence_index.candidates(expected);
-    let assessments = candidates
-        .0
-        .iter()
-        .map(|&SourceIndex(index)| assess_source(expected, sources[index]))
-        .collect::<Vec<_>>();
-    let mut matches = assessments
-        .iter()
-        .filter_map(|candidate| candidate.strength.map(|strength| (candidate, strength)))
-        .collect::<Vec<_>>();
-    matches.sort_by(|(left, left_strength), (right, right_strength)| {
-        right_strength
-            .rank()
-            .cmp(&left_strength.rank())
-            .then_with(|| source_order(&left.source, &right.source))
-    });
-
-    let Some((selected, strength)) = matches.first().copied() else {
-        if assessments.iter().any(is_conflicting_candidate) {
-            return ResolutionStatus::Conflicting {
-                candidates: assessments
-                    .into_iter()
-                    .filter(is_conflicting_candidate)
-                    .collect(),
-            };
-        }
-        let size_agrees = has_uncontradicted_size_match(expected, sources, evidence_index);
-        let reason = if assessments.is_empty() {
-            if sources.is_empty() {
-                MissingReason::NoMatchingSource
-            } else if size_agrees {
-                MissingReason::InsufficientEvidence
-            } else if evidence_index.has_comparable_field(expected) {
-                MissingReason::NoMatchingSource
-            } else {
-                MissingReason::NoComparableObservedEvidence
+    let mut candidate_count = 0;
+    let mut conflicting_count = 0;
+    let mut digest_agrees = false;
+    let mut strongest_count = 0;
+    let mut best: Option<(usize, MatchStrength)> = None;
+    for SourceIndex(index) in evidence_index.candidates(expected) {
+        candidate_count += 1;
+        let facts = assess_evidence(expected, sources[index]);
+        conflicting_count += usize::from(facts.is_conflicting());
+        digest_agrees |= facts.agreements.0
+            & (EvidenceField::Sha1.bit() | EvidenceField::Md5.bit() | EvidenceField::Crc.bit())
+            != 0;
+        if let Some(strength) = facts.strength {
+            match best {
+                Some((_, current)) if current.rank() > strength.rank() => {}
+                Some((_, current)) if current == strength => strongest_count += 1,
+                _ => {
+                    best = Some((index, strength));
+                    strongest_count = 1;
+                }
             }
-        } else if assessments.iter().any(|candidate| {
-            candidate.agreements.iter().any(|field| {
-                matches!(
-                    field,
-                    EvidenceField::Sha1 | EvidenceField::Md5 | EvidenceField::Crc
-                )
-            })
-        }) {
-            MissingReason::InsufficientEvidence
-        } else if !evidence_index.has_comparable_field(expected) {
-            MissingReason::NoComparableObservedEvidence
-        } else {
-            MissingReason::NoMatchingSource
-        };
-        return ResolutionStatus::Missing {
-            reason,
-            assessments,
-        };
+        }
+    }
+
+    let context = ResolutionContext {
+        expected,
+        sources,
+        evidence_index,
+    };
+    let Some((selected_index, strength)) = best else {
+        return resolve_without_match(
+            context,
+            candidate_count,
+            conflicting_count,
+            digest_agrees,
+            assessment_budget,
+        );
     };
 
-    let strongest = matches
-        .iter()
-        .take_while(|(_, candidate_strength)| candidate_strength.rank() == strength.rank())
-        .map(|(candidate, _)| *candidate)
-        .collect::<Vec<_>>();
+    resolve_best_match(
+        context,
+        BestMatch {
+            selected_index,
+            strength,
+            strongest_count,
+            candidate_count,
+        },
+        assessment_budget,
+        copy_budget,
+    )
+}
 
-    if strongest.len() > 1 && !tied_candidates_are_equivalent(strength, &strongest) {
-        return ResolutionStatus::Ambiguous {
-            candidates: strongest.into_iter().cloned().collect(),
+fn resolve_without_match(
+    context: ResolutionContext<'_, '_>,
+    candidate_count: usize,
+    conflicting_count: usize,
+    digest_agrees: bool,
+    assessment_budget: &mut usize,
+) -> ResolutionStatus {
+    let ResolutionContext {
+        expected,
+        sources,
+        evidence_index,
+    } = context;
+    if conflicting_count != 0 {
+        let (retained, omitted_candidates) = retain_count(conflicting_count, assessment_budget);
+        let candidates = evidence_index
+            .candidates(expected)
+            .filter(|source_index| {
+                let SourceIndex(index) = *source_index;
+                assess_evidence(expected, sources[index]).is_conflicting()
+            })
+            .map(|SourceIndex(index)| {
+                assess_evidence(expected, sources[index]).into_assessment(sources[index])
+            })
+            .take(retained)
+            .collect();
+        return ResolutionStatus::Conflicting {
+            candidates,
+            omitted_candidates,
         };
     }
 
-    ResolutionStatus::Matched {
-        selected: Box::new(selected.source.clone()),
-        strength,
-        equivalent_copies: strongest
-            .into_iter()
-            .map(|candidate| candidate.source.clone())
-            .collect(),
+    let size_agrees = has_uncontradicted_size_match(expected, sources, evidence_index);
+    let reason = if candidate_count == 0 {
+        if sources.is_empty() {
+            MissingReason::NoMatchingSource
+        } else if size_agrees {
+            MissingReason::InsufficientEvidence
+        } else if evidence_index.has_comparable_field(expected) {
+            MissingReason::NoMatchingSource
+        } else {
+            MissingReason::NoComparableObservedEvidence
+        }
+    } else if digest_agrees {
+        MissingReason::InsufficientEvidence
+    } else if !evidence_index.has_comparable_field(expected) {
+        MissingReason::NoComparableObservedEvidence
+    } else {
+        MissingReason::NoMatchingSource
+    };
+    let (retained, omitted_assessments) = retain_count(candidate_count, assessment_budget);
+    let assessments = evidence_index
+        .candidates(expected)
+        .take(retained)
+        .map(|SourceIndex(index)| {
+            assess_evidence(expected, sources[index]).into_assessment(sources[index])
+        })
+        .collect();
+    ResolutionStatus::Missing {
+        reason,
         assessments,
+        omitted_assessments,
     }
 }
 
-fn tied_candidates_are_equivalent(
+fn resolve_best_match(
+    context: ResolutionContext<'_, '_>,
+    best: BestMatch,
+    assessment_budget: &mut usize,
+    copy_budget: &mut usize,
+) -> ResolutionStatus {
+    let ResolutionContext {
+        expected,
+        sources,
+        evidence_index,
+    } = context;
+    let BestMatch {
+        selected_index,
+        strength,
+        strongest_count,
+        candidate_count,
+    } = best;
+    let strongest = evidence_index
+        .candidates(expected)
+        .filter_map(|SourceIndex(index)| {
+            (assess_evidence(expected, sources[index]).strength == Some(strength))
+                .then_some(sources[index])
+        });
+    if strongest_count > 1 && !tied_candidates_are_equivalent(strength, strongest) {
+        let (retained, omitted_candidates) = retain_count(strongest_count, assessment_budget);
+        let candidates = evidence_index
+            .candidates(expected)
+            .filter(|source_index| {
+                let SourceIndex(index) = *source_index;
+                assess_evidence(expected, sources[index]).strength == Some(strength)
+            })
+            .map(|SourceIndex(index)| {
+                assess_evidence(expected, sources[index]).into_assessment(sources[index])
+            })
+            .take(retained)
+            .collect();
+        return ResolutionStatus::Ambiguous {
+            candidates,
+            omitted_candidates,
+        };
+    }
+
+    let (retained_assessments, omitted_assessments) =
+        retain_count(candidate_count, assessment_budget);
+    let assessments = evidence_index
+        .candidates(expected)
+        .take(retained_assessments)
+        .map(|SourceIndex(index)| {
+            assess_evidence(expected, sources[index]).into_assessment(sources[index])
+        })
+        .collect();
+    let (retained_copies, omitted_equivalent_copies) = retain_count(strongest_count, copy_budget);
+    let equivalent_copies = evidence_index
+        .candidates(expected)
+        .filter(|source_index| {
+            let SourceIndex(index) = *source_index;
+            assess_evidence(expected, sources[index]).strength == Some(strength)
+        })
+        .map(|SourceIndex(index)| sources[index].clone())
+        .take(retained_copies)
+        .collect();
+    ResolutionStatus::Matched {
+        selected: Box::new(sources[selected_index].clone()),
+        strength,
+        equivalent_copies,
+        assessments,
+        omitted_equivalent_copies,
+        omitted_assessments,
+    }
+}
+
+fn tied_candidates_are_equivalent<'a>(
     strength: MatchStrength,
-    candidates: &[&SourceAssessment],
+    candidates: impl Iterator<Item = &'a SourceFile> + Clone,
 ) -> bool {
-    let consistent = tied_candidates_have_consistent_evidence(candidates);
+    let consistent = tied_candidates_have_consistent_evidence(candidates.clone());
     match strength {
         MatchStrength::Sha1 => consistent,
         MatchStrength::Md5 | MatchStrength::CrcAndSize => {
@@ -404,28 +591,26 @@ fn tied_candidates_are_equivalent(
     }
 }
 
-fn tied_candidates_have_consistent_evidence(candidates: &[&SourceAssessment]) -> bool {
+fn tied_candidates_have_consistent_evidence<'a>(
+    candidates: impl Iterator<Item = &'a SourceFile> + Clone,
+) -> bool {
     evidence_is_consistent(
         candidates
-            .iter()
-            .map(|candidate| candidate.source.observed.size.as_ref()),
+            .clone()
+            .map(|candidate| candidate.observed.size.as_ref()),
     ) && evidence_is_consistent(
         candidates
-            .iter()
-            .map(|candidate| candidate.source.observed.crc.as_ref()),
+            .clone()
+            .map(|candidate| candidate.observed.crc.as_ref()),
     ) && evidence_is_consistent(
         candidates
-            .iter()
-            .map(|candidate| candidate.source.observed.md5.as_ref()),
+            .clone()
+            .map(|candidate| candidate.observed.md5.as_ref()),
     ) && evidence_is_consistent(
         candidates
-            .iter()
-            .map(|candidate| candidate.source.observed.sha1.as_ref()),
-    ) && evidence_is_consistent(
-        candidates
-            .iter()
-            .map(|candidate| Some(&candidate.source.observed.xxh3)),
-    )
+            .clone()
+            .map(|candidate| candidate.observed.sha1.as_ref()),
+    ) && evidence_is_consistent(candidates.map(|candidate| Some(&candidate.observed.xxh3)))
 }
 
 fn evidence_is_consistent<'a, T: PartialEq + 'a>(
@@ -444,63 +629,101 @@ fn evidence_is_consistent<'a, T: PartialEq + 'a>(
     true
 }
 
-fn tied_candidates_share_sha1(candidates: &[&SourceAssessment]) -> bool {
-    let mut sha1s = candidates
-        .iter()
-        .map(|candidate| candidate.source.observed.sha1.as_ref());
+fn tied_candidates_share_sha1<'a>(candidates: impl Iterator<Item = &'a SourceFile>) -> bool {
+    let mut sha1s = candidates.map(|candidate| candidate.observed.sha1.as_ref());
     matches!(sha1s.next(), Some(Some(first)) if sha1s.all(|sha1| sha1 == Some(first)))
-}
-
-fn is_conflicting_candidate(candidate: &SourceAssessment) -> bool {
-    !candidate.conflicts.is_empty()
-        && candidate.agreements.iter().any(|field| {
-            matches!(
-                field,
-                EvidenceField::Sha1 | EvidenceField::Md5 | EvidenceField::Crc
-            )
-        })
 }
 
 fn resolve_sha1_compatibility(
     requirement: &DatRom,
     sha1_sources: &HashMap<&[u8], Vec<&SourceFile>>,
+    copy_budget: &mut usize,
 ) -> ResolutionStatus {
     if requirement.expected.scope != EvidenceScope::WholeAsset {
         return ResolutionStatus::Missing {
             reason: MissingReason::UnsupportedExpectedScope,
             assessments: Vec::new(),
+            omitted_assessments: 0,
         };
     }
     let Some(expected_sha1) = requirement.sha1() else {
         return ResolutionStatus::Missing {
             reason: MissingReason::NoExpectedContentEvidence,
             assessments: Vec::new(),
+            omitted_assessments: 0,
         };
     };
     let Some(copies) = sha1_sources.get(expected_sha1.as_slice()) else {
         return ResolutionStatus::Missing {
             reason: MissingReason::NoMatchingSource,
             assessments: Vec::new(),
+            omitted_assessments: 0,
         };
     };
     let Some(selected) = copies.first() else {
         return ResolutionStatus::Missing {
             reason: MissingReason::NoMatchingSource,
             assessments: Vec::new(),
+            omitted_assessments: 0,
         };
     };
+    let (retained, omitted_equivalent_copies) = retain_count(copies.len(), copy_budget);
     ResolutionStatus::Matched {
         selected: Box::new((**selected).clone()),
         strength: MatchStrength::Sha1,
-        equivalent_copies: copies.iter().map(|source| (**source).clone()).collect(),
+        equivalent_copies: copies
+            .iter()
+            .take(retained)
+            .map(|source| (**source).clone())
+            .collect(),
         assessments: Vec::new(),
+        omitted_equivalent_copies,
+        omitted_assessments: 0,
     }
 }
 
-fn assess_source(
+struct AssessmentFacts {
+    strength: Option<MatchStrength>,
+    agreements: AvailableEvidence,
+    conflicts: AvailableEvidence,
+    comparable: bool,
+}
+
+impl AssessmentFacts {
+    const fn is_conflicting(&self) -> bool {
+        self.conflicts.0 != 0
+            && self.agreements.0
+                & (EvidenceField::Sha1.bit() | EvidenceField::Md5.bit() | EvidenceField::Crc.bit())
+                != 0
+    }
+
+    fn into_assessment(self, source: &SourceFile) -> SourceAssessment {
+        const FIELDS: [EvidenceField; 4] = [
+            EvidenceField::Sha1,
+            EvidenceField::Md5,
+            EvidenceField::Crc,
+            EvidenceField::Size,
+        ];
+        SourceAssessment {
+            source: source.clone(),
+            strength: self.strength,
+            agreements: FIELDS
+                .into_iter()
+                .filter(|field| self.agreements.contains(*field))
+                .collect(),
+            conflicts: FIELDS
+                .into_iter()
+                .filter(|field| self.conflicts.contains(*field))
+                .collect(),
+            comparable: self.comparable,
+        }
+    }
+}
+
+fn assess_evidence(
     expected: &crate::domain::ExpectedEvidence,
     source: &SourceFile,
-) -> SourceAssessment {
+) -> AssessmentFacts {
     let observed = &source.observed;
     let supported = observed.scope == EvidenceScope::WholeAsset
         && matches!(
@@ -508,16 +731,15 @@ fn assess_source(
             EvidenceProvenance::Computed | EvidenceProvenance::SourceDeclared
         );
     if !supported {
-        return SourceAssessment {
-            source: source.clone(),
+        return AssessmentFacts {
             strength: None,
-            agreements: Vec::new(),
-            conflicts: Vec::new(),
+            agreements: AvailableEvidence::default(),
+            conflicts: AvailableEvidence::default(),
             comparable: false,
         };
     }
 
-    let mut conflicts = Vec::new();
+    let mut conflicts = AvailableEvidence::default();
     let sha1_equal = compare(
         expected.sha1,
         observed.sha1,
@@ -542,23 +764,23 @@ fn assess_source(
         EvidenceField::Size,
         &mut conflicts,
     );
-    let comparable = !conflicts.is_empty()
+    let comparable = conflicts.0 != 0
         || expected.sha1.is_some() && observed.sha1.is_some()
         || expected.md5.is_some() && observed.md5.is_some()
         || expected.crc.is_some() && observed.crc.is_some()
         || expected.size.is_some() && observed.size.is_some();
-    let mut agreements = Vec::new();
+    let mut agreements = AvailableEvidence::default();
     if sha1_equal {
-        agreements.push(EvidenceField::Sha1);
+        agreements.insert(EvidenceField::Sha1);
     }
     if md5_equal {
-        agreements.push(EvidenceField::Md5);
+        agreements.insert(EvidenceField::Md5);
     }
     if crc_equal {
-        agreements.push(EvidenceField::Crc);
+        agreements.insert(EvidenceField::Crc);
     }
     if size_equal {
-        agreements.push(EvidenceField::Size);
+        agreements.insert(EvidenceField::Size);
     }
 
     let strength = if sha1_equal {
@@ -575,20 +797,19 @@ fn assess_source(
     // evidence matches, retain lower-priority contradictions as explanation, not vetoes.
     let strength = match strength {
         Some(MatchStrength::Sha1) => Some(MatchStrength::Sha1),
-        Some(MatchStrength::Md5) if !conflicts.contains(&EvidenceField::Sha1) => {
+        Some(MatchStrength::Md5) if !conflicts.contains(EvidenceField::Sha1) => {
             Some(MatchStrength::Md5)
         }
         Some(MatchStrength::CrcAndSize)
-            if !conflicts.contains(&EvidenceField::Sha1)
-                && !conflicts.contains(&EvidenceField::Md5) =>
+            if !conflicts.contains(EvidenceField::Sha1)
+                && !conflicts.contains(EvidenceField::Md5) =>
         {
             Some(MatchStrength::CrcAndSize)
         }
         Some(_) | None => None,
     };
 
-    SourceAssessment {
-        source: source.clone(),
+    AssessmentFacts {
         strength,
         agreements,
         conflicts,
@@ -600,12 +821,12 @@ fn compare<T: PartialEq>(
     expected: Option<T>,
     observed: Option<T>,
     field: EvidenceField,
-    conflicts: &mut Vec<EvidenceField>,
+    conflicts: &mut AvailableEvidence,
 ) -> bool {
     match (expected, observed) {
         (Some(expected), Some(observed)) if expected == observed => true,
         (Some(_), Some(_)) => {
-            conflicts.push(field);
+            conflicts.insert(field);
             false
         }
         _ => false,
@@ -965,7 +1186,7 @@ mod tests {
 
         assert!(matches!(
             &resolutions[0].status,
-            ResolutionStatus::Ambiguous { candidates } if candidates.len() == 2
+            ResolutionStatus::Ambiguous { candidates, .. } if candidates.len() == 2
         ));
     }
 
@@ -1036,8 +1257,91 @@ mod tests {
 
         assert!(matches!(
             &resolutions[0].status,
-            ResolutionStatus::Matched { equivalent_copies, .. }
-                if equivalent_copies.len() == COPY_COUNT
+            ResolutionStatus::Matched {
+                equivalent_copies,
+                omitted_equivalent_copies,
+                ..
+            } if equivalent_copies.len() == MAX_RETAINED_EVIDENCE_DETAILS_PER_KIND
+                && *omitted_equivalent_copies
+                    == COPY_COUNT - MAX_RETAINED_EVIDENCE_DETAILS_PER_KIND
+        ));
+    }
+
+    #[test]
+    fn strongest_tie_after_retained_detail_cap_still_makes_result_ambiguous() {
+        let sha1_a = crate::hashes::sha1_bytes(b"first content");
+        let sha1_b = crate::hashes::sha1_bytes(b"late different content");
+        let rom = requirement(ExpectedEvidence {
+            size: Some(3),
+            crc: Some(crate::domain::Crc32Digest([0, 0, 0, 7])),
+            ..ExpectedEvidence::default()
+        });
+        let inventory = (0..=MAX_RETAINED_EVIDENCE_DETAILS_PER_KIND)
+            .map(|index| {
+                let sha1 = if index == MAX_RETAINED_EVIDENCE_DETAILS_PER_KIND {
+                    sha1_b
+                } else {
+                    sha1_a
+                };
+                source(
+                    &format!("/roms/{index:03}.rom"),
+                    computed(Some(3), Some([0, 0, 0, 7]), None, Some(sha1)),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let resolutions = resolve(
+            &[rom],
+            &inventory,
+            "catalog",
+            &SourceRoot::new("/roms"),
+            MatchingPolicy::EvidenceAware,
+        );
+
+        assert!(matches!(
+            &resolutions[0].status,
+            ResolutionStatus::Ambiguous {
+                candidates,
+                omitted_candidates: 1,
+            } if candidates.len() == MAX_RETAINED_EVIDENCE_DETAILS_PER_KIND
+        ));
+    }
+
+    #[test]
+    fn conflicting_candidate_after_retained_detail_cap_is_not_missed() {
+        let rom = requirement(ExpectedEvidence {
+            size: Some(3),
+            crc: Some(crate::domain::Crc32Digest([0, 0, 0, 7])),
+            ..ExpectedEvidence::default()
+        });
+        let mut inventory = (0..MAX_RETAINED_EVIDENCE_DETAILS_PER_KIND)
+            .map(|index| {
+                source(
+                    &format!("/roms/{index:03}.rom"),
+                    computed(None, Some([0, 0, 0, 7]), None, None),
+                )
+            })
+            .collect::<Vec<_>>();
+        inventory.push(source(
+            &format!("/roms/{MAX_RETAINED_EVIDENCE_DETAILS_PER_KIND:03}.rom"),
+            computed(Some(4), Some([0, 0, 0, 7]), None, None),
+        ));
+
+        let resolutions = resolve(
+            &[rom],
+            &inventory,
+            "catalog",
+            &SourceRoot::new("/roms"),
+            MatchingPolicy::EvidenceAware,
+        );
+
+        assert!(matches!(
+            &resolutions[0].status,
+            ResolutionStatus::Conflicting {
+                candidates,
+                omitted_candidates: 0,
+            } if candidates.len() == 1
+                && candidates[0].source.location.path().ends_with("/256.rom")
         ));
     }
 
@@ -1079,7 +1383,7 @@ mod tests {
 
         assert!(matches!(
             &resolutions[0].status,
-            ResolutionStatus::Ambiguous { candidates }
+            ResolutionStatus::Ambiguous { candidates, .. }
                 if candidates.len() == 2
                     && candidates.iter().all(|candidate| candidate.strength == Some(MatchStrength::Md5))
         ));
@@ -1115,7 +1419,7 @@ mod tests {
 
         assert!(matches!(
             &resolutions[0].status,
-            ResolutionStatus::Ambiguous { candidates } if candidates.len() == 2
+            ResolutionStatus::Ambiguous { candidates, .. } if candidates.len() == 2
         ));
     }
 
@@ -1181,7 +1485,7 @@ mod tests {
 
         assert!(matches!(
             &resolutions[0].status,
-            ResolutionStatus::Ambiguous { candidates } if candidates.len() == 2
+            ResolutionStatus::Ambiguous { candidates, .. } if candidates.len() == 2
         ));
     }
 
@@ -1214,7 +1518,7 @@ mod tests {
 
         assert!(matches!(
             &resolutions[0].status,
-            ResolutionStatus::Ambiguous { candidates } if candidates.len() == 2
+            ResolutionStatus::Ambiguous { candidates, .. } if candidates.len() == 2
         ));
     }
 
@@ -1454,5 +1758,80 @@ mod tests {
             &stored_root_source,
             &SourceRoot::new("/other")
         ));
+    }
+
+    #[test]
+    fn resolver_bounds_retained_evidence_details_across_all_requirements() {
+        let sha1 = crate::hashes::sha1_bytes(b"rom");
+        let requirements = (0..300)
+            .map(|_| {
+                requirement(ExpectedEvidence {
+                    sha1: Some(sha1),
+                    ..ExpectedEvidence::default()
+                })
+            })
+            .collect::<Vec<_>>();
+        let inventory = (0..300)
+            .map(|index| {
+                source(
+                    &format!("/roms/{index:03}.rom"),
+                    computed(None, None, None, Some(sha1)),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let resolutions = resolve(
+            &requirements,
+            &inventory,
+            "catalog",
+            &SourceRoot::new("/roms"),
+            MatchingPolicy::EvidenceAware,
+        );
+        let (retained_assessments, omitted_assessments) = resolutions
+            .iter()
+            .map(|resolution| match &resolution.status {
+                ResolutionStatus::Matched {
+                    assessments,
+                    omitted_assessments,
+                    ..
+                } => (assessments.len(), *omitted_assessments),
+                _ => (0, 0),
+            })
+            .fold(
+                (0, 0),
+                |(retained, omitted), (next_retained, next_omitted)| {
+                    (retained + next_retained, omitted + next_omitted)
+                },
+            );
+
+        assert_eq!(retained_assessments, MAX_RETAINED_EVIDENCE_DETAILS_PER_KIND);
+        assert_eq!(
+            omitted_assessments,
+            300 * 300 - MAX_RETAINED_EVIDENCE_DETAILS_PER_KIND
+        );
+        let retained_copies = resolutions
+            .iter()
+            .map(|resolution| match &resolution.status {
+                ResolutionStatus::Matched {
+                    equivalent_copies, ..
+                } => equivalent_copies.len(),
+                _ => 0,
+            })
+            .sum::<usize>();
+        assert_eq!(retained_copies, MAX_RETAINED_EVIDENCE_DETAILS_PER_KIND);
+        let omitted_copies = resolutions
+            .iter()
+            .map(|resolution| match &resolution.status {
+                ResolutionStatus::Matched {
+                    omitted_equivalent_copies,
+                    ..
+                } => *omitted_equivalent_copies,
+                _ => 0,
+            })
+            .sum::<usize>();
+        assert_eq!(
+            omitted_copies,
+            300 * 300 - MAX_RETAINED_EVIDENCE_DETAILS_PER_KIND
+        );
     }
 }

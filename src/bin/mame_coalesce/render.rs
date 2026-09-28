@@ -2,8 +2,10 @@ use indicatif::{ProgressBar, ProgressStyle};
 use log::{info, warn};
 use mame_coalesce::{
     app::{BuildWorkflowReport, ScanProgressEvent, SourceScanReport},
-    domain::{ArtifactOutcome, PlanOutcome},
+    domain::{ArtifactOutcome, AuditReport, ObservationBasis, PlanOutcome},
+    resolution::ResolutionStatus,
 };
+use std::fmt::Write as _;
 
 /// Terminal progress display for source scanning.
 pub struct ScanProgressReporter(ProgressBar);
@@ -84,7 +86,7 @@ pub fn build_report(report: &BuildWorkflowReport) {
                 "duplicate ROM match: rom={} selected={} candidates={}",
                 duplicate.rom_name,
                 duplicate.selected.display_name(),
-                duplicate.candidates.len()
+                duplicate.candidates.len() + duplicate.omitted_candidates
             );
         }
     }
@@ -124,10 +126,201 @@ pub fn exit_code(report: &BuildWorkflowReport) -> std::process::ExitCode {
     }
 }
 
+pub fn audit_report(report: &AuditReport) -> String {
+    let mut output = String::new();
+    match report.observation_basis() {
+        ObservationBasis::Cached => {
+            output
+                .push_str("Audit against cached observations (ROM bytes were not freshly read)\n");
+        }
+        ObservationBasis::FreshScan { scan_run } => {
+            let _ = writeln!(
+                output,
+                "Audit after a fresh source scan (run {})",
+                scan_run.to_storage_key()
+            );
+        }
+    }
+    let build = report.report();
+    let _ = writeln!(
+        output,
+        "Matched: {}  Unresolved: {}  Equivalent duplicate matches: {}",
+        build.matched_roms,
+        build.missing_roms.len(),
+        build.duplicate_matches.len()
+    );
+    if build.outcome != PlanOutcome::Ready {
+        let _ = writeln!(output, "Plan readiness: {:?}", build.outcome);
+        for issue in &build.validation_issues {
+            let _ = writeln!(output, "  validation issue: {issue}");
+        }
+    }
+    for resolution in &build.resolutions {
+        render_audit_resolution(&mut output, resolution);
+    }
+    output
+}
+
+fn render_audit_resolution(
+    output: &mut String,
+    resolution: &mame_coalesce::resolution::RequirementResolution,
+) {
+    let requirement = &resolution.requirement;
+    match &resolution.status {
+        ResolutionStatus::Matched {
+            selected,
+            strength,
+            equivalent_copies,
+            omitted_equivalent_copies,
+            omitted_assessments,
+            ..
+        } => {
+            let _ = writeln!(
+                output,
+                "Matched: {}/{} <- {} ({strength:?})",
+                requirement.game_name(),
+                requirement.rom_name(),
+                selected.display_name()
+            );
+            render_expected(output, &requirement.expected);
+            render_observed(output, &selected.observed);
+            if equivalent_copies.len() > 1 {
+                for copy in equivalent_copies {
+                    let _ = writeln!(output, "  equivalent copy: {}", copy.display_name());
+                }
+            }
+            if *omitted_equivalent_copies > 0 || *omitted_assessments > 0 {
+                let _ = writeln!(
+                    output,
+                    "  additional evidence details omitted: copies={omitted_equivalent_copies} assessments={omitted_assessments}"
+                );
+            }
+        }
+        ResolutionStatus::Ambiguous {
+            candidates,
+            omitted_candidates,
+        } => {
+            let _ = writeln!(
+                output,
+                "Ambiguous: {}/{}",
+                requirement.game_name(),
+                requirement.rom_name()
+            );
+            render_expected(output, &requirement.expected);
+            render_candidates(output, candidates);
+            render_omitted_candidates(output, *omitted_candidates);
+        }
+        ResolutionStatus::Conflicting {
+            candidates,
+            omitted_candidates,
+        } => {
+            let _ = writeln!(
+                output,
+                "Conflicting evidence: {}/{}",
+                requirement.game_name(),
+                requirement.rom_name()
+            );
+            render_expected(output, &requirement.expected);
+            render_candidates(output, candidates);
+            render_omitted_candidates(output, *omitted_candidates);
+        }
+        ResolutionStatus::Missing {
+            reason,
+            assessments,
+            omitted_assessments,
+        } => {
+            let _ = writeln!(
+                output,
+                "Missing: {}/{} ({reason:?})",
+                requirement.game_name(),
+                requirement.rom_name()
+            );
+            render_expected(output, &requirement.expected);
+            render_candidates(output, assessments);
+            render_omitted_candidates(output, *omitted_assessments);
+        }
+    }
+}
+
+fn render_omitted_candidates(output: &mut String, omitted: usize) {
+    if omitted > 0 {
+        let _ = writeln!(output, "  additional evidence details omitted: {omitted}");
+    }
+}
+
+fn render_candidates(
+    output: &mut String,
+    candidates: &[mame_coalesce::resolution::SourceAssessment],
+) {
+    for candidate in candidates {
+        let _ = writeln!(
+            output,
+            "  candidate: {} strength={:?} agrees={:?} conflicts={:?}",
+            candidate.source.display_name(),
+            candidate.strength,
+            candidate.agreements,
+            candidate.conflicts
+        );
+        render_observed(output, &candidate.source.observed);
+    }
+}
+
+fn render_expected(output: &mut String, evidence: &mame_coalesce::domain::ExpectedEvidence) {
+    let _ = writeln!(
+        output,
+        "  expected: sha1={} md5={} crc={} size={:?}",
+        evidence
+            .sha1
+            .map_or_else(|| "unknown".to_owned(), hex::encode),
+        evidence
+            .md5
+            .as_ref()
+            .map_or_else(|| "unknown".to_owned(), |digest| hex::encode(digest.0)),
+        evidence
+            .crc
+            .as_ref()
+            .map_or_else(|| "unknown".to_owned(), |digest| hex::encode(digest.0)),
+        evidence.size
+    );
+}
+
+fn render_observed(output: &mut String, evidence: &mame_coalesce::domain::ObservedContent) {
+    let _ = writeln!(
+        output,
+        "  observed ({:?}/{:?}): sha1={} md5={} crc={} xxh3={} size={:?}",
+        evidence.scope,
+        evidence.provenance,
+        evidence
+            .sha1
+            .map_or_else(|| "unknown".to_owned(), hex::encode),
+        evidence
+            .md5
+            .as_ref()
+            .map_or_else(|| "unknown".to_owned(), |digest| hex::encode(digest.0)),
+        evidence
+            .crc
+            .as_ref()
+            .map_or_else(|| "unknown".to_owned(), |digest| hex::encode(digest.0)),
+        hex::encode(evidence.xxh3),
+        evidence.size
+    );
+}
+
+pub fn audit_exit_code(report: &AuditReport) -> std::process::ExitCode {
+    if report.report().missing_roms.is_empty() && report.report().outcome == PlanOutcome::Ready {
+        std::process::ExitCode::SUCCESS
+    } else {
+        std::process::ExitCode::from(1)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mame_coalesce::domain::{BuildReport, PlanBlockReason};
+    use mame_coalesce::{
+        build::validation::{PlanIssue, PlanIssueKind},
+        domain::{AuditReport, BuildReport, LogicalPath, ObservationBasis, PlanBlockReason},
+    };
 
     /// Construct a minimal ready report for exit-status mapping tests.
     fn report() -> BuildWorkflowReport {
@@ -170,5 +363,27 @@ mod tests {
         let mut blocked = report();
         blocked.build_report.outcome = PlanOutcome::Blocked(PlanBlockReason::MissingContent);
         assert_eq!(exit_code(&blocked), std::process::ExitCode::from(2));
+    }
+
+    #[test]
+    fn audit_reports_blocked_plan_and_returns_unresolved_status() {
+        let report = AuditReport::new(
+            ObservationBasis::Cached,
+            BuildReport {
+                validation_issues: vec![PlanIssue {
+                    kind: PlanIssueKind::UnsafeGroupPath,
+                    path: LogicalPath::new("../unsafe.zip"),
+                    conflicts_with: None,
+                }],
+                outcome: PlanOutcome::Blocked(PlanBlockReason::InvalidPlan),
+                ..BuildReport::default()
+            },
+        );
+
+        let human = audit_report(&report);
+
+        assert_eq!(audit_exit_code(&report), std::process::ExitCode::from(1));
+        assert!(human.contains("Plan readiness: Blocked(InvalidPlan)"));
+        assert!(human.contains("validation issue: unsafe output zip file name"));
     }
 }

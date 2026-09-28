@@ -20,6 +20,12 @@ pub struct DataFile {
     sha1: Option<Vec<u8>>,
 }
 
+impl DataFile {
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+}
+
 #[derive(Insertable)]
 #[diesel(table_name = data_files)]
 pub struct New<'a> {
