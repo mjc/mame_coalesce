@@ -1927,7 +1927,8 @@ fn cli_legacy_build_defaults_preserve_parent_bundle_deflated_zip_and_warn_missin
             output_path.as_str(),
         ])
         .assert()
-        .success();
+        .success()
+        .stderr(contains("missing ROM: game=clone1 rom=clone1.rom"));
 
     let bundle_path = output_path.join("parent.zip");
     assert!(bundle_path.is_file());
