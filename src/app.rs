@@ -26,6 +26,7 @@ use crate::{
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Inputs needed to import a catalog document into the local cache.
 pub struct CatalogImportRequest {
     pub document_path: Utf8PathBuf,
     pub format: CatalogDocumentFormat,
@@ -37,6 +38,7 @@ pub struct CatalogImportRequest {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Format of a supported catalog document.
 pub enum CatalogDocumentFormat {
     Logiqx,
     MameListXml,
@@ -46,6 +48,7 @@ pub enum CatalogDocumentFormat {
 }
 
 impl CatalogDocumentFormat {
+    /// Return the stable identifier used when reporting this document format.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -59,12 +62,14 @@ impl CatalogDocumentFormat {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Result status for a catalog import attempt.
 pub enum CatalogImportStatus {
     Succeeded,
     Failed,
 }
 
 impl CatalogImportStatus {
+    /// Return the stable lowercase identifier for this status.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -75,6 +80,7 @@ impl CatalogImportStatus {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Summary of a catalog import and its diagnostics.
 pub struct CatalogImportReport {
     pub snapshot_key: Option<SnapshotKey>,
     pub run_key: ImportRunKey,
@@ -83,22 +89,26 @@ pub struct CatalogImportReport {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Inputs needed to import a Logiqx DAT file.
 pub struct DatImportRequest {
     pub dat_path: Utf8PathBuf,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Identifies the imported DAT record in the cache.
 pub struct DatImportReport {
     pub data_file_id: i32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Inputs needed to scan a source directory or its supported archives.
 pub struct SourceScanRequest {
     pub source_path: Utf8PathBuf,
     pub jobs: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Counts and identity for one completed source scan.
 pub struct SourceScanReport {
     pub source_path: Utf8PathBuf,
     pub scan_run: ScanRunKey,
@@ -107,12 +117,14 @@ pub struct SourceScanReport {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Progress notifications emitted while scanning source files.
 pub enum ScanProgressEvent {
     Started { files: u64 },
     Advanced,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Inputs needed to plan and optionally write build artifacts.
 pub struct BuildWorkflowRequest {
     pub dat_path: Utf8PathBuf,
     pub source_path: Utf8PathBuf,
@@ -124,6 +136,7 @@ pub struct BuildWorkflowRequest {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Build diagnostics, artifact outcomes, and any paths visibly written.
 pub struct BuildWorkflowReport {
     pub written_paths: Vec<Utf8PathBuf>,
     pub artifact_results: Vec<ArtifactResult>,
@@ -132,6 +145,7 @@ pub struct BuildWorkflowReport {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Inputs for planning a build from already-cached DAT and scan data.
 pub struct BuildPlanRequest {
     pub dat_path: Utf8PathBuf,
     pub source_path: Utf8PathBuf,
@@ -140,6 +154,7 @@ pub struct BuildPlanRequest {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Inputs for the one-shot import, scan, plan, and build workflow.
 pub struct RunWorkflowRequest {
     pub dat_path: Utf8PathBuf,
     pub source_path: Utf8PathBuf,
@@ -152,12 +167,14 @@ pub struct RunWorkflowRequest {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Inputs for auditing declared disk requirements against a source tree.
 pub struct DiskAuditRequest {
     pub catalog_key: String,
     pub source_path: Utf8PathBuf,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+/// Serializable result of auditing all declared disks in a catalog snapshot.
 pub struct DiskAuditReport {
     pub schema_version: u32,
     pub catalog_key: String,
@@ -167,6 +184,7 @@ pub struct DiskAuditReport {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+/// Audit state and catalog identity for one declared disk requirement.
 pub struct DiskAuditEntry {
     pub set_name: String,
     pub disk_name: String,
@@ -180,6 +198,7 @@ pub struct DiskAuditEntry {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
+/// Verification state assigned to a disk requirement during an audit.
 pub enum DiskAuditState {
     Missing,
     AmbiguousLocation,
@@ -566,6 +585,7 @@ fn same_declared_disk_identity(left: &DiskRequirementRow, right: &DiskRequiremen
         && left.sha1 == right.sha1
 }
 
+/// Parse a Logiqx DAT file and store its contents in the database cache.
 pub fn import_dat(
     database: &Database,
     request: &DatImportRequest,
@@ -574,6 +594,7 @@ pub fn import_dat(
         .map(|data_file_id| DatImportReport { data_file_id })
 }
 
+/// Import a supported catalog document and report its snapshot and diagnostics.
 pub fn import_catalog(
     database: &Database,
     request: &CatalogImportRequest,
@@ -581,6 +602,7 @@ pub fn import_catalog(
     crate::storage::catalog_import::import(database.pool(), request)
 }
 
+/// Scan a source tree, hash discovered content, and persist the completed scan.
 pub fn scan_source(
     database: &Database,
     request: &SourceScanRequest,
@@ -588,6 +610,7 @@ pub fn scan_source(
     scan_source_with_progress(database, request, &|_| {})
 }
 
+/// Scan and persist a source tree while reporting file-count progress to the caller.
 pub fn scan_source_with_progress(
     database: &Database,
     request: &SourceScanRequest,
@@ -620,6 +643,10 @@ pub fn scan_source_with_progress(
     })
 }
 
+/// Plan a build from cached data and write artifacts unless dry-run or blocked.
+///
+/// Artifact-level failures are returned in the report; setup and execution errors carry
+/// the partial build report in [`crate::Error::BuildWorkflow`].
 pub fn build(
     database: &Database,
     request: &BuildWorkflowRequest,
@@ -702,6 +729,7 @@ pub fn build(
     })
 }
 
+/// Create a build plan from cached DAT and source-scan data without writing outputs.
 pub fn plan_build(
     database: &Database,
     request: &BuildPlanRequest,
@@ -725,6 +753,7 @@ pub fn plan_build(
     ))
 }
 
+/// Import a DAT, scan its source, plan the build, and write eligible artifacts.
 pub fn run(
     database: &Database,
     request: &RunWorkflowRequest,
@@ -732,6 +761,7 @@ pub fn run(
     run_with_progress(database, request, &|_| {})
 }
 
+/// Run the complete workflow and report source-scan progress to the caller.
 pub fn run_with_progress(
     database: &Database,
     request: &RunWorkflowRequest,

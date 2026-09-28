@@ -1,10 +1,12 @@
 use camino::Utf8PathBuf;
 
+/// Handle to the application's persistent catalog and scan cache.
 pub struct Database {
     pool: crate::storage::db::Pool,
 }
 
 impl Database {
+    /// Open or create a cache database at `cache_path`, applying pending migrations.
     pub fn open(cache_path: &Utf8PathBuf) -> crate::Result<Self> {
         if let Some(parent) = cache_path.parent()
             && !parent.as_str().is_empty()

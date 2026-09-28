@@ -5,9 +5,11 @@ use mame_coalesce::{
     domain::{ArtifactOutcome, PlanOutcome},
 };
 
+/// Terminal progress display for source scanning.
 pub struct ScanProgressReporter(ProgressBar);
 
 impl ScanProgressReporter {
+    /// Update the display from one scan progress event.
     pub fn update(&self, event: ScanProgressEvent) {
         match event {
             ScanProgressEvent::Started { files } => {
@@ -18,6 +20,7 @@ impl ScanProgressReporter {
         }
     }
 
+    /// Clear the progress display after the scan completes.
     pub fn finish(&self) {
         self.0.finish_and_clear();
     }
@@ -40,6 +43,7 @@ impl Drop for ScanProgressReporter {
     }
 }
 
+/// Log a concise summary of scan results and unmatched content.
 pub fn scan_report(report: &SourceScanReport) {
     info!(
         "scanned {} ROM files at {}",
@@ -53,6 +57,7 @@ pub fn scan_report(report: &SourceScanReport) {
     }
 }
 
+/// Log build diagnostics and each artifact's final outcome.
 pub fn build_report(report: &BuildWorkflowReport) {
     let build = &report.build_report;
     info!("matched {} ROMs", build.matched_roms);
@@ -103,6 +108,7 @@ pub fn build_report(report: &BuildWorkflowReport) {
     }
 }
 
+/// Map a build report to success, artifact failure, or blocked-plan status.
 pub fn exit_code(report: &BuildWorkflowReport) -> std::process::ExitCode {
     if report.build_report.outcome != PlanOutcome::Ready {
         std::process::ExitCode::from(2)

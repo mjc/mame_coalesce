@@ -21,11 +21,15 @@ use crate::{
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Progress events emitted during a source scan.
 pub enum ScanProgress {
     Started { files: u64 },
     Advanced,
 }
 
+/// Scan the source tree and report progress as files are processed.
+///
+/// `excluded_paths` are omitted from traversal; `jobs` controls the hashing pool size.
 pub fn source_with_progress(
     path: &Utf8Path,
     jobs: usize,
