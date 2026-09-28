@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use diesel::{
     Connection, QueryableByName, RunQueryDsl, sql_query,
-    sql_types::{BigInt, Binary, Nullable, Text},
+    sql_types::{BigInt, Binary, Bool, Nullable, Text},
 };
 
 use crate::domain::{
@@ -21,6 +21,8 @@ struct SnapshotRow {
     scope_kind: String,
     #[diesel(sql_type = Nullable<Text>)]
     scope_json: Option<String>,
+    #[diesel(sql_type = Bool)]
+    published: bool,
 }
 
 #[derive(QueryableByName)]
@@ -271,7 +273,10 @@ fn parse_scope(value: Option<String>) -> crate::Result<serde_json::Value> {
 
 fn snapshot(conn: &mut diesel::SqliteConnection, key: &SnapshotKey) -> crate::Result<SnapshotRow> {
     sql_query(
-        "SELECT catalog_key, scope_kind, scope_json FROM catalog_snapshots WHERE snapshot_key = ?",
+        "SELECT snapshot.catalog_key, snapshot.scope_kind, snapshot.scope_json, \
+                EXISTS (SELECT 1 FROM snapshot_publications AS publication \
+                        WHERE publication.snapshot_key = snapshot.snapshot_key) AS published \
+         FROM catalog_snapshots AS snapshot WHERE snapshot.snapshot_key = ?",
     )
     .bind::<Text, _>(key.as_str())
     .get_result(conn)
@@ -284,6 +289,9 @@ fn snapshot(conn: &mut diesel::SqliteConnection, key: &SnapshotKey) -> crate::Re
 }
 
 fn comparable_scope(previous: &SnapshotRow, current: &SnapshotRow) -> bool {
+    if !previous.published || !current.published {
+        return false;
+    }
     if previous.scope_kind == "complete" && current.scope_kind == "complete" {
         return true;
     }
@@ -312,7 +320,8 @@ fn absence_status(
     name: &str,
 ) -> SnapshotRecordStatus {
     let explicitly_excluded = [previous, current].into_iter().any(|snapshot| {
-        snapshot.scope_kind == "filtered"
+        snapshot.published
+            && snapshot.scope_kind == "filtered"
             && scope_set_names(snapshot).is_some_and(|names| !names.contains(name))
     });
     if explicitly_excluded {
@@ -331,11 +340,12 @@ fn scopes_cover_set(previous: &SnapshotRow, current: &SnapshotRow, name: &str) -
 }
 
 fn snapshot_covers_set(snapshot: &SnapshotRow, name: &str) -> bool {
-    match snapshot.scope_kind.as_str() {
-        "complete" => true,
-        "filtered" => scope_set_names(snapshot).is_some_and(|names| names.contains(name)),
-        _ => false,
-    }
+    snapshot.published
+        && match snapshot.scope_kind.as_str() {
+            "complete" => true,
+            "filtered" => scope_set_names(snapshot).is_some_and(|names| names.contains(name)),
+            _ => false,
+        }
 }
 
 fn scope_policy(snapshot: &SnapshotRow) -> Option<serde_json::Value> {

@@ -16,7 +16,8 @@ use mame_coalesce::{
     domain::{
         CatalogKey, CatalogRecordKind, CatalogRecordRef, CatalogScope, DocumentKey,
         ExternalRecordRef, ParserInterpretationKey, PublishingSourceKey, RelationshipClaim,
-        RelationshipEndpoint, RelationshipOrigin, RelationshipType, SnapshotRecordStatus,
+        RelationshipEndpoint, RelationshipOrigin, RelationshipType, SnapshotKey,
+        SnapshotRecordStatus,
     },
 };
 
@@ -2308,6 +2309,53 @@ fn snapshot_diff_attributes_no_intro_rom_extensions_to_their_asset()
             && record.status == SnapshotRecordStatus::Unchanged
             && record.requirement_changes.is_empty()
     }));
+    Ok(())
+}
+
+#[test]
+fn snapshot_diff_does_not_treat_unpublished_complete_identity_as_removal()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, mut connection) = setup()?;
+    let published_path = directory.path().join("published.dat");
+    let identity_path = directory.path().join("identity.dat");
+    let published_bytes =
+        br#"<datafile><header><name>Published</name></header><game name="set"/></datafile>"#;
+    let identity_bytes = b"unpublished identity bytes";
+    std::fs::write(&published_path, published_bytes)?;
+    std::fs::write(&identity_path, identity_bytes)?;
+
+    let mut published_request =
+        request(published_path, "publisher-identity", "identity", "Identity")?;
+    published_request.scope = CatalogScope::Complete;
+    let published = app::import_catalog(&database, &published_request)?;
+    let published_key = published.snapshot_key.ok_or("published snapshot missing")?;
+    let identity_document_key = DocumentKey::from_bytes(identity_bytes);
+    let identity_document = identity_document_key.to_string();
+    let interpretation = ParserInterpretationKey::logiqx_v1(&CatalogScope::Complete);
+    let identity_snapshot = SnapshotKey::new(
+        &published_request.catalog_key,
+        &identity_document_key,
+        &interpretation,
+    );
+    sql_query("INSERT INTO documents (document_key) VALUES (?)")
+        .bind::<Text, _>(&identity_document)
+        .execute(&mut connection)?;
+    sql_query(
+        "INSERT INTO catalog_snapshots \
+         (snapshot_key, catalog_key, document_key, interpretation_key, scope_kind) \
+         VALUES (?, ?, ?, ?, 'complete')",
+    )
+    .bind::<Text, _>(identity_snapshot.as_str())
+    .bind::<Text, _>(published_request.catalog_key.as_str())
+    .bind::<Text, _>(&identity_document)
+    .bind::<Text, _>(interpretation.as_str())
+    .execute(&mut connection)?;
+
+    let diff = app::diff_catalog_snapshots(&database, &published_key, &identity_snapshot)?;
+    assert!(!diff.same_scope);
+    assert_eq!(diff.records.len(), 1);
+    assert_eq!(diff.records[0].set_name, "set");
+    assert_eq!(diff.records[0].status, SnapshotRecordStatus::Unknown);
     Ok(())
 }
 
