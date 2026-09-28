@@ -1360,7 +1360,14 @@ mod tests {
         )
         .execute(&mut conn)?;
 
-        conn.revert_migration(migrations[software_list_index].as_ref())?;
+        // Keep the legacy-retention migration applied for its explicit rollback
+        // assertion below.
+        let rollback_indexes = (legacy_retention_index + 1..migrations.len())
+            .rev()
+            .chain((software_list_index..legacy_retention_index).rev());
+        for index in rollback_indexes {
+            conn.revert_migration(migrations[index].as_ref())?;
+        }
         let software_list_tables = sql_query(
             "SELECT COUNT(*) AS count FROM sqlite_master \
              WHERE type = 'table' AND name IN ('software_lists', 'software_items', \

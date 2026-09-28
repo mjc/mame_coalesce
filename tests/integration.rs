@@ -1,6 +1,9 @@
 use assert_cmd::Command;
 use mame_coalesce::{
-    app::{self, BuildWorkflowRequest, DatImportRequest, RunWorkflowRequest, SourceScanRequest},
+    app::{
+        self, BuildPlanRequest, BuildWorkflowRequest, DatImportRequest, RunWorkflowRequest,
+        ScanCachePolicy, SourceScanRequest,
+    },
     database::Database,
     domain::{ArtifactOutcome, BuildMode, OutputContainer, ZipCompression},
     logiqx::DataFile,
@@ -825,6 +828,121 @@ fn source_scan_replaces_rows_for_source_root() -> Result<(), Box<dyn std::error:
     Ok(())
 }
 
+#[cfg(unix)]
+#[test]
+fn opt_in_bare_file_reuse_supports_forced_rehash_and_detects_same_mtime_changes()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::fs::FileTimes;
+
+    let database_dir = tempfile::tempdir()?;
+    let database = test_database(database_dir.path())?;
+    let source_dir = tempfile::tempdir()?;
+    let source_path = utf8_path(source_dir.path())?.to_path_buf();
+    let rom_path = source_dir.path().join("a.rom");
+    fs::write(&rom_path, b"abc")?;
+    let scan_request = SourceScanRequest {
+        source_path: source_path.clone(),
+        jobs: 1,
+    };
+
+    app::scan_source(&database, &scan_request)?;
+    let reuse_unchanged = ScanCachePolicy::ReuseUnchangedBareFiles {
+        force_rehash: Vec::new(),
+    };
+    let reused = app::scan_source_with_policy(&database, &scan_request, reuse_unchanged.clone())?;
+    assert_eq!(reused.reused_bare_files, 1);
+
+    let forced = app::scan_source_with_policy(
+        &database,
+        &scan_request,
+        ScanCachePolicy::ReuseUnchangedBareFiles {
+            force_rehash: vec![utf8_path(&rom_path)?.to_path_buf()],
+        },
+    )?;
+    assert_eq!(forced.reused_bare_files, 0);
+
+    let original_mtime = fs::metadata(&rom_path)?.modified()?;
+    fs::write(&rom_path, b"xyz")?;
+    fs::File::options()
+        .write(true)
+        .open(&rom_path)?
+        .set_times(FileTimes::new().set_modified(original_mtime))?;
+    assert_eq!(fs::metadata(&rom_path)?.modified()?, original_mtime);
+
+    let changed = app::scan_source_with_policy(&database, &scan_request, reuse_unchanged.clone())?;
+    assert_eq!(changed.reused_bare_files, 0);
+    let next = app::scan_source_with_policy(&database, &scan_request, reuse_unchanged)?;
+    assert_eq!(next.reused_bare_files, 1);
+
+    let work_dir = tempfile::tempdir()?;
+    let dat_path = write_single_game_dat(
+        &work_dir.path().join("new-content.dat"),
+        "New content after same-mtime edit",
+        "game",
+        "a.rom",
+        &hex::encode(mame_coalesce::hashes::sha1_bytes(b"xyz")),
+    )?;
+    app::import_dat(
+        &database,
+        &DatImportRequest {
+            dat_path: dat_path.clone(),
+        },
+    )?;
+    let plan = app::plan_build(
+        &database,
+        &BuildPlanRequest {
+            dat_path,
+            source_path,
+            mode: BuildMode::ParentBundles,
+            matching_policy: mame_coalesce::domain::MatchingPolicy::EvidenceAware,
+            missing_policy: mame_coalesce::domain::MissingContentPolicy::RequireComplete,
+        },
+    )?;
+    assert_eq!(plan.report.matched_roms, 1);
+    assert!(plan.report.missing_roms.is_empty());
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn forced_rehash_matches_walked_symlink_paths() -> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::symlink;
+
+    let database_dir = tempfile::tempdir()?;
+    let database = test_database(database_dir.path())?;
+    let source_dir = tempfile::tempdir()?;
+    let outside_dir = tempfile::tempdir()?;
+    let source_path = utf8_path(source_dir.path())?.to_path_buf();
+    let inside_target = source_dir.path().join("inside-target.rom");
+    let inside_link = source_dir.path().join("inside-link.rom");
+    let outside_target = outside_dir.path().join("outside-target.rom");
+    let outside_link = source_dir.path().join("outside-link.rom");
+    fs::write(&inside_target, b"inside")?;
+    fs::write(&outside_target, b"outside")?;
+    symlink(&inside_target, &inside_link)?;
+    symlink(&outside_target, &outside_link)?;
+    let request = SourceScanRequest {
+        source_path,
+        jobs: 1,
+    };
+
+    app::scan_source(&database, &request)?;
+    let forced = app::scan_source_with_policy(
+        &database,
+        &request,
+        ScanCachePolicy::ReuseUnchangedBareFiles {
+            force_rehash: vec![
+                utf8_path(&inside_link)?.to_path_buf(),
+                utf8_path(&outside_link)?.to_path_buf(),
+            ],
+        },
+    )?;
+
+    assert_eq!(forced.observation_count, 3);
+    assert_eq!(forced.reused_bare_files, 1);
+    Ok(())
+}
+
 #[test]
 fn parent_refresh_removes_stale_observations_owned_by_overlapping_root()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -1343,6 +1461,12 @@ fn cli_help_commands_render_successfully() {
             .success()
             .stdout(contains("Usage"));
     }
+    cargo_command()
+        .args(["cache", "scan", "--help"])
+        .assert()
+        .success()
+        .stdout(contains("--reuse-unchanged"))
+        .stdout(contains("--force-rehash"));
 }
 
 #[test]
