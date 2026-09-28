@@ -238,7 +238,9 @@ const fn has_comparable_evidence(source: &SourceFile) -> bool {
     matches!(source.observed.scope, EvidenceScope::WholeAsset)
         && matches!(
             source.observed.provenance,
-            EvidenceProvenance::Computed | EvidenceProvenance::SourceDeclared
+            EvidenceProvenance::Computed
+                | EvidenceProvenance::SourceDeclared
+                | EvidenceProvenance::StatValidatedCache
         )
 }
 
@@ -807,7 +809,9 @@ fn assess_evidence(
     let supported = observed.scope == EvidenceScope::WholeAsset
         && matches!(
             observed.provenance,
-            EvidenceProvenance::Computed | EvidenceProvenance::SourceDeclared
+            EvidenceProvenance::Computed
+                | EvidenceProvenance::SourceDeclared
+                | EvidenceProvenance::StatValidatedCache
         );
     if !supported {
         return AssessmentFacts {

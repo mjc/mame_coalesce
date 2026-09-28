@@ -1,14 +1,14 @@
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    ffi::OsStr,
-    fs,
-    io::Write,
-    path::PathBuf,
-};
-
 use camino::{Utf8Path, Utf8PathBuf};
 #[cfg(test)]
 use fmmap::{MmapFile, MmapFileExt};
+#[cfg(unix)]
+use std::fs;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    ffi::OsStr,
+    io::Write,
+    path::PathBuf,
+};
 
 use rayon::prelude::*;
 use sha1::{Digest, Sha1};
@@ -238,11 +238,14 @@ fn scan_bare_file(
     force_rehash: bool,
 ) -> crate::Result<Vec<SourceObservation>> {
     let physical_path = SourcePhysicalPath::capture(path)?;
-    let before = bare_file_cache_stamp(physical_path.as_path())?;
+    let mut file = std::fs::File::open(physical_path.as_path())?;
+    let before = bare_file_cache_stamp(&file.metadata()?);
     if !force_rehash
-        && let (Some(current), Some(cached)) = (before, cached_file)
+        && let (BareFileCacheState::Available(current), Some(cached)) = (before, cached_file)
         && cached.stamp == current
-        && bare_file_cache_stamp(physical_path.as_path())? == Some(current)
+        && bare_file_cache_stamp(&file.metadata()?) == BareFileCacheState::Available(current)
+        && bare_file_path_cache_stamp(physical_path.as_path())?
+            == BareFileCacheState::Available(current)
     {
         let mut observed = cached.observed;
         observed.provenance = EvidenceProvenance::StatValidatedCache;
@@ -260,14 +263,21 @@ fn scan_bare_file(
         }]);
     }
     let mut hash_writer = RomHashWriter::default();
-    crate::sources::stream_file(physical_path.as_path(), &mut hash_writer)?;
+    std::io::copy(&mut file, &mut hash_writer)?;
     let (size, sha1, xxhash3) = hash_writer.finish();
-    let after = bare_file_cache_stamp(physical_path.as_path())?;
-    if before != after {
+    let after = bare_file_cache_stamp(&file.metadata()?);
+    let path_after = bare_file_path_cache_stamp(physical_path.as_path())?;
+    if before != after || after != path_after {
         return Err(Error::InvalidPath(format!(
             "bare source changed while it was being scanned: {path}"
         )));
     }
+    #[cfg(unix)]
+    let cache_stamp = match after {
+        BareFileCacheState::Available(stamp) => Some(stamp),
+    };
+    #[cfg(not(unix))]
+    let cache_stamp = after.into_stamp();
     Ok(vec![SourceObservation {
         source_root: source_root.clone(),
         scan_run,
@@ -286,15 +296,14 @@ fn scan_bare_file(
         },
         fingerprint: SourceFingerprint::new(sha1),
         scan_provenance: ScanProvenance::StreamedSha1Xxh3V1,
-        bare_file_cache_stamp: after,
+        bare_file_cache_stamp: cache_stamp,
     }])
 }
 
 #[cfg(unix)]
-fn bare_file_cache_stamp(path: &Utf8Path) -> crate::Result<Option<BareFileCacheStamp>> {
+fn bare_file_cache_stamp(metadata: &std::fs::Metadata) -> BareFileCacheState {
     use std::os::unix::fs::MetadataExt;
 
-    let metadata = fs::metadata(path)?;
     let mut hasher = Sha256::new();
     hasher.update(b"mame-coalesce/bare-file-cache-stamp/v1\0");
     for value in [metadata.dev(), metadata.ino(), metadata.len()] {
@@ -308,12 +317,40 @@ fn bare_file_cache_stamp(path: &Utf8Path) -> crate::Result<Option<BareFileCacheS
     ] {
         hasher.update(value.to_le_bytes());
     }
-    Ok(Some(BareFileCacheStamp::new(hasher.finalize().into())))
+    BareFileCacheState::Available(BareFileCacheStamp::new(hasher.finalize().into()))
 }
 
 #[cfg(not(unix))]
-fn bare_file_cache_stamp(_path: &Utf8Path) -> crate::Result<Option<BareFileCacheStamp>> {
-    Ok(None)
+fn bare_file_cache_stamp(_metadata: &std::fs::Metadata) -> BareFileCacheState {
+    BareFileCacheState::Unavailable
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BareFileCacheState {
+    Available(BareFileCacheStamp),
+    #[cfg(not(unix))]
+    Unavailable,
+}
+
+impl BareFileCacheState {
+    #[cfg(not(unix))]
+    const fn into_stamp(self) -> Option<BareFileCacheStamp> {
+        match self {
+            Self::Available(stamp) => Some(stamp),
+            #[cfg(not(unix))]
+            Self::Unavailable => None,
+        }
+    }
+}
+
+#[cfg(unix)]
+fn bare_file_path_cache_stamp(path: &Utf8Path) -> crate::Result<BareFileCacheState> {
+    Ok(bare_file_cache_stamp(&fs::metadata(path)?))
+}
+
+#[cfg(not(unix))]
+fn bare_file_path_cache_stamp(_path: &Utf8Path) -> crate::Result<BareFileCacheState> {
+    Ok(BareFileCacheState::Unavailable)
 }
 
 #[cfg(test)]

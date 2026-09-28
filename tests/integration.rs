@@ -894,7 +894,7 @@ fn opt_in_bare_file_reuse_supports_forced_rehash_and_detects_same_mtime_changes(
             dat_path,
             source_path,
             mode: BuildMode::ParentBundles,
-            matching_policy: mame_coalesce::domain::MatchingPolicy::Sha1Compatibility,
+            matching_policy: mame_coalesce::domain::MatchingPolicy::EvidenceAware,
             missing_policy: mame_coalesce::domain::MissingContentPolicy::RequireComplete,
         },
     )?;
