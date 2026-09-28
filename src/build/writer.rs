@@ -1313,6 +1313,37 @@ mod tests {
     }
 
     #[test]
+    fn declared_source_root_diagnostic_escapes_control_characters()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let root = utf8_path(temp_dir.path())?;
+        let outside = root.join("outside\nroot");
+        let declared_root = root.join("declared-source");
+        fs::create_dir(&outside)?;
+        fs::create_dir(&declared_root)?;
+        let source_path = outside.join("game.rom");
+        let mut source = source_file(&source_path);
+        source.source_root = crate::domain::SourceRoot::new(declared_root.as_str());
+        let plan = BuildPlan {
+            groups: vec![OutputGroup {
+                path: LogicalPath::new("set"),
+                entries: vec![logical_entry("game.rom", source)],
+            }],
+            report: BuildReport::default(),
+        };
+
+        let message = match checked_plan_destination(&plan, &root.join("output")) {
+            Ok(_) => return Err("expected source outside its declared root to fail".into()),
+            Err(error) => error.to_string(),
+        };
+
+        let source_path = outside.join("game.rom");
+        assert!(message.contains(&format!("source={:?}", source_path.as_str())));
+        assert!(!message.contains('\n'));
+        Ok(())
+    }
+
+    #[test]
     fn write_plan_rejects_unsafe_zip_entry_name() -> Result<(), Box<dyn std::error::Error>> {
         let temp_dir = tempfile::tempdir()?;
         let source_path = source_fixture_path(&temp_dir, "source.rom")?;

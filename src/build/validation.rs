@@ -112,7 +112,7 @@ impl CheckedPlanDestination {
             .map(Utf8PathBuf::as_path)
             .ok_or_else(|| {
                 crate::Error::InvalidPath(format!(
-                    "plan source was not checked before writing: {planned_path}"
+                    "plan source was not checked before writing: {planned_path:?}"
                 ))
             })
     }
@@ -459,7 +459,9 @@ pub(crate) fn checked_destination(
         let source = canonicalize_destination(source)?;
         if source.starts_with(&destination) || destination.starts_with(&source) {
             return Err(crate::Error::InvalidPath(format!(
-                "source/destination overlap is not allowed: source={source} destination={destination}"
+                "source/destination overlap is not allowed: source={:?} destination={:?}",
+                source.as_str(),
+                destination.as_str()
             )));
         }
     }
@@ -486,7 +488,9 @@ pub(crate) fn checked_plan_destination(
         let source_entry = source_entry_path(Utf8Path::new(planned_path))?;
         if !source_entry.starts_with(&declared_root) {
             return Err(crate::Error::InvalidPath(format!(
-                "plan source is outside its declared source root: source={source_entry} root={declared_root}"
+                "plan source is outside its declared source root: source={:?} root={:?}",
+                source_entry.as_str(),
+                declared_root.as_str()
             )));
         }
         if !source_paths.contains_key(planned_path) {
@@ -523,10 +527,13 @@ fn source_location_path(location: &SourceLocation) -> &str {
 
 fn source_entry_path(path: &Utf8Path) -> crate::Result<Utf8PathBuf> {
     let parent = path.parent().ok_or_else(|| {
-        crate::Error::InvalidPath(format!("source path has no parent directory: {path}"))
+        crate::Error::InvalidPath(format!(
+            "source path has no parent directory: {:?}",
+            path.as_str()
+        ))
     })?;
     let name = path.file_name().ok_or_else(|| {
-        crate::Error::InvalidPath(format!("source path has no file name: {path}"))
+        crate::Error::InvalidPath(format!("source path has no file name: {:?}", path.as_str()))
     })?;
     Ok(canonicalize_destination(parent)?.join(name))
 }
@@ -564,8 +571,8 @@ pub(crate) fn canonicalize_destination(destination: &Utf8Path) -> crate::Result<
                         match fs::symlink_metadata(&candidate) {
                             Ok(metadata) if metadata.file_type().is_symlink() => {
                                 return Err(crate::Error::InvalidPath(format!(
-                                    "dangling symlink in path: {}",
-                                    candidate.display()
+                                    "dangling symlink in path: {:?}",
+                                    candidate.to_string_lossy()
                                 )));
                             }
                             Err(metadata_error)
@@ -599,6 +606,23 @@ mod tests {
                 ..BuildReport::default()
             },
         }
+    }
+
+    #[test]
+    fn overlap_diagnostic_escapes_control_characters_in_paths()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let source = Utf8PathBuf::try_from(temp_dir.path().join("source\nroot"))?;
+        fs::create_dir(&source)?;
+
+        let message = match checked_destination(&[source.as_path()], &source) {
+            Ok(_) => return Err("expected source/destination overlap to fail".into()),
+            Err(error) => error.to_string(),
+        };
+
+        assert!(message.contains(&format!("source={:?}", source.as_str())));
+        assert!(!message.contains('\n'));
+        Ok(())
     }
 
     fn group(path: &str, entries: Vec<LogicalEntry>) -> OutputGroup {
