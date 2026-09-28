@@ -146,8 +146,19 @@ fn render_build_result(
 ) -> mame_coalesce::Result<ExitCode> {
     match result {
         Ok(report) => {
+            if let Some(scan_report) = &report.scan_report {
+                render::scan_report(scan_report);
+            }
             render::build_report(&report);
             Ok(render::exit_code(&report))
+        }
+        Err(mame_coalesce::Error::BuildWorkflow { report, source }) => {
+            if let Some(scan_report) = &report.scan_report {
+                render::scan_report(scan_report);
+            }
+            render::build_report(&report);
+            eprintln!("{source}");
+            Ok(ExitCode::from(1))
         }
         Err(error) => Err(error),
     }

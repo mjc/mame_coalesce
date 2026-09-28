@@ -5,6 +5,13 @@ pub enum Error {
     #[error("artifact was replaced, but its containing directory could not be synced: {error}")]
     ArtifactReplacedNotDurable { error: String },
 
+    #[error("build execution failed: {source}")]
+    BuildWorkflow {
+        report: Box<crate::app::BuildWorkflowReport>,
+        #[source]
+        source: Box<Self>,
+    },
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 

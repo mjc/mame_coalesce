@@ -92,9 +92,7 @@ pub fn build_report(report: &BuildWorkflowReport) {
             ArtifactOutcome::Failed { error } => {
                 warn!("failed output artifact: {}: {error}", artifact.path);
             }
-            ArtifactOutcome::Unattempted => {
-                warn!("output artifact was not attempted: {}", artifact.path);
-            }
+            ArtifactOutcome::Unattempted => {}
         }
     }
 }
@@ -123,6 +121,7 @@ mod tests {
             written_paths: Vec::new(),
             artifact_results: Vec::new(),
             build_report: BuildReport::default(),
+            scan_report: None,
         }
     }
 

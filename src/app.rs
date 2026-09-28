@@ -128,6 +128,7 @@ pub struct BuildWorkflowReport {
     pub written_paths: Vec<Utf8PathBuf>,
     pub artifact_results: Vec<ArtifactResult>,
     pub build_report: BuildReport,
+    pub scan_report: Option<SourceScanReport>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -654,10 +655,10 @@ pub fn build(
             .collect::<Vec<_>>()
     };
     let build_report = plan.report.clone();
-    let (written_paths, artifact_results) =
-        if request.dry_run || plan.report.outcome != PlanOutcome::Ready {
-            (Vec::new(), unattempted())
-        } else {
+    let execution = if request.dry_run || plan.report.outcome != PlanOutcome::Ready {
+        Ok((Vec::new(), unattempted()))
+    } else {
+        (|| {
             let source_root = request.source_path.canonicalize_utf8()?;
             crate::build::validation::ensure_sources_disjoint_from_destination(
                 &[source_root.as_path()],
@@ -670,13 +671,29 @@ pub fn build(
                 .filter(|result| result.outcome == ArtifactOutcome::Completed)
                 .map(|result| Utf8PathBuf::from(&result.path))
                 .collect::<Vec<_>>();
-            (paths, results)
-        };
+            Ok((paths, results))
+        })()
+    };
+    let (written_paths, artifact_results) = match execution {
+        Ok(execution) => execution,
+        Err(source) => {
+            return Err(crate::Error::BuildWorkflow {
+                report: Box::new(BuildWorkflowReport {
+                    written_paths: Vec::new(),
+                    artifact_results: unattempted(),
+                    build_report,
+                    scan_report: None,
+                }),
+                source: Box::new(source),
+            });
+        }
+    };
 
     Ok(BuildWorkflowReport {
         written_paths,
         artifact_results,
         build_report,
+        scan_report: None,
     })
 }
 
@@ -725,8 +742,152 @@ pub fn run_with_progress(
             dat_path: request.dat_path.clone(),
         },
     )?;
-    scan_source_with_progress(database, &source_scan_request_from_run(request), progress)?;
-    build(database, &build_workflow_request_from_run(request))
+    let scan_report =
+        scan_source_with_progress(database, &source_scan_request_from_run(request), progress)?;
+    match build(database, &build_workflow_request_from_run(request)) {
+        Ok(mut report) => {
+            report.scan_report = Some(scan_report);
+            Ok(report)
+        }
+        Err(crate::Error::BuildWorkflow { mut report, source }) => {
+            report.scan_report = Some(scan_report);
+            Err(crate::Error::BuildWorkflow { report, source })
+        }
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn run_reports_scans_and_plan_diagnostics_when_an_artifact_fails()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let root = Utf8PathBuf::try_from(temp.path().to_path_buf())?;
+        let dat_path = root.join("catalog.dat");
+        let source_path = root.join("roms");
+        let destination_path = root.join("output-file");
+        std::fs::create_dir(&source_path)?;
+        std::fs::write(source_path.join("game.rom"), b"abc")?;
+        std::fs::write(
+            &dat_path,
+            r#"<?xml version="1.0"?><datafile><header><name>Fixture</name></header><game name="game"><rom name="game.rom" size="3" crc="352441c2" md5="900150983cd24fb0d6963f7d28e17f72" sha1="a9993e364706816aba3e25717850c26c9cd0d89d"/></game></datafile>"#,
+        )?;
+        std::fs::write(&destination_path, b"not a directory")?;
+
+        let database = Database::in_memory()?;
+        let report = run(
+            &database,
+            &RunWorkflowRequest {
+                dat_path: dat_path.clone(),
+                source_path: source_path.clone(),
+                destination_path,
+                mode: BuildMode::PerGame,
+                compression: ZipCompression::Deflate,
+                jobs: 1,
+                dry_run: false,
+                strict: false,
+            },
+        )?;
+        let scan = report
+            .scan_report
+            .as_ref()
+            .ok_or("completed scan missing from artifact failure report")?;
+        assert_eq!(scan.observation_count, 1);
+        assert_eq!(scan.associated_rom_count, 1);
+        assert_eq!(report.build_report.matched_roms, 1);
+        assert_eq!(report.artifact_results.len(), 1);
+        assert!(matches!(
+            report.artifact_results[0].outcome,
+            ArtifactOutcome::Failed { .. }
+        ));
+
+        std::fs::write(source_path.join("game.rom"), b"different")?;
+        let report = run(
+            &database,
+            &RunWorkflowRequest {
+                dat_path,
+                source_path,
+                destination_path: root.join("dry-run-output"),
+                mode: BuildMode::PerGame,
+                compression: ZipCompression::Deflate,
+                jobs: 1,
+                dry_run: true,
+                strict: false,
+            },
+        )?;
+        let scan = report
+            .scan_report
+            .ok_or("successful run missing its scan report")?;
+        assert_eq!(scan.observation_count, 1);
+        assert_eq!(scan.associated_rom_count, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn planning_from_in_memory_cache_does_not_create_or_write_outputs()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let root = Utf8PathBuf::try_from(temp.path().to_path_buf())?;
+        let dat_path = root.join("catalog.dat");
+        let source_path = root.join("roms");
+        let destination_path = root.join("outputs");
+        std::fs::create_dir(&source_path)?;
+        std::fs::write(source_path.join("game.rom"), b"abc")?;
+        std::fs::write(
+            &dat_path,
+            r#"<?xml version="1.0"?><datafile><header><name>Fixture</name></header><game name="game"><rom name="game.rom" size="3" crc="352441c2" md5="900150983cd24fb0d6963f7d28e17f72" sha1="a9993e364706816aba3e25717850c26c9cd0d89d"/></game></datafile>"#,
+        )?;
+        let database = Database::in_memory()?;
+        import_dat(
+            &database,
+            &DatImportRequest {
+                dat_path: dat_path.clone(),
+            },
+        )?;
+        let progress_events = std::sync::Mutex::new(Vec::new());
+        scan_source_with_progress(
+            &database,
+            &SourceScanRequest {
+                source_path: source_path.clone(),
+                jobs: 1,
+            },
+            &|event| {
+                progress_events
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(event);
+            },
+        )?;
+        let progress_events = progress_events
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(
+            progress_events,
+            vec![
+                ScanProgressEvent::Started { files: 1 },
+                ScanProgressEvent::Advanced
+            ]
+        );
+
+        let plan = plan_build(
+            &database,
+            &BuildPlanRequest {
+                dat_path,
+                source_path,
+                mode: BuildMode::PerGame,
+                missing_policy: MissingContentPolicy::RequireComplete,
+            },
+        )?;
+
+        assert_eq!(plan.report.outcome, PlanOutcome::Ready);
+        assert_eq!(plan.report.matched_roms, 1);
+        assert_eq!(plan.groups.len(), 1);
+        assert!(!destination_path.exists());
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
