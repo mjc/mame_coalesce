@@ -45,9 +45,9 @@ impl std::fmt::Display for PlanIssue {
             PlanIssueKind::DuplicateEntry(_) => "duplicate zip entry name",
             PlanIssueKind::EntryFileDirectoryConflict => "entry file/directory path conflict",
         };
-        write!(f, "{label}: {}", self.path.as_str())?;
+        write!(f, "{label}: {:?}", self.path.as_str())?;
         if let Some(other) = &self.conflicts_with {
-            write!(f, " conflicts with {}", other.as_str())?;
+            write!(f, " conflicts with {:?}", other.as_str())?;
         }
         if let PlanIssueKind::DuplicateEntry(relation) = self.kind {
             write!(f, " ({relation:?})")?;
@@ -471,18 +471,31 @@ pub(crate) fn checked_plan_destination(
     destination: &Utf8Path,
 ) -> crate::Result<CheckedPlanDestination> {
     let mut source_roots = BTreeSet::new();
-    let mut source_paths = BTreeMap::new();
+    let mut canonical_roots = BTreeMap::<String, Utf8PathBuf>::new();
+    let mut source_paths = BTreeMap::<String, Utf8PathBuf>::new();
     for entry in plan.groups.iter().flat_map(|group| &group.entries) {
-        let declared_root = Utf8Path::new(entry.source.source_root.as_str()).canonicalize_utf8()?;
+        let root_key = entry.source.source_root.as_str();
+        let declared_root = if let Some(root) = canonical_roots.get(root_key) {
+            root.clone()
+        } else {
+            let root = Utf8Path::new(root_key).canonicalize_utf8()?;
+            canonical_roots.insert(root_key.to_owned(), root.clone());
+            root
+        };
         let planned_path = source_location_path(&entry.source.location);
-        let source_path = canonicalize_destination(Utf8Path::new(planned_path))?;
-        if !source_path.starts_with(&declared_root) {
+        let source_entry = source_entry_path(Utf8Path::new(planned_path))?;
+        if !source_entry.starts_with(&declared_root) {
             return Err(crate::Error::InvalidPath(format!(
-                "plan source is outside its declared source root: source={source_path} root={declared_root}"
+                "plan source is outside its declared source root: source={source_entry} root={declared_root}"
             )));
         }
+        if !source_paths.contains_key(planned_path) {
+            source_paths.insert(
+                planned_path.to_owned(),
+                canonicalize_destination(Utf8Path::new(planned_path))?,
+            );
+        }
         source_roots.insert(declared_root);
-        source_paths.insert(planned_path.to_owned(), source_path);
     }
 
     let mut checked_sources = source_roots.clone();
@@ -508,6 +521,16 @@ fn source_location_path(location: &SourceLocation) -> &str {
     }
 }
 
+fn source_entry_path(path: &Utf8Path) -> crate::Result<Utf8PathBuf> {
+    let parent = path.parent().ok_or_else(|| {
+        crate::Error::InvalidPath(format!("source path has no parent directory: {path}"))
+    })?;
+    let name = path.file_name().ok_or_else(|| {
+        crate::Error::InvalidPath(format!("source path has no file name: {path}"))
+    })?;
+    Ok(canonicalize_destination(parent)?.join(name))
+}
+
 pub(crate) fn canonicalize_destination(destination: &Utf8Path) -> crate::Result<Utf8PathBuf> {
     let absolute = if destination.is_absolute() {
         destination.to_path_buf()
@@ -515,6 +538,15 @@ pub(crate) fn canonicalize_destination(destination: &Utf8Path) -> crate::Result<
         Utf8PathBuf::try_from(std::env::current_dir()?.join(destination))
             .map_err(|_| crate::Error::InvalidPath("destination path is not UTF-8".to_owned()))?
     };
+    match fs::canonicalize(absolute.as_std_path()) {
+        Ok(canonical) => {
+            return Utf8PathBuf::try_from(canonical).map_err(|_| {
+                crate::Error::InvalidPath("destination path is not UTF-8".to_owned())
+            });
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
     let mut resolved = PathBuf::new();
     for component in absolute.as_std_path().components() {
         match component {
@@ -574,6 +606,20 @@ mod tests {
             path: LogicalPath::new(path),
             entries,
         }
+    }
+
+    #[test]
+    fn plan_issue_display_escapes_control_characters() {
+        let issue = PlanIssue {
+            kind: PlanIssueKind::UnsafeGroupPath,
+            path: LogicalPath::new("bad\u{1b}[31m"),
+            conflicts_with: Some(LogicalPath::new("other\n")),
+        };
+
+        assert_eq!(
+            issue.to_string(),
+            r#"unsafe output zip file name: "bad\u{1b}[31m" conflicts with "other\n""#
+        );
     }
 
     fn entry(path: &str, expected: ExpectedEvidence) -> LogicalEntry {

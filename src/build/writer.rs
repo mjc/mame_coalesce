@@ -1473,7 +1473,7 @@ mod tests {
         let destination = root.join("output");
         fs::create_dir(&source_root)?;
         fs::create_dir(&destination)?;
-        let original = source_root.join("original.rom");
+        let original = root.join("original.rom");
         let replacement = root.join("replacement.rom");
         let link = source_root.join("game.rom");
         fs::write(&original, b"planned source")?;
