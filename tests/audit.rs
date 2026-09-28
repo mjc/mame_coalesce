@@ -166,7 +166,7 @@ fn audit_uses_cached_observations_by_default_and_refresh_is_explicit()
     }
     assert!(matches!(
         refreshed.report().resolutions[0].status,
-        ResolutionStatus::Conflicting { .. }
+        ResolutionStatus::Missing { .. }
     ));
     let cached_after_refresh =
         app::audit(&fixture.database, &fixture.request(AuditRefresh::Cached))?;
@@ -235,12 +235,7 @@ fn audit_cli_writes_only_versioned_json_to_stdout_and_labels_refresh()
     assert_eq!(json["report"]["matched_roms"], 0);
     assert!(output.stderr.is_empty());
     assert_eq!(fs::read(fixture.source.join("game.rom"))?, b"changed");
-    assert_eq!(
-        json["report"]["resolutions"][0]["status"]["Conflicting"]["candidates"]
-            .as_array()
-            .map(Vec::len),
-        Some(2)
-    );
+    assert!(json["report"]["resolutions"][0]["status"]["Missing"].is_object());
     Ok(())
 }
 

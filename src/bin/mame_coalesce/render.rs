@@ -149,6 +149,12 @@ pub fn audit_report(report: &AuditReport) -> String {
         build.missing_roms.len(),
         build.duplicate_matches.len()
     );
+    if build.outcome != PlanOutcome::Ready {
+        let _ = writeln!(output, "Plan readiness: {:?}", build.outcome);
+        for issue in &build.validation_issues {
+            let _ = writeln!(output, "  validation issue: {issue}");
+        }
+    }
     for resolution in &build.resolutions {
         render_audit_resolution(&mut output, resolution);
     }
@@ -190,7 +196,7 @@ fn render_audit_resolution(
                 );
             }
         }
-        ResolutionStatus::AmbiguousWeak {
+        ResolutionStatus::Ambiguous {
             candidates,
             omitted_candidates,
         } => {
@@ -301,7 +307,7 @@ fn render_observed(output: &mut String, evidence: &mame_coalesce::domain::Observ
 }
 
 pub fn audit_exit_code(report: &AuditReport) -> std::process::ExitCode {
-    if report.report().missing_roms.is_empty() {
+    if report.report().missing_roms.is_empty() && report.report().outcome == PlanOutcome::Ready {
         std::process::ExitCode::SUCCESS
     } else {
         std::process::ExitCode::from(1)
@@ -311,7 +317,10 @@ pub fn audit_exit_code(report: &AuditReport) -> std::process::ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mame_coalesce::domain::{BuildReport, PlanBlockReason};
+    use mame_coalesce::{
+        build::validation::{PlanIssue, PlanIssueKind},
+        domain::{AuditReport, BuildReport, LogicalPath, ObservationBasis, PlanBlockReason},
+    };
 
     /// Construct a minimal ready report for exit-status mapping tests.
     fn report() -> BuildWorkflowReport {
@@ -354,5 +363,27 @@ mod tests {
         let mut blocked = report();
         blocked.build_report.outcome = PlanOutcome::Blocked(PlanBlockReason::MissingContent);
         assert_eq!(exit_code(&blocked), std::process::ExitCode::from(2));
+    }
+
+    #[test]
+    fn audit_reports_blocked_plan_and_returns_unresolved_status() {
+        let report = AuditReport::new(
+            ObservationBasis::Cached,
+            BuildReport {
+                validation_issues: vec![PlanIssue {
+                    kind: PlanIssueKind::UnsafeGroupPath,
+                    path: LogicalPath::new("../unsafe.zip"),
+                    conflicts_with: None,
+                }],
+                outcome: PlanOutcome::Blocked(PlanBlockReason::InvalidPlan),
+                ..BuildReport::default()
+            },
+        );
+
+        let human = audit_report(&report);
+
+        assert_eq!(audit_exit_code(&report), std::process::ExitCode::from(1));
+        assert!(human.contains("Plan readiness: Blocked(InvalidPlan)"));
+        assert!(human.contains("validation issue: unsafe output zip file name"));
     }
 }
