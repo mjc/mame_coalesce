@@ -100,6 +100,43 @@ fn whole_asset_size_conflict_blocks_exact_content_identity() {
 }
 
 #[test]
+fn conflicting_whole_asset_digest_suppresses_exact_content_candidate() {
+    let left_catalog = CatalogKey::new("publisher-one");
+    let right_catalog = CatalogKey::new("publisher-two");
+    let left_key = snapshot_key(&left_catalog, b"left weak conflict");
+    let right_key = snapshot_key(&right_catalog, b"right weak conflict");
+    let left = RequirementSnapshot {
+        catalog: left_catalog,
+        snapshot: left_key.clone(),
+        requirements: vec![asset(
+            &left_key,
+            "left",
+            "same.bin",
+            Some([1; 4]),
+            Some([4; 20]),
+        )],
+    };
+    let right = RequirementSnapshot {
+        catalog: right_catalog,
+        snapshot: right_key.clone(),
+        requirements: vec![asset(
+            &right_key,
+            "right",
+            "same.bin",
+            Some([2; 4]),
+            Some([4; 20]),
+        )],
+    };
+
+    let report = reconcile_requirements(&left, &right, &[]);
+    let outcome = &report.outcomes[0];
+
+    assert_eq!(outcome.status, ReconciliationStatus::Compatible);
+    assert_eq!(outcome.evidence.contradictions, [EvidenceField::Crc]);
+    assert!(outcome.relationship_candidate().is_none());
+}
+
+#[test]
 fn weak_partial_evidence_is_only_a_candidate_and_scope_mismatch_is_unknown() {
     let crc_only = ExpectedEvidence {
         scope: EvidenceScope::WholeAsset,
@@ -535,6 +572,7 @@ fn mame_software_disk_reconciliation_preserves_chd_header_scope()
         Some(EvidenceScope::ChdHeaderSha1)
     );
     assert_eq!(disk.status, ReconciliationStatus::Compatible);
+    assert!(disk.relationship_candidate().is_none());
     Ok(())
 }
 

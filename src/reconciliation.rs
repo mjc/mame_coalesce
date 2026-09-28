@@ -190,6 +190,17 @@ impl RequirementReconciliation {
         let (Some(left), Some(right)) = (&self.left, &self.right) else {
             return None;
         };
+        let (Some(left_expected), Some(right_expected)) =
+            (&self.left_expected, &self.right_expected)
+        else {
+            return None;
+        };
+        if left_expected.scope != crate::domain::EvidenceScope::WholeAsset
+            || right_expected.scope != crate::domain::EvidenceScope::WholeAsset
+            || !self.evidence.contradictions.is_empty()
+        {
+            return None;
+        }
         let supporting_assertions = self
             .relationship_evidence
             .iter()
