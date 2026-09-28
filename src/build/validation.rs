@@ -216,20 +216,7 @@ pub(crate) fn inspect_groups(output_groups: &[crate::domain::OutputGroup]) -> Ve
         }
     }
 
-    issues.extend(group_artifact_conflicts(plan));
-    let group_paths = groups_by_key.keys().cloned().collect::<BTreeSet<_>>();
-    for path in &group_paths {
-        for slash in path.match_indices('/').map(|(index, _)| index) {
-            let prefix = &path[..slash];
-            if group_paths.contains(prefix) {
-                issues.push(PlanIssue {
-                    kind: PlanIssueKind::GroupFileDirectoryConflict,
-                    path: LogicalPath::new(path),
-                    conflicts_with: Some(LogicalPath::new(prefix)),
-                });
-            }
-        }
-    }
+    issues.extend(group_artifact_conflicts(output_groups));
 
     issues.sort_by(|left, right| {
         left.path
@@ -354,9 +341,8 @@ fn evidence_projection(evidence: &ExpectedEvidence, mask: u8) -> Vec<u8> {
     key
 }
 
-fn group_artifact_conflicts(plan: &BuildPlan) -> Vec<PlanIssue> {
-    let artifact_paths = plan
-        .groups
+fn group_artifact_conflicts(groups: &[crate::domain::OutputGroup]) -> Vec<PlanIssue> {
+    let artifact_paths = groups
         .iter()
         .map(|group| format!("{}.zip", group.path.as_str()).to_ascii_lowercase())
         .collect::<BTreeSet<_>>();

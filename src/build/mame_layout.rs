@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 use crate::{
     build::validation::PlanIssue,
     domain::{
-        EvidenceScope, ExpectedEvidence, LogicalEntry, LogicalPath, OutputGroup, RequirementKey,
-        SetName, SnapshotKey,
+        CatalogKey, EvidenceScope, ExpectedEvidence, LogicalEntry, LogicalPath, OutputGroup,
+        RequirementKey, SetName, SnapshotKey,
     },
     machine_dependencies::{DependencyClosure, DependencyDiagnostic},
 };
@@ -25,6 +25,8 @@ pub enum MameSetLayoutPolicy {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolvedMachineSet {
     pub snapshot: SnapshotKey,
+    /// Catalog identity used by every contained requirement key.
+    pub catalog: CatalogKey,
     pub name: SetName,
     /// Preserved source assertion; it does not add the parent to runtime closure.
     pub parent_clone: Option<SetName>,
@@ -87,9 +89,10 @@ impl AssetRequirementIdentity {
 
 impl ResolvedMachineSet {
     #[must_use]
-    pub const fn new(snapshot: SnapshotKey, name: SetName) -> Self {
+    pub const fn new(snapshot: SnapshotKey, catalog: CatalogKey, name: SetName) -> Self {
         Self {
             snapshot,
+            catalog,
             name,
             parent_clone: None,
             entries: Vec::new(),
@@ -135,6 +138,12 @@ pub enum MameLayoutDiagnostic {
         set: SetName,
         expected: SnapshotKey,
         actual: SnapshotKey,
+    },
+    ResolvedSetCatalogMismatch {
+        root: SetName,
+        set: SetName,
+        expected: CatalogKey,
+        actual: CatalogKey,
     },
     Dependency {
         root: SetName,
@@ -338,6 +347,10 @@ fn plan_root_group(
     sets_by_name: &BTreeMap<SetName, Vec<&ResolvedMachineSet>>,
     plan: &mut MameLayoutPlan,
 ) -> OutputGroup {
+    let expected_catalog = sets_by_key
+        .get(&(closure.snapshot.clone(), root.clone()))
+        .filter(|matches| matches.len() == 1)
+        .map(|matches| matches[0].catalog.clone());
     for diagnostic in &closure.diagnostics {
         plan.diagnostics.insert(MameLayoutDiagnostic::Dependency {
             root: root.clone(),
@@ -348,7 +361,7 @@ fn plan_root_group(
     let group_path = LogicalPath::new(root.as_str());
     let mut entries = BTreeMap::<LogicalPath, LogicalEntry>::new();
     let mut case_insensitive_paths = BTreeMap::<String, LogicalPath>::new();
-    let mut expected_evidence_by_path = BTreeMap::<LogicalPath, Vec<ExpectedEvidence>>::new();
+    let mut expected_evidence_by_path = BTreeMap::<LogicalPath, EvidenceSummary>::new();
     let mut provenance = BTreeMap::<LogicalPath, BTreeSet<RequirementKey>>::new();
     for set_name in &closure.sets {
         let key = (closure.snapshot.clone(), set_name.clone());
@@ -367,6 +380,18 @@ fn plan_root_group(
             continue;
         }
         let resolved_set = matches[0];
+        if let Some(expected_catalog) = &expected_catalog
+            && &resolved_set.catalog != expected_catalog
+        {
+            plan.diagnostics
+                .insert(MameLayoutDiagnostic::ResolvedSetCatalogMismatch {
+                    root: root.clone(),
+                    set: set_name.clone(),
+                    expected: expected_catalog.clone(),
+                    actual: resolved_set.catalog.clone(),
+                });
+            continue;
+        }
         for entry in effective_set_entries(root, resolved_set, sets_by_key, sets_by_name, plan) {
             insert_entry(
                 root,
@@ -502,7 +527,18 @@ fn resolve_clone_lineage<'set>(
                 });
             break;
         }
-        child = matches[0];
+        let parent = matches[0];
+        if parent.catalog != selected.catalog {
+            plan.diagnostics
+                .insert(MameLayoutDiagnostic::ResolvedSetCatalogMismatch {
+                    root: root.clone(),
+                    set: parent_name.clone(),
+                    expected: selected.catalog.clone(),
+                    actual: parent.catalog.clone(),
+                });
+            break;
+        }
+        child = parent;
         seen.insert(child.name.clone(), lineage.len());
         lineage.push(child);
     }
@@ -618,6 +654,7 @@ fn validate_asset_identity(
     diagnostics: &mut BTreeSet<MameLayoutDiagnostic>,
 ) -> bool {
     if identity.snapshot != set.snapshot
+        || requirement.set().catalog() != &set.catalog
         || !identity.set.as_str().eq(set.name.as_str())
         || identity.asset != requirement.rom_name()
         || identity.component_order < 0
@@ -855,10 +892,59 @@ fn content_evidence_conflicts(
 }
 
 fn has_matching_content_digest(left: &ExpectedEvidence, right: &ExpectedEvidence) -> bool {
-    left.scope != EvidenceScope::Unknown
-        && left.scope == right.scope
+    left.scope == EvidenceScope::WholeAsset
+        && right.scope == EvidenceScope::WholeAsset
         && (matches!((left.md5, right.md5), (Some(left), Some(right)) if left == right)
             || matches!((left.sha1, right.sha1), (Some(left), Some(right)) if left == right))
+}
+
+#[derive(Clone, Copy)]
+struct EvidenceSummary {
+    scope: EvidenceScope,
+    size: Option<u64>,
+    crc: Option<crate::domain::Crc32Digest>,
+    md5: Option<crate::domain::Md5Digest>,
+    sha1: Option<[u8; 20]>,
+}
+
+impl EvidenceSummary {
+    const fn from_expected(expected: &ExpectedEvidence) -> Self {
+        Self {
+            scope: expected.scope,
+            size: expected.size,
+            crc: expected.crc,
+            md5: expected.md5,
+            sha1: expected.sha1,
+        }
+    }
+
+    fn conflicts_with(self, incoming: &ExpectedEvidence) -> Vec<ContentEvidenceConflict> {
+        content_evidence_conflicts(
+            &ExpectedEvidence {
+                scope: self.scope,
+                size: self.size,
+                crc: self.crc,
+                md5: self.md5,
+                sha1: self.sha1,
+                ..ExpectedEvidence::default()
+            },
+            incoming,
+        )
+    }
+
+    fn supports_sha1_coalescing(self, incoming: &ExpectedEvidence) -> bool {
+        self.scope == EvidenceScope::WholeAsset
+            && incoming.scope == EvidenceScope::WholeAsset
+            && self.sha1.is_some()
+            && self.sha1 == incoming.sha1
+    }
+
+    fn include(&mut self, incoming: &ExpectedEvidence) {
+        self.size = self.size.or(incoming.size);
+        self.crc = self.crc.or(incoming.crc);
+        self.md5 = self.md5.or(incoming.md5);
+        self.sha1 = self.sha1.or(incoming.sha1);
+    }
 }
 
 fn insert_entry(
@@ -866,7 +952,7 @@ fn insert_entry(
     incoming: &LogicalEntry,
     entries: &mut BTreeMap<LogicalPath, LogicalEntry>,
     case_insensitive_paths: &mut BTreeMap<String, LogicalPath>,
-    expected_evidence_by_path: &mut BTreeMap<LogicalPath, Vec<ExpectedEvidence>>,
+    expected_evidence_by_path: &mut BTreeMap<LogicalPath, EvidenceSummary>,
     provenance: &mut BTreeMap<LogicalPath, BTreeSet<RequirementKey>>,
     diagnostics: &mut BTreeSet<MameLayoutDiagnostic>,
 ) {
@@ -875,7 +961,10 @@ fn insert_entry(
     let Some(existing_path) = case_insensitive_paths.get(&folded_path) else {
         case_insensitive_paths.insert(folded_path, path.clone());
         entries.insert(path.clone(), incoming.clone());
-        expected_evidence_by_path.insert(path.clone(), vec![incoming.expected.clone()]);
+        expected_evidence_by_path.insert(
+            path.clone(),
+            EvidenceSummary::from_expected(&incoming.expected),
+        );
         provenance
             .entry(path)
             .or_default()
@@ -885,7 +974,10 @@ fn insert_entry(
     let Some(existing) = entries.get(existing_path) else {
         case_insensitive_paths.insert(folded_path, path.clone());
         entries.insert(path.clone(), incoming.clone());
-        expected_evidence_by_path.insert(path.clone(), vec![incoming.expected.clone()]);
+        expected_evidence_by_path.insert(
+            path.clone(),
+            EvidenceSummary::from_expected(&incoming.expected),
+        );
         provenance
             .entry(path)
             .or_default()
@@ -907,22 +999,16 @@ fn insert_entry(
     }
     let existing_evidence = expected_evidence_by_path
         .get(existing_path)
-        .map_or_else(|| vec![existing.expected.clone()], Clone::clone);
-    let evidence_conflicts: BTreeSet<_> = existing_evidence
-        .iter()
-        .flat_map(|expected| content_evidence_conflicts(expected, &incoming.expected))
-        .collect();
-    if existing_evidence.iter().all(|expected| {
-        expected.scope != EvidenceScope::Unknown
-            && expected.sha1.is_some()
-            && expected.sha1 == incoming.expected.sha1
-    }) && !existing_evidence.is_empty()
+        .copied()
+        .unwrap_or_else(|| EvidenceSummary::from_expected(&existing.expected));
+    let evidence_conflicts = existing_evidence.conflicts_with(&incoming.expected);
+    if existing_evidence.supports_sha1_coalescing(&incoming.expected)
         && evidence_conflicts.is_empty()
     {
         expected_evidence_by_path
             .entry(existing_path.clone())
-            .or_default()
-            .push(incoming.expected.clone());
+            .and_modify(|summary| summary.include(&incoming.expected))
+            .or_insert_with(|| EvidenceSummary::from_expected(&incoming.expected));
         if existing.requirement != incoming.requirement {
             let requirements = provenance.entry(path).or_default();
             requirements.insert(existing.requirement.clone());
@@ -955,7 +1041,8 @@ mod tests {
         domain::{
             ArchiveBackend, ArchiveMemberSelector, CatalogKey, Crc32Digest, EvidenceProvenance,
             EvidenceScope, ExpectedEvidence, MatchingPolicy, ObservedContent, ScanProvenance,
-            SelectionProvenance, SetKey, SourceFile, SourceLocation, SourceRoot,
+            SelectionProvenance, SetKey, SourceFile, SourceLocation, SourcePhysicalPath,
+            SourceRoot,
         },
         machine_dependencies::{
             MachineDependency, MachineDependencyCatalog, MachineDependencyKind, MachineSet,
@@ -987,13 +1074,15 @@ mod tests {
 
     fn entry(set: &str, name: &str, digest: Option<u8>, merge: Option<&str>) -> LogicalEntry {
         let sha1 = digest.map(|byte| [byte; 20]);
+        let location = SourceLocation::BareFile {
+            path: format!("/roms/{name}"),
+        };
         LogicalEntry {
             path: LogicalPath::new(name),
             source: SourceFile {
                 source_root: SourceRoot::new("/roms"),
-                location: SourceLocation::BareFile {
-                    path: format!("/roms/{name}"),
-                },
+                physical_path: SourcePhysicalPath::from_location(&location),
+                location,
                 observed: ObservedContent {
                     scope: EvidenceScope::WholeAsset,
                     provenance: EvidenceProvenance::Computed,
@@ -1023,12 +1112,17 @@ mod tests {
                 policy: MatchingPolicy::Sha1Compatibility,
                 strength: MatchStrength::Sha1,
                 assessments: Vec::new(),
+                omitted_assessments: 0,
             },
         }
     }
 
     fn resolved(name: &str, entries: Vec<LogicalEntry>) -> ResolvedMachineSet {
-        let mut set = ResolvedMachineSet::new(snapshot(), SetName::new(name));
+        let mut set = ResolvedMachineSet::new(
+            snapshot(),
+            CatalogKey::new("layout-fixture"),
+            SetName::new(name),
+        );
         set.entries = entries
             .into_iter()
             .enumerate()
@@ -1247,6 +1341,29 @@ mod tests {
                 if conflicts == &[ContentEvidenceConflict::InsufficientMatchEvidence]
         )));
         assert_eq!(names(&plan, "clone"), ["clone-game.rom", "parent-game.rom"]);
+    }
+
+    #[test]
+    fn non_whole_asset_digests_do_not_validate_merges() {
+        for scope in [EvidenceScope::DiskData, EvidenceScope::ChdHeaderSha1] {
+            let mut child = entry("clone", "clone-game.rom", Some(5), Some("parent-game.rom"));
+            child.expected.scope = scope;
+            let mut parent = entry("parent", "parent-game.rom", Some(5), None);
+            parent.expected.scope = scope;
+
+            let plan = clone_plan(vec![child], vec![parent]);
+
+            assert!(
+                !plan.is_complete(),
+                "{scope:?} must not prove file identity"
+            );
+            assert!(plan.diagnostics.iter().any(|diagnostic| matches!(
+                diagnostic,
+                MameLayoutDiagnostic::MergeContentMismatch { conflicts, .. }
+                    if conflicts == &[ContentEvidenceConflict::InsufficientMatchEvidence]
+            )));
+            assert_eq!(names(&plan, "clone"), ["clone-game.rom", "parent-game.rom"]);
+        }
     }
 
     #[test]
@@ -1623,6 +1740,100 @@ mod tests {
     }
 
     #[test]
+    fn rejects_asset_requirements_from_another_catalog() {
+        let graph = MachineDependencyCatalog::new(snapshot(), vec![MachineSet::new("root")]);
+        let closure = graph.resolve(&SetName::new("root"));
+        let mut foreign = entry("root", "asset.rom", Some(1), None);
+        foreign.requirement = RequirementKey::new(
+            SetKey::new(CatalogKey::new("foreign-catalog"), "root"),
+            "asset.rom",
+        );
+
+        let plan = plan_mame_layout(
+            MameSetLayoutPolicy::NonMerged,
+            &snapshot(),
+            &[SetName::new("root")],
+            &[closure],
+            &[resolved("root", vec![foreign])],
+        );
+
+        assert!(!plan.is_complete());
+        assert!(plan.diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic,
+            MameLayoutDiagnostic::InvalidAssetIdentity { requirement, .. }
+                if requirement.set().catalog() == &CatalogKey::new("foreign-catalog")
+        )));
+    }
+
+    #[test]
+    fn rejects_dependency_sets_from_another_catalog() {
+        let mut root = MachineSet::new("root");
+        root.dependencies.push(MachineDependency {
+            kind: MachineDependencyKind::RomOf,
+            target: SetName::new("bios"),
+        });
+        let closure =
+            MachineDependencyCatalog::new(snapshot(), vec![root, MachineSet::new("bios")])
+                .resolve(&SetName::new("root"));
+        let mut foreign_bios = resolved("bios", vec![entry("bios", "bios.rom", Some(2), None)]);
+        foreign_bios.catalog = CatalogKey::new("foreign-catalog");
+
+        let plan = plan_mame_layout(
+            MameSetLayoutPolicy::NonMerged,
+            &snapshot(),
+            &[SetName::new("root")],
+            &[closure],
+            &[resolved("root", Vec::new()), foreign_bios],
+        );
+
+        assert!(!plan.is_complete());
+        assert!(plan.diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic,
+            MameLayoutDiagnostic::ResolvedSetCatalogMismatch {
+                set,
+                expected,
+                actual,
+                ..
+            } if set.as_str() == "bios"
+                && expected == &CatalogKey::new("layout-fixture")
+                && actual == &CatalogKey::new("foreign-catalog")
+        )));
+    }
+
+    #[test]
+    fn rejects_clone_parents_from_another_catalog() {
+        let closure = MachineDependencyCatalog::new(snapshot(), vec![MachineSet::new("root")])
+            .resolve(&SetName::new("root"));
+        let mut root = resolved("root", vec![entry("root", "root.rom", Some(1), None)]);
+        root.parent_clone = Some(SetName::new("parent"));
+        let mut foreign_parent =
+            resolved("parent", vec![entry("parent", "parent.rom", Some(2), None)]);
+        foreign_parent.catalog = CatalogKey::new("foreign-catalog");
+
+        let plan = plan_mame_layout(
+            MameSetLayoutPolicy::NonMerged,
+            &snapshot(),
+            &[SetName::new("root")],
+            &[closure],
+            &[root, foreign_parent],
+        );
+
+        assert!(!plan.is_complete());
+        assert!(plan.diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic,
+            MameLayoutDiagnostic::ResolvedSetCatalogMismatch {
+                set,
+                expected,
+                actual,
+                ..
+            } if set.as_str() == "parent"
+                && expected == &CatalogKey::new("layout-fixture")
+                && actual == &CatalogKey::new("foreign-catalog")
+        )));
+        assert_eq!(names(&plan, "root"), ["root.rom"]);
+    }
+
+    #[test]
     fn rejects_mismatched_and_duplicate_component_identities() {
         let closure = MachineDependencyCatalog::new(snapshot(), vec![MachineSet::new("root")])
             .resolve(&SetName::new("root"));
@@ -1838,6 +2049,48 @@ mod tests {
     }
 
     #[test]
+    fn non_whole_asset_sha1_does_not_coalesce_same_path_requirements() {
+        for scope in [EvidenceScope::DiskData, EvidenceScope::ChdHeaderSha1] {
+            let mut root = MachineSet::new("root");
+            root.dependencies = vec![MachineDependency {
+                kind: MachineDependencyKind::DeviceReference,
+                target: SetName::new("device"),
+            }];
+            let graph =
+                MachineDependencyCatalog::new(snapshot(), vec![root, MachineSet::new("device")]);
+            let closure = graph.resolve(&SetName::new("root"));
+            let mut root_entry = entry("root", "shared.rom", Some(8), None);
+            root_entry.expected.scope = scope;
+            let mut device_entry = entry("device", "shared.rom", Some(8), None);
+            device_entry.expected.scope = scope;
+
+            let plan = plan_mame_layout(
+                MameSetLayoutPolicy::NonMerged,
+                &snapshot(),
+                &[SetName::new("root")],
+                &[closure],
+                &[
+                    resolved("root", vec![root_entry]),
+                    resolved("device", vec![device_entry]),
+                ],
+            );
+
+            assert!(
+                !plan.is_complete(),
+                "{scope:?} must not prove file identity"
+            );
+            assert!(plan.diagnostics.iter().any(|diagnostic| matches!(
+                diagnostic,
+                MameLayoutDiagnostic::LogicalPathCollision {
+                    evidence: PathCollisionEvidence::InsufficientSha1,
+                    ..
+                }
+            )));
+            assert!(plan.coalesced_provenance.is_empty());
+        }
+    }
+
+    #[test]
     fn coalescing_compares_against_every_prior_requirement() {
         let graph = MachineDependencyCatalog::new(snapshot(), vec![MachineSet::new("root")]);
         let closure = graph.resolve(&SetName::new("root"));
@@ -1864,5 +2117,35 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    #[test]
+    fn coalesces_many_requirements_for_one_shared_path() {
+        const REQUIREMENTS: usize = 4_096;
+
+        let graph = MachineDependencyCatalog::new(snapshot(), vec![MachineSet::new("root")]);
+        let closure = graph.resolve(&SetName::new("root"));
+        let assets = (0..REQUIREMENTS)
+            .map(|index| {
+                let mut asset = entry("root", &format!("asset-{index}.rom"), Some(7), None);
+                asset.path = LogicalPath::new("shared.rom");
+                asset
+            })
+            .collect();
+
+        let plan = plan_mame_layout(
+            MameSetLayoutPolicy::NonMerged,
+            &snapshot(),
+            &[SetName::new("root")],
+            &[closure],
+            &[resolved("root", assets)],
+        );
+
+        assert!(plan.is_complete());
+        assert_eq!(plan.groups[0].entries.len(), 1);
+        assert_eq!(
+            plan.coalesced_provenance[0].requirements.len(),
+            REQUIREMENTS
+        );
     }
 }
