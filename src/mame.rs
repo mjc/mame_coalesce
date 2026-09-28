@@ -24,6 +24,8 @@ pub struct MameCatalog {
 pub struct Machine {
     pub name: String,
     pub parent: Option<String>,
+    pub rom_of: Option<String>,
+    pub sample_of: Option<String>,
     pub location: RecordLocation,
     pub metadata: BTreeMap<String, serde_json::Value>,
     pub assets: Vec<MachineAsset>,
@@ -270,6 +272,8 @@ fn machine_attribute_extensions(name: &str, node: &Element) -> Vec<XmlExtension>
                 "name",
                 "sourcefile",
                 "cloneof",
+                "romof",
+                "sampleof",
                 "isdevice",
                 "runnable",
                 "isbios",
@@ -295,6 +299,8 @@ fn machine_attribute_extensions(name: &str, node: &Element) -> Vec<XmlExtension>
 fn parse_machine(node: &Element) -> crate::Result<Machine> {
     let name = required(node, "name")?;
     let parent = node.attributes.get("cloneof").cloned();
+    let rom_of = node.attributes.get("romof").cloned();
+    let sample_of = node.attributes.get("sampleof").cloned();
     let mut metadata = BTreeMap::new();
     metadata.insert(
         "sourcefile".into(),
@@ -366,6 +372,8 @@ fn parse_machine(node: &Element) -> crate::Result<Machine> {
     Ok(Machine {
         name: name.into(),
         parent,
+        rom_of,
+        sample_of,
         location: node.location,
         metadata,
         assets,

@@ -903,7 +903,7 @@ fn mame_relationships_resolve_component_keys_and_keep_device_locations()
     let path = directory.path().join("mame-relationship-identity.xml");
     std::fs::write(
         &path,
-        "<mame>\n<machine name=\"parent\">\n<rom name=\"shared.bin\" size=\"1\" crc=\"12345678\"/>\n</machine>\n<machine name=\"clone\" cloneof=\"parent\">\n<device_ref name=\"sound\"/>\n<rom name=\"shared.bin\" merge=\"shared.bin\" size=\"1\" crc=\"12345678\"/>\n</machine>\n<machine name=\"sound\"/>\n</mame>",
+        "<mame>\n<machine name=\"clone-parent\"/>\n<machine name=\"rom-parent\">\n<rom name=\"shared.bin\" size=\"1\" crc=\"12345678\"/>\n</machine>\n<machine name=\"clone\" cloneof=\"clone-parent\" romof=\"rom-parent\">\n<device_ref name=\"sound\"/>\n<rom name=\"shared.bin\" merge=\"shared.bin\" size=\"1\" crc=\"12345678\"/>\n</machine>\n<machine name=\"sound\"/>\n</mame>",
     )?;
     let mut request = request(
         path,
@@ -922,8 +922,8 @@ fn mame_relationships_resolve_component_keys_and_keep_device_locations()
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<RelationshipKeyLocationRow>(&mut connection)?;
     assert_eq!(merge.subject_key, "[\"clone\",\"shared.bin\",0]");
-    assert_eq!(merge.target_key, "[\"parent\",\"shared.bin\",0]");
-    assert_eq!(merge.source_line, 7);
+    assert_eq!(merge.target_key, "[\"rom-parent\",\"shared.bin\",0]");
+    assert_eq!(merge.source_line, 8);
 
     let device = sql_query(
         "SELECT subject_key, target_key, source_line FROM relationship_assertions \
@@ -933,7 +933,22 @@ fn mame_relationships_resolve_component_keys_and_keep_device_locations()
     .get_result::<RelationshipKeyLocationRow>(&mut connection)?;
     assert_eq!(device.subject_key, "clone");
     assert_eq!(device.target_key, "sound");
-    assert_eq!(device.source_line, 6);
+    assert_eq!(device.source_line, 7);
+
+    let dependencies = sql_query(
+        "SELECT source_field || ':' || target_key AS value FROM relationship_assertions \
+         WHERE source_snapshot_key = ? AND subject_kind = 'catalog_set' AND subject_key = 'clone' \
+         AND relation_type = 'runtime_dependency' ORDER BY source_field",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .load::<TextRow>(&mut connection)?;
+    assert_eq!(
+        dependencies
+            .iter()
+            .map(|dependency| dependency.value.as_str())
+            .collect::<Vec<_>>(),
+        ["device_ref:sound", "romof:rom-parent"]
+    );
     Ok(())
 }
 
@@ -1825,11 +1840,18 @@ fn source_relationship_assertions_keep_snapshot_and_field_provenance()
     let runtime_claims = sql_query(
         "SELECT COUNT(*) AS count FROM relationship_assertions \
          WHERE source_snapshot_key = ? AND relation_type = 'runtime_dependency' \
-           AND source_field IN ('romof', 'sampleof')",
+           AND source_field IN ('romof', 'sampleof', 'device_ref')",
     )
     .bind::<Text, _>(snapshot_key.as_str())
     .get_result::<CountRow>(&mut connection)?;
-    assert_eq!(runtime_claims.count, 2);
+    assert_eq!(runtime_claims.count, 3);
+    let device_claim = sql_query(
+        "SELECT target_key AS value FROM relationship_assertions \
+         WHERE source_snapshot_key = ? AND source_field = 'device_ref'",
+    )
+    .bind::<Text, _>(snapshot_key.as_str())
+    .get_result::<TextRow>(&mut connection)?;
+    assert_eq!(device_claim.value, "fixture-sound");
 
     // An identical reimport reuses the immutable snapshot rather than duplicating its claims.
     app::import_catalog(

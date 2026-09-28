@@ -145,18 +145,25 @@ impl SnapshotData {
             sets.push(SnapshotSet {
                 name: game.name().into(), parent: game.cloneof().map(str::to_owned),
                 parent_field: game.cloneof().map(|_| "cloneof".to_owned()),
-                runtime_dependencies: [
-                    game.romof_opt().map(|name| SnapshotDependency {
+                runtime_dependencies: game
+                    .romof_opt()
+                    .map(|name| SnapshotDependency {
                         source_field: "romof".to_owned(),
                         target_name: name.to_owned(),
                         location,
-                    }),
-                    game.sampleof_opt().map(|name| SnapshotDependency {
+                    })
+                    .into_iter()
+                    .chain(game.sampleof_opt().map(|name| SnapshotDependency {
                         source_field: "sampleof".to_owned(),
                         target_name: name.to_owned(),
                         location,
-                    }),
-                ].into_iter().flatten().collect(),
+                    }))
+                    .chain(game.device_refs().map(|name| SnapshotDependency {
+                        source_field: "device_ref".to_owned(),
+                        target_name: name.to_owned(),
+                        location,
+                    }))
+                    .collect(),
                 metadata: serde_json::json!({"source_file": game.sourcefile_opt(), "is_bios": game.isbios_opt(), "rom_of": game.romof_opt(), "sample_of": game.sampleof_opt(), "board": game.board_opt(), "rebuild_to": game.rebuildto_opt(), "description": game.description_opt(), "year": game.year_opt(), "manufacturer": game.manufacturer_opt(), "device_refs": game.device_refs().collect::<Vec<_>>()}),
                 location, assets,
             });
@@ -196,6 +203,16 @@ impl SnapshotData {
                         target_name: reference.name.clone(),
                         location: reference.location,
                     })
+                    .chain(machine.rom_of.iter().map(|name| SnapshotDependency {
+                        source_field: "romof".to_owned(),
+                        target_name: name.clone(),
+                        location: machine.location,
+                    }))
+                    .chain(machine.sample_of.iter().map(|name| SnapshotDependency {
+                        source_field: "sampleof".to_owned(),
+                        target_name: name.clone(),
+                        location: machine.location,
+                    }))
                     .collect();
                 let assets = machine
                     .assets
@@ -939,7 +956,13 @@ fn persist_asset_merge_relationship(
     asset: &SnapshotAsset,
     component_order: i64,
 ) -> crate::Result<()> {
-    let (Some(parent), Some(merged_name)) = (&set.parent, &asset.merge) else {
+    let merge_set = set
+        .runtime_dependencies
+        .iter()
+        .find(|dependency| dependency.source_field == "romof")
+        .map(|dependency| dependency.target_name.as_str())
+        .or(set.parent.as_deref());
+    let (Some(parent), Some(merged_name)) = (merge_set, &asset.merge) else {
         return Ok(());
     };
     let parent_components = sql_query(
