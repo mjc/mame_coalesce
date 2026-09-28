@@ -799,6 +799,7 @@ pub fn run_with_progress(
 mod tests {
     use super::*;
 
+    /// Verifies one-shot runs retain scan and plan diagnostics when artifact output fails.
     #[test]
     fn run_reports_scans_and_plan_diagnostics_when_an_artifact_fails()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -868,6 +869,7 @@ mod tests {
         Ok(())
     }
 
+    /// Verifies completed scan results survive build failures before planning completes.
     #[test]
     fn run_preserves_scan_report_when_build_fails_before_planning()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -924,6 +926,7 @@ mod tests {
         Ok(())
     }
 
+    /// Verifies in-memory planning reports progress without creating output files.
     #[test]
     fn planning_from_in_memory_cache_does_not_create_or_write_outputs()
     -> Result<(), Box<dyn std::error::Error>> {

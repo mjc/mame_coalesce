@@ -129,6 +129,7 @@ mod tests {
     use super::*;
     use mame_coalesce::domain::{BuildReport, PlanBlockReason};
 
+    /// Construct a minimal ready report for exit-status mapping tests.
     fn report() -> BuildWorkflowReport {
         BuildWorkflowReport {
             written_paths: Vec::new(),
@@ -138,6 +139,7 @@ mod tests {
         }
     }
 
+    /// Verifies ready, failed, uncertain, and blocked reports map to their CLI statuses.
     #[test]
     fn process_status_maps_ready_partial_and_blocked_builds() {
         let ready = report();
