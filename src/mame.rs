@@ -262,6 +262,36 @@ fn parse_device_reference(node: &Element) -> crate::Result<DeviceReference> {
     })
 }
 
+fn machine_attribute_extensions(name: &str, node: &Element) -> Vec<XmlExtension> {
+    node.attributes
+        .iter()
+        .filter(|(key, _)| {
+            ![
+                "name",
+                "sourcefile",
+                "cloneof",
+                "isdevice",
+                "runnable",
+                "isbios",
+                "ismechanical",
+                "isconsumable",
+            ]
+            .contains(&key.as_str())
+        })
+        .map(|(key, val)| {
+            let (field_name, namespace_uri) = attribute_name(key);
+            XmlExtension {
+                record_kind: "machine".into(),
+                record_name: Some(name.into()),
+                field_name,
+                namespace_uri,
+                value: serde_json::json!(val),
+                location: node.location,
+            }
+        })
+        .collect()
+}
+
 fn parse_machine(node: &Element) -> crate::Result<Machine> {
     let name = required(node, "name")?;
     let parent = node.attributes.get("cloneof").cloned();
@@ -332,31 +362,7 @@ fn parse_machine(node: &Element) -> crate::Result<Machine> {
         "device_refs".into(),
         device_reference_metadata(&device_refs),
     );
-    for (key, val) in &node.attributes {
-        if ![
-            "name",
-            "sourcefile",
-            "cloneof",
-            "isdevice",
-            "runnable",
-            "isbios",
-            "ismechanical",
-            "isconsumable",
-            "cloneof",
-        ]
-        .contains(&key.as_str())
-        {
-            let (field_name, namespace_uri) = attribute_name(key);
-            extensions.push(XmlExtension {
-                record_kind: "machine".into(),
-                record_name: Some(name.into()),
-                field_name,
-                namespace_uri,
-                value: serde_json::json!(val),
-                location: node.location,
-            });
-        }
-    }
+    extensions.extend(machine_attribute_extensions(name, node));
     Ok(Machine {
         name: name.into(),
         parent,

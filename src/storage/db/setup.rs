@@ -891,7 +891,13 @@ mod tests {
         conn.batch_execute("PRAGMA foreign_keys = ON")?;
         let migrations = MIGRATIONS.migrations()?;
         conn.applied_migrations()?;
-        for migration in &migrations[..migrations.len() - 1] {
+        let relationship_migration = migrations
+            .iter()
+            .position(|migration| {
+                migration.name().to_string() == "2026-09-25-000008_typed_relationship_assertions"
+            })
+            .ok_or("relationship migration not found")?;
+        for migration in &migrations[..relationship_migration] {
             conn.run_migration(migration.as_ref())?;
         }
         conn.batch_execute(
@@ -908,7 +914,9 @@ mod tests {
                  (snapshot_key, set_name, parent_name, metadata_json, source_line, source_column)
                  VALUES ('snapshot', 'clone', 'parent', '{}', 4, 3);",
         )?;
-        conn.run_pending_migrations(MIGRATIONS)?;
+        for migration in &migrations[relationship_migration..] {
+            conn.run_migration(migration.as_ref())?;
+        }
 
         let count = count(&mut conn, "relationship_assertions")?;
         assert_eq!(count, 1);
