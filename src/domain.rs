@@ -966,6 +966,25 @@ pub struct BuildReport {
     pub outcome: PlanOutcome,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ArtifactOutcome {
+    Completed,
+    Failed {
+        error: String,
+    },
+    /// The replacement is visible, but syncing its containing directory failed.
+    ReplacedButNotDurable {
+        error: String,
+    },
+    Unattempted,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactResult {
+    pub path: String,
+    pub outcome: ArtifactOutcome,
+}
+
 impl Default for BuildReport {
     fn default() -> Self {
         Self {

@@ -2,6 +2,9 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum Error {
+    #[error("artifact was replaced, but its containing directory could not be synced: {error}")]
+    ArtifactReplacedNotDurable { error: String },
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
@@ -31,6 +34,9 @@ pub enum Error {
 
     #[error("no published snapshot exists for catalog {0}")]
     CatalogNotFound(String),
+
+    #[error("source changed since planning: {path}: {reason}")]
+    SourceChanged { path: String, reason: String },
 
     #[error("Invalid hash: {0}")]
     InvalidHash(String),
