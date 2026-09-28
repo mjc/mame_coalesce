@@ -39,6 +39,9 @@ pub fn write_plan(plan: &BuildPlan, destination: &Utf8Path) -> crate::Result<Vec
             ArtifactOutcome::Failed { error } => {
                 return Err(crate::Error::InvalidPath(error));
             }
+            ArtifactOutcome::ReplacedButNotDurable { error } => {
+                return Err(crate::Error::ArtifactReplacedNotDurable { error });
+            }
             ArtifactOutcome::Unattempted => {}
         }
     }
@@ -103,6 +106,19 @@ fn write_plan_with_hook(
                     path: path.to_string(),
                     outcome: ArtifactOutcome::Completed,
                 }),
+                Err(crate::Error::ArtifactReplacedNotDurable { error }) => {
+                    results.push(ArtifactResult {
+                        path: path.to_string(),
+                        outcome: ArtifactOutcome::ReplacedButNotDurable { error },
+                    });
+                    results.extend(output_paths.iter().skip(index + 1).map(|path| {
+                        ArtifactResult {
+                            path: path.to_string(),
+                            outcome: ArtifactOutcome::Unattempted,
+                        }
+                    }));
+                    break;
+                }
                 Err(error) => {
                     results.push(ArtifactResult {
                         path: path.to_string(),
@@ -130,6 +146,7 @@ enum ArtifactPhase {
     Write,
     Finalize,
     Replace,
+    DirectorySync,
 }
 
 struct ArtifactContext<'a> {
@@ -169,7 +186,7 @@ fn write_artifact(
     drop(output);
     (artifact.hook)(artifact.artifact_index, ArtifactPhase::Replace)?;
     #[cfg(unix)]
-    staged.replace(artifact.output_root)?;
+    staged.replace(artifact.output_root, artifact.hook, artifact.artifact_index)?;
     #[cfg(not(unix))]
     staged.replace(_path)?;
     Ok(())
@@ -327,7 +344,7 @@ impl SecureOutputDirectory {
                         parent,
                         temporary_name,
                         file_name: (*file_name).to_owned(),
-                        committed: false,
+                        state: StagedZipState::Staged,
                     };
                     return Ok((staged, File::from(file)));
                 }
@@ -495,7 +512,7 @@ fn open_directory(path: &Utf8Path, create: bool) -> crate::Result<File> {
             Ok(next) => next,
             Err(error) if create && error == Errno::NOENT => {
                 match fs::mkdirat(directory.as_fd(), name, Mode::from_raw_mode(0o755)) {
-                    Ok(()) => {}
+                    Ok(()) => directory.sync_all()?,
                     Err(error) if error == Errno::EXIST => {}
                     Err(error) => return Err(std::io::Error::from(error).into()),
                 }
@@ -543,7 +560,15 @@ struct StagedZip {
     parent: File,
     temporary_name: String,
     file_name: String,
-    committed: bool,
+    state: StagedZipState,
+}
+
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StagedZipState {
+    Staged,
+    Replaced,
+    Durable,
 }
 
 #[cfg(unix)]
@@ -619,7 +644,12 @@ impl SecureSpoolDirectory {
 
 #[cfg(unix)]
 impl StagedZip {
-    fn replace(&mut self, output_root: &SecureOutputDirectory) -> crate::Result<()> {
+    fn replace(
+        &mut self,
+        output_root: &SecureOutputDirectory,
+        hook: &mut dyn FnMut(usize, ArtifactPhase) -> io::Result<()>,
+        artifact_index: usize,
+    ) -> crate::Result<()> {
         use rustix::fs;
         use std::os::fd::AsFd;
 
@@ -631,8 +661,18 @@ impl StagedZip {
             self.file_name.as_str(),
         )
         .map_err(std::io::Error::from)?;
-        self.parent.sync_all()?;
-        self.committed = true;
+        self.state = StagedZipState::Replaced;
+        (hook)(artifact_index, ArtifactPhase::DirectorySync).map_err(|error| {
+            crate::Error::ArtifactReplacedNotDurable {
+                error: error.to_string(),
+            }
+        })?;
+        self.parent
+            .sync_all()
+            .map_err(|error| crate::Error::ArtifactReplacedNotDurable {
+                error: error.to_string(),
+            })?;
+        self.state = StagedZipState::Durable;
         Ok(())
     }
 }
@@ -640,7 +680,7 @@ impl StagedZip {
 #[cfg(unix)]
 impl Drop for StagedZip {
     fn drop(&mut self) {
-        if !self.committed {
+        if self.state == StagedZipState::Staged {
             use rustix::{fs, fs::AtFlags};
             use std::os::fd::AsFd;
 
@@ -1707,6 +1747,52 @@ mod tests {
     }
 
     #[test]
+    fn directory_sync_failure_reports_visible_replacement_as_uncertain()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let root = utf8_path(temp_dir.path())?;
+        let source_path = source_fixture_path(&temp_dir, "source.rom")?;
+        std::fs::write(&source_path, b"new artifact")?;
+        let destination = root.join("output");
+        std::fs::create_dir_all(&destination)?;
+        let artifact = destination.join("safe.zip");
+        write_source_zip(&artifact, &[("previous.rom", b"old valid artifact")])?;
+        let plan = BuildPlan {
+            groups: vec![OutputGroup {
+                path: LogicalPath::new("safe"),
+                entries: vec![logical_entry("game.rom", source_file(&source_path))],
+            }],
+            report: BuildReport::default(),
+        };
+        let mut hook = |_, phase| {
+            if phase == ArtifactPhase::DirectorySync {
+                Err(io::Error::other("injected directory sync failure"))
+            } else {
+                Ok(())
+            }
+        };
+
+        let results = write_plan_with_hook(
+            &plan,
+            &destination,
+            file_options(ZipCompression::Deflate),
+            &mut hook,
+        )?;
+
+        assert!(matches!(
+            results.first().map(|result| &result.outcome),
+            Some(ArtifactOutcome::ReplacedButNotDurable { error })
+                if error.contains("injected directory sync failure")
+        ));
+        assert_eq!(
+            archive_member_bytes(&artifact, "game.rom", SourceKind::Zip).as_deref(),
+            Some(b"new artifact" as &[u8])
+        );
+        assert_eq!(std::fs::read_dir(&destination)?.count(), 1);
+        Ok(())
+    }
+
+    #[test]
     fn operating_system_replacement_failure_preserves_destination_directory()
     -> Result<(), Box<dyn std::error::Error>> {
         let temp_dir = tempfile::tempdir()?;
@@ -2286,8 +2372,9 @@ mod tests {
         let (mut staged, file) = output.stage_file("safe.zip")?;
         drop(file);
         fs::rename(&source, destination.join("moved-source"))?;
+        let mut hook = |_, _| Ok(());
 
-        assert!(staged.replace(&output).is_err());
+        assert!(staged.replace(&output, &mut hook, 0).is_err());
         Ok(())
     }
 

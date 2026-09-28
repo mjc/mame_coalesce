@@ -969,7 +969,13 @@ pub struct BuildReport {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ArtifactOutcome {
     Completed,
-    Failed { error: String },
+    Failed {
+        error: String,
+    },
+    /// The replacement is visible, but syncing its containing directory failed.
+    ReplacedButNotDurable {
+        error: String,
+    },
     Unattempted,
 }
 

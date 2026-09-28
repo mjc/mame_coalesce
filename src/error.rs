@@ -2,6 +2,9 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum Error {
+    #[error("artifact was replaced, but its containing directory could not be synced: {error}")]
+    ArtifactReplacedNotDurable { error: String },
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 

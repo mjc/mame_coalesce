@@ -651,15 +651,22 @@ pub fn build(
         report_artifact_outcomes(&results);
         let paths = results
             .iter()
-            .filter(|result| result.outcome == ArtifactOutcome::Completed)
+            .filter(|result| {
+                matches!(
+                    &result.outcome,
+                    ArtifactOutcome::Completed | ArtifactOutcome::ReplacedButNotDurable { .. }
+                )
+            })
             .map(|result| Utf8PathBuf::from(&result.path))
             .collect::<Vec<_>>();
         (paths, results)
     };
-    let exit_code = if artifact_results
-        .iter()
-        .any(|result| matches!(&result.outcome, ArtifactOutcome::Failed { .. }))
-    {
+    let exit_code = if artifact_results.iter().any(|result| {
+        matches!(
+            &result.outcome,
+            ArtifactOutcome::Failed { .. } | ArtifactOutcome::ReplacedButNotDurable { .. }
+        )
+    }) {
         1
     } else {
         exit_code
@@ -785,6 +792,12 @@ fn report_artifact_outcomes(results: &[ArtifactResult]) {
             ArtifactOutcome::Completed => info!("completed output artifact: {}", result.path),
             ArtifactOutcome::Failed { error } => {
                 warn!("failed output artifact: {}: {error}", result.path);
+            }
+            ArtifactOutcome::ReplacedButNotDurable { error } => {
+                warn!(
+                    "replaced output artifact, but durability is uncertain: {}: {error}",
+                    result.path
+                );
             }
             ArtifactOutcome::Unattempted => {
                 warn!("output artifact was not attempted: {}", result.path);
