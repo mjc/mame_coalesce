@@ -2,13 +2,11 @@ use camino::{Utf8Path, Utf8PathBuf};
 #[cfg(test)]
 use fmmap::{MmapFile, MmapFileExt};
 #[cfg(unix)]
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
+#[cfg(unix)]
 use std::fs;
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    ffi::OsStr,
-    io::Write,
-    path::PathBuf,
-};
+use std::{ffi::OsStr, io::Write, path::PathBuf};
 
 use rayon::prelude::*;
 use sha1::{Digest, Sha1};
@@ -48,11 +46,17 @@ pub fn source_with_progress(
 }
 
 #[derive(Clone, Copy)]
+#[cfg(unix)]
 struct CachedBareFile {
     stamp: BareFileCacheStamp,
     observed: ObservedContent,
     fingerprint: SourceFingerprint,
 }
+
+#[cfg(unix)]
+type CachedBareFiles = BTreeMap<Utf8PathBuf, CachedBareFile>;
+#[cfg(not(unix))]
+type CachedBareFiles = ();
 
 #[cfg(test)]
 fn source_with_walk(
@@ -123,6 +127,7 @@ fn source_with_walk_and_cache_progress(
     }
     let source_root = SourceRoot::new(source_root.to_string());
     let scan_run = ScanRunKey::fresh();
+    #[cfg(unix)]
     let cached_by_path = cached_files
         .iter()
         .filter_map(|file| match &file.location {
@@ -147,6 +152,10 @@ fn source_with_walk_and_cache_progress(
             _ => None,
         })
         .collect::<BTreeMap<_, _>>();
+    #[cfg(not(unix))]
+    let cached_by_path = {
+        let _ = cached_files;
+    };
     let observations = get_all_observations(
         &file_list,
         jobs,
@@ -164,7 +173,7 @@ fn get_all_observations(
     jobs: usize,
     source_root: &SourceRoot,
     scan_run: ScanRunKey,
-    cached_files: &BTreeMap<Utf8PathBuf, CachedBareFile>,
+    cached_files: &CachedBareFiles,
     forced_paths: &BTreeSet<Utf8PathBuf>,
     progress: &(impl Fn(ScanProgress) + Sync),
 ) -> crate::Result<Vec<SourceObservation>> {
@@ -197,17 +206,28 @@ fn scan_one_path(
     path: &Utf8Path,
     source_root: &SourceRoot,
     scan_run: ScanRunKey,
-    cached_files: &BTreeMap<Utf8PathBuf, CachedBareFile>,
+    cached_files: &CachedBareFiles,
     forced_paths: &BTreeSet<Utf8PathBuf>,
 ) -> crate::Result<Vec<SourceObservation>> {
+    #[cfg(not(unix))]
+    let _ = (cached_files, forced_paths);
     match crate::sources::detect(path)? {
-        crate::sources::SourceKind::BareFile => scan_bare_file(
-            path,
-            source_root,
-            scan_run,
-            cached_files.get(path),
-            forced_paths.contains(path),
-        ),
+        crate::sources::SourceKind::BareFile => {
+            #[cfg(unix)]
+            {
+                scan_bare_file(
+                    path,
+                    source_root,
+                    scan_run,
+                    cached_files.get(path),
+                    forced_paths.contains(path),
+                )
+            }
+            #[cfg(not(unix))]
+            {
+                scan_bare_file(path, source_root, scan_run)
+            }
+        }
         crate::sources::SourceKind::Archive(backend) => {
             scan_archive(path, backend, source_root, scan_run)
         }
@@ -226,7 +246,7 @@ fn scan_path(path: &Utf8Path) -> crate::Result<Vec<SourceObservation>> {
         path,
         &source_root,
         ScanRunKey::fresh(),
-        &BTreeMap::new(),
+        &CachedBareFiles::default(),
         &BTreeSet::new(),
     )
 }
@@ -235,14 +255,12 @@ fn scan_bare_file(
     path: &Utf8Path,
     source_root: &SourceRoot,
     scan_run: ScanRunKey,
-    cached_file: Option<&CachedBareFile>,
-    force_rehash: bool,
+    #[cfg(unix)] cached_file: Option<&CachedBareFile>,
+    #[cfg(unix)] force_rehash: bool,
 ) -> crate::Result<Vec<SourceObservation>> {
     let physical_path = SourcePhysicalPath::capture(path)?;
     let mut file = std::fs::File::open(physical_path.as_path())?;
     let before = bare_file_cache_stamp(&file.metadata()?);
-    #[cfg(not(unix))]
-    let _ = (cached_file, force_rehash);
     #[cfg(unix)]
     if !force_rehash
         && let (BareFileCacheState::Available(current), Some(cached)) = (before, cached_file)
