@@ -1345,6 +1345,7 @@ fn cli_build_dry_run_exits_zero_and_writes_no_files() -> Result<(), Box<dyn std:
 
     assert!(output.status.success());
     assert!(!String::from_utf8_lossy(&output.stdout).contains("output artifact was not attempted"));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("output artifact was not attempted"));
 
     assert!(!output_path.exists());
 
@@ -1393,6 +1394,7 @@ fn cli_build_missing_fail_exits_two_and_writes_no_files() -> Result<(), Box<dyn 
 
     assert_eq!(output.status.code(), Some(2));
     assert!(!String::from_utf8_lossy(&output.stdout).contains("output artifact was not attempted"));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("output artifact was not attempted"));
 
     assert!(!output_path.exists());
 
