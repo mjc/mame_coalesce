@@ -330,6 +330,7 @@ diesel::table! {
         source_fingerprint -> Nullable<Binary>,
         scan_provenance -> Nullable<Text>,
         rom_id -> Nullable<Integer>,
+        physical_path -> Nullable<Text>,
     }
 }
 

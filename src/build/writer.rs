@@ -1370,15 +1370,17 @@ mod tests {
             .as_deref()
             .map_or([0; 8], crate::hashes::xxhash3_bytes);
         let fingerprint = sha1.map(SourceFingerprint::new);
+        let location = SourceLocation::BareFile {
+            path: path.as_str().to_owned(),
+        };
         SourceFile {
             source_root: crate::domain::SourceRoot::new(
                 path.parent()
                     .expect("test source file has a parent")
                     .as_str(),
             ),
-            location: SourceLocation::BareFile {
-                path: path.as_str().to_owned(),
-            },
+            physical_path: crate::domain::SourcePhysicalPath::from_location(&location),
+            location,
             observed: crate::domain::ObservedContent {
                 scope: crate::domain::EvidenceScope::WholeAsset,
                 provenance: crate::domain::EvidenceProvenance::Computed,
@@ -1461,6 +1463,7 @@ mod tests {
                 }
             },
         );
+        let physical_path = crate::domain::SourcePhysicalPath::from_location(&location);
         SourceFile {
             source_root: crate::domain::SourceRoot::new(
                 path.parent()
@@ -1468,6 +1471,7 @@ mod tests {
                     .as_str(),
             ),
             location,
+            physical_path,
             observed: crate::domain::ObservedContent {
                 scope: crate::domain::EvidenceScope::WholeAsset,
                 provenance: crate::domain::EvidenceProvenance::Computed,

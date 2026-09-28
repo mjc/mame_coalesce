@@ -317,7 +317,12 @@ pub fn resolve_across_roots(
         .collect::<Vec<_>>();
     sources.sort_by(|left, right| source_order_for_roots(left, right, source_roots));
     let mut physical_locations = BTreeSet::new();
-    sources.retain(|source| physical_locations.insert(source.location.clone()));
+    sources.retain(|source| {
+        physical_locations.insert(physical_location_identity(
+            &source.location,
+            &source.physical_path,
+        ))
+    });
 
     match policy {
         MatchingPolicy::EvidenceAware => {
@@ -367,6 +372,33 @@ pub fn resolve_across_roots(
                 })
                 .collect()
         }
+    }
+}
+
+fn physical_location_identity(
+    location: &crate::domain::SourceLocation,
+    physical_path: &crate::domain::SourcePhysicalPath,
+) -> crate::domain::SourceLocation {
+    use crate::domain::SourceLocation;
+
+    let path = if physical_path.as_str().is_empty() {
+        location.path().to_owned()
+    } else {
+        physical_path.as_str().to_owned()
+    };
+    match location {
+        SourceLocation::BareFile { .. } => SourceLocation::BareFile { path },
+        SourceLocation::ArchiveMember {
+            backend, selector, ..
+        } => SourceLocation::ArchiveMember {
+            path,
+            backend: *backend,
+            selector: selector.clone(),
+        },
+        SourceLocation::LegacyUnknown { member_name, .. } => SourceLocation::LegacyUnknown {
+            path,
+            member_name: member_name.clone(),
+        },
     }
 }
 
@@ -929,11 +961,13 @@ mod tests {
     }
 
     fn source(path: &str, observed: ObservedContent) -> SourceFile {
+        let location = SourceLocation::BareFile {
+            path: path.to_owned(),
+        };
         SourceFile {
             source_root: SourceRoot::new("/roms"),
-            location: SourceLocation::BareFile {
-                path: path.to_owned(),
-            },
+            physical_path: crate::domain::SourcePhysicalPath::from_location(&location),
+            location,
             observed,
             fingerprint: None,
             scan_run: None,

@@ -28,6 +28,7 @@ pub struct RomFile {
     pub source_fingerprint: Option<Vec<u8>>,
     pub scan_provenance: Option<String>,
     pub rom_id: Option<i32>,
+    pub physical_path: Option<String>,
 }
 
 #[derive(Clone, Insertable, Debug)]
@@ -49,6 +50,7 @@ pub struct New {
     pub source_fingerprint: Option<Vec<u8>>,
     pub scan_provenance: Option<String>,
     pub rom_id: Option<i32>,
+    pub physical_path: Option<String>,
 }
 
 impl New {
@@ -109,6 +111,7 @@ impl New {
             source_fingerprint: Some(observation.fingerprint.digest().to_vec()),
             scan_provenance: Some(observation.scan_provenance.storage_key().to_owned()),
             rom_id: None,
+            physical_path: Some(observation.physical_path.as_str().to_owned()),
         })
     }
 

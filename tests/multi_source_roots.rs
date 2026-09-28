@@ -372,3 +372,60 @@ fn one_shot_reports_every_root_and_deduplicates_cross_root_file_symlinks()
     }
     Ok(())
 }
+
+#[cfg(unix)]
+#[test]
+fn cached_resolution_uses_physical_identity_captured_during_scan()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::symlink;
+
+    let temp = tempfile::tempdir()?;
+    let root = Utf8PathBuf::try_from(temp.path().to_path_buf())?;
+    let dat = root.join("catalog.dat");
+    let first = root.join("first");
+    let second = root.join("second");
+    fs::create_dir(&first)?;
+    fs::create_dir(&second)?;
+    fs::write(&dat, catalog_dat())?;
+    fs::write(first.join("game-a.rom"), b"wrong")?;
+    fs::write(second.join("game-a.rom"), b"abc")?;
+    let database = Database::open(&root.join("cache.db"))?;
+    app::import_dat(
+        &database,
+        &DatImportRequest {
+            dat_path: dat.clone(),
+        },
+    )?;
+
+    let roots = selection(first.clone(), vec![second.clone()]);
+    app::scan_sources_with_progress(&database, &roots, 1, &|_| {})?;
+    fs::remove_file(first.join("game-a.rom"))?;
+    symlink(second.join("game-a.rom"), first.join("game-a.rom"))?;
+
+    let plan = app::plan_build_with_roots(
+        &database,
+        &BuildPlanRequest {
+            dat_path: dat,
+            source_path: first,
+            mode: BuildMode::ParentBundles,
+            matching_policy: MatchingPolicy::Sha1Compatibility,
+            missing_policy: MissingContentPolicy::AllowPartial,
+        },
+        &roots,
+    )?;
+    let selected_root = plan
+        .report
+        .resolutions
+        .iter()
+        .find_map(|resolution| match &resolution.status {
+            ResolutionStatus::Matched { selected, .. }
+                if resolution.requirement.key.set().name() == "game-a" =>
+            {
+                Some(selected.source_root.as_str())
+            }
+            _ => None,
+        })
+        .ok_or("game-a did not resolve from the cached matching source")?;
+    assert_eq!(selected_root, second.canonicalize_utf8()?.as_str());
+    Ok(())
+}

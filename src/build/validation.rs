@@ -654,6 +654,9 @@ mod tests {
                 location: crate::domain::SourceLocation::BareFile {
                     path: "/unused/file".to_owned(),
                 },
+                physical_path: crate::domain::SourcePhysicalPath::from_storage(
+                    "/unused/file".to_owned(),
+                ),
                 observed: crate::domain::ObservedContent {
                     scope: crate::domain::EvidenceScope::WholeAsset,
                     provenance: crate::domain::EvidenceProvenance::Computed,

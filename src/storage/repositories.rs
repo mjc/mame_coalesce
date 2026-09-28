@@ -8,7 +8,8 @@ use crate::{
     domain::{
         CatalogKey, CompleteSourceScan, Crc32Digest, DatRom, EvidenceProvenance, EvidenceScope,
         ExpectedEvidence, Md5Digest, ObservedContent, RequirementKey, ScanProvenance, ScanRunKey,
-        SetKey, SetMetadata, SourceFile, SourceFingerprint, SourceLocation, SourceRoot,
+        SetKey, SetMetadata, SourceFile, SourceFingerprint, SourceLocation, SourcePhysicalPath,
+        SourceRoot,
     },
     hashes::Sha1Digest,
     storage::{
@@ -216,6 +217,10 @@ impl<'pool> BuildRepository<'pool> {
 
 fn source_file_from_model(rom_file: RomFile) -> crate::Result<SourceFile> {
     let location = source_location_from_model(&rom_file)?;
+    let physical_path = rom_file.physical_path.map_or_else(
+        || SourcePhysicalPath::from_location(&location),
+        SourcePhysicalPath::from_storage,
+    );
     let sha1 = sha1_digest_from_db(rom_file.sha1, "rom_files.sha1", &rom_file.name)?;
     let xxh3 = digest_from_db::<8>(Some(rom_file.xxhash3), "rom_files.xxhash3", &rom_file.name)?
         .ok_or_else(|| {
@@ -271,6 +276,7 @@ fn source_file_from_model(rom_file: RomFile) -> crate::Result<SourceFile> {
     Ok(SourceFile {
         source_root: SourceRoot::new(rom_file.scan_root.unwrap_or(rom_file.parent_path)),
         location,
+        physical_path,
         observed: ObservedContent {
             scope: EvidenceScope::WholeAsset,
             provenance: content_provenance,
@@ -384,6 +390,7 @@ mod tests {
             source_fingerprint: None,
             scan_provenance: None,
             rom_id: None,
+            physical_path: None,
         }
     }
 
@@ -437,21 +444,25 @@ mod tests {
         let run = ScanRunKey::fresh();
         let root = SourceRoot::new("/source");
         let content_sha1 = crate::hashes::sha1_bytes(b"abc");
-        let observation = |location| crate::domain::SourceObservation {
-            source_root: root.clone(),
-            scan_run: run,
-            location,
-            observed: ObservedContent {
-                scope: EvidenceScope::WholeAsset,
-                provenance: EvidenceProvenance::Computed,
-                size: Some(3),
-                crc: None,
-                md5: None,
-                sha1: Some(content_sha1),
-                xxh3: crate::hashes::xxhash3_bytes(b"abc"),
-            },
-            fingerprint: SourceFingerprint::new([7; 20]),
-            scan_provenance: ScanProvenance::StreamedSha1Xxh3V1,
+        let observation = |location| {
+            let physical_path = SourcePhysicalPath::from_location(&location);
+            crate::domain::SourceObservation {
+                source_root: root.clone(),
+                scan_run: run,
+                location,
+                physical_path,
+                observed: ObservedContent {
+                    scope: EvidenceScope::WholeAsset,
+                    provenance: EvidenceProvenance::Computed,
+                    size: Some(3),
+                    crc: None,
+                    md5: None,
+                    sha1: Some(content_sha1),
+                    xxh3: crate::hashes::xxhash3_bytes(b"abc"),
+                },
+                fingerprint: SourceFingerprint::new([7; 20]),
+                scan_provenance: ScanProvenance::StreamedSha1Xxh3V1,
+            }
         };
         let scan = CompleteSourceScan::new(
             root.clone(),
@@ -515,12 +526,14 @@ mod tests {
         let (_temp_dir, pool) = file_backed_pool()?;
         let root = SourceRoot::new("/source");
         let run = ScanRunKey::fresh();
+        let location = SourceLocation::BareFile {
+            path: "/source/game.rom".to_owned(),
+        };
         let observation = crate::domain::SourceObservation {
             source_root: root.clone(),
             scan_run: run,
-            location: SourceLocation::BareFile {
-                path: "/source/game.rom".to_owned(),
-            },
+            physical_path: SourcePhysicalPath::from_location(&location),
+            location,
             observed: ObservedContent {
                 scope: EvidenceScope::WholeAsset,
                 provenance: EvidenceProvenance::Computed,
@@ -576,12 +589,14 @@ mod tests {
 
         let matching_root = SourceRoot::new("/matching");
         let matching_run = ScanRunKey::fresh();
+        let matching_location = SourceLocation::BareFile {
+            path: "/matching/repo.rom".to_owned(),
+        };
         let matching_observation = crate::domain::SourceObservation {
             source_root: matching_root.clone(),
             scan_run: matching_run,
-            location: SourceLocation::BareFile {
-                path: "/matching/repo.rom".to_owned(),
-            },
+            physical_path: SourcePhysicalPath::from_location(&matching_location),
+            location: matching_location,
             observed: ObservedContent {
                 scope: EvidenceScope::WholeAsset,
                 provenance: EvidenceProvenance::Computed,
@@ -603,12 +618,14 @@ mod tests {
 
         let other_root = SourceRoot::new("/other");
         let other_run = ScanRunKey::fresh();
+        let other_location = SourceLocation::BareFile {
+            path: "/other/unmatched.rom".to_owned(),
+        };
         let other_observation = crate::domain::SourceObservation {
             source_root: other_root.clone(),
             scan_run: other_run,
-            location: SourceLocation::BareFile {
-                path: "/other/unmatched.rom".to_owned(),
-            },
+            physical_path: SourcePhysicalPath::from_location(&other_location),
+            location: other_location,
             observed: ObservedContent {
                 scope: EvidenceScope::WholeAsset,
                 provenance: EvidenceProvenance::Computed,
@@ -650,6 +667,7 @@ mod tests {
             source_fingerprint: None,
             scan_provenance: None,
             rom_id: None,
+            physical_path: None,
         };
 
         let zip = source_location_from_model(&archived_file("/source/z.zip"))?;
