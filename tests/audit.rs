@@ -101,6 +101,15 @@ fn audit_uses_cached_observations_by_default_and_refresh_is_explicit()
     let cached = app::audit(&fixture.database, &fixture.request(AuditRefresh::Cached))?;
     let cached_again = app::audit(&fixture.database, &fixture.request(AuditRefresh::Cached))?;
     assert_eq!(cached.to_json()?, cached_again.to_json()?);
+    app::import_dat(
+        &fixture.database,
+        &DatImportRequest {
+            dat_path: fixture.dat.clone(),
+        },
+    )?;
+    let cached_after_reimport =
+        app::audit(&fixture.database, &fixture.request(AuditRefresh::Cached))?;
+    assert_eq!(cached.to_json()?, cached_after_reimport.to_json()?);
     assert_eq!(cached.observation_basis(), &ObservationBasis::Cached);
     assert_eq!(cached.report().matched_roms, build_plan.report.matched_roms);
     assert_eq!(cached.report().missing_roms, build_plan.report.missing_roms);
