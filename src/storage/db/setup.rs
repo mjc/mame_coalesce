@@ -781,7 +781,8 @@ mod tests {
                  VALUES ('snapshot', 'catalog', 'document', 'interpretation', 'unknown');
              INSERT INTO snapshot_sets
                  (snapshot_key, set_name, metadata_json, source_line, source_column)
-                 VALUES ('snapshot', 'set', '{}', 1, 1);
+                 VALUES ('snapshot', 'set', '{}', 1, 1),
+                        ('snapshot', 'second-set', '{}', 5, 1);
              INSERT INTO asset_requirements
                  (snapshot_key, set_name, component_order, asset_name, role,
                   evidence_scope, evidence_provenance, source_line, source_column)
@@ -839,7 +840,8 @@ mod tests {
                  VALUES ('snapshot', 'catalog', 'document', 'interpretation', 'unknown');
              INSERT INTO snapshot_sets
                  (snapshot_key, set_name, metadata_json, source_line, source_column)
-                 VALUES ('snapshot', 'set', '{}', 1, 1);
+                 VALUES ('snapshot', 'set', '{}', 1, 1),
+                        ('snapshot', 'second-set', '{}', 5, 1);
              INSERT INTO asset_requirements
                  (snapshot_key, set_name, component_order, asset_name, role,
                   evidence_scope, evidence_provenance, source_line, source_column)
@@ -1037,19 +1039,23 @@ mod tests {
                  VALUES ('snapshot', 'catalog', 'document', 'interpretation', 'unknown');
              INSERT INTO snapshot_sets
                  (snapshot_key, set_name, metadata_json, source_line, source_column)
-                 VALUES ('snapshot', 'set', '{}', 1, 1);
+                 VALUES ('snapshot', 'set', '{}', 1, 1),
+                        ('snapshot', 'second-set', '{}', 5, 1);
              INSERT INTO asset_requirements
                  (snapshot_key, set_name, component_order, asset_name, role,
                   evidence_scope, evidence_provenance, source_line, source_column)
                  VALUES ('snapshot', 'set', 0, 'rom.bin', 'rom', 'whole_asset',
-                         'source_declared', 2, 3);
+                         'source_declared', 2, 3),
+                        ('snapshot', 'second-set', 0, 'rom.bin', 'rom', 'whole_asset',
+                         'source_declared', 6, 2);
              INSERT INTO snapshot_extensions
                  (snapshot_key, record_kind, record_name, field_name, raw_value_json,
                   source_line, source_column)
                  VALUES ('snapshot', 'rom', 'rom.bin', 'future', '\"value\"', 2, 3),
                         ('snapshot', 'rom', 'rom.bin', 'future', '\"value\"', 2, 3),
                         ('snapshot', 'rom', 'rom.bin', 'element:future', '{}', 3, 4),
-                        ('snapshot', 'device_ref', 'target', 'future', '\"one\"', 4, 5);",
+                        ('snapshot', 'device_ref', 'target', 'future', '\"one\"', 4, 5),
+                        ('snapshot', 'rom', 'rom.bin', 'child:future', '\"two\"', 7, 2);",
         )?;
         insert_legacy_format_extension_fixtures(&mut conn)?;
         for migration in &migrations[asset_extension_migration..] {
@@ -1077,7 +1083,8 @@ mod tests {
         )
         .get_result::<CountRow>(&mut conn)?
         .count;
-        assert_eq!(duplicate_owner_count, 2);
+        assert_eq!(duplicate_owner_count, 3);
+        assert_mame_duplicate_asset_ownership(&mut conn)?;
         assert_legacy_format_extension_ownership(&mut conn)?;
         assert!(conn
             .batch_execute(
@@ -1097,6 +1104,13 @@ mod tests {
              INSERT INTO snapshot_sets
                  (snapshot_key, set_name, metadata_json, source_line, source_column)
                  VALUES ('no-intro-snapshot', 'entry', '{}', 9, 1);
+             INSERT INTO catalog_snapshots
+                 (snapshot_key, catalog_key, document_key, interpretation_key, scope_kind)
+                 VALUES ('no-intro-collision-snapshot', 'catalog', 'document', 'no-intro-interpretation', 'unknown');
+             INSERT INTO snapshot_sets
+                 (snapshot_key, set_name, metadata_json, source_line, source_column)
+                 VALUES ('no-intro-collision-snapshot', 'shared.bin', '{}', 1, 1),
+                        ('no-intro-collision-snapshot', 'entry', '{}', 2, 1);
              INSERT INTO asset_requirements
                  (snapshot_key, set_name, component_order, asset_name, role,
                   evidence_scope, evidence_provenance, source_line, source_column)
@@ -1105,7 +1119,13 @@ mod tests {
              INSERT INTO snapshot_extensions
                  (snapshot_key, record_kind, record_name, field_name, raw_value_json,
                   source_line, source_column)
-                 VALUES ('no-intro-snapshot', 'rom', 'no-intro.bin', 'element:future', '{}', 11, 4);
+                 VALUES ('no-intro-snapshot', 'rom', 'no-intro.bin', 'element:future', '{}', 11, 4),
+                        ('no-intro-collision-snapshot', 'rom', 'shared.bin', 'element:future', '{}', 4, 4);
+             INSERT INTO asset_requirements
+                 (snapshot_key, set_name, component_order, asset_name, role,
+                  evidence_scope, evidence_provenance, source_line, source_column)
+                 VALUES ('no-intro-collision-snapshot', 'entry', 0, 'shared.bin', 'rom', 'whole_asset',
+                         'source_declared', 3, 2);
              INSERT INTO parser_interpretations (interpretation_key, format)
                  VALUES ('logiqx-interpretation', 'logiqx');
              INSERT INTO catalog_snapshots
@@ -1141,6 +1161,28 @@ mod tests {
         )
         .get_result::<TextRow>(conn)?;
         assert_eq!(logiqx_owner.value, "owner");
+        let collision_owner = sql_query(
+            "SELECT owner_set_name AS value FROM snapshot_extensions \
+             WHERE snapshot_key = 'no-intro-collision-snapshot'",
+        )
+        .get_result::<TextRow>(conn)?;
+        assert_eq!(collision_owner.value, "entry");
+        let collision_component = sql_query(
+            "SELECT owner_component_order AS value FROM snapshot_extensions \
+             WHERE snapshot_key = 'no-intro-collision-snapshot'",
+        )
+        .get_result::<TextRow>(conn)?;
+        assert_eq!(collision_component.value, "0");
+        Ok(())
+    }
+
+    fn assert_mame_duplicate_asset_ownership(conn: &mut SqliteConnection) -> QueryResult<()> {
+        let ownership = sql_query(
+            "SELECT owner_set_name AS value FROM snapshot_extensions \
+             WHERE snapshot_key = 'snapshot' AND field_name = 'child:future'",
+        )
+        .get_result::<TextRow>(conn)?;
+        assert_eq!(ownership.value, "second-set");
         Ok(())
     }
 

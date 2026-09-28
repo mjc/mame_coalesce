@@ -7,6 +7,12 @@ ALTER TABLE snapshot_extensions
 CREATE INDEX snapshot_extensions_asset_owner_index
     ON snapshot_extensions (snapshot_key, owner_set_name, owner_component_order);
 
+CREATE INDEX relationship_assertions_subject_snapshot_kind_index
+    ON relationship_assertions (subject_snapshot_key, subject_kind);
+
+CREATE INDEX relationship_assertions_target_snapshot_kind_index
+    ON relationship_assertions (target_snapshot_key, target_kind);
+
 DROP TRIGGER snapshot_extensions_are_immutable_update;
 
 UPDATE snapshot_extensions
@@ -85,6 +91,14 @@ WHERE owner_set_name IS NULL
       FROM asset_requirements AS requirement
       WHERE requirement.snapshot_key = snapshot_extensions.snapshot_key
         AND requirement.set_name = snapshot_extensions.record_name
+        AND (requirement.source_line, requirement.source_column)
+            <= (snapshot_extensions.source_line, snapshot_extensions.source_column)
+  )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM asset_requirements AS requirement
+      WHERE requirement.snapshot_key = snapshot_extensions.snapshot_key
+        AND requirement.asset_name = snapshot_extensions.record_name
         AND (requirement.source_line, requirement.source_column)
             <= (snapshot_extensions.source_line, snapshot_extensions.source_column)
   );
@@ -182,12 +196,14 @@ WHERE owner_set_name IS NULL
         ON interpretation.interpretation_key = snapshot.interpretation_key
       WHERE snapshot.snapshot_key = snapshot_extensions.snapshot_key
   ) = 'mame-listxml'
-  AND (
-      SELECT COUNT(*)
+  AND EXISTS (
+      SELECT 1
       FROM asset_requirements AS requirement
       WHERE requirement.snapshot_key = snapshot_extensions.snapshot_key
         AND requirement.asset_name = snapshot_extensions.record_name
-  ) = 1;
+        AND (requirement.source_line, requirement.source_column)
+            <= (snapshot_extensions.source_line, snapshot_extensions.source_column)
+  );
 
 UPDATE snapshot_extensions
 SET owner_set_name = (
