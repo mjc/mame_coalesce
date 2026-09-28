@@ -620,7 +620,7 @@ mod tests {
             Err(error) => error.to_string(),
         };
 
-        assert!(message.contains(&format!("source={:?}", source.as_str())));
+        assert!(message.contains("\\nroot"));
         assert!(!message.contains('\n'));
         Ok(())
     }

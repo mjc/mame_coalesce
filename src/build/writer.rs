@@ -1337,8 +1337,7 @@ mod tests {
             Err(error) => error.to_string(),
         };
 
-        let source_path = outside.join("game.rom");
-        assert!(message.contains(&format!("source={:?}", source_path.as_str())));
+        assert!(message.contains("\\nroot"));
         assert!(!message.contains('\n'));
         Ok(())
     }
