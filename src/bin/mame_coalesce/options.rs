@@ -124,6 +124,20 @@ pub enum CacheCommand {
     Build(CacheBuildArgs),
     /// Audit imported disk requirements against a source directory without hashing its contents.
     Audit(DiskAuditArgs),
+    /// Create a consistent, versioned SQLite backup.
+    Backup {
+        #[arg(value_name = "backup-file")]
+        destination: Utf8PathBuf,
+    },
+    /// Restore a verified backup; existing caches require --replace-existing.
+    Restore {
+        #[arg(value_name = "backup-file")]
+        backup: Utf8PathBuf,
+        #[arg(long, help = "Explicitly allow replacing the existing cache")]
+        replace_existing: bool,
+    },
+    /// Check SQLite integrity, durable catalog data, and rebuildable inventory rows.
+    Integrity,
 }
 
 #[derive(Clone, Debug, Args)]

@@ -72,6 +72,7 @@ pub struct RetainedDocument {
 
 pub struct DocumentStore {
     pool: Pool,
+    _database_guard: Option<crate::database::Database>,
 }
 
 #[derive(QueryableByName)]
@@ -132,12 +133,23 @@ struct PublishingSourceRow {
 
 impl DocumentStore {
     pub(crate) const fn from_pool(pool: Pool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            _database_guard: None,
+        }
     }
 
     pub fn open(database_url: &str) -> crate::Result<Self> {
+        if database_url == ":memory:" {
+            return Ok(Self {
+                pool: create_db_pool(database_url)?,
+                _database_guard: None,
+            });
+        }
+        let database = crate::database::Database::open(&camino::Utf8PathBuf::from(database_url))?;
         Ok(Self {
-            pool: create_db_pool(database_url)?,
+            pool: database.pool().clone(),
+            _database_guard: Some(database),
         })
     }
 

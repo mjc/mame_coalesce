@@ -99,6 +99,9 @@ chrono = "0.4.44"
 infer = "0.19"
 
 thiserror = "2"
+atomic-write-file = "0.3.1"
+fs4 = "0.12"
+tempfile = "3.27"
 
 # I don't know why but 1.1.5 segfaults if you don't include this, instead of letting flate2 pull it in.
 libz-sys = { version = "1.1", features = ["zlib-ng"] }
@@ -121,4 +124,3 @@ features = ["zlib-ng-compat"]
 assert_cmd = "2"
 predicates = "3"
 proptest = "1"
-tempfile = "3.27"

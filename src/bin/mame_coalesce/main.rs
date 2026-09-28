@@ -10,13 +10,16 @@ mod report;
 use options::{AuditArgs, AuditFormatArg, CacheCommand, Cli, Command};
 
 use mame_coalesce::{
+    RestorePolicy,
     app::{
         self, AuditRefresh, AuditRequest, BuildWorkflowRequest, CatalogImportRequest,
         CatalogImportStatus, DatImportRequest, DiskAuditRequest, RunWorkflowRequest,
         ScanCachePolicy, SourceRootSelection, SourceScanRequest,
     },
+    check_integrity, create_backup,
     database::Database,
     domain::{CatalogKey, PublishingSourceKey},
+    restore_backup,
 };
 
 fn main() -> ExitCode {
@@ -32,7 +35,12 @@ fn main() -> ExitCode {
 
 fn run() -> mame_coalesce::Result<ExitCode> {
     let cli = Cli::parse();
-    let database = Database::open(&resolve_cache_path(cli.cache()))?;
+    let cache_path = resolve_cache_path(cli.cache());
+    if let Some(result) = run_before_database_open(cli.command(), &cache_path) {
+        return result;
+    }
+
+    let database = Database::open(&cache_path)?;
 
     match cli.command() {
         Command::Build(args) => {
@@ -106,6 +114,90 @@ fn run() -> mame_coalesce::Result<ExitCode> {
         Command::Cache {
             command: CacheCommand::Audit(args),
         } => run_disk_audit(&database, args),
+        Command::Cache {
+            command:
+                CacheCommand::Restore { .. } | CacheCommand::Integrity | CacheCommand::Backup { .. },
+        } => unreachable!("handled before opening the database"),
+    }
+}
+
+fn run_before_database_open(
+    command: &Command,
+    cache_path: &Utf8PathBuf,
+) -> Option<mame_coalesce::Result<ExitCode>> {
+    match command {
+        Command::Cache {
+            command:
+                CacheCommand::Restore {
+                    backup,
+                    replace_existing,
+                },
+        } => {
+            let policy = if *replace_existing {
+                RestorePolicy::ReplaceExisting
+            } else {
+                RestorePolicy::CreateNew
+            };
+            Some(restore_backup(backup, cache_path, policy).map(|outcome| {
+                match outcome {
+                    mame_coalesce::RestoreOutcome::Published => {
+                        log::info!("restored cache from {backup}");
+                    }
+                    mame_coalesce::RestoreOutcome::PublishedDurabilityUnconfirmed { error } => {
+                        log::warn!(
+                            "restored cache from {backup}, but directory sync failed: {error}"
+                        );
+                    }
+                    mame_coalesce::RestoreOutcome::PublicationStateUncertain { error } => {
+                        log::error!(
+                            "restore publication state for {backup} could not be confirmed: {error}"
+                        );
+                        return ExitCode::FAILURE;
+                    }
+                }
+                ExitCode::SUCCESS
+            }))
+        }
+        Command::Cache {
+            command: CacheCommand::Integrity,
+        } => Some(check_integrity(cache_path).map(|report| {
+            print_integrity_report(&report);
+            if report.is_clean() {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
+        })),
+        Command::Cache {
+            command: CacheCommand::Backup { destination },
+        } => Some(create_backup(cache_path, destination).map(|outcome| {
+            match outcome {
+                mame_coalesce::BackupOutcome::Published => {
+                    log::info!("created cache backup at {destination}");
+                }
+                mame_coalesce::BackupOutcome::PublishedDurabilityUnconfirmed { error } => {
+                    log::warn!(
+                        "created cache backup at {destination}, but publication durability could not be confirmed: {error}"
+                    );
+                }
+            }
+            ExitCode::SUCCESS
+        })),
+        _ => None,
+    }
+}
+
+fn print_integrity_report(report: &mame_coalesce::IntegrityReport) {
+    println!("Durable catalog: {} issue(s)", report.durable_issues.len());
+    for issue in &report.durable_issues {
+        println!("  {issue}");
+    }
+    println!(
+        "Rebuildable inventory: {} issue(s)",
+        report.inventory_issues.len()
+    );
+    for issue in &report.inventory_issues {
+        println!("  {issue}");
     }
 }
 

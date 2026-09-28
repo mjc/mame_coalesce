@@ -115,6 +115,9 @@ pub enum Error {
     #[error("Migration error: {0}")]
     Migration(String),
 
+    #[error("cache backup error: {0}")]
+    CacheBackup(String),
+
     #[error("Thread pool error: {0}")]
     ThreadPool(#[from] rayon::ThreadPoolBuildError),
 }

@@ -61,7 +61,31 @@ mame_coalesce --cache /tmp/coalesce.db cache build "DAT Header Name" /path/to/ro
 mame_coalesce --cache /tmp/coalesce.db audit "DAT Header Name" /path/to/roms
 mame_coalesce --cache /tmp/coalesce.db audit "DAT Header Name" /path/to/roms --format json
 mame_coalesce --cache /tmp/coalesce.db audit "DAT Header Name" /path/to/roms --refresh --jobs 8
+mame_coalesce --cache /tmp/coalesce.db cache backup /path/to/coalesce.backup.sqlite
+mame_coalesce --cache /tmp/coalesce.db cache integrity
+mame_coalesce --cache /tmp/coalesce.db cache restore /path/to/coalesce.backup.sqlite
+mame_coalesce --cache /tmp/coalesce.db cache restore /path/to/coalesce.backup.sqlite --replace-existing
 ```
+
+Backups are standalone SQLite snapshots made with SQLite `VACUUM INTO`. Format
+version 1 is marked in the SQLite header and includes the complete cache file,
+including retained source bytes, acquisitions, catalog snapshots, assertions,
+reviews, diagnostics, and rebuildable inventory. Backup creation never replaces
+an existing backup file. Restore validates a same-directory staging copy before
+publishing it; an existing cache requires `--replace-existing`, and restore is
+refused while the cache is open by this application or SQLite sidecar files
+exist. Cache files with multiple hard links are refused because they bypass
+application locking. The backup must have exactly the
+migration history embedded in the running program; no migrations are run during
+validation or restore. A future schema requires a compatible program version or
+a new explicit format policy. `cache integrity` never modifies the inspected
+SQLite database; backup, restore, and integrity operations may create adjacent
+`.lock` files on both the cache and backup paths. It reports durable
+catalog/document failures separately from rebuildable inventory problems.
+Inventory problems do not invalidate a backup or prevent restore. Where the
+platform cannot sync the containing directory, publication succeeds with a
+warning that crash durability could not be confirmed. The integrity command
+returns a failing exit status when either category contains issues.
 
 Build, audit, and cache scan also accept repeatable `--source-root DIR` options.
 The positional source directory stays first; roots are canonicalized and exact

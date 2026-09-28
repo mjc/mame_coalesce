@@ -204,7 +204,7 @@ pub fn database_file_paths(pool: &DbPool) -> crate::Result<Vec<Utf8PathBuf>> {
         .flat_map(|path| {
             let base = path.as_str().to_owned();
             std::iter::once(path).chain(
-                ["-wal", "-shm", "-journal"]
+                ["-wal", "-shm", "-journal", ".lock"]
                     .into_iter()
                     .map(move |suffix| Utf8PathBuf::from(format!("{base}{suffix}"))),
             )
@@ -248,8 +248,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn database_file_paths_include_sqlite_sidecar_paths() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn database_file_paths_include_sqlite_and_application_lock_paths()
+    -> Result<(), Box<dyn std::error::Error>> {
         let temp_dir = tempfile::tempdir()?;
         let database_path = temp_dir.path().join("coalesce.db");
         let database_url = database_path
@@ -267,6 +267,7 @@ mod tests {
             "{}-journal",
             canonical.as_str()
         ))));
+        assert!(paths.contains(&Utf8PathBuf::from(format!("{}.lock", canonical.as_str()))));
         Ok(())
     }
 }

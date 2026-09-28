@@ -1,3 +1,4 @@
+pub mod backup;
 pub mod catalog_import;
 pub mod catalog_reconciliation;
 pub mod db;
