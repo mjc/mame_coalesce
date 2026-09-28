@@ -926,7 +926,7 @@ mod tests {
         Ok(())
     }
 
-    /// Verifies in-memory planning reports progress without creating output files.
+    /// Verifies the scan reports progress and in-memory planning creates no output files.
     #[test]
     fn planning_from_in_memory_cache_does_not_create_or_write_outputs()
     -> Result<(), Box<dyn std::error::Error>> {
