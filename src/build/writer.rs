@@ -248,7 +248,7 @@ fn write_directory_artifact(
         let parent = path.parent().ok_or_else(|| {
             crate::Error::InvalidPath(format!("artifact has no parent directory: {path}"))
         })?;
-        create_dir_all(parent)?;
+        fs::create_dir_all(parent)?;
         let staged = StagedDirectory::create(path)?;
         write_directory_group(group, staged.path(), artifact)?;
         (artifact.hook)(artifact.artifact_index, ArtifactPhase::Finalize)?;
@@ -957,7 +957,7 @@ fn write_directory_group(
         let parent = path.parent().ok_or_else(|| {
             crate::Error::InvalidPath(format!("directory entry has no parent: {path}"))
         })?;
-        create_dir_all(parent)?;
+        fs::create_dir_all(parent)?;
         let mut output = OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -1389,15 +1389,11 @@ impl StagedDirectory {
         self.state = StagedDirectoryState::Replaced;
 
         (hook)(artifact_index, ArtifactPhase::DirectorySync).map_err(|error| {
-            crate::Error::ArtifactReplacedNotDurable {
-                error: error.to_string(),
-            }
+            directory_durability_error(destination, backup.as_ref(), error.to_string())
         })?;
-        self.parent
-            .sync_all()
-            .map_err(|error| crate::Error::ArtifactReplacedNotDurable {
-                error: error.to_string(),
-            })?;
+        self.parent.sync_all().map_err(|error| {
+            directory_durability_error(destination, backup.as_ref(), error.to_string())
+        })?;
 
         if let Some(backup) = backup
             && let Err(error) = remove_directory_at(&self.parent, &backup.name)
@@ -1522,6 +1518,22 @@ impl DirectoryBackup {
             .join(&self.name)
             .join("previous-output")
     }
+}
+
+#[cfg(unix)]
+fn directory_durability_error(
+    destination: &Utf8Path,
+    backup: Option<&DirectoryBackup>,
+    error: String,
+) -> crate::Error {
+    let error = match backup {
+        Some(backup) => format!(
+            "{error}; previous output preserved at {}",
+            backup.display_path(destination)
+        ),
+        None => error,
+    };
+    crate::Error::ArtifactReplacedNotDurable { error }
 }
 
 #[cfg(unix)]
@@ -2658,6 +2670,68 @@ mod tests {
             Some(b"new artifact" as &[u8])
         );
         assert_eq!(std::fs::read_dir(&destination)?.count(), 1);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_sync_failure_reports_retained_backup_path()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let root = utf8_path(temp_dir.path())?;
+        let source_path = source_fixture_path(&temp_dir, "source.rom")?;
+        std::fs::write(&source_path, b"new output")?;
+        let destination = root.join("output");
+        let existing = destination.join("nested/set");
+        std::fs::create_dir_all(&existing)?;
+        std::fs::write(existing.join("old.rom"), b"previous output")?;
+        let plan = BuildPlan {
+            groups: vec![OutputGroup {
+                path: LogicalPath::new("nested/set"),
+                entries: vec![logical_entry("new.rom", source_file(&source_path))],
+            }],
+            report: BuildReport::default(),
+        };
+        let mut hook = |_, phase| {
+            if phase == ArtifactPhase::DirectorySync {
+                Err(io::Error::other("injected directory sync failure"))
+            } else {
+                Ok(())
+            }
+        };
+
+        let results = write_plan_with_hook(
+            &plan,
+            &destination,
+            OutputContainer::Directory,
+            file_options(ZipCompression::Deflate),
+            &mut hook,
+        )?;
+
+        let Some(ArtifactOutcome::ReplacedButNotDurable { error }) =
+            results.first().map(|result| &result.outcome)
+        else {
+            return Err("expected a nondurable replacement result".into());
+        };
+        let entries = std::fs::read_dir(destination.join("nested"))?
+            .map(|entry| entry.map(|entry| entry.path()))
+            .collect::<Result<Vec<_>, _>>()?;
+        let backup = entries
+            .iter()
+            .find(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(".set.backup-"))
+            })
+            .ok_or("expected a retained prior-output backup")?;
+        let backup_path = backup.join("previous-output");
+        assert!(error.contains("injected directory sync failure"));
+        assert!(error.contains(backup_path.to_string_lossy().as_ref()));
+        assert_eq!(
+            std::fs::read(backup_path.join("old.rom"))?,
+            b"previous output"
+        );
+        assert_eq!(std::fs::read(existing.join("new.rom"))?, b"new output");
         Ok(())
     }
 
