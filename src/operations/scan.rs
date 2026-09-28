@@ -302,7 +302,7 @@ fn optimize_file_order(mut dirs: Vec<DirEntry>) -> Vec<DirEntry> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn optimize_file_order(mut dirs: Vec<DirEntry>) -> Vec<DirEntry> {
+const fn optimize_file_order(dirs: Vec<DirEntry>) -> Vec<DirEntry> {
     dirs
 }
 
