@@ -137,6 +137,109 @@ fn conflicting_whole_asset_digest_suppresses_exact_content_candidate() {
 }
 
 #[test]
+fn contradictory_sha1_pairs_do_not_make_consistent_pair_ambiguous()
+-> Result<(), Box<dyn std::error::Error>> {
+    let left_catalog = CatalogKey::new("publisher-one");
+    let right_catalog = CatalogKey::new("publisher-two");
+    let left_key = snapshot_key(&left_catalog, b"left alternatives");
+    let right_key = snapshot_key(&right_catalog, b"right alternatives");
+    let left = RequirementSnapshot {
+        catalog: left_catalog,
+        snapshot: left_key.clone(),
+        requirements: vec![asset(
+            &left_key,
+            "left",
+            "same.bin",
+            Some([1; 4]),
+            Some([4; 20]),
+        )],
+    };
+    let right = RequirementSnapshot {
+        catalog: right_catalog,
+        snapshot: right_key.clone(),
+        requirements: vec![
+            asset(
+                &right_key,
+                "right",
+                "conflicting.bin",
+                Some([2; 4]),
+                Some([4; 20]),
+            ),
+            asset(
+                &right_key,
+                "right",
+                "matching.bin",
+                Some([1; 4]),
+                Some([4; 20]),
+            ),
+        ],
+    };
+
+    let report = reconcile_requirements(&left, &right, &[]);
+    let matching = report
+        .outcomes
+        .iter()
+        .find(|outcome| {
+            outcome
+                .right
+                .as_ref()
+                .is_some_and(|record| record.key.as_str().contains("matching.bin"))
+        })
+        .ok_or("clean matching pair is missing")?;
+
+    assert_eq!(matching.status, ReconciliationStatus::Compatible);
+    assert!(matching.relationship_candidate().is_some());
+    Ok(())
+}
+
+#[test]
+fn large_weak_collision_sets_produce_bounded_ambiguous_outcomes() {
+    let left_catalog = CatalogKey::new("publisher-one");
+    let right_catalog = CatalogKey::new("publisher-two");
+    let left_key = snapshot_key(&left_catalog, b"left collision set");
+    let right_key = snapshot_key(&right_catalog, b"right collision set");
+    let left = RequirementSnapshot {
+        catalog: left_catalog,
+        snapshot: left_key.clone(),
+        requirements: (0..100)
+            .map(|index| {
+                asset(
+                    &left_key,
+                    "left",
+                    &format!("left-{index}.bin"),
+                    Some([5; 4]),
+                    None,
+                )
+            })
+            .collect(),
+    };
+    let right = RequirementSnapshot {
+        catalog: right_catalog,
+        snapshot: right_key.clone(),
+        requirements: (0..100)
+            .map(|index| {
+                asset(
+                    &right_key,
+                    "right",
+                    &format!("right-{index}.bin"),
+                    Some([5; 4]),
+                    None,
+                )
+            })
+            .collect(),
+    };
+
+    let report = reconcile_requirements(&left, &right, &[]);
+
+    assert!(report.outcomes.len() <= 200);
+    assert_eq!(report.outcomes.len(), 199);
+    assert!(report.outcomes.iter().all(|outcome| {
+        outcome.status == ReconciliationStatus::Ambiguous
+            && outcome.relationship_candidate().is_none()
+    }));
+}
+
+#[test]
 fn weak_partial_evidence_is_only_a_candidate_and_scope_mismatch_is_unknown() {
     let crc_only = ExpectedEvidence {
         scope: EvidenceScope::WholeAsset,

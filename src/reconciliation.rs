@@ -8,6 +8,10 @@ use crate::domain::{
 use crate::resolution::{EvidenceField, compare_expected_fields};
 use serde::{Deserialize, Serialize};
 
+const MAX_EXPANDED_MATCH_PAIRS: usize = 4096;
+type RequirementPair = (usize, usize);
+type CompressedAmbiguity = BTreeMap<RequirementPair, u8>;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReconciliationStatus {
     Compatible,
@@ -120,30 +124,26 @@ pub fn reconcile_requirements(
     left_requirements.sort_by(|a, b| a.record.cmp(&b.record));
     right_requirements.sort_by(|a, b| a.record.cmp(&b.record));
 
-    let mut right_index = BTreeMap::<EvidenceIndexKey, Vec<usize>>::new();
-    for (index, requirement) in right_requirements.iter().enumerate() {
-        for key in index_keys(requirement) {
-            right_index.entry(key).or_default().push(index);
-        }
-    }
-
-    let mut pairs = BTreeSet::new();
-    for (left_index, requirement) in left_requirements.iter().enumerate() {
-        for key in index_keys(requirement) {
-            if let Some(matches) = right_index.get(&key) {
-                pairs.extend(matches.iter().map(|right_index| (left_index, *right_index)));
-            }
-        }
-    }
+    let (pairs, compressed_ambiguity) = candidate_pairs(&left_requirements, &right_requirements);
 
     let mut outcomes = pairs
         .iter()
         .map(|(left_index, right_index)| {
-            pair_outcome(
+            let mut outcome = pair_outcome(
                 left_requirements[*left_index],
                 right_requirements[*right_index],
                 &relationship_index,
-            )
+            );
+            if compressed_ambiguity
+                .get(&(*left_index, *right_index))
+                .is_some_and(|strength| {
+                    outcome.evidence.contradictions.is_empty()
+                        && evidence_strength(&outcome.evidence) <= *strength
+                })
+            {
+                outcome.status = ReconciliationStatus::Ambiguous;
+            }
+            outcome
         })
         .collect::<Vec<_>>();
     mark_ambiguous(&mut outcomes);
@@ -175,6 +175,75 @@ pub fn reconcile_requirements(
         right_snapshot: right.snapshot.clone(),
         outcomes,
     }
+}
+
+fn candidate_pairs(
+    left_requirements: &[&ExpectedAssetRequirement],
+    right_requirements: &[&ExpectedAssetRequirement],
+) -> (BTreeSet<RequirementPair>, CompressedAmbiguity) {
+    let mut left_index = BTreeMap::<EvidenceIndexKey, Vec<usize>>::new();
+    for (index, requirement) in left_requirements.iter().enumerate() {
+        for key in index_keys(requirement) {
+            left_index.entry(key).or_default().push(index);
+        }
+    }
+    let mut right_index = BTreeMap::<EvidenceIndexKey, Vec<usize>>::new();
+    for (index, requirement) in right_requirements.iter().enumerate() {
+        for key in index_keys(requirement) {
+            right_index.entry(key).or_default().push(index);
+        }
+    }
+
+    let mut pairs = BTreeSet::new();
+    let mut compressed_ambiguity = CompressedAmbiguity::new();
+    for (key, left_matches) in left_index {
+        if let Some(right_matches) = right_index.get(&key) {
+            let bucket_pairs = left_matches.len().saturating_mul(right_matches.len());
+            if pairs.len().saturating_add(bucket_pairs) > MAX_EXPANDED_MATCH_PAIRS {
+                let strength = fingerprint_strength(&key.fingerprint);
+                if let Some(first_left) = left_matches.first() {
+                    for right_index in right_matches {
+                        add_compressed_pair(
+                            &mut pairs,
+                            &mut compressed_ambiguity,
+                            (*first_left, *right_index),
+                            strength,
+                        );
+                    }
+                }
+                if let Some(first_right) = right_matches.first() {
+                    for left_index in left_matches.iter().skip(1) {
+                        add_compressed_pair(
+                            &mut pairs,
+                            &mut compressed_ambiguity,
+                            (*left_index, *first_right),
+                            strength,
+                        );
+                    }
+                }
+            } else {
+                pairs.extend(left_matches.iter().flat_map(|left_index| {
+                    right_matches
+                        .iter()
+                        .map(move |right_index| (*left_index, *right_index))
+                }));
+            }
+        }
+    }
+    (pairs, compressed_ambiguity)
+}
+
+fn add_compressed_pair(
+    pairs: &mut BTreeSet<RequirementPair>,
+    compressed_ambiguity: &mut CompressedAmbiguity,
+    pair: RequirementPair,
+    strength: u8,
+) {
+    pairs.insert(pair);
+    compressed_ambiguity
+        .entry(pair)
+        .and_modify(|current| *current = (*current).max(strength))
+        .or_insert(strength);
 }
 
 impl RequirementReconciliation {
@@ -368,7 +437,7 @@ fn mark_ambiguous(outcomes: &mut [RequirementReconciliation]) {
         matches!(
             outcome.status,
             ReconciliationStatus::Compatible | ReconciliationStatus::Candidate
-        )
+        ) && outcome.evidence.contradictions.is_empty()
     }) {
         let strength = evidence_strength(&outcome.evidence);
         for (record, counts) in [
@@ -389,7 +458,7 @@ fn mark_ambiguous(outcomes: &mut [RequirementReconciliation]) {
         matches!(
             outcome.status,
             ReconciliationStatus::Compatible | ReconciliationStatus::Candidate
-        )
+        ) && outcome.evidence.contradictions.is_empty()
     }) {
         let strength = evidence_strength(&outcome.evidence);
         let left_ambiguous = outcome.left.as_ref().is_some_and(|record| {
@@ -415,5 +484,13 @@ fn evidence_strength(evidence: &ExpectedEvidenceReconciliation) -> u8 {
         2
     } else {
         u8::from(evidence.agreements.contains(&EvidenceField::Crc))
+    }
+}
+
+const fn fingerprint_strength(fingerprint: &EvidenceFingerprint) -> u8 {
+    match fingerprint {
+        EvidenceFingerprint::Sha1(_) => 3,
+        EvidenceFingerprint::Md5(_) => 2,
+        EvidenceFingerprint::Crc(_) => 1,
     }
 }
