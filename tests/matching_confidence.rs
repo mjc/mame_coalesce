@@ -2,7 +2,7 @@ use mame_coalesce::{
     domain::{
         AssetRole, CatalogKey, Crc32Digest, DatRom, EvidenceProvenance, EvidenceScope,
         ExpectedEvidence, Md5Digest, ObservedContent, RequirementKey, SetKey, SetMetadata,
-        SourceFile, SourceLocation, SourceRoot,
+        SourceFile, SourceLocation, SourcePhysicalPath, SourceRoot,
     },
     hashes::sha1_bytes,
     resolution::{MatchStrength, MatchingPolicy, MissingReason, ResolutionStatus, resolve},
@@ -24,11 +24,13 @@ fn requirement(expected: ExpectedEvidence) -> DatRom {
 }
 
 fn source(path: &str, observed: ObservedContent) -> SourceFile {
+    let location = SourceLocation::BareFile {
+        path: path.to_owned(),
+    };
     SourceFile {
         source_root: SourceRoot::new("/roms"),
-        location: SourceLocation::BareFile {
-            path: path.to_owned(),
-        },
+        physical_path: SourcePhysicalPath::from_location(&location),
+        location,
         observed,
         fingerprint: None,
         scan_run: None,
@@ -126,6 +128,6 @@ fn evidence_aware_confidence_falls_back_safely_and_keeps_legacy_default() {
     );
     assert!(matches!(
         &weak[0].status,
-        ResolutionStatus::AmbiguousWeak { candidates } if candidates.len() == 2
+        ResolutionStatus::Ambiguous { candidates, .. } if candidates.len() == 2
     ));
 }
