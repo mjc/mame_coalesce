@@ -645,8 +645,8 @@ pub fn scan_source_with_progress(
 
 /// Plan a build from cached data and write artifacts unless dry-run or blocked.
 ///
-/// Artifact-level failures are returned in the report; setup and execution errors carry
-/// the partial build report in [`crate::Error::BuildWorkflow`].
+/// Artifact-level failures are returned in the report. Once planning succeeds, output
+/// setup and execution errors carry the partial report in [`crate::Error::BuildWorkflow`].
 pub fn build(
     database: &Database,
     request: &BuildWorkflowRequest,
