@@ -36,6 +36,8 @@ pub enum ScanProgress {
 /// Scan the source tree and report progress as files are processed.
 ///
 /// `excluded_paths` are omitted from traversal; `jobs` controls the hashing pool size.
+/// Only regular files are scanned; symlinks to regular files are followed, while special files
+/// are ignored.
 pub fn source_with_progress(
     path: &Utf8Path,
     jobs: usize,
@@ -509,7 +511,15 @@ fn collect_walked_files(
             let entry = entry.map_err(|error| {
                 Error::InvalidPath(format!("failed to traverse source path: {error}"))
             })?;
-            if !entry.file_type().is_dir() {
+            let file_type = entry.file_type();
+            let is_regular_file = file_type.is_file()
+                || (file_type.is_symlink()
+                    && std::fs::metadata(entry.path())
+                        .map_err(|error| {
+                            Error::InvalidPath(format!("failed to traverse source path: {error}"))
+                        })?
+                        .is_file());
+            if is_regular_file {
                 files.push(entry);
             }
             Ok::<_, crate::Error>(files)
@@ -613,6 +623,53 @@ mod tests {
                 Utf8PathBuf::from("visible.rom"),
             ])
         );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scanning_fifo_skips_it_without_blocking() -> Result<(), Box<dyn std::error::Error>> {
+        use std::{os::fd::AsFd, sync::mpsc, time::Duration};
+
+        let temp_dir = tempfile::tempdir()?;
+        let root = Utf8Path::from_path(temp_dir.path())
+            .ok_or_else(|| io::Error::other("temp path is not UTF-8"))?
+            .to_owned();
+        std::fs::write(root.join("visible.rom"), b"visible")?;
+        let directory = std::fs::File::open(&root)?;
+        rustix::fs::mkfifoat(
+            directory.as_fd(),
+            "blocked.rom",
+            rustix::fs::Mode::from_raw_mode(0o600),
+        )?;
+        std::os::unix::fs::symlink("blocked.rom", root.join("blocked-link.rom"))?;
+
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let result =
+                source_with_progress(&root, 1, &[], &|_| {}).map(|scan| scan.observations().len());
+            let _ = sender.send(result);
+        });
+
+        let observation_count = receiver.recv_timeout(Duration::from_secs(2))??;
+        assert_eq!(observation_count, 1);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn walk_for_files_preserves_symlinks_to_regular_files() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let temp_dir = tempfile::tempdir()?;
+        let root = Utf8Path::from_path(temp_dir.path())
+            .ok_or_else(|| io::Error::other("temp path is not UTF-8"))?;
+        std::fs::write(root.join("visible.rom"), b"visible")?;
+        std::os::unix::fs::symlink("visible.rom", root.join("alias.rom"))?;
+
+        let files = walk_for_files(root, &[])?;
+
+        assert!(files.iter().any(|path| path.ends_with("visible.rom")));
+        assert!(files.iter().any(|path| path.ends_with("alias.rom")));
         Ok(())
     }
 
