@@ -511,6 +511,12 @@ fn collect_walked_files(
             let entry = entry.map_err(|error| {
                 Error::InvalidPath(format!("failed to traverse source path: {error}"))
             })?;
+            if excluded_paths
+                .iter()
+                .any(|excluded_path| entry.path() == excluded_path.as_std_path())
+            {
+                return Ok::<_, crate::Error>(files);
+            }
             let file_type = entry.file_type();
             let is_regular_file = file_type.is_file()
                 || (file_type.is_symlink()
@@ -528,14 +534,7 @@ fn collect_walked_files(
         .into_iter()
         .map(|entry| source_path_from_path_buf(entry.into_path()))
         .collect::<crate::Result<Vec<_>>>()?;
-    Ok(paths
-        .into_iter()
-        .filter(|path| {
-            !excluded_paths
-                .iter()
-                .any(|excluded_path| path == excluded_path)
-        })
-        .collect())
+    Ok(paths)
 }
 
 fn source_path_from_path_buf(path: PathBuf) -> crate::Result<Utf8PathBuf> {
@@ -670,6 +669,25 @@ mod tests {
 
         assert!(files.iter().any(|path| path.ends_with("visible.rom")));
         assert!(files.iter().any(|path| path.ends_with("alias.rom")));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn walk_for_files_does_not_resolve_excluded_dangling_symlinks()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let root = Utf8Path::from_path(temp_dir.path())
+            .ok_or_else(|| io::Error::other("temp path is not UTF-8"))?;
+        std::fs::write(root.join("visible.rom"), b"visible")?;
+        std::os::unix::fs::symlink("missing.rom", root.join("excluded.rom"))?;
+        let canonical_root = root.canonicalize_utf8()?;
+        let excluded_path = canonical_root.join("excluded.rom");
+
+        assert_eq!(
+            walk_for_files(root, &[excluded_path])?,
+            vec![canonical_root.join("visible.rom")]
+        );
         Ok(())
     }
 
