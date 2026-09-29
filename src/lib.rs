@@ -16,6 +16,7 @@ mod operations;
 mod private_temp;
 pub mod reconciliation;
 pub mod resolution;
+pub mod serving;
 pub(crate) mod sources;
 mod storage;
 

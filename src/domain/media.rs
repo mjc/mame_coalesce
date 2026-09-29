@@ -693,6 +693,24 @@ impl RepresentationKey {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct VerifiedRepresentationIdentity {
+    key: RepresentationKey,
+    digest: RepresentationDigest,
+}
+
+impl VerifiedRepresentationIdentity {
+    #[must_use]
+    pub const fn key(self) -> RepresentationKey {
+        self.key
+    }
+
+    #[must_use]
+    pub const fn digest(self) -> RepresentationDigest {
+        self.digest
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ExactOutputReference {
     recipe: RepresentationKey,
@@ -821,6 +839,20 @@ impl RecipeVerification {
             VerificationState::Unverified => None,
             VerificationState::ExactReconstruction { recipe, .. }
             | VerificationState::EmulatorCompatible { recipe, .. } => Some(*recipe),
+        }
+    }
+
+    fn verified_output_digest(&self, key: RepresentationKey) -> Option<RepresentationDigest> {
+        match &self.0 {
+            VerificationState::ExactReconstruction { recipe, output, .. }
+            | VerificationState::EmulatorCompatible { recipe, output, .. }
+                if *recipe == key =>
+            {
+                Some(*output)
+            }
+            VerificationState::Unverified
+            | VerificationState::ExactReconstruction { .. }
+            | VerificationState::EmulatorCompatible { .. } => None,
         }
     }
 }
@@ -978,6 +1010,16 @@ impl<State> MediaRecipe<State> {
 }
 
 impl MediaRecipe<ValidatedMediaRecipe> {
+    #[must_use]
+    pub fn verified_identity(&self) -> Option<VerifiedRepresentationIdentity> {
+        self.verification
+            .verified_output_digest(self.representation)
+            .map(|digest| VerifiedRepresentationIdentity {
+                key: self.representation,
+                digest,
+            })
+    }
+
     #[must_use]
     pub fn is_exactly_verified(&self) -> bool {
         matches!(
@@ -1417,7 +1459,6 @@ mod tests {
         )?;
         let verified = original.with_verification(verification.clone())?;
         assert!(verified.is_exactly_verified());
-
         let changed = validate(recipe(
             part.clone(),
             vec![
@@ -1477,6 +1518,45 @@ mod tests {
         let compatible = verified.with_verification(compatible_evidence)?;
         assert!(!compatible.is_exactly_verified());
         assert!(compatible.is_compatible_for(&target));
+        Ok(())
+    }
+
+    #[test]
+    fn verified_representation_identity_binds_recipe_key_to_output_digest()
+    -> Result<(), MediaRecipeError> {
+        let part = part_key();
+        let original = validate(recipe(
+            part.clone(),
+            vec![input_with_observed(
+                &part,
+                0,
+                MediaComponentRole::Rom,
+                Some(RepresentationDigest::from_bytes(b"input")),
+                None,
+                None,
+            )],
+            Vec::new(),
+        )?)?;
+        let reference = ExactOutputReference::establish(
+            &original,
+            ReferenceArtifactId::new("reference-set-v1"),
+            std::io::Cursor::new(b"exact output"),
+        )?;
+        let verification = RecipeVerification::exact_reconstruction(
+            &original,
+            &reference,
+            std::io::Cursor::new(b"exact output"),
+        )?;
+        let verified = original.with_verification(verification)?;
+        let identity = verified.verified_identity();
+        assert_eq!(
+            identity.map(VerifiedRepresentationIdentity::key),
+            Some(verified.representation())
+        );
+        assert_eq!(
+            identity.map(VerifiedRepresentationIdentity::digest),
+            Some(RepresentationDigest::from_bytes(b"exact output"))
+        );
         Ok(())
     }
 

@@ -6,7 +6,7 @@ license = "MIT"
 description = "Merge MAME ROMs into 1 game 1 zip format"
 repository = "https://github.com/mjc/mame_coalesce"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.98.1"
 default-run = "mame_coalesce"
 exclude = [
     ".env",
@@ -78,6 +78,7 @@ crc32fast = "1.5"
 md-5 = "0.10"
 r7z = { version = "0.1.0", git = "https://github.com/mjc/r7z.git", rev = "bfef3198696add8045ad34581dd977d671ae9daa" }
 unrar = "0.5.8"
+unrar-rs = { version = "=0.10.8", default-features = false, features = ["crypto-rust"] }
 
 hex = { version = "0.4", features = ["serde"] }
 sha2 = "0.10"

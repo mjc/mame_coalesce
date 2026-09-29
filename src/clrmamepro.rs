@@ -695,7 +695,7 @@ impl Token<'_> {
         }
     }
 
-    fn word_eq(&self, expected: &str) -> bool {
+    const fn word_eq(&self, expected: &str) -> bool {
         matches!(&self.kind, TokenKind::Word) && self.raw.eq_ignore_ascii_case(expected)
     }
 }

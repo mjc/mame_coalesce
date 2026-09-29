@@ -4,6 +4,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File},
     io::{self, Read, Seek, SeekFrom, Write},
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
 use camino::Utf8Path;
@@ -12,8 +13,19 @@ use crate::domain::ArchiveBackend;
 use crate::{Error, Result};
 
 const RAR_MAX_MEMBER_SIZE: u64 = 128 * 1024 * 1024;
+const RAR_MAX_PREREQUISITE_MEMBER_SIZE: u64 = 512 * 1024 * 1024;
+const RAR_MAX_PREREQUISITE_OUTPUT_SIZE: u64 = 1024 * 1024 * 1024;
+const RAR_MAX_DICTIONARY_SIZE: u64 = 256 * 1024 * 1024;
+const SEVEN_Z_MAX_DICTIONARY_SIZE: u64 = 256 * 1024 * 1024;
+const SEVEN_Z_MAX_DECODER_WORKING_SET_SIZE: u64 = 512 * 1024 * 1024;
+const MAX_ACTIVE_ARCHIVE_DECODERS: usize = 2;
 const SEVEN_Z_MAX_SELECTED_MEMBER_SIZE: u64 = 16 * 1024 * 1024 * 1024;
 const SEVEN_Z_MAX_PACKED_FOLDER_SIZE: u64 = 512 * 1024 * 1024;
+const SEVEN_Z_MAX_PREREQUISITE_MEMBER_SIZE: u64 = 512 * 1024 * 1024;
+const SEVEN_Z_MAX_PREREQUISITE_OUTPUT_SIZE: u64 = 1024 * 1024 * 1024;
+pub const MAX_SERVING_ARCHIVE_ENTRIES: usize = 100_000;
+
+static ARCHIVE_DECODER_SLOTS: DecoderSlots = DecoderSlots::new(MAX_ACTIVE_ARCHIVE_DECODERS);
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ArchiveMemberSelector {
@@ -41,6 +53,11 @@ pub struct BackendCapabilities {
     pub limitation: &'static str,
     pub max_member_size: Option<u64>,
     pub max_packed_folder_size: Option<u64>,
+    pub max_prerequisite_member_size: Option<u64>,
+    pub max_prerequisite_output_size: Option<u64>,
+    pub max_concurrent_decoders: Option<usize>,
+    pub max_decoder_dictionary_size: Option<u64>,
+    pub max_decoder_working_set_size: Option<u64>,
 }
 
 /// Operational details of the backends pinned by this project.
@@ -51,20 +68,35 @@ pub const BACKEND_CAPABILITIES: [BackendCapabilities; 3] = [
         limitation: "The pinned ZIP reader collapses exact duplicate raw filenames, so those archives are rejected; distinct raw names that normalize identically remain selectable by index.",
         max_member_size: None,
         max_packed_folder_size: None,
+        max_prerequisite_member_size: None,
+        max_prerequisite_output_size: None,
+        max_concurrent_decoders: None,
+        max_decoder_dictionary_size: None,
+        max_decoder_working_set_size: None,
     },
     BackendCapabilities {
         backend: ArchiveBackend::SevenZip,
         selected_reads: "Selected members are streamed by index in archive order; each selected solid folder is decoded once and folders with no selected entries are not opened.",
-        limitation: "Multi-range folders buffer at most 512 MiB of packed data. BCJ2 enforces a 512 MiB combined packed/intermediate/final-buffer/decoder-state budget and a 256 MiB final-output ceiling. Decoder chains are limited to 64 coders and 512 MiB aggregate state; LZMA/LZMA2 dictionaries and PPMd memory are capped at 256 MiB, AES buffers at 128 MiB each, and materialized folder output shares a 512 MiB budget with decoder state.",
+        limitation: "Serving admits at most two concurrent 7z/RAR decoders. Per decoder, LZMA/LZMA2 dictionaries and PPMd memory are capped at 256 MiB; decoder working state is capped at 512 MiB. Unselected members in selected solid folders are capped at 512 MiB each and 1 GiB aggregate decoded output. Multi-range folders buffer at most 512 MiB of packed data. BCJ2 enforces a 512 MiB combined packed/intermediate/final-buffer/decoder-state budget and a 256 MiB final-output ceiling. Decoder chains are limited to 64 coders; AES buffers are capped at 128 MiB each, and materialized folder output shares a 512 MiB budget with decoder state.",
         max_member_size: Some(SEVEN_Z_MAX_SELECTED_MEMBER_SIZE),
         max_packed_folder_size: Some(SEVEN_Z_MAX_PACKED_FOLDER_SIZE),
+        max_prerequisite_member_size: Some(SEVEN_Z_MAX_PREREQUISITE_MEMBER_SIZE),
+        max_prerequisite_output_size: Some(SEVEN_Z_MAX_PREREQUISITE_OUTPUT_SIZE),
+        max_concurrent_decoders: Some(MAX_ACTIVE_ARCHIVE_DECODERS),
+        max_decoder_dictionary_size: Some(SEVEN_Z_MAX_DICTIONARY_SIZE),
+        max_decoder_working_set_size: Some(SEVEN_Z_MAX_DECODER_WORKING_SET_SIZE),
     },
     BackendCapabilities {
         backend: ArchiveBackend::Rar,
-        selected_reads: "Selected entries are extracted to a unique temporary directory, then read as a stream.",
-        limitation: "Declared members larger than 128 MiB are rejected before extraction and actual size is checked afterward. The pinned unrar extract_to API has no streaming byte ceiling, so understated metadata can temporarily exceed the limit on disk.",
+        selected_reads: "For serving, selected entries stream directly to the bounded spool and solid predecessors are decoded to a bounded sink.",
+        limitation: "Serving admits at most two concurrent 7z/RAR decoders. Each RAR decoder has a 256 MiB dictionary ceiling. Selected members are capped at 128 MiB. Solid prerequisites are capped at 512 MiB each and 1 GiB total decoded output.",
         max_member_size: Some(RAR_MAX_MEMBER_SIZE),
         max_packed_folder_size: None,
+        max_prerequisite_member_size: Some(RAR_MAX_PREREQUISITE_MEMBER_SIZE),
+        max_prerequisite_output_size: Some(RAR_MAX_PREREQUISITE_OUTPUT_SIZE),
+        max_concurrent_decoders: Some(MAX_ACTIVE_ARCHIVE_DECODERS),
+        max_decoder_dictionary_size: Some(RAR_MAX_DICTIONARY_SIZE),
+        max_decoder_working_set_size: None,
     },
 ];
 
@@ -74,6 +106,47 @@ pub const fn capabilities(backend: ArchiveBackend) -> &'static BackendCapabiliti
         ArchiveBackend::SevenZip => &BACKEND_CAPABILITIES[1],
         ArchiveBackend::Rar => &BACKEND_CAPABILITIES[2],
     }
+}
+
+struct DecoderSlots {
+    maximum: usize,
+    active: AtomicUsize,
+}
+
+impl DecoderSlots {
+    const fn new(maximum: usize) -> Self {
+        Self {
+            maximum,
+            active: AtomicUsize::new(0),
+        }
+    }
+
+    fn try_acquire(&self) -> Option<DecoderPermit<'_>> {
+        self.active
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+                active.checked_add(1).filter(|next| *next <= self.maximum)
+            })
+            .ok()
+            .map(|_| DecoderPermit { slots: self })
+    }
+}
+
+struct DecoderPermit<'a> {
+    slots: &'a DecoderSlots,
+}
+
+impl Drop for DecoderPermit<'_> {
+    fn drop(&mut self) {
+        self.slots.active.fetch_sub(1, Ordering::Release);
+    }
+}
+
+fn reserve_serving_decoder() -> Result<DecoderPermit<'static>> {
+    ARCHIVE_DECODER_SLOTS.try_acquire().ok_or_else(|| {
+        Error::InvalidPath(format!(
+            "archive decoder concurrency limit of {MAX_ACTIVE_ARCHIVE_DECODERS} is reached"
+        ))
+    })
 }
 
 pub fn detect(path: &Utf8Path) -> Result<SourceKind> {
@@ -104,6 +177,22 @@ pub fn stream_file(path: &Utf8Path, writer: &mut dyn Write) -> Result<()> {
 }
 
 pub fn enumerate(path: &Utf8Path, backend: ArchiveBackend) -> Result<Vec<ArchiveMember>> {
+    enumerate_with_limit(path, backend, None)
+}
+
+/// Enumerates an archive under the member-count limit used by content serving.
+pub fn enumerate_for_serving(
+    path: &Utf8Path,
+    backend: ArchiveBackend,
+) -> Result<Vec<ArchiveMember>> {
+    enumerate_with_limit(path, backend, Some(MAX_SERVING_ARCHIVE_ENTRIES))
+}
+
+fn enumerate_with_limit(
+    path: &Utf8Path,
+    backend: ArchiveBackend,
+    maximum_entries: Option<usize>,
+) -> Result<Vec<ArchiveMember>> {
     match detect(path)? {
         SourceKind::Archive(detected) if detected == backend => {}
         SourceKind::Archive(detected) => {
@@ -118,9 +207,9 @@ pub fn enumerate(path: &Utf8Path, backend: ArchiveBackend) -> Result<Vec<Archive
         }
     }
     let result = match backend {
-        ArchiveBackend::Zip => enumerate_zip(path),
-        ArchiveBackend::SevenZip => enumerate_7z(path),
-        ArchiveBackend::Rar => enumerate_rar(path),
+        ArchiveBackend::Zip => enumerate_zip(path, maximum_entries),
+        ArchiveBackend::SevenZip => enumerate_7z(path, maximum_entries),
+        ArchiveBackend::Rar => enumerate_rar(path, maximum_entries),
     };
     result.map_err(|error| {
         Error::InvalidPath(format!(
@@ -157,6 +246,165 @@ where
         ))
     })?;
     Ok(inventory)
+}
+
+/// Streams one selected member directly to a bounded writer.
+///
+/// Unlike [`stream_archive`], this avoids a reader-side extraction spool for
+/// backends whose reader API must materialize a member before returning it.
+pub fn stream_archive_member_to_writer(
+    path: &Utf8Path,
+    backend: ArchiveBackend,
+    selector: &ArchiveMemberSelector,
+    writer: &mut dyn Write,
+) -> Result<ArchiveMember> {
+    let inventory = enumerate_for_serving(path, backend)?;
+    let selected = resolve_selection(&inventory, Some(std::slice::from_ref(selector)))?;
+    let member = selected
+        .first()
+        .ok_or_else(|| Error::InvalidPath("selected archive member is unavailable".to_owned()))?;
+    match backend {
+        ArchiveBackend::Zip => stream_zip(path, std::slice::from_ref(member), &mut |_, reader| {
+            io::copy(reader, writer)?;
+            Ok(())
+        })?,
+        ArchiveBackend::SevenZip => {
+            stream_7z_for_serving(path, std::slice::from_ref(member), &mut |_, reader| {
+                io::copy(reader, writer)?;
+                Ok(())
+            })?;
+        }
+        ArchiveBackend::Rar => stream_rar_to_writer(path, member, writer)?,
+    }
+    Ok(member.clone())
+}
+
+fn stream_rar_to_writer(
+    path: &Utf8Path,
+    member: &ArchiveMember,
+    writer: &mut dyn Write,
+) -> Result<()> {
+    let maximum = capabilities(ArchiveBackend::Rar)
+        .max_member_size
+        .ok_or_else(|| Error::InvalidPath("RAR member limit is not configured".to_owned()))?;
+    if member.size > maximum {
+        return Err(Error::InvalidPath(format!(
+            "RAR member {} exceeds the {} MiB extraction limit",
+            member.selector.name,
+            maximum / (1024 * 1024)
+        )));
+    }
+    let _decoder_permit = reserve_serving_decoder()?;
+    let mut archive = unrar_rs::RarArchive::open(File::open(path)?).map_err(|error| {
+        Error::InvalidPath(format!("failed to open RAR source {path}: {error}"))
+    })?;
+    archive.set_limits(unrar_rs::limits::Limits {
+        max_unpacked_size: RAR_MAX_PREREQUISITE_MEMBER_SIZE,
+        max_dict_size: RAR_MAX_DICTIONARY_SIZE,
+        ..unrar_rs::limits::Limits::default()
+    });
+    let selected_member_is_solid = archive.is_solid()
+        || archive
+            .by_index(member.selector.index)
+            .map_err(|error| {
+                Error::InvalidPath(format!("failed to inspect selected RAR member: {error}"))
+            })?
+            .info()
+            .compression
+            .solid;
+    if selected_member_is_solid {
+        let mut decoded_prerequisites = 0_u64;
+        for index in 0..member.selector.index {
+            let entry = archive.by_index(index).map_err(|error| {
+                Error::InvalidPath(format!("failed to select RAR prerequisite: {error}"))
+            })?;
+            if entry
+                .size()
+                .is_some_and(|size| size > RAR_MAX_PREREQUISITE_MEMBER_SIZE)
+            {
+                return Err(Error::InvalidPath(format!(
+                    "RAR solid prerequisite exceeds the {} MiB per-member decode limit",
+                    RAR_MAX_PREREQUISITE_MEMBER_SIZE / (1024 * 1024)
+                )));
+            }
+            let remaining = RAR_MAX_PREREQUISITE_OUTPUT_SIZE - decoded_prerequisites;
+            let mut discard = io::sink();
+            let mut bounded = BoundedMemberWriter::new(&mut discard, remaining);
+            let written = entry.copy_to(&mut bounded).map_err(|error| {
+                Error::InvalidPath(format!("failed to decode RAR prerequisite: {error}"))
+            })?;
+            if written != bounded.written {
+                return Err(Error::InvalidPath(
+                    "RAR prerequisite byte count changed while decoding".to_owned(),
+                ));
+            }
+            decoded_prerequisites =
+                decoded_prerequisites.checked_add(written).ok_or_else(|| {
+                    Error::InvalidPath("RAR prerequisite byte count overflowed".to_owned())
+                })?;
+        }
+    }
+    let entry = archive
+        .by_index(member.selector.index)
+        .map_err(|error| Error::InvalidPath(format!("failed to select RAR member: {error}")))?;
+    if entry.is_dir()
+        || normalize_member_name(entry.name())? != member.selector.name
+        || entry.size() != Some(member.size)
+    {
+        return Err(Error::InvalidPath(format!(
+            "RAR member changed after enumeration at index {}: {}",
+            member.selector.index, member.selector.name
+        )));
+    }
+    let mut bounded = BoundedMemberWriter::new(writer, member.size);
+    let written = entry
+        .copy_to(&mut bounded)
+        .map_err(|error| Error::InvalidPath(format!("failed to decode RAR member: {error}")))?;
+    if written != member.size || bounded.written != member.size {
+        return Err(Error::InvalidPath(format!(
+            "RAR member size changed while reading: {}",
+            member.selector.name
+        )));
+    }
+    Ok(())
+}
+
+struct BoundedMemberWriter<'a> {
+    writer: &'a mut dyn Write,
+    limit: u64,
+    written: u64,
+}
+
+impl<'a> BoundedMemberWriter<'a> {
+    const fn new(writer: &'a mut dyn Write, limit: u64) -> Self {
+        Self {
+            writer,
+            limit,
+            written: 0,
+        }
+    }
+}
+
+impl Write for BoundedMemberWriter<'_> {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        let remaining = self.limit - self.written;
+        if remaining == 0 && !buffer.is_empty() {
+            return Err(io::Error::other("RAR decoded output exceeded its limit"));
+        }
+        let allowed = usize::try_from(remaining)
+            .unwrap_or(usize::MAX)
+            .min(buffer.len());
+        let written = self.writer.write(&buffer[..allowed])?;
+        self.written = self
+            .written
+            .checked_add(u64::try_from(written).map_err(io::Error::other)?)
+            .ok_or_else(|| io::Error::other("RAR decoded output size overflowed"))?;
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.writer.flush()
+    }
 }
 
 fn resolve_selection(
@@ -234,12 +482,17 @@ fn archive_member(index: usize, name: &str, size: u64) -> Result<ArchiveMember> 
     })
 }
 
-fn enumerate_zip(path: &Utf8Path) -> Result<Vec<ArchiveMember>> {
+fn enumerate_zip(path: &Utf8Path, maximum_entries: Option<usize>) -> Result<Vec<ArchiveMember>> {
     let central_entry_count = zip_central_entry_count(path)?.ok_or_else(|| {
         Error::InvalidPath(format!(
             "cannot validate ZIP central directory count: {path}"
         ))
     })?;
+    if maximum_entries.is_some_and(|maximum| central_entry_count > maximum) {
+        return Err(Error::InvalidPath(format!(
+            "archive exceeds the {MAX_SERVING_ARCHIVE_ENTRIES}-entry serving limit"
+        )));
+    }
     let mut archive = zip::ZipArchive::new(File::open(path)?)?;
     if central_entry_count != archive.len() {
         return Err(Error::InvalidPath(format!(
@@ -449,8 +702,19 @@ fn count_zip_central_entries(file: &mut File, start: u64, size: u64) -> Result<u
     Ok(count)
 }
 
-fn enumerate_7z(path: &Utf8Path) -> Result<Vec<ArchiveMember>> {
-    let archive = r7z::Archive::open(path.as_std_path())?;
+fn enumerate_7z(path: &Utf8Path, maximum_entries: Option<usize>) -> Result<Vec<ArchiveMember>> {
+    let _decoder_permit = maximum_entries
+        .map(|_| reserve_serving_decoder())
+        .transpose()?;
+    let archive = match maximum_entries {
+        Some(_) => open_7z_for_serving(path)?,
+        None => r7z::Archive::open(path.as_std_path())?,
+    };
+    if maximum_entries.is_some_and(|maximum| archive.num_files() > maximum) {
+        return Err(Error::InvalidPath(format!(
+            "archive exceeds the {MAX_SERVING_ARCHIVE_ENTRIES}-entry serving limit"
+        )));
+    }
     let entries = archive.entries().collect::<Vec<_>>();
     let listing = archive.listing(None)?;
     entries
@@ -467,11 +731,16 @@ fn enumerate_7z(path: &Utf8Path) -> Result<Vec<ArchiveMember>> {
         .collect()
 }
 
-fn enumerate_rar(path: &Utf8Path) -> Result<Vec<ArchiveMember>> {
+fn enumerate_rar(path: &Utf8Path, maximum_entries: Option<usize>) -> Result<Vec<ArchiveMember>> {
     let mut archive = unrar::Archive::new(path.as_std_path()).open_for_processing()?;
     let mut members = Vec::new();
     let mut index = 0;
     while let Some(header) = archive.read_header()? {
+        if maximum_entries.is_some_and(|maximum| index >= maximum) {
+            return Err(Error::InvalidPath(format!(
+                "archive exceeds the {MAX_SERVING_ARCHIVE_ENTRIES}-entry serving limit"
+            )));
+        }
         if header.entry().is_file() {
             let name = header.entry().filename.to_str().ok_or_else(|| {
                 Error::InvalidPath("RAR member name is not valid UTF-8".to_owned())
@@ -505,7 +774,36 @@ where
     Ok(())
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SevenZipReadMode {
+    Existing,
+    Serving,
+}
+
 fn stream_7z<F>(path: &Utf8Path, members: &[ArchiveMember], callback: &mut F) -> Result<()>
+where
+    F: FnMut(&ArchiveMember, &mut dyn Read) -> Result<()>,
+{
+    stream_7z_with_mode(path, members, callback, SevenZipReadMode::Existing)
+}
+
+fn stream_7z_for_serving<F>(
+    path: &Utf8Path,
+    members: &[ArchiveMember],
+    callback: &mut F,
+) -> Result<()>
+where
+    F: FnMut(&ArchiveMember, &mut dyn Read) -> Result<()>,
+{
+    stream_7z_with_mode(path, members, callback, SevenZipReadMode::Serving)
+}
+
+fn stream_7z_with_mode<F>(
+    path: &Utf8Path,
+    members: &[ArchiveMember],
+    callback: &mut F,
+    mode: SevenZipReadMode,
+) -> Result<()>
 where
     F: FnMut(&ArchiveMember, &mut dyn Read) -> Result<()>,
 {
@@ -520,13 +818,22 @@ where
     if members.is_empty() {
         return Ok(());
     }
-    let archive = r7z::Archive::open(path.as_std_path())?;
+    let _decoder_permit = (mode == SevenZipReadMode::Serving)
+        .then(reserve_serving_decoder)
+        .transpose()?;
+    let archive = match mode {
+        SevenZipReadMode::Existing => r7z::Archive::open(path.as_std_path())?,
+        SevenZipReadMode::Serving => open_7z_for_serving(path)?,
+    };
     let listing = archive.listing(None)?;
     let selected_indices = members
         .iter()
         .map(|member| member.selector.index)
         .collect::<Vec<_>>();
-    preflight_7z_packed_folders(&archive, &listing, &selected_indices)?;
+    if mode == SevenZipReadMode::Serving {
+        preflight_7z_prerequisite_output(&listing.entries, &selected_indices)?;
+        preflight_7z_packed_folders(&archive, &listing, &selected_indices)?;
+    }
     let selected = members
         .iter()
         .map(|member| (member.selector.index, member))
@@ -568,6 +875,16 @@ where
         ));
     }
     Ok(())
+}
+
+fn open_7z_for_serving(path: &Utf8Path) -> Result<r7z::Archive> {
+    Ok(r7z::Archive::open_with_options(
+        path.as_std_path(),
+        r7z::ArchiveOpenOptions {
+            storage_mode: r7z::ArchiveStorageMode::Seek,
+            ..r7z::ArchiveOpenOptions::default()
+        },
+    )?)
 }
 
 fn preflight_7z_packed_folders(
@@ -616,6 +933,46 @@ fn preflight_7z_packed_folders(
             ))
         })?;
         enforce_7z_packed_folder_limit(block, packed_streams, packed_size)?;
+    }
+    Ok(())
+}
+
+fn preflight_7z_prerequisite_output(
+    entries: &[r7z::ArchiveListingEntry],
+    selected_indices: &[usize],
+) -> Result<()> {
+    let selected = selected_indices.iter().copied().collect::<BTreeSet<_>>();
+    let selected_blocks = selected_indices
+        .iter()
+        .filter_map(|&index| entries.get(index).and_then(|entry| entry.block))
+        .collect::<BTreeSet<_>>();
+    let mut total = 0_u64;
+    for entry in entries {
+        if !entry
+            .block
+            .is_some_and(|block| selected_blocks.contains(&block))
+            || selected.contains(&entry.index)
+        {
+            continue;
+        }
+        let size = entry.size.ok_or_else(|| {
+            Error::InvalidPath("7z solid prerequisite size is unavailable".to_owned())
+        })?;
+        if size > SEVEN_Z_MAX_PREREQUISITE_MEMBER_SIZE {
+            return Err(Error::InvalidPath(format!(
+                "7z solid prerequisite exceeds the {} MiB per-member decode limit",
+                SEVEN_Z_MAX_PREREQUISITE_MEMBER_SIZE / (1024 * 1024)
+            )));
+        }
+        total = total.checked_add(size).ok_or_else(|| {
+            Error::InvalidPath("7z solid prerequisite byte count overflowed".to_owned())
+        })?;
+        if total > SEVEN_Z_MAX_PREREQUISITE_OUTPUT_SIZE {
+            return Err(Error::InvalidPath(format!(
+                "7z solid prerequisites exceed the {} MiB aggregate decode limit",
+                SEVEN_Z_MAX_PREREQUISITE_OUTPUT_SIZE / (1024 * 1024)
+            )));
+        }
     }
     Ok(())
 }
@@ -752,10 +1109,14 @@ mod tests {
     use zip::{ZipWriter, write::SimpleFileOptions};
 
     use super::{
-        ArchiveBackend, ArchiveMember, ArchiveMemberSelector, RAR_MAX_MEMBER_SIZE,
-        SEVEN_Z_MAX_PACKED_FOLDER_SIZE, SourceKind, capabilities, detect,
-        enforce_7z_packed_folder_limit, enumerate, stream_7z, stream_archive, stream_file,
-        stream_rar, stream_zip, zip_central_entry_count,
+        ArchiveBackend, ArchiveMember, ArchiveMemberSelector, MAX_ACTIVE_ARCHIVE_DECODERS,
+        RAR_MAX_DICTIONARY_SIZE, RAR_MAX_MEMBER_SIZE, RAR_MAX_PREREQUISITE_MEMBER_SIZE,
+        RAR_MAX_PREREQUISITE_OUTPUT_SIZE, SEVEN_Z_MAX_DECODER_WORKING_SET_SIZE,
+        SEVEN_Z_MAX_DICTIONARY_SIZE, SEVEN_Z_MAX_PACKED_FOLDER_SIZE,
+        SEVEN_Z_MAX_PREREQUISITE_MEMBER_SIZE, SEVEN_Z_MAX_PREREQUISITE_OUTPUT_SIZE, SourceKind,
+        capabilities, detect, enforce_7z_packed_folder_limit, enumerate, enumerate_with_limit,
+        preflight_7z_prerequisite_output, stream_7z, stream_archive, stream_file, stream_rar,
+        stream_zip, zip_central_entry_count,
     };
 
     #[cfg(unix)]
@@ -777,6 +1138,132 @@ mod tests {
         }
         zip.finish()?;
         Ok(())
+    }
+
+    #[test]
+    fn serving_enumeration_rejects_an_archive_over_its_entry_limit()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let archive = Utf8Path::from_path(temp.path())
+            .ok_or_else(|| io::Error::other("temporary path is not UTF-8"))?
+            .join("one-entry.zip");
+        write_zip(&archive, &[("game.rom", b"content")])?;
+
+        let Err(error) = enumerate_with_limit(&archive, ArchiveBackend::Zip, Some(0)) else {
+            return Err("the serving entry limit was not checked".into());
+        };
+        assert!(error.to_string().contains("entry serving limit"));
+
+        let seven_zip = Utf8Path::from_path(temp.path())
+            .ok_or_else(|| io::Error::other("temporary path is not UTF-8"))?
+            .join("one-entry.7z");
+        std::fs::write(
+            &seven_zip,
+            r7z::ArchiveBuilder::new()
+                .add_file("game.rom", b"content")
+                .build()?,
+        )?;
+        let Err(error) = enumerate_with_limit(&seven_zip, ArchiveBackend::SevenZip, Some(0)) else {
+            return Err("the 7z serving entry limit was not checked".into());
+        };
+        assert!(error.to_string().contains("entry serving limit"));
+        Ok(())
+    }
+
+    #[test]
+    fn rar_decoded_output_is_bounded_even_when_the_writer_is_not() {
+        let mut output = Vec::new();
+        {
+            let mut writer = super::BoundedMemberWriter::new(&mut output, 3);
+            assert!(writer.write_all(b"four").is_err());
+            assert_eq!(writer.written, 3);
+        }
+        assert_eq!(output, b"fou");
+        assert_eq!(
+            capabilities(ArchiveBackend::Rar).max_prerequisite_member_size,
+            Some(RAR_MAX_PREREQUISITE_MEMBER_SIZE)
+        );
+        assert_eq!(
+            capabilities(ArchiveBackend::Rar).max_prerequisite_output_size,
+            Some(RAR_MAX_PREREQUISITE_OUTPUT_SIZE)
+        );
+    }
+
+    #[test]
+    fn archive_decoder_slots_bound_decoder_memory() -> Result<(), Box<dyn std::error::Error>> {
+        let slots = super::DecoderSlots::new(2);
+        let first = slots
+            .try_acquire()
+            .ok_or_else(|| io::Error::other("first archive decoder slot was unavailable"))?;
+        let _second = slots
+            .try_acquire()
+            .ok_or_else(|| io::Error::other("second archive decoder slot was unavailable"))?;
+        assert!(slots.try_acquire().is_none());
+        drop(first);
+        assert!(slots.try_acquire().is_some());
+        let rar = capabilities(ArchiveBackend::Rar);
+        assert_eq!(
+            rar.max_concurrent_decoders,
+            Some(MAX_ACTIVE_ARCHIVE_DECODERS)
+        );
+        assert_eq!(
+            rar.max_decoder_dictionary_size,
+            Some(RAR_MAX_DICTIONARY_SIZE)
+        );
+        let seven_zip = capabilities(ArchiveBackend::SevenZip);
+        assert_eq!(
+            seven_zip.max_concurrent_decoders,
+            Some(MAX_ACTIVE_ARCHIVE_DECODERS)
+        );
+        assert_eq!(
+            seven_zip.max_decoder_dictionary_size,
+            Some(SEVEN_Z_MAX_DICTIONARY_SIZE)
+        );
+        assert_eq!(
+            seven_zip.max_decoder_working_set_size,
+            Some(SEVEN_Z_MAX_DECODER_WORKING_SET_SIZE)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn seven_zip_solid_prerequisites_have_per_member_and_aggregate_limits() {
+        let listing = |index, block, size| r7z::ArchiveListingEntry {
+            index,
+            path: format!("member-{index}"),
+            kind: r7z::ListingEntryKind::File,
+            size: Some(size),
+            packed_size: Some(1),
+            modified: None,
+            attributes: None,
+            crc: None,
+            encrypted: false,
+            methods: Vec::new(),
+            block: Some(block),
+        };
+        let too_large_member = [
+            listing(0, 0, SEVEN_Z_MAX_PREREQUISITE_MEMBER_SIZE + 1),
+            listing(1, 0, 1),
+        ];
+        assert!(preflight_7z_prerequisite_output(&too_large_member, &[1]).is_err());
+
+        let too_large_total = [
+            listing(0, 0, 400 * 1024 * 1024),
+            listing(1, 0, 1),
+            listing(2, 0, 400 * 1024 * 1024),
+            listing(3, 0, 225 * 1024 * 1024),
+        ];
+        assert!(preflight_7z_prerequisite_output(&too_large_total, &[1]).is_err());
+
+        let other_folder_is_irrelevant = [
+            listing(0, 0, SEVEN_Z_MAX_PREREQUISITE_MEMBER_SIZE + 1),
+            listing(1, 1, 1),
+        ];
+        assert!(preflight_7z_prerequisite_output(&other_folder_is_irrelevant, &[1]).is_ok());
+        assert_eq!(
+            capabilities(ArchiveBackend::SevenZip).max_prerequisite_output_size,
+            Some(SEVEN_Z_MAX_PREREQUISITE_OUTPUT_SIZE)
+        );
     }
 
     fn zip64_with_max_comment(bytes: &[u8], saturated_eocd_fields: bool) -> io::Result<Vec<u8>> {
@@ -1147,11 +1634,17 @@ mod tests {
 
     #[test]
     fn rar_limit_is_checked_before_extraction() -> Result<(), Box<dyn std::error::Error>> {
-        assert!(
-            capabilities(ArchiveBackend::Rar)
-                .limitation
-                .contains("understated metadata")
+        let rar_capabilities = capabilities(ArchiveBackend::Rar);
+        assert_eq!(rar_capabilities.max_member_size, Some(RAR_MAX_MEMBER_SIZE));
+        assert_eq!(
+            rar_capabilities.max_prerequisite_member_size,
+            Some(RAR_MAX_PREREQUISITE_MEMBER_SIZE)
         );
+        assert_eq!(
+            rar_capabilities.max_prerequisite_output_size,
+            Some(RAR_MAX_PREREQUISITE_OUTPUT_SIZE)
+        );
+        assert!(rar_capabilities.limitation.contains("Solid prerequisites"));
         let directory = tempfile::tempdir()?;
         let root = Utf8Path::from_path(directory.path())
             .ok_or_else(|| io::Error::other("temporary path is not UTF-8"))?;
