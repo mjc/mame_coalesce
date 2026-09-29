@@ -1,6 +1,7 @@
 # mame_coalesce
 
-`mame_coalesce` imports Logiqx DAT files, scans ROM sources, plans deterministic builds, and writes merged ZIP outputs.
+`mame_coalesce` imports Logiqx DAT files, scans ROM sources, plans deterministic
+builds, and writes verified ZIP/7z archives or directory outputs.
 
 ## Status
 
@@ -29,6 +30,7 @@ Common options:
 --compression deflate
 --compression store
 --output-container zip
+--output-container 7z
 --output-container directory
 --missing warn
 --missing fail
@@ -37,8 +39,8 @@ Common options:
 --reuse-verified
 ```
 
-`--reuse-verified` leaves an existing ZIP or directory artifact untouched only
-when its complete logical contents match the current plan. Otherwise the
+`--reuse-verified` leaves an existing ZIP, 7z, or directory artifact untouched
+only when its complete logical contents match the current plan. Otherwise the
 artifact is rebuilt as usual. The default remains replacement; source files
 are still scanned/planned normally, and this option does not execute a saved
 plan.
@@ -130,7 +132,7 @@ before building. The `*_with_roots` operations accept an ordered
 one-shot `--dry-run` or strict-missing build still imports the
 DAT and refreshes the scan cache, but does not write ROM outputs. The CLI owns
 human-readable reports, progress bars, and mapping build outcomes to process
-exit codes. `build_with_container` and `run_with_container` select ZIP or
+exit codes. `build_with_container` and `run_with_container` select ZIP, 7z, or
 directory output without changing request types; their ordered-root variants
 offer the same choice.
 
@@ -167,8 +169,10 @@ those fallback matches.
 ZIP compression defaults to deflate for compatibility. Use `--compression store`
 when profiling or when faster, larger ZIP output is preferred.
 `--output-container` is independent of layout and compression; it defaults to
-`zip`, and `directory` writes each logical group as an uncompressed directory.
-Compression settings apply only to ZIP output.
+`zip`, `directory` writes each logical group as an uncompressed directory, and
+`7z` writes each group as a 7z archive using the pinned `r7z` LZMA2 defaults.
+`--compression` applies only to ZIP output; it is ignored for 7z and directory
+output.
 
 Defaults:
 
@@ -180,8 +184,9 @@ Defaults:
 - duplicate source matches are resolved deterministically
 
 Building from archive members stages selected bytes on disk before assembling
-each output ZIP. Its private staging directory is created beside the output,
-so ensure that filesystem has up to 16 GiB of free space for one output ZIP.
+each output ZIP or 7z archive. Its private staging directory is created beside
+the output, so ensure that filesystem has up to 16 GiB of free space for one
+output archive.
 
 Logical output paths use a conservative portable naming profile: ASCII only,
 case-insensitive collision checks, no trailing spaces or dots, path traversal,
@@ -195,11 +200,12 @@ archive paths; concurrent local processes modifying the destination are outside
 the threat model. Other platforms are rejected before creating or truncating
 artifacts. Sources are never modified.
 
-Each ZIP artifact is built in a temporary file beside its destination. Source
-bytes are streamed and checked against the selected catalog evidence and scanned
-source identity; archive fingerprints are checked before and after member reads.
-The finished ZIP is flushed and synced before replacement. On Linux and macOS,
-renaming that same-filesystem temporary file replaces one artifact atomically;
+Each ZIP or 7z artifact is built in a temporary file beside its destination.
+Source bytes are streamed and checked against the selected catalog evidence and
+scanned source identity; archive fingerprints are checked before and after
+member reads. The finished archive is flushed and synced before replacement. On
+Linux and macOS, renaming that same-filesystem temporary file replaces one
+artifact atomically;
 the containing directory is synced afterward to ask the filesystem to persist
 the new entry. This does not guarantee survival of sudden power loss on every
 filesystem or storage device (notably, macOS `fsync` may not flush drive caches).

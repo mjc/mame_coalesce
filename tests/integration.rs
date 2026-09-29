@@ -214,6 +214,25 @@ fn zip_entries(
     Ok(entries)
 }
 
+fn seven_zip_entries(
+    path: &camino::Utf8Path,
+) -> Result<BTreeMap<String, Vec<u8>>, Box<dyn std::error::Error>> {
+    let archive = r7z::Archive::open(path.as_std_path())?;
+    let members = archive.entries().collect::<Vec<_>>();
+    let indices = members
+        .iter()
+        .map(|member| member.index)
+        .collect::<Vec<_>>();
+    let mut entries = BTreeMap::new();
+    archive.stream_selected_files(&indices, |member, reader| {
+        let mut contents = Vec::new();
+        reader.read_to_end(&mut contents)?;
+        entries.insert(member.name.clone(), contents);
+        Ok(())
+    })?;
+    Ok(entries)
+}
+
 fn directory_entries(
     root: &std::path::Path,
 ) -> Result<BTreeMap<String, Vec<u8>>, Box<dyn std::error::Error>> {
@@ -444,6 +463,52 @@ fn run_workflow_writes_from_7z_archive() -> Result<(), Box<dyn std::error::Error
             .map(Vec::as_slice),
         Some(b"abc" as &[u8])
     );
+    Ok(())
+}
+
+#[test]
+fn cli_writes_verified_7z_output() -> Result<(), Box<dyn std::error::Error>> {
+    let database_dir = tempfile::tempdir()?;
+    let database_path = utf8_path(&database_dir.path().join("cache.sqlite"))?.to_path_buf();
+    let work_dir = tempfile::tempdir()?;
+    let source_dir = tempfile::tempdir()?;
+    let output_dir = tempfile::tempdir()?;
+    let dat_path = write_shared_dat(
+        work_dir.path(),
+        "output-7z.dat",
+        "7z Output",
+        "a9993e364706816aba3e25717850c26c9cd0d89d",
+    )?;
+    let source_path = write_single_rom_source(source_dir.path(), b"abc")?;
+    let output_path = utf8_path(output_dir.path())?.join("out");
+
+    cargo_command()
+        .args(db_arg(&database_path))
+        .args([
+            "build",
+            dat_path.as_str(),
+            source_path.as_str(),
+            output_path.as_str(),
+            "--jobs",
+            "1",
+            "--missing",
+            "fail",
+            "--output-container",
+            "7z",
+        ])
+        .assert()
+        .success();
+
+    let archive = r7z::Archive::open(output_path.join("shared.7z").as_std_path())?;
+    let entries = archive.entries().collect::<Vec<_>>();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].name, "shared.rom");
+    let mut contents = Vec::new();
+    archive.stream_selected_files(&[entries[0].index], |_, reader| {
+        reader.read_to_end(&mut contents)?;
+        Ok(())
+    })?;
+    assert_eq!(contents, b"abc");
     Ok(())
 }
 
@@ -1921,10 +1986,12 @@ fn cli_directory_output_materializes_bare_roms() -> Result<(), Box<dyn std::erro
 }
 
 #[test]
-fn cli_directory_and_zip_outputs_match_for_each_layout() -> Result<(), Box<dyn std::error::Error>> {
+fn cli_zip_seven_zip_and_directory_outputs_match_for_each_layout()
+-> Result<(), Box<dyn std::error::Error>> {
     let work_dir = tempfile::tempdir()?;
     let source_dir = tempfile::tempdir()?;
     let zip_dir = tempfile::tempdir()?;
+    let seven_zip_dir = tempfile::tempdir()?;
     let directory_dir = tempfile::tempdir()?;
     let root = utf8_path(work_dir.path())?;
     let dat_path = write_clone_dat(work_dir.path())?;
@@ -1936,8 +2003,13 @@ fn cli_directory_and_zip_outputs_match_for_each_layout() -> Result<(), Box<dyn s
         ("per-game", "per-game"),
     ] {
         let zip_output = utf8_path(zip_dir.path())?.join(layout);
+        let seven_zip_output = utf8_path(seven_zip_dir.path())?.join(layout);
         let directory_output = utf8_path(directory_dir.path())?.join(layout);
-        for (destination, container) in [(&zip_output, "zip"), (&directory_output, "directory")] {
+        for (destination, container) in [
+            (&zip_output, "zip"),
+            (&seven_zip_output, "7z"),
+            (&directory_output, "directory"),
+        ] {
             cargo_command()
                 .args(db_arg(&database_path))
                 .args([
@@ -1961,8 +2033,10 @@ fn cli_directory_and_zip_outputs_match_for_each_layout() -> Result<(), Box<dyn s
                 continue;
             }
             let zip = zip_entries(&zip_output.join(format!("{group}.zip")))?;
+            let seven_zip = seven_zip_entries(&seven_zip_output.join(format!("{group}.7z")))?;
             let directory = directory_entries(directory_output.join(group).as_std_path())?;
             assert_eq!(zip, directory, "layout {layout}, group {group}");
+            assert_eq!(seven_zip, directory, "layout {layout}, group {group}");
         }
     }
     Ok(())

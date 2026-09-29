@@ -1051,6 +1051,7 @@ pub fn build_with_roots_and_container_with_policy(
                     .join(match container {
                         OutputContainer::Zip => format!("{}.zip", group.path.as_str()),
                         OutputContainer::Directory => group.path.as_str().to_owned(),
+                        OutputContainer::SevenZip => format!("{}.7z", group.path.as_str()),
                     })
                     .to_string(),
                 outcome: ArtifactOutcome::Unattempted,

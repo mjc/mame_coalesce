@@ -133,7 +133,7 @@ fn utf8_path(path: &std::path::Path) -> Result<&Utf8Path, std::io::Error> {
 }
 
 #[test]
-fn one_pinned_manifest_materializes_equal_zip_and_directory_content()
+fn one_pinned_manifest_materializes_equal_zip_directory_and_seven_zip_content()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = Fixture::new(b"same pinned ROM bytes")?;
     let pinned_snapshot = snapshot("published-1");
@@ -154,6 +154,7 @@ fn one_pinned_manifest_materializes_equal_zip_and_directory_content()
     let root = utf8_path(fixture.temp.path())?;
     let zip_destination = root.join("zip-output");
     let directory_destination = root.join("directory-output");
+    let seven_zip_destination = root.join("7z-output");
     let zip_report = materialize_view(&ViewMaterializationRequest {
         manifest: &manifest,
         destination_path: &zip_destination,
@@ -166,11 +167,19 @@ fn one_pinned_manifest_materializes_equal_zip_and_directory_content()
         container: OutputContainer::Directory,
         compression: ZipCompression::Store,
     })?;
+    let seven_zip_report = materialize_view(&ViewMaterializationRequest {
+        manifest: &manifest,
+        destination_path: &seven_zip_destination,
+        container: OutputContainer::SevenZip,
+        compression: ZipCompression::Deflate,
+    })?;
 
     assert!(zip_report.layout_diagnostics.is_empty());
     assert!(zip_report.validation_issues.is_empty());
     assert_eq!(zip_report.written_paths.len(), 1);
     assert_eq!(directory_report.written_paths.len(), 1);
+    assert_eq!(seven_zip_report.written_paths.len(), 1);
+    assert!(seven_zip_report.validation_issues.is_empty());
     let zip_path = zip_destination.join("nes.zip");
     let mut archive = zip::ZipArchive::new(fs::File::open(zip_path)?)?;
     let mut archived_contents = Vec::new();
@@ -178,15 +187,24 @@ fn one_pinned_manifest_materializes_equal_zip_and_directory_content()
         .by_name("nes.rom")?
         .read_to_end(&mut archived_contents)?;
     let directory_contents = fs::read(directory_destination.join("nes/nes.rom"))?;
+    let seven_zip = r7z::Archive::open(seven_zip_destination.join("nes.7z").as_std_path())?;
+    let entries = seven_zip.entries().collect::<Vec<_>>();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].name, "nes.rom");
+    let mut seven_zip_contents = Vec::new();
+    seven_zip.stream_selected_files(&[entries[0].index], |_, reader| {
+        reader.read_to_end(&mut seven_zip_contents)?;
+        Ok(())
+    })?;
     assert_eq!(archived_contents, fixture.contents);
     assert_eq!(directory_contents, fixture.contents);
     assert_eq!(archived_contents, directory_contents);
+    assert_eq!(seven_zip_contents, archived_contents);
     Ok(())
 }
 
 #[test]
-fn stale_source_does_not_replace_a_prior_valid_artifact() -> Result<(), Box<dyn std::error::Error>>
-{
+fn stale_source_does_not_replace_prior_valid_artifacts() -> Result<(), Box<dyn std::error::Error>> {
     let fixture = Fixture::new(b"planned bytes")?;
     let manifest = fixture.manifest(&snapshot("published"), true);
     let destination = utf8_path(fixture.temp.path())?.join("output");
@@ -212,7 +230,27 @@ fn stale_source_does_not_replace_a_prior_valid_artifact() -> Result<(), Box<dyn 
             if error.contains("source changed since planning")
     ));
     assert_eq!(fs::read(&artifact)?, previous);
-    assert_eq!(fs::read_dir(&destination)?.count(), 1);
+
+    let seven_zip_artifact = destination.join("nes.7z");
+    fs::write(&seven_zip_artifact, b"prior valid 7z artifact")?;
+    let previous_seven_zip = fs::read(&seven_zip_artifact)?;
+    let seven_zip_report = materialize_view(&ViewMaterializationRequest {
+        manifest: &manifest,
+        destination_path: &destination,
+        container: OutputContainer::SevenZip,
+        compression: ZipCompression::Deflate,
+    })?;
+    let seven_zip_result = seven_zip_report
+        .artifact_results
+        .first()
+        .ok_or_else(|| std::io::Error::other("expected a 7z artifact result"))?;
+    assert!(matches!(
+        &seven_zip_result.outcome,
+        mame_coalesce::domain::ArtifactOutcome::Failed { error }
+            if error.contains("source changed since planning")
+    ));
+    assert_eq!(fs::read(&seven_zip_artifact)?, previous_seven_zip);
+    assert_eq!(fs::read_dir(&destination)?.count(), 2);
     Ok(())
 }
 

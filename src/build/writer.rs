@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{File, OpenOptions},
-    io::{self, BufWriter, Write},
+    io::{self, BufWriter, Read, Write},
     path::PathBuf,
 };
 
@@ -218,6 +218,7 @@ fn write_artifact(
     match container {
         OutputContainer::Zip => write_zip_artifact(group, path, artifact),
         OutputContainer::Directory => write_directory_artifact(group, path, artifact),
+        OutputContainer::SevenZip => write_seven_zip_artifact(group, path, artifact),
     }
 }
 
@@ -230,6 +231,7 @@ fn try_reuse_artifact(
     let (relative, is_directory) = match container {
         OutputContainer::Zip => (format!("{}.zip", group.path.as_str()), false),
         OutputContainer::Directory => (group.path.as_str().to_owned(), true),
+        OutputContainer::SevenZip => (format!("{}.7z", group.path.as_str()), false),
     };
     let Some(existing) = artifact
         .output_root
@@ -246,6 +248,7 @@ fn try_reuse_artifact(
             let path = artifact.output_root.path.join(&relative);
             verify_existing_directory(group, &path, &existing, artifact.output_root)?
         }
+        OutputContainer::SevenZip => verify_existing_seven_zip(group, &existing.file)?,
     };
     if !matches {
         return Ok(false);
@@ -291,6 +294,73 @@ fn verify_existing_zip(group: &OutputGroup, file: &File) -> crate::Result<bool> 
         }
     }
     Ok(seen.len() == expected.len())
+}
+
+#[cfg(unix)]
+fn verify_existing_seven_zip(group: &OutputGroup, file: &File) -> crate::Result<bool> {
+    let Ok(archive) = r7z::Archive::from_reader(file.try_clone()?) else {
+        return Ok(false);
+    };
+    let entries = archive.entries().collect::<Vec<_>>();
+    if entries.len() != group.entries.len() {
+        return Ok(false);
+    }
+    let Ok(listing) = archive.listing(None) else {
+        return Ok(false);
+    };
+    let expected: BTreeMap<_, _> = group
+        .entries
+        .iter()
+        .map(|entry| (entry.path.as_str(), entry))
+        .collect();
+    let mut seen = BTreeSet::new();
+    let mut selected = BTreeMap::new();
+    for member in entries {
+        if !matches!(
+            member.entry_type,
+            r7z::EntryType::File | r7z::EntryType::EmptyFile
+        ) {
+            return Ok(false);
+        }
+        if !seen.insert(member.name.clone()) {
+            return Ok(false);
+        }
+        let Some(entry) = expected.get(member.name.as_str()) else {
+            return Ok(false);
+        };
+        let Some(declared_size) = listing
+            .entries
+            .get(member.index)
+            .and_then(|listed| listed.size)
+        else {
+            return Ok(false);
+        };
+        let maximum = existing_member_maximum(entry);
+        if declared_size > maximum {
+            return Ok(false);
+        }
+        selected.insert(member.index, (entry, declared_size, maximum));
+    }
+    if seen.len() != expected.len() {
+        return Ok(false);
+    }
+
+    let indices = selected.keys().copied().collect::<Vec<_>>();
+    Ok(archive
+        .stream_selected_files(&indices, |member, reader| {
+            let Some((entry, declared_size, maximum)) = selected.get(&member.index) else {
+                return Err(r7z::R7zError::Parse);
+            };
+            let mut content = ContentWriter::with_limit(io::sink(), *maximum);
+            io::copy(reader, &mut content).map_err(r7z::R7zError::Io)?;
+            if !verify_existing_member_digest(entry, content.finish(), Some(*declared_size)) {
+                return Err(r7z::R7zError::Io(io::Error::other(
+                    "existing 7z member content does not match the planned output",
+                )));
+            }
+            Ok(())
+        })
+        .is_ok())
 }
 
 #[cfg(unix)]
@@ -388,12 +458,8 @@ fn verify_existing_directory(
 }
 
 #[cfg(unix)]
-fn verify_existing_member(
-    entry: &LogicalEntry,
-    reader: &mut impl io::Read,
-    declared_size: Option<u64>,
-) -> bool {
-    let maximum = match entry.selection.strength {
+fn existing_member_maximum(entry: &LogicalEntry) -> u64 {
+    match entry.selection.strength {
         crate::resolution::MatchStrength::Sha1 | crate::resolution::MatchStrength::Md5 => {
             entry.source.observed.size
         }
@@ -401,12 +467,34 @@ fn verify_existing_member(
             entry.expected.size.or(entry.source.observed.size)
         }
     }
-    .unwrap_or(MAX_ARCHIVE_STAGING_BYTES);
+    .unwrap_or(MAX_ARCHIVE_STAGING_BYTES)
+}
+
+#[cfg(unix)]
+fn verify_existing_member_digest(
+    entry: &LogicalEntry,
+    actual: ContentDigest,
+    declared_size: Option<u64>,
+) -> bool {
+    let maximum = existing_member_maximum(entry);
+    declared_size.is_none_or(|size| size <= maximum)
+        && actual.size <= maximum
+        && verify_content(entry, actual).is_ok()
+}
+
+#[cfg(unix)]
+fn verify_existing_member(
+    entry: &LogicalEntry,
+    reader: &mut impl io::Read,
+    declared_size: Option<u64>,
+) -> bool {
+    let maximum = existing_member_maximum(entry);
     if declared_size.is_some_and(|size| size > maximum) {
         return false;
     }
     let mut content = ContentWriter::with_limit(io::sink(), maximum);
-    io::copy(reader, &mut content).is_ok() && verify_content(entry, content.finish()).is_ok()
+    io::copy(reader, &mut content).is_ok()
+        && verify_existing_member_digest(entry, content.finish(), declared_size)
 }
 
 fn write_zip_artifact(
@@ -433,6 +521,38 @@ fn write_zip_artifact(
     let mut output = zip_writer.finish()?;
     output.flush()?;
     output.get_ref().sync_all()?;
+    drop(output);
+    (artifact.hook)(artifact.artifact_index, ArtifactPhase::Replace)?;
+    #[cfg(unix)]
+    staged.replace(artifact.output_root, artifact.hook, artifact.artifact_index)?;
+    #[cfg(not(unix))]
+    staged.replace(_path)?;
+    Ok(ArtifactOutcome::Completed)
+}
+
+fn write_seven_zip_artifact(
+    group: &OutputGroup,
+    _path: &Utf8Path,
+    artifact: &mut ArtifactContext<'_>,
+) -> crate::Result<ArtifactOutcome> {
+    #[cfg(unix)]
+    let (mut staged, file) = artifact
+        .output_root
+        .stage_file(&format!("{}.7z", group.path.as_str()))?;
+    #[cfg(not(unix))]
+    let (staged, file) = {
+        let parent = _path.parent().ok_or_else(|| {
+            crate::Error::InvalidPath(format!("artifact has no parent directory: {_path}"))
+        })?;
+        fs::create_dir_all(parent)?;
+        StagedArtifact::create(_path)?
+    };
+    let mut archive_writer = r7z::ArchiveWriter::new(file, r7z::ArchiveOptions::default())?;
+    write_seven_zip_group(group, &mut archive_writer, artifact)?;
+    (artifact.hook)(artifact.artifact_index, ArtifactPhase::Finalize)?;
+    let mut output = archive_writer.finish()?;
+    output.flush()?;
+    output.sync_all()?;
     drop(output);
     (artifact.hook)(artifact.artifact_index, ArtifactPhase::Replace)?;
     #[cfg(unix)]
@@ -482,10 +602,12 @@ fn output_paths(
     let extension = match container {
         OutputContainer::Zip => ".zip",
         OutputContainer::Directory => "",
+        OutputContainer::SevenZip => ".7z",
     };
     let kind = match container {
         OutputContainer::Zip => "ZIP artifact",
         OutputContainer::Directory => "directory artifact",
+        OutputContainer::SevenZip => "7z artifact",
     };
     let relative_paths = plan
         .groups
@@ -1356,6 +1478,52 @@ fn write_zip_group(
     Ok(())
 }
 
+fn write_seven_zip_group(
+    group: &OutputGroup,
+    archive_writer: &mut r7z::ArchiveWriter<File>,
+    artifact: &mut ArtifactContext<'_>,
+) -> crate::Result<()> {
+    #[cfg(unix)]
+    artifact.output_root.ensure_disjoint()?;
+    let session = SourceSession::open(&group.entries, artifact.checked_destination)?;
+    let staged = stage_archive_sources(&session, artifact)?;
+    for (entry, source) in group.entries.iter().zip(session.resolved) {
+        #[cfg(unix)]
+        artifact.output_root.ensure_disjoint()?;
+        (artifact.hook)(artifact.artifact_index, ArtifactPhase::Write)?;
+        let file = match source {
+            ResolvedSource::Bare { path } => {
+                (artifact.hook)(artifact.artifact_index, ArtifactPhase::Read)?;
+                File::open(path)?
+            }
+            ResolvedSource::Archive {
+                path,
+                backend,
+                selector,
+            } => {
+                let staged_path = staged
+                    .members
+                    .get(&(path.clone(), backend, selector))
+                    .ok_or_else(|| {
+                        crate::Error::InvalidPath(format!(
+                            "selected archive member was not staged: {path}"
+                        ))
+                    })?;
+                let spool = staged.spool.as_ref().ok_or_else(|| {
+                    crate::Error::InvalidPath("archive staging was not initialized".to_owned())
+                })?;
+                spool.ensure_disjoint()?;
+                spool.open_file(staged_path)?
+            }
+        };
+        let mut verified = VerifiedContentReader::new(file, entry);
+        archive_writer.append(entry.path.as_str(), &mut verified)?;
+    }
+    #[cfg(unix)]
+    artifact.output_root.ensure_disjoint()?;
+    Ok(())
+}
+
 #[cfg(unix)]
 fn write_directory_group(
     group: &OutputGroup,
@@ -1653,14 +1821,53 @@ struct ContentDigest {
     xxh3: [u8; 8],
 }
 
-struct ContentWriter<W> {
-    inner: W,
+struct ContentHasher {
     size: u64,
-    maximum: Option<u64>,
     sha1: Sha1,
     md5: Md5,
     crc: crc32fast::Hasher,
     xxh3: Xxh3,
+}
+
+impl ContentHasher {
+    fn new() -> Self {
+        Self {
+            size: 0,
+            sha1: Sha1::new(),
+            md5: Md5::new(),
+            crc: crc32fast::Hasher::new(),
+            xxh3: Xxh3::new(),
+        }
+    }
+
+    fn update(&mut self, bytes: &[u8]) -> io::Result<()> {
+        let count = u64::try_from(bytes.len()).map_err(io::Error::other)?;
+        self.size = self
+            .size
+            .checked_add(count)
+            .ok_or_else(|| io::Error::other("source byte count overflowed"))?;
+        self.sha1.update(bytes);
+        self.md5.update(bytes);
+        self.crc.update(bytes);
+        self.xxh3.update(bytes);
+        Ok(())
+    }
+
+    fn finish(self) -> ContentDigest {
+        ContentDigest {
+            size: self.size,
+            sha1: self.sha1.finalize().into(),
+            md5: self.md5.finalize().into(),
+            crc: self.crc.finalize().to_be_bytes(),
+            xxh3: self.xxh3.digest().to_be_bytes(),
+        }
+    }
+}
+
+struct ContentWriter<W> {
+    inner: W,
+    hasher: ContentHasher,
+    maximum: Option<u64>,
 }
 
 impl<W> ContentWriter<W> {
@@ -1675,30 +1882,20 @@ impl<W> ContentWriter<W> {
     fn with_maximum(inner: W, maximum: Option<u64>) -> Self {
         Self {
             inner,
-            size: 0,
+            hasher: ContentHasher::new(),
             maximum,
-            sha1: Sha1::new(),
-            md5: Md5::new(),
-            crc: crc32fast::Hasher::new(),
-            xxh3: Xxh3::new(),
         }
     }
 
     fn finish(self) -> ContentDigest {
-        ContentDigest {
-            size: self.size,
-            sha1: self.sha1.finalize().into(),
-            md5: self.md5.finalize().into(),
-            crc: self.crc.finalize().to_be_bytes(),
-            xxh3: self.xxh3.digest().to_be_bytes(),
-        }
+        self.hasher.finish()
     }
 }
 
 impl<W: Write> Write for ContentWriter<W> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         let bounded = if let Some(maximum) = self.maximum {
-            let remaining = maximum.saturating_sub(self.size);
+            let remaining = maximum.saturating_sub(self.hasher.size);
             let allowed = usize::try_from(remaining)
                 .unwrap_or(usize::MAX)
                 .min(bytes.len());
@@ -1716,20 +1913,46 @@ impl<W: Write> Write for ContentWriter<W> {
         let Some(written_bytes) = bytes.get(..written) else {
             return Err(io::Error::other("writer reported an invalid byte count"));
         };
-        let count = u64::try_from(written).map_err(io::Error::other)?;
-        self.size = self
-            .size
-            .checked_add(count)
-            .ok_or_else(|| io::Error::other("source byte count overflowed"))?;
-        self.sha1.update(written_bytes);
-        self.md5.update(written_bytes);
-        self.crc.update(written_bytes);
-        self.xxh3.update(written_bytes);
+        self.hasher.update(written_bytes)?;
         Ok(written)
     }
 
     fn flush(&mut self) -> io::Result<()> {
         self.inner.flush()
+    }
+}
+
+struct VerifiedContentReader<'entry, R> {
+    inner: R,
+    entry: &'entry LogicalEntry,
+    hasher: Option<ContentHasher>,
+}
+
+impl<'entry, R> VerifiedContentReader<'entry, R> {
+    fn new(inner: R, entry: &'entry LogicalEntry) -> Self {
+        Self {
+            inner,
+            entry,
+            hasher: Some(ContentHasher::new()),
+        }
+    }
+}
+
+impl<R: Read> Read for VerifiedContentReader<'_, R> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if buffer.is_empty() || self.hasher.is_none() {
+            return Ok(0);
+        }
+        let read = self.inner.read(buffer)?;
+        if read == 0 {
+            if let Some(hasher) = self.hasher.take() {
+                verify_content(self.entry, hasher.finish())
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+            }
+        } else if let Some(hasher) = self.hasher.as_mut() {
+            hasher.update(&buffer[..read])?;
+        }
+        Ok(read)
     }
 }
 
@@ -3570,6 +3793,142 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn verified_seven_zip_artifact_is_reused_without_reading_changed_sources()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let root = utf8_path(temp_dir.path())?;
+        let source_path = source_fixture_path(&temp_dir, "source.rom")?;
+        fs::write(&source_path, b"planned content")?;
+        let plan = single_bare_file_plan(&source_path);
+        let destination = root.join("output");
+        let artifact = destination.join("safe.7z");
+        write_plan_with_container(
+            &plan,
+            &destination,
+            OutputContainer::SevenZip,
+            ZipCompression::Deflate,
+        )?;
+        fs::write(&source_path, b"changed after planning")?;
+
+        let results = write_plan_with_container_policy(
+            &plan,
+            &destination,
+            OutputContainer::SevenZip,
+            ZipCompression::Deflate,
+            ArtifactReusePolicy::ReuseVerified,
+        )?;
+
+        assert_eq!(results[0].outcome, ArtifactOutcome::Reused);
+        let archive = r7z::Archive::open(artifact.as_std_path())?;
+        let entries = archive.entries().collect::<Vec<_>>();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "game.rom");
+        let mut content = Vec::new();
+        archive.stream_selected_files(&[entries[0].index], |_, reader| {
+            reader.read_to_end(&mut content)?;
+            Ok(())
+        })?;
+        assert_eq!(content, b"planned content");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mismatched_existing_seven_zip_is_replaced() -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let root = utf8_path(temp_dir.path())?;
+        let source_path = source_fixture_path(&temp_dir, "source.rom")?;
+        fs::write(&source_path, b"planned content")?;
+        let plan = single_bare_file_plan(&source_path);
+        let destination = root.join("output");
+        fs::create_dir_all(&destination)?;
+        let artifact = destination.join("safe.7z");
+        let existing = r7z::ArchiveBuilder::new()
+            .add_file("game.rom", b"stale content")
+            .build()?;
+        fs::write(&artifact, existing)?;
+
+        let results = write_plan_with_container_policy(
+            &plan,
+            &destination,
+            OutputContainer::SevenZip,
+            ZipCompression::Deflate,
+            ArtifactReusePolicy::ReuseVerified,
+        )?;
+
+        assert_eq!(results[0].outcome, ArtifactOutcome::Completed);
+        let archive = r7z::Archive::open(artifact.as_std_path())?;
+        let entries = archive.entries().collect::<Vec<_>>();
+        assert_eq!(entries.len(), 1);
+        let mut content = Vec::new();
+        archive.stream_selected_files(&[entries[0].index], |_, reader| {
+            reader.read_to_end(&mut content)?;
+            Ok(())
+        })?;
+        assert_eq!(content, b"planned content");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_only_seven_zip_is_not_reused() -> Result<(), Box<dyn std::error::Error>> {
+        let existing = r7z::ArchiveBuilder::new()
+            .add_symlink("game.rom", "planned content", r7z::EntryMeta::default())
+            .build()?;
+
+        assert_unplanned_seven_zip_is_replaced(existing)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn seven_zip_with_extra_anti_item_is_not_reused() -> Result<(), Box<dyn std::error::Error>> {
+        let existing = r7z::ArchiveBuilder::new()
+            .add_file("game.rom", b"planned content")
+            .add_anti_item("deleted.rom", r7z::EntryMeta::default())
+            .build()?;
+
+        assert_unplanned_seven_zip_is_replaced(existing)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn solid_seven_zip_with_multiple_members_is_reused_in_one_stream_pass()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let root = utf8_path(temp_dir.path())?;
+        let first_source = source_fixture_path(&temp_dir, "first.rom")?;
+        let second_source = source_fixture_path(&temp_dir, "second.rom")?;
+        fs::write(&first_source, b"planned first content")?;
+        fs::write(&second_source, b"planned second content")?;
+        let mut plan = single_bare_file_plan(&first_source);
+        plan.groups[0]
+            .entries
+            .push(logical_entry("other.rom", source_file(&second_source)));
+        plan.report.matched_roms = 2;
+        let destination = root.join("output");
+        write_plan_with_container(
+            &plan,
+            &destination,
+            OutputContainer::SevenZip,
+            ZipCompression::Deflate,
+        )?;
+        fs::write(&first_source, b"changed first content")?;
+        fs::write(&second_source, b"changed second content")?;
+
+        let results = write_plan_with_container_policy(
+            &plan,
+            &destination,
+            OutputContainer::SevenZip,
+            ZipCompression::Deflate,
+            ArtifactReusePolicy::ReuseVerified,
+        )?;
+
+        assert_eq!(results[0].outcome, ArtifactOutcome::Reused);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn invalid_existing_zip_is_replaced_instead_of_reused() -> Result<(), Box<dyn std::error::Error>>
     {
         let temp_dir = tempfile::tempdir()?;
@@ -3917,6 +4276,43 @@ mod tests {
                 ..BuildReport::default()
             },
         }
+    }
+
+    #[cfg(unix)]
+    fn assert_unplanned_seven_zip_is_replaced(
+        existing_archive: Vec<u8>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let root = utf8_path(temp_dir.path())?;
+        let source_path = source_fixture_path(&temp_dir, "source.rom")?;
+        fs::write(&source_path, b"planned content")?;
+        let plan = single_bare_file_plan(&source_path);
+        let destination = root.join("output");
+        fs::create_dir_all(&destination)?;
+        let artifact = destination.join("safe.7z");
+        fs::write(&artifact, existing_archive)?;
+
+        let results = write_plan_with_container_policy(
+            &plan,
+            &destination,
+            OutputContainer::SevenZip,
+            ZipCompression::Deflate,
+            ArtifactReusePolicy::ReuseVerified,
+        )?;
+
+        assert_eq!(results[0].outcome, ArtifactOutcome::Completed);
+        let archive = r7z::Archive::open(artifact.as_std_path())?;
+        let entries = archive.entries().collect::<Vec<_>>();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "game.rom");
+        assert_eq!(entries[0].entry_type, r7z::EntryType::File);
+        let mut content = Vec::new();
+        archive.stream_selected_files(&[entries[0].index], |_, reader| {
+            reader.read_to_end(&mut content)?;
+            Ok(())
+        })?;
+        assert_eq!(content, b"planned content");
+        Ok(())
     }
 
     #[test]

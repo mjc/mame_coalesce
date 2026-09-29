@@ -983,6 +983,8 @@ pub enum OutputContainer {
     #[default]
     Zip,
     Directory,
+    #[serde(rename = "7z")]
+    SevenZip,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

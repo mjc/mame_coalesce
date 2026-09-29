@@ -352,6 +352,8 @@ pub enum OutputContainerArg {
     #[default]
     Zip,
     Directory,
+    #[value(name = "7z")]
+    SevenZip,
 }
 
 impl From<OutputContainerArg> for OutputContainer {
@@ -359,6 +361,7 @@ impl From<OutputContainerArg> for OutputContainer {
         match container {
             OutputContainerArg::Zip => Self::Zip,
             OutputContainerArg::Directory => Self::Directory,
+            OutputContainerArg::SevenZip => Self::SevenZip,
         }
     }
 }

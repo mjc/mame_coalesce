@@ -32,7 +32,9 @@ cached inventory. `resolution` is the format-neutral matching policy layer;
 `build::planner` converts selected evidence into logical output groups, while
 `build::validation` rejects unsafe paths, collisions, and source/output
 overlap. `build::writer` reopens and verifies selected sources, stages archive
-members once per source session, and writes ZIP or directory artifacts. The
+members once per source session, and writes ZIP, 7z, or directory artifacts.
+ZIP and 7z archives share secure file staging and verified replacement; 7z
+entries are streamed through the pinned `r7z` writer. The
 public `app` functions compose these layers without CLI logging, rendering, or
 process exits. The binary owns those presentation concerns.
 
@@ -47,11 +49,12 @@ involved; neither legacy CLI layout is reinterpreted.
 
 `build::view_manifest` captures a MAME 0.289 target profile, an exact catalog
 snapshot, selected roots, independently versioned policies, and the pure layout
-result in a versioned JSON envelope. Its layout remains format-neutral: ZIP or
-directory output is selected later by a materializer, not recorded as a layout
-rule. The existing `parent-bundles`/`per-game` request adapter and ZIP writer
-option retain their current meanings and remain separate from the snapshot-aware
-MAME policies. See [the MAME 0.289 target profile decision](target-profile-mame-0.289.md).
+result in a versioned JSON envelope. Its layout remains format-neutral: ZIP,
+7z, or directory output is selected later by a materializer, not recorded as a
+layout rule. The existing `parent-bundles`/`per-game` request adapter and ZIP
+writer option retain their current meanings and remain separate from the
+snapshot-aware MAME policies. See
+[the MAME 0.289 target profile decision](target-profile-mame-0.289.md).
 
 The crate root deliberately exposes `app`, `build`, `database`, `disk`,
 `domain`, `error`, `hashes`, `logiqx`, and `resolution`, plus the retained
@@ -64,7 +67,10 @@ parser-internal representations the public contract.
 
 - Existing one-source CLI positionals and defaults remain: ZIP output,
   `parent-bundles`, deflate compression, and permissive missing-content
-  reporting. Additional source roots and directory output are opt-in.
+  reporting. Additional source roots, 7z output, and directory output are
+  opt-in.
+  The `--compression` setting applies only to ZIP; 7z uses the pinned `r7z`
+  LZMA2 defaults, and directory output remains uncompressed.
 - The library's snapshot-aware non-merged MAME policy is an explicit planning
   operation and does not change the meanings or CLI availability of
   `parent-bundles` and `per-game`.
@@ -117,8 +123,9 @@ parser-internal representations the public contract.
   Missing or changed stamps and `--force-rehash` paths hash normally. The stamp
   is a freshness hint, never a content digest; build-time source-byte
   verification remains authoritative, and unsupported platforms disable reuse.
-- Outputs are not a single transaction across groups. Each ZIP is written to a
-  sibling temporary file, synced, then replaced atomically on Linux and macOS.
+- Outputs are not a single transaction across groups. Each ZIP or 7z archive is
+  written to a sibling temporary file, synced, then replaced atomically on
+  Linux and macOS.
   Each directory is built in a private sibling stage; replacement backs up an
   existing real directory and attempts rollback if installation fails. The
   report marks completed, failed, unattempted, and recoverable-backup outcomes.
@@ -180,7 +187,7 @@ module line coverage:
 - Plan/writer tests reject unsafe paths, case-folded collisions and
   file/directory overlaps; inject read, write, finalize, and replace failures;
   verify stop/rollback/report outcomes; detect stale source or archive identity;
-  and compare ZIP contents with directory trees under both supported layouts.
+  and compare ZIP/7z contents with directory trees under both supported layouts.
 - Adapter tests use synthetic fixtures to cover supported format records,
   source locations, extensions, malformed input, and catalog import behavior.
 
