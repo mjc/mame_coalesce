@@ -1148,6 +1148,48 @@ mod tests {
         Ok(())
     }
 
+    fn assert_verified_ranges(
+        session: &mut VerifiedContentSession,
+        identity: &ServingIdentity,
+        contents: &[u8],
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let range = ByteRange::new(ByteOffset::new(2), ByteLength::new(5))?;
+        let mut output = [0; 5];
+        let response = session.read_range(range, &mut output)?;
+        assert_eq!(&output[..], &contents[2..7]);
+        assert_eq!(&response.identity, identity);
+        assert_eq!(
+            response.verification,
+            VerificationStatus::WholeObjectVerified
+        );
+        assert_eq!(
+            response.total_length,
+            ByteLength::new(u64::try_from(contents.len())?)
+        );
+        assert_eq!(response.returned, ByteLength::new(5));
+        assert!(!response.eof);
+        for offset in [
+            contents.len() - 1,
+            0,
+            contents.len() / 2,
+            1,
+            contents.len() - 1,
+        ] {
+            let length = (contents.len() - offset).min(4);
+            let mut ranged = vec![0; length];
+            let response = session.read_range(
+                ByteRange::new(
+                    ByteOffset::new(u64::try_from(offset)?),
+                    ByteLength::new(u64::try_from(length)?),
+                )?,
+                &mut ranged,
+            )?;
+            assert_eq!(ranged, contents[offset..offset + length]);
+            assert_eq!(response.returned, ByteLength::new(u64::try_from(length)?));
+        }
+        Ok(())
+    }
+
     #[test]
     fn bare_zip_7z_and_rar_sources_serve_verified_ranges() -> Result<(), Box<dyn std::error::Error>>
     {
@@ -1226,21 +1268,7 @@ mod tests {
             assert_decoder_capabilities(&budget, entry)?;
             let identity = content_identity(contents)?;
             let mut session = VerifiedContentSession::open(entry, identity.clone(), &budget)?;
-            let range = ByteRange::new(ByteOffset::new(2), ByteLength::new(5))?;
-            let mut output = [0; 5];
-            let response = session.read_range(range, &mut output)?;
-            assert_eq!(&output[..], &contents[2..7]);
-            assert_eq!(response.identity, identity);
-            assert_eq!(
-                response.verification,
-                VerificationStatus::WholeObjectVerified
-            );
-            assert_eq!(
-                response.total_length,
-                ByteLength::new(u64::try_from(contents.len())?)
-            );
-            assert_eq!(response.returned, ByteLength::new(5));
-            assert!(!response.eof);
+            assert_verified_ranges(&mut session, &identity, contents)?;
         }
         Ok(())
     }
@@ -1474,6 +1502,36 @@ mod tests {
             VerifiedContentSession::open(&entry, wrong_identity, &budget),
             Err(ServingError::IdentityMismatch { .. })
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn spool_creation_failure_releases_quota_for_a_later_open()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let root = path(&temp)?;
+        let source = root.join("game.rom");
+        let spool_root = root.join("spool-root");
+        let contents = b"retry bytes";
+        fs::write(&source, contents)?;
+        fs::write(&spool_root, b"not a directory")?;
+        let entry = logical_entry(&source, contents, None, None)?;
+        let budget = MaterializationBudget::new_in(
+            ByteLength::new(u64::try_from(contents.len())?),
+            ByteLength::new(u64::try_from(contents.len())?),
+            spool_root.clone(),
+        );
+
+        assert!(matches!(
+            VerifiedContentSession::open(&entry, content_identity(contents)?, &budget),
+            Err(ServingError::Io(_))
+        ));
+        fs::remove_file(&spool_root)?;
+        fs::create_dir(&spool_root)?;
+        let session = VerifiedContentSession::open(&entry, content_identity(contents)?, &budget)?;
+        assert!(session.spool_directory().starts_with(&spool_root));
+        drop(session);
+        assert_eq!(fs::read_dir(&spool_root)?.count(), 0);
         Ok(())
     }
 

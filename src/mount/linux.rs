@@ -485,6 +485,7 @@ mod tests {
     use camino::Utf8Path;
 
     use super::*;
+    use crate::app::{ViewMaterializationRequest, materialize_view};
     use crate::{
         build::{
             mame_layout::{
@@ -494,10 +495,11 @@ mod tests {
             view_manifest::{TargetViewRequest, ViewManifest, plan_view},
         },
         domain::{
-            CatalogKey, CatalogScope, DocumentKey, EvidenceProvenance, EvidenceScope,
-            ExpectedEvidence, LogicalEntry, LogicalPath, MatchingPolicy, ObservedContent,
-            ParserInterpretationKey, RequirementKey, SelectionProvenance, SetKey, SetName,
-            SnapshotKey, SourceFile, SourceLocation, SourcePhysicalPath, SourceRoot,
+            ArchiveBackend, CatalogKey, CatalogScope, DocumentKey, EvidenceProvenance,
+            EvidenceScope, ExpectedEvidence, LogicalEntry, LogicalPath, MatchingPolicy,
+            ObservedContent, OutputContainer, ParserInterpretationKey, RequirementKey,
+            SelectionProvenance, SetKey, SetName, SnapshotKey, SourceFile, SourceLocation,
+            SourcePhysicalPath, SourceRoot, ZipCompression,
         },
         hashes::{sha1_bytes, xxhash3_bytes},
         machine_dependencies::{MachineDependencyCatalog, MachineSet},
@@ -590,14 +592,33 @@ mod tests {
         fs::write(&source_path, expected)?;
 
         let manifest = manifest_for_source(&source_path, &source_root, expected)?;
+        let serialized_manifest = manifest.to_json()?;
+        let materialized_manifest = ViewManifest::from_json(&serialized_manifest)?;
+        let (zipped_bytes, directory_bytes) =
+            materialized_reference_views(root, &materialized_manifest, expected)?;
+        assert_eq!(zipped_bytes, expected);
+        assert_eq!(directory_bytes, expected);
+
+        let newer_source_path = source_root.join("newer-game.rom");
+        let newer_bytes = b"bytes published by a newer catalog snapshot";
+        fs::write(&newer_source_path, newer_bytes)?;
+        let newer_manifest = manifest_for_source(&newer_source_path, &source_root, newer_bytes)?;
+        let newer_projection = MountProjection::compile(newer_manifest)?;
         let projection = MountProjection::compile(manifest)?;
+        assert_ne!(projection.manifest_id(), newer_projection.manifest_id());
+        assert_eq!(
+            projection
+                .node_at("game/game.rom")
+                .and_then(MountNode::size),
+            Some(u64::try_from(expected.len())?)
+        );
         let spool_root = projection
             .validate_spool_root(spool_root.as_std_path(), mount_point.as_std_path())
             .map_err(|error| std::io::Error::other(format!("spool validation failed: {error}")))?;
         let budget = MaterializationBudget::new_in(
             ByteLength::new(MOUNT_SPOOL_QUOTA_BYTES),
             ByteLength::new(256 * 1024 * 1024),
-            spool_root,
+            spool_root.clone(),
         );
         projection
             .preflight_sources(&budget)
@@ -635,11 +656,10 @@ mod tests {
         let mounted_bytes = fs::read(&mounted_path)
             .map_err(|error| std::io::Error::other(format!("mounted path read failed: {error}")))?;
         assert_eq!(mounted_bytes, reference_bytes);
+        assert_eq!(mounted_bytes, zipped_bytes);
+        assert_eq!(mounted_bytes, directory_bytes);
         let mut mounted_file = fs::File::open(&mounted_path)?;
-        mounted_file.seek(SeekFrom::Start(9))?;
-        let mut suffix = Vec::new();
-        mounted_file.read_to_end(&mut suffix)?;
-        assert_eq!(suffix, reference_bytes[9..]);
+        assert_mounted_ranges(&mut mounted_file, expected)?;
 
         fs::write(&source_path, b"badified mounted ROM bytes")?;
         mounted_file.seek(SeekFrom::Start(0))?;
@@ -649,12 +669,113 @@ mod tests {
         assert!(fs::read(&mounted_path).is_err());
         assert!(
             fs::OpenOptions::new()
+                .read(true)
                 .write(true)
                 .open(&mounted_path)
                 .is_err()
         );
         drop(mounted_file);
+        drop(reference);
         background.umount_and_join()?;
+        assert!(fs::read_dir(&spool_root)?.next().is_none());
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "requires /dev/fuse and permission to mount a FUSE filesystem"]
+    fn mounted_seven_zip_member_survives_repeated_ranges_and_releases_its_spool()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let root = Utf8Path::from_path(directory.path())
+            .ok_or_else(|| std::io::Error::other("temporary path is not UTF-8"))?;
+        let source_root = root.join("roms");
+        let spool_root = root.join("spool");
+        let mount_point = root.join("mount");
+        fs::create_dir_all(&source_root)?;
+        fs::create_dir(&spool_root)?;
+        fs::create_dir(&mount_point)?;
+        let source_path = source_root.join("game.7z");
+        let expected = b"verified solid-folder member bytes";
+        let archive_bytes = r7z::ArchiveBuilder::new()
+            .add_file("before.rom", b"unselected solid-folder prerequisite")
+            .add_file("game.rom", expected)
+            .build()?;
+        fs::write(&source_path, &archive_bytes)?;
+        let location = SourceLocation::ArchiveMember {
+            path: source_path.to_string(),
+            backend: ArchiveBackend::SevenZip,
+            selector: crate::domain::ArchiveMemberSelector::IndexAndName {
+                index: 1,
+                name: "game.rom".to_owned(),
+            },
+        };
+        let manifest = manifest_for_location(&source_root, expected, location)?;
+        let projection = MountProjection::compile(manifest)?;
+        let spool_root = projection
+            .validate_spool_root(spool_root.as_std_path(), mount_point.as_std_path())
+            .map_err(|error| std::io::Error::other(format!("spool validation failed: {error}")))?;
+        let budget = MaterializationBudget::new_in(
+            ByteLength::new(MOUNT_SPOOL_QUOTA_BYTES),
+            ByteLength::new(256 * 1024 * 1024),
+            spool_root.clone(),
+        );
+        projection
+            .preflight_sources(&budget)
+            .map_err(|error| std::io::Error::other(format!("source preflight failed: {error}")))?;
+
+        let mut config = Config::default();
+        config.n_threads = Some(4);
+        config.mount_options = vec![MountOption::RO, MountOption::DefaultPermissions];
+        let background = fuser::spawn_mount(
+            PinnedViewFilesystem::new(projection, budget),
+            &mount_point,
+            &config,
+        )
+        .map_err(|error| std::io::Error::other(format!("FUSE mount failed: {error}")))?;
+        let mounted_path = mount_point.join("game/game.rom");
+        let mut mounted_file = fs::File::open(&mounted_path)?;
+        for offset in [0, 11, (expected.len() - 4) as u64, 3, 0] {
+            mounted_file.seek(SeekFrom::Start(offset))?;
+            let mut bytes = Vec::new();
+            mounted_file.read_to_end(&mut bytes)?;
+            assert_eq!(bytes, expected[usize::try_from(offset)?..]);
+        }
+        fs::write(&source_path, b"replacement archive with equal length")?;
+        mounted_file.seek(SeekFrom::Start(0))?;
+        let mut pinned_bytes = Vec::new();
+        mounted_file.read_to_end(&mut pinned_bytes)?;
+        assert_eq!(pinned_bytes, expected);
+        assert!(fs::read(&mounted_path).is_err());
+        drop(mounted_file);
+        background.umount_and_join()?;
+        assert!(fs::read_dir(&spool_root)?.next().is_none());
+        assert_ne!(fs::read(&source_path)?, archive_bytes);
+        Ok(())
+    }
+
+    #[test]
+    fn rar_members_are_reported_unsupported_before_opening_the_source()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let root = Utf8Path::from_path(directory.path())
+            .ok_or_else(|| std::io::Error::other("temporary path is not UTF-8"))?;
+        let source_root = root.join("roms");
+        fs::create_dir(&source_root)?;
+        let source_path = source_root.join("unsupported.rar");
+        let location = SourceLocation::ArchiveMember {
+            path: source_path.to_string(),
+            backend: ArchiveBackend::Rar,
+            selector: crate::domain::ArchiveMemberSelector::IndexAndName {
+                index: 0,
+                name: "game.rom".to_owned(),
+            },
+        };
+        let manifest = manifest_for_location(&source_root, b"content", location)?;
+        let projection = MountProjection::compile(manifest)?;
+        assert!(matches!(
+            projection.preflight_sources(&MaterializationBudget::new(ByteLength::new(512))),
+            Err(crate::mount::MountPreflightError::UnsupportedRar(_))
+        ));
         Ok(())
     }
 
@@ -663,9 +784,67 @@ mod tests {
         source_root: &Utf8Path,
         bytes: &[u8],
     ) -> Result<ViewManifest, Box<dyn std::error::Error>> {
-        let location = SourceLocation::BareFile {
-            path: source_path.to_string(),
-        };
+        manifest_for_location(
+            source_root,
+            bytes,
+            SourceLocation::BareFile {
+                path: source_path.to_string(),
+            },
+        )
+    }
+
+    fn materialized_reference_views(
+        root: &Utf8Path,
+        manifest: &ViewManifest,
+        expected: &[u8],
+    ) -> Result<(Vec<u8>, Vec<u8>), Box<dyn std::error::Error>> {
+        let zip_destination = root.join("zip-view");
+        let directory_destination = root.join("directory-view");
+        let zip_report = materialize_view(&ViewMaterializationRequest {
+            manifest,
+            destination_path: &zip_destination,
+            container: OutputContainer::Zip,
+            compression: ZipCompression::Deflate,
+        })?;
+        let directory_report = materialize_view(&ViewMaterializationRequest {
+            manifest,
+            destination_path: &directory_destination,
+            container: OutputContainer::Directory,
+            compression: ZipCompression::Store,
+        })?;
+        assert!(zip_report.layout_diagnostics.is_empty());
+        assert!(zip_report.validation_issues.is_empty());
+        assert!(directory_report.layout_diagnostics.is_empty());
+        assert!(directory_report.validation_issues.is_empty());
+        let mut archive = zip::ZipArchive::new(fs::File::open(zip_destination.join("game.zip"))?)?;
+        let mut zipped_bytes = Vec::new();
+        archive
+            .by_name("game.rom")?
+            .read_to_end(&mut zipped_bytes)?;
+        let directory_bytes = fs::read(directory_destination.join("game/game.rom"))?;
+        assert_eq!(zipped_bytes, expected);
+        assert_eq!(directory_bytes, expected);
+        Ok((zipped_bytes, directory_bytes))
+    }
+
+    fn assert_mounted_ranges(
+        file: &mut fs::File,
+        expected: &[u8],
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        for offset in [0, 9, (expected.len() - 3) as u64, 4, 0] {
+            file.seek(SeekFrom::Start(offset))?;
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes)?;
+            assert_eq!(bytes, expected[usize::try_from(offset)?..]);
+        }
+        Ok(())
+    }
+
+    fn manifest_for_location(
+        source_root: &Utf8Path,
+        bytes: &[u8],
+        location: SourceLocation,
+    ) -> Result<ViewManifest, Box<dyn std::error::Error>> {
         let sha1 = sha1_bytes(bytes);
         let entry = LogicalEntry {
             path: LogicalPath::new("game.rom"),
