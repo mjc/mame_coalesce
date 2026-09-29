@@ -80,6 +80,12 @@ pub struct AuditArgs {
     pub jobs: usize,
     #[arg(long, help = "Refresh and persist source observations before auditing")]
     pub refresh: bool,
+    #[arg(
+        long = "verify-selected",
+        conflicts_with = "refresh",
+        help = "Read and verify only the resolved source members without updating inventory"
+    )]
+    pub verify_selected: bool,
     #[arg(long, value_enum, default_value_t = MatchingPolicyArg::Sha1Compatibility, help = "Evidence matching policy")]
     pub matching_policy: MatchingPolicyArg,
     #[arg(long, value_enum, default_value_t = AuditFormatArg::Human, help = "Audit report format")]

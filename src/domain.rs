@@ -1429,6 +1429,31 @@ pub enum ObservationBasis {
     FreshScans { scan_runs: Vec<RootScanRun> },
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VerificationBasis {
+    #[default]
+    CachedOnly,
+    SelectedSources,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SelectedSourceVerification {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_group: Option<LogicalPath>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requirement: Option<RequirementKey>,
+    pub logical_path: LogicalPath,
+    pub source: SourceLocation,
+    pub outcome: SelectedVerificationOutcome,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SelectedVerificationOutcome {
+    Verified,
+    Stale { reason: String },
+    Unavailable { reason: String },
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RootScanRun {
     pub source_root: SourceRoot,
@@ -1439,18 +1464,40 @@ pub struct RootScanRun {
 pub struct AuditReport {
     schema_version: u32,
     observation_basis: ObservationBasis,
+    #[serde(default)]
+    verification_basis: VerificationBasis,
     report: BuildReport,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    selected_verifications: Vec<SelectedSourceVerification>,
 }
 
 impl AuditReport {
-    pub const SCHEMA_VERSION: u32 = 1;
+    pub const SCHEMA_VERSION: u32 = 3;
 
     #[must_use]
     pub const fn new(observation_basis: ObservationBasis, report: BuildReport) -> Self {
         Self {
             schema_version: Self::SCHEMA_VERSION,
             observation_basis,
+            verification_basis: VerificationBasis::CachedOnly,
             report,
+            selected_verifications: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub const fn with_selected_verifications(
+        observation_basis: ObservationBasis,
+        report: BuildReport,
+        selected_verifications: Vec<SelectedSourceVerification>,
+        verification_basis: VerificationBasis,
+    ) -> Self {
+        Self {
+            schema_version: Self::SCHEMA_VERSION,
+            observation_basis,
+            verification_basis,
+            report,
+            selected_verifications,
         }
     }
 
@@ -1465,8 +1512,18 @@ impl AuditReport {
     }
 
     #[must_use]
+    pub const fn verification_basis(&self) -> VerificationBasis {
+        self.verification_basis
+    }
+
+    #[must_use]
     pub const fn report(&self) -> &BuildReport {
         &self.report
+    }
+
+    #[must_use]
+    pub fn selected_verifications(&self) -> &[SelectedSourceVerification] {
+        &self.selected_verifications
     }
 
     pub fn to_json(&self) -> crate::Result<Vec<u8>> {
@@ -1478,16 +1535,25 @@ impl AuditReport {
         struct Document {
             schema_version: u32,
             observation_basis: ObservationBasis,
+            #[serde(default)]
+            verification_basis: VerificationBasis,
             report: BuildReport,
+            #[serde(default)]
+            selected_verifications: Vec<SelectedSourceVerification>,
         }
 
         let document: Document = serde_json::from_slice(bytes)?;
-        if document.schema_version != Self::SCHEMA_VERSION {
+        if !matches!(document.schema_version, 1 | 2 | Self::SCHEMA_VERSION) {
             return Err(crate::Error::UnsupportedAuditVersion(
                 document.schema_version,
             ));
         }
-        Ok(Self::new(document.observation_basis, document.report))
+        Ok(Self::with_selected_verifications(
+            document.observation_basis,
+            document.report,
+            document.selected_verifications,
+            document.verification_basis,
+        ))
     }
 }
 

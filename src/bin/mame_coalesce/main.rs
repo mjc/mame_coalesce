@@ -367,7 +367,9 @@ fn audit_command(database: &Database, args: &AuditArgs) -> mame_coalesce::Result
         &AuditRequest {
             dat_path: args.dat.clone(),
             source_path: args.source.clone(),
-            refresh: if args.refresh {
+            refresh: if args.verify_selected {
+                AuditRefresh::VerifySelected
+            } else if args.refresh {
                 AuditRefresh::Refresh
             } else {
                 AuditRefresh::Cached

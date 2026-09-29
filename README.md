@@ -132,6 +132,9 @@ an already-imported DAT and cached source observations by default and labels
 them as cached rather than freshly checked bytes. Opening the cache may apply
 database migrations; that does not refresh source observations. `--refresh`
 explicitly rescans and persists the selected source root before resolving;
+`--verify-selected` instead reads and verifies only the resolved source members,
+reports stale or unavailable selections, and leaves the inventory unchanged;
+it cannot be combined with `--refresh`.
 `--matching-policy evidence-aware` opts into the
 resolver's evidence-aware conflict/ambiguity classifications. Human reports
 include expected and observed evidence and the selected or competing sources.
@@ -139,8 +142,9 @@ To keep adversarially large inventories from multiplying report memory by the
 number of requirements, resolution retains at most 256 detailed assessments and
 256 duplicate-source examples per operation; omitted counts remain explicit in
 JSON and human reports.
-`--format json` writes a versioned audit document to stdout and keeps logs and
-progress on stderr. Audit exits `0` when all requirements match and `1` when
+`--format json` writes version 2 audit documents to stdout and keeps logs and
+progress on stderr; the reader remains compatible with version 1 reports.
+Audit exits `0` when all requirements match and `1` when
 requirements remain unresolved (operational failures also exit `1`). These
 audit statuses do not change build's existing `0` success, `1` execution-failure
 and `2` strict-missing behavior.

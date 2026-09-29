@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use diesel::{
@@ -23,12 +23,13 @@ use crate::{
         DiskVerificationState, ParentDiskName,
     },
     domain::{
-        ArtifactOutcome, ArtifactResult, AuditReport, BuildMode, BuildPlan, BuildReport,
-        BuildRequest, CatalogKey, CatalogScope, CatalogSnapshotDiff, CatalogSnapshotEntry,
-        ImportRunKey, MatchingPolicy, MissingContentPolicy, ObservationBasis, OutputContainer,
-        OutputGroup, PlanOutcome, PublishingSourceKey, RelationshipAssertionKey, RelationshipClaim,
-        RelationshipExplanation, RelationshipReview, ScanRunKey, SetSelection, SnapshotKey,
-        SourceRoot, ZipCompression,
+        ArchiveBackend, ArtifactOutcome, ArtifactResult, AuditReport, BuildMode, BuildPlan,
+        BuildReport, BuildRequest, CatalogKey, CatalogScope, CatalogSnapshotDiff,
+        CatalogSnapshotEntry, ImportRunKey, MatchingPolicy, MissingContentPolicy, ObservationBasis,
+        OutputContainer, OutputGroup, PlanOutcome, PublishingSourceKey, RelationshipAssertionKey,
+        RelationshipClaim, RelationshipExplanation, RelationshipReview, ScanRunKey,
+        SelectedSourceVerification, SelectedVerificationOutcome, SetSelection, SnapshotKey,
+        SourceRoot, VerificationBasis, ZipCompression,
     },
     operations,
     storage::repositories::{BuildRepository, DataFileSelector, SourceRepository},
@@ -290,6 +291,7 @@ pub struct BuildPlanRequest {
 pub enum AuditRefresh {
     Cached,
     Refresh,
+    VerifySelected,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1184,7 +1186,7 @@ pub fn audit_with_roots_and_progress(
     }
 
     let observation_basis = match request.refresh {
-        AuditRefresh::Cached => ObservationBasis::Cached,
+        AuditRefresh::Cached | AuditRefresh::VerifySelected => ObservationBasis::Cached,
         AuditRefresh::Refresh => {
             let scans = scan_sources_with_progress(database, selection, request.jobs, progress)?;
             if let [scan] = scans.as_slice() {
@@ -1216,7 +1218,99 @@ pub fn audit_with_roots_and_progress(
         },
         selection,
     )?;
-    Ok(AuditReport::new(observation_basis, plan.report))
+    let selected_verifications = if request.refresh == AuditRefresh::VerifySelected {
+        verify_plan_selected_sources(&plan)
+    } else {
+        Vec::new()
+    };
+    Ok(if request.refresh == AuditRefresh::VerifySelected {
+        AuditReport::with_selected_verifications(
+            observation_basis,
+            plan.report,
+            selected_verifications,
+            VerificationBasis::SelectedSources,
+        )
+    } else {
+        AuditReport::new(observation_basis, plan.report)
+    })
+}
+
+fn verify_plan_selected_sources(plan: &BuildPlan) -> Vec<SelectedSourceVerification> {
+    let entries: Vec<_> = plan
+        .groups
+        .iter()
+        .flat_map(|group| group.entries.iter().map(move |entry| (group, entry)))
+        .collect();
+    let mut outcomes = vec![None; entries.len()];
+    let mut archives: BTreeMap<(String, ArchiveBackend), Vec<usize>> = BTreeMap::new();
+    for (index, (_, entry)) in entries.iter().enumerate() {
+        if let crate::domain::SourceLocation::ArchiveMember { path, backend, .. } =
+            &entry.source.location
+        {
+            archives
+                .entry((path.clone(), *backend))
+                .or_default()
+                .push(index);
+        } else {
+            outcomes[index] = Some(verify_selected_source(entry));
+        }
+    }
+    for indices in archives.into_values() {
+        let selected: Vec<_> = indices.iter().map(|index| entries[*index].1).collect();
+        match crate::serving::VerifiedContentSession::verify_archive_entries_fresh(&selected) {
+            Ok(results) => {
+                for (index, result) in indices.into_iter().zip(results) {
+                    outcomes[index] = Some(verification_outcome(result));
+                }
+            }
+            Err(error) => {
+                let outcome = verification_outcome(Err(error));
+                for index in indices {
+                    outcomes[index] = Some(outcome.clone());
+                }
+            }
+        }
+    }
+    entries
+        .into_iter()
+        .zip(outcomes)
+        .map(|((group, entry), outcome)| SelectedSourceVerification {
+            output_group: Some(group.path.clone()),
+            requirement: Some(entry.requirement.clone()),
+            logical_path: entry.path.clone(),
+            source: entry.source.location.clone(),
+            outcome: outcome.unwrap_or_else(|| SelectedVerificationOutcome::Unavailable {
+                reason: "selected source was not verified".to_owned(),
+            }),
+        })
+        .collect()
+}
+
+fn verify_selected_source(entry: &crate::domain::LogicalEntry) -> SelectedVerificationOutcome {
+    verification_outcome(crate::serving::VerifiedContentSession::verify_logical_entry_fresh(entry))
+}
+
+fn verification_outcome(
+    result: Result<(), crate::serving::ServingError>,
+) -> SelectedVerificationOutcome {
+    match result {
+        Ok(()) => SelectedVerificationOutcome::Verified,
+        Err(error) => {
+            let reason = error.to_string();
+            match error.failure_kind() {
+                crate::serving::ServingFailureKind::Stale
+                | crate::serving::ServingFailureKind::NotFound => {
+                    SelectedVerificationOutcome::Stale { reason }
+                }
+                crate::serving::ServingFailureKind::Capacity
+                | crate::serving::ServingFailureKind::Unsupported
+                | crate::serving::ServingFailureKind::Corrupt
+                | crate::serving::ServingFailureKind::Io => {
+                    SelectedVerificationOutcome::Unavailable { reason }
+                }
+            }
+        }
+    }
 }
 
 /// Import a DAT, scan its source, plan the build, and write eligible artifacts.

@@ -417,6 +417,18 @@ impl VerifiedContentSession {
             .collect()
     }
 
+    /// Stream and verify one planned source against its cached observation and selected catalog evidence.
+    pub fn verify_logical_entry_fresh(entry: &LogicalEntry) -> Result<(), ServingError> {
+        PinnedSource::resolve(entry)?.verify(entry)
+    }
+
+    /// Verify several selected members of one archive with a shared inventory and fingerprint pass.
+    pub fn verify_archive_entries_fresh(
+        entries: &[&LogicalEntry],
+    ) -> Result<Vec<Result<(), ServingError>>, ServingError> {
+        verify_archive_entries_with_fingerprint(entries, file_fingerprint)
+    }
+
     #[must_use]
     pub const fn total_length(&self) -> ByteLength {
         self.total_length
@@ -602,8 +614,6 @@ impl PinnedSource {
         identity: &ServingIdentity,
         spool_root: &std::path::Path,
     ) -> Result<(PrivateTempDir, File, ContentDigests), ServingError> {
-        let path = self.physical_path.as_path();
-        let original_path = location_path(&entry.source.location);
         let temporary_directory = PrivateTempDir::create_in(spool_root, "mame-coalesce-serving-")?;
         let staged_path = temporary_directory.path().join(MATERIALIZED_FILE_NAME);
         let output = OpenOptions::new()
@@ -611,41 +621,76 @@ impl PinnedSource {
             .write(true)
             .create_new(true)
             .open(staged_path)?;
+        let (file, actual) = self.stream(entry, Some(identity), output)?;
+        Ok((temporary_directory, file, actual))
+    }
+
+    fn verify(&self, entry: &LogicalEntry) -> Result<(), ServingError> {
+        let (_, actual) = self.stream(entry, None, io::sink())?;
+        let path = self.physical_path.as_path();
+        verify_observation(entry, actual, path)?;
+        verify_selected_evidence(entry, actual, path)
+    }
+
+    fn stream<W: Write>(
+        &self,
+        entry: &LogicalEntry,
+        identity: Option<&ServingIdentity>,
+        output: W,
+    ) -> Result<(W, ContentDigests), ServingError> {
+        self.stream_with_archive_fingerprint(entry, identity, output, true)
+    }
+
+    fn stream_with_archive_fingerprint<W: Write>(
+        &self,
+        entry: &LogicalEntry,
+        identity: Option<&ServingIdentity>,
+        output: W,
+        verify_archive_fingerprint: bool,
+    ) -> Result<(W, ContentDigests), ServingError> {
+        let path = self.physical_path.as_path();
+        let original_path = location_path(&entry.source.location);
         let mut materializer = ContentMaterializer::new(
             output,
             self.length,
             DigestRequirements::for_entry(entry, identity),
         );
-
         if let Some((backend, member)) = &self.archive_member {
-            let before = file_fingerprint(path)?;
-            if entry
-                .source
-                .fingerprint
-                .is_some_and(|expected| expected != before)
-            {
-                return Err(ServingError::SourceChanged {
-                    path: path.to_string(),
-                    reason: "archive fingerprint differs from its observation".to_owned(),
-                });
-            }
+            let before = if verify_archive_fingerprint {
+                let fingerprint = file_fingerprint(path)?;
+                if entry
+                    .source
+                    .fingerprint
+                    .is_some_and(|expected| expected != fingerprint)
+                {
+                    return Err(ServingError::SourceChanged {
+                        path: path.to_string(),
+                        reason: "archive fingerprint differs from its observation".to_owned(),
+                    });
+                }
+                Some(fingerprint)
+            } else {
+                None
+            };
             crate::sources::stream_enumerated_archive_member_to_writer(
                 path,
                 *backend,
                 member,
                 &mut materializer,
             )?;
-            let after = file_fingerprint(path)?;
-            if after != before
-                || entry
-                    .source
-                    .fingerprint
-                    .is_some_and(|expected| expected != after)
-            {
-                return Err(ServingError::SourceChanged {
-                    path: path.to_string(),
-                    reason: "archive changed while its member was read".to_owned(),
-                });
+            if let Some(before) = before {
+                let after = file_fingerprint(path)?;
+                if after != before
+                    || entry
+                        .source
+                        .fingerprint
+                        .is_some_and(|expected| expected != after)
+                {
+                    return Err(ServingError::SourceChanged {
+                        path: path.to_string(),
+                        reason: "archive changed while its member was read".to_owned(),
+                    });
+                }
             }
         } else {
             let mut input = File::open(path)?;
@@ -658,15 +703,88 @@ impl PinnedSource {
                 path: original_path.to_owned(),
             });
         }
-        let (file, actual) = materializer.finish()?;
+        let (output, actual) = materializer.finish()?;
         if actual.size != self.length {
             return Err(ServingError::SourceChanged {
                 path: path.to_string(),
                 reason: "materialized byte length differs from the pinned location".to_owned(),
             });
         }
-        Ok((temporary_directory, file, actual))
+        Ok((output, actual))
     }
+}
+
+fn verify_archive_entries_with_fingerprint(
+    entries: &[&LogicalEntry],
+    fingerprint: impl Fn(&Utf8Path) -> crate::Result<SourceFingerprint>,
+) -> Result<Vec<Result<(), ServingError>>, ServingError> {
+    let Some(first) = entries.first() else {
+        return Ok(Vec::new());
+    };
+    let SourceLocation::ArchiveMember {
+        path: first_path,
+        backend,
+        ..
+    } = &first.source.location
+    else {
+        return Err(ServingError::UnaddressableLocation {
+            path: location_path(&first.source.location).to_owned(),
+        });
+    };
+    if entries.iter().any(|entry| {
+        !matches!(
+            &entry.source.location,
+            SourceLocation::ArchiveMember { path, backend: candidate, .. }
+                if path == first_path && candidate == backend
+        )
+    }) {
+        return Err(ServingError::SourceLocationChanged {
+            path: first_path.clone(),
+        });
+    }
+
+    let inventory = ArchiveInventory::open(first)?;
+    let sources: Vec<_> = entries
+        .iter()
+        .map(|entry| PinnedSource::resolve_with_inventory(entry, Some(&inventory)))
+        .collect();
+    let path = inventory.physical_path.as_path();
+    let before = fingerprint(path)?;
+    let mut results: Vec<_> = entries
+        .iter()
+        .zip(sources)
+        .map(|(entry, source)| {
+            if entry
+                .source
+                .fingerprint
+                .is_some_and(|expected| expected != before)
+            {
+                return Err(ServingError::SourceChanged {
+                    path: path.to_string(),
+                    reason: "archive fingerprint differs from its observation".to_owned(),
+                });
+            }
+            source.and_then(|source| {
+                let (_, actual) =
+                    source.stream_with_archive_fingerprint(entry, None, io::sink(), false)?;
+                verify_observation(entry, actual, path)?;
+                verify_selected_evidence(entry, actual, path)
+            })
+        })
+        .collect();
+    let after = fingerprint(path)?;
+    if after != before {
+        let changed = || ServingError::SourceChanged {
+            path: path.to_string(),
+            reason: "archive changed while selected members were verified".to_owned(),
+        };
+        for result in &mut results {
+            if result.is_ok() {
+                *result = Err(changed());
+            }
+        }
+    }
+    Ok(results)
 }
 
 impl Drop for VerifiedContentSession {
@@ -675,8 +793,8 @@ impl Drop for VerifiedContentSession {
     }
 }
 
-struct ContentMaterializer {
-    file: File,
+struct ContentMaterializer<W: Write> {
+    output: W,
     maximum: ByteLength,
     size: u64,
     sha1: Sha1,
@@ -694,11 +812,11 @@ struct DigestRequirements {
 }
 
 impl DigestRequirements {
-    fn for_entry(entry: &LogicalEntry, identity: &ServingIdentity) -> Self {
-        let identity_algorithm = match identity {
-            ServingIdentity::Content(identity) => Some(identity.algorithm()),
-            ServingIdentity::Representation(_) => Some(ContentDigestAlgorithm::Sha256),
-        };
+    fn for_entry(entry: &LogicalEntry, identity: Option<&ServingIdentity>) -> Self {
+        let identity_algorithm = identity.map(|identity| match identity {
+            ServingIdentity::Content(identity) => identity.algorithm(),
+            ServingIdentity::Representation(_) => ContentDigestAlgorithm::Sha256,
+        });
         Self {
             md5: entry.source.observed.md5.is_some()
                 || entry.expected.md5.is_some()
@@ -713,10 +831,10 @@ impl DigestRequirements {
     }
 }
 
-impl ContentMaterializer {
-    fn new(file: File, maximum: ByteLength, requirements: DigestRequirements) -> Self {
+impl<W: Write> ContentMaterializer<W> {
+    fn new(output: W, maximum: ByteLength, requirements: DigestRequirements) -> Self {
         Self {
-            file,
+            output,
             maximum,
             size: 0,
             sha1: Sha1::new(),
@@ -727,8 +845,8 @@ impl ContentMaterializer {
         }
     }
 
-    fn finish(mut self) -> Result<(File, ContentDigests), ServingError> {
-        self.file.flush()?;
+    fn finish(mut self) -> Result<(W, ContentDigests), ServingError> {
+        self.output.flush()?;
         let evidence = ContentDigests {
             size: ByteLength::new(self.size),
             sha1: self.sha1.finalize().into(),
@@ -737,11 +855,11 @@ impl ContentMaterializer {
             xxh3: self.xxh3.digest().to_be_bytes(),
             sha256: self.sha256.map(|digest| digest.finalize().into()),
         };
-        Ok((self.file, evidence))
+        Ok((self.output, evidence))
     }
 }
 
-impl Write for ContentMaterializer {
+impl<W: Write> Write for ContentMaterializer<W> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         let count = u64::try_from(bytes.len()).map_err(io::Error::other)?;
         let Some(size) = self.size.checked_add(count) else {
@@ -750,7 +868,7 @@ impl Write for ContentMaterializer {
         if size > self.maximum.get() {
             return Err(io::Error::other("materialization budget exceeded"));
         }
-        self.file.write_all(bytes)?;
+        self.output.write_all(bytes)?;
         self.sha1.update(bytes);
         if let Some(md5) = &mut self.md5 {
             md5.update(bytes);
@@ -767,7 +885,7 @@ impl Write for ContentMaterializer {
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.file.flush()
+        self.output.flush()
     }
 }
 
@@ -1265,6 +1383,7 @@ mod tests {
                 VerifiedContentSession::preflight_source(entry)?,
                 ByteLength::new(u64::try_from(contents.len())?)
             );
+            VerifiedContentSession::verify_logical_entry_fresh(entry)?;
             assert_decoder_capabilities(&budget, entry)?;
             let identity = content_identity(contents)?;
             let mut session = VerifiedContentSession::open(entry, identity.clone(), &budget)?;
@@ -1301,6 +1420,14 @@ mod tests {
                 ByteLength::new(u64::try_from(second.len())?),
             ]
         );
+        let fingerprint_calls = std::cell::Cell::new(0);
+        let verified =
+            verify_archive_entries_with_fingerprint(&[&first_entry, &second_entry], |path| {
+                fingerprint_calls.set(fingerprint_calls.get() + 1);
+                file_fingerprint(path)
+            })?;
+        assert!(verified.into_iter().all(|result| result.is_ok()));
+        assert_eq!(fingerprint_calls.get(), 2);
         Ok(())
     }
 
@@ -1342,6 +1469,10 @@ mod tests {
         let mut session =
             VerifiedContentSession::open(&entry, content_identity(b"verified snapshot")?, &budget)?;
         fs::write(&source, b"changed after opening")?;
+        assert!(matches!(
+            VerifiedContentSession::verify_logical_entry_fresh(&entry),
+            Err(ServingError::SourceChanged { .. })
+        ));
         let mut bytes = [0; 17];
         let response = session.read_range(
             ByteRange::new(ByteOffset::new(0), ByteLength::new(17))?,

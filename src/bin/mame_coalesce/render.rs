@@ -2,7 +2,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use log::{info, warn};
 use mame_coalesce::{
     app::{BuildWorkflowReport, ScanProgressEvent, SourceScanReport},
-    domain::{ArtifactOutcome, AuditReport, ObservationBasis, PlanOutcome},
+    domain::{ArtifactOutcome, AuditReport, ObservationBasis, PlanOutcome, VerificationBasis},
     resolution::ResolutionStatus,
 };
 use std::fmt::Write as _;
@@ -145,6 +145,13 @@ pub fn exit_code(report: &BuildWorkflowReport) -> std::process::ExitCode {
 pub fn audit_report(report: &AuditReport) -> String {
     let mut output = String::new();
     match report.observation_basis() {
+        ObservationBasis::Cached
+            if report.verification_basis() == VerificationBasis::SelectedSources =>
+        {
+            output.push_str(
+                "Audit against cached observations with fresh verification of selected sources\n",
+            );
+        }
         ObservationBasis::Cached => {
             output
                 .push_str("Audit against cached observations (ROM bytes were not freshly read)\n");
@@ -185,6 +192,41 @@ pub fn audit_report(report: &AuditReport) -> String {
     render_set_selection_issues(&mut output, &build.set_selection_issues);
     for resolution in &build.resolutions {
         render_audit_resolution(&mut output, resolution);
+    }
+    for verification in report.selected_verifications() {
+        let (status, reason) = match &verification.outcome {
+            mame_coalesce::domain::SelectedVerificationOutcome::Verified => ("verified", None),
+            mame_coalesce::domain::SelectedVerificationOutcome::Stale { reason } => {
+                ("stale", Some(reason.as_str()))
+            }
+            mame_coalesce::domain::SelectedVerificationOutcome::Unavailable { reason } => {
+                ("unavailable", Some(reason.as_str()))
+            }
+        };
+        if let (Some(group), Some(requirement)) =
+            (&verification.output_group, &verification.requirement)
+        {
+            let _ = write!(
+                output,
+                "Fresh source verification: {} / {} / {} ({}) -> {} ({status})",
+                group.as_str(),
+                requirement.game_name(),
+                requirement.rom_name(),
+                verification.logical_path.as_str(),
+                verification.source.path()
+            );
+        } else {
+            let _ = write!(
+                output,
+                "Fresh source verification: {} -> {} ({status})",
+                verification.logical_path.as_str(),
+                verification.source.path()
+            );
+        }
+        if let Some(reason) = reason {
+            let _ = write!(output, ": {reason}");
+        }
+        output.push('\n');
     }
     output
 }
@@ -355,6 +397,9 @@ pub fn audit_exit_code(report: &AuditReport) -> std::process::ExitCode {
     if report.report().missing_roms.is_empty()
         && report.report().outcome == PlanOutcome::Ready
         && report.report().set_selection_issues.is_empty()
+        && report.selected_verifications().iter().all(|verification| {
+            verification.outcome == mame_coalesce::domain::SelectedVerificationOutcome::Verified
+        })
     {
         std::process::ExitCode::SUCCESS
     } else {
