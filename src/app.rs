@@ -11,18 +11,24 @@ use serde::Serialize;
 
 use crate::reconciliation::CatalogReconciliation;
 use crate::{
-    build::write_plan_with_container,
+    build::mame_layout::MameLayoutDiagnostic,
+    build::view_manifest::ViewManifest,
+    build::{
+        validation::{self, PlanIssue},
+        write_plan_with_container,
+    },
     database::Database,
     disk::{
         self, DiskDigestScope, DiskIdentitySha1, DiskName, DiskObservation, DiskRequirement,
         DiskVerificationState, ParentDiskName,
     },
     domain::{
-        ArtifactOutcome, ArtifactResult, AuditReport, BuildMode, BuildReport, BuildRequest,
-        CatalogKey, CatalogScope, CatalogSnapshotDiff, CatalogSnapshotEntry, ImportRunKey,
-        MatchingPolicy, MissingContentPolicy, ObservationBasis, OutputContainer, PlanOutcome,
-        PublishingSourceKey, RelationshipAssertionKey, RelationshipClaim, RelationshipExplanation,
-        RelationshipReview, ScanRunKey, SetSelection, SnapshotKey, SourceRoot, ZipCompression,
+        ArtifactOutcome, ArtifactResult, AuditReport, BuildMode, BuildPlan, BuildReport,
+        BuildRequest, CatalogKey, CatalogScope, CatalogSnapshotDiff, CatalogSnapshotEntry,
+        ImportRunKey, MatchingPolicy, MissingContentPolicy, ObservationBasis, OutputContainer,
+        OutputGroup, PlanOutcome, PublishingSourceKey, RelationshipAssertionKey, RelationshipClaim,
+        RelationshipExplanation, RelationshipReview, ScanRunKey, SetSelection, SnapshotKey,
+        SourceRoot, ZipCompression,
     },
     operations,
     storage::repositories::{BuildRepository, DataFileSelector, SourceRepository},
@@ -182,6 +188,91 @@ pub struct BuildWorkflowReport {
     /// Scan results for every selected root. `scan_report` is retained as the legacy primary-root view.
     pub scan_reports: Vec<SourceScanReport>,
     pub scan_report: Option<SourceScanReport>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Inputs for materializing one already-pinned target view through an existing output backend.
+pub struct ViewMaterializationRequest<'a> {
+    pub manifest: &'a ViewManifest,
+    pub destination_path: &'a Utf8Path,
+    pub container: OutputContainer,
+    pub compression: ZipCompression,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+/// Diagnostics and artifact outcomes from consuming a pinned target view.
+pub struct ViewMaterializationReport {
+    pub written_paths: Vec<Utf8PathBuf>,
+    pub artifact_results: Vec<ArtifactResult>,
+    pub layout_diagnostics: Vec<MameLayoutDiagnostic>,
+    pub validation_issues: Vec<PlanIssue>,
+}
+
+/// Execute a pinned view through the shared validation, verification, and staged writer path.
+pub fn materialize_view(
+    request: &ViewMaterializationRequest<'_>,
+) -> crate::Result<ViewMaterializationReport> {
+    let manifest = request.manifest;
+    let groups = manifest
+        .layout()
+        .groups()
+        .iter()
+        .map(|group| OutputGroup {
+            path: group.path().clone(),
+            entries: group.entries().to_vec(),
+        })
+        .collect::<Vec<_>>();
+    let layout_diagnostics = manifest.layout().diagnostics().to_vec();
+    let validation_issues = validation::inspect_groups(&groups);
+    let mut result = ViewMaterializationReport {
+        written_paths: Vec::new(),
+        artifact_results: Vec::new(),
+        layout_diagnostics,
+        validation_issues: validation_issues.clone(),
+    };
+    if !result.layout_diagnostics.is_empty() || !validation_issues.is_empty() {
+        return Ok(result);
+    }
+
+    let source_roots = groups
+        .iter()
+        .flat_map(|group| group.entries.iter().map(|entry| &entry.source.source_root))
+        .collect::<std::collections::BTreeSet<_>>();
+    let source_paths = source_roots
+        .iter()
+        .map(|root| Utf8Path::new(root.as_str()))
+        .collect::<Vec<_>>();
+    validation::ensure_sources_disjoint_from_destination(&source_paths, request.destination_path)?;
+
+    let matched_roms = groups.iter().map(|group| group.entries.len()).sum();
+    let plan = BuildPlan {
+        groups,
+        report: BuildReport {
+            matched_roms,
+            outcome: PlanOutcome::Ready,
+            ..BuildReport::default()
+        },
+    };
+    result.artifact_results = write_plan_with_container(
+        &plan,
+        request.destination_path,
+        request.container,
+        request.compression,
+    )?;
+    result.written_paths = result
+        .artifact_results
+        .iter()
+        .filter(|artifact| {
+            matches!(
+                &artifact.outcome,
+                ArtifactOutcome::Completed
+                    | ArtifactOutcome::ReplacedButNotDurable { .. }
+                    | ArtifactOutcome::CompletedWithWarning { .. }
+            )
+        })
+        .map(|artifact| Utf8PathBuf::from(&artifact.path))
+        .collect();
+    Ok(result)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
