@@ -170,8 +170,9 @@ the established scan/build concurrency contract as part of FUSE work.
    enabled decoder/backend. Treat RAR as unsupported until its working-set
    ceiling is enforceable and the measured peak fits the documented budget.
 
-This decision makes MAMEC-46 a conditional implementation step: implement the
-profile behind the optional platform-adapter seam and retain Linux, macOS, and
-Windows as the intended desktop targets. A Linux prototype alone does not
-complete or close the profile; do not claim support on any OS until its adapter
-passes the same contract and equivalence suite.
+This decision makes MAMEC-46 a staged implementation step: the first working
+adapter may target the best-supported available host, but the optional
+platform-neutral contract must retain Linux, macOS, and Windows as intended
+desktop targets. Closing that first adapter does not claim that other OSes
+already work; document them as unavailable until their adapter passes the same
+contract and equivalence suite. Do not make Linux a permanent product boundary.
