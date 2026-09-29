@@ -15,7 +15,7 @@ use crate::{
     build::view_manifest::ViewManifest,
     build::{
         validation::{self, PlanIssue},
-        write_plan_with_container,
+        write_plan_with_container, write_plan_with_container_policy,
     },
     database::Database,
     disk::{
@@ -23,13 +23,13 @@ use crate::{
         DiskVerificationState, ParentDiskName,
     },
     domain::{
-        ArchiveBackend, ArtifactOutcome, ArtifactResult, AuditReport, BuildMode, BuildPlan,
-        BuildReport, BuildRequest, CatalogKey, CatalogScope, CatalogSnapshotDiff,
-        CatalogSnapshotEntry, ImportRunKey, MatchingPolicy, MissingContentPolicy, ObservationBasis,
-        OutputContainer, OutputGroup, PlanOutcome, PublishingSourceKey, RelationshipAssertionKey,
-        RelationshipClaim, RelationshipExplanation, RelationshipReview, ScanRunKey,
-        SelectedSourceVerification, SelectedVerificationOutcome, SetSelection, SnapshotKey,
-        SourceRoot, VerificationBasis, ZipCompression,
+        ArchiveBackend, ArtifactOutcome, ArtifactResult, ArtifactReusePolicy, AuditReport,
+        BuildMode, BuildPlan, BuildReport, BuildRequest, CatalogKey, CatalogScope,
+        CatalogSnapshotDiff, CatalogSnapshotEntry, ImportRunKey, MatchingPolicy,
+        MissingContentPolicy, ObservationBasis, OutputContainer, OutputGroup, PlanOutcome,
+        PublishingSourceKey, RelationshipAssertionKey, RelationshipClaim, RelationshipExplanation,
+        RelationshipReview, ScanRunKey, SelectedSourceVerification, SelectedVerificationOutcome,
+        SetSelection, SnapshotKey, SourceRoot, VerificationBasis, ZipCompression,
     },
     operations,
     storage::repositories::{BuildRepository, DataFileSelector, SourceRepository},
@@ -1001,6 +1001,22 @@ pub fn build_with_roots_and_container(
     selection: &SourceRootSelection,
     container: OutputContainer,
 ) -> crate::Result<BuildWorkflowReport> {
+    build_with_roots_and_container_with_policy(
+        database,
+        request,
+        selection,
+        container,
+        ArtifactReusePolicy::Replace,
+    )
+}
+
+pub fn build_with_roots_and_container_with_policy(
+    database: &Database,
+    request: &BuildWorkflowRequest,
+    selection: &SourceRootSelection,
+    container: OutputContainer,
+    reuse_policy: ArtifactReusePolicy,
+) -> crate::Result<BuildWorkflowReport> {
     let roots = canonical_roots(selection)?;
     let canonical_paths = roots
         .iter()
@@ -1050,11 +1066,12 @@ pub fn build_with_roots_and_container(
                 &canonical_paths,
                 &request.destination_path,
             )?;
-            let results = write_plan_with_container(
+            let results = write_plan_with_container_policy(
                 &plan,
                 &request.destination_path,
                 container,
                 request.compression,
+                reuse_policy,
             )?;
             let paths = results
                 .iter()
@@ -1380,6 +1397,24 @@ pub fn run_with_roots_and_container_and_progress(
     container: OutputContainer,
     progress: &(impl Fn(ScanProgressEvent) + Sync),
 ) -> crate::Result<BuildWorkflowReport> {
+    run_with_roots_and_container_and_progress_with_policy(
+        database,
+        request,
+        selection,
+        container,
+        progress,
+        ArtifactReusePolicy::Replace,
+    )
+}
+
+pub fn run_with_roots_and_container_and_progress_with_policy(
+    database: &Database,
+    request: &RunWorkflowRequest,
+    selection: &SourceRootSelection,
+    container: OutputContainer,
+    progress: &(impl Fn(ScanProgressEvent) + Sync),
+    reuse_policy: ArtifactReusePolicy,
+) -> crate::Result<BuildWorkflowReport> {
     let roots = canonical_roots(selection)?;
     let canonical_paths = roots
         .iter()
@@ -1413,11 +1448,12 @@ pub fn run_with_roots_and_container_and_progress(
             "at least one source root is required",
         ))
     })?;
-    match build_with_roots_and_container(
+    match build_with_roots_and_container_with_policy(
         database,
         &build_workflow_request_from_run(request),
         selection,
         container,
+        reuse_policy,
     ) {
         Ok(mut report) => {
             report.scan_report = Some(scan_report);

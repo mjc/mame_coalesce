@@ -106,6 +106,9 @@ pub fn build_report(report: &BuildWorkflowReport) {
     for artifact in &report.artifact_results {
         match &artifact.outcome {
             ArtifactOutcome::Completed => info!("completed output artifact: {}", artifact.path),
+            ArtifactOutcome::Reused => {
+                info!("reused verified output artifact: {}", artifact.path);
+            }
             ArtifactOutcome::CompletedWithWarning { warning } => {
                 warn!(
                     "completed output artifact with warning: {}: {warning}",

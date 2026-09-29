@@ -511,10 +511,15 @@ fn enumerate_zip(path: &Utf8Path, maximum_entries: Option<usize>) -> Result<Vec<
 }
 
 fn zip_central_entry_count(path: &Utf8Path) -> Result<Option<usize>> {
+    let file = File::open(path)?;
+    zip_central_entry_count_from_file(&file)
+}
+
+pub fn zip_central_entry_count_from_file(file: &File) -> Result<Option<usize>> {
     const EOCD_SIGNATURE: &[u8; 4] = b"PK\x05\x06";
     const MAX_EOCD_TAIL: usize = 22 + u16::MAX as usize;
 
-    let mut file = File::open(path)?;
+    let mut file = file.try_clone()?;
     let file_len = file.metadata()?.len();
     let tail_len = usize::try_from(file_len.min(MAX_EOCD_TAIL as u64))
         .map_err(|_| Error::InvalidPath("ZIP trailer is too large".to_owned()))?;

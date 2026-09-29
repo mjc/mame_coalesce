@@ -985,6 +985,13 @@ pub enum OutputContainer {
     Directory,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ArtifactReusePolicy {
+    #[default]
+    Replace,
+    ReuseVerified,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum ArchiveBackend {
     Zip,
@@ -1560,6 +1567,7 @@ impl AuditReport {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ArtifactOutcome {
     Completed,
+    Reused,
     Failed {
         error: String,
     },

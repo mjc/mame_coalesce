@@ -46,7 +46,7 @@ fn run() -> mame_coalesce::Result<ExitCode> {
         Command::Build(args) => {
             let progress = render::ScanProgressReporter::default();
             let callback = |event| progress.update(event);
-            let result = app::run_with_roots_and_container_and_progress(
+            let result = app::run_with_roots_and_container_and_progress_with_policy(
                 &database,
                 &RunWorkflowRequest {
                     dat_path: args.dat.clone(),
@@ -65,6 +65,7 @@ fn run() -> mame_coalesce::Result<ExitCode> {
                 },
                 args.options.output_container.into(),
                 &callback,
+                args.options.artifact_reuse_policy(),
             );
             progress.finish();
             render_build_result(result)
@@ -91,7 +92,7 @@ fn run() -> mame_coalesce::Result<ExitCode> {
         Command::Cache {
             command: CacheCommand::Build(args),
         } => {
-            let result = app::build_with_roots_and_container(
+            let result = app::build_with_roots_and_container_with_policy(
                 &database,
                 &BuildWorkflowRequest {
                     dat_path: args.dat.clone(),
@@ -108,6 +109,7 @@ fn run() -> mame_coalesce::Result<ExitCode> {
                     additional: args.additional_source_roots.clone(),
                 },
                 args.options.output_container.into(),
+                args.options.artifact_reuse_policy(),
             );
             render_build_result(result)
         }

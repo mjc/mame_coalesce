@@ -34,7 +34,14 @@ Common options:
 --missing fail
 --dry-run
 --set "Game Set Name"
+--reuse-verified
 ```
+
+`--reuse-verified` leaves an existing ZIP or directory artifact untouched only
+when its complete logical contents match the current plan. Otherwise the
+artifact is rebuilt as usual. The default remains replacement; source files
+are still scanned/planned normally, and this option does not execute a saved
+plan.
 
 Build and audit commands accept repeatable `--set NAME` options to restrict
 planning to exact set names in the selected DAT:

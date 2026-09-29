@@ -23,8 +23,8 @@ use crate::build::validation::{
 };
 use crate::domain::{
     ArchiveBackend, ArchiveMemberSelector as PlannedArchiveMemberSelector, ArtifactOutcome,
-    ArtifactResult, BuildPlan, LogicalEntry, OutputContainer, OutputGroup, PlanOutcome,
-    SourceFingerprint, SourceLocation, ZipCompression,
+    ArtifactResult, ArtifactReusePolicy, BuildPlan, LogicalEntry, OutputContainer, OutputGroup,
+    PlanOutcome, SourceFingerprint, SourceLocation, ZipCompression,
 };
 
 #[cfg(test)]
@@ -32,7 +32,7 @@ pub fn write_plan(plan: &BuildPlan, destination: &Utf8Path) -> crate::Result<Vec
     let mut written = Vec::new();
     for result in write_plan_with_compression(plan, destination, ZipCompression::Deflate)? {
         match result.outcome {
-            ArtifactOutcome::Completed => written.push(
+            ArtifactOutcome::Completed | ArtifactOutcome::Reused => written.push(
                 Utf8PathBuf::try_from(PathBuf::from(result.path)).map_err(|_| {
                     crate::Error::InvalidPath("artifact path is not UTF-8".to_owned())
                 })?,
@@ -69,6 +69,22 @@ pub fn write_plan_with_container(
     container: OutputContainer,
     compression: ZipCompression,
 ) -> crate::Result<Vec<ArtifactResult>> {
+    write_plan_with_container_policy(
+        plan,
+        destination,
+        container,
+        compression,
+        ArtifactReusePolicy::Replace,
+    )
+}
+
+pub fn write_plan_with_container_policy(
+    plan: &BuildPlan,
+    destination: &Utf8Path,
+    container: OutputContainer,
+    compression: ZipCompression,
+    reuse_policy: ArtifactReusePolicy,
+) -> crate::Result<Vec<ArtifactResult>> {
     if plan.report.outcome != PlanOutcome::Ready || !plan.has_outputs() {
         return Ok(Vec::new());
     }
@@ -80,6 +96,7 @@ pub fn write_plan_with_container(
         destination,
         container,
         file_options(compression),
+        reuse_policy,
         &mut |_, _| Ok(()),
     )
 }
@@ -89,6 +106,7 @@ fn write_plan_with_hook(
     destination: &Utf8Path,
     container: OutputContainer,
     options: SimpleFileOptions,
+    reuse_policy: ArtifactReusePolicy,
     hook: &mut impl FnMut(usize, ArtifactPhase) -> io::Result<()>,
 ) -> crate::Result<Vec<ArtifactResult>> {
     let checked = checked_plan_destination(plan, destination)?;
@@ -102,7 +120,7 @@ fn write_plan_with_hook(
     // Handle-relative output is supported on Linux and macOS. Reject other
     // targets before opening or creating output.
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    let _ = (container, options, output_paths);
+    let _ = (container, options, output_paths, reuse_policy);
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     return Err(
         io::Error::other("secure output writing is supported only on Linux and macOS").into(),
@@ -115,6 +133,7 @@ fn write_plan_with_hook(
         for (index, (group, path)) in plan.groups.iter().zip(&output_paths).enumerate() {
             let mut artifact = ArtifactContext {
                 options,
+                reuse_policy,
                 spool_parent: destination,
                 checked_destination: &checked,
                 artifact_index: index,
@@ -173,6 +192,7 @@ enum ArtifactPhase {
 
 struct ArtifactContext<'a> {
     options: SimpleFileOptions,
+    reuse_policy: ArtifactReusePolicy,
     artifact_index: usize,
     spool_parent: &'a Utf8Path,
     checked_destination: &'a crate::build::validation::CheckedPlanDestination,
@@ -187,10 +207,206 @@ fn write_artifact(
     container: OutputContainer,
     artifact: &mut ArtifactContext<'_>,
 ) -> crate::Result<ArtifactOutcome> {
+    #[cfg(unix)]
+    if artifact.reuse_policy == ArtifactReusePolicy::ReuseVerified {
+        artifact.output_root.ensure_disjoint()?;
+        (artifact.hook)(artifact.artifact_index, ArtifactPhase::Read)?;
+        if try_reuse_artifact(group, container, artifact)? {
+            return Ok(ArtifactOutcome::Reused);
+        }
+    }
     match container {
         OutputContainer::Zip => write_zip_artifact(group, path, artifact),
         OutputContainer::Directory => write_directory_artifact(group, path, artifact),
     }
+}
+
+#[cfg(unix)]
+fn try_reuse_artifact(
+    group: &OutputGroup,
+    container: OutputContainer,
+    artifact: &ArtifactContext<'_>,
+) -> crate::Result<bool> {
+    let (relative, is_directory) = match container {
+        OutputContainer::Zip => (format!("{}.zip", group.path.as_str()), false),
+        OutputContainer::Directory => (group.path.as_str().to_owned(), true),
+    };
+    let Some(existing) = artifact
+        .output_root
+        .open_existing_artifact(&relative, is_directory)?
+    else {
+        return Ok(false);
+    };
+    let Some(snapshot) = existing.snapshot() else {
+        return Ok(false);
+    };
+    let matches = match container {
+        OutputContainer::Zip => verify_existing_zip(group, &existing.file)?,
+        OutputContainer::Directory => {
+            let path = artifact.output_root.path.join(&relative);
+            verify_existing_directory(group, &path, &existing, artifact.output_root)?
+        }
+    };
+    if !matches {
+        return Ok(false);
+    }
+    artifact.output_root.ensure_disjoint()?;
+    Ok(existing.is_unchanged_and_still_named(&snapshot))
+}
+
+#[cfg(unix)]
+fn verify_existing_zip(group: &OutputGroup, file: &File) -> crate::Result<bool> {
+    let Some(central_entry_count) = crate::sources::zip_central_entry_count_from_file(file)
+        .ok()
+        .flatten()
+    else {
+        return Ok(false);
+    };
+    let file = file.try_clone()?;
+    let Ok(mut archive) = zip::ZipArchive::new(file) else {
+        return Ok(false);
+    };
+    if central_entry_count != archive.len() || archive.len() != group.entries.len() {
+        return Ok(false);
+    }
+    let expected: BTreeMap<_, _> = group
+        .entries
+        .iter()
+        .map(|entry| (entry.path.as_str(), entry))
+        .collect();
+    let mut seen = BTreeSet::new();
+    for index in 0..archive.len() {
+        let Ok(mut member) = archive.by_index(index) else {
+            return Ok(false);
+        };
+        if !member.is_file() || !seen.insert(member.name().to_owned()) {
+            return Ok(false);
+        }
+        let Some(entry) = expected.get(member.name()) else {
+            return Ok(false);
+        };
+        let declared_size = member.size();
+        if !verify_existing_member(entry, &mut member, Some(declared_size)) {
+            return Ok(false);
+        }
+    }
+    Ok(seen.len() == expected.len())
+}
+
+#[cfg(unix)]
+fn verify_existing_directory(
+    group: &OutputGroup,
+    path: &Utf8Path,
+    existing: &ExistingArtifact,
+    output_root: &SecureOutputDirectory,
+) -> crate::Result<bool> {
+    let expected: BTreeMap<_, _> = group
+        .entries
+        .iter()
+        .map(|entry| (entry.path.as_str(), entry))
+        .collect();
+    let mut expected_directories = BTreeSet::new();
+    for entry in &group.entries {
+        let mut parent = Utf8Path::new(entry.path.as_str()).parent();
+        while let Some(directory) = parent.filter(|directory| !directory.as_str().is_empty()) {
+            expected_directories.insert(directory.as_str().to_owned());
+            parent = directory.parent();
+        }
+    }
+    let mut seen_files = BTreeSet::new();
+    let mut seen_directories = BTreeSet::new();
+    let Some(root_snapshot) = existing.snapshot() else {
+        return Ok(false);
+    };
+    let mut file_snapshots = BTreeMap::new();
+    let mut directory_snapshots = BTreeMap::new();
+    for item in walkdir::WalkDir::new(path).follow_links(false) {
+        let Ok(item) = item else {
+            return Ok(false);
+        };
+        if item.depth() == 0 {
+            continue;
+        }
+        let Ok(relative_path) = item.path().strip_prefix(path) else {
+            return Ok(false);
+        };
+        let Some(relative) = Utf8Path::from_path(relative_path).map(Utf8Path::as_str) else {
+            return Ok(false);
+        };
+        let file_type = item.file_type();
+        if file_type.is_symlink() {
+            return Ok(false);
+        }
+        if file_type.is_dir() {
+            if !expected_directories.contains(relative)
+                || !seen_directories.insert(relative.to_owned())
+            {
+                return Ok(false);
+            }
+            let Some(directory) = open_existing_relative(&existing.file, relative, true)? else {
+                return Ok(false);
+            };
+            let Some(snapshot) = directory.snapshot() else {
+                return Ok(false);
+            };
+            directory_snapshots.insert(relative.to_owned(), snapshot);
+            continue;
+        }
+        if !file_type.is_file() || !seen_files.insert(relative.to_owned()) {
+            return Ok(false);
+        }
+        let Some(entry) = expected.get(relative) else {
+            return Ok(false);
+        };
+        let Some(file) = open_existing_relative(&existing.file, relative, false)? else {
+            return Ok(false);
+        };
+        let Some(snapshot) = file.snapshot() else {
+            return Ok(false);
+        };
+        if !verify_existing_member(entry, &mut &file.file, Some(snapshot.size)) {
+            return Ok(false);
+        }
+        file_snapshots.insert(relative.to_owned(), snapshot);
+    }
+    output_root.ensure_disjoint()?;
+    Ok(seen_files.len() == expected.len()
+        && seen_directories == expected_directories
+        && existing.is_unchanged_and_still_named(&root_snapshot)
+        && directory_snapshots.iter().all(|(relative, snapshot)| {
+            open_existing_relative(&existing.file, relative, true)
+                .ok()
+                .flatten()
+                .is_some_and(|directory| directory.is_unchanged_and_still_named(snapshot))
+        })
+        && file_snapshots.iter().all(|(relative, snapshot)| {
+            open_existing_relative(&existing.file, relative, false)
+                .ok()
+                .flatten()
+                .is_some_and(|file| file.is_unchanged_and_still_named(snapshot))
+        }))
+}
+
+#[cfg(unix)]
+fn verify_existing_member(
+    entry: &LogicalEntry,
+    reader: &mut impl io::Read,
+    declared_size: Option<u64>,
+) -> bool {
+    let maximum = match entry.selection.strength {
+        crate::resolution::MatchStrength::Sha1 | crate::resolution::MatchStrength::Md5 => {
+            entry.source.observed.size
+        }
+        crate::resolution::MatchStrength::CrcAndSize => {
+            entry.expected.size.or(entry.source.observed.size)
+        }
+    }
+    .unwrap_or(MAX_ARCHIVE_STAGING_BYTES);
+    if declared_size.is_some_and(|size| size > maximum) {
+        return false;
+    }
+    let mut content = ContentWriter::with_limit(io::sink(), maximum);
+    io::copy(reader, &mut content).is_ok() && verify_content(entry, content.finish()).is_ok()
 }
 
 fn write_zip_artifact(
@@ -377,6 +593,15 @@ impl SecureOutputDirectory {
             }
         }
         Ok(())
+    }
+
+    fn open_existing_artifact(
+        &self,
+        relative: &str,
+        directory: bool,
+    ) -> crate::Result<Option<ExistingArtifact>> {
+        self.ensure_disjoint()?;
+        open_existing_relative(&self.directory, relative, directory)
     }
 
     fn stage_file(&self, relative: &str) -> crate::Result<(StagedZip, File)> {
@@ -672,6 +897,198 @@ impl SecureOutputDirectory {
         .map_err(std::io::Error::from)?;
         Ok(File::from(file))
     }
+}
+
+#[cfg(unix)]
+struct ExistingArtifact {
+    file: File,
+    parent: File,
+    name: String,
+    ancestors: Vec<DirectoryBinding>,
+}
+
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ArtifactSnapshot {
+    device: u64,
+    inode: u64,
+    file_type: u32,
+    size: u64,
+    modified_seconds: i64,
+    modified_nanoseconds: i64,
+    changed_seconds: i64,
+    changed_nanoseconds: i64,
+}
+
+#[cfg(unix)]
+struct DirectoryBinding {
+    directory: File,
+    parent: File,
+    name: String,
+    snapshot: ArtifactSnapshot,
+}
+
+#[cfg(unix)]
+impl DirectoryBinding {
+    fn is_unchanged_and_still_named(&self) -> bool {
+        is_snapshot_still_named(&self.directory, &self.parent, &self.name, &self.snapshot)
+    }
+}
+
+#[cfg(unix)]
+impl ExistingArtifact {
+    fn snapshot(&self) -> Option<ArtifactSnapshot> {
+        snapshot_handle(&self.file)
+    }
+
+    fn is_unchanged_and_still_named(&self, snapshot: &ArtifactSnapshot) -> bool {
+        is_snapshot_still_named(&self.file, &self.parent, &self.name, snapshot)
+            && self
+                .ancestors
+                .iter()
+                .all(DirectoryBinding::is_unchanged_and_still_named)
+    }
+}
+
+#[cfg(unix)]
+fn snapshot_handle(file: &File) -> Option<ArtifactSnapshot> {
+    use std::os::unix::fs::MetadataExt;
+
+    let metadata = file.metadata().ok()?;
+    Some(ArtifactSnapshot {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+        file_type: metadata.mode() & 0o170_000,
+        size: metadata.size(),
+        modified_seconds: metadata.mtime(),
+        modified_nanoseconds: metadata.mtime_nsec(),
+        changed_seconds: metadata.ctime(),
+        changed_nanoseconds: metadata.ctime_nsec(),
+    })
+}
+
+#[cfg(unix)]
+fn is_snapshot_still_named(
+    file: &File,
+    parent: &File,
+    name: &str,
+    snapshot: &ArtifactSnapshot,
+) -> bool {
+    use rustix::fs::{self, AtFlags};
+    use std::os::fd::AsFd;
+
+    let Ok(named) = fs::statat(parent.as_fd(), name, AtFlags::SYMLINK_NOFOLLOW) else {
+        return false;
+    };
+    snapshot_handle(file).is_some_and(|current| {
+        let named_identity_matches =
+            current.device == named.st_dev && current.inode == named.st_ino;
+        let named_type_matches = current.file_type == (named.st_mode & 0o170_000);
+        current == *snapshot && named_identity_matches && named_type_matches
+    })
+}
+
+#[cfg(unix)]
+fn open_existing_relative(
+    root: &File,
+    relative: &str,
+    directory: bool,
+) -> crate::Result<Option<ExistingArtifact>> {
+    use rustix::{
+        fs::{self, Mode, OFlags},
+        io::Errno,
+    };
+    use std::os::fd::AsFd;
+
+    if !is_safe_relative_path(relative) {
+        return Ok(None);
+    }
+    let components = relative.split('/').collect::<Vec<_>>();
+    let Some(name) = components.last().copied() else {
+        return Ok(None);
+    };
+    let mut parent = root.try_clone()?;
+    let mut ancestors = Vec::new();
+    for component in &components[..components.len() - 1] {
+        let flags = OFlags::RDONLY
+            | OFlags::DIRECTORY
+            | OFlags::CLOEXEC
+            | OFlags::NOFOLLOW
+            | OFlags::NONBLOCK;
+        match fs::openat(parent.as_fd(), *component, flags, Mode::empty()) {
+            Ok(next) => {
+                let next = File::from(next);
+                let Some(snapshot) = snapshot_handle(&next) else {
+                    return Ok(None);
+                };
+                ancestors.push(DirectoryBinding {
+                    directory: next.try_clone()?,
+                    parent: parent.try_clone()?,
+                    name: (*component).to_owned(),
+                    snapshot,
+                });
+                parent = next;
+            }
+            Err(error)
+                if error == Errno::NOENT
+                    || error == Errno::NOTDIR
+                    || error == Errno::LOOP
+                    || error == Errno::ACCESS
+                    || error == Errno::PERM =>
+            {
+                return Ok(None);
+            }
+            Err(error) => return Err(std::io::Error::from(error).into()),
+        }
+    }
+    let expected_kind = if directory { 0o040_000 } else { 0o100_000 };
+    let named_before = match fs::statat(parent.as_fd(), name, rustix::fs::AtFlags::SYMLINK_NOFOLLOW)
+    {
+        Ok(metadata) if metadata.st_mode & 0o170_000 == expected_kind => metadata,
+        Ok(_) => return Ok(None),
+        Err(error)
+            if error == Errno::NOENT
+                || error == Errno::NOTDIR
+                || error == Errno::LOOP
+                || error == Errno::ACCESS
+                || error == Errno::PERM =>
+        {
+            return Ok(None);
+        }
+        Err(error) => return Err(std::io::Error::from(error).into()),
+    };
+    let mut flags = OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK;
+    flags |= OFlags::NOCTTY;
+    if directory {
+        flags |= OFlags::DIRECTORY;
+    }
+    let file = match fs::openat(parent.as_fd(), name, flags, Mode::empty()) {
+        Ok(file) => File::from(file),
+        Err(error)
+            if error == Errno::NOENT
+                || error == Errno::NOTDIR
+                || error == Errno::LOOP
+                || error == Errno::ACCESS
+                || error == Errno::PERM =>
+        {
+            return Ok(None);
+        }
+        Err(error) => return Err(std::io::Error::from(error).into()),
+    };
+    let metadata = fs::fstat(file.as_fd()).map_err(std::io::Error::from)?;
+    let file_kind = metadata.st_mode & 0o170_000;
+    if file_kind != expected_kind
+        || metadata.st_dev != named_before.st_dev
+        || metadata.st_ino != named_before.st_ino
+    {
+        return Ok(None);
+    }
+    Ok(Some(ExistingArtifact {
+        file,
+        parent,
+        name: name.to_owned(),
+        ancestors,
+    }))
 }
 
 #[cfg(unix)]
@@ -1239,6 +1656,7 @@ struct ContentDigest {
 struct ContentWriter<W> {
     inner: W,
     size: u64,
+    maximum: Option<u64>,
     sha1: Sha1,
     md5: Md5,
     crc: crc32fast::Hasher,
@@ -1247,9 +1665,18 @@ struct ContentWriter<W> {
 
 impl<W> ContentWriter<W> {
     fn new(inner: W) -> Self {
+        Self::with_maximum(inner, None)
+    }
+
+    fn with_limit(inner: W, maximum: u64) -> Self {
+        Self::with_maximum(inner, Some(maximum))
+    }
+
+    fn with_maximum(inner: W, maximum: Option<u64>) -> Self {
         Self {
             inner,
             size: 0,
+            maximum,
             sha1: Sha1::new(),
             md5: Md5::new(),
             crc: crc32fast::Hasher::new(),
@@ -1270,7 +1697,22 @@ impl<W> ContentWriter<W> {
 
 impl<W: Write> Write for ContentWriter<W> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        let written = self.inner.write(bytes)?;
+        let bounded = if let Some(maximum) = self.maximum {
+            let remaining = maximum.saturating_sub(self.size);
+            let allowed = usize::try_from(remaining)
+                .unwrap_or(usize::MAX)
+                .min(bytes.len());
+            if allowed == 0 && !bytes.is_empty() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "existing artifact member exceeds its planned size bound",
+                ));
+            }
+            &bytes[..allowed]
+        } else {
+            bytes
+        };
+        let written = self.inner.write(bounded)?;
         let Some(written_bytes) = bytes.get(..written) else {
             return Err(io::Error::other("writer reported an invalid byte count"));
         };
@@ -1974,9 +2416,9 @@ mod tests {
     use proptest::prelude::*;
 
     use crate::domain::{
-        ArchiveMemberSelector, BuildReport, CatalogKey, ExpectedEvidence, LogicalEntry,
-        LogicalPath, MatchingPolicy, OutputGroup, RequirementKey, SelectionProvenance, SetKey,
-        SourceFile,
+        ArchiveMemberSelector, ArtifactReusePolicy, BuildReport, CatalogKey, ExpectedEvidence,
+        LogicalEntry, LogicalPath, MatchingPolicy, OutputGroup, RequirementKey,
+        SelectionProvenance, SetKey, SourceFile,
     };
 
     #[derive(Clone, Copy)]
@@ -2197,6 +2639,7 @@ mod tests {
             &destination,
             OutputContainer::Directory,
             file_options(ZipCompression::Deflate),
+            ArtifactReusePolicy::Replace,
             &mut hook,
         )?;
 
@@ -2517,6 +2960,51 @@ mod tests {
         Ok(())
     }
 
+    fn replace_zip_name(
+        path: &Utf8Path,
+        old: &str,
+        new: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        if old.len() != new.len() {
+            return Err("ZIP test names must have equal byte lengths".into());
+        }
+        let mut bytes = fs::read(path)?;
+        let mut cursor = 0;
+        while let Some(relative) = bytes[cursor..]
+            .windows(old.len())
+            .position(|window| window == old.as_bytes())
+        {
+            cursor += relative;
+            bytes[cursor..cursor + old.len()].copy_from_slice(new.as_bytes());
+            cursor += old.len();
+        }
+        fs::write(path, bytes)?;
+        Ok(())
+    }
+
+    fn mark_zip_entry_as_symlink(
+        path: &Utf8Path,
+        name: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut bytes = fs::read(path)?;
+        let header = bytes
+            .windows(4)
+            .position(|window| window == b"PK\x01\x02")
+            .ok_or_else(|| io::Error::other("ZIP central entry was not written"))?;
+        let name_length = usize::from(u16::from_le_bytes(
+            bytes[header + 28..header + 30]
+                .try_into()
+                .map_err(|_| io::Error::other("invalid ZIP central entry"))?,
+        ));
+        if &bytes[header + 46..header + 46 + name_length] != name.as_bytes() {
+            return Err("ZIP central entry name did not match the fixture".into());
+        }
+        bytes[header + 5] = 3;
+        bytes[header + 38..header + 42].copy_from_slice(&(0o120_777_u32 << 16).to_le_bytes());
+        fs::write(path, bytes)?;
+        Ok(())
+    }
+
     fn write_version_rar(path: &Utf8Path) -> Result<(), Box<dyn std::error::Error>> {
         let archive = hex::decode(
             "526172211a0700cf907300000d000000000000000f0c7420802700150000000b0000000345f37dc6a48a07471d330700a481000056455253494f4e0c008fec8a45cc23c848088362fe5fdd5c5388f072c43d7b00400700",
@@ -2727,6 +3215,7 @@ mod tests {
                 &destination,
                 OutputContainer::Zip,
                 file_options(ZipCompression::Deflate),
+                ArtifactReusePolicy::Replace,
                 &mut hook,
             )?;
 
@@ -2771,6 +3260,7 @@ mod tests {
             &destination,
             OutputContainer::Zip,
             file_options(ZipCompression::Deflate),
+            ArtifactReusePolicy::Replace,
             &mut hook,
         )?;
 
@@ -2819,6 +3309,7 @@ mod tests {
             &destination,
             OutputContainer::Directory,
             file_options(ZipCompression::Deflate),
+            ArtifactReusePolicy::Replace,
             &mut hook,
         )?;
 
@@ -3041,6 +3532,393 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn verified_zip_artifact_is_reused_without_reading_changed_sources()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let root = utf8_path(temp_dir.path())?;
+        let source_path = source_fixture_path(&temp_dir, "source.rom")?;
+        fs::write(&source_path, b"planned content")?;
+        let plan = single_bare_file_plan(&source_path);
+        let destination = root.join("output");
+        let artifact = destination.join("safe.zip");
+        write_plan_with_container(
+            &plan,
+            &destination,
+            OutputContainer::Zip,
+            ZipCompression::Deflate,
+        )?;
+        fs::write(&source_path, b"changed after planning")?;
+
+        let results = write_plan_with_container_policy(
+            &plan,
+            &destination,
+            OutputContainer::Zip,
+            ZipCompression::Deflate,
+            ArtifactReusePolicy::ReuseVerified,
+        )?;
+
+        assert_eq!(results[0].outcome, ArtifactOutcome::Reused);
+        let mut archive = zip::ZipArchive::new(File::open(artifact)?)?;
+        let mut member = archive.by_name("game.rom")?;
+        let mut content = Vec::new();
+        member.read_to_end(&mut content)?;
+        assert_eq!(content, b"planned content");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn invalid_existing_zip_is_replaced_instead_of_reused() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let temp_dir = tempfile::tempdir()?;
+        let root = utf8_path(temp_dir.path())?;
+        let source_path = source_fixture_path(&temp_dir, "source.rom")?;
+        fs::write(&source_path, b"planned content")?;
+        let plan = single_bare_file_plan(&source_path);
+        let destination = root.join("output");
+        fs::create_dir_all(&destination)?;
+        let artifact = destination.join("safe.zip");
+        fs::write(&artifact, b"not a zip")?;
+
+        let results = write_plan_with_container_policy(
+            &plan,
+            &destination,
+            OutputContainer::Zip,
+            ZipCompression::Deflate,
+            ArtifactReusePolicy::ReuseVerified,
+        )?;
+
+        assert_eq!(results[0].outcome, ArtifactOutcome::Completed);
+        let mut archive = zip::ZipArchive::new(File::open(artifact)?)?;
+        let mut member = archive.by_name("game.rom")?;
+        let mut content = Vec::new();
+        member.read_to_end(&mut content)?;
+        assert_eq!(content, b"planned content");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn duplicate_raw_zip_names_are_not_reused() -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let root = utf8_path(temp_dir.path())?;
+        let source_path = source_fixture_path(&temp_dir, "source.rom")?;
+        fs::write(&source_path, b"planned content")?;
+        let plan = single_bare_file_plan(&source_path);
+        let destination = root.join("output");
+        fs::create_dir_all(&destination)?;
+        let artifact = destination.join("safe.zip");
+        write_source_zip(
+            &artifact,
+            &[
+                ("game.rom", b"wrong content"),
+                ("item.rom", b"planned content"),
+            ],
+        )?;
+        replace_zip_name(&artifact, "item.rom", "game.rom")?;
+
+        let results = write_plan_with_container_policy(
+            &plan,
+            &destination,
+            OutputContainer::Zip,
+            ZipCompression::Deflate,
+            ArtifactReusePolicy::ReuseVerified,
+        )?;
+
+        assert_eq!(results[0].outcome, ArtifactOutcome::Completed);
+        let mut archive = zip::ZipArchive::new(File::open(artifact)?)?;
+        let mut member = archive.by_name("game.rom")?;
+        let mut content = Vec::new();
+        member.read_to_end(&mut content)?;
+        assert_eq!(content, b"planned content");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn zip_symlink_member_is_not_reused() -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let root = utf8_path(temp_dir.path())?;
+        let source_path = source_fixture_path(&temp_dir, "source.rom")?;
+        fs::write(&source_path, b"planned content")?;
+        let plan = single_bare_file_plan(&source_path);
+        let destination = root.join("output");
+        let artifact = destination.join("safe.zip");
+        write_plan_with_container(
+            &plan,
+            &destination,
+            OutputContainer::Zip,
+            ZipCompression::Deflate,
+        )?;
+        mark_zip_entry_as_symlink(&artifact, "game.rom")?;
+
+        let results = write_plan_with_container_policy(
+            &plan,
+            &destination,
+            OutputContainer::Zip,
+            ZipCompression::Deflate,
+            ArtifactReusePolicy::ReuseVerified,
+        )?;
+
+        assert_eq!(results[0].outcome, ArtifactOutcome::Completed);
+        let mut archive = zip::ZipArchive::new(File::open(artifact)?)?;
+        assert!(archive.by_name("game.rom")?.is_file());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fifo_destination_does_not_block_verified_reuse() -> Result<(), Box<dyn std::error::Error>> {
+        use std::{os::fd::AsFd, sync::mpsc, time::Duration};
+
+        let temp_dir = tempfile::tempdir()?;
+        let root = utf8_path(temp_dir.path())?;
+        let source_path = source_fixture_path(&temp_dir, "source.rom")?;
+        fs::write(&source_path, b"planned content")?;
+        let plan = single_bare_file_plan(&source_path);
+        let destination = root.join("output");
+        fs::create_dir_all(&destination)?;
+        let directory = File::open(&destination)?;
+        rustix::fs::mkfifoat(
+            directory.as_fd(),
+            "safe.zip",
+            rustix::fs::Mode::from_raw_mode(0o600),
+        )?;
+        let (sender, receiver) = mpsc::channel();
+        let worker_destination = destination.clone();
+        std::thread::spawn(move || {
+            let _ = sender.send(write_plan_with_container_policy(
+                &plan,
+                &worker_destination,
+                OutputContainer::Zip,
+                ZipCompression::Deflate,
+                ArtifactReusePolicy::ReuseVerified,
+            ));
+        });
+
+        let results = receiver.recv_timeout(Duration::from_secs(2))??;
+
+        assert_eq!(results[0].outcome, ArtifactOutcome::Completed);
+        assert!(destination.join("safe.zip").is_file());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_zip_falls_back_to_replacement() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = tempfile::tempdir()?;
+        let root = utf8_path(temp_dir.path())?;
+        let source_path = source_fixture_path(&temp_dir, "source.rom")?;
+        fs::write(&source_path, b"planned content")?;
+        let plan = single_bare_file_plan(&source_path);
+        let destination = root.join("output");
+        let artifact = destination.join("safe.zip");
+        write_plan_with_container(
+            &plan,
+            &destination,
+            OutputContainer::Zip,
+            ZipCompression::Deflate,
+        )?;
+        fs::set_permissions(&artifact, fs::Permissions::from_mode(0o0))?;
+
+        let results = write_plan_with_container_policy(
+            &plan,
+            &destination,
+            OutputContainer::Zip,
+            ZipCompression::Deflate,
+            ArtifactReusePolicy::ReuseVerified,
+        );
+        fs::set_permissions(&artifact, fs::Permissions::from_mode(0o600))?;
+        let results = results?;
+
+        assert_eq!(results[0].outcome, ArtifactOutcome::Completed);
+        let mut archive = zip::ZipArchive::new(File::open(artifact)?)?;
+        assert!(archive.by_name("game.rom")?.is_file());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verified_sha1_size_bound_uses_observed_size_not_conflicting_catalog_size()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let root = utf8_path(temp_dir.path())?;
+        let source_path = source_fixture_path(&temp_dir, "source.rom")?;
+        fs::write(&source_path, b"abc")?;
+        let mut plan = single_bare_file_plan(&source_path);
+        plan.groups[0].entries[0].source.observed.size = Some(3);
+        plan.groups[0].entries[0].expected.size = Some(2);
+        let destination = root.join("output");
+        let artifact = destination.join("safe.zip");
+        write_plan_with_container(
+            &plan,
+            &destination,
+            OutputContainer::Zip,
+            ZipCompression::Deflate,
+        )?;
+
+        let results = write_plan_with_container_policy(
+            &plan,
+            &destination,
+            OutputContainer::Zip,
+            ZipCompression::Deflate,
+            ArtifactReusePolicy::ReuseVerified,
+        )?;
+
+        assert_eq!(results[0].outcome, ArtifactOutcome::Reused);
+        assert!(artifact.is_file());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn artifact_snapshot_detects_same_length_file_replacement()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let root = utf8_path(temp_dir.path())?;
+        let artifact_path = root.join("artifact.zip");
+        fs::write(&artifact_path, b"original")?;
+        let root_file = File::open(root)?;
+        let artifact = open_existing_relative(&root_file, "artifact.zip", false)?
+            .ok_or_else(|| io::Error::other("existing output artifact was not opened"))?;
+        let snapshot = artifact
+            .snapshot()
+            .ok_or_else(|| io::Error::other("artifact metadata was not captured"))?;
+
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        fs::write(&artifact_path, b"modified")?;
+
+        assert!(
+            !artifact.is_unchanged_and_still_named(&snapshot),
+            "snapshot before={snapshot:?}, after={:?}",
+            artifact.snapshot()
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn artifact_snapshot_detects_directory_entry_changes() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let temp_dir = tempfile::tempdir()?;
+        let root = utf8_path(temp_dir.path())?;
+        let directory_path = root.join("artifact");
+        fs::create_dir(&directory_path)?;
+        let root_file = File::open(root)?;
+        let directory = open_existing_relative(&root_file, "artifact", true)?
+            .ok_or_else(|| io::Error::other("existing output directory was not opened"))?;
+        let snapshot = directory
+            .snapshot()
+            .ok_or_else(|| io::Error::other("directory metadata was not captured"))?;
+
+        fs::write(directory_path.join("extra.rom"), b"extra")?;
+
+        assert!(!directory.is_unchanged_and_still_named(&snapshot));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn artifact_snapshot_detects_a_renamed_nested_parent() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let temp_dir = tempfile::tempdir()?;
+        let root = utf8_path(temp_dir.path())?;
+        let parent_path = root.join("parent");
+        fs::create_dir(&parent_path)?;
+        let artifact_path = parent_path.join("artifact.zip");
+        fs::write(&artifact_path, b"contents")?;
+        let root_file = File::open(root)?;
+        let artifact = open_existing_relative(&root_file, "parent/artifact.zip", false)?
+            .ok_or_else(|| io::Error::other("existing output artifact was not opened"))?;
+        let snapshot = artifact
+            .snapshot()
+            .ok_or_else(|| io::Error::other("artifact metadata was not captured"))?;
+
+        fs::rename(&parent_path, root.join("renamed-parent"))?;
+
+        assert!(!artifact.is_unchanged_and_still_named(&snapshot));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verified_directory_artifact_is_reused_without_reading_changed_sources()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let root = utf8_path(temp_dir.path())?;
+        let source_path = source_fixture_path(&temp_dir, "source.rom")?;
+        fs::write(&source_path, b"planned content")?;
+        let plan = single_bare_file_plan(&source_path);
+        let destination = root.join("output");
+        let artifact = destination.join("safe");
+        write_plan_with_container(
+            &plan,
+            &destination,
+            OutputContainer::Directory,
+            ZipCompression::Deflate,
+        )?;
+        fs::write(&source_path, b"changed after planning")?;
+
+        let results = write_plan_with_container_policy(
+            &plan,
+            &destination,
+            OutputContainer::Directory,
+            ZipCompression::Deflate,
+            ArtifactReusePolicy::ReuseVerified,
+        )?;
+
+        assert_eq!(results[0].outcome, ArtifactOutcome::Reused);
+        assert_eq!(fs::read(artifact.join("game.rom"))?, b"planned content");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_with_unplanned_content_is_replaced_instead_of_reused()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let root = utf8_path(temp_dir.path())?;
+        let source_path = source_fixture_path(&temp_dir, "source.rom")?;
+        fs::write(&source_path, b"planned content")?;
+        let plan = single_bare_file_plan(&source_path);
+        let destination = root.join("output");
+        let artifact = destination.join("safe");
+        fs::create_dir_all(&artifact)?;
+        fs::write(artifact.join("game.rom"), b"planned content")?;
+        fs::write(artifact.join("unexpected.rom"), b"unplanned")?;
+
+        let results = write_plan_with_container_policy(
+            &plan,
+            &destination,
+            OutputContainer::Directory,
+            ZipCompression::Deflate,
+            ArtifactReusePolicy::ReuseVerified,
+        )?;
+
+        assert_eq!(results[0].outcome, ArtifactOutcome::Completed);
+        assert_eq!(fs::read(artifact.join("game.rom"))?, b"planned content");
+        assert!(!artifact.join("unexpected.rom").exists());
+        Ok(())
+    }
+
+    fn single_bare_file_plan(source_path: &Utf8Path) -> BuildPlan {
+        BuildPlan {
+            groups: vec![OutputGroup {
+                path: LogicalPath::new("safe"),
+                entries: vec![logical_entry("game.rom", source_file(source_path))],
+            }],
+            report: BuildReport {
+                matched_roms: 1,
+                outcome: PlanOutcome::Ready,
+                ..BuildReport::default()
+            },
+        }
+    }
+
     #[test]
     fn archive_replacement_during_read_is_detected_before_commit()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -3070,6 +3948,7 @@ mod tests {
             &destination,
             OutputContainer::Zip,
             file_options(ZipCompression::Deflate),
+            ArtifactReusePolicy::Replace,
             &mut hook,
         )?;
         let result = results

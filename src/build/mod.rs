@@ -4,4 +4,4 @@ pub mod validation;
 pub mod view_manifest;
 mod writer;
 
-pub(crate) use writer::write_plan_with_container;
+pub(crate) use writer::{write_plan_with_container, write_plan_with_container_policy};

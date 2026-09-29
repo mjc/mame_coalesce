@@ -1,7 +1,8 @@
 use camino::Utf8PathBuf;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use mame_coalesce::domain::{
-    BuildMode, CatalogScope, MatchingPolicy, OutputContainer, SetName, SetSelection, ZipCompression,
+    ArtifactReusePolicy, BuildMode, CatalogScope, MatchingPolicy, OutputContainer, SetName,
+    SetSelection, ZipCompression,
 };
 
 #[derive(Parser)]
@@ -311,6 +312,12 @@ pub struct BuildOptions {
     )]
     pub dry_run: bool,
     #[arg(
+        long,
+        default_value_t = false,
+        help = "Reuse existing output artifacts only when their logical contents verify against this plan"
+    )]
+    pub reuse_verified: bool,
+    #[arg(
         long = "set",
         value_name = "NAME",
         help = "Select this exact set name (repeatable)"
@@ -321,6 +328,14 @@ pub struct BuildOptions {
 impl BuildOptions {
     pub fn set_selection(&self) -> SetSelection {
         set_selection(&self.set_names)
+    }
+
+    pub const fn artifact_reuse_policy(&self) -> ArtifactReusePolicy {
+        if self.reuse_verified {
+            ArtifactReusePolicy::ReuseVerified
+        } else {
+            ArtifactReusePolicy::Replace
+        }
     }
 }
 
