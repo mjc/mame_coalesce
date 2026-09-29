@@ -1,8 +1,10 @@
 //! Verified, snapshot-bound byte-range reads from source locations.
 
 use std::{
+    collections::BTreeMap,
     fs::{self, File, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
+    path::PathBuf,
     sync::{Arc, Mutex},
 };
 
@@ -114,12 +116,13 @@ pub enum AccessPattern {
     BoundedMaterialization,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServingCapabilities {
     /// Native backend access mode. Opening a verified session still hashes and
     /// snapshots the entire object before it returns any range.
     pub access_pattern: AccessPattern,
     pub maximum_materialized_bytes: ByteLength,
+    pub maximum_per_session_bytes: ByteLength,
     pub maximum_member_bytes: Option<ByteLength>,
     pub maximum_archive_entries: Option<usize>,
     pub maximum_prerequisite_member_bytes: Option<ByteLength>,
@@ -129,12 +132,16 @@ pub struct ServingCapabilities {
     pub maximum_decoder_working_set_bytes: Option<ByteLength>,
     pub maximum_open_sessions: usize,
     pub open_snapshots_entire_object: bool,
+    /// Volume root used for this budget's private per-session spools.
+    pub spool_root: PathBuf,
 }
 
 /// A shared ceiling for all simultaneously open materialized readers.
 #[derive(Clone, Debug)]
 pub struct MaterializationBudget {
     inner: Arc<Mutex<BudgetState>>,
+    maximum_per_session: ByteLength,
+    spool_root: PathBuf,
 }
 
 #[derive(Debug)]
@@ -147,13 +154,30 @@ struct BudgetState {
 impl MaterializationBudget {
     #[must_use]
     pub fn new(maximum: ByteLength) -> Self {
+        Self::new_in(maximum, maximum, std::env::temp_dir())
+    }
+
+    /// Create a shared budget whose private session directories live on a caller-selected volume.
+    #[must_use]
+    pub fn new_in(
+        maximum: ByteLength,
+        maximum_per_session: ByteLength,
+        spool_root: impl Into<PathBuf>,
+    ) -> Self {
         Self {
             inner: Arc::new(Mutex::new(BudgetState {
                 maximum,
                 reserved: ByteLength::new(0),
                 active_sessions: 0,
             })),
+            maximum_per_session,
+            spool_root: spool_root.into(),
         }
+    }
+
+    #[must_use]
+    pub fn spool_root(&self) -> &std::path::Path {
+        &self.spool_root
     }
 
     pub fn capabilities(&self, source: &LogicalEntry) -> Result<ServingCapabilities, ServingError> {
@@ -234,6 +258,7 @@ impl MaterializationBudget {
         Ok(ServingCapabilities {
             access_pattern,
             maximum_materialized_bytes,
+            maximum_per_session_bytes: self.maximum_per_session,
             maximum_member_bytes: Some(backend_limit.map_or(maximum_materialized_bytes, |limit| {
                 ByteLength::new(limit.get().min(maximum_materialized_bytes.get()))
             })),
@@ -245,6 +270,7 @@ impl MaterializationBudget {
             maximum_decoder_working_set_bytes: decoder_working_set_limit,
             maximum_open_sessions: MAX_ACTIVE_SESSIONS,
             open_snapshots_entire_object: true,
+            spool_root: self.spool_root.clone(),
         })
     }
 
@@ -346,8 +372,15 @@ impl VerifiedContentSession {
         let pinned_source = PinnedSource::resolve(entry)?;
         let path = pinned_source.physical_path.as_path();
         let length = pinned_source.length;
+        if length > budget.maximum_per_session {
+            return Err(ServingError::PerSessionLimitExceeded {
+                requested: length,
+                maximum: budget.maximum_per_session,
+            });
+        }
         lease.resize(length)?;
-        let (temporary_directory, file, actual) = pinned_source.materialize(entry, &identity)?;
+        let (temporary_directory, file, actual) =
+            pinned_source.materialize(entry, &identity, budget.spool_root())?;
         verify_observation(entry, actual, path)?;
         verify_selected_evidence(entry, actual, path)?;
         verify_identity(&identity, actual, path)?;
@@ -359,6 +392,29 @@ impl VerifiedContentSession {
             identity,
             total_length: length,
         })
+    }
+
+    /// Resolve a pinned source and return its current exact length without exposing bytes.
+    /// Archive sources are enumerated with the serving backend and selected ordinal/name.
+    pub fn preflight_source(entry: &LogicalEntry) -> Result<ByteLength, ServingError> {
+        Ok(PinnedSource::resolve(entry)?.length)
+    }
+
+    /// Resolve several members of one archive from a single bounded inventory.
+    pub fn preflight_archive_sources(
+        entries: &[&LogicalEntry],
+    ) -> Result<Vec<ByteLength>, ServingError> {
+        let Some(first) = entries.first() else {
+            return Ok(Vec::new());
+        };
+        let inventory = ArchiveInventory::open(first)?;
+        entries
+            .iter()
+            .map(|entry| {
+                PinnedSource::resolve_with_inventory(entry, Some(&inventory))
+                    .map(|source| source.length)
+            })
+            .collect()
     }
 
     #[must_use]
@@ -406,11 +462,47 @@ impl VerifiedContentSession {
 struct PinnedSource {
     physical_path: SourcePhysicalPath,
     length: ByteLength,
-    archive_member: Option<(ArchiveBackend, crate::sources::ArchiveMemberSelector)>,
+    archive_member: Option<(ArchiveBackend, crate::sources::ArchiveMember)>,
+}
+
+struct ArchiveInventory {
+    physical_path: SourcePhysicalPath,
+    backend: ArchiveBackend,
+    members: BTreeMap<crate::sources::ArchiveMemberSelector, crate::sources::ArchiveMember>,
+}
+
+impl ArchiveInventory {
+    fn open(entry: &LogicalEntry) -> Result<Self, ServingError> {
+        let SourceLocation::ArchiveMember { path, backend, .. } = &entry.source.location else {
+            return Err(ServingError::UnaddressableLocation {
+                path: location_path(&entry.source.location).to_owned(),
+            });
+        };
+        let physical_path = SourcePhysicalPath::capture(Utf8Path::new(path))?;
+        if physical_path != entry.source.physical_path {
+            return Err(ServingError::SourceLocationChanged { path: path.clone() });
+        }
+        let members = crate::sources::enumerate_for_serving(physical_path.as_path(), *backend)?
+            .into_iter()
+            .map(|member| (member.selector.clone(), member))
+            .collect();
+        Ok(Self {
+            physical_path,
+            backend: *backend,
+            members,
+        })
+    }
 }
 
 impl PinnedSource {
     fn resolve(entry: &LogicalEntry) -> Result<Self, ServingError> {
+        Self::resolve_with_inventory(entry, None)
+    }
+
+    fn resolve_with_inventory(
+        entry: &LogicalEntry,
+        archive_inventory: Option<&ArchiveInventory>,
+    ) -> Result<Self, ServingError> {
         let location = &entry.source.location;
         let original_path = location_path(location);
         let physical_path = SourcePhysicalPath::capture(Utf8Path::new(original_path))?;
@@ -440,16 +532,36 @@ impl PinnedSource {
                     index,
                     name: name.clone(),
                 };
-                let inventory = crate::sources::enumerate_for_serving(path, *backend)?;
-                let member = inventory
-                    .iter()
-                    .find(|member| member.selector == selected)
-                    .ok_or_else(|| ServingError::MemberUnavailable {
-                        path: path.to_string(),
-                        index: selector_index,
-                        name: name.clone(),
-                    })?;
-                (member.size, Some((*backend, selected)))
+                let missing_member = || ServingError::MemberUnavailable {
+                    path: path.to_string(),
+                    index: selector_index,
+                    name: name.clone(),
+                };
+                let member = match archive_inventory {
+                    Some(inventory)
+                        if inventory.backend == *backend
+                            && inventory.physical_path == physical_path =>
+                    {
+                        inventory
+                            .members
+                            .get(&selected)
+                            .cloned()
+                            .ok_or_else(missing_member)?
+                    }
+                    Some(_) => {
+                        return Err(ServingError::SourceLocationChanged {
+                            path: path.to_string(),
+                        });
+                    }
+                    None => {
+                        let inventory = crate::sources::enumerate_for_serving(path, *backend)?;
+                        inventory
+                            .into_iter()
+                            .find(|member| member.selector == selected)
+                            .ok_or_else(missing_member)?
+                    }
+                };
+                (member.size, Some((*backend, member)))
             }
             SourceLocation::LegacyUnknown { .. } => {
                 return Err(ServingError::UnaddressableLocation {
@@ -457,6 +569,15 @@ impl PinnedSource {
                 });
             }
         };
+        Self::resolved(entry, physical_path, length, archive_member)
+    }
+
+    fn resolved(
+        entry: &LogicalEntry,
+        physical_path: SourcePhysicalPath,
+        length: u64,
+        archive_member: Option<(ArchiveBackend, crate::sources::ArchiveMember)>,
+    ) -> Result<Self, ServingError> {
         if entry
             .source
             .observed
@@ -464,7 +585,7 @@ impl PinnedSource {
             .is_some_and(|observed| observed != length)
         {
             return Err(ServingError::SourceChanged {
-                path: path.to_string(),
+                path: physical_path.as_path().to_string(),
                 reason: "selected object length differs from its observation".to_owned(),
             });
         }
@@ -479,10 +600,11 @@ impl PinnedSource {
         &self,
         entry: &LogicalEntry,
         identity: &ServingIdentity,
+        spool_root: &std::path::Path,
     ) -> Result<(PrivateTempDir, File, ContentDigests), ServingError> {
         let path = self.physical_path.as_path();
         let original_path = location_path(&entry.source.location);
-        let temporary_directory = PrivateTempDir::create("mame-coalesce-serving-")?;
+        let temporary_directory = PrivateTempDir::create_in(spool_root, "mame-coalesce-serving-")?;
         let staged_path = temporary_directory.path().join(MATERIALIZED_FILE_NAME);
         let output = OpenOptions::new()
             .read(true)
@@ -495,7 +617,7 @@ impl PinnedSource {
             DigestRequirements::for_entry(entry, identity),
         );
 
-        if let Some((backend, selector)) = &self.archive_member {
+        if let Some((backend, member)) = &self.archive_member {
             let before = file_fingerprint(path)?;
             if entry
                 .source
@@ -507,10 +629,10 @@ impl PinnedSource {
                     reason: "archive fingerprint differs from its observation".to_owned(),
                 });
             }
-            crate::sources::stream_archive_member_to_writer(
+            crate::sources::stream_enumerated_archive_member_to_writer(
                 path,
                 *backend,
-                selector,
+                member,
                 &mut materializer,
             )?;
             let after = file_fingerprint(path)?;
@@ -784,6 +906,11 @@ pub enum ServingError {
         requested: ByteLength,
         available: ByteLength,
     },
+    #[error("session needs {requested:?}, above its {maximum:?} per-session limit")]
+    PerSessionLimitExceeded {
+        requested: ByteLength,
+        maximum: ByteLength,
+    },
     #[error("maximum number of open content sessions reached ({maximum})")]
     SessionLimitExceeded { maximum: usize },
     #[error("archive member index does not fit this platform: {0}")]
@@ -808,6 +935,68 @@ pub enum ServingError {
     IdentityMismatch { path: String },
     #[error("read session is closed")]
     SessionClosed,
+}
+
+/// Stable failure categories for platform adapters; display text is never inspected.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ServingFailureKind {
+    NotFound,
+    Stale,
+    Capacity,
+    Unsupported,
+    Corrupt,
+    Io,
+}
+
+impl ServingError {
+    #[must_use]
+    pub fn failure_kind(&self) -> ServingFailureKind {
+        match self {
+            Self::Io(error) => classify_io(error),
+            Self::Source(error) => classify_source(error),
+            Self::BudgetExceeded { .. }
+            | Self::PerSessionLimitExceeded { .. }
+            | Self::SessionLimitExceeded { .. } => ServingFailureKind::Capacity,
+            Self::SourceChanged { .. }
+            | Self::SourceKindChanged { .. }
+            | Self::SourceLocationChanged { .. }
+            | Self::MemberUnavailable { .. }
+            | Self::EvidenceMismatch { .. }
+            | Self::IdentityMismatch { .. } => ServingFailureKind::Stale,
+            Self::UnaddressableLocation { .. } | Self::InvalidMemberIndex(_) => {
+                ServingFailureKind::Unsupported
+            }
+            Self::RangeOverflow
+            | Self::RangeTooLarge(_)
+            | Self::BufferTooSmall { .. }
+            | Self::BudgetPoisoned
+            | Self::SessionClosed => ServingFailureKind::Io,
+        }
+    }
+}
+
+fn classify_io(error: &io::Error) -> ServingFailureKind {
+    match error.kind() {
+        io::ErrorKind::NotFound => ServingFailureKind::NotFound,
+        io::ErrorKind::StorageFull | io::ErrorKind::QuotaExceeded => ServingFailureKind::Capacity,
+        _ => ServingFailureKind::Io,
+    }
+}
+
+fn classify_source(error: &crate::Error) -> ServingFailureKind {
+    match error {
+        crate::Error::Io(error) if error.kind() == io::ErrorKind::NotFound => {
+            ServingFailureKind::Stale
+        }
+        crate::Error::Io(error) => classify_io(error),
+        crate::Error::ArchiveDecoderLimitExceeded { .. } => ServingFailureKind::Capacity,
+        crate::Error::SourceChanged { .. } => ServingFailureKind::Stale,
+        crate::Error::InvalidPath(_)
+        | crate::Error::Zip(_)
+        | crate::Error::Archive(_)
+        | crate::Error::Rar(_) => ServingFailureKind::Corrupt,
+        _ => ServingFailureKind::Io,
+    }
 }
 
 #[cfg(test)]
@@ -1030,6 +1219,10 @@ mod tests {
         ] {
             let capabilities = budget.capabilities(entry)?;
             assert_eq!(capabilities.access_pattern, expected_pattern);
+            assert_eq!(
+                VerifiedContentSession::preflight_source(entry)?,
+                ByteLength::new(u64::try_from(contents.len())?)
+            );
             assert_decoder_capabilities(&budget, entry)?;
             let identity = content_identity(contents)?;
             let mut session = VerifiedContentSession::open(entry, identity.clone(), &budget)?;
@@ -1049,6 +1242,37 @@ mod tests {
             assert_eq!(response.returned, ByteLength::new(5));
             assert!(!response.eof);
         }
+        Ok(())
+    }
+
+    #[test]
+    fn archive_preflight_reuses_one_inventory_for_multiple_members()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let archive = path(&temp)?.join("multi-member.zip");
+        let first = b"first member";
+        let second = b"second member";
+        write_zip(&archive, &[("first.rom", first), ("second.rom", second)])?;
+        let first_entry = logical_entry(
+            &archive,
+            first,
+            Some(ArchiveBackend::Zip),
+            Some((0, "first.rom")),
+        )?;
+        let second_entry = logical_entry(
+            &archive,
+            second,
+            Some(ArchiveBackend::Zip),
+            Some((1, "second.rom")),
+        )?;
+
+        assert_eq!(
+            VerifiedContentSession::preflight_archive_sources(&[&first_entry, &second_entry])?,
+            [
+                ByteLength::new(u64::try_from(first.len())?),
+                ByteLength::new(u64::try_from(second.len())?),
+            ]
+        );
         Ok(())
     }
 
@@ -1104,6 +1328,28 @@ mod tests {
             VerifiedContentSession::open(&entry, content_identity(b"verified snapshot")?, &budget,)
                 .is_err()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn same_length_stale_sources_fail_before_serving_any_bytes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let source = path(&temp)?.join("same-length.rom");
+        let pinned = b"before";
+        fs::write(&source, pinned)?;
+        let entry = logical_entry(&source, pinned, None, None)?;
+        let budget = MaterializationBudget::new(ByteLength::new(64));
+
+        fs::write(&source, b"later!")?;
+        assert_eq!(
+            VerifiedContentSession::preflight_source(&entry)?,
+            ByteLength::new(u64::try_from(pinned.len())?)
+        );
+        assert!(matches!(
+            VerifiedContentSession::open(&entry, content_identity(pinned)?, &budget),
+            Err(error) if error.failure_kind() == ServingFailureKind::Stale
+        ));
         Ok(())
     }
 
@@ -1229,5 +1475,90 @@ mod tests {
             Err(ServingError::IdentityMismatch { .. })
         ));
         Ok(())
+    }
+
+    #[test]
+    fn sessions_use_the_configured_spool_root_and_enforce_the_per_file_limit()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let root = path(&temp)?;
+        let spool_root = root.join("spool");
+        let source = root.join("game.rom");
+        fs::create_dir(&spool_root)?;
+        fs::write(&source, b"five!")?;
+        let entry = logical_entry(&source, b"five!", None, None)?;
+        let budget = MaterializationBudget::new_in(
+            ByteLength::new(512),
+            ByteLength::new(4),
+            spool_root.clone(),
+        );
+
+        assert!(matches!(
+            VerifiedContentSession::open(&entry, content_identity(b"five!")?, &budget),
+            Err(ServingError::PerSessionLimitExceeded {
+                requested: ByteLength(5),
+                maximum: ByteLength(4),
+            })
+        ));
+        assert_eq!(fs::read_dir(&spool_root)?.count(), 0);
+
+        let allowed = MaterializationBudget::new_in(
+            ByteLength::new(512),
+            ByteLength::new(5),
+            spool_root.clone(),
+        );
+        let session = VerifiedContentSession::open(&entry, content_identity(b"five!")?, &allowed)?;
+        let directory = session.spool_directory();
+        assert!(directory.starts_with(&spool_root));
+        assert_eq!(allowed.spool_root(), spool_root);
+        assert_eq!(allowed.capabilities(&entry)?.spool_root, spool_root);
+        drop(session);
+        assert_eq!(fs::read_dir(&spool_root)?.count(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn serving_failures_have_stable_typed_categories() {
+        assert_eq!(
+            ServingError::Io(io::Error::new(io::ErrorKind::NotFound, "untrusted text"))
+                .failure_kind(),
+            ServingFailureKind::NotFound
+        );
+        assert_eq!(
+            ServingError::Source(crate::Error::Io(io::Error::new(
+                io::ErrorKind::NotFound,
+                "pinned source disappeared",
+            )))
+            .failure_kind(),
+            ServingFailureKind::Stale
+        );
+        assert_eq!(
+            ServingError::PerSessionLimitExceeded {
+                requested: ByteLength::new(2),
+                maximum: ByteLength::new(1),
+            }
+            .failure_kind(),
+            ServingFailureKind::Capacity
+        );
+        assert_eq!(
+            ServingError::Source(crate::Error::ArchiveDecoderLimitExceeded { maximum: 2 })
+                .failure_kind(),
+            ServingFailureKind::Capacity
+        );
+        assert_eq!(
+            ServingError::SourceChanged {
+                path: "rom.bin".to_owned(),
+                reason: "untrusted text".to_owned(),
+            }
+            .failure_kind(),
+            ServingFailureKind::Stale
+        );
+        assert_eq!(
+            ServingError::UnaddressableLocation {
+                path: "rom.bin".to_owned(),
+            }
+            .failure_kind(),
+            ServingFailureKind::Unsupported
+        );
     }
 }

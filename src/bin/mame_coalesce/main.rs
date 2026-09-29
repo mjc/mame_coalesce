@@ -114,7 +114,8 @@ fn run() -> mame_coalesce::Result<ExitCode> {
         Command::Cache {
             command: CacheCommand::Audit(args),
         } => run_disk_audit(&database, args),
-        Command::Cache {
+        Command::Mount(_)
+        | Command::Cache {
             command:
                 CacheCommand::Restore { .. } | CacheCommand::Integrity | CacheCommand::Backup { .. },
         } => unreachable!("handled before opening the database"),
@@ -126,6 +127,7 @@ fn run_before_database_open(
     cache_path: &Utf8PathBuf,
 ) -> Option<mame_coalesce::Result<ExitCode>> {
     match command {
+        Command::Mount(args) => Some(run_mount(args)),
         Command::Cache {
             command:
                 CacheCommand::Restore {
@@ -184,6 +186,30 @@ fn run_before_database_open(
             ExitCode::SUCCESS
         })),
         _ => None,
+    }
+}
+
+fn run_mount(args: &options::MountArgs) -> mame_coalesce::Result<ExitCode> {
+    #[cfg(all(feature = "fuse", target_os = "linux"))]
+    {
+        mame_coalesce::mount::linux::run_mount(
+            args.manifest.as_std_path(),
+            args.mountpoint.as_std_path(),
+            args.spool_root.as_std_path(),
+        )
+        .map_err(|error| mame_coalesce::Error::Mount(error.to_string()))?;
+        Ok(ExitCode::SUCCESS)
+    }
+
+    #[cfg(not(all(feature = "fuse", target_os = "linux")))]
+    {
+        let reason = if cfg!(target_os = "linux") {
+            "mount requires building with the `fuse` feature on Linux"
+        } else {
+            "mount is supported only on Linux builds with the `fuse` feature"
+        };
+        let _ = args;
+        Err(mame_coalesce::Error::Mount(reason.to_owned()))
     }
 }
 

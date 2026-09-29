@@ -18,7 +18,9 @@ use mame_coalesce::{
     },
     hashes::{sha1_bytes, xxhash3_bytes},
     machine_dependencies::{DependencyDiagnostic, MachineDependencyCatalog, MachineSet},
+    mount::MountProjection,
     resolution::MatchStrength,
+    serving::{ByteLength, MaterializationBudget},
 };
 use tempfile::TempDir;
 
@@ -98,6 +100,7 @@ impl Fixture {
             expected: ExpectedEvidence {
                 scope: EvidenceScope::WholeAsset,
                 provenance: EvidenceProvenance::SourceDeclared,
+                size: Some(self.contents.len() as u64),
                 sha1: Some(sha1),
                 ..ExpectedEvidence::default()
             },
@@ -233,6 +236,70 @@ fn unresolved_profile_dependencies_block_materialization_before_writing()
     assert!(!report.layout_diagnostics.is_empty());
     assert!(report.artifact_results.is_empty());
     assert_eq!(fs::read(&artifact)?, previous);
+    Ok(())
+}
+
+#[test]
+fn mount_preflight_uses_the_manifest_source_and_rejects_stale_bytes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::new(b"pinned mount bytes")?;
+    let manifest = fixture.manifest(&snapshot("mounted-snapshot"), true);
+    let projection = MountProjection::compile(manifest)?;
+    let spool_root = utf8_path(fixture.temp.path())?.join("mount-spool");
+    fs::create_dir(&spool_root)?;
+    let budget = MaterializationBudget::new_in(
+        ByteLength::new(512 * 1024 * 1024),
+        ByteLength::new(256 * 1024 * 1024),
+        spool_root,
+    );
+
+    projection.preflight_sources(&budget)?;
+    fs::write(&fixture.source, b"replaced after the manifest was pinned")?;
+    assert!(matches!(
+        projection.preflight_sources(&budget),
+        Err(mame_coalesce::mount::MountPreflightError::Serving(
+            mame_coalesce::serving::ServingError::SourceChanged { .. }
+        ))
+    ));
+    Ok(())
+}
+
+#[test]
+fn mount_preflight_rejects_mountpoints_that_hide_pinned_sources()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::new(b"pinned mount bytes")?;
+    let manifest = fixture.manifest(&snapshot("mounted-snapshot"), true);
+    let projection = MountProjection::compile(manifest)?;
+    let spool_root = utf8_path(fixture.temp.path())?.join("mount-spool");
+    fs::create_dir(&spool_root)?;
+
+    assert!(matches!(
+        projection
+            .validate_spool_root(spool_root.as_std_path(), fixture.source_root.as_std_path(),),
+        Err(mame_coalesce::mount::MountStartupError::MountOverlapsSource(_))
+    ));
+    Ok(())
+}
+
+#[test]
+fn mount_startup_rejects_nonempty_mountpoints() -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::new(b"pinned mount bytes")?;
+    let manifest = fixture.manifest(&snapshot("mounted-snapshot"), true);
+    let projection = MountProjection::compile(manifest)?;
+    let root = utf8_path(fixture.temp.path())?;
+    let spool_root = root.join("mount-spool");
+    let mount_point = root.join("mount-point");
+    fs::create_dir(&spool_root)?;
+    fs::create_dir(&mount_point)?;
+    fs::write(mount_point.join("existing-file"), b"keep me")?;
+
+    assert!(matches!(
+        projection.validate_spool_root(spool_root.as_std_path(), mount_point.as_std_path()),
+        Err(mame_coalesce::mount::MountStartupError::MountPointNotEmpty(
+            _
+        ))
+    ));
+    assert_eq!(fs::read(mount_point.join("existing-file"))?, b"keep me");
     Ok(())
 }
 

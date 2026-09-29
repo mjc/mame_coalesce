@@ -53,6 +53,9 @@ pub enum Error {
     #[error("Invalid path: {0}")]
     InvalidPath(String),
 
+    #[error("Mount failed: {0}")]
+    Mount(String),
+
     #[error("no published snapshot exists for catalog {0}")]
     CatalogNotFound(String),
     #[error("catalog format is not supported for machine dependencies: {0}")]
@@ -60,6 +63,9 @@ pub enum Error {
 
     #[error("source changed since planning: {path}: {reason}")]
     SourceChanged { path: String, reason: String },
+
+    #[error("archive decoder concurrency limit of {maximum} is reached")]
+    ArchiveDecoderLimitExceeded { maximum: usize },
 
     #[error("Invalid hash: {0}")]
     InvalidHash(String),

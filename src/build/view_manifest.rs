@@ -1424,4 +1424,50 @@ mod tests {
         assert_eq!(PolicyVersion::new(0), None);
         assert_eq!(PolicyVersion::new(2).map(PolicyVersion::get), Some(2));
     }
+
+    #[test]
+    fn mount_projection_pins_manifest_and_assigns_deterministic_namespace_ids()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut file = entry();
+        file.expected.size = Some(1);
+        let manifest = manifest_from_plan(
+            &[SetName::new("set")],
+            vec![OutputGroup {
+                path: LogicalPath::new("set"),
+                entries: vec![file],
+            }],
+            Vec::new(),
+        );
+
+        let first = crate::mount::MountProjection::compile(manifest.clone())?;
+        let second = crate::mount::MountProjection::compile(manifest)?;
+        let first_file = first
+            .node_at("set/same.rom")
+            .ok_or_else(|| std::io::Error::other("projected file should exist"))?;
+        let second_file = second
+            .node_at("set/same.rom")
+            .ok_or_else(|| std::io::Error::other("projected file should exist"))?;
+
+        assert_eq!(first.manifest_id(), second.manifest_id());
+        assert_eq!(first_file.id(), second_file.id());
+        assert_eq!(first_file.size(), Some(1));
+        assert_eq!(first.children(first.root_id()).count(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn mount_projection_rejects_conflicting_size_evidence_before_namespace_creation() {
+        let mut file = entry();
+        file.expected.size = Some(2);
+        let manifest = manifest_from_plan(
+            &[SetName::new("set")],
+            vec![OutputGroup {
+                path: LogicalPath::new("set"),
+                entries: vec![file],
+            }],
+            Vec::new(),
+        );
+
+        assert!(crate::mount::MountProjection::compile(manifest).is_err());
+    }
 }

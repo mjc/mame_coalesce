@@ -142,11 +142,11 @@ impl Drop for DecoderPermit<'_> {
 }
 
 fn reserve_serving_decoder() -> Result<DecoderPermit<'static>> {
-    ARCHIVE_DECODER_SLOTS.try_acquire().ok_or_else(|| {
-        Error::InvalidPath(format!(
-            "archive decoder concurrency limit of {MAX_ACTIVE_ARCHIVE_DECODERS} is reached"
-        ))
-    })
+    ARCHIVE_DECODER_SLOTS
+        .try_acquire()
+        .ok_or(Error::ArchiveDecoderLimitExceeded {
+            maximum: MAX_ACTIVE_ARCHIVE_DECODERS,
+        })
 }
 
 pub fn detect(path: &Utf8Path) -> Result<SourceKind> {
@@ -211,11 +211,16 @@ fn enumerate_with_limit(
         ArchiveBackend::SevenZip => enumerate_7z(path, maximum_entries),
         ArchiveBackend::Rar => enumerate_rar(path, maximum_entries),
     };
-    result.map_err(|error| {
-        Error::InvalidPath(format!(
+    result.map_err(|error| enumeration_error(error, backend, path))
+}
+
+fn enumeration_error(error: Error, backend: ArchiveBackend, path: &Utf8Path) -> Error {
+    match error {
+        Error::ArchiveDecoderLimitExceeded { .. } => error,
+        error => Error::InvalidPath(format!(
             "failed to enumerate {backend:?} source {path}: {error}"
-        ))
-    })
+        )),
+    }
 }
 
 pub fn stream_archive<F>(
@@ -252,17 +257,12 @@ where
 ///
 /// Unlike [`stream_archive`], this avoids a reader-side extraction spool for
 /// backends whose reader API must materialize a member before returning it.
-pub fn stream_archive_member_to_writer(
+pub fn stream_enumerated_archive_member_to_writer(
     path: &Utf8Path,
     backend: ArchiveBackend,
-    selector: &ArchiveMemberSelector,
+    member: &ArchiveMember,
     writer: &mut dyn Write,
-) -> Result<ArchiveMember> {
-    let inventory = enumerate_for_serving(path, backend)?;
-    let selected = resolve_selection(&inventory, Some(std::slice::from_ref(selector)))?;
-    let member = selected
-        .first()
-        .ok_or_else(|| Error::InvalidPath("selected archive member is unavailable".to_owned()))?;
+) -> Result<()> {
     match backend {
         ArchiveBackend::Zip => stream_zip(path, std::slice::from_ref(member), &mut |_, reader| {
             io::copy(reader, writer)?;
@@ -276,7 +276,7 @@ pub fn stream_archive_member_to_writer(
         }
         ArchiveBackend::Rar => stream_rar_to_writer(path, member, writer)?,
     }
-    Ok(member.clone())
+    Ok(())
 }
 
 fn stream_rar_to_writer(
@@ -1105,6 +1105,7 @@ where
 mod tests {
     use std::io::{self, Write};
 
+    use crate::Error;
     use camino::Utf8Path;
     use zip::{ZipWriter, write::SimpleFileOptions};
 
@@ -1115,8 +1116,8 @@ mod tests {
         SEVEN_Z_MAX_DICTIONARY_SIZE, SEVEN_Z_MAX_PACKED_FOLDER_SIZE,
         SEVEN_Z_MAX_PREREQUISITE_MEMBER_SIZE, SEVEN_Z_MAX_PREREQUISITE_OUTPUT_SIZE, SourceKind,
         capabilities, detect, enforce_7z_packed_folder_limit, enumerate, enumerate_with_limit,
-        preflight_7z_prerequisite_output, stream_7z, stream_archive, stream_file, stream_rar,
-        stream_zip, zip_central_entry_count,
+        enumeration_error, preflight_7z_prerequisite_output, stream_7z, stream_archive,
+        stream_file, stream_rar, stream_zip, zip_central_entry_count,
     };
 
     #[cfg(unix)]
@@ -1168,6 +1169,22 @@ mod tests {
         };
         assert!(error.to_string().contains("entry serving limit"));
         Ok(())
+    }
+
+    #[test]
+    fn serving_enumeration_preserves_decoder_capacity_classification() {
+        let error = enumeration_error(
+            Error::ArchiveDecoderLimitExceeded {
+                maximum: MAX_ACTIVE_ARCHIVE_DECODERS,
+            },
+            ArchiveBackend::SevenZip,
+            Utf8Path::new("game.7z"),
+        );
+        assert!(matches!(error, Error::ArchiveDecoderLimitExceeded { .. }));
+        assert_eq!(
+            crate::serving::ServingError::Source(error).failure_kind(),
+            crate::serving::ServingFailureKind::Capacity
+        );
     }
 
     #[test]

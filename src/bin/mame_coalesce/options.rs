@@ -39,11 +39,23 @@ pub enum Command {
     Build(BuildArgs),
     /// Report catalog coverage from cached or explicitly refreshed source observations.
     Audit(AuditArgs),
+    /// Mount a materialized view from a manifest.
+    Mount(MountArgs),
     /// Manage the persistent cache explicitly.
     Cache {
         #[command(subcommand)]
         command: CacheCommand,
     },
+}
+
+#[derive(Clone, Debug, Args)]
+pub struct MountArgs {
+    #[arg(long, value_name = "FILE", required = true)]
+    pub manifest: Utf8PathBuf,
+    #[arg(long, value_name = "DIR", required = true)]
+    pub mountpoint: Utf8PathBuf,
+    #[arg(long, value_name = "DIR", required = true)]
+    pub spool_root: Utf8PathBuf,
 }
 
 #[derive(Clone, Debug, Args)]

@@ -389,10 +389,30 @@ devenv --profile maintenance shell -- cargo machete
 
 - Running outside Nix requires system `pkg-config`, SQLite, zlib, and related
   development libraries.
-- The crate currently declares `rust-version = "1.88"`; devenv builds
-  with latest stable Rust from the locked `rust-overlay` input. Updating the
-  development toolchain does not by itself change the declared MSRV.
+- The crate declares `rust-version = "1.98.1"`, matching the latest stable
+  Rust release selected by devenv. The project currently tests against that
+  release rather than maintaining a separately validated older MSRV.
 - `cargo package` requires `r7z` to be published on crates.io; until then the
   crate uses a pinned `mjc/r7z` git dependency.
 - `cargo deny check` may report duplicate dependency warnings under the current
   policy, but the check exits successfully.
+
+## Optional read-only FUSE view
+
+On Linux, build with the optional `fuse` feature and mount a serialized MAME
+0.289 view manifest:
+
+```sh
+cargo run --features fuse -- mount \
+  --manifest /path/to/view.json \
+  --mountpoint /path/to/empty-mountpoint \
+  --spool-root /path/to/separate-spool
+```
+
+The mount is read-only. Startup validates source locations, selected archive
+members, and known lengths; every open then verifies the pinned content before
+exposing bytes. Same-length stale content therefore fails on open rather than
+being served or retargeted. The spool must be an existing directory outside
+both the source tree and mountpoint, with at least 512 MiB available.
+The first adapter is Linux-only; FUSE remains optional, so catalog and other
+commands do not depend on it. Other operating systems do not yet have an adapter.
