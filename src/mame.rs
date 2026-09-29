@@ -10,7 +10,7 @@ use crate::{
     disk::{DiskDigestScope, DiskIdentitySha1, DiskName, DiskRequirement, ParentDiskName},
     document_input,
     domain::AssetRole,
-    logiqx::RecordLocation,
+    logiqx::{RecordLocation, contains_entity_declaration},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -23,10 +23,20 @@ pub struct MameCatalog {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Machine {
     pub name: String,
+    pub parent: Option<String>,
+    pub rom_of: Option<String>,
+    pub sample_of: Option<String>,
     pub location: RecordLocation,
     pub metadata: BTreeMap<String, serde_json::Value>,
     pub assets: Vec<MachineAsset>,
+    pub device_refs: Vec<DeviceReference>,
     pub extensions: Vec<XmlExtension>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeviceReference {
+    pub name: String,
+    pub location: RecordLocation,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -37,6 +47,8 @@ pub struct MachineAsset {
     pub crc: Option<Vec<u8>>,
     pub md5: Option<Vec<u8>>,
     pub sha1: Option<Vec<u8>>,
+    pub merge_name: Option<String>,
+    pub dump_status: Option<String>,
     pub disk_requirement: Option<DiskRequirement>,
     pub location: RecordLocation,
     pub metadata: BTreeMap<String, serde_json::Value>,
@@ -148,9 +160,8 @@ impl MameCatalog {
 
 pub fn parse_xml_element(bytes: &[u8]) -> crate::Result<Element> {
     let xml = document_input::decode_xml(bytes)?;
-    if xml
-        .windows(b"<!ENTITY".len())
-        .any(|marker| marker == b"<!ENTITY")
+    if contains_entity_declaration(&xml)
+        .map_err(|()| crate::Error::XmlValidation("malformed UTF-16 encoding".into()))?
     {
         return Err(crate::Error::XmlEntityNotAllowed);
     }
@@ -236,13 +247,69 @@ pub fn parse_xml_element(bytes: &[u8]) -> crate::Result<Element> {
     root.ok_or_else(|| crate::Error::XmlValidation("missing document root".into()))
 }
 
+fn device_reference_metadata(references: &[DeviceReference]) -> serde_json::Value {
+    serde_json::json!(
+        references
+            .iter()
+            .enumerate()
+            .map(|(order, reference)| serde_json::json!({"name": reference.name, "order": order}))
+            .collect::<Vec<_>>()
+    )
+}
+
+fn parse_device_reference(node: &Element) -> crate::Result<DeviceReference> {
+    Ok(DeviceReference {
+        name: required(node, "name")?.to_owned(),
+        location: node.location,
+    })
+}
+
+fn machine_attribute_extensions(name: &str, node: &Element) -> Vec<XmlExtension> {
+    node.attributes
+        .iter()
+        .filter(|(key, _)| {
+            ![
+                "name",
+                "sourcefile",
+                "cloneof",
+                "romof",
+                "sampleof",
+                "isdevice",
+                "runnable",
+                "isbios",
+                "ismechanical",
+                "isconsumable",
+            ]
+            .contains(&key.as_str())
+        })
+        .map(|(key, val)| {
+            let (field_name, namespace_uri) = attribute_name(key);
+            XmlExtension {
+                record_kind: "machine".into(),
+                record_name: Some(name.into()),
+                field_name,
+                namespace_uri,
+                value: serde_json::json!(val),
+                location: node.location,
+            }
+        })
+        .collect()
+}
+
 fn parse_machine(node: &Element) -> crate::Result<Machine> {
     let name = required(node, "name")?;
+    let parent = node.attributes.get("cloneof").cloned();
+    let rom_of = node.attributes.get("romof").cloned();
+    let sample_of = node.attributes.get("sampleof").cloned();
     let mut metadata = BTreeMap::new();
     metadata.insert(
         "sourcefile".into(),
         value(node.attributes.get("sourcefile")),
     );
+    if let Some(parent) = &parent {
+        metadata.insert("cloneof".into(), serde_json::json!(parent));
+    }
+    copy_machine_relationship_metadata(node, &mut metadata);
     for flag in [
         "isdevice",
         "runnable",
@@ -277,12 +344,14 @@ fn parse_machine(node: &Element) -> crate::Result<Machine> {
                 }
             }
             "biosset" => biossets.push(serde_json::json!({"name": required(child, "name")?, "description": child.attributes.get("description"), "default": child.attributes.get("default")})),
-            "device_ref" => device_refs.push(serde_json::json!({"name": required(child, "name")?, "order": device_refs.len()})),
+            "device_ref" => device_refs.push(parse_device_reference(child)?),
             "rom" | "disk" => assets.push(parse_asset(child)?),
             _ => extensions.push(extension("machine", Some(name), child)?),
         }
         for (key, val) in &child.attributes {
-            if !known_child_attribute(&child.name, key) {
+            if !matches!(child.name.as_str(), "rom" | "disk")
+                && !known_child_attribute(&child.name, key)
+            {
                 let (field_name, namespace_uri) = attribute_name(key);
                 extensions.push(XmlExtension {
                     record_kind: child.name.clone(),
@@ -296,37 +365,33 @@ fn parse_machine(node: &Element) -> crate::Result<Machine> {
         }
     }
     metadata.insert("biossets".into(), serde_json::json!(biossets));
-    metadata.insert("device_refs".into(), serde_json::json!(device_refs));
-    for (key, val) in &node.attributes {
-        if ![
-            "name",
-            "sourcefile",
-            "isdevice",
-            "runnable",
-            "isbios",
-            "ismechanical",
-            "isconsumable",
-        ]
-        .contains(&key.as_str())
-        {
-            let (field_name, namespace_uri) = attribute_name(key);
-            extensions.push(XmlExtension {
-                record_kind: "machine".into(),
-                record_name: Some(name.into()),
-                field_name,
-                namespace_uri,
-                value: serde_json::json!(val),
-                location: node.location,
-            });
-        }
-    }
+    metadata.insert(
+        "device_refs".into(),
+        device_reference_metadata(&device_refs),
+    );
+    extensions.extend(machine_attribute_extensions(name, node));
     Ok(Machine {
         name: name.into(),
+        parent,
+        rom_of,
+        sample_of,
         location: node.location,
         metadata,
         assets,
+        device_refs,
         extensions,
     })
+}
+
+fn copy_machine_relationship_metadata(
+    node: &Element,
+    metadata: &mut BTreeMap<String, serde_json::Value>,
+) {
+    for relationship in ["romof", "sampleof"] {
+        if let Some(target) = node.attributes.get(relationship) {
+            metadata.insert(relationship.into(), serde_json::json!(target));
+        }
+    }
 }
 
 fn parse_asset(node: &Element) -> crate::Result<MachineAsset> {
@@ -355,13 +420,16 @@ fn parse_asset(node: &Element) -> crate::Result<MachineAsset> {
         .get("md5")
         .map(|digest| decode_hex_sized(digest, 32))
         .transpose()?;
+    let merge_name = node.attributes.get("merge").cloned();
+    let dump_status = node.attributes.get("status").cloned();
     let disk_requirement = parse_disk_requirement(node, name, sha1.as_deref())?;
     let metadata = node
         .attributes
         .iter()
         .filter(|(key, _)| {
-            !(["name", "size", "sha1"].contains(&key.as_str())
-                || (node.name == "disk" && key.as_str() == "merge"))
+            known_asset_attribute(&node.name, key)
+                && !["name", "size", "sha1", "crc", "md5", "merge", "status"]
+                    .contains(&key.as_str())
         })
         .map(|(key, val)| (key.clone(), serde_json::json!(val)))
         .collect();
@@ -370,26 +438,7 @@ fn parse_asset(node: &Element) -> crate::Result<MachineAsset> {
         extensions.push(extension(node.name.as_str(), Some(name), child)?);
     }
     for (key, val) in &node.attributes {
-        if ![
-            "name",
-            "size",
-            "sha1",
-            "crc",
-            "md5",
-            "merge",
-            "region",
-            "bios",
-            "status",
-            "offset",
-            "optional",
-            "writable",
-            "writeable",
-            "mcd",
-            "flip",
-            "soundonly",
-        ]
-        .contains(&key.as_str())
-        {
+        if !known_asset_attribute(&node.name, key) {
             let (field_name, namespace_uri) = attribute_name(key);
             extensions.push(XmlExtension {
                 record_kind: node.name.clone(),
@@ -412,6 +461,8 @@ fn parse_asset(node: &Element) -> crate::Result<MachineAsset> {
         crc,
         md5,
         sha1,
+        merge_name,
+        dump_status,
         disk_requirement,
         location: node.location,
         metadata,
@@ -435,7 +486,7 @@ fn parse_disk_requirement(
     let requirement = DiskRequirement::new(
         DiskName::new(name),
         expected_sha1,
-        DiskDigestScope::LogicalDiskData,
+        DiskDigestScope::ChdHeaderSha1,
     );
     Ok(Some(match node.attributes.get("merge") {
         Some(parent) => requirement.with_parent(ParentDiskName::new(parent.clone())),
@@ -459,6 +510,45 @@ fn known_child_attribute(element: &str, attribute: &str) -> bool {
     match element {
         "biosset" => ["name", "description", "default"].contains(&attribute),
         "device_ref" => ["name"].contains(&attribute),
+        "rom" => [
+            "name",
+            "size",
+            "sha1",
+            "crc",
+            "md5",
+            "merge",
+            "region",
+            "bios",
+            "status",
+            "offset",
+            "optional",
+            "soundonly",
+            "dispose",
+            "loadflag",
+            "value",
+            "inverted",
+            "ovha",
+            "nothread",
+        ]
+        .contains(&attribute),
+        "disk" => [
+            "name",
+            "sha1",
+            "merge",
+            "region",
+            "index",
+            "writable",
+            "writeable",
+            "status",
+            "optional",
+        ]
+        .contains(&attribute),
+        _ => false,
+    }
+}
+
+fn known_asset_attribute(element: &str, attribute: &str) -> bool {
+    match element {
         "rom" => [
             "name",
             "size",

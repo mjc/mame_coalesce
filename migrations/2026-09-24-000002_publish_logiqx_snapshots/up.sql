@@ -1,5 +1,40 @@
-CREATE UNIQUE INDEX catalog_snapshots_idempotent_identity
-    ON catalog_snapshots (catalog_key, document_key, interpretation_key);
+-- Pre-existing identity-only snapshots may contain duplicate natural keys.
+-- Preserve them and claim one published snapshot per identity separately.
+CREATE TABLE snapshot_publications (
+    catalog_key TEXT NOT NULL,
+    document_key TEXT NOT NULL,
+    interpretation_key TEXT NOT NULL,
+    snapshot_key TEXT NOT NULL UNIQUE,
+    published_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (catalog_key, document_key, interpretation_key),
+    FOREIGN KEY (snapshot_key, catalog_key, document_key, interpretation_key)
+        REFERENCES catalog_snapshots
+            (snapshot_key, catalog_key, document_key, interpretation_key)
+        ON DELETE RESTRICT
+);
+
+CREATE TRIGGER snapshot_publications_are_immutable_update
+BEFORE UPDATE ON snapshot_publications
+BEGIN
+    SELECT RAISE(ABORT, 'snapshot publications are immutable');
+END;
+CREATE TRIGGER snapshot_publications_are_immutable_insert
+BEFORE INSERT ON snapshot_publications
+WHEN EXISTS (
+    SELECT 1 FROM snapshot_publications
+    WHERE (catalog_key = NEW.catalog_key
+       AND document_key = NEW.document_key
+       AND interpretation_key = NEW.interpretation_key)
+       OR snapshot_key = NEW.snapshot_key
+)
+BEGIN
+    SELECT RAISE(ABORT, 'snapshot publications are immutable');
+END;
+CREATE TRIGGER snapshot_publications_are_immutable_delete
+BEFORE DELETE ON snapshot_publications
+BEGIN
+    SELECT RAISE(ABORT, 'snapshot publications are immutable');
+END;
 
 CREATE TABLE snapshot_sets (
     snapshot_key TEXT NOT NULL REFERENCES catalog_snapshots (snapshot_key) ON DELETE RESTRICT,

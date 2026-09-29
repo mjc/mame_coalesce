@@ -214,6 +214,25 @@ fn zip_entries(
     Ok(entries)
 }
 
+fn seven_zip_entries(
+    path: &camino::Utf8Path,
+) -> Result<BTreeMap<String, Vec<u8>>, Box<dyn std::error::Error>> {
+    let archive = r7z::Archive::open(path.as_std_path())?;
+    let members = archive.entries().collect::<Vec<_>>();
+    let indices = members
+        .iter()
+        .map(|member| member.index)
+        .collect::<Vec<_>>();
+    let mut entries = BTreeMap::new();
+    archive.stream_selected_files(&indices, |member, reader| {
+        let mut contents = Vec::new();
+        reader.read_to_end(&mut contents)?;
+        entries.insert(member.name.clone(), contents);
+        Ok(())
+    })?;
+    Ok(entries)
+}
+
 fn directory_entries(
     root: &std::path::Path,
 ) -> Result<BTreeMap<String, Vec<u8>>, Box<dyn std::error::Error>> {
@@ -286,6 +305,7 @@ fn one_shot_rejects_source_destination_overlap_before_catalog_import()
     Ok(())
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn build_reports_partial_artifact_completion_when_a_later_source_disappears()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -343,7 +363,10 @@ fn build_reports_partial_artifact_completion_when_a_later_source_disappears()
             .iter()
             .any(|artifact| matches!(&artifact.outcome, ArtifactOutcome::Failed { .. }))
     );
-    assert_eq!(report.written_paths, vec![output_path.join("a.zip")]);
+    assert_eq!(
+        report.written_paths,
+        vec![output_path.join("a.zip").canonicalize_utf8()?]
+    );
     let mut results = report.artifact_results.iter();
     assert_eq!(
         results.next().map(|result| &result.outcome),
@@ -430,13 +453,62 @@ fn run_workflow_writes_from_7z_archive() -> Result<(), Box<dyn std::error::Error
     );
     assert_eq!(report.build_report.matched_roms, 1);
     assert!(report.build_report.missing_roms.is_empty());
-    assert_eq!(report.written_paths, vec![output_path.join("shared.zip")]);
+    assert_eq!(
+        report.written_paths,
+        vec![output_path.join("shared.zip").canonicalize_utf8()?]
+    );
     assert_eq!(
         zip_entries(&output_path.join("shared.zip"))?
             .get("shared.rom")
             .map(Vec::as_slice),
         Some(b"abc" as &[u8])
     );
+    Ok(())
+}
+
+#[test]
+fn cli_writes_verified_7z_output() -> Result<(), Box<dyn std::error::Error>> {
+    let database_dir = tempfile::tempdir()?;
+    let database_path = utf8_path(&database_dir.path().join("cache.sqlite"))?.to_path_buf();
+    let work_dir = tempfile::tempdir()?;
+    let source_dir = tempfile::tempdir()?;
+    let output_dir = tempfile::tempdir()?;
+    let dat_path = write_shared_dat(
+        work_dir.path(),
+        "output-7z.dat",
+        "7z Output",
+        "a9993e364706816aba3e25717850c26c9cd0d89d",
+    )?;
+    let source_path = write_single_rom_source(source_dir.path(), b"abc")?;
+    let output_path = utf8_path(output_dir.path())?.join("out");
+
+    cargo_command()
+        .args(db_arg(&database_path))
+        .args([
+            "build",
+            dat_path.as_str(),
+            source_path.as_str(),
+            output_path.as_str(),
+            "--jobs",
+            "1",
+            "--missing",
+            "fail",
+            "--output-container",
+            "7z",
+        ])
+        .assert()
+        .success();
+
+    let archive = r7z::Archive::open(output_path.join("shared.7z").as_std_path())?;
+    let entries = archive.entries().collect::<Vec<_>>();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].name, "shared.rom");
+    let mut contents = Vec::new();
+    archive.stream_selected_files(&[entries[0].index], |_, reader| {
+        reader.read_to_end(&mut contents)?;
+        Ok(())
+    })?;
+    assert_eq!(contents, b"abc");
     Ok(())
 }
 
@@ -478,7 +550,10 @@ fn run_workflow_writes_from_rar_archive() -> Result<(), Box<dyn std::error::Erro
     );
     assert_eq!(report.build_report.matched_roms, 1);
     assert!(report.build_report.missing_roms.is_empty());
-    assert_eq!(report.written_paths, vec![output_path.join("shared.zip")]);
+    assert_eq!(
+        report.written_paths,
+        vec![output_path.join("shared.zip").canonicalize_utf8()?]
+    );
     assert_eq!(
         zip_entries(&output_path.join("shared.zip"))?
             .get("shared.rom")
@@ -489,7 +564,32 @@ fn run_workflow_writes_from_rar_archive() -> Result<(), Box<dyn std::error::Erro
 }
 
 #[test]
-fn p7zip_extracts_r7z_builder_archive() -> Result<(), Box<dyn std::error::Error>> {
+fn r7z_reads_its_synthetic_builder_archive() -> Result<(), Box<dyn std::error::Error>> {
+    let work_dir = tempfile::tempdir()?;
+    let archive_path = work_dir.path().join("source.7z");
+    let archive_data = r7z::ArchiveBuilder::new()
+        .add_file("nested/shared.rom", b"abc")
+        .build()?;
+    fs::write(&archive_path, archive_data)?;
+
+    let archive = r7z::Archive::open(&archive_path)?;
+    let entries = archive.entries().collect::<Vec<_>>();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].name, "nested/shared.rom");
+    assert!(entries[0].is_file());
+
+    let mut contents = Vec::new();
+    archive.stream_selected_files(&[entries[0].index], |_, reader| {
+        reader.read_to_end(&mut contents)?;
+        Ok(())
+    })?;
+    assert_eq!(contents, b"abc");
+    Ok(())
+}
+
+#[test]
+#[ignore = "optional cross-implementation check; requires a 7z-compatible executable"]
+fn external_7z_extracts_r7z_builder_archive() -> Result<(), Box<dyn std::error::Error>> {
     let work_dir = tempfile::tempdir()?;
     let archive_path = work_dir.path().join("source.7z");
     let extract_dir = work_dir.path().join("extract");
@@ -498,7 +598,8 @@ fn p7zip_extracts_r7z_builder_archive() -> Result<(), Box<dyn std::error::Error>
         .build()?;
     fs::write(&archive_path, archive_data)?;
 
-    let output = ProcessCommand::new("7z")
+    let executable = std::env::var_os("MAME_COALESCE_7Z").unwrap_or_else(|| "7z".into());
+    let output = ProcessCommand::new(executable)
         .arg("x")
         .arg(&archive_path)
         .arg(format!("-o{}", extract_dir.display()))
@@ -507,7 +608,7 @@ fn p7zip_extracts_r7z_builder_archive() -> Result<(), Box<dyn std::error::Error>
 
     assert!(
         output.status.success(),
-        "7z failed:\nstdout:\n{}\nstderr:\n{}",
+        "external 7z decoder failed:\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -594,7 +695,10 @@ fn run_workflow_writes_parent_bundle_zip() -> Result<(), Box<dyn std::error::Err
     assert_eq!(report.build_report.matched_roms, 2);
     assert_eq!(report.build_report.missing_roms.len(), 1);
     assert_eq!(report.build_report.missing_roms[0].rom_name, "clone1.rom");
-    assert_eq!(report.written_paths, vec![output_path.join("parent.zip")]);
+    assert_eq!(
+        report.written_paths,
+        vec![output_path.join("parent.zip").canonicalize_utf8()?]
+    );
 
     let entries = zip_entries(&output_path.join("parent.zip"))?;
     assert_eq!(entries.len(), 2);
@@ -693,7 +797,10 @@ fn build_workflow_accepts_imported_dat_name() -> Result<(), Box<dyn std::error::
     assert_eq!(report.build_report.matched_roms, 2);
     assert_eq!(report.build_report.missing_roms.len(), 1);
     assert_eq!(report.build_report.missing_roms[0].rom_name, "clone1.rom");
-    assert_eq!(report.written_paths, vec![output_path.join("parent.zip")]);
+    assert_eq!(
+        report.written_paths,
+        vec![output_path.join("parent.zip").canonicalize_utf8()?]
+    );
 
     let entries = zip_entries(&output_path.join("parent.zip"))?;
     assert_eq!(entries.len(), 2);
@@ -756,7 +863,10 @@ fn build_matches_sources_scanned_from_noncanonical_path() -> Result<(), Box<dyn 
         mame_coalesce::domain::PlanOutcome::Ready
     );
     assert_eq!(report.build_report.matched_roms, 2);
-    assert_eq!(report.written_paths, vec![output_path.join("parent.zip")]);
+    assert_eq!(
+        report.written_paths,
+        vec![output_path.join("parent.zip").canonicalize_utf8()?]
+    );
     Ok(())
 }
 
@@ -921,12 +1031,52 @@ fn opt_in_bare_file_reuse_supports_forced_rehash_and_detects_same_mtime_changes(
             dat_path,
             source_path,
             mode: BuildMode::ParentBundles,
-            matching_policy: mame_coalesce::domain::MatchingPolicy::Sha1Compatibility,
+            matching_policy: mame_coalesce::domain::MatchingPolicy::EvidenceAware,
             missing_policy: mame_coalesce::domain::MissingContentPolicy::RequireComplete,
         },
     )?;
     assert_eq!(plan.report.matched_roms, 1);
     assert!(plan.report.missing_roms.is_empty());
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn forced_rehash_matches_walked_symlink_paths() -> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::symlink;
+
+    let database_dir = tempfile::tempdir()?;
+    let database = test_database(database_dir.path())?;
+    let source_dir = tempfile::tempdir()?;
+    let outside_dir = tempfile::tempdir()?;
+    let source_path = utf8_path(source_dir.path())?.to_path_buf();
+    let inside_target = source_dir.path().join("inside-target.rom");
+    let inside_link = source_dir.path().join("inside-link.rom");
+    let outside_target = outside_dir.path().join("outside-target.rom");
+    let outside_link = source_dir.path().join("outside-link.rom");
+    fs::write(&inside_target, b"inside")?;
+    fs::write(&outside_target, b"outside")?;
+    symlink(&inside_target, &inside_link)?;
+    symlink(&outside_target, &outside_link)?;
+    let request = SourceScanRequest {
+        source_path,
+        jobs: 1,
+    };
+
+    app::scan_source(&database, &request)?;
+    let forced = app::scan_source_with_policy(
+        &database,
+        &request,
+        ScanCachePolicy::ReuseUnchangedBareFiles {
+            force_rehash: vec![
+                utf8_path(&inside_link)?.to_path_buf(),
+                utf8_path(&outside_link)?.to_path_buf(),
+            ],
+        },
+    )?;
+
+    assert_eq!(forced.observation_count, 3);
+    assert_eq!(forced.reused_bare_files, 1);
     Ok(())
 }
 
@@ -1448,6 +1598,7 @@ fn cli_help_commands_render_successfully() {
         vec!["build", "--help"],
         vec!["cache", "--help"],
         vec!["cache", "import", "--help"],
+        vec!["cache", "catalog-import", "--help"],
         vec!["cache", "scan", "--help"],
         vec!["cache", "build", "--help"],
     ] {
@@ -1466,6 +1617,72 @@ fn cli_help_commands_render_successfully() {
 }
 
 #[test]
+fn cli_catalog_imports_mame_xml_and_audits_each_catalog() -> Result<(), Box<dyn std::error::Error>>
+{
+    let work_dir = tempfile::tempdir()?;
+    let source_dir = tempfile::tempdir()?;
+    let root = utf8_path(work_dir.path())?;
+    let database_path = root.join("cli-catalog.db");
+    let source_path = utf8_path(source_dir.path())?;
+    let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/catalog/mame");
+
+    for (document, format, source_key, catalog_key, disk_name) in [
+        (
+            fixtures.join("machine.xml"),
+            "mame-listxml",
+            "cli-machine-source",
+            "cli-machine-catalog",
+            "demo_disk",
+        ),
+        (
+            fixtures.join("software-list.xml"),
+            "mame-softwarelist-xml",
+            "cli-software-source",
+            "cli-software-catalog",
+            "demo-disk",
+        ),
+    ] {
+        let document_path = utf8_path(&document)?;
+        cargo_command()
+            .args(db_arg(&database_path))
+            .args(["cache", "catalog-import", document_path.as_str()])
+            .args(["--format", format])
+            .args(["--source-key", source_key])
+            .args(["--source-name", source_key])
+            .args(["--catalog-key", catalog_key])
+            .args(["--catalog-name", catalog_key])
+            .assert()
+            .success();
+
+        let audit = cargo_command()
+            .args(db_arg(&database_path))
+            .args([
+                "cache",
+                "audit",
+                catalog_key,
+                source_path.as_str(),
+                "--format",
+                "json",
+            ])
+            .assert()
+            .success();
+        let report: serde_json::Value = serde_json::from_slice(&audit.get_output().stdout)?;
+        assert_eq!(report["catalog_key"], catalog_key);
+        assert!(report["disks"].is_array());
+        assert!(
+            report["disks"].as_array().is_some_and(|disks| {
+                disks
+                    .iter()
+                    .any(|disk| disk["disk_name"] == disk_name && disk["state"] == "missing")
+            }),
+            "unexpected audit report: {report}"
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
 fn cli_build_dry_run_exits_zero_and_writes_no_files() -> Result<(), Box<dyn std::error::Error>> {
     let work_dir = tempfile::tempdir()?;
     let source_dir = tempfile::tempdir()?;
@@ -1477,7 +1694,7 @@ fn cli_build_dry_run_exits_zero_and_writes_no_files() -> Result<(), Box<dyn std:
     let database_path = root.join("cli.db");
     let output_path = utf8_path(output_dir.path())?.join("dry-run-output");
 
-    cargo_command()
+    let output = cargo_command()
         .args(db_arg(&database_path))
         .args([
             "build",
@@ -1488,8 +1705,11 @@ fn cli_build_dry_run_exits_zero_and_writes_no_files() -> Result<(), Box<dyn std:
             "1",
             "--dry-run",
         ])
-        .assert()
-        .success();
+        .output()?;
+
+    assert!(output.status.success());
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("output artifact was not attempted"));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("output artifact was not attempted"));
 
     assert!(!output_path.exists());
 
@@ -1522,7 +1742,7 @@ fn cli_build_missing_fail_exits_two_and_writes_no_files() -> Result<(), Box<dyn 
     let database_path = root.join("cli.db");
     let output_path = utf8_path(output_dir.path())?.join("strict-output");
 
-    cargo_command()
+    let output = cargo_command()
         .args(db_arg(&database_path))
         .args([
             "build",
@@ -1534,8 +1754,11 @@ fn cli_build_missing_fail_exits_two_and_writes_no_files() -> Result<(), Box<dyn 
             "--missing",
             "fail",
         ])
-        .assert()
-        .code(2);
+        .output()?;
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("output artifact was not attempted"));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("output artifact was not attempted"));
 
     assert!(!output_path.exists());
 
@@ -1763,10 +1986,12 @@ fn cli_directory_output_materializes_bare_roms() -> Result<(), Box<dyn std::erro
 }
 
 #[test]
-fn cli_directory_and_zip_outputs_match_for_each_layout() -> Result<(), Box<dyn std::error::Error>> {
+fn cli_zip_seven_zip_and_directory_outputs_match_for_each_layout()
+-> Result<(), Box<dyn std::error::Error>> {
     let work_dir = tempfile::tempdir()?;
     let source_dir = tempfile::tempdir()?;
     let zip_dir = tempfile::tempdir()?;
+    let seven_zip_dir = tempfile::tempdir()?;
     let directory_dir = tempfile::tempdir()?;
     let root = utf8_path(work_dir.path())?;
     let dat_path = write_clone_dat(work_dir.path())?;
@@ -1778,8 +2003,13 @@ fn cli_directory_and_zip_outputs_match_for_each_layout() -> Result<(), Box<dyn s
         ("per-game", "per-game"),
     ] {
         let zip_output = utf8_path(zip_dir.path())?.join(layout);
+        let seven_zip_output = utf8_path(seven_zip_dir.path())?.join(layout);
         let directory_output = utf8_path(directory_dir.path())?.join(layout);
-        for (destination, container) in [(&zip_output, "zip"), (&directory_output, "directory")] {
+        for (destination, container) in [
+            (&zip_output, "zip"),
+            (&seven_zip_output, "7z"),
+            (&directory_output, "directory"),
+        ] {
             cargo_command()
                 .args(db_arg(&database_path))
                 .args([
@@ -1803,8 +2033,10 @@ fn cli_directory_and_zip_outputs_match_for_each_layout() -> Result<(), Box<dyn s
                 continue;
             }
             let zip = zip_entries(&zip_output.join(format!("{group}.zip")))?;
+            let seven_zip = seven_zip_entries(&seven_zip_output.join(format!("{group}.7z")))?;
             let directory = directory_entries(directory_output.join(group).as_std_path())?;
             assert_eq!(zip, directory, "layout {layout}, group {group}");
+            assert_eq!(seven_zip, directory, "layout {layout}, group {group}");
         }
     }
     Ok(())
@@ -1901,7 +2133,10 @@ fn directory_output_preserves_existing_group_when_cached_source_is_stale()
         OutputContainer::Directory,
         &|_| {},
     )?;
-    assert_eq!(initial.written_paths, vec![output_path.join("shared")]);
+    assert_eq!(
+        initial.written_paths,
+        vec![output_path.join("shared").canonicalize_utf8()?]
+    );
     fs::write(source_dir.path().join("shared.rom"), b"changed")?;
 
     let stale = app::build_with_roots_and_container(
@@ -2111,10 +2346,17 @@ fn cli_legacy_build_defaults_preserve_parent_bundle_deflated_zip_and_warn_missin
             output_path.as_str(),
         ])
         .assert()
-        .success();
+        .success()
+        .stderr(contains("missing ROM: game=clone1 rom=clone1.rom"));
 
     let bundle_path = output_path.join("parent.zip");
     assert!(bundle_path.is_file());
+    let output_entries = fs::read_dir(&output_path)?.collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(
+        output_entries.len(),
+        1,
+        "expected exactly one parent bundle"
+    );
     assert!(!output_path.join("parent").exists());
 
     let mut archive = zip::ZipArchive::new(fs::File::open(bundle_path)?)?;

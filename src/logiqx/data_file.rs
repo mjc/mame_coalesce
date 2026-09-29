@@ -1,9 +1,7 @@
-use std::{
-    fs::File,
-    io::{Cursor, Read},
-};
+use std::io::{Cursor, Read};
 
 use camino::Utf8Path;
+use fmmap::MmapFileExt;
 use serde::Deserialize;
 use xml::common::Position;
 use xml::reader::{ParserConfig, XmlEvent};
@@ -47,6 +45,7 @@ pub struct UnsupportedAttribute {
 pub struct XmlSourceMap {
     pub game_locations: Vec<RecordLocation>,
     pub rom_locations: Vec<Vec<RecordLocation>>,
+    pub device_ref_locations: Vec<Vec<RecordLocation>>,
     pub unsupported_attributes: Vec<UnsupportedAttribute>,
 }
 impl DataFile {
@@ -56,14 +55,16 @@ impl DataFile {
     }
 
     pub fn from_path(path: &Utf8Path) -> crate::Result<Self> {
-        let raw =
-            document_input::read_bounded(File::open(path)?, document_input::MAX_DOCUMENT_BYTES)?;
-        let (mut data_file, _) = Self::parse_bytes(&raw)?;
+        // Keep large path-based DATs out of the eager heap while preserving their
+        // historical size behavior. `from_reader` remains deliberately bounded.
+        let mmap = hashes::mmap_path(path)?;
+        let raw = mmap.as_slice();
+        let (mut data_file, _) = Self::parse_bytes(raw)?;
         data_file.file_name = path
             .canonicalize()
             .ok()
             .map(|p| p.to_string_lossy().into_owned());
-        data_file.sha1 = Some(hashes::sha1_bytes(&raw).to_vec());
+        data_file.sha1 = Some(hashes::sha1_bytes(raw).to_vec());
         Ok(data_file)
     }
 
@@ -85,6 +86,11 @@ impl DataFile {
         let data_file = serde_xml_rs::SerdeXml::new()
             .parser(
                 ParserConfig::new()
+                    .trim_whitespace(true)
+                    .whitespace_to_characters(true)
+                    .cdata_to_characters(true)
+                    .ignore_comments(true)
+                    .coalesce_characters(true)
                     .max_entity_expansion_length(1024)
                     .max_entity_expansion_depth(4)
                     .max_name_length(4096)
@@ -135,9 +141,8 @@ impl DataFile {
 }
 
 fn validate_xml(bytes: &[u8]) -> crate::Result<XmlSourceMap> {
-    if bytes
-        .windows(b"<!ENTITY".len())
-        .any(|marker| marker == b"<!ENTITY")
+    if contains_entity_declaration(bytes)
+        .map_err(|()| crate::Error::XmlValidation("malformed UTF-16 encoding".into()))?
     {
         return Err(crate::Error::XmlEntityNotAllowed);
     }
@@ -151,7 +156,9 @@ fn validate_xml(bytes: &[u8]) -> crate::Result<XmlSourceMap> {
         .allow_multiple_root_elements(false);
     let mut reader = config.create_reader(bytes);
     let mut source_map = XmlSourceMap::default();
-    let mut current_game = None;
+    let mut element_depth = 0_usize;
+    let mut datafile_root = false;
+    let mut current_game: Option<(usize, usize)> = None;
     loop {
         let event = reader.next();
         match event {
@@ -159,6 +166,9 @@ fn validate_xml(bytes: &[u8]) -> crate::Result<XmlSourceMap> {
                 name, attributes, ..
             }) => {
                 let local_name = name.local_name;
+                if element_depth == 0 {
+                    datafile_root = local_name == "datafile";
+                }
                 let position = reader.position();
                 let location = RecordLocation {
                     line: i64::try_from(position.row.saturating_add(1)).unwrap_or(i64::MAX),
@@ -169,18 +179,30 @@ fn validate_xml(bytes: &[u8]) -> crate::Result<XmlSourceMap> {
                     .find(|attribute| attribute.name.local_name == "name")
                     .map(|attribute| attribute.value.clone());
                 match local_name.as_str() {
-                    "game" => {
-                        current_game = Some(source_map.game_locations.len());
+                    "game" if datafile_root && element_depth == 1 => {
+                        let game_index = source_map.game_locations.len();
+                        current_game = Some((game_index, element_depth));
                         source_map.game_locations.push(location);
                         source_map.rom_locations.push(Vec::new());
+                        source_map.device_ref_locations.push(Vec::new());
                     }
-                    "rom" => {
-                        if let Some(index) = current_game {
+                    "rom" if element_depth == 2 => {
+                        if let Some((index, game_depth)) = current_game
+                            && game_depth + 1 == element_depth
+                        {
                             source_map.rom_locations[index].push(location);
+                        }
+                    }
+                    "device_ref" => {
+                        if let Some((index, game_depth)) = current_game
+                            && game_depth + 1 == element_depth
+                        {
+                            source_map.device_ref_locations[index].push(location);
                         }
                     }
                     _ => {}
                 }
+                element_depth = element_depth.saturating_add(1);
                 for attribute in &attributes {
                     if attribute.name.namespace.is_some()
                         || !known_attribute(&local_name, &attribute.name.local_name)
@@ -188,6 +210,7 @@ fn validate_xml(bytes: &[u8]) -> crate::Result<XmlSourceMap> {
                         let record_kind = match local_name.as_str() {
                             "game" => "game",
                             "rom" => "rom",
+                            _ if current_game.is_some() => local_name.as_str(),
                             _ => "document",
                         };
                         source_map
@@ -204,9 +227,12 @@ fn validate_xml(bytes: &[u8]) -> crate::Result<XmlSourceMap> {
                 }
             }
             Ok(XmlEvent::EndElement { name }) => {
-                if name.local_name == "game" {
+                if name.local_name == "game"
+                    && current_game.is_some_and(|(_, game_depth)| game_depth + 1 == element_depth)
+                {
                     current_game = None;
                 }
+                element_depth = element_depth.saturating_sub(1);
             }
             Ok(XmlEvent::EndDocument) => break,
             // xml-rs reports declarations without fetching external subsets.
@@ -240,10 +266,115 @@ fn known_attribute(element: &str, attribute: &str) -> bool {
     known.contains(&attribute)
 }
 
+pub fn contains_entity_declaration(bytes: &[u8]) -> Result<bool, ()> {
+    let decoded = utf16_inspection_bytes(bytes)?;
+    let bytes = decoded.as_deref().unwrap_or(bytes);
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index..].starts_with(b"<!--") {
+            index = after_markup(bytes, index + b"<!--".len(), b"-->");
+        } else if bytes[index..].starts_with(b"<![CDATA[") {
+            index = after_markup(bytes, index + b"<![CDATA[".len(), b"]]>");
+        } else if bytes[index..].starts_with(b"<?") {
+            index = after_markup(bytes, index + b"<?".len(), b"?>");
+        } else if bytes[index..].starts_with(b"<!DOCTYPE") {
+            let (has_entity, end) =
+                doctype_contains_entity_declaration(bytes, index + b"<!DOCTYPE".len());
+            if has_entity {
+                return Ok(true);
+            }
+            index = end;
+        } else {
+            index += 1;
+        }
+    }
+    Ok(false)
+}
+
+/// Return a byte-oriented inspection view for UTF-16, preserving ASCII markup
+/// while replacing non-ASCII characters with non-markup bytes.
+fn utf16_inspection_bytes(bytes: &[u8]) -> Result<Option<Vec<u8>>, ()> {
+    let (encoding, start) = if bytes.starts_with(&[0xFE, 0xFF]) {
+        (Some(true), 2)
+    } else if bytes.starts_with(&[0xFF, 0xFE]) {
+        (Some(false), 2)
+    } else if bytes.starts_with(b"<\0") {
+        (Some(false), 0)
+    } else if bytes.starts_with(b"\0<") {
+        (Some(true), 0)
+    } else {
+        (None, 0)
+    };
+    let Some(big_endian) = encoding else {
+        return Ok(None);
+    };
+    let encoded = bytes.get(start..).ok_or(())?;
+    let (pairs, remainder) = encoded.as_chunks::<2>();
+    if !remainder.is_empty() {
+        return Err(());
+    }
+    let units = pairs.iter().map(|pair| {
+        if big_endian {
+            u16::from_be_bytes([pair[0], pair[1]])
+        } else {
+            u16::from_le_bytes([pair[0], pair[1]])
+        }
+    });
+    let mut inspection = Vec::with_capacity(encoded.len() / 2);
+    for character in char::decode_utf16(units) {
+        let character = character.map_err(|_| ())?;
+        inspection.push(if character.is_ascii() {
+            character as u8
+        } else {
+            0x80
+        });
+    }
+    Ok(Some(inspection))
+}
+
+fn doctype_contains_entity_declaration(bytes: &[u8], mut index: usize) -> (bool, usize) {
+    let mut subset_depth = 0_usize;
+    let mut quote = None;
+    while index < bytes.len() {
+        if let Some(delimiter) = quote {
+            if bytes[index] == delimiter {
+                quote = None;
+            }
+            index += 1;
+        } else if bytes[index..].starts_with(b"<!--") {
+            index = after_markup(bytes, index + b"<!--".len(), b"-->");
+        } else if bytes[index..].starts_with(b"<?") {
+            index = after_markup(bytes, index + b"<?".len(), b"?>");
+        } else if bytes[index..].starts_with(b"<!ENTITY") && subset_depth > 0 {
+            return (true, index + b"<!ENTITY".len());
+        } else {
+            match bytes[index] {
+                b'\'' | b'"' => quote = Some(bytes[index]),
+                b'[' => subset_depth += 1,
+                b']' => subset_depth = subset_depth.saturating_sub(1),
+                b'>' if subset_depth == 0 => return (false, index + 1),
+                _ => {}
+            }
+            index += 1;
+        }
+    }
+    (false, bytes.len())
+}
+
+fn after_markup(bytes: &[u8], mut index: usize, terminator: &[u8]) -> usize {
+    while index < bytes.len() {
+        if bytes[index..].starts_with(terminator) {
+            return index + terminator.len();
+        }
+        index += 1;
+    }
+    bytes.len()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io;
+    use std::io::{self, Write};
 
     const SIMPLE_DAT: &str = r#"<?xml version="1.0"?>
 <datafile>
@@ -320,22 +451,170 @@ mod tests {
     }
 
     #[test]
+    fn preserves_mixed_text_and_cdata_and_ignores_entity_text_in_comments_and_cdata()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dat = br#"<?note <!DOCTYPE datafile [<!ENTITY fake "value">]?>
+<datafile><!-- <!ENTITY comment "ignored"> --><header><name>Test <![CDATA[& stuff <!ENTITY literal>]]></name></header></datafile>"#;
+        let parsed = DataFile::from_reader(dat.as_slice())?;
+        assert_eq!(parsed.header().name(), "Test & stuff <!ENTITY literal>");
+        Ok(())
+    }
+
+    #[test]
     fn parser_source_map_retains_unknown_attributes_and_record_positions()
     -> Result<(), Box<dyn std::error::Error>> {
         let xml = br#"<datafile>
   <header><name>Source map</name></header>
   <game name="set" future="preserve">
+    <device_ref name="sound"/>
     <rom name="asset.bin" size="4" future-hash="unknown"/>
   </game>
 </datafile>"#;
         let (data_file, source_map) = DataFile::from_reader_with_source_map(xml.as_slice())?;
         assert_eq!(data_file.games().len(), 1);
         assert_eq!(source_map.game_locations[0].line, 3);
-        assert_eq!(source_map.rom_locations[0][0].line, 4);
+        assert_eq!(source_map.device_ref_locations[0][0].line, 4);
+        assert_eq!(source_map.device_ref_locations[0][0].column, 5);
+        assert_eq!(source_map.rom_locations[0][0].line, 5);
         assert_eq!(source_map.unsupported_attributes.len(), 2);
         assert_eq!(source_map.unsupported_attributes[0].field_name, "future");
         assert_eq!(source_map.unsupported_attributes[1].value, "unknown");
         Ok(())
+    }
+
+    #[test]
+    fn parser_source_map_ignores_nested_games_and_roms() -> Result<(), Box<dyn std::error::Error>> {
+        let xml = br#"<datafile>
+  <header>
+    <name>Source map</name>
+    <extension>
+      <game name="ignored">
+        <rom name="ignored.bin" size="1"/>
+      </game>
+    </extension>
+  </header>
+  <game name="real">
+    <rom name="real.bin" size="1"/>
+  </game>
+</datafile>"#;
+
+        let (data_file, source_map) = DataFile::from_reader_with_source_map(xml.as_slice())?;
+
+        assert_eq!(data_file.games().len(), 1);
+        assert_eq!(data_file.games()[0].name(), "real");
+        assert_eq!(source_map.game_locations.len(), 1);
+        assert_eq!(source_map.game_locations[0].line, 10);
+        assert_eq!(source_map.rom_locations.len(), 1);
+        assert_eq!(source_map.rom_locations[0].len(), 1);
+        assert_eq!(source_map.rom_locations[0][0].line, 11);
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_internal_entity_declarations() {
+        let dat = br#"<!DOCTYPE datafile [<!ENTITY local "value">]><datafile><header><name>&local;</name></header></datafile>"#;
+        assert!(matches!(
+            DataFile::from_reader(dat.as_slice()),
+            Err(crate::Error::XmlEntityNotAllowed)
+        ));
+    }
+
+    #[test]
+    fn detects_entities_in_bom_prefixed_utf16_and_parses_normal_documents()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for big_endian in [false, true] {
+            let entity = concat!(
+                "<?xml version=\"1.0\" encoding=\"UTF-16\"?>",
+                "<!DOCTYPE datafile [<!ENTITY local \"value\">]>",
+                "<datafile><header><name>&local;</name></header></datafile>"
+            );
+            let mut entity_bytes = utf16_bytes(entity, big_endian);
+            entity_bytes.splice(
+                0..0,
+                if big_endian {
+                    [0xFE, 0xFF]
+                } else {
+                    [0xFF, 0xFE]
+                },
+            );
+            assert!(matches!(
+                DataFile::from_reader(entity_bytes.as_slice()),
+                Err(crate::Error::XmlEntityNotAllowed)
+            ));
+
+            let document = format!(
+                "<?xml version=\"1.0\" encoding=\"UTF-16\"?>{}",
+                SIMPLE_DAT.replacen("<?xml version=\"1.0\"?>", "", 1)
+            );
+            let mut document_bytes = utf16_bytes(&document, big_endian);
+            document_bytes.splice(
+                0..0,
+                if big_endian {
+                    [0xFE, 0xFF]
+                } else {
+                    [0xFF, 0xFE]
+                },
+            );
+            let parsed = DataFile::from_reader(document_bytes.as_slice())?;
+            assert_eq!(parsed.header().name(), "Test Set");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn detects_entities_with_utf16_xml_signature_without_bom() {
+        for big_endian in [false, true] {
+            let entity = concat!(
+                "<?xml version=\"1.0\" encoding=\"UTF-16\"?>",
+                "<!DOCTYPE datafile [<!ENTITY local \"value\">]>",
+                "<datafile><header><name>&local;</name></header></datafile>"
+            );
+            let bytes = utf16_bytes(entity, big_endian);
+            assert!(matches!(
+                DataFile::from_reader(bytes.as_slice()),
+                Err(crate::Error::XmlEntityNotAllowed)
+            ));
+        }
+    }
+
+    #[test]
+    fn rejects_malformed_utf16_before_declaration_inspection_can_be_bypassed() {
+        assert!(matches!(
+            contains_entity_declaration(&[0xFF, 0xFE, b'<']),
+            Err(())
+        ));
+        assert!(matches!(
+            DataFile::from_reader([0xFF, 0xFE, b'<'].as_slice()),
+            Err(crate::Error::XmlValidation(_))
+        ));
+    }
+
+    #[test]
+    fn malformed_repeated_doctype_prefixes_are_scanned_once_and_fail_xml_validation() {
+        let prefix = b"<!DOCTYPE";
+        let mut malformed = Vec::with_capacity(prefix.len() * 4096);
+        for _ in 0..4096 {
+            malformed.extend_from_slice(prefix);
+        }
+        let (_, end) = doctype_contains_entity_declaration(&malformed, prefix.len());
+        assert_eq!(end, malformed.len());
+        assert!(matches!(
+            DataFile::from_reader(malformed.as_slice()),
+            Err(crate::Error::XmlValidation(_))
+        ));
+    }
+
+    fn utf16_bytes(value: &str, big_endian: bool) -> Vec<u8> {
+        value
+            .encode_utf16()
+            .flat_map(|unit| {
+                if big_endian {
+                    unit.to_be_bytes()
+                } else {
+                    unit.to_le_bytes()
+                }
+            })
+            .collect()
     }
 
     #[test]
@@ -530,6 +809,32 @@ mod tests {
             );
             assert!(!df.games().is_empty());
         }
+        Ok(())
+    }
+
+    #[test]
+    fn from_path_accepts_valid_documents_larger_than_reader_limit()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("large.dat");
+        let mut file = std::fs::File::create(&path)?;
+        file.write_all(b"<datafile><header><name>Large</name></header>")?;
+        let padding = vec![b' '; 64 * 1024];
+        let mut remaining = document_input::MAX_DOCUMENT_BYTES + 1;
+        while remaining > 0 {
+            let chunk_len = remaining.min(padding.len());
+            file.write_all(b"<!--")?;
+            file.write_all(&padding[..chunk_len])?;
+            file.write_all(b"-->")?;
+            remaining -= chunk_len;
+        }
+        file.write_all(b"</datafile>")?;
+        drop(file);
+
+        let path = Utf8Path::from_path(&path).ok_or("temporary path is not UTF-8")?;
+        let data_file = DataFile::from_path(path)?;
+        assert_eq!(data_file.header().name(), "Large");
+        assert!(data_file.sha1().is_some());
         Ok(())
     }
 }

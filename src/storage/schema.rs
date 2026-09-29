@@ -60,6 +60,50 @@ diesel::table! {
 }
 
 diesel::table! {
+    snapshot_publications (catalog_key, document_key, interpretation_key) {
+        catalog_key -> Text,
+        document_key -> Text,
+        interpretation_key -> Text,
+        snapshot_key -> Text,
+        published_at -> Timestamp,
+    }
+}
+
+diesel::table! {
+    relationship_assertions (assertion_key) {
+        assertion_key -> Text,
+        relation_type -> Text,
+        origin -> Text,
+        subject_snapshot_key -> Nullable<Text>,
+        subject_kind -> Text,
+        subject_key -> Text,
+        target_snapshot_key -> Nullable<Text>,
+        target_kind -> Text,
+        target_key -> Text,
+        source_snapshot_key -> Nullable<Text>,
+        source_field -> Nullable<Text>,
+        source_line -> Nullable<BigInt>,
+        source_column -> Nullable<BigInt>,
+        evidence_json -> Text,
+        rule_version -> Nullable<Text>,
+        supporting_assertion_keys_json -> Text,
+        created_at -> Timestamp,
+    }
+}
+
+diesel::table! {
+    relationship_reviews (review_id) {
+        review_id -> BigInt,
+        review_key -> Text,
+        assertion_key -> Text,
+        decision -> Text,
+        note -> Text,
+        superseded_by_assertion_key -> Nullable<Text>,
+        created_at -> Timestamp,
+    }
+}
+
+diesel::table! {
     snapshot_sets (snapshot_key, set_name) {
         snapshot_key -> Text,
         set_name -> Text,
@@ -87,7 +131,7 @@ diesel::table! {
         list_name -> Text,
         item_name -> Text,
         item_order -> BigInt,
-        supported -> Text,
+        supported -> Nullable<Text>,
         description -> Text,
         year -> Text,
         publisher -> Text,
@@ -114,7 +158,7 @@ diesel::table! {
 }
 
 diesel::table! {
-    software_areas (snapshot_key, list_name, item_name, part_name, area_kind, area_name) {
+    software_areas (snapshot_key, list_name, item_name, part_name, area_order) {
         snapshot_key -> Text,
         list_name -> Text,
         item_name -> Text,
@@ -131,11 +175,12 @@ diesel::table! {
 }
 
 diesel::table! {
-    software_components (snapshot_key, list_name, item_name, part_name, area_kind, area_name, component_order) {
+    software_components (snapshot_key, list_name, item_name, part_name, area_order, component_order) {
         snapshot_key -> Text,
         list_name -> Text,
         item_name -> Text,
         part_name -> Text,
+        area_order -> BigInt,
         area_kind -> Text,
         area_name -> Text,
         component_order -> BigInt,
@@ -195,6 +240,8 @@ diesel::table! {
         snapshot_key -> Text,
         record_kind -> Text,
         record_name -> Nullable<Text>,
+        owner_set_name -> Nullable<Text>,
+        owner_component_order -> Nullable<Text>,
         field_name -> Text,
         namespace_uri -> Nullable<Text>,
         raw_value_json -> Text,
@@ -321,6 +368,7 @@ diesel::table! {
         bare_file_cache_stamp -> Nullable<Binary>,
         cache_reused -> Bool,
         rom_id -> Nullable<Integer>,
+        physical_path -> Nullable<Text>,
     }
 }
 
@@ -352,6 +400,7 @@ diesel::joinable!(catalog_snapshots -> documents (document_key));
 diesel::joinable!(catalog_snapshots -> parser_interpretations (interpretation_key));
 diesel::joinable!(snapshot_sets -> catalog_snapshots (snapshot_key));
 diesel::joinable!(snapshot_extensions -> catalog_snapshots (snapshot_key));
+diesel::joinable!(relationship_reviews -> relationship_assertions (assertion_key));
 diesel::joinable!(import_diagnostics -> import_runs (run_key));
 diesel::joinable!(import_runs -> catalogs (catalog_key));
 diesel::joinable!(import_runs -> documents (document_key));
@@ -376,6 +425,8 @@ diesel::allow_tables_to_appear_in_same_query!(
     publishing_sources,
     rom_files,
     roms,
+    relationship_assertions,
+    relationship_reviews,
     software_areas,
     software_components,
     software_item_dependencies,
@@ -384,4 +435,5 @@ diesel::allow_tables_to_appear_in_same_query!(
     software_parts,
     snapshot_extensions,
     snapshot_sets,
+    snapshot_publications,
 );

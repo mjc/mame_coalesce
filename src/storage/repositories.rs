@@ -9,7 +9,7 @@ use crate::{
         BareFileCacheStamp, CatalogKey, CompleteSourceScan, Crc32Digest, DatRom,
         EvidenceProvenance, EvidenceScope, ExpectedEvidence, Md5Digest, ObservedContent,
         RequirementKey, ScanProvenance, ScanRunKey, SetKey, SetMetadata, SourceFile,
-        SourceFingerprint, SourceLocation, SourceRoot,
+        SourceFingerprint, SourceLocation, SourcePhysicalPath, SourceRoot,
     },
     hashes::Sha1Digest,
     storage::{
@@ -172,7 +172,8 @@ impl<'pool> BuildRepository<'pool> {
             .inner_join(schema::roms::dsl::roms)
             .load::<(crate::storage::models::Game, crate::storage::models::Rom)>(&mut conn)?;
 
-        let catalog_key = CatalogKey::fresh();
+        // The unique DAT name survives SQLite REPLACE, unlike its autoincrement row ID.
+        let catalog_key = CatalogKey::for_legacy_data_file(data_file.name());
         rows.into_iter()
             .map(|(game, rom)| {
                 let size = u64::try_from(rom.size).map_err(|_| {
@@ -200,6 +201,7 @@ impl<'pool> BuildRepository<'pool> {
                         rom_of: game.rom_of,
                         sample_of: game.sample_of,
                         board: game.board,
+                        rebuild_to: game.rebuildto,
                         year: game.year,
                         manufacturer: game.manufacturer,
                         ..SetMetadata::default()
@@ -211,10 +213,35 @@ impl<'pool> BuildRepository<'pool> {
             })
             .collect()
     }
+
+    pub fn load_set_names(
+        &self,
+        selector: DataFileSelector<'_>,
+    ) -> crate::Result<std::collections::BTreeSet<crate::domain::SetName>> {
+        let mut conn = self.pool.get()?;
+        let data_file = match selector {
+            DataFileSelector::FileName(value) => schema::data_files::dsl::data_files
+                .filter(schema::data_files::dsl::file_name.eq(value))
+                .first::<DataFile>(&mut conn)?,
+            DataFileSelector::Name(value) => schema::data_files::dsl::data_files
+                .filter(schema::data_files::dsl::name.eq(value))
+                .first::<DataFile>(&mut conn)?,
+        };
+        schema::games::dsl::games
+            .filter(schema::games::dsl::data_file_id.eq(data_file.id))
+            .select(schema::games::dsl::name)
+            .load::<String>(&mut conn)
+            .map(|names| names.into_iter().map(crate::domain::SetName::new).collect())
+            .map_err(Into::into)
+    }
 }
 
 fn source_file_from_model(rom_file: RomFile) -> crate::Result<SourceFile> {
     let location = source_location_from_model(&rom_file)?;
+    let physical_path = rom_file.physical_path.as_ref().map_or_else(
+        || SourcePhysicalPath::from_location(&location),
+        |path| SourcePhysicalPath::from_storage(path.clone()),
+    );
     let scan_run = scan_run_from_model(&rom_file)?;
     let scan_provenance = scan_provenance_from_model(&rom_file)?;
     let sha1 = sha1_digest_from_db(rom_file.sha1, "rom_files.sha1", &rom_file.name)?;
@@ -278,6 +305,7 @@ fn source_file_from_model(rom_file: RomFile) -> crate::Result<SourceFile> {
     Ok(SourceFile {
         source_root: SourceRoot::new(rom_file.scan_root.unwrap_or(rom_file.parent_path)),
         location,
+        physical_path,
         observed: ObservedContent {
             scope: EvidenceScope::WholeAsset,
             provenance: content_provenance,
@@ -435,6 +463,7 @@ mod tests {
             bare_file_cache_stamp: None,
             cache_reused: false,
             rom_id: None,
+            physical_path: None,
         }
     }
 
@@ -473,7 +502,7 @@ mod tests {
   <header>
     <name>Repository Test</name>
   </header>
-  <game name="repo-game">
+  <game name="repo-game" rebuildto="repo-target">
     <rom name="repo.rom" size="3" sha1="a9993e364706816aba3e25717850c26c9cd0d89d" md5="900150983cd24fb0d6963f7d28e17f72" crc="12345678"/>
   </game>
 </datafile>"#;
@@ -489,6 +518,7 @@ mod tests {
         let root = SourceRoot::new("/source");
         let content_sha1 = crate::hashes::sha1_bytes(b"abc");
         let observation = |location| {
+            let physical_path = SourcePhysicalPath::from_location(&location);
             let bare_file_cache_stamp = match &location {
                 SourceLocation::BareFile { .. } => Some(BareFileCacheStamp::new([4; 32])),
                 _ => None,
@@ -497,6 +527,7 @@ mod tests {
                 source_root: root.clone(),
                 scan_run: run,
                 location,
+                physical_path,
                 observed: ObservedContent {
                     scope: EvidenceScope::WholeAsset,
                     provenance: EvidenceProvenance::Computed,
@@ -537,6 +568,10 @@ mod tests {
 
         assert_eq!(dat_roms.len(), 1);
         assert_eq!(dat_roms[0].rom_name(), "repo.rom");
+        assert_eq!(
+            dat_roms[0].set_metadata.rebuild_to.as_deref(),
+            Some("repo-target")
+        );
         assert_eq!(source_files.len(), 2);
         assert!(source_files.iter().all(|source| {
             source.observed.size == Some(3)
@@ -559,6 +594,169 @@ mod tests {
                 ..
             } if name == "repo.rom"
         )));
+
+        Ok(())
+    }
+
+    #[test]
+    fn scan_metadata_requires_observed_size_on_insert_and_update()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (_temp_dir, pool) = file_backed_pool()?;
+        let root = SourceRoot::new("/source");
+        let run = ScanRunKey::fresh();
+        let location = SourceLocation::BareFile {
+            path: "/source/game.rom".to_owned(),
+        };
+        let observation = crate::domain::SourceObservation {
+            source_root: root.clone(),
+            scan_run: run,
+            physical_path: SourcePhysicalPath::from_location(&location),
+            location,
+            observed: ObservedContent {
+                scope: EvidenceScope::WholeAsset,
+                provenance: EvidenceProvenance::Computed,
+                size: Some(3),
+                crc: None,
+                md5: None,
+                sha1: Some(crate::hashes::sha1_bytes(b"abc")),
+                xxh3: crate::hashes::xxhash3_bytes(b"abc"),
+            },
+            fingerprint: SourceFingerprint::new([7; 20]),
+            scan_provenance: ScanProvenance::StreamedSha1Xxh3V1,
+            bare_file_cache_stamp: None,
+        };
+        let scan = CompleteSourceScan::new(root.clone(), run, vec![observation.clone()])?;
+        SourceRepository::new(&pool).replace_completed_scan(&scan)?;
+
+        let mut malformed = NewRomFile::from_observation(&observation)?;
+        malformed.observed_size = None;
+        let result = db::replace_rom_files_for_source_root(
+            &pool,
+            camino::Utf8Path::new("/source"),
+            &[malformed],
+        );
+        let Err(error) = result else {
+            return Err("insert without observed_size unexpectedly succeeded".into());
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("scan metadata must be stored together")
+        );
+
+        let mut conn = pool.get()?;
+        let result = sql_query("UPDATE rom_files SET observed_size = NULL WHERE scan_root = ?")
+            .bind::<Text, _>(root.as_str())
+            .execute(&mut conn);
+        let Err(error) = result else {
+            return Err("update without observed_size unexpectedly succeeded".into());
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("scan metadata must be stored together")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn scan_association_count_ignores_other_source_roots() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (_temp_dir, pool) = file_backed_pool()?;
+        let data_file = logiqx::DataFile::from_reader(SIMPLE_DAT.as_bytes())?;
+        DatRepository::new(&pool).import(&data_file)?;
+
+        let matching_root = SourceRoot::new("/matching");
+        let matching_run = ScanRunKey::fresh();
+        let matching_location = SourceLocation::BareFile {
+            path: "/matching/repo.rom".to_owned(),
+        };
+        let matching_observation = crate::domain::SourceObservation {
+            source_root: matching_root.clone(),
+            scan_run: matching_run,
+            physical_path: SourcePhysicalPath::from_location(&matching_location),
+            location: matching_location,
+            observed: ObservedContent {
+                scope: EvidenceScope::WholeAsset,
+                provenance: EvidenceProvenance::Computed,
+                size: Some(3),
+                crc: None,
+                md5: None,
+                sha1: Some(crate::hashes::sha1_bytes(b"abc")),
+                xxh3: crate::hashes::xxhash3_bytes(b"abc"),
+            },
+            fingerprint: SourceFingerprint::new([7; 20]),
+            scan_provenance: ScanProvenance::StreamedSha1Xxh3V1,
+            bare_file_cache_stamp: None,
+        };
+        let matching_scan =
+            CompleteSourceScan::new(matching_root, matching_run, vec![matching_observation])?;
+        assert_eq!(
+            SourceRepository::new(&pool).replace_completed_scan(&matching_scan)?,
+            1
+        );
+
+        let other_root = SourceRoot::new("/other");
+        let other_run = ScanRunKey::fresh();
+        let other_location = SourceLocation::BareFile {
+            path: "/other/unmatched.rom".to_owned(),
+        };
+        let other_observation = crate::domain::SourceObservation {
+            source_root: other_root.clone(),
+            scan_run: other_run,
+            physical_path: SourcePhysicalPath::from_location(&other_location),
+            location: other_location,
+            observed: ObservedContent {
+                scope: EvidenceScope::WholeAsset,
+                provenance: EvidenceProvenance::Computed,
+                size: Some(9),
+                crc: None,
+                md5: None,
+                sha1: Some(crate::hashes::sha1_bytes(b"unmatched")),
+                xxh3: crate::hashes::xxhash3_bytes(b"unmatched"),
+            },
+            fingerprint: SourceFingerprint::new([8; 20]),
+            scan_provenance: ScanProvenance::StreamedSha1Xxh3V1,
+            bare_file_cache_stamp: None,
+        };
+        let other_scan = CompleteSourceScan::new(other_root, other_run, vec![other_observation])?;
+        assert_eq!(
+            SourceRepository::new(&pool).replace_completed_scan(&other_scan)?,
+            0
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_archive_models_keep_known_backend_priority() -> crate::Result<()> {
+        let archived_file = |path: &str| RomFile {
+            id: 1,
+            parent_path: "/source".to_owned(),
+            parent_game_name: None,
+            path: path.to_owned(),
+            name: "game.rom".to_owned(),
+            crc: None,
+            sha1: crate::hashes::sha1_bytes(b"content").to_vec(),
+            md5: None,
+            xxhash3: crate::hashes::xxhash3_bytes(b"content").to_vec(),
+            in_archive: true,
+            archive_backend: None,
+            archive_member_index: None,
+            scan_root: None,
+            scan_run: None,
+            observed_size: None,
+            source_fingerprint: None,
+            scan_provenance: None,
+            bare_file_cache_stamp: None,
+            cache_reused: false,
+            rom_id: None,
+            physical_path: None,
+        };
+
+        let zip = source_location_from_model(&archived_file("/source/z.zip"))?;
+        let seven_zip = source_location_from_model(&archived_file("/source/a.7z"))?;
+
+        assert!(zip.priority() < seven_zip.priority());
         Ok(())
     }
 

@@ -1,17 +1,16 @@
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    ffi::OsStr,
-    fs,
-    io::Write,
-    path::PathBuf,
-};
-
 use camino::{Utf8Path, Utf8PathBuf};
 #[cfg(test)]
 use fmmap::{MmapFile, MmapFileExt};
+#[cfg(unix)]
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
+#[cfg(unix)]
+use std::fs;
+use std::{ffi::OsStr, io::Write, path::PathBuf};
 
 use rayon::prelude::*;
 use sha1::{Digest, Sha1};
+#[cfg(unix)]
 use sha2::Sha256;
 
 use walkdir::{DirEntry, WalkDir};
@@ -22,31 +21,71 @@ use crate::{
     domain::{
         ArchiveMemberSelector, BareFileCacheStamp, CompleteSourceScan, EvidenceProvenance,
         EvidenceScope, ObservedContent, ScanProvenance, ScanRunKey, SourceFile, SourceFingerprint,
-        SourceLocation, SourceObservation, SourceRoot,
+        SourceLocation, SourceObservation, SourcePhysicalPath, SourceRoot,
     },
     hashes::{Sha1Digest, Xxh3Digest},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Progress events emitted during a source scan.
 pub enum ScanProgress {
     Started { files: u64 },
     Advanced,
 }
 
-#[derive(Clone, Copy)]
-struct CachedBareFile {
-    stamp: BareFileCacheStamp,
-    observed: ObservedContent,
-    fingerprint: SourceFingerprint,
-}
-
+/// Scan the source tree and report progress as files are processed.
+///
+/// `excluded_paths` are omitted from traversal; `jobs` controls the hashing pool size.
+/// Only regular files are scanned; symlinks to regular files are followed, while special files
+/// are ignored.
 pub fn source_with_progress(
     path: &Utf8Path,
     jobs: usize,
     excluded_paths: &[Utf8PathBuf],
     progress: &(impl Fn(ScanProgress) + Sync),
 ) -> crate::Result<CompleteSourceScan> {
-    source_with_cache_and_progress(path, jobs, excluded_paths, &[], &BTreeSet::new(), progress)
+    source_with_walk_progress(path, jobs, excluded_paths, walk_for_files, progress)
+}
+
+#[derive(Clone, Copy)]
+#[cfg(unix)]
+struct CachedBareFile {
+    stamp: BareFileCacheStamp,
+    observed: ObservedContent,
+    fingerprint: SourceFingerprint,
+}
+
+#[cfg(unix)]
+type CachedBareFiles = BTreeMap<Utf8PathBuf, CachedBareFile>;
+#[cfg(not(unix))]
+type CachedBareFiles = ();
+
+#[cfg(test)]
+fn source_with_walk(
+    path: &Utf8Path,
+    jobs: usize,
+    excluded_paths: &[Utf8PathBuf],
+    walk: impl FnOnce(&Utf8Path, &[Utf8PathBuf]) -> crate::Result<Vec<Utf8PathBuf>>,
+) -> crate::Result<CompleteSourceScan> {
+    source_with_walk_progress(path, jobs, excluded_paths, walk, &|_| {})
+}
+
+fn source_with_walk_progress(
+    path: &Utf8Path,
+    jobs: usize,
+    excluded_paths: &[Utf8PathBuf],
+    walk: impl FnOnce(&Utf8Path, &[Utf8PathBuf]) -> crate::Result<Vec<Utf8PathBuf>>,
+    progress: &(impl Fn(ScanProgress) + Sync),
+) -> crate::Result<CompleteSourceScan> {
+    source_with_walk_and_cache_progress(
+        path,
+        jobs,
+        excluded_paths,
+        walk,
+        &[],
+        &BTreeSet::new(),
+        progress,
+    )
 }
 
 pub fn source_with_cache_and_progress(
@@ -57,8 +96,28 @@ pub fn source_with_cache_and_progress(
     forced_paths: &BTreeSet<Utf8PathBuf>,
     progress: &(impl Fn(ScanProgress) + Sync),
 ) -> crate::Result<CompleteSourceScan> {
+    source_with_walk_and_cache_progress(
+        path,
+        jobs,
+        excluded_paths,
+        walk_for_files,
+        cached_files,
+        forced_paths,
+        progress,
+    )
+}
+
+fn source_with_walk_and_cache_progress(
+    path: &Utf8Path,
+    jobs: usize,
+    excluded_paths: &[Utf8PathBuf],
+    walk: impl FnOnce(&Utf8Path, &[Utf8PathBuf]) -> crate::Result<Vec<Utf8PathBuf>>,
+    cached_files: &[SourceFile],
+    forced_paths: &BTreeSet<Utf8PathBuf>,
+    progress: &(impl Fn(ScanProgress) + Sync),
+) -> crate::Result<CompleteSourceScan> {
     let source_root = path.canonicalize_utf8()?;
-    let file_list = walk_for_files(&source_root, excluded_paths)?;
+    let file_list = walk(&source_root, excluded_paths)?;
     let scanned_paths = file_list.iter().collect::<BTreeSet<_>>();
     if forced_paths
         .iter()
@@ -70,6 +129,7 @@ pub fn source_with_cache_and_progress(
     }
     let source_root = SourceRoot::new(source_root.to_string());
     let scan_run = ScanRunKey::fresh();
+    #[cfg(unix)]
     let cached_by_path = cached_files
         .iter()
         .filter_map(|file| match &file.location {
@@ -94,6 +154,10 @@ pub fn source_with_cache_and_progress(
             _ => None,
         })
         .collect::<BTreeMap<_, _>>();
+    #[cfg(not(unix))]
+    let cached_by_path = {
+        let _ = cached_files;
+    };
     let observations = get_all_observations(
         &file_list,
         jobs,
@@ -111,7 +175,7 @@ fn get_all_observations(
     jobs: usize,
     source_root: &SourceRoot,
     scan_run: ScanRunKey,
-    cached_files: &BTreeMap<Utf8PathBuf, CachedBareFile>,
+    cached_files: &CachedBareFiles,
     forced_paths: &BTreeSet<Utf8PathBuf>,
     progress: &(impl Fn(ScanProgress) + Sync),
 ) -> crate::Result<Vec<SourceObservation>> {
@@ -144,17 +208,28 @@ fn scan_one_path(
     path: &Utf8Path,
     source_root: &SourceRoot,
     scan_run: ScanRunKey,
-    cached_files: &BTreeMap<Utf8PathBuf, CachedBareFile>,
+    cached_files: &CachedBareFiles,
     forced_paths: &BTreeSet<Utf8PathBuf>,
 ) -> crate::Result<Vec<SourceObservation>> {
+    #[cfg(not(unix))]
+    let _ = (cached_files, forced_paths);
     match crate::sources::detect(path)? {
-        crate::sources::SourceKind::BareFile => scan_bare_file(
-            path,
-            source_root,
-            scan_run,
-            cached_files.get(path),
-            forced_paths.contains(path),
-        ),
+        crate::sources::SourceKind::BareFile => {
+            #[cfg(unix)]
+            {
+                scan_bare_file(
+                    path,
+                    source_root,
+                    scan_run,
+                    cached_files.get(path),
+                    forced_paths.contains(path),
+                )
+            }
+            #[cfg(not(unix))]
+            {
+                scan_bare_file(path, source_root, scan_run)
+            }
+        }
         crate::sources::SourceKind::Archive(backend) => {
             scan_archive(path, backend, source_root, scan_run)
         }
@@ -173,7 +248,7 @@ fn scan_path(path: &Utf8Path) -> crate::Result<Vec<SourceObservation>> {
         path,
         &source_root,
         ScanRunKey::fresh(),
-        &BTreeMap::new(),
+        &CachedBareFiles::default(),
         &BTreeSet::new(),
     )
 }
@@ -182,14 +257,19 @@ fn scan_bare_file(
     path: &Utf8Path,
     source_root: &SourceRoot,
     scan_run: ScanRunKey,
-    cached_file: Option<&CachedBareFile>,
-    force_rehash: bool,
+    #[cfg(unix)] cached_file: Option<&CachedBareFile>,
+    #[cfg(unix)] force_rehash: bool,
 ) -> crate::Result<Vec<SourceObservation>> {
-    let before = bare_file_cache_stamp(path)?;
+    let physical_path = SourcePhysicalPath::capture(path)?;
+    let mut file = std::fs::File::open(physical_path.as_path())?;
+    let before = bare_file_cache_stamp(&file.metadata()?);
+    #[cfg(unix)]
     if !force_rehash
-        && let (Some(current), Some(cached)) = (before, cached_file)
+        && let (BareFileCacheState::Available(current), Some(cached)) = (before, cached_file)
         && cached.stamp == current
-        && bare_file_cache_stamp(path)? == Some(current)
+        && bare_file_cache_stamp(&file.metadata()?) == BareFileCacheState::Available(current)
+        && bare_file_path_cache_stamp(physical_path.as_path())?
+            == BareFileCacheState::Available(current)
     {
         let mut observed = cached.observed;
         observed.provenance = EvidenceProvenance::StatValidatedCache;
@@ -199,6 +279,7 @@ fn scan_bare_file(
             location: SourceLocation::BareFile {
                 path: path.to_string(),
             },
+            physical_path,
             observed,
             fingerprint: cached.fingerprint,
             scan_provenance: ScanProvenance::ReusedStatValidatedV1,
@@ -206,20 +287,28 @@ fn scan_bare_file(
         }]);
     }
     let mut hash_writer = RomHashWriter::default();
-    crate::sources::stream_file(path, &mut hash_writer)?;
+    std::io::copy(&mut file, &mut hash_writer)?;
     let (size, sha1, xxhash3) = hash_writer.finish();
-    let after = bare_file_cache_stamp(path)?;
-    if before != after {
+    let after = bare_file_cache_stamp(&file.metadata()?);
+    let path_after = bare_file_path_cache_stamp(physical_path.as_path())?;
+    if before != after || after != path_after {
         return Err(Error::InvalidPath(format!(
             "bare source changed while it was being scanned: {path}"
         )));
     }
+    #[cfg(unix)]
+    let cache_stamp = match after {
+        BareFileCacheState::Available(stamp) => Some(stamp),
+    };
+    #[cfg(not(unix))]
+    let cache_stamp = after.into_stamp();
     Ok(vec![SourceObservation {
         source_root: source_root.clone(),
         scan_run,
         location: SourceLocation::BareFile {
             path: path.to_string(),
         },
+        physical_path,
         observed: ObservedContent {
             scope: EvidenceScope::WholeAsset,
             provenance: EvidenceProvenance::Computed,
@@ -231,15 +320,14 @@ fn scan_bare_file(
         },
         fingerprint: SourceFingerprint::new(sha1),
         scan_provenance: ScanProvenance::StreamedSha1Xxh3V1,
-        bare_file_cache_stamp: after,
+        bare_file_cache_stamp: cache_stamp,
     }])
 }
 
 #[cfg(unix)]
-fn bare_file_cache_stamp(path: &Utf8Path) -> crate::Result<Option<BareFileCacheStamp>> {
+fn bare_file_cache_stamp(metadata: &std::fs::Metadata) -> BareFileCacheState {
     use std::os::unix::fs::MetadataExt;
 
-    let metadata = fs::metadata(path)?;
     let mut hasher = Sha256::new();
     hasher.update(b"mame-coalesce/bare-file-cache-stamp/v1\0");
     for value in [metadata.dev(), metadata.ino(), metadata.len()] {
@@ -253,12 +341,42 @@ fn bare_file_cache_stamp(path: &Utf8Path) -> crate::Result<Option<BareFileCacheS
     ] {
         hasher.update(value.to_le_bytes());
     }
-    Ok(Some(BareFileCacheStamp::new(hasher.finalize().into())))
+    BareFileCacheState::Available(BareFileCacheStamp::new(hasher.finalize().into()))
 }
 
 #[cfg(not(unix))]
-fn bare_file_cache_stamp(_path: &Utf8Path) -> crate::Result<Option<BareFileCacheStamp>> {
-    Ok(None)
+fn bare_file_cache_stamp(_metadata: &std::fs::Metadata) -> BareFileCacheState {
+    BareFileCacheState::Unavailable
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BareFileCacheState {
+    #[cfg(unix)]
+    Available(BareFileCacheStamp),
+    #[cfg(not(unix))]
+    Unavailable,
+}
+
+impl BareFileCacheState {
+    #[cfg(not(unix))]
+    const fn into_stamp(self) -> Option<BareFileCacheStamp> {
+        match self {
+            #[cfg(unix)]
+            Self::Available(stamp) => Some(stamp),
+            #[cfg(not(unix))]
+            Self::Unavailable => None,
+        }
+    }
+}
+
+#[cfg(unix)]
+fn bare_file_path_cache_stamp(path: &Utf8Path) -> crate::Result<BareFileCacheState> {
+    Ok(bare_file_cache_stamp(&fs::metadata(path)?))
+}
+
+#[cfg(not(unix))]
+fn bare_file_path_cache_stamp(_path: &Utf8Path) -> crate::Result<BareFileCacheState> {
+    Ok(BareFileCacheState::Unavailable)
 }
 
 #[cfg(test)]
@@ -279,9 +397,11 @@ fn scan_archive(
     source_root: &SourceRoot,
     scan_run: ScanRunKey,
 ) -> crate::Result<Vec<SourceObservation>> {
-    let fingerprint = fingerprint_file(path)?;
+    let physical_path = SourcePhysicalPath::capture(path)?;
+    let resolved_path = physical_path.as_path();
+    let fingerprint = fingerprint_file(resolved_path)?;
     let mut observations = Vec::new();
-    crate::sources::stream_archive(path, backend, None, |member, reader| {
+    crate::sources::stream_archive(resolved_path, backend, None, |member, reader| {
         let mut hash_writer = RomHashWriter::default();
         std::io::copy(reader, &mut hash_writer)?;
         let (size, sha1, xxhash3) = hash_writer.finish();
@@ -298,6 +418,7 @@ fn scan_archive(
                     name: member.selector.name.clone(),
                 },
             },
+            physical_path: physical_path.clone(),
             observed: ObservedContent {
                 scope: EvidenceScope::WholeAsset,
                 provenance: EvidenceProvenance::Computed,
@@ -313,7 +434,7 @@ fn scan_archive(
         });
         Ok(())
     })?;
-    verify_archive_fingerprint(path, fingerprint)?;
+    verify_archive_fingerprint(resolved_path, fingerprint)?;
     Ok(observations)
 }
 
@@ -365,18 +486,46 @@ impl Write for RomHashWriter {
     }
 }
 
-fn walk_for_files(
+pub(super) fn walk_for_files(
     dir: &Utf8Path,
     excluded_paths: &[Utf8PathBuf],
 ) -> crate::Result<Vec<Utf8PathBuf>> {
-    let files = WalkDir::new(dir)
+    let dir = dir
+        .canonicalize_utf8()
+        .map_err(|error| Error::InvalidPath(format!("failed to traverse source path: {error}")))?;
+    collect_walked_files(
+        WalkDir::new(&dir)
+            .into_iter()
+            .filter_entry(entry_is_relevant),
+        excluded_paths,
+    )
+}
+
+fn collect_walked_files(
+    entries: impl IntoIterator<Item = Result<DirEntry, walkdir::Error>>,
+    excluded_paths: &[Utf8PathBuf],
+) -> crate::Result<Vec<Utf8PathBuf>> {
+    let files = entries
         .into_iter()
-        .filter_entry(entry_is_relevant)
         .try_fold(Vec::new(), |mut files, entry| {
             let entry = entry.map_err(|error| {
                 Error::InvalidPath(format!("failed to traverse source path: {error}"))
             })?;
-            if !entry.file_type().is_dir() {
+            if excluded_paths
+                .iter()
+                .any(|excluded_path| entry.path() == excluded_path.as_std_path())
+            {
+                return Ok::<_, crate::Error>(files);
+            }
+            let file_type = entry.file_type();
+            let is_regular_file = file_type.is_file()
+                || (file_type.is_symlink()
+                    && std::fs::metadata(entry.path())
+                        .map_err(|error| {
+                            Error::InvalidPath(format!("failed to traverse source path: {error}"))
+                        })?
+                        .is_file());
+            if is_regular_file {
                 files.push(entry);
             }
             Ok::<_, crate::Error>(files)
@@ -385,14 +534,7 @@ fn walk_for_files(
         .into_iter()
         .map(|entry| source_path_from_path_buf(entry.into_path()))
         .collect::<crate::Result<Vec<_>>>()?;
-    Ok(paths
-        .into_iter()
-        .filter(|path| {
-            !excluded_paths
-                .iter()
-                .any(|excluded_path| path == excluded_path)
-        })
-        .collect())
+    Ok(paths)
 }
 
 fn source_path_from_path_buf(path: PathBuf) -> crate::Result<Utf8PathBuf> {
@@ -423,13 +565,14 @@ fn optimize_file_order(mut dirs: Vec<DirEntry>) -> Vec<DirEntry> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn optimize_file_order(mut dirs: Vec<DirEntry>) -> Vec<DirEntry> {
+const fn optimize_file_order(dirs: Vec<DirEntry>) -> Vec<DirEntry> {
     dirs
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
     use std::collections::BTreeSet;
     use std::io::{self, Write};
     use zip::write::SimpleFileOptions;
@@ -465,10 +608,11 @@ mod tests {
         std::fs::create_dir(root.join("visible-dir"))?;
         std::fs::write(root.join("visible-dir").join(".hidden.rom"), b"hidden file")?;
         std::fs::write(root.join("visible-dir").join("nested.rom"), b"nested")?;
+        let canonical_root = root.canonicalize_utf8()?;
 
         let files = walk_for_files(root, &[])?
             .into_iter()
-            .map(|path| path.strip_prefix(root).map(Utf8Path::to_owned))
+            .map(|path| path.strip_prefix(&canonical_root).map(Utf8Path::to_owned))
             .collect::<Result<BTreeSet<_>, _>>()?;
 
         assert_eq!(
@@ -477,6 +621,72 @@ mod tests {
                 Utf8PathBuf::from("visible-dir/nested.rom"),
                 Utf8PathBuf::from("visible.rom"),
             ])
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scanning_fifo_skips_it_without_blocking() -> Result<(), Box<dyn std::error::Error>> {
+        use std::{os::fd::AsFd, sync::mpsc, time::Duration};
+
+        let temp_dir = tempfile::tempdir()?;
+        let root = Utf8Path::from_path(temp_dir.path())
+            .ok_or_else(|| io::Error::other("temp path is not UTF-8"))?
+            .to_owned();
+        std::fs::write(root.join("visible.rom"), b"visible")?;
+        let directory = std::fs::File::open(&root)?;
+        rustix::fs::mkfifoat(
+            directory.as_fd(),
+            "blocked.rom",
+            rustix::fs::Mode::from_raw_mode(0o600),
+        )?;
+        std::os::unix::fs::symlink("blocked.rom", root.join("blocked-link.rom"))?;
+
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let result =
+                source_with_progress(&root, 1, &[], &|_| {}).map(|scan| scan.observations().len());
+            let _ = sender.send(result);
+        });
+
+        let observation_count = receiver.recv_timeout(Duration::from_secs(2))??;
+        assert_eq!(observation_count, 1);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn walk_for_files_preserves_symlinks_to_regular_files() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let temp_dir = tempfile::tempdir()?;
+        let root = Utf8Path::from_path(temp_dir.path())
+            .ok_or_else(|| io::Error::other("temp path is not UTF-8"))?;
+        std::fs::write(root.join("visible.rom"), b"visible")?;
+        std::os::unix::fs::symlink("visible.rom", root.join("alias.rom"))?;
+
+        let files = walk_for_files(root, &[])?;
+
+        assert!(files.iter().any(|path| path.ends_with("visible.rom")));
+        assert!(files.iter().any(|path| path.ends_with("alias.rom")));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn walk_for_files_does_not_resolve_excluded_dangling_symlinks()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let root = Utf8Path::from_path(temp_dir.path())
+            .ok_or_else(|| io::Error::other("temp path is not UTF-8"))?;
+        std::fs::write(root.join("visible.rom"), b"visible")?;
+        std::os::unix::fs::symlink("missing.rom", root.join("excluded.rom"))?;
+        let canonical_root = root.canonicalize_utf8()?;
+        let excluded_path = canonical_root.join("excluded.rom");
+
+        assert_eq!(
+            walk_for_files(root, &[excluded_path])?,
+            vec![canonical_root.join("visible.rom")]
         );
         Ok(())
     }
@@ -492,6 +702,48 @@ mod tests {
         };
 
         assert!(error.to_string().contains("failed to traverse source path"));
+        Ok(())
+    }
+
+    #[test]
+    fn failed_partial_walk_does_not_produce_a_completed_scan()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source_dir = tempfile::tempdir()?;
+        let root = Utf8Path::from_path(source_dir.path())
+            .ok_or_else(|| io::Error::other("source path is not UTF-8"))?;
+        std::fs::write(root.join("b.rom"), b"new")?;
+        let saw_file = Cell::new(false);
+        let result = source_with_walk(root, 1, &[], |source_root, excluded_paths| {
+            let missing_path = source_root.join("removed-during-scan");
+            let Some(Err(walk_error)) = WalkDir::new(&missing_path).into_iter().next() else {
+                return Err(Error::InvalidPath(
+                    "missing path should fail traversal".to_owned(),
+                ));
+            };
+            let partial_walk = WalkDir::new(source_root)
+                .into_iter()
+                .filter_entry(entry_is_relevant)
+                .take(2)
+                .inspect(|entry| {
+                    if entry
+                        .as_ref()
+                        .is_ok_and(|entry| entry.file_type().is_file())
+                    {
+                        saw_file.set(true);
+                    }
+                })
+                .chain(std::iter::once(Err(walk_error)));
+            collect_walked_files(partial_walk, excluded_paths)
+        });
+
+        assert!(
+            saw_file.get(),
+            "the walk must observe a file before failing"
+        );
+        let Err(error) = result else {
+            return Err("expected partial walk to fail".into());
+        };
+        assert!(error.to_string().contains("removed-during-scan"));
         Ok(())
     }
 
@@ -528,11 +780,19 @@ mod tests {
         let rom_path = root.join("game.rom");
         std::fs::write(&rom_path, b"rom")?;
         let excluded_paths = crate::storage::db::database_file_paths(&pool)?;
+        let canonical_database_path = database_path.canonicalize_utf8()?;
 
-        assert!(excluded_paths.contains(&database_path.canonicalize_utf8()?));
-        assert!(excluded_paths.contains(&Utf8PathBuf::from(format!("{database_path}-wal"))));
-        assert!(excluded_paths.contains(&Utf8PathBuf::from(format!("{database_path}-shm"))));
-        assert_eq!(walk_for_files(root, &excluded_paths)?, vec![rom_path]);
+        assert!(excluded_paths.contains(&canonical_database_path));
+        assert!(
+            excluded_paths.contains(&Utf8PathBuf::from(format!("{canonical_database_path}-wal")))
+        );
+        assert!(
+            excluded_paths.contains(&Utf8PathBuf::from(format!("{canonical_database_path}-shm")))
+        );
+        assert_eq!(
+            walk_for_files(root, &excluded_paths)?,
+            vec![rom_path.canonicalize_utf8()?]
+        );
         Ok(())
     }
 

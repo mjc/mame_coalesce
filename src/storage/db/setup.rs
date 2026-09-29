@@ -1,4 +1,8 @@
-use diesel::{SqliteConnection, connection::SimpleConnection, r2d2::ConnectionManager};
+use diesel::{
+    SqliteConnection,
+    connection::{AnsiTransactionManager, SimpleConnection, TransactionManager},
+    r2d2::ConnectionManager,
+};
 use diesel_migrations::{EmbeddedMigrations, MigrationHarness, embed_migrations};
 
 use super::Pool;
@@ -17,6 +21,28 @@ impl diesel::r2d2::CustomizeConnection<SqliteConnection, diesel::r2d2::Error>
     }
 }
 
+fn run_startup_migrations(conn: &mut SqliteConnection) -> crate::Result<()> {
+    let pending = conn
+        .pending_migrations(MIGRATIONS)
+        .map_err(|error| crate::Error::Migration(error.to_string()))?;
+
+    for migration in pending {
+        if let Err(error) = conn.run_migration(migration.as_ref()) {
+            let migration_error = format!("{}: {error}", migration.name());
+            return match AnsiTransactionManager::rollback_transaction(conn) {
+                Ok(()) | Err(diesel::result::Error::NotInTransaction) => {
+                    Err(crate::Error::Migration(migration_error))
+                }
+                Err(rollback_error) => Err(crate::Error::Migration(format!(
+                    "{migration_error}; failed to roll back migration: {rollback_error}"
+                ))),
+            };
+        }
+    }
+
+    Ok(())
+}
+
 pub fn create_db_pool(database_url: &str) -> crate::Result<Pool> {
     let manager = ConnectionManager::<SqliteConnection>::new(database_url);
     let pool = Pool::builder()
@@ -24,8 +50,7 @@ pub fn create_db_pool(database_url: &str) -> crate::Result<Pool> {
         .build(manager)?;
     {
         let mut conn = pool.get()?;
-        conn.run_pending_migrations(MIGRATIONS)
-            .map_err(|e| crate::Error::Migration(e.to_string()))?;
+        run_startup_migrations(&mut conn)?;
     }
     Ok(pool)
 }
@@ -40,6 +65,9 @@ mod tests {
         sql_query,
         sql_types::{BigInt, Integer},
     };
+
+    const IDENTITY_MIGRATION: &str = "2026-09-24-000000_create_catalog_identity_schema";
+    const SCOPED_NAMES_MIGRATION: &str = "2026-04-22-153500_scope_game_and_rom_names";
 
     #[derive(QueryableByName)]
     struct CountRow {
@@ -91,6 +119,130 @@ mod tests {
         sql_query(statement).execute(conn).is_err()
     }
 
+    fn assert_device_ref_extension_ownership(
+        conn: &mut SqliteConnection,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let owner = sql_query(
+            "SELECT owner_set_name AS value FROM snapshot_extensions \
+             WHERE snapshot_key = 'snapshot' AND record_kind = 'device_ref'",
+        )
+        .get_result::<TextRow>(conn)?;
+        assert_eq!(owner.value, "set");
+        let component_count = sql_query(
+            "SELECT COUNT(*) AS count FROM snapshot_extensions \
+             WHERE snapshot_key = 'snapshot' AND record_kind = 'device_ref' \
+               AND owner_component_order IS NULL",
+        )
+        .get_result::<CountRow>(conn)?
+        .count;
+        assert_eq!(component_count, 1);
+        Ok(())
+    }
+
+    fn seed_then_delete_high_rebuilt_ids(conn: &mut SqliteConnection) -> QueryResult<()> {
+        conn.batch_execute(
+            "INSERT INTO games (id, name) VALUES (23, 'surviving-game');
+             INSERT INTO games (id, name) VALUES (90023, 'deleted-high-game');
+             DELETE FROM games WHERE id = 90023;
+             INSERT INTO roms (id, name, size, md5, sha1, crc)
+                 VALUES (31, 'surviving.rom', 1, X'01', X'02', X'03');
+             INSERT INTO roms (id, name, size, md5, sha1, crc)
+                 VALUES (90031, 'deleted-high.rom', 1, X'04', X'05', X'06');
+             DELETE FROM roms WHERE id = 90031;
+             INSERT INTO rom_files
+                 (id, parent_path, path, name, sha1, xxhash3, in_archive)
+                 VALUES (41, '/roms', '/roms/surviving.rom', 'surviving.rom',
+                         X'02', X'04', 0);
+             INSERT INTO rom_files
+                 (id, parent_path, path, name, sha1, xxhash3, in_archive)
+                 VALUES (90041, '/roms', '/roms/deleted-high.rom',
+                         'deleted-high.rom', X'05', X'06', 0);
+             DELETE FROM rom_files WHERE id = 90041;",
+        )
+    }
+
+    fn assert_rebuilt_ids_advance_past(conn: &mut SqliteConnection) -> QueryResult<()> {
+        conn.batch_execute(
+            "INSERT INTO games (name) VALUES ('new-game');
+             INSERT INTO roms (name, size, md5, sha1, crc)
+                 VALUES ('new.rom', 1, X'11', X'12', X'13');
+             INSERT INTO rom_files
+                 (parent_path, path, name, sha1, xxhash3, in_archive)
+                 VALUES ('/roms', '/roms/new.rom', 'new.rom', X'12', X'14', 0);",
+        )?;
+
+        for (table, name, prior) in [
+            ("games", "new-game", 90_023),
+            ("roms", "new.rom", 90_031),
+            ("rom_files", "new.rom", 90_041),
+        ] {
+            let id = sql_query(format!("SELECT id FROM {table} WHERE name = '{name}'"))
+                .get_result::<IdRow>(conn)?
+                .id;
+            assert!(id > prior, "{table} reused {id}, at or below {prior}");
+        }
+        Ok(())
+    }
+
+    fn assert_snapshot_parent_is_catalog_scoped(conn: &mut SqliteConnection) -> QueryResult<()> {
+        conn.batch_execute(
+            "INSERT INTO catalog_snapshots \
+                 (snapshot_key, catalog_key, document_key, interpretation_key, \
+                  parent_snapshot_key, scope_kind) \
+             VALUES ('snapshot-a4', 'catalog-a', 'document-b', 'logiqx-v2', \
+                     'snapshot-a1', 'unknown')",
+        )?;
+        assert_eq!(
+            sql_query(
+                "SELECT COUNT(*) AS count FROM catalog_snapshots \
+                 WHERE snapshot_key = 'snapshot-a4' \
+                   AND parent_snapshot_key = 'snapshot-a1'",
+            )
+            .get_result::<CountRow>(conn)?
+            .count,
+            1
+        );
+        assert!(sql_fails(
+            conn,
+            "INSERT INTO catalog_snapshots \
+                 (snapshot_key, catalog_key, document_key, interpretation_key, \
+                  parent_snapshot_key, scope_kind) \
+             VALUES ('snapshot-cross-catalog-parent', 'catalog-b', 'document-b', \
+                     'logiqx-v1', 'snapshot-a1', 'unknown')",
+        ));
+        Ok(())
+    }
+
+    fn assert_snapshot_publication_identity_is_unique(
+        conn: &mut SqliteConnection,
+    ) -> QueryResult<()> {
+        sql_query(
+            "INSERT INTO catalog_snapshots \
+             (snapshot_key, catalog_key, document_key, interpretation_key, scope_kind) \
+             VALUES ('snapshot-a2', 'catalog-a', 'document-a', 'logiqx-v1', 'unknown')",
+        )
+        .execute(conn)?;
+        sql_query(
+            "INSERT INTO snapshot_publications \
+             (catalog_key, document_key, interpretation_key, snapshot_key) \
+             VALUES ('catalog-a', 'document-a', 'logiqx-v1', 'snapshot-a1')",
+        )
+        .execute(conn)?;
+        assert!(sql_fails(
+            conn,
+            "INSERT INTO snapshot_publications \
+                 (catalog_key, document_key, interpretation_key, snapshot_key) \
+             VALUES ('catalog-a', 'document-a', 'logiqx-v1', 'snapshot-a2')",
+        ));
+        assert!(sql_fails(
+            conn,
+            "INSERT OR REPLACE INTO snapshot_publications \
+                 (catalog_key, document_key, interpretation_key, snapshot_key) \
+             VALUES ('catalog-a', 'document-a', 'logiqx-v1', 'snapshot-a2')",
+        ));
+        Ok(())
+    }
+
     #[test]
     fn additive_migration_preserves_a_populated_legacy_cache()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -98,8 +250,12 @@ mod tests {
         conn.batch_execute("PRAGMA foreign_keys = ON")?;
         let migrations = MIGRATIONS.migrations()?;
         assert!(!migrations.is_empty());
+        let identity_migration_index = migrations
+            .iter()
+            .position(|migration| migration.name().to_string() == IDENTITY_MIGRATION)
+            .ok_or("identity migration not found")?;
         conn.applied_migrations()?;
-        for migration in &migrations[..migrations.len() - 1] {
+        for migration in &migrations[..identity_migration_index] {
             conn.run_migration(migration.as_ref())?;
         }
         conn.batch_execute(
@@ -111,7 +267,7 @@ mod tests {
                  (id, parent_path, path, name, sha1, xxhash3, in_archive, rom_id)
                  VALUES (41, '/roms', '/roms/legacy.zip', 'legacy.rom', X'02', X'04', 1, 31);",
         )?;
-        conn.run_pending_migrations(MIGRATIONS)?;
+        run_startup_migrations(&mut conn)?;
         assert_eq!(count(&mut conn, "data_files")?, 1);
         assert_eq!(count(&mut conn, "games")?, 1);
         assert_eq!(count(&mut conn, "roms")?, 1);
@@ -161,13 +317,457 @@ mod tests {
     }
 
     #[test]
+    fn scan_size_migration_repairs_triggers_on_databases_with_prior_migration()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut conn = SqliteConnection::establish(":memory:")?;
+        conn.applied_migrations()?;
+        let migrations = MIGRATIONS.migrations()?;
+        let enforce_size_index = migrations
+            .iter()
+            .position(|migration| {
+                migration
+                    .name()
+                    .to_string()
+                    .starts_with("2026-09-27-000000_enforce_observed_scan_size")
+            })
+            .ok_or("scan-size migration not found")?;
+
+        for migration in &migrations[..enforce_size_index] {
+            conn.run_migration(migration.as_ref())?;
+        }
+        conn.batch_execute(
+            "INSERT INTO rom_files \
+                 (parent_path, path, name, sha1, xxhash3, in_archive, scan_root, scan_run, \
+                  source_fingerprint, scan_provenance) \
+             VALUES ('/source', '/source/game.rom', 'game.rom', zeroblob(20), zeroblob(8), 0, \
+                     '/source', 'run-1', zeroblob(20), 'streamed_sha1_xxh3_v1');",
+        )?;
+
+        run_startup_migrations(&mut conn)?;
+        assert_eq!(count(&mut conn, "rom_files")?, 1);
+        let repaired = sql_query(
+            "SELECT scan_root, scan_run, observed_size, source_fingerprint, scan_provenance \
+             FROM rom_files WHERE path = '/source/game.rom'",
+        )
+        .get_result::<LegacyScanEvidenceRow>(&mut conn)?;
+        assert!(repaired.scan_root.is_none());
+        assert!(repaired.scan_run.is_none());
+        assert!(repaired.observed_size.is_none());
+        assert!(repaired.source_fingerprint.is_none());
+        assert!(repaired.scan_provenance.is_none());
+        conn.batch_execute(
+            "INSERT INTO rom_files \
+                 (parent_path, path, name, sha1, xxhash3, in_archive, scan_root, scan_run, \
+                  observed_size, source_fingerprint, scan_provenance) \
+             VALUES ('/source', '/source/new.rom', 'new.rom', zeroblob(20), zeroblob(8), 0, \
+                     '/source', 'run-2', 3, zeroblob(20), 'streamed_sha1_xxh3_v1');",
+        )?;
+        assert!(sql_fails(
+            &mut conn,
+            "UPDATE rom_files SET observed_size = NULL WHERE scan_root = '/source'",
+        ));
+        sql_query("UPDATE rom_files SET observed_size = 3 WHERE scan_root = '/source'")
+            .execute(&mut conn)?;
+        Ok(())
+    }
+
+    #[test]
+    fn scoped_names_migration_preserves_populated_legacy_rows_with_foreign_keys_enabled()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut conn = SqliteConnection::establish(":memory:")?;
+        conn.batch_execute("PRAGMA foreign_keys = ON")?;
+        let migrations = MIGRATIONS.migrations()?;
+        let scoped_names_index = migrations
+            .iter()
+            .position(|migration| {
+                migration
+                    .name()
+                    .to_string()
+                    .starts_with("2026-04-22-153500_scope_game_and_rom_names")
+            })
+            .ok_or("scoped names migration not found")?;
+
+        conn.applied_migrations()?;
+        for migration in &migrations[..scoped_names_index] {
+            conn.run_migration(migration.as_ref())?;
+        }
+        conn.batch_execute(
+            "INSERT INTO data_files (id, name, version) VALUES (17, 'Legacy DAT', 'v1');
+             INSERT INTO games (id, name, data_file_id) VALUES (23, 'legacy-set', 17);
+             INSERT INTO roms (id, name, size, md5, sha1, crc, game_id)
+                 VALUES (31, 'legacy.rom', 3, X'01', X'02', X'03', 23);
+             INSERT INTO archive_files (id, path, sha1) VALUES (37, '/legacy.zip', X'04');
+             UPDATE roms SET archive_file_id = 37 WHERE id = 31;
+             INSERT INTO rom_files
+                 (id, parent_path, path, name, sha1, xxhash3, in_archive, rom_id)
+                 VALUES (41, '/roms', '/roms/legacy.rom', 'legacy.rom', X'02', X'04', 0, 31);",
+        )?;
+
+        conn.run_migration(migrations[scoped_names_index].as_ref())?;
+        assert_eq!(count(&mut conn, "data_files")?, 1);
+        assert_eq!(count(&mut conn, "games")?, 1);
+        assert_eq!(count(&mut conn, "roms")?, 1);
+        assert_eq!(count(&mut conn, "archive_files")?, 1);
+        assert_eq!(count(&mut conn, "rom_files")?, 1);
+        assert_eq!(
+            sql_query("SELECT id FROM data_files WHERE id = 17")
+                .get_result::<IdRow>(&mut conn)?
+                .id,
+            17
+        );
+        assert_eq!(
+            sql_query("SELECT id FROM games WHERE id = 23 AND data_file_id = 17")
+                .get_result::<IdRow>(&mut conn)?
+                .id,
+            23
+        );
+        assert_eq!(
+            sql_query(
+                "SELECT id FROM roms WHERE id = 31 AND game_id = 23 AND archive_file_id = 37"
+            )
+            .get_result::<IdRow>(&mut conn)?
+            .id,
+            31
+        );
+        assert_eq!(
+            sql_query("SELECT id FROM archive_files WHERE id = 37")
+                .get_result::<IdRow>(&mut conn)?
+                .id,
+            37
+        );
+        assert_eq!(
+            sql_query("SELECT id FROM rom_files WHERE id = 41 AND rom_id = 31")
+                .get_result::<IdRow>(&mut conn)?
+                .id,
+            41
+        );
+        let foreign_keys_enabled =
+            sql_query("SELECT foreign_keys AS count FROM pragma_foreign_keys")
+                .get_result::<CountRow>(&mut conn)?
+                .count;
+        assert_eq!(foreign_keys_enabled, 1);
+        assert_eq!(count(&mut conn, "pragma_foreign_key_check")?, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn scoped_names_migration_preserves_autoincrement_high_water_marks()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut conn = SqliteConnection::establish(":memory:")?;
+        let migrations = MIGRATIONS.migrations()?;
+        let scoped_names_index = migrations
+            .iter()
+            .position(|migration| {
+                migration
+                    .name()
+                    .to_string()
+                    .starts_with(SCOPED_NAMES_MIGRATION)
+            })
+            .ok_or("scoped names migration not found")?;
+        conn.applied_migrations()?;
+        for migration in &migrations[..scoped_names_index] {
+            conn.run_migration(migration.as_ref())?;
+        }
+        seed_then_delete_high_rebuilt_ids(&mut conn)?;
+
+        conn.run_migration(migrations[scoped_names_index].as_ref())?;
+        assert_rebuilt_ids_advance_past(&mut conn)?;
+        Ok(())
+    }
+
+    #[test]
+    fn failed_startup_migration_reenables_foreign_keys()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut conn = SqliteConnection::establish(":memory:")?;
+        conn.batch_execute("PRAGMA foreign_keys = ON")?;
+        let migrations = MIGRATIONS.migrations()?;
+        let scoped_names_index = migrations
+            .iter()
+            .position(|migration| {
+                migration
+                    .name()
+                    .to_string()
+                    .starts_with(SCOPED_NAMES_MIGRATION)
+            })
+            .ok_or("scoped names migration not found")?;
+        conn.applied_migrations()?;
+        for migration in &migrations[..scoped_names_index] {
+            conn.run_migration(migration.as_ref())?;
+        }
+        conn.batch_execute("CREATE TABLE games_scoped (id INTEGER PRIMARY KEY)")?;
+        let applied_before = conn.applied_migrations()?;
+
+        assert!(run_startup_migrations(&mut conn).is_err());
+        assert_eq!(conn.applied_migrations()?, applied_before);
+        assert_eq!(
+            sql_query(
+                "SELECT COUNT(*) AS count FROM sqlite_master \
+                 WHERE type = 'table' AND name = 'games_scoped'",
+            )
+            .get_result::<CountRow>(&mut conn)?
+            .count,
+            1
+        );
+        assert_eq!(
+            sql_query("SELECT foreign_keys AS count FROM pragma_foreign_keys")
+                .get_result::<CountRow>(&mut conn)?
+                .count,
+            1
+        );
+        assert_eq!(count(&mut conn, "pragma_foreign_key_check")?, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn startup_migration_rejects_legacy_orphans_without_changing_the_cache()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut conn = SqliteConnection::establish(":memory:")?;
+        let migrations = MIGRATIONS.migrations()?;
+        let scoped_names_index = migrations
+            .iter()
+            .position(|migration| {
+                migration
+                    .name()
+                    .to_string()
+                    .starts_with(SCOPED_NAMES_MIGRATION)
+            })
+            .ok_or("scoped names migration not found")?;
+        conn.applied_migrations()?;
+        for migration in &migrations[..scoped_names_index] {
+            conn.run_migration(migration.as_ref())?;
+        }
+
+        conn.batch_execute(
+            "PRAGMA foreign_keys = OFF;
+             INSERT INTO data_files (id, name, version) VALUES (17, 'Legacy DAT', 'v1');
+             INSERT INTO games (id, name, data_file_id) VALUES (23, 'legacy-set', 17);
+             INSERT INTO roms (id, name, size, md5, sha1, crc, game_id)
+                 VALUES (31, 'orphan.rom', 3, X'01', X'02', X'03', 999);",
+        )?;
+        let applied_before = conn.applied_migrations()?;
+        assert_eq!(count(&mut conn, "pragma_foreign_key_check")?, 1);
+
+        conn.batch_execute("PRAGMA foreign_keys = ON")?;
+        let migration_result = run_startup_migrations(&mut conn);
+        assert!(
+            migration_result.is_err(),
+            "startup accepted a legacy foreign key violation"
+        );
+
+        assert_eq!(
+            conn.applied_migrations()?,
+            applied_before,
+            "startup applied a migration despite rejecting a legacy foreign key violation"
+        );
+        assert_eq!(
+            sql_query(
+                "SELECT COUNT(*) AS count FROM sqlite_master \
+                 WHERE type = 'table' AND name = 'games_scoped'",
+            )
+            .get_result::<CountRow>(&mut conn)?
+            .count,
+            0
+        );
+        assert_eq!(count(&mut conn, "games")?, 1);
+        assert_eq!(count(&mut conn, "roms")?, 1);
+        assert_eq!(count(&mut conn, "pragma_foreign_key_check")?, 1);
+        assert_eq!(
+            sql_query(
+                "SELECT COUNT(*) AS count FROM pragma_foreign_key_check \
+                 WHERE \"table\" = 'roms' AND parent = 'games'",
+            )
+            .get_result::<CountRow>(&mut conn)?
+            .count,
+            1
+        );
+        assert_eq!(
+            sql_query("SELECT foreign_keys AS count FROM pragma_foreign_keys")
+                .get_result::<CountRow>(&mut conn)?
+                .count,
+            1
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failed_scoped_names_rollback_is_atomic_and_reenables_foreign_keys()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut conn = SqliteConnection::establish(":memory:")?;
+        conn.batch_execute("PRAGMA foreign_keys = ON")?;
+        run_startup_migrations(&mut conn)?;
+
+        conn.batch_execute(
+            "INSERT INTO data_files (id, name, version)
+                 VALUES (17, 'First DAT', 'v1'), (18, 'Second DAT', 'v1');
+             INSERT INTO games (id, name, data_file_id)
+                 VALUES (23, 'same-game', 17), (24, 'same-game', 18);
+             INSERT INTO archive_files (id, path, sha1) VALUES (37, '/legacy.zip', X'04');
+             INSERT INTO roms (id, name, size, md5, sha1, crc, game_id)
+                 VALUES (31, 'same.rom', 3, X'01', X'02', X'03', 23),
+                        (32, 'same.rom', 3, X'04', X'05', X'06', 24);
+             UPDATE roms SET archive_file_id = 37 WHERE id = 31;
+             INSERT INTO rom_files
+                 (id, parent_path, path, name, sha1, xxhash3, in_archive, rom_id)
+                 VALUES (41, '/roms', '/roms/same.rom', 'same.rom', X'02', X'04', 0, 31);",
+        )?;
+
+        let migrations = MIGRATIONS.migrations()?;
+        let scoped_names_migration = migrations
+            .iter()
+            .find(|migration| {
+                migration
+                    .name()
+                    .to_string()
+                    .starts_with("2026-04-22-153500_scope_game_and_rom_names")
+            })
+            .ok_or("scoped names migration not found")?;
+        let applied_before = conn.applied_migrations()?;
+        let revert_result = conn.revert_migration(scoped_names_migration.as_ref());
+        let revert_error = match revert_result {
+            Ok(_) => String::new(),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            revert_error.contains("UNIQUE constraint failed"),
+            "rollback did not fail because of global-name uniqueness: {revert_error}"
+        );
+
+        assert_eq!(count(&mut conn, "data_files")?, 2);
+        assert_eq!(count(&mut conn, "games")?, 2);
+        assert_eq!(count(&mut conn, "roms")?, 2);
+        assert_eq!(count(&mut conn, "archive_files")?, 1);
+        assert_eq!(count(&mut conn, "rom_files")?, 1);
+        assert_eq!(
+            sql_query("SELECT COUNT(*) AS count FROM roms WHERE name = 'same.rom'")
+                .get_result::<CountRow>(&mut conn)?
+                .count,
+            2
+        );
+        assert_eq!(conn.applied_migrations()?, applied_before);
+        assert_eq!(
+            sql_query(
+                "SELECT COUNT(*) AS count FROM sqlite_master \
+                 WHERE type = 'index' AND name IN \
+                     ('roms_game_name_unique', 'games_data_file_name_unique')",
+            )
+            .get_result::<CountRow>(&mut conn)?
+            .count,
+            2
+        );
+        assert_eq!(
+            sql_query("SELECT foreign_keys AS count FROM pragma_foreign_keys")
+                .get_result::<CountRow>(&mut conn)?
+                .count,
+            1
+        );
+        assert_eq!(count(&mut conn, "pragma_foreign_key_check")?, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn scoped_names_revert_preserves_populated_rows_with_foreign_keys_enabled()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut conn = SqliteConnection::establish(":memory:")?;
+        conn.batch_execute("PRAGMA foreign_keys = ON")?;
+        let migrations = MIGRATIONS.migrations()?;
+        let scoped_names_index = migrations
+            .iter()
+            .position(|migration| {
+                migration
+                    .name()
+                    .to_string()
+                    .starts_with(SCOPED_NAMES_MIGRATION)
+            })
+            .ok_or("scoped names migration not found")?;
+        conn.applied_migrations()?;
+        for migration in &migrations[..=scoped_names_index] {
+            conn.run_migration(migration.as_ref())?;
+        }
+        conn.batch_execute(
+            "INSERT INTO data_files (id, name, version) VALUES (17, 'Legacy DAT', 'v1');
+             INSERT INTO games (id, name, data_file_id) VALUES (23, 'legacy-set', 17);
+             INSERT INTO archive_files (id, path, sha1) VALUES (37, '/legacy.zip', X'04');
+             INSERT INTO roms (id, name, size, md5, sha1, crc, game_id, archive_file_id)
+                 VALUES (31, 'legacy.rom', 3, X'01', X'02', X'03', 23, 37);
+             INSERT INTO rom_files
+                 (id, parent_path, path, name, sha1, xxhash3, in_archive, rom_id)
+                 VALUES (41, '/roms', '/roms/legacy.rom', 'legacy.rom', X'02', X'04', 0, 31);",
+        )?;
+
+        conn.revert_migration(migrations[scoped_names_index].as_ref())?;
+
+        assert_eq!(count(&mut conn, "data_files")?, 1);
+        assert_eq!(count(&mut conn, "games")?, 1);
+        assert_eq!(count(&mut conn, "roms")?, 1);
+        assert_eq!(count(&mut conn, "archive_files")?, 1);
+        assert_eq!(count(&mut conn, "rom_files")?, 1);
+        assert_eq!(
+            sql_query(
+                "SELECT id FROM roms WHERE id = 31 AND game_id = 23 AND archive_file_id = 37"
+            )
+            .get_result::<IdRow>(&mut conn)?
+            .id,
+            31
+        );
+        assert_eq!(
+            sql_query("SELECT id FROM rom_files WHERE id = 41 AND rom_id = 31")
+                .get_result::<IdRow>(&mut conn)?
+                .id,
+            41
+        );
+        assert_eq!(
+            sql_query("SELECT foreign_keys AS count FROM pragma_foreign_keys")
+                .get_result::<CountRow>(&mut conn)?
+                .count,
+            1
+        );
+        assert_eq!(count(&mut conn, "pragma_foreign_key_check")?, 0);
+        assert!(
+            conn.applied_migrations()?
+                .iter()
+                .all(|name| name.to_string() != SCOPED_NAMES_MIGRATION)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn scoped_names_revert_preserves_autoincrement_high_water_marks()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut conn = SqliteConnection::establish(":memory:")?;
+        let migrations = MIGRATIONS.migrations()?;
+        let scoped_names_index = migrations
+            .iter()
+            .position(|migration| {
+                migration
+                    .name()
+                    .to_string()
+                    .starts_with(SCOPED_NAMES_MIGRATION)
+            })
+            .ok_or("scoped names migration not found")?;
+        conn.applied_migrations()?;
+        for migration in &migrations[..=scoped_names_index] {
+            conn.run_migration(migration.as_ref())?;
+        }
+        seed_then_delete_high_rebuilt_ids(&mut conn)?;
+        conn.revert_migration(migrations[scoped_names_index].as_ref())?;
+        assert_rebuilt_ids_advance_past(&mut conn)?;
+        Ok(())
+    }
+
+    #[test]
     fn machine_asset_migration_preserves_existing_rom_requirements()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut conn = SqliteConnection::establish(":memory:")?;
         conn.batch_execute("PRAGMA foreign_keys = ON")?;
         conn.run_pending_migrations(MIGRATIONS)?;
-        conn.revert_last_migration(MIGRATIONS)?;
-        conn.revert_last_migration(MIGRATIONS)?;
+        let machine_asset_migration = MIGRATIONS
+            .migrations()?
+            .into_iter()
+            .find(|migration| {
+                migration.name().to_string() == "2026-09-24-000003_mame_machine_asset_semantics"
+            })
+            .ok_or("machine asset migration not found")?;
+        conn.revert_migration(machine_asset_migration.as_ref())?;
         conn.batch_execute(
             "INSERT INTO publishing_sources (source_key, display_name)
                  VALUES ('source', 'Source');
@@ -181,7 +781,8 @@ mod tests {
                  VALUES ('snapshot', 'catalog', 'document', 'interpretation', 'unknown');
              INSERT INTO snapshot_sets
                  (snapshot_key, set_name, metadata_json, source_line, source_column)
-                 VALUES ('snapshot', 'set', '{}', 1, 1);
+                 VALUES ('snapshot', 'set', '{}', 1, 1),
+                        ('snapshot', 'second-set', '{}', 5, 1);
              INSERT INTO asset_requirements
                  (snapshot_key, set_name, component_order, asset_name, role,
                   evidence_scope, evidence_provenance, source_line, source_column)
@@ -215,6 +816,377 @@ mod tests {
     }
 
     #[test]
+    fn chd_scope_migration_relabels_existing_disk_evidence_without_touching_roms()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut conn = SqliteConnection::establish(":memory:")?;
+        conn.batch_execute("PRAGMA foreign_keys = ON")?;
+        conn.run_pending_migrations(MIGRATIONS)?;
+        let chd_scope_migration = MIGRATIONS
+            .migrations()?
+            .into_iter()
+            .find(|migration| migration.name().to_string() == "2026-09-26-000000_chd_digest_scope")
+            .ok_or("CHD scope migration not found")?;
+        conn.revert_migration(chd_scope_migration.as_ref())?;
+        conn.batch_execute(
+            "INSERT INTO publishing_sources (source_key, display_name)
+                 VALUES ('source', 'Source');
+             INSERT INTO catalogs (catalog_key, source_key, display_name)
+                 VALUES ('catalog', 'source', 'Catalog');
+             INSERT INTO documents (document_key) VALUES ('document');
+             INSERT INTO parser_interpretations (interpretation_key, format)
+                 VALUES ('interpretation', 'mame');
+             INSERT INTO catalog_snapshots
+                 (snapshot_key, catalog_key, document_key, interpretation_key, scope_kind)
+                 VALUES ('snapshot', 'catalog', 'document', 'interpretation', 'unknown');
+             INSERT INTO snapshot_sets
+                 (snapshot_key, set_name, metadata_json, source_line, source_column)
+                 VALUES ('snapshot', 'set', '{}', 1, 1),
+                        ('snapshot', 'second-set', '{}', 5, 1);
+             INSERT INTO asset_requirements
+                 (snapshot_key, set_name, component_order, asset_name, role,
+                  evidence_scope, evidence_provenance, source_line, source_column)
+                 VALUES ('snapshot', 'set', 0, 'rom.bin', 'rom', 'whole_asset',
+                         'source_declared', 2, 3),
+                        ('snapshot', 'set', 1, 'disk.chd', 'disk', 'disk_data',
+                         'source_declared', 4, 5);
+             INSERT INTO software_lists
+                 (snapshot_key, list_name, list_order, source_line, source_column)
+                 VALUES ('snapshot', 'list', 0, 1, 1);
+             INSERT INTO software_items
+                 (snapshot_key, list_name, item_name, item_order, description, year,
+                  publisher, info_json, shared_features_json, source_line, source_column)
+                 VALUES ('snapshot', 'list', 'item', 0, 'Item', '2000', 'Publisher',
+                         '[]', '[]', 1, 1);
+             INSERT INTO software_parts
+                 (snapshot_key, list_name, item_name, part_name, part_order,
+                  interface, features_json, source_line, source_column)
+                 VALUES ('snapshot', 'list', 'item', 'part', 0, 'disk', '[]', 1, 1);
+             INSERT INTO software_areas
+                 (snapshot_key, list_name, item_name, part_name, area_name,
+                  area_kind, area_order, source_line, source_column)
+                 VALUES ('snapshot', 'list', 'item', 'part', 'media', 'disk', 0, 1, 1);
+             INSERT INTO software_components
+                 (snapshot_key, list_name, item_name, part_name, area_order,
+                  area_kind, area_name, component_order, component_kind,
+                  component_name, source_line, source_column)
+                 VALUES ('snapshot', 'list', 'item', 'part', 0, 'disk', 'media',
+                         0, 'disk', 'software.chd', 2, 3);",
+        )?;
+        conn.run_pending_migrations(MIGRATIONS)?;
+        let rom = sql_query(
+            "SELECT evidence_scope AS value FROM asset_requirements WHERE asset_name = 'rom.bin'",
+        )
+        .get_result::<TextRow>(&mut conn)?;
+        let disk = sql_query(
+            "SELECT evidence_scope AS value FROM asset_requirements WHERE asset_name = 'disk.chd'",
+        )
+        .get_result::<TextRow>(&mut conn)?;
+        let software_disk = sql_query(
+            "SELECT evidence_scope AS value FROM software_components \
+             WHERE component_name = 'software.chd'",
+        )
+        .get_result::<TextRow>(&mut conn)?;
+        assert_eq!(rom.value, "whole_asset");
+        assert_eq!(disk.value, "chd_header_sha1");
+        assert_eq!(software_disk.value, "chd_header_sha1");
+        assert!(sql_fails(
+            &mut conn,
+            "INSERT INTO asset_requirements \
+                 (snapshot_key, set_name, component_order, asset_name, role, \
+                  evidence_scope, evidence_provenance, source_line, source_column) \
+             VALUES ('snapshot', 'set', 2, 'invalid-scope.chd', 'disk', 'bogus', \
+                     'source_declared', 6, 7)",
+        ));
+        conn.revert_migration(chd_scope_migration.as_ref())?;
+        let rolled_back_disk = sql_query(
+            "SELECT evidence_scope AS value FROM asset_requirements WHERE asset_name = 'disk.chd'",
+        )
+        .get_result::<TextRow>(&mut conn)?;
+        assert_eq!(rolled_back_disk.value, "disk_data");
+        Ok(())
+    }
+
+    #[test]
+    fn relationship_migration_backfills_legacy_parent_claims_and_keeps_them_immutable()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut conn = SqliteConnection::establish(":memory:")?;
+        conn.batch_execute("PRAGMA foreign_keys = ON")?;
+        let migrations = MIGRATIONS.migrations()?;
+        conn.applied_migrations()?;
+        let relationship_migration = migrations
+            .iter()
+            .position(|migration| {
+                migration.name().to_string() == "2026-09-25-000008_typed_relationship_assertions"
+            })
+            .ok_or("relationship migration not found")?;
+        for migration in &migrations[..relationship_migration] {
+            conn.run_migration(migration.as_ref())?;
+        }
+        conn.batch_execute(
+            "INSERT INTO publishing_sources (source_key, display_name) VALUES ('source', 'Source');
+             INSERT INTO catalogs (catalog_key, source_key, display_name)
+                 VALUES ('catalog', 'source', 'Catalog');
+             INSERT INTO documents (document_key) VALUES ('document');
+             INSERT INTO parser_interpretations (interpretation_key, format)
+                 VALUES ('interpretation', 'logiqx');
+             INSERT INTO catalog_snapshots
+                 (snapshot_key, catalog_key, document_key, interpretation_key, scope_kind)
+                 VALUES ('snapshot', 'catalog', 'document', 'interpretation', 'unknown');
+             INSERT INTO snapshot_sets
+                 (snapshot_key, set_name, parent_name, metadata_json, source_line, source_column)
+                 VALUES ('snapshot', 'clone', 'clone-parent',
+                         '{\"rom_of\":\"rom-parent\",\"sample_of\":\"samples\",\
+                           \"device_refs\":[\"sound\"]}', 4, 3),
+                        ('snapshot', 'clone-parent', NULL, '{}', 1, 1),
+                        ('snapshot', 'rom-parent', NULL, '{}', 2, 1);
+             INSERT INTO asset_requirements
+                 (snapshot_key, set_name, component_order, asset_name, role, size,
+                  evidence_scope, evidence_provenance, merge_name, source_line, source_column)
+                 VALUES ('snapshot', 'clone', 0, 'clone.rom', 'rom', 1,
+                         'whole_asset', 'source_declared', 'shared.rom', 5, 7),
+                        ('snapshot', 'rom-parent', 0, 'shared.rom', 'rom', 1,
+                         'whole_asset', 'source_declared', NULL, 2, 8);",
+        )?;
+        for migration in &migrations[relationship_migration..] {
+            conn.run_migration(migration.as_ref())?;
+        }
+
+        let count = count(&mut conn, "relationship_assertions")?;
+        assert_eq!(count, 5);
+        let field = sql_query(
+            "SELECT source_field AS value FROM relationship_assertions WHERE assertion_key = \
+             (SELECT assertion_key FROM relationship_assertions \
+              WHERE source_field = 'parent_name (legacy normalized)' LIMIT 1)",
+        )
+        .get_result::<TextRow>(&mut conn)?;
+        assert_eq!(field.value, "parent_name (legacy normalized)");
+        let merge_target = sql_query(
+            "SELECT target_key AS value FROM relationship_assertions \
+             WHERE source_field = 'merge'",
+        )
+        .get_result::<TextRow>(&mut conn)?;
+        assert_eq!(merge_target.value, "[\"rom-parent\",\"shared.rom\",0]");
+        let runtime_edges = sql_query(
+            "SELECT source_field || ':' || target_key AS value \
+             FROM relationship_assertions WHERE relation_type = 'runtime_dependency' \
+             ORDER BY source_field",
+        )
+        .load::<TextRow>(&mut conn)?;
+        assert_eq!(
+            runtime_edges
+                .iter()
+                .map(|edge| edge.value.as_str())
+                .collect::<Vec<_>>(),
+            ["device_ref:sound", "romof:rom-parent", "sampleof:samples"]
+        );
+        assert!(sql_fails(
+            &mut conn,
+            "UPDATE relationship_assertions SET target_key = 'changed'"
+        ));
+        assert!(sql_fails(&mut conn, "DELETE FROM relationship_assertions"));
+        assert!(sql_fails(
+            &mut conn,
+            "INSERT OR REPLACE INTO relationship_assertions \
+             SELECT * FROM relationship_assertions LIMIT 1"
+        ));
+        let assertion =
+            sql_query("SELECT assertion_key AS value FROM relationship_assertions LIMIT 1")
+                .get_result::<TextRow>(&mut conn)?;
+        sql_query(
+            "INSERT INTO relationship_reviews (review_key, assertion_key, decision, note) \
+             VALUES ('review-key', ?, 'accepted', 'initial review')",
+        )
+        .bind::<diesel::sql_types::Text, _>(assertion.value)
+        .execute(&mut conn)?;
+        assert!(sql_fails(
+            &mut conn,
+            "INSERT OR REPLACE INTO relationship_reviews \
+             SELECT * FROM relationship_reviews LIMIT 1"
+        ));
+        assert!(sql_fails(
+            &mut conn,
+            "UPDATE relationship_reviews SET note = 'overwritten'"
+        ));
+        assert!(sql_fails(&mut conn, "DELETE FROM relationship_reviews"));
+        Ok(())
+    }
+
+    #[test]
+    fn asset_extension_migration_backfills_ownership_from_source_locations()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut conn = SqliteConnection::establish(":memory:")?;
+        conn.batch_execute("PRAGMA foreign_keys = ON")?;
+        let migrations = MIGRATIONS.migrations()?;
+        conn.applied_migrations()?;
+        let asset_extension_migration = migrations
+            .iter()
+            .position(|migration| {
+                migration.name().to_string() == "2026-09-27-000009_asset_extension_ownership"
+            })
+            .ok_or("asset extension ownership migration not found")?;
+        for migration in &migrations[..asset_extension_migration] {
+            conn.run_migration(migration.as_ref())?;
+        }
+        conn.batch_execute(
+            "INSERT INTO publishing_sources (source_key, display_name) VALUES ('source', 'Source');
+             INSERT INTO catalogs (catalog_key, source_key, display_name)
+                 VALUES ('catalog', 'source', 'Catalog');
+             INSERT INTO documents (document_key) VALUES ('document');
+             INSERT INTO parser_interpretations (interpretation_key, format)
+                 VALUES ('interpretation', 'mame-listxml');
+             INSERT INTO catalog_snapshots
+                 (snapshot_key, catalog_key, document_key, interpretation_key, scope_kind)
+                 VALUES ('snapshot', 'catalog', 'document', 'interpretation', 'unknown');
+             INSERT INTO snapshot_sets
+                 (snapshot_key, set_name, metadata_json, source_line, source_column)
+                 VALUES ('snapshot', 'set', '{}', 1, 1),
+                        ('snapshot', 'second-set', '{}', 5, 1);
+             INSERT INTO asset_requirements
+                 (snapshot_key, set_name, component_order, asset_name, role,
+                  evidence_scope, evidence_provenance, source_line, source_column)
+                 VALUES ('snapshot', 'set', 0, 'rom.bin', 'rom', 'whole_asset',
+                         'source_declared', 2, 3),
+                        ('snapshot', 'second-set', 0, 'rom.bin', 'rom', 'whole_asset',
+                         'source_declared', 6, 2);
+             INSERT INTO snapshot_extensions
+                 (snapshot_key, record_kind, record_name, field_name, raw_value_json,
+                  source_line, source_column)
+                 VALUES ('snapshot', 'rom', 'rom.bin', 'future', '\"value\"', 2, 3),
+                        ('snapshot', 'rom', 'rom.bin', 'future', '\"value\"', 2, 3),
+                        ('snapshot', 'rom', 'rom.bin', 'element:future', '{}', 3, 4),
+                        ('snapshot', 'device_ref', 'target', 'future', '\"one\"', 4, 5),
+                        ('snapshot', 'rom', 'rom.bin', 'child:future', '\"two\"', 7, 2);",
+        )?;
+        insert_legacy_format_extension_fixtures(&mut conn)?;
+        for migration in &migrations[asset_extension_migration..] {
+            conn.run_migration(migration.as_ref())?;
+        }
+
+        let owner = sql_query(
+            "SELECT owner_set_name AS value FROM snapshot_extensions \
+             WHERE snapshot_key = 'snapshot' AND record_kind = 'rom' \
+               AND field_name = 'future' AND owner_set_name IS NOT NULL",
+        )
+        .get_result::<TextRow>(&mut conn)?;
+        assert_eq!(owner.value, "set");
+        let component = sql_query(
+            "SELECT owner_component_order AS value FROM snapshot_extensions \
+             WHERE snapshot_key = 'snapshot' AND record_kind = 'rom' \
+               AND field_name = 'future' AND owner_set_name IS NOT NULL",
+        )
+        .get_result::<TextRow>(&mut conn)?;
+        assert_eq!(component.value, "0");
+        assert_device_ref_extension_ownership(&mut conn)?;
+        let duplicate_owner_count = sql_query(
+            "SELECT COUNT(*) AS count FROM snapshot_extensions \
+             WHERE snapshot_key = 'snapshot' AND owner_component_order IS NOT NULL",
+        )
+        .get_result::<CountRow>(&mut conn)?
+        .count;
+        assert_eq!(duplicate_owner_count, 3);
+        assert_mame_duplicate_asset_ownership(&mut conn)?;
+        assert_legacy_format_extension_ownership(&mut conn)?;
+        assert!(conn
+            .batch_execute(
+                "UPDATE snapshot_extensions SET raw_value_json = '\"changed\"' WHERE field_name = 'future';",
+            )
+            .is_err());
+        Ok(())
+    }
+
+    fn insert_legacy_format_extension_fixtures(conn: &mut SqliteConnection) -> QueryResult<()> {
+        conn.batch_execute(
+            "INSERT INTO parser_interpretations (interpretation_key, format)
+                 VALUES ('no-intro-interpretation', 'no-intro-pc-xml');
+             INSERT INTO catalog_snapshots
+                 (snapshot_key, catalog_key, document_key, interpretation_key, scope_kind)
+                 VALUES ('no-intro-snapshot', 'catalog', 'document', 'no-intro-interpretation', 'unknown');
+             INSERT INTO snapshot_sets
+                 (snapshot_key, set_name, metadata_json, source_line, source_column)
+                 VALUES ('no-intro-snapshot', 'entry', '{}', 9, 1);
+             INSERT INTO catalog_snapshots
+                 (snapshot_key, catalog_key, document_key, interpretation_key, scope_kind)
+                 VALUES ('no-intro-collision-snapshot', 'catalog', 'document', 'no-intro-interpretation', 'unknown');
+             INSERT INTO snapshot_sets
+                 (snapshot_key, set_name, metadata_json, source_line, source_column)
+                 VALUES ('no-intro-collision-snapshot', 'shared.bin', '{}', 1, 1),
+                        ('no-intro-collision-snapshot', 'entry', '{}', 2, 1);
+             INSERT INTO asset_requirements
+                 (snapshot_key, set_name, component_order, asset_name, role,
+                  evidence_scope, evidence_provenance, source_line, source_column)
+                 VALUES ('no-intro-snapshot', 'entry', 0, 'no-intro.bin', 'rom', 'whole_asset',
+                         'source_declared', 10, 2);
+             INSERT INTO snapshot_extensions
+                 (snapshot_key, record_kind, record_name, field_name, raw_value_json,
+                  source_line, source_column)
+                 VALUES ('no-intro-snapshot', 'rom', 'no-intro.bin', 'element:future', '{}', 11, 4),
+                        ('no-intro-collision-snapshot', 'rom', 'shared.bin', 'element:future', '{}', 4, 4);
+             INSERT INTO asset_requirements
+                 (snapshot_key, set_name, component_order, asset_name, role,
+                  evidence_scope, evidence_provenance, source_line, source_column)
+                 VALUES ('no-intro-collision-snapshot', 'entry', 0, 'shared.bin', 'rom', 'whole_asset',
+                         'source_declared', 3, 2);
+             INSERT INTO parser_interpretations (interpretation_key, format)
+                 VALUES ('logiqx-interpretation', 'logiqx');
+             INSERT INTO catalog_snapshots
+                 (snapshot_key, catalog_key, document_key, interpretation_key, scope_kind)
+                 VALUES ('logiqx-snapshot', 'catalog', 'document', 'logiqx-interpretation', 'unknown');
+             INSERT INTO snapshot_sets
+                 (snapshot_key, set_name, metadata_json, source_line, source_column)
+                 VALUES ('logiqx-snapshot', 'owner', '{\"device_refs\":[\"target\"]}', 1, 1),
+                        ('logiqx-snapshot', 'target', '{}', 8, 1);
+             INSERT INTO snapshot_extensions
+                 (snapshot_key, record_kind, record_name, field_name, raw_value_json,
+                  source_line, source_column)
+                 VALUES ('logiqx-snapshot', 'document', 'target', 'future', '\"one\"', 4, 5);",
+        )
+    }
+
+    fn assert_legacy_format_extension_ownership(conn: &mut SqliteConnection) -> QueryResult<()> {
+        let no_intro_owner = sql_query(
+            "SELECT owner_set_name AS value FROM snapshot_extensions \
+             WHERE snapshot_key = 'no-intro-snapshot'",
+        )
+        .get_result::<TextRow>(conn)?;
+        assert_eq!(no_intro_owner.value, "entry");
+        let no_intro_component = sql_query(
+            "SELECT owner_component_order AS value FROM snapshot_extensions \
+             WHERE snapshot_key = 'no-intro-snapshot'",
+        )
+        .get_result::<TextRow>(conn)?;
+        assert_eq!(no_intro_component.value, "0");
+        let logiqx_owner = sql_query(
+            "SELECT owner_set_name AS value FROM snapshot_extensions \
+             WHERE snapshot_key = 'logiqx-snapshot'",
+        )
+        .get_result::<TextRow>(conn)?;
+        assert_eq!(logiqx_owner.value, "owner");
+        let collision_owner = sql_query(
+            "SELECT owner_set_name AS value FROM snapshot_extensions \
+             WHERE snapshot_key = 'no-intro-collision-snapshot'",
+        )
+        .get_result::<TextRow>(conn)?;
+        assert_eq!(collision_owner.value, "entry");
+        let collision_component = sql_query(
+            "SELECT owner_component_order AS value FROM snapshot_extensions \
+             WHERE snapshot_key = 'no-intro-collision-snapshot'",
+        )
+        .get_result::<TextRow>(conn)?;
+        assert_eq!(collision_component.value, "0");
+        Ok(())
+    }
+
+    fn assert_mame_duplicate_asset_ownership(conn: &mut SqliteConnection) -> QueryResult<()> {
+        let ownership = sql_query(
+            "SELECT owner_set_name AS value FROM snapshot_extensions \
+             WHERE snapshot_key = 'snapshot' AND field_name = 'child:future'",
+        )
+        .get_result::<TextRow>(conn)?;
+        assert_eq!(ownership.value, "second-set");
+        Ok(())
+    }
+
+    #[test]
     fn identity_keys_separate_names_versions_interpretations_and_runs()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut conn = SqliteConnection::establish(":memory:")?;
@@ -232,7 +1204,8 @@ mod tests {
                  VALUES ('acquisition-a', 'source-a', 'document-a'),
                         ('acquisition-b', 'source-b', 'document-b');
              INSERT INTO parser_interpretations (interpretation_key, format)
-                 VALUES ('logiqx-v1', 'logiqx'), ('logiqx-v2', 'logiqx');
+                 VALUES ('logiqx-v1', 'logiqx'), ('logiqx-v2', 'logiqx'),
+                        ('logiqx-v3', 'logiqx');
              INSERT INTO catalog_snapshots
                  (snapshot_key, catalog_key, document_key, interpretation_key,
                   declared_version, scope_kind)
@@ -257,12 +1230,8 @@ mod tests {
             .count,
             1
         );
-        assert!(sql_fails(
-            &mut conn,
-            "INSERT INTO catalog_snapshots \
-                 (snapshot_key, catalog_key, document_key, interpretation_key, scope_kind) \
-             VALUES ('duplicate-snapshot', 'catalog-a', 'document-a', 'logiqx-v1', 'unknown')",
-        ));
+        assert_snapshot_parent_is_catalog_scoped(&mut conn)?;
+        assert_snapshot_publication_identity_is_unique(&mut conn)?;
         assert!(sql_fails(
             &mut conn,
             "INSERT INTO catalogs (catalog_key, source_key, display_name) \
@@ -280,6 +1249,15 @@ mod tests {
             "UPDATE catalog_snapshots SET declared_version = '2.0' \
              WHERE snapshot_key = 'snapshot-a3'",
         ));
+        assert!(sql_fails(
+            &mut conn,
+            "UPDATE parser_interpretations SET parser_version = 'changed' \
+             WHERE interpretation_key = 'logiqx-v1'",
+        ));
+        conn.batch_execute(
+            "UPDATE parser_interpretations SET parser_version = 'initialized' \
+             WHERE interpretation_key = 'logiqx-v3'",
+        )?;
         assert!(sql_fails(
             &mut conn,
             "DELETE FROM catalog_snapshots WHERE snapshot_key = 'snapshot-a3'",
@@ -307,6 +1285,106 @@ mod tests {
                  VALUES ('run-mismatched-acquisition', 'catalog-a', 'document-a', \
                          'logiqx-v1', 'acquisition-b', 'succeeded')",
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn snapshot_publication_migration_preserves_duplicate_legacy_identities()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut conn = SqliteConnection::establish(":memory:")?;
+        conn.batch_execute("PRAGMA foreign_keys = ON")?;
+        let migrations = MIGRATIONS.migrations()?;
+        let snapshot_index = migrations
+            .iter()
+            .position(|migration| {
+                migration.name().to_string() == "2026-09-24-000002_publish_logiqx_snapshots"
+            })
+            .ok_or("snapshot migration not found")?;
+        conn.applied_migrations()?;
+        for migration in &migrations[..snapshot_index] {
+            conn.run_migration(migration.as_ref())?;
+        }
+        conn.batch_execute(
+            "INSERT INTO publishing_sources (source_key, display_name) \
+                 VALUES ('legacy-source', 'Legacy source'); \
+             INSERT INTO catalogs (catalog_key, source_key, display_name) \
+                 VALUES ('legacy-catalog', 'legacy-source', 'Legacy catalog'); \
+             INSERT INTO documents (document_key) VALUES ('legacy-document'); \
+             INSERT INTO parser_interpretations (interpretation_key, format) \
+                 VALUES ('legacy-logiqx', 'logiqx'); \
+             INSERT INTO catalog_snapshots \
+                 (snapshot_key, catalog_key, document_key, interpretation_key) \
+                 VALUES ('legacy-snapshot-a', 'legacy-catalog', 'legacy-document', 'legacy-logiqx'), \
+                        ('legacy-snapshot-b', 'legacy-catalog', 'legacy-document', 'legacy-logiqx');",
+        )?;
+
+        conn.run_pending_migrations(MIGRATIONS)?;
+        assert_eq!(count(&mut conn, "catalog_snapshots")?, 2);
+        assert_eq!(count(&mut conn, "snapshot_publications")?, 0);
+        sql_query(
+            "INSERT INTO snapshot_publications \
+             (catalog_key, document_key, interpretation_key, snapshot_key) \
+             VALUES ('legacy-catalog', 'legacy-document', 'legacy-logiqx', 'legacy-snapshot-a')",
+        )
+        .execute(&mut conn)?;
+        assert!(sql_fails(
+            &mut conn,
+            "INSERT INTO snapshot_publications \
+                 (catalog_key, document_key, interpretation_key, snapshot_key) \
+             VALUES ('legacy-catalog', 'legacy-document', 'legacy-logiqx', 'legacy-snapshot-b')",
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn identity_migration_reverts_with_parent_and_child_snapshots()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut conn = SqliteConnection::establish(":memory:")?;
+        conn.batch_execute("PRAGMA foreign_keys = ON")?;
+        let migrations = MIGRATIONS.migrations()?;
+        assert!(!migrations.is_empty());
+        let identity_migration_index = migrations
+            .iter()
+            .position(|migration| migration.name().to_string() == IDENTITY_MIGRATION)
+            .ok_or("identity migration not found")?;
+        conn.applied_migrations()?;
+        for migration in &migrations[..identity_migration_index] {
+            conn.run_migration(migration.as_ref())?;
+        }
+        let identity_migration = &migrations[identity_migration_index];
+        conn.run_migration(identity_migration.as_ref())?;
+        conn.batch_execute(
+            "INSERT INTO publishing_sources (source_key, display_name)
+                 VALUES ('source-a', 'Publisher');
+             INSERT INTO catalogs (catalog_key, source_key, display_name)
+                 VALUES ('catalog-a', 'source-a', 'Catalog');
+             INSERT INTO documents (document_key) VALUES ('document-a');
+             INSERT INTO parser_interpretations (interpretation_key, format)
+                 VALUES ('logiqx-v1', 'logiqx');
+             INSERT INTO catalog_snapshots
+                 (snapshot_key, catalog_key, document_key, interpretation_key)
+                 VALUES ('snapshot-parent', 'catalog-a', 'document-a', 'logiqx-v1');
+             INSERT INTO catalog_snapshots
+                 (snapshot_key, catalog_key, document_key, interpretation_key, parent_snapshot_key)
+                 VALUES ('snapshot-child', 'catalog-a', 'document-a', 'logiqx-v1', 'snapshot-parent');",
+        )?;
+
+        conn.revert_migration(identity_migration.as_ref())?;
+        assert_eq!(
+            sql_query(
+                "SELECT COUNT(*) AS count FROM sqlite_master \
+                 WHERE type = 'table' AND name = 'catalog_snapshots'",
+            )
+            .get_result::<CountRow>(&mut conn)?
+            .count,
+            0
+        );
+        assert_eq!(
+            sql_query("SELECT foreign_keys AS count FROM pragma_foreign_keys")
+                .get_result::<CountRow>(&mut conn)?
+                .count,
+            1
+        );
         Ok(())
     }
 }

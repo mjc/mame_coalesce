@@ -8,16 +8,25 @@ pub mod domain;
 pub mod error;
 pub mod hashes;
 pub mod logiqx;
+pub mod machine_dependencies;
 pub(crate) mod mame;
 pub(crate) mod mame_softwarelist;
+pub mod mount;
 mod no_intro_pc_xml;
 mod operations;
 mod private_temp;
+pub mod reconciliation;
 pub mod resolution;
+pub mod serving;
 pub(crate) mod sources;
 mod storage;
 
+pub use domain::PublishingSource;
 pub use error::Error;
+pub use storage::backup::{
+    BackupOutcome, IntegrityReport, RestoreOutcome, RestorePolicy, check_integrity, create_backup,
+    restore_backup,
+};
 pub use storage::documents::{AcquisitionMetadata, DocumentStore, RetainedDocument};
 pub type Result<T> = std::result::Result<T, Error>;
 

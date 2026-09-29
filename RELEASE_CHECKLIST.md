@@ -17,6 +17,15 @@ Expected tracked state: no modified, added, or deleted tracked files.
 devenv test
 ```
 
+The gate covers synthetic 7z archives generated and read through the pinned
+`r7z` implementation; it does not run an independent 7z executable. When a
+release needs cross-implementation coverage, install a compatible 7z executable
+and run the opt-in check:
+
+```sh
+devenv shell -- env MAME_COALESCE_7Z=7z cargo test --locked --test integration external_7z_extracts_r7z_builder_archive -- --ignored
+```
+
 ## 3. Optional Packaging Check
 
 Run this only if crates.io packaging or publishing is part of the release goal.

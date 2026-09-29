@@ -6,7 +6,7 @@ license = "MIT"
 description = "Merge MAME ROMs into 1 game 1 zip format"
 repository = "https://github.com/mjc/mame_coalesce"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.98.1"
 default-run = "mame_coalesce"
 exclude = [
     ".env",
@@ -66,21 +66,22 @@ missing_panics_doc = "allow"
 log = "0.4"
 simplelog = "0.12"
 indicatif = { version = "0.18", features = ["rayon"] }
+unicode-normalization = "0.1"
 
 rayon = "1.12"
 
 serde = { version = "1", features = ["derive"] }
 serde-xml-rs = "0.8"
-serde_json = "1"
+serde_json = { version = "1", features = ["raw_value"] }
 
 zip = { version = "8.5", features = ["deflate", "bzip2", "zstd"] }
 crc32fast = "1.5"
 md-5 = "0.10"
-r7z = { version = "0.1.0", git = "https://github.com/mjc/r7z.git", rev = "08f90bb068154b4b5999ea7cdf8361d1407ba024" }
+r7z = { version = "0.1.0", git = "https://github.com/mjc/r7z.git", rev = "bfef3198696add8045ad34581dd977d671ae9daa" }
 unrar = "0.5.8"
+unrar-rs = { version = "=0.10.8", default-features = false, features = ["crypto-rust"] }
 
 hex = { version = "0.4", features = ["serde"] }
-sha-1 = { version = "0.10", features = ["asm"] }
 sha2 = "0.10"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 uuid = { version = "1.23", features = ["v4", "serde"] }
@@ -100,9 +101,28 @@ chrono = "0.4.44"
 infer = "0.19"
 
 thiserror = "2"
+atomic-write-file = "0.3.1"
+fs4 = "0.12"
+tempfile = "3.27"
 
 # I don't know why but 1.1.5 segfaults if you don't include this, instead of letting flate2 pull it in.
 libz-sys = { version = "1.1", features = ["zlib-ng"] }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1.4", features = ["fs", "process"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+fuser = { version = "=0.18.0", optional = true, default-features = false }
+signal-hook = { version = "0.3", optional = true }
+
+[features]
+fuse = ["dep:fuser", "dep:signal-hook"]
+
+[target.'cfg(target_os = "macos")'.dependencies]
+sha-1 = "0.10"
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+sha-1 = { version = "0.10", features = ["asm"] }
 
 [dependencies.flate2]
 version = "1.1"
@@ -113,4 +133,3 @@ features = ["zlib-ng-compat"]
 assert_cmd = "2"
 predicates = "3"
 proptest = "1"
-tempfile = "3.27"

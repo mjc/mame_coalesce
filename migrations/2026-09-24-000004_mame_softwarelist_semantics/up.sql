@@ -14,7 +14,7 @@ CREATE TABLE software_items (
     list_name          TEXT NOT NULL,
     item_name          TEXT NOT NULL,
     item_order         INTEGER NOT NULL CHECK (item_order >= 0),
-    supported          TEXT NOT NULL CHECK (supported IN ('yes', 'partial', 'no')),
+    supported          TEXT CHECK (supported IS NULL OR supported IN ('yes', 'partial', 'no')),
     description        TEXT NOT NULL,
     year               TEXT NOT NULL,
     publisher          TEXT NOT NULL,
@@ -58,8 +58,7 @@ CREATE TABLE software_areas (
     endianness     TEXT,
     source_line    INTEGER NOT NULL CHECK (source_line > 0),
     source_column  INTEGER NOT NULL CHECK (source_column > 0),
-    PRIMARY KEY (snapshot_key, list_name, item_name, part_name, area_kind, area_name),
-    UNIQUE (snapshot_key, list_name, item_name, part_name, area_order),
+    PRIMARY KEY (snapshot_key, list_name, item_name, part_name, area_order),
     FOREIGN KEY (snapshot_key, list_name, item_name, part_name)
         REFERENCES software_parts (snapshot_key, list_name, item_name, part_name)
         ON DELETE RESTRICT
@@ -70,6 +69,7 @@ CREATE TABLE software_components (
     list_name         TEXT NOT NULL,
     item_name         TEXT NOT NULL,
     part_name         TEXT NOT NULL,
+    area_order        INTEGER NOT NULL CHECK (area_order >= 0),
     area_kind         TEXT NOT NULL,
     area_name         TEXT NOT NULL,
     component_order   INTEGER NOT NULL CHECK (component_order >= 0),
@@ -87,11 +87,11 @@ CREATE TABLE software_components (
     source_column     INTEGER NOT NULL CHECK (source_column > 0),
     PRIMARY KEY (
         snapshot_key, list_name, item_name, part_name,
-        area_kind, area_name, component_order
+        area_order, component_order
     ),
-    FOREIGN KEY (snapshot_key, list_name, item_name, part_name, area_kind, area_name)
+    FOREIGN KEY (snapshot_key, list_name, item_name, part_name, area_order)
         REFERENCES software_areas (
-            snapshot_key, list_name, item_name, part_name, area_kind, area_name
+            snapshot_key, list_name, item_name, part_name, area_order
         ) ON DELETE RESTRICT,
     CHECK (
         (component_kind = 'rom' AND writeable IS NULL)
@@ -121,5 +121,5 @@ CREATE INDEX software_areas_part_index
     ON software_areas (snapshot_key, list_name, item_name, part_name, area_order);
 CREATE INDEX software_components_area_index
     ON software_components (
-        snapshot_key, list_name, item_name, part_name, area_kind, area_name, component_order
+        snapshot_key, list_name, item_name, part_name, area_order, component_order
     );

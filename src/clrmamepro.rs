@@ -49,7 +49,7 @@ pub struct Extension {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum TokenKind {
-    Word(String),
+    Word,
     Quoted(String),
     LeftParen,
     RightParen,
@@ -57,32 +57,32 @@ enum TokenKind {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct Token {
+struct Token<'a> {
     kind: TokenKind,
-    raw: String,
+    raw: &'a str,
     start: usize,
     end: usize,
     location: RecordLocation,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct Field {
-    key: Token,
-    value: Token,
+struct Field<'a> {
+    key: Token<'a>,
+    value: Token<'a>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum FormItem {
-    Field(Field),
-    Flag(Token),
-    Form(Form),
+enum FormItem<'a> {
+    Field(Field<'a>),
+    Flag(Token<'a>),
+    Form(Form<'a>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct Form {
-    tag: Token,
-    items: Vec<FormItem>,
-    raw: String,
+struct Form<'a> {
+    tag: Token<'a>,
+    items: Vec<FormItem<'a>>,
+    raw: &'a str,
 }
 
 struct Lexer<'a> {
@@ -182,7 +182,7 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn tokenize(mut self) -> crate::Result<Vec<Token>> {
+    fn tokenize(mut self) -> crate::Result<Vec<Token<'a>>> {
         let mut tokens = Vec::new();
         while let Some(character) = self.peek() {
             if character.is_whitespace() {
@@ -208,24 +208,17 @@ impl<'a> Lexer<'a> {
                 }
                 '"' => TokenKind::Quoted(self.quoted_value(location)?),
                 _ => {
-                    let mut word = String::new();
                     while self.peek().is_some_and(|next| {
                         !next.is_whitespace() && !matches!(next, '(' | ')' | ';')
                     }) {
-                        if let Some(next) = self.bump() {
-                            word.push(next);
-                        }
+                        self.bump();
                     }
-                    TokenKind::Word(word)
+                    TokenKind::Word
                 }
             };
-            let raw = self
-                .input
-                .get(start..self.offset)
-                .ok_or_else(|| {
-                    parse_error("invalid token boundary", "document", None, Some(location))
-                })?
-                .to_owned();
+            let raw = self.input.get(start..self.offset).ok_or_else(|| {
+                parse_error("invalid token boundary", "document", None, Some(location))
+            })?;
             tokens.push(Token {
                 kind,
                 raw,
@@ -294,13 +287,13 @@ impl<'a> Lexer<'a> {
 
 struct Parser<'a> {
     input: &'a str,
-    tokens: Vec<Token>,
-    comments: Vec<Token>,
+    tokens: Vec<Token<'a>>,
+    comments: Vec<Token<'a>>,
     cursor: usize,
 }
 
 impl<'a> Parser<'a> {
-    fn new(input: &'a str, tokens: Vec<Token>) -> Self {
+    fn new(input: &'a str, tokens: Vec<Token<'a>>) -> Self {
         let comments = tokens
             .iter()
             .filter(|token| matches!(token.kind, TokenKind::Comment))
@@ -314,7 +307,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_document(&mut self) -> crate::Result<Vec<Form>> {
+    fn parse_document(&mut self) -> crate::Result<Vec<Form<'a>>> {
         let mut forms = Vec::new();
         loop {
             self.skip_comments();
@@ -325,7 +318,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_form(&mut self, depth: usize) -> crate::Result<Form> {
+    fn parse_form(&mut self, depth: usize) -> crate::Result<Form<'a>> {
         if depth >= MAX_FORM_DEPTH {
             return Err(parse_error(
                 format!("DAT nesting exceeds {MAX_FORM_DEPTH} forms"),
@@ -349,18 +342,14 @@ impl<'a> Parser<'a> {
                     let close = self.take_token().ok_or_else(|| {
                         parse_error("missing ')'", "document", None, Some(tag.location))
                     })?;
-                    let raw = self
-                        .input
-                        .get(start..close.end)
-                        .ok_or_else(|| {
-                            parse_error(
-                                "invalid form token range",
-                                "document",
-                                None,
-                                Some(tag.location),
-                            )
-                        })?
-                        .to_owned();
+                    let raw = self.input.get(start..close.end).ok_or_else(|| {
+                        parse_error(
+                            "invalid form token range",
+                            "document",
+                            None,
+                            Some(tag.location),
+                        )
+                    })?;
                     return Ok(Form { tag, items, raw });
                 }
                 None => {
@@ -384,25 +373,46 @@ impl<'a> Parser<'a> {
                 items.push(FormItem::Form(self.parse_form(depth + 1)?));
             } else if key.word_eq("nodump") || key.word_eq("baddump") {
                 items.push(FormItem::Flag(key));
-            } else {
-                let value = self.take_value().ok_or_else(|| {
-                    parse_error(
+            } else if let Some(next) = self.peek_token() {
+                if matches!(next.kind, TokenKind::RightParen) {
+                    if is_value_keyword(&tag, &key) {
+                        let record_name = form_record_name(&items);
+                        return Err(parse_error(
+                            format!("keyword {} has no value", key.value()),
+                            tag.value(),
+                            record_name,
+                            Some(key.location),
+                        ));
+                    }
+                    items.push(FormItem::Flag(key));
+                } else if !is_value_keyword(&tag, &key) && is_value_keyword(&tag, next) {
+                    items.push(FormItem::Flag(key));
+                } else if let Some(value) = self.take_value() {
+                    items.push(FormItem::Field(Field { key, value }));
+                } else {
+                    return Err(parse_error(
                         format!("keyword {} has no value", key.value()),
                         tag.value(),
                         None,
                         Some(key.location),
-                    )
-                })?;
-                items.push(FormItem::Field(Field { key, value }));
+                    ));
+                }
+            } else {
+                return Err(parse_error(
+                    format!("keyword {} has no value", key.value()),
+                    tag.value(),
+                    None,
+                    Some(key.location),
+                ));
             }
         }
     }
 
-    fn take_word(&mut self, message: &str) -> crate::Result<Token> {
+    fn take_word(&mut self, message: &str) -> crate::Result<Token<'a>> {
         self.skip_comments();
         match self.peek_token() {
             Some(Token {
-                kind: TokenKind::Word(_),
+                kind: TokenKind::Word,
                 ..
             }) => self
                 .take_token()
@@ -416,10 +426,10 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn take_value(&mut self) -> Option<Token> {
+    fn take_value(&mut self) -> Option<Token<'a>> {
         if matches!(
             self.peek_token().map(|token| &token.kind),
-            Some(TokenKind::Word(_) | TokenKind::Quoted(_))
+            Some(TokenKind::Word | TokenKind::Quoted(_))
         ) {
             self.take_token()
         } else {
@@ -454,18 +464,52 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn peek_token(&self) -> Option<&Token> {
+    fn peek_token(&self) -> Option<&Token<'a>> {
         self.tokens.get(self.cursor)
     }
 
-    fn take_token(&mut self) -> Option<Token> {
+    fn take_token(&mut self) -> Option<Token<'a>> {
         let token = self.tokens.get(self.cursor)?.clone();
         self.cursor += 1;
         Some(token)
     }
 }
 
-fn parse_set(form: &Form) -> crate::Result<Set> {
+fn is_value_keyword(form: &Token<'_>, keyword: &Token<'_>) -> bool {
+    if form.word_eq("rom") {
+        [
+            "name", "size", "crc", "crc32", "md5", "sha1", "merge", "status",
+        ]
+        .iter()
+        .any(|field| keyword.word_eq(field))
+    } else if form.word_eq("game") || form.word_eq("set") {
+        ["name", "cloneof", "description", "year", "manufacturer"]
+            .iter()
+            .any(|field| keyword.word_eq(field))
+    } else if form.word_eq("clrmamepro") {
+        [
+            "name",
+            "version",
+            "author",
+            "description",
+            "homepage",
+            "url",
+        ]
+        .iter()
+        .any(|field| keyword.word_eq(field))
+    } else {
+        false
+    }
+}
+
+fn form_record_name<'items>(items: &'items [FormItem<'_>]) -> Option<&'items str> {
+    items.iter().find_map(|item| match item {
+        FormItem::Field(field) if field.key.word_eq("name") => Some(field.value.value()),
+        _ => None,
+    })
+}
+
+fn parse_set(form: &Form<'_>) -> crate::Result<Set> {
     let mut names = form.fields("name");
     let name_field = names.next().ok_or_else(|| {
         parse_error(
@@ -520,7 +564,7 @@ fn parse_set(form: &Form) -> crate::Result<Set> {
     })
 }
 
-fn parse_asset(form: &Form, set_name: &str) -> crate::Result<Asset> {
+fn parse_asset(form: &Form<'_>, set_name: &str) -> crate::Result<Asset> {
     let name = single_field(form, "name", "rom", Some(set_name))?
         .ok_or_else(|| {
             parse_error(
@@ -619,15 +663,18 @@ fn parse_asset(form: &Form, set_name: &str) -> crate::Result<Asset> {
     })
 }
 
-impl Form {
-    fn fields<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'a Field> + 'a {
+impl<'src> Form<'src> {
+    fn fields<'form>(
+        &'form self,
+        name: &'form str,
+    ) -> impl Iterator<Item = &'form Field<'src>> + 'form {
         self.items.iter().filter_map(move |item| match item {
             FormItem::Field(field) if field.key.word_eq(name) => Some(field),
             _ => None,
         })
     }
 
-    fn flags(&self, name: &str) -> Vec<&Token> {
+    fn flags(&self, name: &str) -> Vec<&Token<'src>> {
         self.items
             .iter()
             .filter_map(|item| match item {
@@ -638,27 +685,27 @@ impl Form {
     }
 }
 
-impl Token {
+impl Token<'_> {
     fn value(&self) -> &str {
         match &self.kind {
-            TokenKind::Word(value) | TokenKind::Quoted(value) => value,
+            TokenKind::Word | TokenKind::Comment => self.raw,
+            TokenKind::Quoted(value) => value,
             TokenKind::LeftParen => "(",
             TokenKind::RightParen => ")",
-            TokenKind::Comment => &self.raw,
         }
     }
 
-    fn word_eq(&self, expected: &str) -> bool {
-        matches!(&self.kind, TokenKind::Word(value) if value.eq_ignore_ascii_case(expected))
+    const fn word_eq(&self, expected: &str) -> bool {
+        matches!(&self.kind, TokenKind::Word) && self.raw.eq_ignore_ascii_case(expected)
     }
 }
 
-fn single_field<'a>(
-    form: &'a Form,
-    field_name: &'a str,
+fn single_field<'form, 'src>(
+    form: &'form Form<'src>,
+    field_name: &'form str,
     record_kind: &str,
     record_name: Option<&str>,
-) -> crate::Result<Option<&'a Field>> {
+) -> crate::Result<Option<&'form Field<'src>>> {
     let mut fields = form.fields(field_name);
     let field = fields.next();
     if fields.next().is_some() {
@@ -673,7 +720,7 @@ fn single_field<'a>(
 }
 
 fn digest_field(
-    form: &Form,
+    form: &Form<'_>,
     field_name: &str,
     expected_hex_length: usize,
     record_kind: &str,
@@ -701,7 +748,7 @@ fn digest_field(
     })
 }
 
-fn field_extension(record_kind: &str, record_name: &str, field: &Field) -> Extension {
+fn field_extension(record_kind: &str, record_name: &str, field: &Field<'_>) -> Extension {
     Extension {
         record_kind: record_kind.into(),
         record_name: Some(record_name.into()),
@@ -711,7 +758,7 @@ fn field_extension(record_kind: &str, record_name: &str, field: &Field) -> Exten
     }
 }
 
-fn flag_extension(record_kind: &str, record_name: &str, flag: &Token) -> Extension {
+fn flag_extension(record_kind: &str, record_name: &str, flag: &Token<'_>) -> Extension {
     Extension {
         record_kind: record_kind.into(),
         record_name: Some(record_name.into()),
@@ -721,7 +768,7 @@ fn flag_extension(record_kind: &str, record_name: &str, flag: &Token) -> Extensi
     }
 }
 
-fn form_extension(record_kind: &str, record_name: &str, form: &Form) -> Extension {
+fn form_extension(record_kind: &str, record_name: &str, form: &Form<'_>) -> Extension {
     Extension {
         record_kind: record_kind.into(),
         record_name: Some(record_name.into()),
@@ -784,7 +831,7 @@ mod tests {
     #[test]
     fn retains_comments_unknown_tokens_and_original_form_tokens() -> crate::Result<()> {
         let catalog = Catalog::parse(
-            b"; top\nclrmamepro ( version v1 )\ngame ( name set rom ( name x.bin futuretag \"opaque\" ) )",
+            b"; top\nclrmamepro ( version v1 )\ngame ( name set rom ( name x.bin futuretag \"opaque\" mysteryflag crc 12345678 ) )",
         )?;
         assert_eq!(
             catalog
@@ -810,6 +857,14 @@ mod tests {
         assert_eq!(ext.field_name, "futuretag");
         assert_eq!(ext.value["value_token"], "\"opaque\"");
         assert!(ext.location.line > 0);
+        assert!(
+            set.assets[0]
+                .extensions
+                .iter()
+                .any(|extension| extension.field_name == "mysteryflag"
+                    && extension.value["raw_token"] == "mysteryflag")
+        );
+        assert_eq!(set.assets[0].crc, Some(vec![0x12, 0x34, 0x56, 0x78]));
         Ok(())
     }
 
@@ -823,5 +878,11 @@ mod tests {
         assert!(
             matches!(unclosed, Err(crate::Error::CatalogParse { record_kind: Some(kind), .. }) if kind == "game")
         );
+        let missing_size = Catalog::parse(b"game ( name one rom ( name x size ) )");
+        assert!(matches!(
+            missing_size,
+            Err(crate::Error::CatalogParse { record_kind: Some(kind), record_name: Some(name), .. })
+                if kind == "rom" && name == "x"
+        ));
     }
 }

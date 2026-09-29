@@ -13,13 +13,50 @@ use diesel::{
 use mame_coalesce::{
     app::{self, CatalogDocumentFormat, CatalogImportRequest},
     database::Database,
-    domain::{CatalogKey, CatalogScope, PublishingSourceKey},
+    domain::{
+        CatalogKey, CatalogRecordKind, CatalogRecordRef, CatalogScope, DocumentKey,
+        ExternalRecordRef, ParserInterpretationKey, PublishingSourceKey, RelationshipClaim,
+        RelationshipEndpoint, RelationshipOrigin, RelationshipType, SnapshotKey,
+        SnapshotRecordStatus,
+    },
 };
 
 #[derive(QueryableByName)]
 struct CountRow {
     #[diesel(sql_type = BigInt)]
     count: i64,
+}
+
+#[derive(QueryableByName)]
+struct QueryableAssertion {
+    #[diesel(sql_type = Text)]
+    relation_type: String,
+    #[diesel(sql_type = Text)]
+    origin: String,
+    #[diesel(sql_type = Nullable<Text>)]
+    source_snapshot_key: Option<String>,
+    #[diesel(sql_type = Text)]
+    subject_key: String,
+    #[diesel(sql_type = Text)]
+    target_key: String,
+    #[diesel(sql_type = Nullable<Text>)]
+    source_field: Option<String>,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    source_line: Option<i64>,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    source_column: Option<i64>,
+    #[diesel(sql_type = Nullable<Text>)]
+    rule_version: Option<String>,
+}
+
+#[derive(QueryableByName)]
+struct RelationshipKeyLocationRow {
+    #[diesel(sql_type = Text)]
+    subject_key: String,
+    #[diesel(sql_type = Text)]
+    target_key: String,
+    #[diesel(sql_type = BigInt)]
+    source_line: i64,
 }
 
 #[derive(QueryableByName)]
@@ -52,6 +89,12 @@ struct AssetHashesRow {
 struct IntegerRow {
     #[diesel(sql_type = diesel::sql_types::BigInt)]
     value: i64,
+}
+
+#[derive(QueryableByName)]
+struct NullableIntegerRow {
+    #[diesel(sql_type = Nullable<BigInt>)]
+    value: Option<i64>,
 }
 
 #[derive(QueryableByName)]
@@ -98,6 +141,18 @@ struct SoftwareComponentRow {
     writeable: Option<i64>,
     #[diesel(sql_type = BigInt)]
     source_line: i64,
+}
+
+#[derive(QueryableByName)]
+struct FailedLocationRow {
+    #[diesel(sql_type = Nullable<Text>)]
+    record_kind: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    record_name: Option<String>,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    source_line: Option<i64>,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    source_column: Option<i64>,
 }
 
 fn setup() -> Result<(tempfile::TempDir, Database, SqliteConnection), Box<dyn std::error::Error>> {
@@ -216,6 +271,7 @@ fn imports_overlapping_catalogs_and_reimports_idempotently()
     assert_eq!(count(&mut connection, "snapshot_sets")?, 2);
     assert_eq!(count(&mut connection, "asset_requirements")?, 4);
     assert_eq!(count(&mut connection, "import_runs")?, 3);
+    assert_eq!(count(&mut connection, "snapshot_publications")?, 2);
 
     let unknown_attribute = sql_query(
         "SELECT field_name AS value FROM snapshot_extensions WHERE field_name = 'future-policy'",
@@ -254,6 +310,66 @@ fn imports_overlapping_catalogs_and_reimports_idempotently()
     )
     .get_result::<NullableTextRow>(&mut connection)?;
     assert_eq!(namespace.value.as_deref(), Some("urn:vendor"));
+    Ok(())
+}
+
+#[test]
+fn publishing_completes_a_matching_identity_only_snapshot() -> Result<(), Box<dyn std::error::Error>>
+{
+    let (directory, database, mut connection) = setup()?;
+    let path = directory.path().join("identity-only.dat");
+    let bytes = br#"<datafile><header><name>Legacy</name></header><game name="set"><rom name="asset.bin" crc="12345678"/></game></datafile>"#;
+    std::fs::write(&path, bytes)?;
+    let request = request(path, "legacy-publisher", "legacy-catalog", "Legacy")?;
+    let document_key = DocumentKey::from_bytes(bytes).to_string();
+    let interpretation = ParserInterpretationKey::logiqx_v1(&request.scope);
+    sql_query("INSERT INTO publishing_sources (source_key, display_name) VALUES (?, ?)")
+        .bind::<Text, _>(request.source_key.as_str())
+        .bind::<Text, _>(&request.source_display_name)
+        .execute(&mut connection)?;
+    sql_query("INSERT INTO catalogs (catalog_key, source_key, display_name) VALUES (?, ?, ?)")
+        .bind::<Text, _>(request.catalog_key.as_str())
+        .bind::<Text, _>(request.source_key.as_str())
+        .bind::<Text, _>(&request.catalog_display_name)
+        .execute(&mut connection)?;
+    sql_query("INSERT INTO documents (document_key) VALUES (?)")
+        .bind::<Text, _>(&document_key)
+        .execute(&mut connection)?;
+    sql_query(
+        "INSERT INTO acquisitions (acquisition_key, source_key, document_key) \
+         VALUES ('legacy-acquisition', ?, ?)",
+    )
+    .bind::<Text, _>(request.source_key.as_str())
+    .bind::<Text, _>(&document_key)
+    .execute(&mut connection)?;
+    sql_query(
+        "INSERT INTO parser_interpretations (interpretation_key, format) VALUES (?, 'logiqx')",
+    )
+    .bind::<Text, _>(interpretation.as_str())
+    .execute(&mut connection)?;
+    sql_query(
+        "INSERT INTO catalog_snapshots \
+         (snapshot_key, catalog_key, document_key, interpretation_key, acquisition_key) \
+         VALUES ('identity-only-snapshot', ?, ?, ?, 'legacy-acquisition')",
+    )
+    .bind::<Text, _>(request.catalog_key.as_str())
+    .bind::<Text, _>(&document_key)
+    .bind::<Text, _>(interpretation.as_str())
+    .execute(&mut connection)?;
+
+    let report = app::import_catalog(&database, &request)?;
+    assert_eq!(
+        report
+            .snapshot_key
+            .as_ref()
+            .map(ToString::to_string)
+            .as_deref(),
+        Some("identity-only-snapshot")
+    );
+    assert_eq!(count(&mut connection, "catalog_snapshots")?, 1);
+    assert_eq!(count(&mut connection, "snapshot_sets")?, 1);
+    assert_eq!(count(&mut connection, "asset_requirements")?, 1);
+    assert_eq!(count(&mut connection, "snapshot_publications")?, 1);
     Ok(())
 }
 
@@ -359,14 +475,34 @@ fn imports_no_intro_pc_xml_metadata_without_inventing_title_relationships()
     .get_result::<TextRow>(&mut connection)?;
     assert_eq!(retained_unknown.value, "\"retained\"");
 
+    assert_no_intro_retained_document(
+        &mut connection,
+        snapshot.as_str(),
+        request.document_path.as_std_path(),
+    )?;
+
+    Ok(())
+}
+
+fn assert_no_intro_retained_document(
+    connection: &mut SqliteConnection,
+    snapshot: &str,
+    path: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
     let document = sql_query(
         "SELECT payload AS value FROM documents \
          JOIN catalog_snapshots USING (document_key) WHERE snapshot_key = ?",
     )
-    .bind::<Text, _>(snapshot.as_str())
-    .get_result::<BytesRow>(&mut connection)?;
-    assert_eq!(document.value, std::fs::read(&request.document_path)?);
-
+    .bind::<Text, _>(snapshot)
+    .get_result::<BytesRow>(connection)?;
+    assert_eq!(document.value, std::fs::read(path)?);
+    let format_hint = sql_query(
+        "SELECT documents.format_hint AS value FROM documents \
+         JOIN catalog_snapshots USING (document_key) WHERE snapshot_key = ?",
+    )
+    .bind::<Text, _>(snapshot)
+    .get_result::<NullableTextRow>(connection)?;
+    assert_eq!(format_hint.value.as_deref(), Some("no-intro-pc-xml"));
     Ok(())
 }
 
@@ -408,6 +544,60 @@ fn assert_no_intro_source_assertions(
 }
 
 #[test]
+fn stale_identity_only_metadata_is_not_published_as_current()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, mut connection) = setup()?;
+    let path = directory.path().join("stale-identity.dat");
+    let bytes = br#"<datafile><header><name>Legacy</name><version>2.0</version></header><game name="set"/></datafile>"#;
+    std::fs::write(&path, bytes)?;
+    let request = request(path, "legacy-publisher", "legacy-catalog", "Legacy")?;
+    let document_key = DocumentKey::from_bytes(bytes).to_string();
+    let interpretation = ParserInterpretationKey::logiqx_v1(&request.scope);
+    sql_query("INSERT INTO publishing_sources (source_key, display_name) VALUES (?, ?)")
+        .bind::<Text, _>(request.source_key.as_str())
+        .bind::<Text, _>(&request.source_display_name)
+        .execute(&mut connection)?;
+    sql_query("INSERT INTO catalogs (catalog_key, source_key, display_name) VALUES (?, ?, ?)")
+        .bind::<Text, _>(request.catalog_key.as_str())
+        .bind::<Text, _>(request.source_key.as_str())
+        .bind::<Text, _>(&request.catalog_display_name)
+        .execute(&mut connection)?;
+    sql_query("INSERT INTO documents (document_key) VALUES (?)")
+        .bind::<Text, _>(&document_key)
+        .execute(&mut connection)?;
+    sql_query(
+        "INSERT INTO parser_interpretations (interpretation_key, format) VALUES (?, 'logiqx')",
+    )
+    .bind::<Text, _>(interpretation.as_str())
+    .execute(&mut connection)?;
+    sql_query(
+        "INSERT INTO catalog_snapshots \
+         (snapshot_key, catalog_key, document_key, interpretation_key, declared_version, scope_kind) \
+         VALUES ('stale-identity-snapshot', ?, ?, ?, '1.0', 'complete')",
+    )
+    .bind::<Text, _>(request.catalog_key.as_str())
+    .bind::<Text, _>(&document_key)
+    .bind::<Text, _>(interpretation.as_str())
+    .execute(&mut connection)?;
+
+    let report = app::import_catalog(&database, &request)?;
+    let published_key = report
+        .snapshot_key
+        .as_ref()
+        .map(ToString::to_string)
+        .ok_or_else(|| io::Error::other("valid import publishes a snapshot"))?;
+    assert_ne!(published_key, "stale-identity-snapshot");
+    assert_eq!(count(&mut connection, "catalog_snapshots")?, 2);
+    assert_eq!(count(&mut connection, "snapshot_publications")?, 1);
+    let version =
+        sql_query("SELECT declared_version AS value FROM catalog_snapshots WHERE snapshot_key = ?")
+            .bind::<Text, _>(published_key)
+            .get_result::<NullableTextRow>(&mut connection)?;
+    assert_eq!(version.value.as_deref(), Some("2.0"));
+    Ok(())
+}
+
+#[test]
 fn malformed_no_intro_xml_does_not_publish_a_snapshot() -> Result<(), Box<dyn std::error::Error>> {
     let (directory, database, mut connection) = setup()?;
     let malformed_path = directory.path().join("malformed.xml");
@@ -425,6 +615,122 @@ fn malformed_no_intro_xml_does_not_publish_a_snapshot() -> Result<(), Box<dyn st
         .get_result::<DiagnosticLocationRow>(&mut connection)?;
     assert!(location.source_line.is_some_and(|line| line > 0));
     assert!(location.source_column.is_some_and(|column| column > 0));
+    Ok(())
+}
+
+#[test]
+fn structured_no_intro_header_fails_with_location_and_no_snapshot()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, mut connection) = setup()?;
+    for (file_name, xml) in [
+        (
+            "attributed-header.xml",
+            br#"<datafile><header><version source="export">v1</version></header><game name="set"/></datafile>"#.as_slice(),
+        ),
+        (
+            "nested-header.xml",
+            br#"<datafile><header><description><revision>v2</revision></description></header><game name="set"/></datafile>"#.as_slice(),
+        ),
+    ] {
+        let path = directory.path().join(file_name);
+        std::fs::write(&path, xml)?;
+        let mut request = no_intro_request()?;
+        request.document_path = Utf8PathBuf::from_path_buf(path).map_err(|_| "non-UTF8 fixture path")?;
+        let report = app::import_catalog(&database, &request)?;
+        assert_eq!(report.status, app::CatalogImportStatus::Failed);
+        assert!(report.snapshot_key.is_none());
+    }
+    assert_eq!(count(&mut connection, "catalog_snapshots")?, 0);
+    let located = sql_query(
+        "SELECT COUNT(*) AS count FROM import_diagnostics \
+         WHERE record_kind = 'header' AND record_name IS NOT NULL \
+         AND source_line IS NOT NULL AND source_column IS NOT NULL",
+    )
+    .get_result::<CountRow>(&mut connection)?;
+    assert_eq!(located.count, 2);
+    Ok(())
+}
+
+#[test]
+fn no_intro_unknown_rom_fields_keep_the_rom_record_identity()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, mut connection) = setup()?;
+    let path = directory.path().join("rom-extensions.xml");
+    std::fs::write(
+        &path,
+        br#"<datafile><game name="set"><rom name="a.bin" future="A"><future-child value="a"/></rom><rom name="b.bin" future="B"/></game></datafile>"#,
+    )?;
+    let mut request = no_intro_request()?;
+    request.document_path =
+        Utf8PathBuf::from_path_buf(path).map_err(|_| "non-UTF8 fixture path")?;
+    let report = app::import_catalog(&database, &request)?;
+    assert_eq!(report.status, app::CatalogImportStatus::Succeeded);
+    let first = sql_query(
+        "SELECT raw_value_json AS value FROM snapshot_extensions \
+         WHERE record_kind = 'rom' AND record_name = 'a.bin' AND field_name = 'future'",
+    )
+    .get_result::<TextRow>(&mut connection)?;
+    let second = sql_query(
+        "SELECT raw_value_json AS value FROM snapshot_extensions \
+         WHERE record_kind = 'rom' AND record_name = 'b.bin' AND field_name = 'future'",
+    )
+    .get_result::<TextRow>(&mut connection)?;
+    let nested = sql_query(
+        "SELECT COUNT(*) AS count FROM snapshot_extensions \
+         WHERE record_kind = 'rom' AND record_name = 'a.bin' AND field_name = 'element:future-child'",
+    )
+    .get_result::<CountRow>(&mut connection)?;
+    assert_eq!(first.value, "\"A\"");
+    assert_eq!(second.value, "\"B\"");
+    assert_eq!(nested.count, 1);
+    Ok(())
+}
+
+#[test]
+fn no_intro_record_text_fails_instead_of_disappearing() -> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, mut connection) = setup()?;
+    for (file_name, xml, kind) in [
+        (
+            "root-text.xml",
+            br#"<datafile>unexpected<game name="set"/></datafile>"#.as_slice(),
+            "document",
+        ),
+        (
+            "header-text.xml",
+            br#"<datafile><header>unexpected</header><game name="set"/></datafile>"#.as_slice(),
+            "header",
+        ),
+        (
+            "game-text.xml",
+            br#"<datafile><game name="set">unexpected</game></datafile>"#.as_slice(),
+            "game",
+        ),
+        (
+            "rom-text.xml",
+            br#"<datafile><game name="set"><rom name="a.bin">unexpected</rom></game></datafile>"#
+                .as_slice(),
+            "rom",
+        ),
+    ] {
+        let path = directory.path().join(file_name);
+        std::fs::write(&path, xml)?;
+        let mut request = no_intro_request()?;
+        request.document_path =
+            Utf8PathBuf::from_path_buf(path).map_err(|_| "non-UTF8 fixture path")?;
+        let report = app::import_catalog(&database, &request)?;
+        assert_eq!(report.status, app::CatalogImportStatus::Failed);
+        assert!(report.snapshot_key.is_none());
+        let located = sql_query(
+            "SELECT COUNT(*) AS count FROM import_diagnostics \
+             WHERE run_key = ? AND record_kind = ? \
+             AND source_line IS NOT NULL AND source_column IS NOT NULL",
+        )
+        .bind::<Text, _>(report.run_key.to_string())
+        .bind::<Text, _>(kind)
+        .get_result::<CountRow>(&mut connection)?;
+        assert_eq!(located.count, 1, "missing located diagnostic for {kind}");
+    }
+    assert_eq!(count(&mut connection, "catalog_snapshots")?, 0);
     Ok(())
 }
 
@@ -501,7 +807,7 @@ fn imports_mame_machine_rom_disk_bios_and_device_semantics_loss_aware()
     assert!(region.value.contains("demo_bios"));
     let disk_scope = sql_query("SELECT evidence_scope AS value FROM asset_requirements WHERE snapshot_key = ? AND asset_name = 'demo_disk'")
         .bind::<Text, _>(snapshot.as_str()).get_result::<TextRow>(&mut connection)?;
-    assert_eq!(disk_scope.value, "disk_data");
+    assert_eq!(disk_scope.value, "chd_header_sha1");
     let disk_identity = sql_query("SELECT sha1 AS value FROM asset_requirements WHERE snapshot_key = ? AND asset_name = 'demo_disk'")
         .bind::<Text, _>(snapshot.as_str()).get_result::<BytesRow>(&mut connection)?;
     assert_eq!(
@@ -533,6 +839,326 @@ fn imports_mame_machine_rom_disk_bios_and_device_semantics_loss_aware()
 }
 
 #[test]
+fn imports_mame_relationship_asset_fields_extensions_and_format_hint()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (_directory, database, mut connection) = setup()?;
+    let mut request = request(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/catalog/mame/semantics.xml"),
+        "mame-semantics",
+        "mame-semantics",
+        "MAME semantics",
+    )?;
+    request.format = CatalogDocumentFormat::MameListXml;
+    let report = app::import_catalog(&database, &request)?;
+    let snapshot = report.snapshot_key.ok_or("MAME snapshot missing")?;
+
+    let parent = sql_query(
+        "SELECT parent_name AS value FROM snapshot_sets \
+         WHERE snapshot_key = ? AND set_name = 'clone'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<NullableTextRow>(&mut connection)?;
+    assert_eq!(parent.value.as_deref(), Some("parent"));
+
+    let rom_fields = sql_query(
+        "SELECT merge_name || ':' || dump_status AS value FROM asset_requirements \
+         WHERE snapshot_key = ? AND asset_name = 'clone.rom'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(&mut connection)?;
+    assert_eq!(rom_fields.value, "parent.rom:baddump");
+    let disk_fields = sql_query(
+        "SELECT merge_name || ':' || dump_status AS value FROM asset_requirements \
+         WHERE snapshot_key = ? AND asset_name = 'clone.disk'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(&mut connection)?;
+    assert_eq!(disk_fields.value, "parent.disk:nodump");
+
+    let asset_extension_count = sql_query(
+        "SELECT COUNT(*) AS count FROM snapshot_extensions \
+         WHERE snapshot_key = ? AND record_kind = 'rom' AND field_name = 'flag'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<CountRow>(&mut connection)?
+    .count;
+    assert_eq!(asset_extension_count, 1);
+    let asset_metadata = sql_query(
+        "SELECT metadata_json AS value FROM asset_requirements \
+         WHERE snapshot_key = ? AND asset_name = 'clone.rom'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(&mut connection)?;
+    assert!(!asset_metadata.value.contains("future:flag"));
+
+    let format_hint = sql_query(
+        "SELECT documents.format_hint AS value FROM documents \
+         JOIN catalog_snapshots USING (document_key) WHERE snapshot_key = ?",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<NullableTextRow>(&mut connection)?;
+    assert_eq!(format_hint.value.as_deref(), Some("mame-listxml"));
+    Ok(())
+}
+
+#[test]
+fn mame_relationships_resolve_component_keys_and_keep_device_locations()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, mut connection) = setup()?;
+    let path = directory.path().join("mame-relationship-identity.xml");
+    std::fs::write(
+        &path,
+        "<mame>\n<machine name=\"clone-parent\"/>\n<machine name=\"rom-parent\">\n<rom name=\"shared.bin\" size=\"1\" crc=\"12345678\"/>\n</machine>\n<machine name=\"clone\" cloneof=\"clone-parent\" romof=\"rom-parent\">\n<device_ref name=\"sound\"/>\n<rom name=\"shared.bin\" merge=\"shared.bin\" size=\"1\" crc=\"12345678\"/>\n</machine>\n<machine name=\"sound\"/>\n</mame>",
+    )?;
+    let mut request = request(
+        path,
+        "publisher-mame-relations",
+        "mame-relations",
+        "MAME relations",
+    )?;
+    request.format = CatalogDocumentFormat::MameListXml;
+    let report = app::import_catalog(&database, &request)?;
+    let snapshot = report.snapshot_key.ok_or("MAME snapshot missing")?;
+
+    let merge = sql_query(
+        "SELECT subject_key, target_key, source_line FROM relationship_assertions \
+         WHERE source_snapshot_key = ? AND source_field = 'merge'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<RelationshipKeyLocationRow>(&mut connection)?;
+    assert_eq!(merge.subject_key, "[\"clone\",\"shared.bin\",0]");
+    assert_eq!(merge.target_key, "[\"rom-parent\",\"shared.bin\",0]");
+    assert_eq!(merge.source_line, 8);
+
+    let device = sql_query(
+        "SELECT subject_key, target_key, source_line FROM relationship_assertions \
+         WHERE source_snapshot_key = ? AND source_field = 'device_ref'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<RelationshipKeyLocationRow>(&mut connection)?;
+    assert_eq!(device.subject_key, "clone");
+    assert_eq!(device.target_key, "sound");
+    assert_eq!(device.source_line, 7);
+
+    let dependencies = sql_query(
+        "SELECT source_field || ':' || target_key AS value FROM relationship_assertions \
+         WHERE source_snapshot_key = ? AND subject_kind = 'catalog_set' AND subject_key = 'clone' \
+         AND relation_type = 'runtime_dependency' ORDER BY source_field",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .load::<TextRow>(&mut connection)?;
+    assert_eq!(
+        dependencies
+            .iter()
+            .map(|dependency| dependency.value.as_str())
+            .collect::<Vec<_>>(),
+        ["device_ref:sound", "romof:rom-parent"]
+    );
+    Ok(())
+}
+
+#[test]
+fn resolves_machine_runtime_closure_without_traversing_clone_ancestry()
+-> Result<(), Box<dyn std::error::Error>> {
+    use mame_coalesce::machine_dependencies::{DependencyDiagnostic, MachineDependencyKind};
+
+    let (directory, database, mut connection) = setup()?;
+    let document = directory.path().join("machine-dependencies.xml");
+    std::fs::write(
+        &document,
+        br#"<mame build="fixture">
+          <machine name="game" cloneof="parent" romof="bios" sampleof="samples">
+            <device_ref name="sound"/>
+          </machine>
+          <machine name="bios" isbios="yes"/>
+          <machine name="sound" isdevice="yes"/>
+          <machine name="parent"/>
+          <machine name="samples"/>
+        </mame>"#,
+    )?;
+    let mut import = request(
+        document,
+        "mame-fixture",
+        "machine-dependencies",
+        "Machine dependencies",
+    )?;
+    import.format = CatalogDocumentFormat::MameListXml;
+    import.scope = CatalogScope::Complete;
+    let imported = app::import_catalog(&database, &import)?;
+    let snapshot = imported.snapshot_key.ok_or("machine snapshot missing")?;
+
+    let closure = app::resolve_machine_dependencies(
+        &database,
+        &snapshot,
+        &mame_coalesce::domain::SetName::new("game"),
+    )?;
+    assert_eq!(
+        closure
+            .sets
+            .iter()
+            .map(mame_coalesce::domain::SetName::as_str)
+            .collect::<Vec<_>>(),
+        ["bios", "game", "sound"]
+    );
+    assert!(closure.edges.iter().any(|edge| {
+        edge.kind == MachineDependencyKind::RomOf
+            && edge.to.as_str() == "bios"
+            && edge.target_is_bios
+    }));
+    assert!(closure.edges.iter().any(|edge| {
+        edge.kind == MachineDependencyKind::DeviceReference
+            && edge.to.as_str() == "sound"
+            && edge.target_is_device
+    }));
+    assert!(
+        closure
+            .diagnostics
+            .contains(&DependencyDiagnostic::UnsupportedRelationship {
+                set: mame_coalesce::domain::SetName::new("game"),
+                field: "sampleof".into(),
+                target: mame_coalesce::domain::SetName::new("samples"),
+            })
+    );
+    assert!(
+        !closure
+            .sets
+            .contains(&mame_coalesce::domain::SetName::new("parent"))
+    );
+
+    let source_assertions = sql_query(
+        "SELECT COUNT(*) AS count FROM relationship_assertions \
+         WHERE source_snapshot_key = ? AND subject_key = 'game' \
+           AND source_field IN ('cloneof', 'romof', 'device_ref', 'sampleof')",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<CountRow>(&mut connection)?;
+    assert_eq!(source_assertions.count, 4);
+    Ok(())
+}
+
+#[test]
+fn software_item_relationship_keys_do_not_collide_on_slashes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, mut connection) = setup()?;
+    let path = directory.path().join("software-list-slash-identities.xml");
+    std::fs::write(
+        &path,
+        "<softwarelists><softwarelist name=\"a/b\"><software name=\"c\" cloneof=\"parent\"><description>c</description><year>2000</year><publisher>example</publisher><part name=\"cart\" interface=\"cart\"/></software><software name=\"parent\"><description>parent</description><year>2000</year><publisher>example</publisher><part name=\"cart\" interface=\"cart\"/></software></softwarelist><softwarelist name=\"a\"><software name=\"b/c\" cloneof=\"parent\"><description>b/c</description><year>2000</year><publisher>example</publisher><part name=\"cart\" interface=\"cart\"/></software><software name=\"parent\"><description>parent</description><year>2000</year><publisher>example</publisher><part name=\"cart\" interface=\"cart\"/></software></softwarelist></softwarelists>",
+    )?;
+    let mut request = request(path, "publisher-slash-keys", "slash-keys", "Slash keys")?;
+    request.format = CatalogDocumentFormat::MameSoftwareListXml;
+    let report = app::import_catalog(&database, &request)?;
+    let Some(snapshot) = report.snapshot_key.as_ref() else {
+        let diagnostic =
+            sql_query("SELECT message AS value FROM import_diagnostics WHERE run_key = ?")
+                .bind::<Text, _>(report.run_key.to_string())
+                .get_result::<TextRow>(&mut connection)?;
+        return Err(io::Error::other(diagnostic.value).into());
+    };
+    let keys = sql_query(
+        "SELECT subject_key AS value FROM relationship_assertions \
+         WHERE source_snapshot_key = ? AND source_field = 'cloneof' ORDER BY subject_key",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .load::<TextRow>(&mut connection)?;
+    assert_eq!(keys.len(), 2);
+    assert_eq!(keys[0].value, "[\"a\",\"b/c\"]");
+    assert_eq!(keys[1].value, "[\"a/b\",\"c\"]");
+    Ok(())
+}
+
+#[test]
+fn machine_dependency_loader_rejects_software_list_snapshots()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (_directory, database, _) = setup()?;
+    let requests = [
+        mame_softwarelist_request()?,
+        no_intro_request()?,
+        clrmamepro_request()?,
+    ];
+    for request in requests {
+        let format = request.format.as_str();
+        let imported = app::import_catalog(&database, &request)?;
+        let snapshot = imported.snapshot_key.ok_or("catalog snapshot missing")?;
+        let result = app::resolve_machine_dependencies(
+            &database,
+            &snapshot,
+            &mame_coalesce::domain::SetName::new("game"),
+        );
+        assert!(matches!(
+            result,
+            Err(mame_coalesce::Error::UnsupportedMachineDependencyFormat(actual))
+                if actual == format
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn machine_dependency_loader_accepts_logiqx_set_snapshots() -> Result<(), Box<dyn std::error::Error>>
+{
+    let (_directory, database, _) = setup()?;
+    let mut request = request(
+        fixture("catalog-a-v1.dat"),
+        "logiqx-machine",
+        "logiqx-machine-catalog",
+        "Logiqx machine fixture",
+    )?;
+    request.scope = CatalogScope::Complete;
+    let imported = app::import_catalog(&database, &request)?;
+    let snapshot = imported.snapshot_key.ok_or("Logiqx snapshot missing")?;
+    let closure = app::resolve_machine_dependencies(
+        &database,
+        &snapshot,
+        &mame_coalesce::domain::SetName::new("alpha"),
+    )?;
+    assert_eq!(closure.root.as_str(), "alpha");
+    Ok(())
+}
+
+#[test]
+fn dependency_absence_respects_filtered_snapshot_scope() -> Result<(), Box<dyn std::error::Error>> {
+    use mame_coalesce::machine_dependencies::DependencyDiagnostic;
+
+    let (directory, database, _) = setup()?;
+    let document = directory.path().join("filtered-machine.xml");
+    std::fs::write(
+        &document,
+        br#"<mame build="fixture"><machine name="root" romof="outside"/></mame>"#,
+    )?;
+    let mut import = request(
+        document,
+        "mame-filtered",
+        "filtered-machines",
+        "Filtered machines",
+    )?;
+    import.format = CatalogDocumentFormat::MameListXml;
+    import.scope = CatalogScope::Filtered(serde_json::json!({"sets": ["root"]}));
+    let imported = app::import_catalog(&database, &import)?;
+    let snapshot = imported.snapshot_key.ok_or("filtered snapshot missing")?;
+    let closure = app::resolve_machine_dependencies(
+        &database,
+        &snapshot,
+        &mame_coalesce::domain::SetName::new("root"),
+    )?;
+    assert!(
+        closure
+            .diagnostics
+            .contains(&DependencyDiagnostic::OutOfScopeSet {
+                name: mame_coalesce::domain::SetName::new("outside"),
+                required_by: Some(mame_coalesce::domain::SetName::new("root")),
+            })
+    );
+    assert_eq!(
+        closure.completeness,
+        mame_coalesce::machine_dependencies::SnapshotCompleteness::Filtered(Some(
+            std::collections::BTreeSet::from([mame_coalesce::domain::SetName::new("root")])
+        ))
+    );
+    Ok(())
+}
+
+#[test]
 fn imports_mame_softwarelists_with_nested_order_dependencies_and_load_claims()
 -> Result<(), Box<dyn std::error::Error>> {
     let (directory, database, mut connection) = setup()?;
@@ -544,6 +1170,18 @@ fn imports_mame_softwarelists_with_nested_order_dependencies_and_load_claims()
         .snapshot_key
         .ok_or("software-list snapshot missing")?;
     assert_eq!(Some(snapshot.clone()), repeated.snapshot_key);
+    let format_hint = sql_query(
+        "SELECT documents.format_hint AS value FROM documents \
+         JOIN catalog_snapshots USING (document_key) WHERE snapshot_key = ?",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<NullableTextRow>(&mut connection)?;
+    assert_eq!(format_hint.value.as_deref(), Some("mame-softwarelist-xml"));
+    let version =
+        sql_query("SELECT declared_version AS value FROM catalog_snapshots WHERE snapshot_key = ?")
+            .bind::<Text, _>(snapshot.as_str())
+            .get_result::<NullableTextRow>(&mut connection)?;
+    assert_eq!(version.value.as_deref(), Some("0.289-synthetic"));
 
     assert_eq!(count(&mut connection, "software_lists")?, 2);
     assert_eq!(count(&mut connection, "software_items")?, 3);
@@ -558,7 +1196,124 @@ fn imports_mame_softwarelists_with_nested_order_dependencies_and_load_claims()
     assert_software_list_nesting(&mut connection, &snapshot)?;
     assert_software_list_components(&mut connection, &snapshot)?;
     assert_software_list_extensions(&mut connection, &snapshot)?;
-    assert_malformed_software_list_fails(directory.path(), &database, &mut connection, request)?;
+    assert_malformed_software_list_fails(directory.path(), &database, &mut connection, &request)?;
+    Ok(())
+}
+
+#[test]
+fn imports_metadata_only_software_without_parts() -> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, mut connection) = setup()?;
+    let path = directory.path().join("metadata-only-softwarelist.xml");
+    std::fs::write(
+        &path,
+        br#"<softwarelist name="one"><software name="game"><description>Game</description><year>2000</year><publisher>Pub</publisher></software></softwarelist>"#,
+    )?;
+    let mut request = mame_softwarelist_request()?;
+    request.document_path =
+        Utf8PathBuf::from_path_buf(path).map_err(|_| "non-UTF8 metadata fixture path")?;
+    request.catalog_key = CatalogKey::new("metadata-only-softwarelist");
+    request.catalog_display_name = "Metadata-only software list".into();
+    let report = app::import_catalog(&database, &request)?;
+    assert_eq!(report.status, app::CatalogImportStatus::Succeeded);
+    assert!(report.snapshot_key.is_some());
+    assert_eq!(count(&mut connection, "software_lists")?, 1);
+    assert_eq!(count(&mut connection, "software_items")?, 1);
+    assert_eq!(count(&mut connection, "software_parts")?, 0);
+    let supported = sql_query("SELECT supported AS value FROM software_items")
+        .get_result::<NullableTextRow>(&mut connection)?;
+    assert_eq!(supported.value, None);
+    Ok(())
+}
+
+#[test]
+fn imports_repeated_area_names_without_merging_components_or_defaults()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, mut connection) = setup()?;
+    let path = directory.path().join("repeated-software-areas.xml");
+    std::fs::write(
+        &path,
+        br#"<softwarelist name="one"><software name="game"><description>Game</description><year>2000</year><publisher>Pub</publisher><part name="cart" interface="cart"><dataarea name="rom" size="1"><rom name="first.bin"/></dataarea><dataarea name="rom" size="2"><rom name="second.bin"/></dataarea><diskarea name="media"><disk name="implicit"/><disk name="explicit" writeable="no"/></diskarea></part></software></softwarelist>"#,
+    )?;
+    let mut request = mame_softwarelist_request()?;
+    request.document_path =
+        Utf8PathBuf::from_path_buf(path).map_err(|_| "non-UTF8 fixture path")?;
+    request.catalog_key = CatalogKey::new("repeated-software-areas");
+    request.catalog_display_name = "Repeated software areas".into();
+    let report = app::import_catalog(&database, &request)?;
+    assert_eq!(report.status, app::CatalogImportStatus::Succeeded);
+    assert_eq!(count(&mut connection, "software_areas")?, 3);
+    assert_eq!(count(&mut connection, "software_components")?, 4);
+    let first =
+        sql_query("SELECT component_name AS value FROM software_components WHERE area_order = 0")
+            .get_result::<NullableTextRow>(&mut connection)?;
+    let second =
+        sql_query("SELECT component_name AS value FROM software_components WHERE area_order = 1")
+            .get_result::<NullableTextRow>(&mut connection)?;
+    assert_eq!(first.value.as_deref(), Some("first.bin"));
+    assert_eq!(second.value.as_deref(), Some("second.bin"));
+    let absent = sql_query(
+        "SELECT writeable AS value FROM software_components WHERE component_name = 'implicit'",
+    )
+    .get_result::<NullableIntegerRow>(&mut connection)?;
+    let explicit = sql_query(
+        "SELECT writeable AS value FROM software_components WHERE component_name = 'explicit'",
+    )
+    .get_result::<NullableIntegerRow>(&mut connection)?;
+    assert_eq!(absent.value, None);
+    assert_eq!(explicit.value, Some(0));
+    Ok(())
+}
+
+#[test]
+fn imports_mame_numeric_bases_and_empty_nodump_hashes() -> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, mut connection) = setup()?;
+    let path = directory.path().join("octal-software-nodump.xml");
+    std::fs::write(
+        &path,
+        br#"<softwarelist name="one"><software name="game"><description>Game</description><year>2000</year><publisher>Pub</publisher><part name="cart" interface="cart"><dataarea name="rom" size="010"><rom name="missing.bin" size="010" offset="010" status="nodump" crc="" sha1=""/></dataarea></part></software></softwarelist>"#,
+    )?;
+    let mut request = mame_softwarelist_request()?;
+    request.document_path =
+        Utf8PathBuf::from_path_buf(path).map_err(|_| "non-UTF8 fixture path")?;
+    request.catalog_key = CatalogKey::new("octal-software-nodump");
+    request.catalog_display_name = "Octal software sizes".into();
+    let report = app::import_catalog(&database, &request)?;
+    assert_eq!(report.status, app::CatalogImportStatus::Succeeded);
+    let area_size = sql_query("SELECT declared_size AS value FROM software_areas")
+        .get_result::<NullableIntegerRow>(&mut connection)?;
+    let rom_size = sql_query("SELECT size AS value FROM software_components")
+        .get_result::<NullableIntegerRow>(&mut connection)?;
+    let offset = sql_query("SELECT offset AS value FROM software_components")
+        .get_result::<NullableIntegerRow>(&mut connection)?;
+    let no_hash =
+        sql_query("SELECT crc IS NULL AND sha1 IS NULL AS value FROM software_components")
+            .get_result::<IntegerRow>(&mut connection)?;
+    assert_eq!(area_size.value, Some(8));
+    assert_eq!(rom_size.value, Some(8));
+    assert_eq!(offset.value, Some(8));
+    assert_eq!(no_hash.value, 1);
+    Ok(())
+}
+
+#[test]
+fn imports_empty_software_list_export_as_an_empty_snapshot()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, mut connection) = setup()?;
+    let path = directory.path().join("empty-softwarelists.xml");
+    std::fs::write(&path, b"<softwarelists/>")?;
+    let mut request = mame_softwarelist_request()?;
+    request.document_path =
+        Utf8PathBuf::from_path_buf(path).map_err(|_| "non-UTF8 empty fixture path")?;
+    request.catalog_key = CatalogKey::new("empty-softwarelists");
+    request.catalog_display_name = "Empty software-list export".into();
+    let report = app::import_catalog(&database, &request)?;
+    assert_eq!(report.status, app::CatalogImportStatus::Succeeded);
+    assert!(report.snapshot_key.is_some());
+    assert_eq!(count(&mut connection, "catalog_snapshots")?, 1);
+    assert_eq!(count(&mut connection, "software_lists")?, 0);
+    assert_eq!(count(&mut connection, "software_items")?, 0);
+    let repeated = app::import_catalog(&database, &request)?;
+    assert_eq!(repeated.snapshot_key, report.snapshot_key);
     Ok(())
 }
 
@@ -662,6 +1417,17 @@ fn assert_software_list_nesting(
     assert_eq!(area.width, Some(16));
     assert_eq!(area.endianness.as_deref(), Some("big"));
     assert!(item.source_line < area.source_line);
+
+    let sparse_area = sql_query(
+        "SELECT declared_size, width, endianness, source_line FROM software_areas \
+         WHERE snapshot_key = ? AND list_name = 'demo_cart' AND item_name = 'demo_game' \
+         AND part_name = 'manual' AND area_name = 'text' AND area_kind = 'data'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<SoftwareAreaRow>(connection)?;
+    assert_eq!(sparse_area.declared_size, Some(16));
+    assert_eq!(sparse_area.width, None);
+    assert_eq!(sparse_area.endianness, None);
     Ok(())
 }
 
@@ -726,6 +1492,13 @@ fn assert_software_list_components(
     assert!(disk.dump_status.is_none());
     assert!(disk.sha1.is_some());
     assert_eq!(disk.writeable, Some(1));
+    let disk_scope = sql_query(
+        "SELECT evidence_scope AS value FROM software_components \
+         WHERE snapshot_key = ? AND component_name = 'demo-disk'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(connection)?;
+    assert_eq!(disk_scope.value, "chd_header_sha1");
 
     let absent_status = sql_query(
         "SELECT dump_status, NULL AS sha1, NULL AS load_instruction, writeable, source_line \
@@ -764,14 +1537,14 @@ fn assert_malformed_software_list_fails(
     temp_dir: &Path,
     database: &Database,
     connection: &mut SqliteConnection,
-    request: CatalogImportRequest,
+    request: &CatalogImportRequest,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let malformed_path = temp_dir.join("malformed-softwarelist.xml");
     std::fs::write(
         &malformed_path,
         b"<softwarelist name=\"broken\"><software name=\"game\"><description>Game</description><year>2000</year><publisher>Pub</publisher><part name=\"cart\"/></software></softwarelist>",
     )?;
-    let mut malformed_request = request;
+    let mut malformed_request = request.clone();
     malformed_request.document_path = Utf8PathBuf::from_path_buf(malformed_path)
         .map_err(|_| "non-UTF8 malformed fixture path")?;
     malformed_request.catalog_key = CatalogKey::new("malformed-softwarelist");
@@ -786,6 +1559,66 @@ fn assert_malformed_software_list_fails(
             .bind::<Text, _>(failed.run_key.to_string())
             .get_result::<IntegerRow>(connection)?;
     assert!(failure_location.value > 0);
+
+    let oversized_path = temp_dir.join("oversized-softwarelist-value.xml");
+    std::fs::write(
+        &oversized_path,
+        b"<softwarelist name=\"range\"><software name=\"game\"><description>Game</description><year>2000</year><publisher>Pub</publisher><part name=\"cart\" interface=\"cart\"><dataarea name=\"rom\" size=\"9223372036854775808\"><rom name=\"game.bin\"/></dataarea></part></software></softwarelist>",
+    )?;
+    let mut oversized_request = request.clone();
+    oversized_request.document_path = Utf8PathBuf::from_path_buf(oversized_path)
+        .map_err(|_| "non-UTF8 oversized fixture path")?;
+    oversized_request.catalog_key = CatalogKey::new("oversized-softwarelist");
+    oversized_request.catalog_display_name = "Oversized software-list value".into();
+    let failed = app::import_catalog(database, &oversized_request)?;
+    assert_eq!(failed.status, app::CatalogImportStatus::Failed);
+    assert!(failed.snapshot_key.is_none());
+    assert_eq!(count(connection, "catalog_snapshots")?, 1);
+
+    let fixture = include_str!("../fixtures/catalog/mame/software-list.xml");
+    for (field, original, replacement, record_kind) in [
+        (
+            "load",
+            "loadflag=\"continue\"",
+            "loadflag=\"unknown\"",
+            "rom",
+        ),
+        ("width", "width=\"16\"", "width=\"7\"", "dataarea"),
+        (
+            "endianness",
+            "endianness=\"big\"",
+            "endianness=\"unknown\"",
+            "dataarea",
+        ),
+        ("size", "size=\"0x20\"", "size=\"unknown\"", "dataarea"),
+        ("crc", "crc=\"12345678\"", "crc=\"unknown\"", "rom"),
+    ] {
+        let invalid_path = temp_dir.join(format!("invalid-softwarelist-{field}.xml"));
+        assert!(fixture.contains(original));
+        std::fs::write(&invalid_path, fixture.replacen(original, replacement, 1))?;
+        let mut invalid_request = request.clone();
+        invalid_request.document_path = Utf8PathBuf::from_path_buf(invalid_path)
+            .map_err(|_| "non-UTF8 invalid fixture path")?;
+        invalid_request.catalog_key = CatalogKey::new(format!("invalid-softwarelist-{field}"));
+        invalid_request.catalog_display_name = format!("Invalid software-list {field}");
+        let failed = app::import_catalog(database, &invalid_request)?;
+        assert_eq!(failed.status, app::CatalogImportStatus::Failed);
+        assert!(failed.snapshot_key.is_none());
+        assert_eq!(count(connection, "catalog_snapshots")?, 1);
+        let location = sql_query(
+            "SELECT record_kind, record_name, source_line, source_column \
+             FROM import_diagnostics WHERE run_key = ?",
+        )
+        .bind::<Text, _>(failed.run_key.to_string())
+        .get_result::<FailedLocationRow>(connection)?;
+        assert_eq!(location.record_kind.as_deref(), Some(record_kind));
+        assert_eq!(
+            location.record_name.as_deref(),
+            Some("demo_cart:demo_game:cart:data:program")
+        );
+        assert!(location.source_line.is_some_and(|line| line > 0));
+        assert!(location.source_column.is_some_and(|column| column > 0));
+    }
     Ok(())
 }
 
@@ -799,6 +1632,13 @@ fn imports_clrmamepro_sets_rom_statuses_and_retained_source_tokens()
     assert_eq!(report.status, app::CatalogImportStatus::Succeeded);
     let snapshot = report.snapshot_key.ok_or("ClrMamePro snapshot missing")?;
     assert_eq!(Some(snapshot.clone()), repeated.snapshot_key);
+    let format_hint = sql_query(
+        "SELECT documents.format_hint AS value FROM documents \
+         JOIN catalog_snapshots USING (document_key) WHERE snapshot_key = ?",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<NullableTextRow>(&mut connection)?;
+    assert_eq!(format_hint.value.as_deref(), Some("clrmamepro-text"));
     assert_eq!(count(&mut connection, "catalog_snapshots")?, 1);
     assert_eq!(count(&mut connection, "snapshot_sets")?, 2);
     assert_eq!(count(&mut connection, "asset_requirements")?, 6);
@@ -1094,6 +1934,808 @@ fn changed_document_publishes_a_new_snapshot_and_preserves_the_previous_one()
 }
 
 #[test]
+fn snapshot_diff_separates_hash_changes_from_metadata_and_regrouping()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (_directory, database, _connection) = setup()?;
+    let mut first_request = request(
+        fixture("catalog-a-v1.dat"),
+        "publisher-a",
+        "catalog-a",
+        "Catalog A",
+    )?;
+    first_request.scope = CatalogScope::Complete;
+    let first = app::import_catalog(&database, &first_request)?;
+    let mut second_request = request(
+        fixture("catalog-a-v2.dat"),
+        "publisher-a",
+        "catalog-a",
+        "Catalog A",
+    )?;
+    second_request.scope = CatalogScope::Complete;
+    let second = app::import_catalog(&database, &second_request)?;
+    let previous = first.snapshot_key.ok_or("first snapshot missing")?;
+    let current = second.snapshot_key.ok_or("second snapshot missing")?;
+
+    app::record_relationship(
+        &database,
+        &RelationshipClaim {
+            relation_type: RelationshipType::CatalogContinuity,
+            subject: RelationshipEndpoint::ExternalRecord(ExternalRecordRef::new(
+                "publisher-note",
+                "alpha-history",
+            )),
+            target: RelationshipEndpoint::CatalogRecord(CatalogRecordRef::new(
+                current.clone(),
+                CatalogRecordKind::Set,
+                "alpha",
+            )),
+            origin: RelationshipOrigin::UserConclusion,
+            evidence: serde_json::json!({"reason": "explicitly linked"}),
+        },
+    )?;
+
+    let history = app::catalog_snapshot_history(&database, &CatalogKey::new("catalog-a"))?;
+    assert_eq!(history.len(), 2);
+    assert!(history.windows(2).all(|pair| {
+        (pair[0].document_key.as_str(), pair[0].snapshot.as_str())
+            <= (pair[1].document_key.as_str(), pair[1].snapshot.as_str())
+    }));
+    let diff = app::diff_catalog_snapshots(&database, &previous, &current)?;
+    let alpha = diff
+        .records
+        .iter()
+        .find(|record| record.set_name == "alpha")
+        .ok_or("alpha diff missing")?;
+    assert_eq!(alpha.status, SnapshotRecordStatus::Changed);
+    assert!(!alpha.metadata_changed);
+    assert!(!alpha.regrouped);
+    assert!(alpha.relationship_evidence.iter().any(|evidence| matches!(
+        &evidence.claim.origin,
+        mame_coalesce::domain::RelationshipOrigin::SourceAssertion { .. }
+    )));
+    assert!(alpha.relationship_evidence.iter().any(|evidence| matches!(
+        &evidence.claim.subject,
+        mame_coalesce::domain::RelationshipEndpoint::ExternalRecord(_)
+    )));
+    let disputed = alpha
+        .requirement_changes
+        .iter()
+        .find(|change| change.asset_name == "disputed.bin")
+        .ok_or("changed requirement missing")?;
+    assert!(disputed.hash_changed);
+    assert!(!disputed.size_changed);
+    assert!(disputed.other_evidence_changed);
+    assert_eq!(
+        disputed
+            .previous
+            .as_ref()
+            .and_then(|v| v[0]["crc"].as_str()),
+        Some("11111111")
+    );
+    assert_eq!(
+        disputed.current.as_ref().and_then(|v| v[0]["crc"].as_str()),
+        Some("22222222")
+    );
+    Ok(())
+}
+
+#[test]
+fn snapshot_diff_rejects_software_list_catalogs_instead_of_reporting_empty_changes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, _) = setup()?;
+    let fixture_path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/catalog/mame/software-list.xml");
+    let original = std::fs::read_to_string(fixture_path)?;
+    let changed = original
+        .replace("0.289-synthetic", "0.290-synthetic")
+        .replace("crc=\"12345678\"", "crc=\"87654321\"");
+    let previous_path = directory.path().join("software-list-v1.xml");
+    let current_path = directory.path().join("software-list-v2.xml");
+    std::fs::write(&previous_path, original)?;
+    std::fs::write(&current_path, &changed)?;
+
+    let mut previous_request = request(
+        previous_path,
+        "software-list-history",
+        "software-list-history",
+        "Software-list history",
+    )?;
+    previous_request.format = CatalogDocumentFormat::MameSoftwareListXml;
+    previous_request.scope = CatalogScope::Complete;
+    let mut current_request = previous_request.clone();
+    current_request.document_path =
+        Utf8PathBuf::from_path_buf(current_path).map_err(|_| "non-UTF8 fixture path")?;
+    let previous = app::import_catalog(&database, &previous_request)?
+        .snapshot_key
+        .ok_or("previous snapshot missing")?;
+    let current = app::import_catalog(&database, &current_request)?
+        .snapshot_key
+        .ok_or("current snapshot missing")?;
+
+    let Err(error) = app::diff_catalog_snapshots(&database, &previous, &current) else {
+        return Err("software-list diff unexpectedly succeeded".into());
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("does not yet support MAME software-list")
+    );
+
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    std::io::Write::write_all(&mut encoder, changed.as_bytes())?;
+    let gzip_path = directory.path().join("software-list-v2.xml.gz");
+    std::fs::write(&gzip_path, encoder.finish()?)?;
+    let mut gzip_request = current_request;
+    gzip_request.document_path =
+        Utf8PathBuf::from_path_buf(gzip_path).map_err(|_| "non-UTF8 gzip path")?;
+    let gzip_snapshot = app::import_catalog(&database, &gzip_request)?
+        .snapshot_key
+        .ok_or("gzip snapshot missing")?;
+    let Err(error) = app::diff_catalog_snapshots(&database, &previous, &gzip_snapshot) else {
+        return Err("compressed software-list diff unexpectedly succeeded".into());
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("does not yet support MAME software-list")
+    );
+    Ok(())
+}
+
+#[test]
+fn snapshot_diff_treats_filtered_absence_as_unknown_and_complete_absence_as_removal()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, _connection) = setup()?;
+    let complete_path = directory.path().join("complete.dat");
+    let filtered_path = directory.path().join("filtered.dat");
+    std::fs::write(
+        &complete_path,
+        br#"<datafile><header><name>Scope</name></header><game name="alpha"/><game name="beta"/></datafile>"#,
+    )?;
+    std::fs::write(
+        &filtered_path,
+        br#"<datafile><header><name>Scope</name></header><game name="alpha"/></datafile>"#,
+    )?;
+    let mut complete_request = request(complete_path, "publisher-scope", "scope", "Scope")?;
+    complete_request.scope = CatalogScope::Complete;
+    let complete = app::import_catalog(&database, &complete_request)?;
+    let mut filtered_request = request(filtered_path, "publisher-scope", "scope", "Scope")?;
+    filtered_request.scope = CatalogScope::Filtered(serde_json::json!({"sets": ["alpha"]}));
+    let filtered = app::import_catalog(&database, &filtered_request)?;
+    let complete_key = complete.snapshot_key.ok_or("complete snapshot missing")?;
+    let filtered_key = filtered.snapshot_key.ok_or("filtered snapshot missing")?;
+
+    let diff = app::diff_catalog_snapshots(&database, &complete_key, &filtered_key)?;
+    assert!(!diff.same_scope);
+    let beta = diff
+        .records
+        .iter()
+        .find(|record| record.set_name == "beta")
+        .ok_or("beta diff missing")?;
+    assert_eq!(beta.status, SnapshotRecordStatus::OutOfScope);
+
+    let unknown_request = request(
+        filtered_request.document_path.into_std_path_buf(),
+        "publisher-scope",
+        "scope",
+        "Scope",
+    )?;
+    let unknown = app::import_catalog(&database, &unknown_request)?;
+    let unknown_key = unknown
+        .snapshot_key
+        .ok_or("unknown-scope snapshot missing")?;
+    let unknown_diff = app::diff_catalog_snapshots(&database, &complete_key, &unknown_key)?;
+    assert_eq!(
+        unknown_diff
+            .records
+            .iter()
+            .find(|record| record.set_name == "beta")
+            .map(|record| record.status),
+        Some(SnapshotRecordStatus::Unknown)
+    );
+
+    let mut next_complete_request = request(
+        fixture("catalog-a-filtered.dat"),
+        "publisher-scope",
+        "scope",
+        "Scope",
+    )?;
+    next_complete_request.scope = CatalogScope::Complete;
+    let next_complete = app::import_catalog(&database, &next_complete_request)?;
+    let next_key = next_complete.snapshot_key.ok_or("next snapshot missing")?;
+    let removal = app::diff_catalog_snapshots(&database, &complete_key, &next_key)?;
+    assert!(removal.same_scope);
+    assert_eq!(
+        removal
+            .records
+            .iter()
+            .find(|record| record.set_name == "beta")
+            .map(|record| record.status),
+        Some(SnapshotRecordStatus::RemovedWithinScope)
+    );
+
+    let included_path = directory.path().join("included-filter.dat");
+    std::fs::write(
+        &included_path,
+        br#"<datafile><header><name>Scope</name></header><game name="alpha"/><game name="beta"/><game name="gamma"/></datafile>"#,
+    )?;
+    let mut included_request = request(included_path, "publisher-scope", "scope", "Scope")?;
+    included_request.scope = CatalogScope::Filtered(serde_json::json!({
+        "sets": ["alpha", "beta", "gamma"]
+    }));
+    let included = app::import_catalog(&database, &included_request)?;
+    let included_key = included.snapshot_key.ok_or("included snapshot missing")?;
+    let addition = app::diff_catalog_snapshots(&database, &complete_key, &included_key)?;
+    assert_eq!(
+        addition
+            .records
+            .iter()
+            .find(|record| record.set_name == "gamma")
+            .map(|record| record.status),
+        Some(SnapshotRecordStatus::AddedWithinScope)
+    );
+    Ok(())
+}
+
+#[test]
+fn snapshot_diff_requires_known_filtered_set_membership_to_compare_scopes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, _connection) = setup()?;
+    let mut snapshots = Vec::new();
+    for (filename, games) in [
+        ("filtered-alpha.dat", "<game name=\"alpha\"/>"),
+        (
+            "filtered-alpha-beta.dat",
+            "<game name=\"alpha\"/><game name=\"beta\"/>",
+        ),
+    ] {
+        let path = directory.path().join(filename);
+        std::fs::write(
+            &path,
+            format!("<datafile><header><name>Scope</name></header>{games}</datafile>"),
+        )?;
+        let mut import = request(path, "publisher-scope", "scope", "Scope")?;
+        import.scope = CatalogScope::Filtered(serde_json::json!({"source": "manual"}));
+        snapshots.push(
+            app::import_catalog(&database, &import)?
+                .snapshot_key
+                .ok_or("filtered snapshot without set names missing")?,
+        );
+    }
+    let diff = app::diff_catalog_snapshots(&database, &snapshots[0], &snapshots[1])?;
+    assert!(!diff.same_scope);
+    Ok(())
+}
+
+#[test]
+fn snapshot_diff_tracks_unknown_extensions_and_does_not_call_missing_hashes_changed()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, _connection) = setup()?;
+    let first_path = directory.path().join("machine-v1.xml");
+    let second_path = directory.path().join("machine-v2.xml");
+    std::fs::write(
+        &first_path,
+        br#"<mame><machine name="thing"><description>Thing</description><future value="one"/></machine></mame>"#,
+    )?;
+    std::fs::write(
+        &second_path,
+        br#"<mame><machine name="thing"><description>Thing</description><future value="two"/><rom name="undumped.bin"/></machine></mame>"#,
+    )?;
+    let mut first_request = request(first_path, "publisher-machines", "machines", "Machines")?;
+    first_request.format = CatalogDocumentFormat::MameListXml;
+    first_request.scope = CatalogScope::Complete;
+    let first = app::import_catalog(&database, &first_request)?;
+    let mut second_request = request(second_path, "publisher-machines", "machines", "Machines")?;
+    second_request.format = CatalogDocumentFormat::MameListXml;
+    second_request.scope = CatalogScope::Complete;
+    let second = app::import_catalog(&database, &second_request)?;
+    let diff = app::diff_catalog_snapshots(
+        &database,
+        &first.snapshot_key.ok_or("first snapshot missing")?,
+        &second.snapshot_key.ok_or("second snapshot missing")?,
+    )?;
+    let thing = diff
+        .records
+        .iter()
+        .find(|record| record.set_name == "thing")
+        .ok_or("machine diff missing")?;
+    assert!(thing.metadata_changed);
+    let undumped = thing
+        .requirement_changes
+        .iter()
+        .find(|change| change.asset_name == "undumped.bin")
+        .ok_or("new undumped requirement missing")?;
+    assert!(!undumped.size_changed);
+    assert!(!undumped.hash_changed);
+    Ok(())
+}
+
+#[test]
+fn snapshot_diff_tracks_logiqx_game_extensions() -> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, _connection) = setup()?;
+    let logiqx_v1 = directory.path().join("logiqx-extension-v1.dat");
+    let logiqx_v2 = directory.path().join("logiqx-extension-v2.dat");
+    std::fs::write(
+        &logiqx_v1,
+        br#"<datafile><header><name>Extension test</name></header><game name="thing" future="one"/></datafile>"#,
+    )?;
+    std::fs::write(
+        &logiqx_v2,
+        br#"<datafile><header><name>Extension test</name></header><game name="thing" future="two"/></datafile>"#,
+    )?;
+    let mut logiqx_first = request(
+        logiqx_v1,
+        "publisher-logiqx-extensions",
+        "logiqx-extensions",
+        "Extension test",
+    )?;
+    logiqx_first.scope = CatalogScope::Complete;
+    let first = app::import_catalog(&database, &logiqx_first)?;
+    let mut logiqx_second = request(
+        logiqx_v2,
+        "publisher-logiqx-extensions",
+        "logiqx-extensions",
+        "Extension test",
+    )?;
+    logiqx_second.scope = CatalogScope::Complete;
+    let second = app::import_catalog(&database, &logiqx_second)?;
+    let logiqx_diff = app::diff_catalog_snapshots(
+        &database,
+        &first.snapshot_key.ok_or("Logiqx first snapshot missing")?,
+        &second
+            .snapshot_key
+            .ok_or("Logiqx second snapshot missing")?,
+    )?;
+    assert!(logiqx_diff.records[0].metadata_changed);
+    Ok(())
+}
+
+#[test]
+fn snapshot_diff_attributes_logiqx_extensions_to_their_asset_and_game()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, _connection) = setup()?;
+    let first_path = directory.path().join("logiqx-owned-extensions-v1.dat");
+    let second_path = directory.path().join("logiqx-owned-extensions-v2.dat");
+    for (path, value) in [(&first_path, "one"), (&second_path, "two")] {
+        std::fs::write(
+            path,
+            format!(
+                "<datafile><header><name>Owned extensions</name></header><game name=\"owner\"><rom name=\"shared.rom\" future=\"{value}\"/><device_ref name=\"target\" future=\"{value}\"/></game><game name=\"target\"/></datafile>"
+            ),
+        )?;
+    }
+    let mut first_request = request(
+        first_path,
+        "publisher-logiqx-owned-extensions",
+        "logiqx-owned-extensions",
+        "Owned extensions",
+    )?;
+    first_request.scope = CatalogScope::Complete;
+    let first = app::import_catalog(&database, &first_request)?;
+    let mut second_request = request(
+        second_path,
+        "publisher-logiqx-owned-extensions",
+        "logiqx-owned-extensions",
+        "Owned extensions",
+    )?;
+    second_request.scope = CatalogScope::Complete;
+    let second = app::import_catalog(&database, &second_request)?;
+    let diff = app::diff_catalog_snapshots(
+        &database,
+        &first.snapshot_key.ok_or("first snapshot missing")?,
+        &second.snapshot_key.ok_or("second snapshot missing")?,
+    )?;
+    let owner = diff
+        .records
+        .iter()
+        .find(|record| record.set_name == "owner")
+        .ok_or("owner diff missing")?;
+    assert_eq!(owner.status, SnapshotRecordStatus::Changed);
+    assert!(owner.metadata_changed);
+    let asset = owner
+        .requirement_changes
+        .iter()
+        .find(|change| change.asset_name == "shared.rom")
+        .ok_or("owned asset extension change missing")?;
+    assert!(asset.other_evidence_changed);
+
+    let target = diff
+        .records
+        .iter()
+        .find(|record| record.set_name == "target")
+        .ok_or("target diff missing")?;
+    assert_eq!(target.status, SnapshotRecordStatus::Unchanged);
+    assert!(!target.metadata_changed);
+    Ok(())
+}
+
+#[test]
+fn snapshot_diff_attributes_device_ref_extensions_to_the_owning_set()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, _connection) = setup()?;
+    let device_ref_v1 = directory.path().join("device-ref-v1.xml");
+    let device_ref_v2 = directory.path().join("device-ref-v2.xml");
+    for (path, value) in [(&device_ref_v1, "one"), (&device_ref_v2, "two")] {
+        std::fs::write(
+            path,
+            format!(
+                "<mame><machine name=\"owner\"><description>Owner</description><device_ref name=\"target\" future=\"{value}\"/></machine><machine name=\"target\"><description>Target</description></machine></mame>"
+            ),
+        )?;
+    }
+    let mut device_ref_first = request(
+        device_ref_v1,
+        "publisher-device-ref",
+        "device-refs",
+        "Device refs",
+    )?;
+    device_ref_first.format = CatalogDocumentFormat::MameListXml;
+    device_ref_first.scope = CatalogScope::Complete;
+    let first = app::import_catalog(&database, &device_ref_first)?;
+    let mut device_ref_second = request(
+        device_ref_v2,
+        "publisher-device-ref",
+        "device-refs",
+        "Device refs",
+    )?;
+    device_ref_second.format = CatalogDocumentFormat::MameListXml;
+    device_ref_second.scope = CatalogScope::Complete;
+    let second = app::import_catalog(&database, &device_ref_second)?;
+    let device_ref_diff = app::diff_catalog_snapshots(
+        &database,
+        &first
+            .snapshot_key
+            .ok_or("device-ref first snapshot missing")?,
+        &second
+            .snapshot_key
+            .ok_or("device-ref second snapshot missing")?,
+    )?;
+    let owner = device_ref_diff
+        .records
+        .iter()
+        .find(|record| record.set_name == "owner")
+        .ok_or("owner diff missing")?;
+    assert_eq!(owner.status, SnapshotRecordStatus::Changed);
+    assert!(owner.metadata_changed);
+
+    let target = device_ref_diff
+        .records
+        .iter()
+        .find(|record| record.set_name == "target")
+        .ok_or("target diff missing")?;
+    assert_eq!(target.status, SnapshotRecordStatus::Unchanged);
+    assert!(!target.metadata_changed);
+    Ok(())
+}
+
+#[test]
+fn snapshot_diff_keeps_asset_extensions_with_their_owning_set()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, mut connection) = setup()?;
+    let first_path = directory.path().join("asset-extension-v1.xml");
+    let second_path = directory.path().join("asset-extension-v2.xml");
+    for (path, changed_value) in [(&first_path, "one"), (&second_path, "two")] {
+        std::fs::write(
+            path,
+            format!(
+                "<mame><machine name=\"alpha\"><description>Alpha</description><rom name=\"shared.rom\" future=\"{changed_value}\"/></machine><machine name=\"beta\"><description>Beta</description><rom name=\"shared.rom\"/></machine></mame>"
+            ),
+        )?;
+    }
+    let mut first_request = request(
+        first_path,
+        "publisher-asset-extensions",
+        "asset-extensions",
+        "Asset extensions",
+    )?;
+    first_request.format = CatalogDocumentFormat::MameListXml;
+    first_request.scope = CatalogScope::Complete;
+    let first = app::import_catalog(&database, &first_request)?;
+    let mut second_request = request(
+        second_path,
+        "publisher-asset-extensions",
+        "asset-extensions",
+        "Asset extensions",
+    )?;
+    second_request.format = CatalogDocumentFormat::MameListXml;
+    second_request.scope = CatalogScope::Complete;
+    let second = app::import_catalog(&database, &second_request)?;
+    let diff = app::diff_catalog_snapshots(
+        &database,
+        first
+            .snapshot_key
+            .as_ref()
+            .ok_or("first asset-extension snapshot missing")?,
+        second
+            .snapshot_key
+            .as_ref()
+            .ok_or("second asset-extension snapshot missing")?,
+    )?;
+
+    let alpha = diff
+        .records
+        .iter()
+        .find(|record| record.set_name == "alpha")
+        .ok_or("alpha diff missing")?;
+    let alpha_asset = alpha
+        .requirement_changes
+        .iter()
+        .find(|change| change.asset_name == "shared.rom")
+        .ok_or("alpha asset extension change missing")?;
+    assert!(alpha_asset.other_evidence_changed);
+
+    let beta = diff
+        .records
+        .iter()
+        .find(|record| record.set_name == "beta")
+        .ok_or("beta diff missing")?;
+    assert_eq!(beta.status, SnapshotRecordStatus::Unchanged);
+    assert!(beta.requirement_changes.is_empty());
+
+    let metadata = sql_query(
+        "SELECT metadata_json AS value FROM asset_requirements WHERE snapshot_key = ? LIMIT 1",
+    )
+    .bind::<Text, _>(
+        second
+            .snapshot_key
+            .as_ref()
+            .ok_or("second snapshot missing")?
+            .as_str(),
+    )
+    .get_result::<TextRow>(&mut connection)?;
+    assert!(!metadata.value.contains("__mame_coalesce_extensions"));
+    Ok(())
+}
+
+#[test]
+fn snapshot_diff_attributes_no_intro_rom_extensions_to_their_asset()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, _connection) = setup()?;
+    let first_path = directory.path().join("no-intro-asset-extension-v1.xml");
+    let second_path = directory.path().join("no-intro-asset-extension-v2.xml");
+    for (path, changed_value) in [(&first_path, "one"), (&second_path, "two")] {
+        std::fs::write(
+            path,
+            format!(
+                "<datafile><header><name>Extensions</name></header><game name=\"alpha\"><rom name=\"shared.bin\" future=\"{changed_value}\"/></game><game name=\"beta\"><rom name=\"shared.bin\"/></game></datafile>"
+            ),
+        )?;
+    }
+    let mut first_request = request(
+        first_path,
+        "publisher-no-intro-extensions",
+        "no-intro-extensions",
+        "No-Intro extensions",
+    )?;
+    first_request.format = CatalogDocumentFormat::NoIntroPcXml;
+    first_request.scope = CatalogScope::Complete;
+    let first = app::import_catalog(&database, &first_request)?;
+    let mut second_request = request(
+        second_path,
+        "publisher-no-intro-extensions",
+        "no-intro-extensions",
+        "No-Intro extensions",
+    )?;
+    second_request.format = CatalogDocumentFormat::NoIntroPcXml;
+    second_request.scope = CatalogScope::Complete;
+    let second = app::import_catalog(&database, &second_request)?;
+    let diff = app::diff_catalog_snapshots(
+        &database,
+        first
+            .snapshot_key
+            .as_ref()
+            .ok_or("first snapshot missing")?,
+        second
+            .snapshot_key
+            .as_ref()
+            .ok_or("second snapshot missing")?,
+    )?;
+    assert!(diff.records.iter().any(|record| {
+        record.set_name == "alpha"
+            && record
+                .requirement_changes
+                .iter()
+                .any(|change| change.asset_name == "shared.bin" && change.other_evidence_changed)
+    }));
+    assert!(diff.records.iter().any(|record| {
+        record.set_name == "beta"
+            && record.status == SnapshotRecordStatus::Unchanged
+            && record.requirement_changes.is_empty()
+    }));
+    Ok(())
+}
+
+#[test]
+fn snapshot_diff_does_not_treat_unpublished_complete_identity_as_removal()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, mut connection) = setup()?;
+    let published_path = directory.path().join("published.dat");
+    let identity_path = directory.path().join("identity.dat");
+    let published_bytes =
+        br#"<datafile><header><name>Published</name></header><game name="set"/></datafile>"#;
+    let identity_bytes = b"unpublished identity bytes";
+    std::fs::write(&published_path, published_bytes)?;
+    std::fs::write(&identity_path, identity_bytes)?;
+
+    let mut published_request =
+        request(published_path, "publisher-identity", "identity", "Identity")?;
+    published_request.scope = CatalogScope::Complete;
+    let published = app::import_catalog(&database, &published_request)?;
+    let published_key = published.snapshot_key.ok_or("published snapshot missing")?;
+    let identity_document_key = DocumentKey::from_bytes(identity_bytes);
+    let identity_document = identity_document_key.to_string();
+    let interpretation = ParserInterpretationKey::logiqx_v1(&CatalogScope::Complete);
+    let identity_snapshot = SnapshotKey::new(
+        &published_request.catalog_key,
+        &identity_document_key,
+        &interpretation,
+    );
+    sql_query("INSERT INTO documents (document_key) VALUES (?)")
+        .bind::<Text, _>(&identity_document)
+        .execute(&mut connection)?;
+    sql_query(
+        "INSERT INTO catalog_snapshots \
+         (snapshot_key, catalog_key, document_key, interpretation_key, scope_kind) \
+         VALUES (?, ?, ?, ?, 'complete')",
+    )
+    .bind::<Text, _>(identity_snapshot.as_str())
+    .bind::<Text, _>(published_request.catalog_key.as_str())
+    .bind::<Text, _>(&identity_document)
+    .bind::<Text, _>(interpretation.as_str())
+    .execute(&mut connection)?;
+
+    let diff = app::diff_catalog_snapshots(&database, &published_key, &identity_snapshot)?;
+    assert!(!diff.same_scope);
+    assert_eq!(diff.records.len(), 1);
+    assert_eq!(diff.records[0].set_name, "set");
+    assert_eq!(diff.records[0].status, SnapshotRecordStatus::Unknown);
+    Ok(())
+}
+
+#[test]
+fn snapshot_diff_preserves_duplicate_asset_extension_occurrences()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, _connection) = setup()?;
+    let first_path = directory.path().join("duplicate-extension-v1.xml");
+    let second_path = directory.path().join("duplicate-extension-v2.xml");
+    for (path, count) in [(&first_path, 2), (&second_path, 1)] {
+        let children = "<future/>".repeat(count);
+        std::fs::write(
+            path,
+            format!(
+                "<mame><machine name=\"alpha\"><description>Alpha</description><rom name=\"shared.rom\">{children}</rom></machine></mame>"
+            ),
+        )?;
+    }
+    let mut first_request = request(
+        first_path,
+        "publisher-duplicate-extensions",
+        "duplicate-extensions",
+        "Duplicate extensions",
+    )?;
+    first_request.format = CatalogDocumentFormat::MameListXml;
+    first_request.scope = CatalogScope::Complete;
+    let first = app::import_catalog(&database, &first_request)?;
+    let mut second_request = request(
+        second_path,
+        "publisher-duplicate-extensions",
+        "duplicate-extensions",
+        "Duplicate extensions",
+    )?;
+    second_request.format = CatalogDocumentFormat::MameListXml;
+    second_request.scope = CatalogScope::Complete;
+    let second = app::import_catalog(&database, &second_request)?;
+    let diff = app::diff_catalog_snapshots(
+        &database,
+        first
+            .snapshot_key
+            .as_ref()
+            .ok_or("first snapshot missing")?,
+        second
+            .snapshot_key
+            .as_ref()
+            .ok_or("second snapshot missing")?,
+    )?;
+    assert!(diff.records.iter().any(|record| {
+        record.set_name == "alpha"
+            && record
+                .requirement_changes
+                .iter()
+                .any(|change| change.asset_name == "shared.rom" && change.other_evidence_changed)
+    }));
+    Ok(())
+}
+
+#[test]
+fn snapshot_diff_compares_duplicate_asset_fields_as_unordered_multisets()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, _connection) = setup()?;
+    let first_path = directory.path().join("duplicates-v1.dat");
+    let second_path = directory.path().join("duplicates-v2.dat");
+    std::fs::write(
+        &first_path,
+        br#"<datafile><header><name>Duplicates</name></header><game name="set"><rom name="same.bin" size="1" crc="11111111" status="good"/><rom name="same.bin" size="2" crc="11111111" status="bad"/></game></datafile>"#,
+    )?;
+    std::fs::write(
+        &second_path,
+        br#"<datafile><header><name>Duplicates</name></header><game name="set"><rom name="same.bin" size="2" crc="11111111" status="good"/><rom name="same.bin" size="1" crc="11111111" status="bad"/></game></datafile>"#,
+    )?;
+    let mut first_request = request(
+        first_path,
+        "publisher-duplicates",
+        "duplicates",
+        "Duplicates",
+    )?;
+    first_request.scope = CatalogScope::Complete;
+    let first = app::import_catalog(&database, &first_request)?;
+    let mut second_request = request(
+        second_path,
+        "publisher-duplicates",
+        "duplicates",
+        "Duplicates",
+    )?;
+    second_request.scope = CatalogScope::Complete;
+    let second = app::import_catalog(&database, &second_request)?;
+    let diff = app::diff_catalog_snapshots(
+        &database,
+        &first.snapshot_key.ok_or("first snapshot missing")?,
+        &second.snapshot_key.ok_or("second snapshot missing")?,
+    )?;
+    let duplicate = diff.records[0]
+        .requirement_changes
+        .first()
+        .ok_or("duplicate requirement change missing")?;
+    assert!(!duplicate.size_changed);
+    assert!(!duplicate.hash_changed);
+    assert!(duplicate.other_evidence_changed);
+    Ok(())
+}
+
+#[test]
+fn snapshot_diff_is_order_independent_and_rejects_cross_catalog_name_matching()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, _connection) = setup()?;
+    let first_path = directory.path().join("first-order.dat");
+    let second_path = directory.path().join("second-order.dat");
+    std::fs::write(
+        &first_path,
+        br#"<datafile><header><name>Order</name></header><game name="one"><rom name="one.rom" crc="11111111"/></game><game name="two"><rom name="two.rom" crc="22222222"/></game></datafile>"#,
+    )?;
+    std::fs::write(
+        &second_path,
+        br#"<datafile><header><name>Order</name></header><game name="two"><rom name="two.rom" crc="22222222"/></game><game name="one"><rom name="one.rom" crc="11111111"/></game></datafile>"#,
+    )?;
+    let mut first_request = request(first_path, "publisher-order", "order", "Order")?;
+    first_request.scope = CatalogScope::Complete;
+    let first = app::import_catalog(&database, &first_request)?;
+    let mut second_request = request(second_path, "publisher-order", "order", "Order")?;
+    second_request.scope = CatalogScope::Complete;
+    let second = app::import_catalog(&database, &second_request)?;
+    let first_key = first.snapshot_key.ok_or("first snapshot missing")?;
+    let second_key = second.snapshot_key.ok_or("second snapshot missing")?;
+    let diff = app::diff_catalog_snapshots(&database, &first_key, &second_key)?;
+    assert_eq!(diff.records.len(), 2);
+    assert!(
+        diff.records
+            .iter()
+            .all(|record| record.status == SnapshotRecordStatus::Unchanged)
+    );
+
+    let other_catalog = app::import_catalog(
+        &database,
+        &request(
+            fixture("catalog-b.dat"),
+            "publisher-b",
+            "another-order",
+            "Another catalog",
+        )?,
+    )?;
+    let other_key = other_catalog.snapshot_key.ok_or("other snapshot missing")?;
+    assert!(app::diff_catalog_snapshots(&database, &first_key, &other_key).is_err());
+    Ok(())
+}
+
+#[test]
 fn permuting_set_records_does_not_change_source_attributed_requirements()
 -> Result<(), Box<dyn std::error::Error>> {
     let (directory, database, mut connection) = setup()?;
@@ -1131,6 +2773,91 @@ fn permuting_set_records_does_not_change_source_attributed_requirements()
     )
     .get_result::<CountRow>(&mut connection)?;
     assert_eq!(preserved_claims.count, 4);
+    Ok(())
+}
+
+#[test]
+fn source_relationship_assertions_keep_snapshot_and_field_provenance()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (_directory, database, mut connection) = setup()?;
+    let imported = app::import_catalog(
+        &database,
+        &request(
+            fixture("catalog-a-v1.dat"),
+            "publisher-a",
+            "catalog-a",
+            "Catalog A",
+        )?,
+    )?;
+    let snapshot_key = imported
+        .snapshot_key
+        .as_ref()
+        .ok_or_else(|| io::Error::other("successful import has no snapshot key"))?;
+    let assertion = sql_query(
+        "SELECT relation_type, origin, source_snapshot_key, subject_key, target_key, \
+                source_field, source_line, source_column, rule_version \
+         FROM relationship_assertions \
+         WHERE source_snapshot_key = ? AND source_field = 'cloneof'",
+    )
+    .bind::<Text, _>(snapshot_key.as_str())
+    .get_result::<QueryableAssertion>(&mut connection)?;
+    assert_eq!(assertion.relation_type, "source_parent_clone");
+    assert_eq!(assertion.origin, "source_assertion");
+    assert_eq!(assertion.subject_key, "alpha");
+    assert_eq!(assertion.target_key, "parent");
+    assert_eq!(assertion.source_field.as_deref(), Some("cloneof"));
+    assert_eq!(assertion.source_line, Some(4));
+    assert_eq!(assertion.source_column, Some(3));
+    assert!(assertion.rule_version.is_none());
+    assert_eq!(
+        assertion.source_snapshot_key.as_deref(),
+        Some(snapshot_key.as_str())
+    );
+
+    let runtime_claims = sql_query(
+        "SELECT COUNT(*) AS count FROM relationship_assertions \
+         WHERE source_snapshot_key = ? AND relation_type = 'runtime_dependency' \
+           AND source_field IN ('romof', 'sampleof', 'device_ref')",
+    )
+    .bind::<Text, _>(snapshot_key.as_str())
+    .get_result::<CountRow>(&mut connection)?;
+    assert_eq!(runtime_claims.count, 3);
+    let device_claim = sql_query(
+        "SELECT target_key AS value FROM relationship_assertions \
+         WHERE source_snapshot_key = ? AND source_field = 'device_ref'",
+    )
+    .bind::<Text, _>(snapshot_key.as_str())
+    .get_result::<TextRow>(&mut connection)?;
+    assert_eq!(device_claim.value, "fixture-sound");
+
+    let device_claim = sql_query(
+        "SELECT relation_type, origin, source_snapshot_key, subject_key, target_key, \
+                source_field, source_line, source_column, rule_version \
+         FROM relationship_assertions \
+         WHERE source_snapshot_key = ? AND source_field = 'device_ref'",
+    )
+    .bind::<Text, _>(snapshot_key.as_str())
+    .get_result::<QueryableAssertion>(&mut connection)?;
+    assert_eq!(device_claim.source_line, Some(8));
+    assert_eq!(device_claim.source_column, Some(5));
+
+    // An identical reimport reuses the immutable snapshot rather than duplicating its claims.
+    app::import_catalog(
+        &database,
+        &request(
+            fixture("catalog-a-v1.dat"),
+            "publisher-a",
+            "catalog-a",
+            "Catalog A",
+        )?,
+    )?;
+    let claims = sql_query(
+        "SELECT COUNT(*) AS count FROM relationship_assertions \
+         WHERE source_snapshot_key = ? AND source_field = 'cloneof'",
+    )
+    .bind::<Text, _>(snapshot_key.as_str())
+    .get_result::<CountRow>(&mut connection)?;
+    assert_eq!(claims.count, 1);
     Ok(())
 }
 

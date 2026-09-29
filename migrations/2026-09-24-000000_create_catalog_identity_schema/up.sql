@@ -45,9 +45,14 @@ CREATE TABLE catalog_snapshots (
     scope_kind          TEXT NOT NULL DEFAULT 'unknown'
                                 CHECK (scope_kind IN ('unknown', 'complete', 'filtered', 'partial')),
     scope_json          TEXT,
-    parent_snapshot_key TEXT REFERENCES catalog_snapshots (snapshot_key) ON DELETE RESTRICT,
+    parent_snapshot_key TEXT,
     CHECK (scope_kind NOT IN ('filtered', 'partial') OR scope_json IS NOT NULL),
+    CHECK (parent_snapshot_key IS NULL OR parent_snapshot_key <> snapshot_key),
+    UNIQUE (snapshot_key, catalog_key),
     UNIQUE (snapshot_key, catalog_key, document_key, interpretation_key),
+    FOREIGN KEY (parent_snapshot_key, catalog_key)
+        REFERENCES catalog_snapshots (snapshot_key, catalog_key)
+        ON DELETE RESTRICT,
     FOREIGN KEY (acquisition_key, document_key)
         REFERENCES acquisitions (acquisition_key, document_key)
         ON DELETE RESTRICT
@@ -73,6 +78,29 @@ CREATE TABLE import_runs (
         REFERENCES acquisitions (acquisition_key, document_key)
         ON DELETE RESTRICT
 );
+
+CREATE TRIGGER parser_interpretations_are_immutable_update
+BEFORE UPDATE ON parser_interpretations
+WHEN (
+    OLD.interpretation_key IS NOT NEW.interpretation_key
+    OR OLD.format IS NOT NEW.format
+    OR OLD.parser_name IS NOT NEW.parser_name
+    OR OLD.parser_version IS NOT NEW.parser_version
+    OR OLD.rules_version IS NOT NEW.rules_version
+    OR OLD.options_json IS NOT NEW.options_json
+) AND (
+    EXISTS (
+        SELECT 1 FROM catalog_snapshots
+        WHERE interpretation_key = OLD.interpretation_key
+    )
+    OR EXISTS (
+        SELECT 1 FROM import_runs
+        WHERE interpretation_key = OLD.interpretation_key
+    )
+)
+BEGIN
+    SELECT RAISE(ABORT, 'referenced parser interpretations are immutable');
+END;
 
 CREATE INDEX catalogs_source_key_index ON catalogs (source_key);
 CREATE INDEX documents_sha1_index ON documents (sha1);

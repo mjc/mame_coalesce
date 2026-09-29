@@ -1,24 +1,24 @@
 //! Conservative, format-neutral validation for logical plans and their destinations.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fs,
-    path::{Component, Path, PathBuf},
+    path::{Component, PathBuf},
 };
 
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 
-use crate::domain::{BuildPlan, ExpectedEvidence, LogicalPath};
+use crate::domain::{BuildPlan, ExpectedEvidence, LogicalPath, SourceLocation};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum ContentRelation {
     SameEstablishedContent,
     DifferentContent,
     UnknownContent,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum PlanIssueKind {
     UnsafeGroupPath,
     UnsafeEntryPath,
@@ -28,7 +28,7 @@ pub enum PlanIssueKind {
     EntryFileDirectoryConflict,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct PlanIssue {
     pub kind: PlanIssueKind,
     pub path: LogicalPath,
@@ -45,9 +45,9 @@ impl std::fmt::Display for PlanIssue {
             PlanIssueKind::DuplicateEntry(_) => "duplicate logical entry path",
             PlanIssueKind::EntryFileDirectoryConflict => "entry file/directory path conflict",
         };
-        write!(f, "{label}: {}", self.path.as_str())?;
+        write!(f, "{label}: {:?}", self.path.as_str())?;
         if let Some(other) = &self.conflicts_with {
-            write!(f, " conflicts with {}", other.as_str())?;
+            write!(f, " conflicts with {:?}", other.as_str())?;
         }
         if let PlanIssueKind::DuplicateEntry(relation) = self.kind {
             write!(f, " ({relation:?})")?;
@@ -89,6 +89,35 @@ impl<'plan> ValidatedPlan<'plan> {
     }
 }
 
+/// A destination proven disjoint from every declared root and actual plan source.
+#[derive(Debug)]
+pub(crate) struct CheckedPlanDestination {
+    path: Utf8PathBuf,
+    sources: Vec<Utf8PathBuf>,
+    source_paths: BTreeMap<String, Utf8PathBuf>,
+}
+
+impl CheckedPlanDestination {
+    pub(crate) fn path(&self) -> &Utf8Path {
+        &self.path
+    }
+
+    pub(crate) fn sources(&self) -> &[Utf8PathBuf] {
+        &self.sources
+    }
+
+    pub(crate) fn source_path(&self, planned_path: &str) -> crate::Result<&Utf8Path> {
+        self.source_paths
+            .get(planned_path)
+            .map(Utf8PathBuf::as_path)
+            .ok_or_else(|| {
+                crate::Error::InvalidPath(format!(
+                    "plan source was not checked before writing: {planned_path:?}"
+                ))
+            })
+    }
+}
+
 /// Apply the repository's conservative portable naming profile and reject every collision.
 /// The profile is ASCII-only and case-insensitive across common filesystems.
 pub fn validate_plan(plan: &BuildPlan) -> Result<ValidatedPlan<'_>, PlanValidation> {
@@ -101,23 +130,37 @@ pub fn validate_plan(plan: &BuildPlan) -> Result<ValidatedPlan<'_>, PlanValidati
 }
 
 pub(crate) fn inspect_plan(plan: &BuildPlan) -> Vec<PlanIssue> {
-    let mut issues = Vec::new();
-    let mut groups = BTreeMap::<String, Vec<&LogicalPath>>::new();
+    inspect_groups(&plan.groups)
+}
 
-    for group in &plan.groups {
-        let path = group.path.as_str();
+pub(crate) fn inspect_groups(output_groups: &[crate::domain::OutputGroup]) -> Vec<PlanIssue> {
+    inspect_group_parts(
+        output_groups
+            .iter()
+            .map(|group| (&group.path, group.entries.as_slice())),
+    )
+}
+
+pub(crate) fn inspect_group_parts<'a>(
+    groups: impl Clone + Iterator<Item = (&'a LogicalPath, &'a [crate::domain::LogicalEntry])>,
+) -> Vec<PlanIssue> {
+    let mut issues = Vec::new();
+    let mut groups_by_key = BTreeMap::<String, Vec<&LogicalPath>>::new();
+
+    for (group_path, group_entries) in groups.clone() {
+        let path = group_path.as_str();
         if !is_safe_relative_path(path) {
             issues.push(PlanIssue {
                 kind: PlanIssueKind::UnsafeGroupPath,
-                path: group.path.clone(),
+                path: (*group_path).clone(),
                 conflicts_with: None,
             });
         }
 
         let folded = path.to_ascii_lowercase();
-        groups.entry(folded).or_default().push(&group.path);
+        groups_by_key.entry(folded).or_default().push(group_path);
 
-        for entry in &group.entries {
+        for entry in group_entries {
             if !is_safe_relative_path(entry.path.as_str()) {
                 issues.push(PlanIssue {
                     kind: PlanIssueKind::UnsafeEntryPath,
@@ -128,7 +171,7 @@ pub(crate) fn inspect_plan(plan: &BuildPlan) -> Vec<PlanIssue> {
         }
 
         let mut entries = BTreeMap::<String, Vec<&crate::domain::LogicalEntry>>::new();
-        for entry in &group.entries {
+        for entry in group_entries {
             let path = entry.path.as_str();
             let folded = path.to_ascii_lowercase();
             entries.entry(folded).or_default().push(entry);
@@ -140,24 +183,20 @@ pub(crate) fn inspect_plan(plan: &BuildPlan) -> Vec<PlanIssue> {
                     .then_with(|| left.expected.cmp(&right.expected))
                     .then_with(|| left.requirement.cmp(&right.requirement))
             });
-            for index in 0..duplicates.len() {
-                for duplicate_index in index + 1..duplicates.len() {
-                    let first = duplicates[index];
-                    let duplicate = duplicates[duplicate_index];
-                    issues.push(PlanIssue {
-                        kind: PlanIssueKind::DuplicateEntry(content_relation(
-                            &first.expected,
-                            &duplicate.expected,
-                        )),
-                        path: duplicate.path.clone(),
-                        conflicts_with: Some(first.path.clone()),
-                    });
-                }
+            // Find one witness of each possible relation in linear time. There are only
+            // four comparable evidence fields, so indexing every non-empty projection
+            // costs a fixed amount per entry rather than comparing every pair.
+            for (first, duplicate) in entry_collision_witnesses(duplicates) {
+                let relation = content_relation(&first.expected, &duplicate.expected);
+                issues.push(PlanIssue {
+                    kind: PlanIssueKind::DuplicateEntry(relation),
+                    path: duplicate.path.clone(),
+                    conflicts_with: Some(first.path.clone()),
+                });
             }
         }
 
-        let entry_paths = group
-            .entries
+        let entry_paths = group_entries
             .iter()
             .map(|entry| entry.path.as_str().to_ascii_lowercase())
             .collect::<BTreeSet<_>>();
@@ -175,38 +214,164 @@ pub(crate) fn inspect_plan(plan: &BuildPlan) -> Vec<PlanIssue> {
         }
     }
 
-    for duplicates in groups.values_mut() {
+    for duplicates in groups_by_key.values_mut() {
         duplicates.sort();
-        for index in 0..duplicates.len() {
-            for duplicate_index in index + 1..duplicates.len() {
-                issues.push(PlanIssue {
-                    kind: PlanIssueKind::DuplicateGroup,
-                    path: duplicates[duplicate_index].clone(),
-                    conflicts_with: Some(duplicates[index].clone()),
-                });
-            }
+        if let [first, duplicate, ..] = duplicates.as_slice() {
+            issues.push(PlanIssue {
+                kind: PlanIssueKind::DuplicateGroup,
+                path: (*duplicate).clone(),
+                conflicts_with: Some((*first).clone()),
+            });
         }
     }
 
-    let group_paths = groups.keys().cloned().collect::<BTreeSet<_>>();
-    for path in &group_paths {
-        for slash in path.match_indices('/').map(|(index, _)| index) {
-            let prefix = &path[..slash];
-            if group_paths.contains(prefix) {
-                issues.push(PlanIssue {
-                    kind: PlanIssueKind::GroupFileDirectoryConflict,
-                    path: LogicalPath::new(path),
-                    conflicts_with: Some(LogicalPath::new(prefix)),
-                });
-            }
-        }
-    }
+    issues.extend(group_artifact_conflicts(groups.map(|(path, _)| path)));
 
     issues.sort_by(|left, right| {
         left.path
             .cmp(&right.path)
             .then_with(|| format!("{:?}", left.kind).cmp(&format!("{:?}", right.kind)))
     });
+    issues
+}
+
+fn entry_collision_witnesses<'a>(
+    entries: &[&'a crate::domain::LogicalEntry],
+) -> Vec<(
+    &'a crate::domain::LogicalEntry,
+    &'a crate::domain::LogicalEntry,
+)> {
+    use crate::domain::EvidenceScope;
+
+    let mut witnesses = [None; 3];
+    let mut by_projection = HashMap::<(u8, u8, Vec<u8>), &crate::domain::LogicalEntry>::new();
+    let mut first_by_mask = [None; 16];
+    let mut first_by_field: [Option<(Vec<u8>, &'a crate::domain::LogicalEntry)>; 4] =
+        std::array::from_fn(|_| None);
+    let mut first_entry = None;
+    let mut first_non_whole = None;
+
+    for entry in entries {
+        let expected = &entry.expected;
+        if expected.scope != EvidenceScope::WholeAsset {
+            if let Some(first) = first_entry {
+                witnesses[2].get_or_insert((first, *entry));
+            }
+            first_non_whole.get_or_insert(*entry);
+            first_entry.get_or_insert(*entry);
+            continue;
+        }
+        if let Some(first) = first_non_whole {
+            witnesses[2].get_or_insert((first, *entry));
+        }
+        first_entry.get_or_insert(*entry);
+
+        let mask = evidence_mask(expected);
+        for other_mask in 0_u8..16 {
+            if mask & other_mask == 0
+                && let Some(first) = first_by_mask[usize::from(other_mask)]
+            {
+                witnesses[2].get_or_insert((first, *entry));
+            }
+        }
+
+        for other_mask in 1_u8..16 {
+            let shared = mask & other_mask;
+            if let Some(first) =
+                by_projection.get(&(other_mask, shared, evidence_projection(expected, shared)))
+            {
+                let witness = if shared & 0b011 != 0 {
+                    &mut witnesses[0]
+                } else if shared & 0b1100 != 0 {
+                    &mut witnesses[2]
+                } else {
+                    continue;
+                };
+                witness.get_or_insert((*first, *entry));
+            }
+        }
+
+        for (field, first_for_field) in first_by_field.iter_mut().enumerate() {
+            if mask & (1 << field) == 0 {
+                continue;
+            }
+            let value = evidence_projection(expected, 1 << field);
+            if let Some((first_value, first)) = first_for_field {
+                if first_value != &value {
+                    witnesses[1].get_or_insert((*first, *entry));
+                }
+            } else {
+                *first_for_field = Some((value, *entry));
+            }
+        }
+
+        first_by_mask[mask as usize].get_or_insert(*entry);
+        for projection in 1_u8..16 {
+            if mask & projection == projection {
+                by_projection
+                    .entry((mask, projection, evidence_projection(expected, projection)))
+                    .or_insert(*entry);
+            }
+        }
+    }
+
+    witnesses.into_iter().flatten().collect()
+}
+
+fn evidence_mask(evidence: &ExpectedEvidence) -> u8 {
+    u8::from(evidence.sha1.is_some())
+        | (u8::from(evidence.md5.is_some()) << 1)
+        | (u8::from(evidence.crc.is_some()) << 2)
+        | (u8::from(evidence.size.is_some()) << 3)
+}
+
+fn evidence_projection(evidence: &ExpectedEvidence, mask: u8) -> Vec<u8> {
+    let mut key = Vec::with_capacity(40);
+    if mask & 1 != 0
+        && let Some(sha1) = evidence.sha1
+    {
+        key.extend_from_slice(&sha1);
+    }
+    if mask & 2 != 0
+        && let Some(md5) = evidence.md5
+    {
+        key.extend_from_slice(&md5.0);
+    }
+    if mask & 4 != 0
+        && let Some(crc) = evidence.crc
+    {
+        key.extend_from_slice(&crc.0);
+    }
+    if mask & 8 != 0
+        && let Some(size) = evidence.size
+    {
+        key.extend_from_slice(&size.to_be_bytes());
+    }
+    key
+}
+
+fn group_artifact_conflicts<'a>(
+    groups: impl IntoIterator<Item = &'a LogicalPath>,
+) -> Vec<PlanIssue> {
+    let artifact_paths = groups
+        .into_iter()
+        .map(|path| format!("{}.zip", path.as_str()).to_ascii_lowercase())
+        .collect::<BTreeSet<_>>();
+    let mut issues = Vec::new();
+    for path in &artifact_paths {
+        for slash in path.match_indices('/').map(|(index, _)| index) {
+            let prefix = &path[..slash];
+            if artifact_paths.contains(prefix) {
+                issues.push(PlanIssue {
+                    kind: PlanIssueKind::GroupFileDirectoryConflict,
+                    path: LogicalPath::new(path.strip_suffix(".zip").unwrap_or(path)),
+                    conflicts_with: Some(LogicalPath::new(
+                        prefix.strip_suffix(".zip").unwrap_or(prefix),
+                    )),
+                });
+            }
+        }
+    }
     issues
 }
 
@@ -235,12 +400,14 @@ fn is_safe_component(component: &str) -> bool {
         .next()
         .unwrap_or_default()
         .to_ascii_uppercase();
-    !matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-        && !["COM", "LPT"].into_iter().any(|prefix| {
-            stem.strip_prefix(prefix).is_some_and(|suffix| {
-                suffix.len() == 1 && suffix.as_bytes()[0].is_ascii_digit() && suffix != "0"
-            })
+    !matches!(
+        stem.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) && !["COM", "LPT"].into_iter().any(|prefix| {
+        stem.strip_prefix(prefix).is_some_and(|suffix| {
+            suffix.len() == 1 && suffix.as_bytes()[0].is_ascii_digit() && suffix != "0"
         })
+    })
 }
 
 const fn has_windows_drive_prefix(path: &str) -> bool {
@@ -255,22 +422,31 @@ fn content_relation(left: &ExpectedEvidence, right: &ExpectedEvidence) -> Conten
         return ContentRelation::UnknownContent;
     }
 
-    let mut comparable = false;
+    let mut matching_strong_digest = false;
     macro_rules! compare {
         ($field:ident) => {
             if let (Some(left), Some(right)) = (&left.$field, &right.$field) {
-                comparable = true;
                 if left != right {
                     return ContentRelation::DifferentContent;
                 }
             }
         };
     }
-    compare!(sha1);
-    compare!(md5);
-    compare!(crc);
+    macro_rules! compare_digest {
+        ($field:ident, $strong:expr) => {
+            if let (Some(left), Some(right)) = (&left.$field, &right.$field) {
+                matching_strong_digest |= $strong;
+                if left != right {
+                    return ContentRelation::DifferentContent;
+                }
+            }
+        };
+    }
+    compare_digest!(sha1, true);
+    compare_digest!(md5, true);
+    compare_digest!(crc, false);
     compare!(size);
-    if comparable {
+    if matching_strong_digest {
         ContentRelation::SameEstablishedContent
     } else {
         ContentRelation::UnknownContent
@@ -282,67 +458,152 @@ pub fn ensure_sources_disjoint_from_destination(
     sources: &[&Utf8Path],
     destination: &Utf8Path,
 ) -> crate::Result<()> {
+    checked_destination(sources, destination).map(drop)
+}
+
+pub(crate) fn checked_destination(
+    sources: &[&Utf8Path],
+    destination: &Utf8Path,
+) -> crate::Result<Utf8PathBuf> {
     let destination = canonicalize_destination(destination)?;
     for source in sources {
-        let source = source.canonicalize_utf8()?;
+        // Source files may have disappeared since the plan was created. Resolve all
+        // existing path components (including symlinks), but preserve a missing
+        // suffix so the writer can report that artifact as a per-file failure.
+        let source = canonicalize_destination(source)?;
         if source.starts_with(&destination) || destination.starts_with(&source) {
             return Err(crate::Error::InvalidPath(format!(
-                "source/destination overlap is not allowed: source={source} destination={destination}"
+                "source/destination overlap is not allowed: source={:?} destination={:?}",
+                source.as_str(),
+                destination.as_str()
             )));
         }
     }
-    Ok(())
+    Ok(destination)
 }
 
-fn canonicalize_destination(destination: &Utf8Path) -> crate::Result<Utf8PathBuf> {
+pub(crate) fn checked_plan_destination(
+    plan: &BuildPlan,
+    destination: &Utf8Path,
+) -> crate::Result<CheckedPlanDestination> {
+    let mut source_roots = BTreeSet::new();
+    let mut canonical_roots = BTreeMap::<String, Utf8PathBuf>::new();
+    let mut source_paths = BTreeMap::<String, Utf8PathBuf>::new();
+    for entry in plan.groups.iter().flat_map(|group| &group.entries) {
+        let root_key = entry.source.source_root.as_str();
+        let declared_root = if let Some(root) = canonical_roots.get(root_key) {
+            root.clone()
+        } else {
+            let root = Utf8Path::new(root_key).canonicalize_utf8()?;
+            canonical_roots.insert(root_key.to_owned(), root.clone());
+            root
+        };
+        let planned_path = source_location_path(&entry.source.location);
+        let source_entry = source_entry_path(Utf8Path::new(planned_path))?;
+        if !source_entry.starts_with(&declared_root) {
+            return Err(crate::Error::InvalidPath(format!(
+                "plan source is outside its declared source root: source={:?} root={:?}",
+                source_entry.as_str(),
+                declared_root.as_str()
+            )));
+        }
+        if !source_paths.contains_key(planned_path) {
+            source_paths.insert(
+                planned_path.to_owned(),
+                canonicalize_destination(Utf8Path::new(planned_path))?,
+            );
+        }
+        source_roots.insert(declared_root);
+    }
+
+    let mut checked_sources = source_roots.clone();
+    checked_sources.extend(source_paths.values().cloned());
+    let checked_sources = checked_sources.into_iter().collect::<Vec<_>>();
+    let source_refs = checked_sources
+        .iter()
+        .map(Utf8PathBuf::as_path)
+        .collect::<Vec<_>>();
+    let path = checked_destination(&source_refs, destination)?;
+    Ok(CheckedPlanDestination {
+        path,
+        sources: source_roots.into_iter().collect(),
+        source_paths,
+    })
+}
+
+fn source_location_path(location: &SourceLocation) -> &str {
+    match location {
+        SourceLocation::BareFile { path }
+        | SourceLocation::ArchiveMember { path, .. }
+        | SourceLocation::LegacyUnknown { path, .. } => path,
+    }
+}
+
+fn source_entry_path(path: &Utf8Path) -> crate::Result<Utf8PathBuf> {
+    let parent = path.parent().ok_or_else(|| {
+        crate::Error::InvalidPath(format!(
+            "source path has no parent directory: {:?}",
+            path.as_str()
+        ))
+    })?;
+    let name = path.file_name().ok_or_else(|| {
+        crate::Error::InvalidPath(format!("source path has no file name: {:?}", path.as_str()))
+    })?;
+    Ok(canonicalize_destination(parent)?.join(name))
+}
+
+pub(crate) fn canonicalize_destination(destination: &Utf8Path) -> crate::Result<Utf8PathBuf> {
     let absolute = if destination.is_absolute() {
         destination.to_path_buf()
     } else {
         Utf8PathBuf::try_from(std::env::current_dir()?.join(destination))
             .map_err(|_| crate::Error::InvalidPath("destination path is not UTF-8".to_owned()))?
     };
-    let normalized = normalize_absolute(absolute.as_std_path())?;
-    let mut ancestor = normalized;
-    let mut suffix = Vec::<String>::new();
-    while match fs::symlink_metadata(&ancestor) {
-        Ok(_) => false,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
-        Err(error) => return Err(error.into()),
-    } {
-        let Some(name) = ancestor.file_name().map(str::to_owned) else {
-            return Err(crate::Error::InvalidPath(format!(
-                "destination has no existing ancestor: {destination}"
-            )));
-        };
-        suffix.push(name);
-        if !ancestor.pop() {
-            return Err(crate::Error::InvalidPath(format!(
-                "destination has no existing ancestor: {destination}"
-            )));
+    match fs::canonicalize(absolute.as_std_path()) {
+        Ok(canonical) => {
+            return Utf8PathBuf::try_from(canonical).map_err(|_| {
+                crate::Error::InvalidPath("destination path is not UTF-8".to_owned())
+            });
         }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
     }
-
-    let mut canonical = ancestor.canonicalize_utf8()?;
-    for component in suffix.iter().rev() {
-        canonical.push(component);
-    }
-    Ok(canonical)
-}
-
-fn normalize_absolute(path: &Path) -> crate::Result<Utf8PathBuf> {
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
+    let mut resolved = PathBuf::new();
+    for component in absolute.as_std_path().components() {
         match component {
-            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
-            Component::RootDir => normalized.push(component.as_os_str()),
+            Component::Prefix(prefix) => resolved.push(prefix.as_os_str()),
+            Component::RootDir => resolved.push(component.as_os_str()),
             Component::CurDir => {}
             Component::ParentDir => {
-                normalized.pop();
+                resolved.pop();
             }
-            Component::Normal(name) => normalized.push(name),
+            Component::Normal(name) => {
+                let candidate = resolved.join(name);
+                match fs::canonicalize(&candidate) {
+                    Ok(canonical) => resolved = canonical,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        match fs::symlink_metadata(&candidate) {
+                            Ok(metadata) if metadata.file_type().is_symlink() => {
+                                return Err(crate::Error::InvalidPath(format!(
+                                    "dangling symlink in path: {:?}",
+                                    candidate.to_string_lossy()
+                                )));
+                            }
+                            Err(metadata_error)
+                                if metadata_error.kind() == std::io::ErrorKind::NotFound =>
+                            {
+                                resolved.push(name);
+                            }
+                            Err(metadata_error) => return Err(metadata_error.into()),
+                            Ok(_) => return Err(error.into()),
+                        }
+                    }
+                    Err(error) => return Err(error.into()),
+                }
+            }
         }
     }
-    Utf8PathBuf::try_from(normalized)
+    Utf8PathBuf::try_from(resolved)
         .map_err(|_| crate::Error::InvalidPath("destination path is not UTF-8".to_owned()))
 }
 
@@ -361,11 +622,42 @@ mod tests {
         }
     }
 
+    #[test]
+    fn overlap_diagnostic_escapes_control_characters_in_paths()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let source = Utf8PathBuf::try_from(temp_dir.path().join("source\nroot"))?;
+        fs::create_dir(&source)?;
+
+        let message = match checked_destination(&[source.as_path()], &source) {
+            Ok(_) => return Err("expected source/destination overlap to fail".into()),
+            Err(error) => error.to_string(),
+        };
+
+        assert!(message.contains("\\nroot"));
+        assert!(!message.contains('\n'));
+        Ok(())
+    }
+
     fn group(path: &str, entries: Vec<LogicalEntry>) -> OutputGroup {
         OutputGroup {
             path: LogicalPath::new(path),
             entries,
         }
+    }
+
+    #[test]
+    fn plan_issue_display_escapes_control_characters() {
+        let issue = PlanIssue {
+            kind: PlanIssueKind::UnsafeGroupPath,
+            path: LogicalPath::new("bad\u{1b}[31m"),
+            conflicts_with: Some(LogicalPath::new("other\n")),
+        };
+
+        assert_eq!(
+            issue.to_string(),
+            r#"unsafe logical output group path: "bad\u{1b}[31m" conflicts with "other\n""#
+        );
     }
 
     fn entry(path: &str, expected: ExpectedEvidence) -> LogicalEntry {
@@ -376,6 +668,9 @@ mod tests {
                 location: crate::domain::SourceLocation::BareFile {
                     path: "/unused/file".to_owned(),
                 },
+                physical_path: crate::domain::SourcePhysicalPath::from_storage(
+                    "/unused/file".to_owned(),
+                ),
                 observed: crate::domain::ObservedContent {
                     scope: crate::domain::EvidenceScope::WholeAsset,
                     provenance: crate::domain::EvidenceProvenance::Computed,
@@ -399,13 +694,23 @@ mod tests {
                 policy: crate::domain::MatchingPolicy::Sha1Compatibility,
                 strength: crate::resolution::MatchStrength::Sha1,
                 assessments: Vec::new(),
+                omitted_assessments: 0,
             },
         }
     }
 
     #[test]
     fn rejects_unsafe_portable_names() {
-        for name in ["../outside", "CON.txt", "bad.", "bad ", "a\\b", "É.rom"] {
+        for name in [
+            "../outside",
+            "CON.txt",
+            "CONIN$",
+            "CONOUT$",
+            "bad.",
+            "bad ",
+            "a\\b",
+            "É.rom",
+        ] {
             assert!(!is_safe_relative_path(name), "accepted {name:?}");
         }
         for name in ["safe/name.rom", "safe-name.rom", "Disk 1.rom"] {
@@ -418,7 +723,7 @@ mod tests {
         let plan = empty_plan(vec![
             group("Games/Parent", Vec::new()),
             group("games/parent", Vec::new()),
-            group("games/parent/clone", Vec::new()),
+            group("games/parent.zip/clone", Vec::new()),
         ]);
 
         let issues = inspect_plan(&plan);
@@ -431,6 +736,46 @@ mod tests {
             issues
                 .iter()
                 .any(|issue| issue.kind == PlanIssueKind::GroupFileDirectoryConflict)
+        );
+    }
+
+    #[test]
+    fn validates_collisions_after_appending_zip_extension() {
+        let compatible = empty_plan(vec![group("a", Vec::new()), group("a/b", Vec::new())]);
+        assert!(
+            !inspect_plan(&compatible)
+                .iter()
+                .any(|issue| { issue.kind == PlanIssueKind::GroupFileDirectoryConflict })
+        );
+
+        let conflict = empty_plan(vec![group("a", Vec::new()), group("a.zip/b", Vec::new())]);
+        assert!(
+            inspect_plan(&conflict)
+                .iter()
+                .any(|issue| { issue.kind == PlanIssueKind::GroupFileDirectoryConflict })
+        );
+    }
+
+    #[test]
+    fn size_alone_does_not_establish_identical_content() {
+        let left = ExpectedEvidence {
+            scope: crate::domain::EvidenceScope::WholeAsset,
+            size: Some(123),
+            ..ExpectedEvidence::default()
+        };
+        let right = left.clone();
+        assert_eq!(
+            content_relation(&left, &right),
+            ContentRelation::UnknownContent
+        );
+
+        let different_size = ExpectedEvidence {
+            size: Some(124),
+            ..right
+        };
+        assert_eq!(
+            content_relation(&left, &different_size),
+            ContentRelation::DifferentContent
         );
     }
 
@@ -477,6 +822,105 @@ mod tests {
     }
 
     #[test]
+    fn matching_crc_without_stronger_digest_does_not_establish_content_identity() {
+        let left = ExpectedEvidence {
+            scope: crate::domain::EvidenceScope::WholeAsset,
+            crc: Some(crate::domain::Crc32Digest([1; 4])),
+            size: Some(1024),
+            ..ExpectedEvidence::default()
+        };
+        let right = left.clone();
+
+        assert_eq!(
+            content_relation(&left, &right),
+            ContentRelation::UnknownContent
+        );
+        assert_eq!(
+            content_relation(
+                &left,
+                &ExpectedEvidence {
+                    crc: Some(crate::domain::Crc32Digest([2; 4])),
+                    ..right
+                }
+            ),
+            ContentRelation::DifferentContent
+        );
+    }
+
+    #[test]
+    fn matching_crc_only_duplicates_are_reported_as_unknown_content() {
+        let expected = ExpectedEvidence {
+            scope: crate::domain::EvidenceScope::WholeAsset,
+            crc: Some(crate::domain::Crc32Digest([1; 4])),
+            size: Some(1024),
+            ..ExpectedEvidence::default()
+        };
+        let plan = empty_plan(vec![group(
+            "set",
+            vec![
+                entry("rom.bin", expected.clone()),
+                entry("rom.bin", expected),
+            ],
+        )]);
+
+        assert!(inspect_plan(&plan).iter().any(|issue| {
+            issue.kind == PlanIssueKind::DuplicateEntry(ContentRelation::UnknownContent)
+        }));
+        assert!(validate_plan(&plan).is_err());
+    }
+
+    #[test]
+    fn matching_size_only_duplicates_are_reported_as_unknown_content() {
+        let expected = ExpectedEvidence {
+            scope: crate::domain::EvidenceScope::WholeAsset,
+            size: Some(1024),
+            ..ExpectedEvidence::default()
+        };
+        let plan = empty_plan(vec![group(
+            "set",
+            vec![
+                entry("rom.bin", expected.clone()),
+                entry("rom.bin", expected),
+            ],
+        )]);
+
+        assert!(inspect_plan(&plan).iter().any(|issue| {
+            issue.kind == PlanIssueKind::DuplicateEntry(ContentRelation::UnknownContent)
+        }));
+        assert!(validate_plan(&plan).is_err());
+    }
+
+    #[test]
+    fn crc_only_match_does_not_consume_strong_identity_witness() {
+        let crc_only = ExpectedEvidence {
+            scope: crate::domain::EvidenceScope::WholeAsset,
+            crc: Some(crate::domain::Crc32Digest([1; 4])),
+            ..ExpectedEvidence::default()
+        };
+        let matching_md5 = ExpectedEvidence {
+            scope: crate::domain::EvidenceScope::WholeAsset,
+            md5: Some(crate::domain::Md5Digest([2; 16])),
+            ..ExpectedEvidence::default()
+        };
+        let entries = [
+            entry("rom.bin", crc_only.clone()),
+            entry("rom.bin", crc_only),
+            entry("rom.bin", matching_md5.clone()),
+            entry("rom.bin", matching_md5),
+        ];
+        let entries = entries.iter().collect::<Vec<_>>();
+
+        assert!(
+            entry_collision_witnesses(&entries)
+                .iter()
+                .any(|(left, right)| {
+                    content_relation(&left.expected, &right.expected)
+                        == ContentRelation::SameEstablishedContent
+                })
+        );
+    }
+
+    #[test]
     fn validation_diagnostics_are_stable_under_group_and_entry_permutations() {
         let expected = ExpectedEvidence {
             scope: crate::domain::EvidenceScope::WholeAsset,
@@ -499,6 +943,124 @@ mod tests {
         ]));
 
         assert_eq!(reordered, original);
+    }
+
+    #[test]
+    fn large_casefolded_group_class_has_one_stable_diagnostic() {
+        let groups = (0..10_000)
+            .map(|bits| {
+                let name = (0..14)
+                    .map(|bit| if bits & (1 << bit) == 0 { 'a' } else { 'A' })
+                    .collect::<String>();
+                group(&name, Vec::new())
+            })
+            .collect::<Vec<_>>();
+        let original = empty_plan(groups.clone());
+        let reversed = empty_plan(groups.into_iter().rev().collect());
+
+        let issues = inspect_plan(&original);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].kind, PlanIssueKind::DuplicateGroup);
+        assert_eq!(inspect_plan(&reversed), issues);
+        assert!(validate_plan(&original).is_err());
+    }
+
+    #[test]
+    fn large_casefolded_entry_class_has_bounded_content_diagnostics() {
+        let expected = ExpectedEvidence {
+            scope: crate::domain::EvidenceScope::WholeAsset,
+            sha1: Some([1; 20]),
+            ..ExpectedEvidence::default()
+        };
+        let mut entries = vec![
+            entry("rom.bin", ExpectedEvidence::default()),
+            entry("rom.bin", expected.clone()),
+            entry(
+                "rom.bin",
+                ExpectedEvidence {
+                    sha1: Some([2; 20]),
+                    ..expected.clone()
+                },
+            ),
+        ];
+        entries.extend((0..9_997).map(|_| entry("rom.bin", expected.clone())));
+        let original = empty_plan(vec![group("set", entries.clone())]);
+        let reversed = empty_plan(vec![group("set", entries.into_iter().rev().collect())]);
+
+        let issues = inspect_plan(&original);
+        assert_eq!(issues.len(), 3);
+        for relation in [
+            ContentRelation::SameEstablishedContent,
+            ContentRelation::DifferentContent,
+            ContentRelation::UnknownContent,
+        ] {
+            assert!(issues.iter().any(|issue| {
+                issue.kind == PlanIssueKind::DuplicateEntry(relation)
+                    && issue.path.as_str() == "rom.bin"
+                    && issue
+                        .conflicts_with
+                        .as_ref()
+                        .is_some_and(|path| path.as_str() == "rom.bin")
+            }));
+        }
+        assert_eq!(inspect_plan(&reversed), issues);
+        assert!(validate_plan(&original).is_err());
+    }
+
+    #[test]
+    fn bounded_entry_diagnostics_find_relations_between_later_evidence_shapes() {
+        let entries = vec![
+            entry("rom.bin", ExpectedEvidence::default()),
+            entry(
+                "rom.bin",
+                ExpectedEvidence {
+                    scope: crate::domain::EvidenceScope::WholeAsset,
+                    md5: Some(crate::domain::Md5Digest([0; 16])),
+                    ..ExpectedEvidence::default()
+                },
+            ),
+            entry(
+                "rom.bin",
+                ExpectedEvidence {
+                    scope: crate::domain::EvidenceScope::WholeAsset,
+                    crc: Some(crate::domain::Crc32Digest([0; 4])),
+                    ..ExpectedEvidence::default()
+                },
+            ),
+            entry(
+                "rom.bin",
+                ExpectedEvidence {
+                    scope: crate::domain::EvidenceScope::WholeAsset,
+                    crc: Some(crate::domain::Crc32Digest([0; 4])),
+                    md5: Some(crate::domain::Md5Digest([1; 16])),
+                    ..ExpectedEvidence::default()
+                },
+            ),
+            entry(
+                "rom.bin",
+                ExpectedEvidence {
+                    scope: crate::domain::EvidenceScope::WholeAsset,
+                    md5: Some(crate::domain::Md5Digest([0; 16])),
+                    ..ExpectedEvidence::default()
+                },
+            ),
+        ];
+        let plan = empty_plan(vec![group("set", entries)]);
+
+        let issues = inspect_plan(&plan);
+        assert_eq!(issues.len(), 3);
+        for relation in [
+            ContentRelation::SameEstablishedContent,
+            ContentRelation::DifferentContent,
+            ContentRelation::UnknownContent,
+        ] {
+            assert!(
+                issues
+                    .iter()
+                    .any(|issue| { issue.kind == PlanIssueKind::DuplicateEntry(relation) })
+            );
+        }
+        assert!(validate_plan(&plan).is_err());
     }
 
     #[test]
@@ -526,7 +1088,80 @@ mod tests {
             symlink(source, &alias)?;
             let destination = alias.join("generated");
             assert!(ensure_sources_disjoint_from_destination(&[source], &destination).is_err());
+
+            let target = source.join("child");
+            std::fs::create_dir_all(&target)?;
+            let parent_alias = temp.path().join("parent-alias");
+            symlink(&target, &parent_alias)?;
+            let traversal = Utf8PathBuf::try_from(parent_alias.join("../new"))
+                .map_err(|_| std::io::Error::other("temporary path is not UTF-8"))?;
+            assert!(ensure_sources_disjoint_from_destination(&[source], &traversal).is_err());
         }
+        Ok(())
+    }
+
+    #[test]
+    fn checked_plan_destination_allows_a_missing_source_inside_its_root() -> crate::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let source_dir = temp.path().join("input");
+        std::fs::create_dir_all(&source_dir)?;
+        let source_root = Utf8Path::from_path(&source_dir)
+            .ok_or_else(|| std::io::Error::other("temporary path is not UTF-8"))?;
+        let missing_source = source_root.join("not-yet-present.rom");
+        let destination_path = temp.path().join("output");
+        let destination = Utf8Path::from_path(&destination_path)
+            .ok_or_else(|| std::io::Error::other("temporary path is not UTF-8"))?;
+        let mut source = entry("game.rom", ExpectedEvidence::default()).source;
+        source.source_root = crate::domain::SourceRoot::new(source_root.as_str());
+        source.location = crate::domain::SourceLocation::BareFile {
+            path: missing_source.to_string(),
+        };
+        let mut planned_entry = entry("game.rom", ExpectedEvidence::default());
+        planned_entry.source = source;
+        let plan = empty_plan(vec![group("set", vec![planned_entry])]);
+
+        let checked = checked_plan_destination(&plan, destination)?;
+        assert_eq!(checked.path(), &canonicalize_destination(destination)?);
+        assert_eq!(checked.sources(), &[source_root.canonicalize_utf8()?]);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn checked_plan_destination_rejects_a_dangling_source_symlink() -> crate::Result<()> {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir()?;
+        let source_dir = temp.path().join("input");
+        std::fs::create_dir_all(&source_dir)?;
+        let source_root = Utf8Path::from_path(&source_dir)
+            .ok_or_else(|| std::io::Error::other("temporary path is not UTF-8"))?;
+        let first_source = source_root.join("first.rom");
+        std::fs::write(&first_source, b"first")?;
+        let destination_path = temp.path().join("output");
+        let destination = Utf8Path::from_path(&destination_path)
+            .ok_or_else(|| std::io::Error::other("temporary path is not UTF-8"))?;
+        let dangling_source = source_root.join("generated.zip");
+        symlink(destination.join("first.zip"), &dangling_source)?;
+
+        let make_source = |path: &Utf8Path| {
+            let mut source = entry("game.rom", ExpectedEvidence::default()).source;
+            source.source_root = crate::domain::SourceRoot::new(source_root.as_str());
+            source.location = crate::domain::SourceLocation::BareFile {
+                path: path.to_string(),
+            };
+            source
+        };
+        let mut first = entry("first.rom", ExpectedEvidence::default());
+        first.source = make_source(&first_source);
+        let mut second = entry("second.rom", ExpectedEvidence::default());
+        second.source = make_source(&dangling_source);
+        let plan = empty_plan(vec![
+            group("first", vec![first]),
+            group("second", vec![second]),
+        ]);
+
+        assert!(checked_plan_destination(&plan, destination).is_err());
         Ok(())
     }
 }

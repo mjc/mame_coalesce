@@ -1,19 +1,42 @@
-use camino::Utf8PathBuf;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
+use camino::{Utf8Path, Utf8PathBuf};
+use diesel::{
+    QueryableByName,
+    prelude::*,
+    sql_query,
+    sql_types::{Binary, Nullable, Text},
+};
+use serde::Serialize;
+
+use crate::reconciliation::CatalogReconciliation;
 use crate::{
-    build::{planner::plan_build as build_plan, write_plan_with_container},
+    build::mame_layout::MameLayoutDiagnostic,
+    build::view_manifest::ViewManifest,
+    build::{
+        validation::{self, PlanIssue},
+        write_plan_with_container, write_plan_with_container_policy,
+    },
     database::Database,
+    disk::{
+        self, DiskDigestScope, DiskIdentitySha1, DiskName, DiskObservation, DiskRequirement,
+        DiskVerificationState, ParentDiskName,
+    },
     domain::{
-        ArtifactOutcome, ArtifactResult, AuditReport, BuildMode, BuildReport, BuildRequest,
-        CatalogKey, CatalogScope, ImportRunKey, MatchingPolicy, MissingContentPolicy,
-        ObservationBasis, OutputContainer, PlanOutcome, PublishingSourceKey, ScanRunKey,
-        SetSelection, SnapshotKey, SourceRoot, ZipCompression,
+        ArchiveBackend, ArtifactOutcome, ArtifactResult, ArtifactReusePolicy, AuditReport,
+        BuildMode, BuildPlan, BuildReport, BuildRequest, CatalogKey, CatalogScope,
+        CatalogSnapshotDiff, CatalogSnapshotEntry, ImportRunKey, MatchingPolicy,
+        MissingContentPolicy, ObservationBasis, OutputContainer, OutputGroup, PlanOutcome,
+        PublishingSourceKey, RelationshipAssertionKey, RelationshipClaim, RelationshipExplanation,
+        RelationshipReview, ScanRunKey, SelectedSourceVerification, SelectedVerificationOutcome,
+        SetSelection, SnapshotKey, SourceRoot, VerificationBasis, ZipCompression,
     },
     operations,
     storage::repositories::{BuildRepository, DataFileSelector, SourceRepository},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Inputs needed to import a catalog document into the local cache.
 pub struct CatalogImportRequest {
     pub document_path: Utf8PathBuf,
     pub format: CatalogDocumentFormat,
@@ -25,6 +48,7 @@ pub struct CatalogImportRequest {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Format of a supported catalog document.
 pub enum CatalogDocumentFormat {
     Logiqx,
     MameListXml,
@@ -34,6 +58,7 @@ pub enum CatalogDocumentFormat {
 }
 
 impl CatalogDocumentFormat {
+    /// Return the stable identifier used when reporting this document format.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -47,12 +72,14 @@ impl CatalogDocumentFormat {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Result status for a catalog import attempt.
 pub enum CatalogImportStatus {
     Succeeded,
     Failed,
 }
 
 impl CatalogImportStatus {
+    /// Return the stable lowercase identifier for this status.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -63,6 +90,7 @@ impl CatalogImportStatus {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Summary of a catalog import and its diagnostics.
 pub struct CatalogImportReport {
     pub snapshot_key: Option<SnapshotKey>,
     pub run_key: ImportRunKey,
@@ -71,16 +99,19 @@ pub struct CatalogImportReport {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Inputs needed to import a Logiqx DAT file.
 pub struct DatImportRequest {
     pub dat_path: Utf8PathBuf,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Identifies the imported DAT record in the cache.
 pub struct DatImportReport {
     pub data_file_id: i32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Inputs needed to scan a source directory or its supported archives.
 pub struct SourceScanRequest {
     pub source_path: Utf8PathBuf,
     pub jobs: usize,
@@ -119,6 +150,7 @@ impl SourceRootSelection {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Counts and identity for one completed source scan.
 pub struct SourceScanReport {
     pub source_path: Utf8PathBuf,
     pub scan_run: ScanRunKey,
@@ -129,12 +161,14 @@ pub struct SourceScanReport {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Progress notifications emitted while scanning source files.
 pub enum ScanProgressEvent {
     Started { files: u64 },
     Advanced,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Inputs needed to plan and optionally write build artifacts.
 pub struct BuildWorkflowRequest {
     pub dat_path: Utf8PathBuf,
     pub source_path: Utf8PathBuf,
@@ -147,13 +181,103 @@ pub struct BuildWorkflowRequest {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Build diagnostics, artifact outcomes, and any paths visibly written.
 pub struct BuildWorkflowReport {
     pub written_paths: Vec<Utf8PathBuf>,
     pub artifact_results: Vec<ArtifactResult>,
     pub build_report: BuildReport,
+    /// Scan results for every selected root. `scan_report` is retained as the legacy primary-root view.
+    pub scan_reports: Vec<SourceScanReport>,
+    pub scan_report: Option<SourceScanReport>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Inputs for materializing one already-pinned target view through an existing output backend.
+pub struct ViewMaterializationRequest<'a> {
+    pub manifest: &'a ViewManifest,
+    pub destination_path: &'a Utf8Path,
+    pub container: OutputContainer,
+    pub compression: ZipCompression,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Diagnostics and artifact outcomes from consuming a pinned target view.
+pub struct ViewMaterializationReport {
+    pub written_paths: Vec<Utf8PathBuf>,
+    pub artifact_results: Vec<ArtifactResult>,
+    pub layout_diagnostics: Vec<MameLayoutDiagnostic>,
+    pub validation_issues: Vec<PlanIssue>,
+}
+
+/// Execute a pinned view through the shared validation, verification, and staged writer path.
+pub fn materialize_view(
+    request: &ViewMaterializationRequest<'_>,
+) -> crate::Result<ViewMaterializationReport> {
+    let manifest = request.manifest;
+    let groups = manifest
+        .layout()
+        .groups()
+        .iter()
+        .map(|group| OutputGroup {
+            path: group.path().clone(),
+            entries: group.entries().to_vec(),
+        })
+        .collect::<Vec<_>>();
+    let layout_diagnostics = manifest.layout().diagnostics().to_vec();
+    let validation_issues = validation::inspect_groups(&groups);
+    let mut result = ViewMaterializationReport {
+        written_paths: Vec::new(),
+        artifact_results: Vec::new(),
+        layout_diagnostics,
+        validation_issues: validation_issues.clone(),
+    };
+    if !result.layout_diagnostics.is_empty() || !validation_issues.is_empty() {
+        return Ok(result);
+    }
+
+    let source_roots = groups
+        .iter()
+        .flat_map(|group| group.entries.iter().map(|entry| &entry.source.source_root))
+        .collect::<std::collections::BTreeSet<_>>();
+    let source_paths = source_roots
+        .iter()
+        .map(|root| Utf8Path::new(root.as_str()))
+        .collect::<Vec<_>>();
+    validation::ensure_sources_disjoint_from_destination(&source_paths, request.destination_path)?;
+
+    let matched_roms = groups.iter().map(|group| group.entries.len()).sum();
+    let plan = BuildPlan {
+        groups,
+        report: BuildReport {
+            matched_roms,
+            outcome: PlanOutcome::Ready,
+            ..BuildReport::default()
+        },
+    };
+    result.artifact_results = write_plan_with_container(
+        &plan,
+        request.destination_path,
+        request.container,
+        request.compression,
+    )?;
+    result.written_paths = result
+        .artifact_results
+        .iter()
+        .filter(|artifact| {
+            matches!(
+                &artifact.outcome,
+                ArtifactOutcome::Completed
+                    | ArtifactOutcome::ReplacedButNotDurable { .. }
+                    | ArtifactOutcome::CompletedWithWarning { .. }
+            )
+        })
+        .map(|artifact| Utf8PathBuf::from(&artifact.path))
+        .collect();
+    Ok(result)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+/// Inputs for planning a build from already-cached DAT and scan data.
 pub struct BuildPlanRequest {
     pub dat_path: Utf8PathBuf,
     pub source_path: Utf8PathBuf,
@@ -167,6 +291,7 @@ pub struct BuildPlanRequest {
 pub enum AuditRefresh {
     Cached,
     Refresh,
+    VerifySelected,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -180,6 +305,7 @@ pub struct AuditRequest {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Inputs for the one-shot import, scan, plan, and build workflow.
 pub struct RunWorkflowRequest {
     pub dat_path: Utf8PathBuf,
     pub source_path: Utf8PathBuf,
@@ -192,6 +318,426 @@ pub struct RunWorkflowRequest {
     pub set_selection: SetSelection,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+/// Inputs for auditing declared disk requirements against a source tree.
+pub struct DiskAuditRequest {
+    pub catalog_key: String,
+    pub source_path: Utf8PathBuf,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+/// Serializable result of auditing all declared disks in a catalog snapshot.
+pub struct DiskAuditReport {
+    pub schema_version: u32,
+    pub catalog_key: String,
+    pub snapshot_key: String,
+    pub source_path: Utf8PathBuf,
+    pub disks: Vec<DiskAuditEntry>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+/// Audit state and catalog identity for one declared disk requirement.
+pub struct DiskAuditEntry {
+    pub set_name: String,
+    pub disk_name: String,
+    pub list_name: Option<String>,
+    pub item_name: Option<String>,
+    pub part_name: Option<String>,
+    pub parent_disk: Option<String>,
+    pub expected_logical_sha1: Option<String>,
+    pub state: DiskAuditState,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+/// Verification state assigned to a disk requirement during an audit.
+pub enum DiskAuditState {
+    Missing,
+    AmbiguousLocation,
+    UnknownDigestScope,
+    IdentityNotDeclared,
+    UnverifiedContainer,
+    UnsupportedContainer,
+    VerifiedLogicalIdentity,
+    LogicalIdentityMismatch,
+}
+
+impl From<DiskVerificationState> for DiskAuditState {
+    fn from(state: DiskVerificationState) -> Self {
+        match state {
+            DiskVerificationState::Missing => Self::Missing,
+            DiskVerificationState::UnknownDigestScope => Self::UnknownDigestScope,
+            DiskVerificationState::IdentityNotDeclared => Self::IdentityNotDeclared,
+            DiskVerificationState::UnverifiedContainer => Self::UnverifiedContainer,
+            DiskVerificationState::UnsupportedContainer => Self::UnsupportedContainer,
+            DiskVerificationState::VerifiedLogicalIdentity => Self::VerifiedLogicalIdentity,
+            DiskVerificationState::LogicalIdentityMismatch => Self::LogicalIdentityMismatch,
+        }
+    }
+}
+
+#[derive(QueryableByName)]
+struct PublishedDiskSnapshotRow {
+    #[diesel(sql_type = Text)]
+    snapshot_key: String,
+}
+
+#[derive(Clone, QueryableByName)]
+struct DiskRequirementRow {
+    #[diesel(sql_type = Text)]
+    set_name: String,
+    #[diesel(sql_type = Text)]
+    asset_name: String,
+    #[diesel(sql_type = Nullable<Binary>)]
+    sha1: Option<Vec<u8>>,
+    #[diesel(sql_type = Text)]
+    evidence_scope: String,
+    #[diesel(sql_type = Nullable<Text>)]
+    merge_name: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    list_name: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    item_name: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    part_name: Option<String>,
+}
+
+type DiskParentMap = HashMap<(Option<String>, String), String>;
+type DiskSourceIndex<'files> = HashMap<String, Vec<&'files camino::Utf8Path>>;
+type DiskRequirementsByEntity<'rows> =
+    HashMap<(Option<String>, String), Vec<&'rows DiskRequirementRow>>;
+
+#[derive(QueryableByName)]
+struct DiskParentRow {
+    #[diesel(sql_type = Nullable<Text>)]
+    list: Option<String>,
+    #[diesel(sql_type = Text)]
+    child: String,
+    #[diesel(sql_type = Text)]
+    parent: String,
+}
+
+/// Audit disk requirements against a source root without reading or hashing its CHD contents.
+/// Container-byte hashes cannot establish logical CHD identity.
+pub fn audit_disks(
+    database: &Database,
+    request: &DiskAuditRequest,
+) -> crate::Result<DiskAuditReport> {
+    let source_path = request.source_path.canonicalize_utf8()?;
+    let (snapshot_key, requirements, parent_map) =
+        load_published_disk_requirements(database, &request.catalog_key)?;
+    let source_paths = operations::list_source_paths(&source_path, database.pool())?;
+    let source_index = disk_source_index(&source_paths);
+    let requirements_by_entity = disk_requirements_by_entity(&requirements);
+    let disks = requirements
+        .iter()
+        .cloned()
+        .map(|row| {
+            audit_disk_requirement(
+                row,
+                &source_path,
+                &source_index,
+                &requirements_by_entity,
+                &parent_map,
+            )
+        })
+        .collect::<crate::Result<Vec<_>>>()?;
+
+    Ok(DiskAuditReport {
+        schema_version: 1,
+        catalog_key: request.catalog_key.clone(),
+        snapshot_key,
+        source_path,
+        disks,
+    })
+}
+
+fn load_published_disk_requirements(
+    database: &Database,
+    catalog_key: &str,
+) -> crate::Result<(String, Vec<DiskRequirementRow>, DiskParentMap)> {
+    let mut conn = database.pool().get()?;
+    let snapshot = sql_query(
+        "SELECT publication.snapshot_key FROM snapshot_publications AS publication \
+         WHERE publication.catalog_key = ? \
+         ORDER BY publication.rowid DESC LIMIT 1",
+    )
+    .bind::<Text, _>(catalog_key)
+    .get_result::<PublishedDiskSnapshotRow>(&mut conn)
+    .map_err(|error| match error {
+        diesel::result::Error::NotFound => crate::Error::CatalogNotFound(catalog_key.to_owned()),
+        error => error.into(),
+    })?;
+    let mut requirements = sql_query(
+        "SELECT asset.set_name, asset.asset_name, asset.sha1, asset.evidence_scope, \
+                asset.merge_name, NULL AS list_name, NULL AS item_name, NULL AS part_name \
+         FROM asset_requirements AS asset \
+         WHERE asset.snapshot_key = ? AND asset.role = 'disk' \
+         ORDER BY asset.set_name, asset.component_order",
+    )
+    .bind::<Text, _>(&snapshot.snapshot_key)
+    .load::<DiskRequirementRow>(&mut conn)?;
+    requirements.extend(
+        sql_query(
+            "SELECT component.item_name AS set_name, component.component_name AS asset_name, \
+                component.sha1, component.evidence_scope, NULL AS merge_name, \
+                component.list_name, component.item_name, component.part_name \
+         FROM software_components AS component \
+         JOIN software_items AS item \
+           ON item.snapshot_key = component.snapshot_key \
+          AND item.list_name = component.list_name AND item.item_name = component.item_name \
+         WHERE component.snapshot_key = ? AND component.component_kind = 'disk' \
+         ORDER BY component.list_name, component.item_name, component.part_name, \
+                  component.area_order, component.component_order",
+        )
+        .bind::<Text, _>(&snapshot.snapshot_key)
+        .load::<DiskRequirementRow>(&mut conn)?,
+    );
+    let mut parent_rows = sql_query(
+        "SELECT NULL AS list, set_name AS child, parent_name AS parent \
+         FROM snapshot_sets WHERE snapshot_key = ? AND parent_name IS NOT NULL",
+    )
+    .bind::<Text, _>(&snapshot.snapshot_key)
+    .load::<DiskParentRow>(&mut conn)?;
+    parent_rows.extend(
+        sql_query(
+            "SELECT dependency.list_name AS list, dependency.item_name AS child, \
+             dependency.target_item_name AS parent \
+             FROM software_item_dependencies AS dependency \
+             WHERE dependency.snapshot_key = ? AND dependency.dependency_kind = 'clone_of'",
+        )
+        .bind::<Text, _>(&snapshot.snapshot_key)
+        .load::<DiskParentRow>(&mut conn)?,
+    );
+    let parent_map = parent_rows
+        .into_iter()
+        .map(|row| ((row.list, row.child), row.parent))
+        .collect();
+    Ok((snapshot.snapshot_key, requirements, parent_map))
+}
+
+fn audit_disk_requirement(
+    row: DiskRequirementRow,
+    source_path: &camino::Utf8Path,
+    source_index: &DiskSourceIndex<'_>,
+    requirements_by_entity: &DiskRequirementsByEntity<'_>,
+    parent_map: &DiskParentMap,
+) -> crate::Result<DiskAuditEntry> {
+    let (requirement, expected_logical_sha1) = disk_requirement(&row)?;
+    let (observation, ambiguous) = disk_observation(
+        &row,
+        source_path,
+        source_index,
+        requirements_by_entity,
+        parent_map,
+    );
+    let state = if ambiguous {
+        DiskAuditState::AmbiguousLocation
+    } else {
+        DiskAuditState::from(disk::audit_disk(&requirement, observation))
+    };
+
+    Ok(DiskAuditEntry {
+        set_name: row.set_name,
+        disk_name: row.asset_name,
+        list_name: row.list_name,
+        item_name: row.item_name,
+        part_name: row.part_name,
+        parent_disk: requirement
+            .parent()
+            .map(|parent| parent.as_str().to_owned()),
+        expected_logical_sha1,
+        state,
+    })
+}
+
+fn disk_requirement(row: &DiskRequirementRow) -> crate::Result<(DiskRequirement, Option<String>)> {
+    let expected = row
+        .sha1
+        .as_ref()
+        .map(|bytes| {
+            <[u8; 20]>::try_from(bytes.as_slice()).map_err(|_| {
+                crate::Error::InvalidHash(format!(
+                    "disk identity SHA-1 for {} has length {}; expected 20 bytes",
+                    row.asset_name,
+                    bytes.len()
+                ))
+            })
+        })
+        .transpose()?;
+    let scope = match row.evidence_scope.as_str() {
+        "chd_header_sha1" => DiskDigestScope::ChdHeaderSha1,
+        _ => DiskDigestScope::Unknown,
+    };
+    let mut requirement = DiskRequirement::new(
+        DiskName::new(row.asset_name.clone()),
+        expected.map(DiskIdentitySha1::new),
+        scope,
+    );
+    if let Some(parent) = row.merge_name.as_deref() {
+        requirement = requirement.with_parent(ParentDiskName::new(parent));
+    }
+    Ok((requirement, expected.map(hex::encode)))
+}
+
+fn disk_observation(
+    row: &DiskRequirementRow,
+    source_path: &camino::Utf8Path,
+    source_index: &DiskSourceIndex<'_>,
+    requirements_by_entity: &DiskRequirementsByEntity<'_>,
+    parent_map: &DiskParentMap,
+) -> (DiskObservation, bool) {
+    let candidate_locations = disk_locations(row, source_path, requirements_by_entity, parent_map);
+    let matching_file = indexed_disk_candidates(&candidate_locations, source_index);
+    matching_file.map_or((DiskObservation::Missing, false), |(file, assigned)| {
+        if !assigned {
+            return (DiskObservation::Missing, true);
+        }
+        let file_name = file.file_name().unwrap_or_default();
+        if file_name.to_ascii_lowercase().ends_with(".chd") {
+            (DiskObservation::ContainerPresent { byte_sha1: None }, false)
+        } else {
+            (DiskObservation::UnsupportedContainer, false)
+        }
+    })
+}
+
+fn disk_locations(
+    row: &DiskRequirementRow,
+    source_path: &camino::Utf8Path,
+    requirements_by_entity: &DiskRequirementsByEntity<'_>,
+    parent_map: &DiskParentMap,
+) -> Vec<(Utf8PathBuf, Vec<String>)> {
+    let mut locations = Vec::new();
+    let initial_entity = (
+        row.list_name.clone(),
+        row.item_name
+            .clone()
+            .unwrap_or_else(|| row.set_name.clone()),
+    );
+    let direct_parent = parent_map
+        .get(&initial_entity)
+        .map(|parent| (initial_entity.0.clone(), parent.clone()));
+    let mut entity = initial_entity;
+    let mut ancestors = HashSet::new();
+    while ancestors.insert(entity.clone()) {
+        let mut names = vec![row.asset_name.clone()];
+        if direct_parent.as_ref() == Some(&entity)
+            && let Some(merge_name) = row.merge_name.as_deref()
+        {
+            names.push(merge_name.to_owned());
+        }
+        let entity_directories = std::iter::once(entity.0.as_deref().map_or_else(
+            || source_path.join(&entity.1),
+            |list| source_path.join(list).join(&entity.1),
+        ))
+        .chain(entity.0.is_some().then(|| source_path.join(&entity.1)));
+        for parent_disk in requirements_by_entity
+            .get(&entity)
+            .into_iter()
+            .flatten()
+            .filter(|candidate| same_declared_disk_identity(row, candidate))
+        {
+            if !names.contains(&parent_disk.asset_name) {
+                names.push(parent_disk.asset_name.clone());
+            }
+        }
+        for directory in entity_directories {
+            locations.push((directory, names.clone()));
+        }
+        let Some(parent) = parent_map.get(&entity).cloned() else {
+            break;
+        };
+        entity = (entity.0, parent);
+    }
+    locations
+}
+
+fn disk_requirements_by_entity(
+    requirements: &[DiskRequirementRow],
+) -> DiskRequirementsByEntity<'_> {
+    let mut index = DiskRequirementsByEntity::new();
+    for requirement in requirements {
+        let entity = (
+            requirement.list_name.clone(),
+            requirement
+                .item_name
+                .clone()
+                .unwrap_or_else(|| requirement.set_name.clone()),
+        );
+        index.entry(entity).or_default().push(requirement);
+    }
+    index
+}
+
+fn disk_source_index(source_files: &[Utf8PathBuf]) -> DiskSourceIndex<'_> {
+    let mut index = DiskSourceIndex::new();
+    for file in source_files {
+        if let Some(file_name) = file.file_name() {
+            index
+                .entry(file_name.to_owned())
+                .or_default()
+                .push(file.as_path());
+            if file
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("chd"))
+                && let Some(stem) = file.file_stem()
+            {
+                let normalized_name = format!("{stem}.chd");
+                if normalized_name != file_name {
+                    index
+                        .entry(normalized_name)
+                        .or_default()
+                        .push(file.as_path());
+                }
+            }
+        }
+    }
+    index
+}
+
+fn indexed_disk_candidates<'files>(
+    locations: &[(Utf8PathBuf, Vec<String>)],
+    source_index: &DiskSourceIndex<'files>,
+) -> Option<(&'files camino::Utf8Path, bool)> {
+    let mut candidates = Vec::new();
+    for (directory, names) in locations {
+        for name in names {
+            for expected_name in [name.clone(), format!("{name}.chd")] {
+                let Some(files) = source_index.get(&expected_name) else {
+                    continue;
+                };
+                for file in files {
+                    let assigned = file.parent() == Some(directory.as_path());
+                    candidates.push((*file, expected_name.clone(), assigned));
+                }
+            }
+        }
+    }
+    let matching_file = candidates
+        .into_iter()
+        .min_by_key(|(file, file_name, assigned)| {
+            (
+                u8::from(!assigned),
+                u8::from(
+                    !camino::Utf8Path::new(file_name)
+                        .extension()
+                        .is_some_and(|extension| extension.eq_ignore_ascii_case("chd")),
+                ),
+                file.as_str().to_owned(),
+            )
+        });
+    matching_file.map(|(file, _, assigned)| (file, assigned))
+}
+
+fn same_declared_disk_identity(left: &DiskRequirementRow, right: &DiskRequirementRow) -> bool {
+    left.evidence_scope == "chd_header_sha1"
+        && right.evidence_scope == left.evidence_scope
+        && left.sha1.is_some()
+        && left.sha1 == right.sha1
+}
+
+/// Parse a Logiqx DAT file and store its contents in the database cache.
 pub fn import_dat(
     database: &Database,
     request: &DatImportRequest,
@@ -200,6 +746,7 @@ pub fn import_dat(
         .map(|data_file_id| DatImportReport { data_file_id })
 }
 
+/// Import a supported catalog document and report its snapshot and diagnostics.
 pub fn import_catalog(
     database: &Database,
     request: &CatalogImportRequest,
@@ -207,6 +754,66 @@ pub fn import_catalog(
     crate::storage::catalog_import::import(database.pool(), request)
 }
 
+/// Persist a derived candidate or user-authored relationship without conflating it with a source claim.
+pub fn record_relationship(
+    database: &Database,
+    claim: &RelationshipClaim,
+) -> crate::Result<RelationshipAssertionKey> {
+    crate::storage::relationships::record_claim(database.pool(), claim)
+}
+
+/// Append a review event. Earlier reviews remain available as durable history.
+pub fn review_relationship(
+    database: &Database,
+    assertion_key: &RelationshipAssertionKey,
+    review: &RelationshipReview,
+) -> crate::Result<()> {
+    crate::storage::relationships::review_claim(database.pool(), assertion_key, review)
+}
+
+/// Explain all known source claims, derived candidates, and user conclusions in stable order.
+pub fn explain_relationships(database: &Database) -> crate::Result<Vec<RelationshipExplanation>> {
+    crate::storage::relationships::explain_all(database.pool())
+}
+
+/// Compare two explicit catalog snapshots without changing either published snapshot.
+pub fn diff_catalog_snapshots(
+    database: &Database,
+    previous: &SnapshotKey,
+    current: &SnapshotKey,
+) -> crate::Result<CatalogSnapshotDiff> {
+    crate::storage::snapshot_history::diff(database.pool(), previous, current)
+}
+
+/// List immutable snapshots for one catalog in stable identity order.
+pub fn catalog_snapshot_history(
+    database: &Database,
+    catalog: &CatalogKey,
+) -> crate::Result<Vec<CatalogSnapshotEntry>> {
+    crate::storage::snapshot_history::history(database.pool(), catalog)
+}
+
+/// Resolve expected MAME machine requirements for one explicit catalog snapshot.
+/// This operation reads catalog metadata only and never requires ROM inventory.
+pub fn resolve_machine_dependencies(
+    database: &Database,
+    snapshot: &SnapshotKey,
+    root: &crate::domain::SetName,
+) -> crate::Result<crate::machine_dependencies::DependencyClosure> {
+    let catalog = crate::storage::machine_dependencies::load_catalog(database.pool(), snapshot)?;
+    Ok(catalog.resolve(root))
+}
+
+/// Reconcile two explicit published snapshots without consulting local inventory.
+pub fn reconcile_catalog_snapshots(
+    database: &Database,
+    left: &SnapshotKey,
+    right: &SnapshotKey,
+) -> crate::Result<CatalogReconciliation> {
+    crate::storage::catalog_reconciliation::reconcile(database.pool(), left, right)
+}
+
+/// Scan a source tree, hash discovered content, and persist the completed scan.
 pub fn scan_source(
     database: &Database,
     request: &SourceScanRequest,
@@ -214,6 +821,7 @@ pub fn scan_source(
     scan_source_with_progress(database, request, &|_| {})
 }
 
+/// Scan and persist a source tree while reporting file-count progress to the caller.
 pub fn scan_source_with_progress(
     database: &Database,
     request: &SourceScanRequest,
@@ -248,8 +856,19 @@ pub fn scan_source_with_policy_and_progress(
             let cached_files = repository.load_source_files_for_root(&source_root)?;
             let forced_paths = force_rehash
                 .into_iter()
-                .map(|path| path.canonicalize_utf8())
-                .collect::<std::io::Result<std::collections::BTreeSet<_>>>()?;
+                .map(|path| {
+                    let file_name = path.file_name().ok_or_else(|| {
+                        crate::Error::InvalidPath(format!(
+                            "forced rehash path is not a file: {path}"
+                        ))
+                    })?;
+                    let parent = path
+                        .parent()
+                        .unwrap_or_else(|| Utf8Path::new("."))
+                        .canonicalize_utf8()?;
+                    Ok(parent.join(file_name))
+                })
+                .collect::<crate::Result<std::collections::BTreeSet<_>>>()?;
             if forced_paths
                 .iter()
                 .any(|path| !path.starts_with(&source_root_path))
@@ -296,6 +915,10 @@ pub fn scan_source_with_policy_and_progress(
     })
 }
 
+/// Plan a build from cached data and write artifacts unless dry-run or blocked.
+///
+/// Artifact-level failures are returned in the report. Once planning succeeds, output
+/// setup and execution errors carry the partial report in [`crate::Error::BuildWorkflow`].
 /// Scan every distinct canonical root before replacing any cached scope. If any scan fails,
 /// none of the requested roots are refreshed. Successful scans commit together in one DB tx.
 pub fn scan_sources_with_progress(
@@ -340,7 +963,6 @@ pub fn scan_sources(
 ) -> crate::Result<Vec<SourceScanReport>> {
     scan_sources_with_progress(database, selection, jobs, &|_| {})
 }
-
 pub fn build(
     database: &Database,
     request: &BuildWorkflowRequest,
@@ -379,6 +1001,22 @@ pub fn build_with_roots_and_container(
     selection: &SourceRootSelection,
     container: OutputContainer,
 ) -> crate::Result<BuildWorkflowReport> {
+    build_with_roots_and_container_with_policy(
+        database,
+        request,
+        selection,
+        container,
+        ArtifactReusePolicy::Replace,
+    )
+}
+
+pub fn build_with_roots_and_container_with_policy(
+    database: &Database,
+    request: &BuildWorkflowRequest,
+    selection: &SourceRootSelection,
+    container: OutputContainer,
+    reuse_policy: ArtifactReusePolicy,
+) -> crate::Result<BuildWorkflowReport> {
     let roots = canonical_roots(selection)?;
     let canonical_paths = roots
         .iter()
@@ -413,6 +1051,7 @@ pub fn build_with_roots_and_container(
                     .join(match container {
                         OutputContainer::Zip => format!("{}.zip", group.path.as_str()),
                         OutputContainer::Directory => group.path.as_str().to_owned(),
+                        OutputContainer::SevenZip => format!("{}.7z", group.path.as_str()),
                     })
                     .to_string(),
                 outcome: ArtifactOutcome::Unattempted,
@@ -420,41 +1059,62 @@ pub fn build_with_roots_and_container(
             .collect::<Vec<_>>()
     };
     let build_report = plan.report.clone();
-    let (written_paths, artifact_results) =
-        if request.dry_run || plan.report.outcome != PlanOutcome::Ready {
-            (Vec::new(), unattempted())
-        } else {
+    let execution = if request.dry_run || plan.report.outcome != PlanOutcome::Ready {
+        Ok((Vec::new(), unattempted()))
+    } else {
+        (|| {
             crate::build::validation::ensure_sources_disjoint_from_destination(
                 &canonical_paths,
                 &request.destination_path,
             )?;
-            let results = write_plan_with_container(
+            let results = write_plan_with_container_policy(
                 &plan,
                 &request.destination_path,
                 container,
                 request.compression,
+                reuse_policy,
             )?;
             let paths = results
                 .iter()
                 .filter(|result| {
                     matches!(
-                        result.outcome,
-                        ArtifactOutcome::Completed | ArtifactOutcome::CompletedWithWarning { .. }
+                        &result.outcome,
+                        ArtifactOutcome::Completed
+                            | ArtifactOutcome::ReplacedButNotDurable { .. }
+                            | ArtifactOutcome::CompletedWithWarning { .. }
                     )
                 })
                 .map(|result| Utf8PathBuf::from(&result.path))
                 .collect::<Vec<_>>();
-            (paths, results)
-        };
+            Ok((paths, results))
+        })()
+    };
+    let (written_paths, artifact_results) = match execution {
+        Ok(execution) => execution,
+        Err(source) => {
+            return Err(crate::Error::BuildWorkflow {
+                report: Box::new(BuildWorkflowReport {
+                    written_paths: Vec::new(),
+                    artifact_results: unattempted(),
+                    build_report,
+                    scan_reports: Vec::new(),
+                    scan_report: None,
+                }),
+                source: Box::new(source),
+            });
+        }
+    };
 
     Ok(BuildWorkflowReport {
         written_paths,
         artifact_results,
         build_report,
+        scan_reports: Vec::new(),
+        scan_report: None,
     })
 }
 
-/// Resolve cached catalog and source evidence without writing outputs or rendering to a terminal.
+/// Create a build plan from cached DAT and source-scan data without writing outputs.
 pub fn plan_build(
     database: &Database,
     request: &BuildPlanRequest,
@@ -477,16 +1137,19 @@ pub fn plan_build_with_roots(
         .iter()
         .map(|(_, root)| root.clone())
         .collect::<Vec<_>>();
-    let dat_roms =
-        BuildRepository::new(database.pool()).load_dat_roms(dat_selector.repository_selector())?;
+    let build_repository = BuildRepository::new(database.pool());
+    let available_set_names =
+        build_repository.load_set_names(dat_selector.repository_selector())?;
+    let dat_roms = build_repository.load_dat_roms(dat_selector.repository_selector())?;
     let repository = SourceRepository::new(database.pool());
     let source_files = if let [source_root] = source_roots.as_slice() {
         repository.load_source_files_for_root(source_root)?
     } else {
         repository.load_source_files_for_roots(&source_roots)?
     };
-    let plan = build_plan(
+    let plan = crate::build::planner::plan_build_with_set_names(
         &dat_roms,
+        &available_set_names,
         &source_files,
         &BuildRequest {
             dat_name: dat_selector.value().to_owned(),
@@ -531,8 +1194,17 @@ pub fn audit_with_roots_and_progress(
     selection: &SourceRootSelection,
     progress: &(impl Fn(ScanProgressEvent) + Sync),
 ) -> crate::Result<AuditReport> {
+    let selection_issues =
+        catalog_set_selection_issues(database, &request.dat_path, &request.set_selection)?;
+    if !selection_issues.is_empty() {
+        return Ok(AuditReport::new(
+            ObservationBasis::Cached,
+            invalid_set_selection_report(selection_issues),
+        ));
+    }
+
     let observation_basis = match request.refresh {
-        AuditRefresh::Cached => ObservationBasis::Cached,
+        AuditRefresh::Cached | AuditRefresh::VerifySelected => ObservationBasis::Cached,
         AuditRefresh::Refresh => {
             let scans = scan_sources_with_progress(database, selection, request.jobs, progress)?;
             if let [scan] = scans.as_slice() {
@@ -564,9 +1236,102 @@ pub fn audit_with_roots_and_progress(
         },
         selection,
     )?;
-    Ok(AuditReport::new(observation_basis, plan.report))
+    let selected_verifications = if request.refresh == AuditRefresh::VerifySelected {
+        verify_plan_selected_sources(&plan)
+    } else {
+        Vec::new()
+    };
+    Ok(if request.refresh == AuditRefresh::VerifySelected {
+        AuditReport::with_selected_verifications(
+            observation_basis,
+            plan.report,
+            selected_verifications,
+            VerificationBasis::SelectedSources,
+        )
+    } else {
+        AuditReport::new(observation_basis, plan.report)
+    })
 }
 
+fn verify_plan_selected_sources(plan: &BuildPlan) -> Vec<SelectedSourceVerification> {
+    let entries: Vec<_> = plan
+        .groups
+        .iter()
+        .flat_map(|group| group.entries.iter().map(move |entry| (group, entry)))
+        .collect();
+    let mut outcomes = vec![None; entries.len()];
+    let mut archives: BTreeMap<(String, ArchiveBackend), Vec<usize>> = BTreeMap::new();
+    for (index, (_, entry)) in entries.iter().enumerate() {
+        if let crate::domain::SourceLocation::ArchiveMember { path, backend, .. } =
+            &entry.source.location
+        {
+            archives
+                .entry((path.clone(), *backend))
+                .or_default()
+                .push(index);
+        } else {
+            outcomes[index] = Some(verify_selected_source(entry));
+        }
+    }
+    for indices in archives.into_values() {
+        let selected: Vec<_> = indices.iter().map(|index| entries[*index].1).collect();
+        match crate::serving::VerifiedContentSession::verify_archive_entries_fresh(&selected) {
+            Ok(results) => {
+                for (index, result) in indices.into_iter().zip(results) {
+                    outcomes[index] = Some(verification_outcome(result));
+                }
+            }
+            Err(error) => {
+                let outcome = verification_outcome(Err(error));
+                for index in indices {
+                    outcomes[index] = Some(outcome.clone());
+                }
+            }
+        }
+    }
+    entries
+        .into_iter()
+        .zip(outcomes)
+        .map(|((group, entry), outcome)| SelectedSourceVerification {
+            output_group: Some(group.path.clone()),
+            requirement: Some(entry.requirement.clone()),
+            logical_path: entry.path.clone(),
+            source: entry.source.location.clone(),
+            outcome: outcome.unwrap_or_else(|| SelectedVerificationOutcome::Unavailable {
+                reason: "selected source was not verified".to_owned(),
+            }),
+        })
+        .collect()
+}
+
+fn verify_selected_source(entry: &crate::domain::LogicalEntry) -> SelectedVerificationOutcome {
+    verification_outcome(crate::serving::VerifiedContentSession::verify_logical_entry_fresh(entry))
+}
+
+fn verification_outcome(
+    result: Result<(), crate::serving::ServingError>,
+) -> SelectedVerificationOutcome {
+    match result {
+        Ok(()) => SelectedVerificationOutcome::Verified,
+        Err(error) => {
+            let reason = error.to_string();
+            match error.failure_kind() {
+                crate::serving::ServingFailureKind::Stale
+                | crate::serving::ServingFailureKind::NotFound => {
+                    SelectedVerificationOutcome::Stale { reason }
+                }
+                crate::serving::ServingFailureKind::Capacity
+                | crate::serving::ServingFailureKind::Unsupported
+                | crate::serving::ServingFailureKind::Corrupt
+                | crate::serving::ServingFailureKind::Io => {
+                    SelectedVerificationOutcome::Unavailable { reason }
+                }
+            }
+        }
+    }
+}
+
+/// Import a DAT, scan its source, plan the build, and write eligible artifacts.
 pub fn run(
     database: &Database,
     request: &RunWorkflowRequest,
@@ -574,6 +1339,7 @@ pub fn run(
     run_with_progress(database, request, &|_| {})
 }
 
+/// Run a complete workflow using the selected output container.
 pub fn run_with_container(
     database: &Database,
     request: &RunWorkflowRequest,
@@ -588,6 +1354,7 @@ pub fn run_with_container(
     )
 }
 
+/// Run the complete workflow and report source-scan progress to the caller.
 pub fn run_with_progress(
     database: &Database,
     request: &RunWorkflowRequest,
@@ -631,6 +1398,24 @@ pub fn run_with_roots_and_container_and_progress(
     container: OutputContainer,
     progress: &(impl Fn(ScanProgressEvent) + Sync),
 ) -> crate::Result<BuildWorkflowReport> {
+    run_with_roots_and_container_and_progress_with_policy(
+        database,
+        request,
+        selection,
+        container,
+        progress,
+        ArtifactReusePolicy::Replace,
+    )
+}
+
+pub fn run_with_roots_and_container_and_progress_with_policy(
+    database: &Database,
+    request: &RunWorkflowRequest,
+    selection: &SourceRootSelection,
+    container: OutputContainer,
+    progress: &(impl Fn(ScanProgressEvent) + Sync),
+    reuse_policy: ArtifactReusePolicy,
+) -> crate::Result<BuildWorkflowReport> {
     let roots = canonical_roots(selection)?;
     let canonical_paths = roots
         .iter()
@@ -646,19 +1431,213 @@ pub fn run_with_roots_and_container_and_progress(
             dat_path: request.dat_path.clone(),
         },
     )?;
-    scan_sources_with_progress(database, selection, request.jobs, progress)?;
-    build_with_roots_and_container(
+    let selection_issues =
+        catalog_set_selection_issues(database, &request.dat_path, &request.set_selection)?;
+    if !selection_issues.is_empty() {
+        return Ok(BuildWorkflowReport {
+            written_paths: Vec::new(),
+            artifact_results: Vec::new(),
+            build_report: invalid_set_selection_report(selection_issues),
+            scan_reports: Vec::new(),
+            scan_report: None,
+        });
+    }
+    let scan_reports = scan_sources_with_progress(database, selection, request.jobs, progress)?;
+    let scan_report = scan_reports.first().cloned().ok_or_else(|| {
+        crate::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "at least one source root is required",
+        ))
+    })?;
+    match build_with_roots_and_container_with_policy(
         database,
         &build_workflow_request_from_run(request),
         selection,
         container,
-    )
+        reuse_policy,
+    ) {
+        Ok(mut report) => {
+            report.scan_report = Some(scan_report);
+            report.scan_reports = scan_reports;
+            Ok(report)
+        }
+        Err(crate::Error::BuildWorkflow { mut report, source }) => {
+            report.scan_report = Some(scan_report);
+            report.scan_reports = scan_reports;
+            Err(crate::Error::BuildWorkflow { report, source })
+        }
+        Err(source) if scan_reports.len() == 1 => Err(crate::Error::RunWorkflow {
+            scan_report,
+            source: Box::new(source),
+        }),
+        Err(source) => Err(crate::Error::RunWorkflowWithRoots {
+            scan_reports,
+            source: Box::new(source),
+        }),
+    }
+}
+
+fn catalog_set_selection_issues(
+    database: &Database,
+    dat_path: &Utf8PathBuf,
+    selection: &SetSelection,
+) -> crate::Result<Vec<crate::domain::SetSelectionIssue>> {
+    if matches!(selection, SetSelection::All) {
+        return Ok(Vec::new());
+    }
+    let dat_selector = resolve_dat_selector(dat_path);
+    let available =
+        BuildRepository::new(database.pool()).load_set_names(dat_selector.repository_selector())?;
+    Ok(crate::build::planner::validate_set_selection(
+        selection, &available,
+    ))
+}
+
+fn invalid_set_selection_report(issues: Vec<crate::domain::SetSelectionIssue>) -> BuildReport {
+    BuildReport {
+        outcome: crate::domain::PlanOutcome::Blocked(
+            crate::domain::PlanBlockReason::InvalidSetSelection,
+        ),
+        set_selection_issues: issues,
+        ..BuildReport::default()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Verifies one-shot runs retain scan and plan diagnostics when artifact output fails.
+    #[test]
+    fn run_reports_scans_and_plan_diagnostics_when_an_artifact_fails()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let root = Utf8PathBuf::try_from(temp.path().to_path_buf())?;
+        let dat_path = root.join("catalog.dat");
+        let source_path = root.join("roms");
+        let destination_path = root.join("output-file");
+        std::fs::create_dir(&source_path)?;
+        std::fs::write(source_path.join("game.rom"), b"abc")?;
+        std::fs::write(
+            &dat_path,
+            r#"<?xml version="1.0"?><datafile><header><name>Fixture</name></header><game name="game"><rom name="game.rom" size="3" crc="352441c2" md5="900150983cd24fb0d6963f7d28e17f72" sha1="a9993e364706816aba3e25717850c26c9cd0d89d"/></game></datafile>"#,
+        )?;
+        std::fs::write(&destination_path, b"not a directory")?;
+
+        let database = Database::in_memory()?;
+        let report = match run(
+            &database,
+            &RunWorkflowRequest {
+                dat_path: dat_path.clone(),
+                source_path: source_path.clone(),
+                destination_path,
+                mode: BuildMode::PerGame,
+                compression: ZipCompression::Deflate,
+                jobs: 1,
+                dry_run: false,
+                strict: false,
+                set_selection: SetSelection::All,
+            },
+        ) {
+            Ok(_) => return Err("writing beneath a regular file unexpectedly succeeded".into()),
+            Err(crate::Error::BuildWorkflow { report, .. }) => *report,
+            Err(error) => return Err(error.into()),
+        };
+        let scan = report
+            .scan_report
+            .as_ref()
+            .ok_or("completed scan missing from artifact failure report")?;
+        assert_eq!(scan.observation_count, 1);
+        assert_eq!(scan.associated_rom_count, 1);
+        assert_eq!(report.build_report.matched_roms, 1);
+        assert_eq!(report.artifact_results.len(), 1);
+        assert_eq!(
+            report.artifact_results[0].outcome,
+            ArtifactOutcome::Unattempted
+        );
+
+        std::fs::write(source_path.join("game.rom"), b"different")?;
+        let report = run(
+            &database,
+            &RunWorkflowRequest {
+                dat_path,
+                source_path,
+                destination_path: root.join("dry-run-output"),
+                mode: BuildMode::PerGame,
+                compression: ZipCompression::Deflate,
+                jobs: 1,
+                dry_run: true,
+                strict: false,
+                set_selection: SetSelection::All,
+            },
+        )?;
+        let scan = report
+            .scan_report
+            .ok_or("successful run missing its scan report")?;
+        assert_eq!(scan.observation_count, 1);
+        assert_eq!(scan.associated_rom_count, 0);
+        Ok(())
+    }
+
+    /// Verifies completed scan results survive build failures before planning completes.
+    #[test]
+    fn run_preserves_scan_report_when_build_fails_before_planning()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let root = Utf8PathBuf::try_from(temp.path().to_path_buf())?;
+        let dat_path = root.join("catalog.dat");
+        let source_path = root.join("roms");
+        std::fs::create_dir(&source_path)?;
+        std::fs::write(source_path.join("game.rom"), b"abc")?;
+        std::fs::write(
+            &dat_path,
+            r#"<?xml version="1.0"?><datafile><header><name>Fixture</name></header><game name="game"><rom name="game.rom" size="3" crc="352441c2" md5="900150983cd24fb0d6963f7d28e17f72" sha1="a9993e364706816aba3e25717850c26c9cd0d89d"/></game></datafile>"#,
+        )?;
+
+        let database = Database::in_memory()?;
+        let removed = std::sync::atomic::AtomicBool::new(false);
+        let result = run_with_progress(
+            &database,
+            &RunWorkflowRequest {
+                dat_path,
+                source_path: source_path.clone(),
+                destination_path: root.join("output"),
+                mode: BuildMode::PerGame,
+                compression: ZipCompression::Deflate,
+                jobs: 1,
+                dry_run: false,
+                strict: false,
+                set_selection: SetSelection::All,
+            },
+            &|event| {
+                if matches!(event, ScanProgressEvent::Advanced) {
+                    removed.store(
+                        std::fs::remove_dir_all(&source_path).is_ok(),
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
+                }
+            },
+        );
+        let Err(error) = result else {
+            return Err("removing the source after scanning must fail planning".into());
+        };
+        assert!(removed.load(std::sync::atomic::Ordering::Relaxed));
+
+        match error {
+            crate::Error::RunWorkflow {
+                scan_report,
+                source,
+            } => {
+                assert_eq!(scan_report.observation_count, 1);
+                assert_eq!(scan_report.associated_rom_count, 1);
+                assert!(matches!(*source, crate::Error::Io(_)));
+            }
+            error => return Err(format!("unexpected error: {error}").into()),
+        }
+        Ok(())
+    }
+
+    /// Verifies the scan reports progress and in-memory planning creates no output files.
     #[test]
     fn planning_from_in_memory_cache_does_not_create_or_write_outputs()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -721,6 +1700,109 @@ mod tests {
         assert_eq!(plan.report.matched_roms, 1);
         assert_eq!(plan.groups.len(), 1);
         assert!(!destination_path.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn set_selection_uses_empty_catalog_sets_and_rejects_typos_before_scanning()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let root = Utf8PathBuf::try_from(temp.path().to_path_buf())?;
+        let dat_path = root.join("catalog.dat");
+        let source_path = root.join("roms");
+        std::fs::create_dir(&source_path)?;
+        std::fs::write(
+            &dat_path,
+            r#"<?xml version="1.0"?><datafile><header><name>Fixture</name></header><game name="empty-set"><description>Empty</description></game></datafile>"#,
+        )?;
+        let database = Database::in_memory()?;
+        import_dat(
+            &database,
+            &DatImportRequest {
+                dat_path: dat_path.clone(),
+            },
+        )?;
+
+        let empty_set_plan = plan_build(
+            &database,
+            &BuildPlanRequest {
+                dat_path: dat_path.clone(),
+                source_path: source_path.clone(),
+                mode: BuildMode::PerGame,
+                matching_policy: MatchingPolicy::Sha1Compatibility,
+                missing_policy: MissingContentPolicy::AllowPartial,
+                set_selection: SetSelection::exact_names([crate::domain::SetName::new(
+                    "empty-set",
+                )]),
+            },
+        )?;
+        assert_eq!(empty_set_plan.report.outcome, PlanOutcome::Ready);
+        assert!(empty_set_plan.report.set_selection_issues.is_empty());
+
+        let progress_events = std::sync::Mutex::new(Vec::new());
+        let request = RunWorkflowRequest {
+            dat_path: dat_path.clone(),
+            source_path: source_path.clone(),
+            destination_path: root.join("output"),
+            mode: BuildMode::PerGame,
+            compression: ZipCompression::Deflate,
+            jobs: 1,
+            dry_run: false,
+            strict: false,
+            set_selection: SetSelection::exact_names([crate::domain::SetName::new("typo")]),
+        };
+        let run_report = run_with_roots_and_progress(
+            &database,
+            &request,
+            &SourceRootSelection::single(source_path.clone()),
+            &|event| {
+                progress_events
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(event);
+            },
+        )?;
+        assert_eq!(
+            run_report.build_report.outcome,
+            PlanOutcome::Blocked(crate::domain::PlanBlockReason::InvalidSetSelection)
+        );
+        assert!(
+            progress_events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty()
+        );
+
+        let audit_progress_events = std::sync::Mutex::new(Vec::new());
+        let audit = audit_with_roots_and_progress(
+            &database,
+            &AuditRequest {
+                dat_path,
+                source_path: source_path.clone(),
+                refresh: AuditRefresh::Refresh,
+                matching_policy: MatchingPolicy::Sha1Compatibility,
+                jobs: 1,
+                set_selection: SetSelection::exact_names([crate::domain::SetName::new("typo")]),
+            },
+            &SourceRootSelection::single(source_path),
+            &|event| {
+                audit_progress_events
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(event);
+            },
+        )?;
+        assert_eq!(
+            audit.report().outcome,
+            PlanOutcome::Blocked(crate::domain::PlanBlockReason::InvalidSetSelection)
+        );
+        assert_eq!(audit.report().set_selection_issues.len(), 1);
+        assert!(
+            audit_progress_events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty()
+        );
         Ok(())
     }
 }

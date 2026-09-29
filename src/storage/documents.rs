@@ -10,7 +10,7 @@ use sha1::{Digest as _, Sha1};
 
 use crate::{
     document_input::{self, MAX_DOCUMENT_BYTES},
-    domain::{AcquisitionKey, DocumentDigest, DocumentKey, PublishingSourceKey},
+    domain::{AcquisitionKey, DocumentDigest, DocumentKey, PublishingSource, PublishingSourceKey},
     hashes::Sha1Digest,
     logiqx::DataFile,
     storage::db::{Pool, create_db_pool},
@@ -29,6 +29,14 @@ pub struct AcquisitionMetadata {
 enum FormatHint {
     LogiqxXml,
     LogiqxXmlGzip,
+    MameListXml,
+    MameListXmlGzip,
+    MameSoftwareListXml,
+    MameSoftwareListXmlGzip,
+    ClrMameProText,
+    ClrMameProTextGzip,
+    NoIntroPcXml,
+    NoIntroPcXmlGzip,
 }
 
 impl FormatHint {
@@ -36,6 +44,14 @@ impl FormatHint {
         match self {
             Self::LogiqxXml => "logiqx+xml",
             Self::LogiqxXmlGzip => "logiqx+xml+gzip",
+            Self::MameListXml => "mame-listxml",
+            Self::MameListXmlGzip => "mame-listxml+gzip",
+            Self::MameSoftwareListXml => "mame-softwarelist-xml",
+            Self::MameSoftwareListXmlGzip => "mame-softwarelist-xml+gzip",
+            Self::ClrMameProText => "clrmamepro-text",
+            Self::ClrMameProTextGzip => "clrmamepro-text+gzip",
+            Self::NoIntroPcXml => "no-intro-pc-xml",
+            Self::NoIntroPcXmlGzip => "no-intro-pc-xml+gzip",
         }
     }
 
@@ -56,6 +72,7 @@ pub struct RetainedDocument {
 
 pub struct DocumentStore {
     pool: Pool,
+    _database_guard: Option<crate::database::Database>,
 }
 
 #[derive(QueryableByName)]
@@ -63,7 +80,13 @@ struct ExistingDocument {
     #[diesel(sql_type = Text)]
     document_key: String,
     #[diesel(sql_type = Nullable<Binary>)]
+    sha256: Option<Vec<u8>>,
+    #[diesel(sql_type = Nullable<Binary>)]
     payload: Option<Vec<u8>>,
+    #[diesel(sql_type = Nullable<Binary>)]
+    sha1: Option<Vec<u8>>,
+    #[diesel(sql_type = Nullable<diesel::sql_types::BigInt>)]
+    byte_length: Option<i64>,
     #[diesel(sql_type = Text)]
     retention_status: String,
 }
@@ -74,20 +97,86 @@ struct RetainedPayload {
     payload: Vec<u8>,
 }
 
+#[derive(QueryableByName)]
+struct LegacyPayload {
+    #[diesel(sql_type = Binary)]
+    sha256: Vec<u8>,
+    #[diesel(sql_type = Binary)]
+    sha1: Vec<u8>,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    byte_length: i64,
+    #[diesel(sql_type = Binary)]
+    payload: Vec<u8>,
+}
+
+#[derive(QueryableByName)]
+struct LegacyLoadPayload {
+    #[diesel(sql_type = Binary)]
+    sha256: Vec<u8>,
+    #[diesel(sql_type = Binary)]
+    sha1: Vec<u8>,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    byte_length: i64,
+    #[diesel(sql_type = Binary)]
+    payload: Vec<u8>,
+    #[diesel(sql_type = Nullable<Binary>)]
+    document_sha1: Option<Vec<u8>>,
+}
+
+#[derive(QueryableByName)]
+struct PublishingSourceRow {
+    #[diesel(sql_type = Text)]
+    source_key: String,
+    #[diesel(sql_type = Text)]
+    display_name: String,
+}
+
 impl DocumentStore {
     pub(crate) const fn from_pool(pool: Pool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            _database_guard: None,
+        }
     }
 
     pub fn open(database_url: &str) -> crate::Result<Self> {
+        if database_url == ":memory:" {
+            return Ok(Self {
+                pool: create_db_pool(database_url)?,
+                _database_guard: None,
+            });
+        }
+        let database = crate::database::Database::open(&camino::Utf8PathBuf::from(database_url))?;
         Ok(Self {
-            pool: create_db_pool(database_url)?,
+            pool: database.pool().clone(),
+            _database_guard: Some(database),
         })
     }
 
-    #[cfg(test)]
-    const fn new(pool: Pool) -> Self {
-        Self { pool }
+    pub fn register_source(&self, source: &PublishingSource) -> crate::Result<()> {
+        let mut conn = self.pool.get()?;
+        sql_query(
+            "INSERT INTO publishing_sources (source_key, display_name) VALUES (?, ?) \
+             ON CONFLICT (source_key) DO UPDATE SET display_name = excluded.display_name",
+        )
+        .bind::<Text, _>(source.key().as_str())
+        .bind::<Text, _>(source.display_name())
+        .execute(&mut conn)?;
+        Ok(())
+    }
+
+    pub fn resolve_source(
+        &self,
+        key: &PublishingSourceKey,
+    ) -> crate::Result<Option<PublishingSource>> {
+        let mut conn = self.pool.get()?;
+        let source = sql_query(
+            "SELECT source_key, display_name FROM publishing_sources WHERE source_key = ?",
+        )
+        .bind::<Text, _>(key.as_str())
+        .get_result::<PublishingSourceRow>(&mut conn)
+        .optional()?;
+        Ok(source.map(|source| PublishingSource::new(source.source_key, source.display_name)))
     }
 
     pub fn retain<R: Read>(
@@ -103,22 +192,52 @@ impl DocumentStore {
         source_key: PublishingSourceKey,
         path: &Utf8Path,
     ) -> crate::Result<RetainedDocument> {
-        self.retain_path_with_validation(source_key, path, true)
+        self.retain_path_with_options(source_key, path, true, None)
     }
 
-    pub(crate) fn retain_path_raw(
+    pub(crate) fn retain_path_mame(
         &self,
         source_key: PublishingSourceKey,
         path: &Utf8Path,
     ) -> crate::Result<RetainedDocument> {
-        self.retain_path_with_validation(source_key, path, false)
+        self.retain_path_with_options(source_key, path, false, Some(FormatHint::MameListXml))
     }
 
-    fn retain_path_with_validation(
+    pub(crate) fn retain_path_clrmamepro(
+        &self,
+        source_key: PublishingSourceKey,
+        path: &Utf8Path,
+    ) -> crate::Result<RetainedDocument> {
+        self.retain_path_with_options(source_key, path, false, Some(FormatHint::ClrMameProText))
+    }
+
+    pub(crate) fn retain_path_mame_softwarelist(
+        &self,
+        source_key: PublishingSourceKey,
+        path: &Utf8Path,
+    ) -> crate::Result<RetainedDocument> {
+        self.retain_path_with_options(
+            source_key,
+            path,
+            false,
+            Some(FormatHint::MameSoftwareListXml),
+        )
+    }
+
+    pub(crate) fn retain_path_no_intro_pc_xml(
+        &self,
+        source_key: PublishingSourceKey,
+        path: &Utf8Path,
+    ) -> crate::Result<RetainedDocument> {
+        self.retain_path_with_options(source_key, path, false, Some(FormatHint::NoIntroPcXml))
+    }
+
+    fn retain_path_with_options(
         &self,
         source_key: PublishingSourceKey,
         path: &Utf8Path,
         validate_xml: bool,
+        requested_format: Option<FormatHint>,
     ) -> crate::Result<RetainedDocument> {
         let mut metadata = AcquisitionMetadata {
             source_key,
@@ -144,11 +263,12 @@ impl DocumentStore {
         }
         metadata.source_uri = Some(canonical_path.to_string_lossy().into_owned());
         match File::open(&canonical_path) {
-            Ok(file) => self.retain_with_limit_and_validation(
+            Ok(file) => self.retain_with_options(
                 &metadata,
                 file,
                 MAX_DOCUMENT_BYTES,
                 validate_xml,
+                requested_format,
             ),
             Err(error) => {
                 self.record_failed_attempt(&metadata, "io", &error.to_string())?;
@@ -159,15 +279,50 @@ impl DocumentStore {
 
     pub fn load(&self, key: &DocumentKey) -> crate::Result<Vec<u8>> {
         let mut conn = self.pool.get()?;
-        let row = sql_query(
+        let key_string = key.to_string();
+        let retained = sql_query(
             "SELECT payload FROM documents \
              WHERE document_key = ? AND retention_status = 'retained' AND payload IS NOT NULL",
         )
-        .bind::<Text, _>(key.to_string())
+        .bind::<Text, _>(&key_string)
         .get_result::<RetainedPayload>(&mut conn)
-        .optional()?
-        .ok_or_else(|| crate::Error::DocumentUnavailable(key.to_string()))?;
-        Ok(row.payload)
+        .optional()?;
+        let payload = if let Some(row) = retained {
+            row.payload
+        } else {
+            let row = sql_query(
+                "SELECT legacy.sha256, legacy.sha1, legacy.byte_length, legacy.payload, \
+                        documents.sha1 AS document_sha1 \
+                 FROM legacy_document_payloads AS legacy \
+                 JOIN documents USING (document_key) \
+                 WHERE legacy.document_key = ?",
+            )
+            .bind::<Text, _>(&key_string)
+            .get_result::<LegacyLoadPayload>(&mut conn)
+            .optional()?
+            .filter(|row| {
+                row.sha256.as_slice() == key.digest()
+                    && usize::try_from(row.byte_length).ok() == Some(row.payload.len())
+            })
+            .ok_or_else(|| crate::Error::DocumentUnavailable(key_string.clone()))?;
+            if DocumentKey::from_bytes(&row.payload) != *key {
+                return Err(crate::Error::DocumentDigestCollision);
+            }
+            let payload_sha1 = sha1(&row.payload);
+            if row.sha1.as_slice() != payload_sha1
+                || row
+                    .document_sha1
+                    .as_deref()
+                    .is_some_and(|stored| stored != payload_sha1)
+            {
+                return Err(crate::Error::DocumentUnavailable(key_string.clone()));
+            }
+            row.payload
+        };
+        if DocumentKey::from_bytes(&payload) != *key {
+            return Err(crate::Error::DocumentDigestCollision);
+        }
+        Ok(payload)
     }
 
     fn retain_with_limit_and_validation<R: Read>(
@@ -176,6 +331,17 @@ impl DocumentStore {
         reader: R,
         limit: usize,
         validate_xml: bool,
+    ) -> crate::Result<RetainedDocument> {
+        self.retain_with_options(metadata, reader, limit, validate_xml, None)
+    }
+
+    fn retain_with_options<R: Read>(
+        &self,
+        metadata: &AcquisitionMetadata,
+        reader: R,
+        limit: usize,
+        validate_xml: bool,
+        requested_format: Option<FormatHint>,
     ) -> crate::Result<RetainedDocument> {
         let transport_metadata = metadata
             .transport_metadata
@@ -203,8 +369,14 @@ impl DocumentStore {
             return Err(error);
         }
 
-        let result =
-            self.persist_retained(metadata, transport_metadata.as_deref(), &raw, key, limit);
+        let result = self.persist_retained(
+            metadata,
+            transport_metadata.as_deref(),
+            &raw,
+            key,
+            limit,
+            requested_format,
+        );
         match result {
             Ok(retained) => Ok(retained),
             Err(error) => {
@@ -221,6 +393,7 @@ impl DocumentStore {
         raw: &[u8],
         key: DocumentKey,
         limit: usize,
+        requested_format: Option<FormatHint>,
     ) -> crate::Result<RetainedDocument> {
         let verification_status = if metadata.expected_sha256.is_some() {
             "verified"
@@ -230,7 +403,37 @@ impl DocumentStore {
         let sha1 = sha1(raw);
         let byte_length =
             i64::try_from(raw.len()).map_err(|_| crate::Error::DocumentTooLarge { limit })?;
-        let format_hint = FormatHint::for_bytes(raw);
+        let format_hint = requested_format.map_or_else(
+            || FormatHint::for_bytes(raw),
+            |hint| match (hint, raw.starts_with(&[0x1f, 0x8b])) {
+                (FormatHint::MameListXml | FormatHint::MameListXmlGzip, false) => {
+                    FormatHint::MameListXml
+                }
+                (FormatHint::MameListXml | FormatHint::MameListXmlGzip, true) => {
+                    FormatHint::MameListXmlGzip
+                }
+                (FormatHint::MameSoftwareListXml | FormatHint::MameSoftwareListXmlGzip, false) => {
+                    FormatHint::MameSoftwareListXml
+                }
+                (FormatHint::MameSoftwareListXml | FormatHint::MameSoftwareListXmlGzip, true) => {
+                    FormatHint::MameSoftwareListXmlGzip
+                }
+                (FormatHint::ClrMameProText | FormatHint::ClrMameProTextGzip, false) => {
+                    FormatHint::ClrMameProText
+                }
+                (FormatHint::ClrMameProText | FormatHint::ClrMameProTextGzip, true) => {
+                    FormatHint::ClrMameProTextGzip
+                }
+                (FormatHint::NoIntroPcXml | FormatHint::NoIntroPcXmlGzip, false) => {
+                    FormatHint::NoIntroPcXml
+                }
+                (FormatHint::NoIntroPcXml | FormatHint::NoIntroPcXmlGzip, true) => {
+                    FormatHint::NoIntroPcXmlGzip
+                }
+                (_, false) => FormatHint::LogiqxXml,
+                (_, true) => FormatHint::LogiqxXmlGzip,
+            },
+        );
         let acquisition_key = AcquisitionKey::fresh();
         let attempt_key = uuid::Uuid::new_v4().to_string();
         let acquisition_key_string = acquisition_key.to_string();
@@ -238,33 +441,15 @@ impl DocumentStore {
         {
             let mut conn = self.pool.get()?;
             conn.immediate_transaction::<_, crate::Error, _>(|conn| {
-                let existing = sql_query(
-                    "SELECT document_key, payload, retention_status FROM documents WHERE sha256 = ?",
-                )
-                .bind::<Binary, _>(key.digest().as_slice())
-                .get_result::<ExistingDocument>(conn)
-                .optional()?;
-                match existing {
-                    Some(document)
-                        if document.document_key == document_key_string
-                            && document.retention_status == "retained"
-                            && document.payload.as_deref() == Some(raw) => {}
-                    Some(_) => return Err(crate::Error::DocumentDigestCollision),
-                    None => {
-                        sql_query(
-                            "INSERT INTO documents \
-                             (document_key, sha1, byte_length, sha256, payload, format_hint, retention_status) \
-                             VALUES (?, ?, ?, ?, ?, ?, 'retained')",
-                        )
-                        .bind::<Text, _>(&document_key_string)
-                        .bind::<Binary, _>(sha1.as_slice())
-                        .bind::<diesel::sql_types::BigInt, _>(byte_length)
-                        .bind::<Binary, _>(key.digest().as_slice())
-                        .bind::<Binary, _>(&raw)
-                        .bind::<Text, _>(format_hint.as_str())
-                        .execute(conn)?;
-                    }
-                }
+                ensure_document_retained(
+                    conn,
+                    raw,
+                    key.digest().as_slice(),
+                    &document_key_string,
+                    &sha1,
+                    byte_length,
+                    format_hint,
+                )?;
 
                 sql_query(
                     "INSERT INTO acquisitions \
@@ -343,6 +528,96 @@ impl DocumentStore {
     }
 }
 
+fn ensure_document_retained(
+    conn: &mut diesel::SqliteConnection,
+    raw: &[u8],
+    digest: &[u8],
+    document_key: &str,
+    sha1: &Sha1Digest,
+    byte_length: i64,
+    format_hint: FormatHint,
+) -> crate::Result<()> {
+    let existing = sql_query(
+        "SELECT document_key, sha256, payload, retention_status, sha1, byte_length FROM documents \
+         WHERE sha256 = ? OR document_key = ?",
+    )
+    .bind::<Binary, _>(digest)
+    .bind::<Text, _>(document_key)
+    .load::<ExistingDocument>(conn)?;
+    if existing.len() > 1 {
+        return Err(crate::Error::DocumentDigestCollision);
+    }
+    match existing.into_iter().next() {
+        Some(document)
+            if document.document_key == document_key
+                && document.retention_status == "retained"
+                && document.sha256.as_deref() == Some(digest)
+                && document.payload.as_deref() == Some(raw) => {}
+        Some(document)
+            if document.document_key == document_key
+                && document.retention_status == "unavailable"
+                && document.sha256.is_none()
+                && document.payload.is_none() =>
+        {
+            if document
+                .sha1
+                .as_deref()
+                .is_some_and(|stored| stored != sha1)
+                || document
+                    .byte_length
+                    .is_some_and(|stored| stored != byte_length)
+            {
+                return Err(crate::Error::DocumentDigestCollision);
+            }
+            let existing_payload = sql_query(
+                "SELECT sha256, sha1, byte_length, payload FROM legacy_document_payloads \
+                 WHERE document_key = ?",
+            )
+            .bind::<Text, _>(document_key)
+            .get_result::<LegacyPayload>(conn)
+            .optional()?;
+            match existing_payload {
+                Some(existing)
+                    if existing.sha256.as_slice() == digest
+                        && existing.sha1.as_slice() == sha1
+                        && existing.byte_length == byte_length
+                        && existing.payload.as_slice() == raw => {}
+                Some(_) => return Err(crate::Error::DocumentDigestCollision),
+                None => {
+                    sql_query(
+                        "INSERT INTO legacy_document_payloads \
+                         (document_key, sha256, sha1, byte_length, payload, format_hint) \
+                         VALUES (?, ?, ?, ?, ?, ?)",
+                    )
+                    .bind::<Text, _>(document_key)
+                    .bind::<Binary, _>(digest)
+                    .bind::<Binary, _>(sha1.as_slice())
+                    .bind::<diesel::sql_types::BigInt, _>(byte_length)
+                    .bind::<Binary, _>(raw)
+                    .bind::<Text, _>(format_hint.as_str())
+                    .execute(conn)?;
+                }
+            }
+        }
+        Some(_) => return Err(crate::Error::DocumentDigestCollision),
+        None => {
+            sql_query(
+                "INSERT INTO documents \
+                 (document_key, sha1, byte_length, sha256, payload, format_hint, retention_status) \
+                 VALUES (?, ?, ?, ?, ?, ?, 'retained')",
+            )
+            .bind::<Text, _>(document_key)
+            .bind::<Binary, _>(sha1.as_slice())
+            .bind::<diesel::sql_types::BigInt, _>(byte_length)
+            .bind::<Binary, _>(digest)
+            .bind::<Binary, _>(raw)
+            .bind::<Text, _>(format_hint.as_str())
+            .execute(conn)?;
+        }
+    }
+    Ok(())
+}
+
 fn sha1(bytes: &[u8]) -> Sha1Digest {
     Sha1::digest(bytes).into()
 }
@@ -390,14 +665,10 @@ mod tests {
     fn setup_store() -> TestResult<(TempDir, DocumentStore)> {
         let directory = tempfile::tempdir()?;
         let database_path = directory.path().join("catalog.sqlite");
-        let pool = create_db_pool(&database_path.to_string_lossy())?;
-        let mut conn = pool.get()?;
-        conn.batch_execute(
-            "INSERT INTO publishing_sources (source_key, display_name) \
-             VALUES ('source-a', 'Publisher A'), ('source-b', 'Publisher B');",
-        )?;
-        drop(conn);
-        Ok((directory, DocumentStore::new(pool)))
+        let store = DocumentStore::open(&database_path.to_string_lossy())?;
+        store.register_source(&PublishingSource::new("source-a", "Publisher A"))?;
+        store.register_source(&PublishingSource::new("source-b", "Publisher B"))?;
+        Ok((directory, store))
     }
 
     fn acquisition(source_key: &str) -> AcquisitionMetadata {
@@ -427,6 +698,62 @@ mod tests {
             DocumentKey::from_bytes(b"catalog"),
             DocumentKey::from_bytes(b"changed")
         );
+    }
+
+    #[test]
+    fn fresh_store_registers_and_resolves_source_before_successful_retention() -> TestResult {
+        let directory = tempfile::tempdir()?;
+        let database_path = directory.path().join("fresh.sqlite");
+        let store = DocumentStore::open(&database_path.to_string_lossy())?;
+        store.register_source(&PublishingSource::new("fresh-source", "Fresh Publisher"))?;
+
+        let source = store
+            .resolve_source(&PublishingSourceKey::new("fresh-source"))?
+            .ok_or("registered source did not resolve")?;
+        assert_eq!(source.key().as_str(), "fresh-source");
+        assert_eq!(source.display_name(), "Fresh Publisher");
+        assert!(
+            store
+                .resolve_source(&PublishingSourceKey::new("missing-source"))?
+                .is_none()
+        );
+        let retained = store.retain(&acquisition("fresh-source"), VALID_DAT)?;
+        assert_eq!(store.load(&retained.document_key)?, VALID_DAT);
+        assert_eq!(count(&store, "acquisitions")?, 1);
+        assert_eq!(count(&store, "acquisition_attempts")?, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn fresh_store_persists_failed_attempt_after_source_registration() -> TestResult {
+        let directory = tempfile::tempdir()?;
+        let database_path = directory.path().join("fresh-failure.sqlite");
+        let store = DocumentStore::open(&database_path.to_string_lossy())?;
+        store.register_source(&PublishingSource::new("fresh-source", "Fresh Publisher"))?;
+
+        let mut failed = acquisition("fresh-source");
+        failed.expected_sha256 = Some(DocumentDigest::from_hex(&"00".repeat(32))?);
+        assert!(matches!(
+            store.retain(&failed, VALID_DAT),
+            Err(crate::Error::DocumentDigestMismatch)
+        ));
+
+        let mut conn = store.pool.get()?;
+        let attempt = sql_query(
+            "SELECT outcome, diagnostic FROM acquisition_attempts WHERE source_key = 'fresh-source'",
+        )
+        .get_result::<FailedAttemptRow>(&mut conn)?;
+        assert_eq!(attempt.outcome, "failed");
+        assert!(
+            attempt
+                .diagnostic
+                .as_deref()
+                .is_some_and(|diagnostic| diagnostic.starts_with("digest_mismatch:"))
+        );
+        assert_eq!(count(&store, "documents")?, 0);
+        assert_eq!(count(&store, "acquisitions")?, 0);
+        assert_eq!(count(&store, "acquisition_attempts")?, 1);
+        Ok(())
     }
 
     #[test]
@@ -544,12 +871,14 @@ mod tests {
     fn retained_bytes_and_provenance_survive_database_backup_restore() -> TestResult {
         let (directory, store) = setup_store()?;
         let retained = store.retain(&acquisition("source-a"), VALID_DAT)?;
+        let serialized_key = retained.document_key.to_string();
         let backup_path = directory.path().join("restored.sqlite");
         let original_path = directory.path().join("catalog.sqlite");
         drop(store);
         std::fs::copy(&original_path, &backup_path)?;
         let restored = DocumentStore::open(&backup_path.to_string_lossy())?;
-        assert_eq!(restored.load(&retained.document_key)?, VALID_DAT);
+        let restored_key = serialized_key.parse()?;
+        assert_eq!(restored.load(&restored_key)?, VALID_DAT);
         assert_eq!(count(&restored, "acquisitions")?, 1);
         assert_eq!(count(&restored, "acquisition_attempts")?, 1);
         Ok(())
@@ -586,10 +915,13 @@ mod tests {
     fn verifies_source_digest_when_available_and_rejects_mismatches() -> TestResult {
         let (_directory, store) = setup_store()?;
         let mut verified = acquisition("source-a");
-        verified.expected_sha256 = Some(DocumentDigest::from_bytes(VALID_DAT));
+        verified.expected_sha256 = Some(DocumentDigest::from_hex(
+            "0cad48a4d2d1c1427572ab458f1ed2f927d58b85852ea0d4a4ef28e6bc554e88",
+        )?);
         let retained = store.retain(&verified, VALID_DAT)?;
         let mut mismatched = acquisition("source-b");
-        mismatched.expected_sha256 = Some(DocumentDigest::from_bytes(b"other bytes"));
+        let mismatch_digest = DocumentDigest::from_hex(&"00".repeat(32))?;
+        mismatched.expected_sha256 = Some(mismatch_digest);
         assert!(matches!(
             store.retain(&mismatched, VALID_DAT),
             Err(crate::Error::DocumentDigestMismatch)
@@ -614,14 +946,7 @@ mod tests {
             sql_query("SELECT expected_sha256 FROM acquisition_attempts WHERE outcome = 'failed'")
                 .get_result::<ExpectedDigestRow>(&mut conn)?
                 .expected_sha256;
-        assert_eq!(
-            failed_digest,
-            Some(
-                DocumentDigest::from_bytes(b"other bytes")
-                    .as_bytes()
-                    .to_vec()
-            )
-        );
+        assert_eq!(failed_digest, Some(mismatch_digest.as_bytes().to_vec()));
         assert_eq!(count(&store, "documents")?, 1);
         assert_eq!(count(&store, "acquisitions")?, 1);
         assert_eq!(count(&store, "acquisition_attempts")?, 2);
@@ -632,7 +957,9 @@ mod tests {
     fn rejects_digest_mismatch_before_parsing_and_records_digest_failure() -> TestResult {
         let (_directory, store) = setup_store()?;
         let mut metadata = acquisition("source-a");
-        metadata.expected_sha256 = Some(DocumentDigest::from_bytes(VALID_DAT));
+        metadata.expected_sha256 = Some(DocumentDigest::from_hex(
+            "0cad48a4d2d1c1427572ab458f1ed2f927d58b85852ea0d4a4ef28e6bc554e88",
+        )?);
         assert!(matches!(
             store.retain(&metadata, b"malformed XML".as_slice()),
             Err(crate::Error::DocumentDigestMismatch)
@@ -646,10 +973,26 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn malformed_source_digest_is_rejected() {
+        assert!(DocumentDigest::from_hex("not-a-sha256-digest").is_err());
+        assert!(DocumentDigest::from_hex("00").is_err());
+        assert!(DocumentDigest::from_hex(&"gg".repeat(32)).is_err());
+        assert!("g".repeat(64).parse::<DocumentDigest>().is_err());
+    }
+
     #[derive(QueryableByName)]
     struct DiagnosticRow {
         #[diesel(sql_type = Text)]
         diagnostic: String,
+    }
+
+    #[derive(QueryableByName)]
+    struct FailedAttemptRow {
+        #[diesel(sql_type = Text)]
+        outcome: String,
+        #[diesel(sql_type = Nullable<Text>)]
+        diagnostic: Option<String>,
     }
 
     #[test]
@@ -735,8 +1078,14 @@ mod tests {
         conn.batch_execute("PRAGMA foreign_keys = ON")?;
         let migrations = crate::storage::db::MIGRATIONS.migrations()?;
         assert!(migrations.len() > 1);
+        let retain_source_documents_index = migrations
+            .iter()
+            .position(|migration| {
+                migration.name().to_string() == "2026-09-24-000001_retain_source_documents"
+            })
+            .ok_or("retain_source_documents migration not found")?;
         conn.applied_migrations()?;
-        for migration in &migrations[..migrations.len() - 1] {
+        for migration in &migrations[..retain_source_documents_index] {
             conn.run_migration(migration.as_ref())?;
         }
         sql_query(
@@ -772,11 +1121,245 @@ mod tests {
     }
 
     #[test]
+    fn retained_import_hydrates_legacy_content_derived_document_key() -> TestResult {
+        let (_directory, store) = setup_store()?;
+        let key = DocumentKey::from_bytes(VALID_DAT);
+        let mut conn = store.pool.get()?;
+        sql_query("INSERT INTO documents (document_key, sha1, byte_length) VALUES (?, ?, ?)")
+            .bind::<Text, _>(key.to_string())
+            .bind::<Binary, _>(sha1(VALID_DAT).as_slice())
+            .bind::<BigInt, _>(i64::try_from(VALID_DAT.len())?)
+            .execute(&mut conn)?;
+        sql_query(
+            "INSERT INTO acquisitions (acquisition_key, source_key, document_key, method) \
+             VALUES ('legacy-content-key', 'source-a', ?, 'legacy-import')",
+        )
+        .bind::<Text, _>(key.to_string())
+        .execute(&mut conn)?;
+        drop(conn);
+
+        let retained = store.retain(&acquisition("source-a"), VALID_DAT)?;
+        assert_eq!(retained.document_key, key);
+        assert_eq!(store.load(&key)?, VALID_DAT);
+        assert_eq!(count(&store, "documents")?, 1);
+        assert_eq!(count(&store, "acquisitions")?, 2);
+
+        let mut conn = store.pool.get()?;
+        let document = sql_query(
+            "SELECT retention_status, sha256, payload FROM documents WHERE document_key = ?",
+        )
+        .bind::<Text, _>(key.to_string())
+        .get_result::<HydratedDocumentRow>(&mut conn)?;
+        assert_eq!(document.retention_status, "unavailable");
+        assert_eq!(document.sha256, None);
+        assert_eq!(document.payload, None);
+        let sidecar = sql_query(
+            "SELECT sha256, sha1, byte_length, payload FROM legacy_document_payloads \
+             WHERE document_key = ?",
+        )
+        .bind::<Text, _>(key.to_string())
+        .get_result::<LegacyPayload>(&mut conn)?;
+        assert_eq!(sidecar.sha256, key.digest());
+        assert_eq!(sidecar.sha1, sha1(VALID_DAT));
+        assert_eq!(sidecar.byte_length, i64::try_from(VALID_DAT.len())?);
+        assert_eq!(sidecar.payload, VALID_DAT);
+        Ok(())
+    }
+
+    #[test]
+    fn replace_cannot_overwrite_retained_legacy_payload() -> TestResult {
+        let (_directory, store) = setup_store()?;
+        let key = DocumentKey::from_bytes(VALID_DAT);
+        let mut conn = store.pool.get()?;
+        sql_query("INSERT INTO documents (document_key, sha1, byte_length) VALUES (?, ?, ?)")
+            .bind::<Text, _>(key.to_string())
+            .bind::<Binary, _>(sha1(VALID_DAT).as_slice())
+            .bind::<BigInt, _>(i64::try_from(VALID_DAT.len())?)
+            .execute(&mut conn)?;
+        drop(conn);
+
+        store.retain(&acquisition("source-a"), VALID_DAT)?;
+        assert_eq!(store.load(&key)?, VALID_DAT);
+
+        let mut corrupt_payload = VALID_DAT.to_vec();
+        corrupt_payload[0] ^= 1;
+        let mut conn = store.pool.get()?;
+        let replace = sql_query(
+            "INSERT OR REPLACE INTO legacy_document_payloads \
+             (document_key, sha256, sha1, byte_length, payload, format_hint) \
+             VALUES (?, ?, ?, ?, ?, 'logiqx+xml')",
+        )
+        .bind::<Text, _>(key.to_string())
+        .bind::<Binary, _>(key.digest().as_slice())
+        .bind::<Binary, _>(sha1(VALID_DAT).as_slice())
+        .bind::<BigInt, _>(i64::try_from(corrupt_payload.len())?)
+        .bind::<Binary, _>(&corrupt_payload)
+        .execute(&mut conn);
+        assert!(replace.is_err());
+        drop(conn);
+
+        assert_eq!(store.load(&key)?, VALID_DAT);
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_sha1_and_length_mismatches_reject_retention() -> TestResult {
+        let wrong_sha1 = [0_u8; 20];
+        let correct_sha1 = sha1(VALID_DAT);
+        let correct_length = i64::try_from(VALID_DAT.len())?;
+        for (stored_sha1, stored_length) in [
+            (&wrong_sha1, correct_length),
+            (&correct_sha1, correct_length + 1),
+        ] {
+            let (_directory, store) = setup_store()?;
+            let key = DocumentKey::from_bytes(VALID_DAT);
+            let mut conn = store.pool.get()?;
+            sql_query("INSERT INTO documents (document_key, sha1, byte_length) VALUES (?, ?, ?)")
+                .bind::<Text, _>(key.to_string())
+                .bind::<Binary, _>(stored_sha1.as_slice())
+                .bind::<BigInt, _>(stored_length)
+                .execute(&mut conn)?;
+            drop(conn);
+
+            assert!(matches!(
+                store.retain(&acquisition("source-a"), VALID_DAT),
+                Err(crate::Error::DocumentDigestCollision)
+            ));
+            assert!(matches!(
+                store.load(&key),
+                Err(crate::Error::DocumentUnavailable(_))
+            ));
+            assert_eq!(count(&store, "legacy_document_payloads")?, 0);
+            assert_eq!(count(&store, "acquisitions")?, 0);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_payload_with_matching_but_incorrect_sha1_is_rejected_on_load() -> TestResult {
+        let (_directory, store) = setup_store()?;
+        let key = DocumentKey::from_bytes(VALID_DAT);
+        let incorrect_sha1 = [0_u8; 20];
+        assert_ne!(incorrect_sha1, sha1(VALID_DAT));
+        let mut conn = store.pool.get()?;
+        sql_query("INSERT INTO documents (document_key, sha1, byte_length) VALUES (?, ?, ?)")
+            .bind::<Text, _>(key.to_string())
+            .bind::<Binary, _>(incorrect_sha1.as_slice())
+            .bind::<BigInt, _>(i64::try_from(VALID_DAT.len())?)
+            .execute(&mut conn)?;
+        sql_query(
+            "INSERT INTO legacy_document_payloads \
+             (document_key, sha256, sha1, byte_length, payload, format_hint) \
+             VALUES (?, ?, ?, ?, ?, 'logiqx+xml')",
+        )
+        .bind::<Text, _>(key.to_string())
+        .bind::<Binary, _>(key.digest().as_slice())
+        .bind::<Binary, _>(incorrect_sha1.as_slice())
+        .bind::<BigInt, _>(i64::try_from(VALID_DAT.len())?)
+        .bind::<Binary, _>(VALID_DAT)
+        .execute(&mut conn)?;
+        drop(conn);
+
+        assert!(matches!(
+            store.load(&key),
+            Err(crate::Error::DocumentUnavailable(_))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn arbitrary_sql_cannot_hydrate_a_forged_legacy_payload() -> TestResult {
+        let (_directory, store) = setup_store()?;
+        let key = DocumentKey::from_bytes(VALID_DAT);
+        let mut conn = store.pool.get()?;
+        sql_query("INSERT INTO documents (document_key, sha1, byte_length) VALUES (?, ?, ?)")
+            .bind::<Text, _>(key.to_string())
+            .bind::<Binary, _>(sha1(VALID_DAT).as_slice())
+            .bind::<BigInt, _>(i64::try_from(VALID_DAT.len())?)
+            .execute(&mut conn)?;
+
+        assert!(
+            sql_query("UPDATE documents SET payload = ? WHERE document_key = ?")
+                .bind::<Binary, _>(VALID_DAT)
+                .bind::<Text, _>(key.to_string())
+                .execute(&mut conn)
+                .is_err()
+        );
+
+        let mut forged = VALID_DAT.to_vec();
+        forged[0] ^= 1;
+        sql_query(
+            "INSERT INTO legacy_document_payloads \
+             (document_key, sha256, sha1, byte_length, payload, format_hint) \
+             VALUES (?, ?, ?, ?, ?, 'logiqx+xml')",
+        )
+        .bind::<Text, _>(key.to_string())
+        .bind::<Binary, _>(key.digest().as_slice())
+        .bind::<Binary, _>(sha1(VALID_DAT).as_slice())
+        .bind::<BigInt, _>(i64::try_from(forged.len())?)
+        .bind::<Binary, _>(&forged)
+        .execute(&mut conn)?;
+        drop(conn);
+
+        assert!(matches!(
+            store.load(&key),
+            Err(crate::Error::DocumentDigestCollision)
+        ));
+        let mut conn = store.pool.get()?;
+        let document = sql_query(
+            "SELECT retention_status, sha256, payload FROM documents WHERE document_key = ?",
+        )
+        .bind::<Text, _>(key.to_string())
+        .get_result::<HydratedDocumentRow>(&mut conn)?;
+        assert_eq!(document.retention_status, "unavailable");
+        assert!(document.sha256.is_none());
+        assert!(document.payload.is_none());
+        Ok(())
+    }
+
+    #[test]
     fn down_migrations_remove_software_list_snapshot_and_document_retention_extensions()
     -> TestResult {
         let mut conn = SqliteConnection::establish(":memory:")?;
         conn.batch_execute("PRAGMA foreign_keys = ON")?;
+        let migrations = crate::storage::db::MIGRATIONS.migrations()?;
+        let document_retention_index = migrations
+            .iter()
+            .position(|migration| {
+                migration.name().to_string() == "2026-09-24-000001_retain_source_documents"
+            })
+            .ok_or("document retention migration not found")?;
+        let legacy_retention_index = migrations
+            .iter()
+            .position(|migration| {
+                migration.name().to_string() == "2026-09-25-000000_allow_legacy_document_retention"
+            })
+            .ok_or("legacy document retention migration not found")?;
+        let snapshot_index = migrations
+            .iter()
+            .position(|migration| {
+                migration.name().to_string() == "2026-09-24-000002_publish_logiqx_snapshots"
+            })
+            .ok_or("snapshot migration not found")?;
+        let machine_asset_index = migrations
+            .iter()
+            .position(|migration| {
+                migration.name().to_string() == "2026-09-24-000003_mame_machine_asset_semantics"
+            })
+            .ok_or("machine asset migration not found")?;
+        let software_list_index = migrations
+            .iter()
+            .position(|migration| {
+                migration.name().to_string() == "2026-09-24-000004_mame_softwarelist_semantics"
+            })
+            .ok_or("software-list migration not found")?;
+        assert!(document_retention_index < legacy_retention_index);
+        conn.applied_migrations()?;
+        for migration in &migrations[..=legacy_retention_index] {
+            conn.run_migration(migration.as_ref())?;
+        }
         conn.run_pending_migrations(crate::storage::db::MIGRATIONS)?;
+
         sql_query(
             "INSERT INTO publishing_sources (source_key, display_name) VALUES ('legacy', 'Legacy')",
         )
@@ -789,12 +1372,14 @@ mod tests {
         )
         .execute(&mut conn)?;
 
-        // This test targets catalog/document rollback behavior; remove the newer
-        // ROM-scan extensions before walking back those migrations.
-        conn.revert_last_migration(crate::storage::db::MIGRATIONS)?;
-        conn.revert_last_migration(crate::storage::db::MIGRATIONS)?;
-        conn.revert_last_migration(crate::storage::db::MIGRATIONS)?;
-        conn.revert_last_migration(crate::storage::db::MIGRATIONS)?;
+        // Keep the legacy-retention migration applied for its explicit rollback
+        // assertion below.
+        let rollback_indexes = (legacy_retention_index + 1..migrations.len())
+            .rev()
+            .chain((software_list_index..legacy_retention_index).rev());
+        for index in rollback_indexes {
+            conn.revert_migration(migrations[index].as_ref())?;
+        }
         let software_list_tables = sql_query(
             "SELECT COUNT(*) AS count FROM sqlite_master \
              WHERE type = 'table' AND name IN ('software_lists', 'software_items', \
@@ -805,26 +1390,26 @@ mod tests {
         .count;
         assert_eq!(software_list_tables, 0);
 
-        conn.revert_last_migration(crate::storage::db::MIGRATIONS)?;
+        conn.revert_migration(migrations[machine_asset_index].as_ref())?;
         let snapshot_tables_after_asset_revert = sql_query(
             "SELECT COUNT(*) AS count FROM sqlite_master \
-             WHERE type = 'table' AND name IN ('snapshot_sets', 'asset_requirements', \
+             WHERE type = 'table' AND name IN ('snapshot_publications', 'snapshot_sets', 'asset_requirements', \
                  'snapshot_extensions', 'import_diagnostics')",
         )
         .get_result::<CountRow>(&mut conn)?
         .count;
-        assert_eq!(snapshot_tables_after_asset_revert, 4);
-
-        conn.revert_last_migration(crate::storage::db::MIGRATIONS)?;
+        assert_eq!(snapshot_tables_after_asset_revert, 5);
+        conn.revert_migration(migrations[snapshot_index].as_ref())?;
         let snapshot_tables = sql_query(
             "SELECT COUNT(*) AS count FROM sqlite_master \
-             WHERE type = 'table' AND name IN ('snapshot_sets', 'asset_requirements', \
+             WHERE type = 'table' AND name IN ('snapshot_publications', 'snapshot_sets', 'asset_requirements', \
                  'snapshot_extensions', 'import_diagnostics')",
         )
         .get_result::<CountRow>(&mut conn)?
         .count;
         assert_eq!(snapshot_tables, 0);
-        conn.revert_last_migration(crate::storage::db::MIGRATIONS)?;
+        conn.revert_migration(migrations[legacy_retention_index].as_ref())?;
+        conn.revert_migration(migrations[document_retention_index].as_ref())?;
         sql_query(
             "UPDATE acquisitions SET source_uri = 'restored' \
              WHERE acquisition_key = 'legacy-acquisition'",
@@ -844,6 +1429,16 @@ mod tests {
     struct DocumentStatusRow {
         #[diesel(sql_type = Text)]
         retention_status: String,
+        #[diesel(sql_type = Nullable<Binary>)]
+        payload: Option<Vec<u8>>,
+    }
+
+    #[derive(QueryableByName)]
+    struct HydratedDocumentRow {
+        #[diesel(sql_type = Text)]
+        retention_status: String,
+        #[diesel(sql_type = Nullable<Binary>)]
+        sha256: Option<Vec<u8>>,
         #[diesel(sql_type = Nullable<Binary>)]
         payload: Option<Vec<u8>>,
     }

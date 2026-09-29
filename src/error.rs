@@ -2,6 +2,30 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum Error {
+    #[error("artifact was replaced, but its containing directory could not be synced: {error}")]
+    ArtifactReplacedNotDurable { error: String },
+
+    #[error("build execution failed: {source}")]
+    BuildWorkflow {
+        report: Box<crate::app::BuildWorkflowReport>,
+        #[source]
+        source: Box<Self>,
+    },
+
+    #[error("run workflow failed after source scan: {source}")]
+    RunWorkflow {
+        scan_report: crate::app::SourceScanReport,
+        #[source]
+        source: Box<Self>,
+    },
+
+    #[error("multi-root run workflow failed after scanning sources: {source}")]
+    RunWorkflowWithRoots {
+        scan_reports: Vec<crate::app::SourceScanReport>,
+        #[source]
+        source: Box<Self>,
+    },
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
@@ -29,8 +53,19 @@ pub enum Error {
     #[error("Invalid path: {0}")]
     InvalidPath(String),
 
+    #[error("Mount failed: {0}")]
+    Mount(String),
+
+    #[error("no published snapshot exists for catalog {0}")]
+    CatalogNotFound(String),
+    #[error("catalog format is not supported for machine dependencies: {0}")]
+    UnsupportedMachineDependencyFormat(String),
+
     #[error("source changed since planning: {path}: {reason}")]
     SourceChanged { path: String, reason: String },
+
+    #[error("archive decoder concurrency limit of {maximum} is reached")]
+    ArchiveDecoderLimitExceeded { maximum: usize },
 
     #[error("Invalid hash: {0}")]
     InvalidHash(String),
@@ -85,6 +120,9 @@ pub enum Error {
 
     #[error("Migration error: {0}")]
     Migration(String),
+
+    #[error("cache backup error: {0}")]
+    CacheBackup(String),
 
     #[error("Thread pool error: {0}")]
     ThreadPool(#[from] rayon::ThreadPoolBuildError),

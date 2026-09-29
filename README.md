@@ -1,6 +1,7 @@
 # mame_coalesce
 
-`mame_coalesce` imports Logiqx DAT files, scans ROM sources, plans deterministic builds, and writes merged ZIP outputs.
+`mame_coalesce` imports Logiqx DAT files, scans ROM sources, plans deterministic
+builds, and writes verified ZIP/7z archives or directory outputs.
 
 ## Status
 
@@ -29,12 +30,20 @@ Common options:
 --compression deflate
 --compression store
 --output-container zip
+--output-container 7z
 --output-container directory
 --missing warn
 --missing fail
 --dry-run
 --set "Game Set Name"
+--reuse-verified
 ```
+
+`--reuse-verified` leaves an existing ZIP, 7z, or directory artifact untouched
+only when its complete logical contents match the current plan. Otherwise the
+artifact is rebuilt as usual. The default remains replacement; source files
+are still scanned/planned normally, and this option does not execute a saved
+plan.
 
 Build and audit commands accept repeatable `--set NAME` options to restrict
 planning to exact set names in the selected DAT:
@@ -61,7 +70,31 @@ mame_coalesce --cache /tmp/coalesce.db cache build "DAT Header Name" /path/to/ro
 mame_coalesce --cache /tmp/coalesce.db audit "DAT Header Name" /path/to/roms
 mame_coalesce --cache /tmp/coalesce.db audit "DAT Header Name" /path/to/roms --format json
 mame_coalesce --cache /tmp/coalesce.db audit "DAT Header Name" /path/to/roms --refresh --jobs 8
+mame_coalesce --cache /tmp/coalesce.db cache backup /path/to/coalesce.backup.sqlite
+mame_coalesce --cache /tmp/coalesce.db cache integrity
+mame_coalesce --cache /tmp/coalesce.db cache restore /path/to/coalesce.backup.sqlite
+mame_coalesce --cache /tmp/coalesce.db cache restore /path/to/coalesce.backup.sqlite --replace-existing
 ```
+
+Backups are standalone SQLite snapshots made with SQLite `VACUUM INTO`. Format
+version 1 is marked in the SQLite header and includes the complete cache file,
+including retained source bytes, acquisitions, catalog snapshots, assertions,
+reviews, diagnostics, and rebuildable inventory. Backup creation never replaces
+an existing backup file. Restore validates a same-directory staging copy before
+publishing it; an existing cache requires `--replace-existing`, and restore is
+refused while the cache is open by this application or SQLite sidecar files
+exist. Cache files with multiple hard links are refused because they bypass
+application locking. The backup must have exactly the
+migration history embedded in the running program; no migrations are run during
+validation or restore. A future schema requires a compatible program version or
+a new explicit format policy. `cache integrity` never modifies the inspected
+SQLite database; backup, restore, and integrity operations may create adjacent
+`.lock` files on both the cache and backup paths. It reports durable
+catalog/document failures separately from rebuildable inventory problems.
+Inventory problems do not invalidate a backup or prevent restore. Where the
+platform cannot sync the containing directory, publication succeeds with a
+warning that crash durability could not be confirmed. The integrity command
+returns a failing exit status when either category contains issues.
 
 Build, audit, and cache scan also accept repeatable `--source-root DIR` options.
 The positional source directory stays first; roots are canonicalized and exact
@@ -99,7 +132,7 @@ before building. The `*_with_roots` operations accept an ordered
 one-shot `--dry-run` or strict-missing build still imports the
 DAT and refreshes the scan cache, but does not write ROM outputs. The CLI owns
 human-readable reports, progress bars, and mapping build outcomes to process
-exit codes. `build_with_container` and `run_with_container` select ZIP or
+exit codes. `build_with_container` and `run_with_container` select ZIP, 7z, or
 directory output without changing request types; their ordered-root variants
 offer the same choice.
 
@@ -108,11 +141,19 @@ an already-imported DAT and cached source observations by default and labels
 them as cached rather than freshly checked bytes. Opening the cache may apply
 database migrations; that does not refresh source observations. `--refresh`
 explicitly rescans and persists the selected source root before resolving;
+`--verify-selected` instead reads and verifies only the resolved source members,
+reports stale or unavailable selections, and leaves the inventory unchanged;
+it cannot be combined with `--refresh`.
 `--matching-policy evidence-aware` opts into the
 resolver's evidence-aware conflict/ambiguity classifications. Human reports
 include expected and observed evidence and the selected or competing sources.
-`--format json` writes a versioned audit document to stdout and keeps logs and
-progress on stderr. Audit exits `0` when all requirements match and `1` when
+To keep adversarially large inventories from multiplying report memory by the
+number of requirements, resolution retains at most 256 detailed assessments and
+256 duplicate-source examples per operation; omitted counts remain explicit in
+JSON and human reports.
+`--format json` writes version 2 audit documents to stdout and keeps logs and
+progress on stderr; the reader remains compatible with version 1 reports.
+Audit exits `0` when all requirements match and `1` when
 requirements remain unresolved (operational failures also exit `1`). These
 audit statuses do not change build's existing `0` success, `1` execution-failure
 and `2` strict-missing behavior.
@@ -121,14 +162,17 @@ Evidence-aware matching ranks SHA1 above MD5 above CRC-plus-size. It may fall
 back to a weaker digest only when the observed stronger digest does not
 contradict the catalog; a stronger contradiction vetoes that candidate. A
 unique CRC-plus-size candidate is classified as weak evidence, while collisions
-at that level remain ambiguous. The default SHA1-compatibility policy is
-unchanged and does not use those fallback matches.
+remain ambiguous unless consistent stronger evidence establishes equivalent
+copies. The default SHA1-compatibility policy is unchanged and does not use
+those fallback matches.
 
 ZIP compression defaults to deflate for compatibility. Use `--compression store`
 when profiling or when faster, larger ZIP output is preferred.
 `--output-container` is independent of layout and compression; it defaults to
-`zip`, and `directory` writes each logical group as an uncompressed directory.
-Compression settings apply only to ZIP output.
+`zip`, `directory` writes each logical group as an uncompressed directory, and
+`7z` writes each group as a 7z archive using the pinned `r7z` LZMA2 defaults.
+`--compression` applies only to ZIP output; it is ignored for 7z and directory
+output.
 
 Defaults:
 
@@ -139,22 +183,35 @@ Defaults:
 - `--missing fail` exits `2` and writes nothing when required ROMs are missing
 - duplicate source matches are resolved deterministically
 
+Building from archive members stages selected bytes on disk before assembling
+each output ZIP or 7z archive. Its private staging directory is created beside
+the output, so ensure that filesystem has up to 16 GiB of free space for one
+output archive.
+
 Logical output paths use a conservative portable naming profile: ASCII only,
 case-insensitive collision checks, no trailing spaces or dots, path traversal,
 Windows-reserved device names, or platform-forbidden characters. Unicode names
 are rejected rather than relying on filesystem-specific normalization. The
 one-shot workflow rejects source and destination roots that are equal, nested,
 or aliased through existing symlinks; it checks before scanning and again before
-writing. Sources are never modified.
+writing. Linux and macOS artifact writing use handle-relative directory access
+and do not follow symlink components. These checks contain untrusted catalog and
+archive paths; concurrent local processes modifying the destination are outside
+the threat model. Other platforms are rejected before creating or truncating
+artifacts. Sources are never modified.
 
-Each ZIP artifact is built in a temporary file beside its destination. Source
-bytes are streamed and checked against the selected catalog evidence and scanned
-source identity; archive fingerprints are checked before and after member reads.
-The finished ZIP is flushed and synced before replacement. On Unix, renaming that
-same-filesystem temporary file replaces one artifact atomically. A multi-artifact
-build is not atomic as a whole: execution stops at the first failure and reports
-which artifacts completed, failed, or were not attempted. Atomic replacement is
-currently supported on Unix only.
+Each ZIP or 7z artifact is built in a temporary file beside its destination.
+Source bytes are streamed and checked against the selected catalog evidence and
+scanned source identity; archive fingerprints are checked before and after
+member reads. The finished archive is flushed and synced before replacement. On
+Linux and macOS, renaming that same-filesystem temporary file replaces one
+artifact atomically;
+the containing directory is synced afterward to ask the filesystem to persist
+the new entry. This does not guarantee survival of sudden power loss on every
+filesystem or storage device (notably, macOS `fsync` may not flush drive caches).
+A multi-artifact build is not atomic as a whole: execution stops at the first
+failure and reports which artifacts completed, failed, or were not attempted.
+Atomic replacement is currently supported on Linux and macOS only.
 
 Each directory artifact is materialized in a private sibling staging directory.
 Replacing an existing real directory first renames it into a unique sibling
@@ -228,6 +285,18 @@ CLI: tests use temporary SQLite databases and synthetic archive fixtures.
 The older `nix develop -c ...` entrypoint remains available for compatibility,
 but devenv is the primary development and CI gate.
 
+## MAME XML catalog import
+
+The machine `-listxml` adapter imports machine records, clone relationships, ROM
+and disk declarations, selected machine metadata, BIOS sets, and device
+references. The separate software-list adapter imports list-scoped items, parts,
+data/disk areas, component evidence, and load instructions as source data; it
+does not execute those instructions or expand dependencies. Both adapters
+preserve unrecognized XML as extensions. Imports accept retained documents up
+to 64 MiB, gzip-expanded XML up to 128 MiB, at most 200,000 XML elements, and
+nesting up to 256 levels. These limits bound retained input and the in-memory
+XML tree; larger exports are rejected.
+
 ### CPU Flamegraphs
 
 The profiling helpers mirror the workflow used in `nntp-proxy`, with
@@ -299,9 +368,20 @@ devenv --profile profiling shell -- sh -c 'perf script 2>/dev/null | bash script
 
 ## Verification
 
-Required local gate: `devenv test`. The p7zip interoperability test runs as
-part of the normal integration suite because devenv supplies `7z`. The component
-commands are:
+Required local gate: `devenv test`. The integration suite generates and reads
+synthetic 7z archives through `r7z`, pinned at revision
+`bfef3198696add8045ad34581dd977d671ae9daa`; it does not require an external
+`7z` executable. This verifies the pinned library's writer/reader and the
+application read path, not compatibility with every external encoder or codec.
+Independent cross-implementation checks are outside the default gate. To run the
+ignored interoperability test with a compatible executable installed, set
+`MAME_COALESCE_7Z` if its name is not `7z`:
+
+```sh
+devenv shell -- env MAME_COALESCE_7Z=7z cargo test --locked --test integration external_7z_extracts_r7z_builder_archive -- --ignored
+```
+
+The component commands are:
 
 ```sh
 devenv shell -- shellcheck scripts/fetch_public_domain_test_data.sh scripts/profile_flamegraph.sh scripts/benchmark_run.sh scripts/generate_synthetic_benchmark_corpus.sh scripts/parse_flamegraph scripts/parse_perfdata
@@ -326,10 +406,30 @@ devenv --profile maintenance shell -- cargo machete
 
 - Running outside Nix requires system `pkg-config`, SQLite, zlib, and related
   development libraries.
-- The crate currently declares `rust-version = "1.88"`; devenv builds
-  with latest stable Rust from the locked `rust-overlay` input. Updating the
-  development toolchain does not by itself change the declared MSRV.
+- The crate declares `rust-version = "1.98.1"`, matching the latest stable
+  Rust release selected by devenv. The project currently tests against that
+  release rather than maintaining a separately validated older MSRV.
 - `cargo package` requires `r7z` to be published on crates.io; until then the
   crate uses a pinned `mjc/r7z` git dependency.
 - `cargo deny check` may report duplicate dependency warnings under the current
   policy, but the check exits successfully.
+
+## Optional read-only FUSE view
+
+On Linux, build with the optional `fuse` feature and mount a serialized MAME
+0.289 view manifest:
+
+```sh
+cargo run --features fuse -- mount \
+  --manifest /path/to/view.json \
+  --mountpoint /path/to/empty-mountpoint \
+  --spool-root /path/to/separate-spool
+```
+
+The mount is read-only. Startup validates source locations, selected archive
+members, and known lengths; every open then verifies the pinned content before
+exposing bytes. Same-length stale content therefore fails on open rather than
+being served or retargeted. The spool must be an existing directory outside
+both the source tree and mountpoint, with at least 512 MiB available.
+The first adapter is Linux-only; FUSE remains optional, so catalog and other
+commands do not depend on it. Other operating systems do not yet have an adapter.

@@ -30,6 +30,7 @@ pub struct RomFile {
     pub bare_file_cache_stamp: Option<Vec<u8>>,
     pub cache_reused: bool,
     pub rom_id: Option<i32>,
+    pub physical_path: Option<String>,
 }
 
 #[derive(Clone, Insertable, Debug)]
@@ -53,6 +54,7 @@ pub struct New {
     pub bare_file_cache_stamp: Option<Vec<u8>>,
     pub cache_reused: bool,
     pub rom_id: Option<i32>,
+    pub physical_path: Option<String>,
 }
 
 impl New {
@@ -122,6 +124,7 @@ impl New {
                 .map(|stamp| stamp.as_bytes().to_vec()),
             cache_reused: observation.scan_provenance == ScanProvenance::ReusedStatValidatedV1,
             rom_id: None,
+            physical_path: Some(observation.physical_path.as_str().to_owned()),
         })
     }
 

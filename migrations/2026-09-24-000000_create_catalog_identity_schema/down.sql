@@ -1,6 +1,9 @@
 DROP TRIGGER catalog_snapshots_are_immutable_delete;
 DROP TRIGGER catalog_snapshots_are_immutable_update;
 DROP TRIGGER catalog_snapshots_are_immutable_insert;
+DROP TRIGGER parser_interpretations_are_immutable_update;
+
+UPDATE catalog_snapshots SET parent_snapshot_key = NULL;
 
 DROP INDEX import_runs_snapshot_key_index;
 DROP INDEX import_runs_document_key_index;

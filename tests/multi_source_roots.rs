@@ -4,10 +4,13 @@ use camino::Utf8PathBuf;
 use mame_coalesce::{
     app::{
         self, AuditRefresh, AuditRequest, BuildPlanRequest, BuildWorkflowRequest, DatImportRequest,
-        SourceRootSelection,
+        RunWorkflowRequest, SourceRootSelection,
     },
     database::Database,
-    domain::{BuildMode, MatchingPolicy, MissingContentPolicy, ObservationBasis, ZipCompression},
+    domain::{
+        BuildMode, MatchingPolicy, MissingContentPolicy, ObservationBasis, SetSelection,
+        ZipCompression,
+    },
     resolution::ResolutionStatus,
 };
 
@@ -304,5 +307,137 @@ fn failed_root_scan_preserves_every_requested_cached_scope()
         &|_| {},
     )?;
     assert_eq!(cached_multi.report().matched_roms, 2);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn one_shot_reports_every_root_and_deduplicates_cross_root_file_symlinks()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::symlink;
+
+    let temp = tempfile::tempdir()?;
+    let root = Utf8PathBuf::try_from(temp.path().to_path_buf())?;
+    let dat = root.join("catalog.dat");
+    let first = root.join("first");
+    let second = first.join("nested");
+    fs::create_dir(&first)?;
+    fs::create_dir(&second)?;
+    fs::write(&dat, catalog_dat())?;
+    fs::write(second.join("game-a.rom"), b"abc")?;
+    fs::write(first.join("game-b.rom"), b"def")?;
+    symlink(second.join("game-a.rom"), first.join("alias.rom"))?;
+
+    let database = Database::open(&root.join("cache.db"))?;
+    let request = RunWorkflowRequest {
+        dat_path: dat,
+        source_path: first.clone(),
+        destination_path: root.join("output"),
+        mode: BuildMode::ParentBundles,
+        compression: ZipCompression::Store,
+        jobs: 1,
+        dry_run: false,
+        strict: false,
+        set_selection: SetSelection::All,
+    };
+    let roots = selection(first.clone(), vec![second]);
+    let report = app::run_with_roots(&database, &request, &roots)?;
+    assert_eq!(report.scan_reports.len(), 2);
+    assert_eq!(
+        report.scan_report.as_ref(),
+        report.scan_reports.first(),
+        "the legacy field continues to expose the primary-root report"
+    );
+    assert_eq!(report.build_report.matched_roms, 2);
+    assert!(
+        report.build_report.duplicate_matches.is_empty(),
+        "the symlink and target identify one physical source"
+    );
+    let selected_a = report
+        .build_report
+        .resolutions
+        .iter()
+        .find_map(|resolution| match &resolution.status {
+            ResolutionStatus::Matched { selected, .. }
+                if resolution.requirement.key.set().name() == "game-a" =>
+            {
+                Some(selected.source_root.clone())
+            }
+            _ => None,
+        })
+        .ok_or("game-a did not resolve")?;
+    assert_eq!(selected_a.as_str(), first.canonicalize_utf8()?.as_str());
+
+    let failed_destination = root.join("not-a-directory");
+    fs::write(&failed_destination, b"file")?;
+    let failed_request = RunWorkflowRequest {
+        destination_path: failed_destination,
+        ..request
+    };
+    match app::run_with_roots(&database, &failed_request, &roots) {
+        Err(mame_coalesce::Error::BuildWorkflow { report, .. }) => {
+            assert_eq!(report.scan_reports.len(), 2);
+            assert_eq!(report.scan_report.as_ref(), report.scan_reports.first());
+        }
+        other => return Err(format!("expected reported build failure, got {other:?}").into()),
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn cached_resolution_uses_physical_identity_captured_during_scan()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::symlink;
+
+    let temp = tempfile::tempdir()?;
+    let root = Utf8PathBuf::try_from(temp.path().to_path_buf())?;
+    let dat = root.join("catalog.dat");
+    let first = root.join("first");
+    let second = root.join("second");
+    fs::create_dir(&first)?;
+    fs::create_dir(&second)?;
+    fs::write(&dat, catalog_dat())?;
+    fs::write(first.join("game-a.rom"), b"wrong")?;
+    fs::write(second.join("game-a.rom"), b"abc")?;
+    let database = Database::open(&root.join("cache.db"))?;
+    app::import_dat(
+        &database,
+        &DatImportRequest {
+            dat_path: dat.clone(),
+        },
+    )?;
+
+    let roots = selection(first.clone(), vec![second.clone()]);
+    app::scan_sources_with_progress(&database, &roots, 1, &|_| {})?;
+    fs::remove_file(first.join("game-a.rom"))?;
+    symlink(second.join("game-a.rom"), first.join("game-a.rom"))?;
+
+    let plan = app::plan_build_with_roots(
+        &database,
+        &BuildPlanRequest {
+            dat_path: dat,
+            source_path: first,
+            mode: BuildMode::ParentBundles,
+            matching_policy: MatchingPolicy::Sha1Compatibility,
+            missing_policy: MissingContentPolicy::AllowPartial,
+            set_selection: SetSelection::All,
+        },
+        &roots,
+    )?;
+    let selected_root = plan
+        .report
+        .resolutions
+        .iter()
+        .find_map(|resolution| match &resolution.status {
+            ResolutionStatus::Matched { selected, .. }
+                if resolution.requirement.key.set().name() == "game-a" =>
+            {
+                Some(selected.source_root.as_str())
+            }
+            _ => None,
+        })
+        .ok_or("game-a did not resolve from the cached matching source")?;
+    assert_eq!(selected_root, second.canonicalize_utf8()?.as_str());
     Ok(())
 }

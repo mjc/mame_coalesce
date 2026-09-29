@@ -1,7 +1,8 @@
 use camino::Utf8PathBuf;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use mame_coalesce::domain::{
-    BuildMode, MatchingPolicy, OutputContainer, SetName, SetSelection, ZipCompression,
+    ArtifactReusePolicy, BuildMode, CatalogScope, MatchingPolicy, OutputContainer, SetName,
+    SetSelection, ZipCompression,
 };
 
 #[derive(Parser)]
@@ -39,11 +40,23 @@ pub enum Command {
     Build(BuildArgs),
     /// Report catalog coverage from cached or explicitly refreshed source observations.
     Audit(AuditArgs),
+    /// Mount a materialized view from a manifest.
+    Mount(MountArgs),
     /// Manage the persistent cache explicitly.
     Cache {
         #[command(subcommand)]
         command: CacheCommand,
     },
+}
+
+#[derive(Clone, Debug, Args)]
+pub struct MountArgs {
+    #[arg(long, value_name = "FILE", required = true)]
+    pub manifest: Utf8PathBuf,
+    #[arg(long, value_name = "DIR", required = true)]
+    pub mountpoint: Utf8PathBuf,
+    #[arg(long, value_name = "DIR", required = true)]
+    pub spool_root: Utf8PathBuf,
 }
 
 #[derive(Clone, Debug, Args)]
@@ -68,6 +81,12 @@ pub struct AuditArgs {
     pub jobs: usize,
     #[arg(long, help = "Refresh and persist source observations before auditing")]
     pub refresh: bool,
+    #[arg(
+        long = "verify-selected",
+        conflicts_with = "refresh",
+        help = "Read and verify only the resolved source members without updating inventory"
+    )]
+    pub verify_selected: bool,
     #[arg(long, value_enum, default_value_t = MatchingPolicyArg::Sha1Compatibility, help = "Evidence matching policy")]
     pub matching_policy: MatchingPolicyArg,
     #[arg(long, value_enum, default_value_t = AuditFormatArg::Human, help = "Audit report format")]
@@ -116,10 +135,100 @@ pub enum CacheCommand {
         #[arg(value_name = "dat", help = "Logiqx DAT file to import")]
         dat: Utf8PathBuf,
     },
+    /// Import a MAME machine or software-list XML catalog.
+    CatalogImport(CatalogImportArgs),
     /// Refresh cached ROM-file rows for a source root.
     Scan(CacheScanArgs),
     /// Build from DAT and source rows already present in the cache.
     Build(CacheBuildArgs),
+    /// Audit imported disk requirements against a source directory without hashing its contents.
+    Audit(DiskAuditArgs),
+    /// Create a consistent, versioned SQLite backup.
+    Backup {
+        #[arg(value_name = "backup-file")]
+        destination: Utf8PathBuf,
+    },
+    /// Restore a verified backup; existing caches require --replace-existing.
+    Restore {
+        #[arg(value_name = "backup-file")]
+        backup: Utf8PathBuf,
+        #[arg(long, help = "Explicitly allow replacing the existing cache")]
+        replace_existing: bool,
+    },
+    /// Check SQLite integrity, durable catalog data, and rebuildable inventory rows.
+    Integrity,
+}
+
+#[derive(Clone, Debug, Args)]
+pub struct CatalogImportArgs {
+    #[arg(value_name = "document", help = "MAME XML document to import")]
+    pub document: Utf8PathBuf,
+    #[arg(long, value_enum, help = "MAME XML document format")]
+    pub format: CatalogDocumentFormatArg,
+    #[arg(long, value_name = "key", help = "Stable publishing source key")]
+    pub source_key: String,
+    #[arg(long, value_name = "name", help = "Publishing source display name")]
+    pub source_name: String,
+    #[arg(
+        long,
+        value_name = "key",
+        help = "Stable catalog key used by cache audit"
+    )]
+    pub catalog_key: String,
+    #[arg(long, value_name = "name", help = "Catalog display name")]
+    pub catalog_name: String,
+    #[arg(long, value_enum, default_value_t = CatalogScopeArg::Complete, help = "Coverage represented by this import")]
+    pub scope: CatalogScopeArg,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum CatalogDocumentFormatArg {
+    #[value(name = "mame-listxml")]
+    MachineXml,
+    #[value(name = "mame-softwarelist-xml")]
+    SoftwareListXml,
+}
+
+impl From<CatalogDocumentFormatArg> for mame_coalesce::app::CatalogDocumentFormat {
+    fn from(format: CatalogDocumentFormatArg) -> Self {
+        match format {
+            CatalogDocumentFormatArg::MachineXml => Self::MameListXml,
+            CatalogDocumentFormatArg::SoftwareListXml => Self::MameSoftwareListXml,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+pub enum CatalogScopeArg {
+    #[default]
+    Complete,
+    Unknown,
+}
+
+impl From<CatalogScopeArg> for CatalogScope {
+    fn from(scope: CatalogScopeArg) -> Self {
+        match scope {
+            CatalogScopeArg::Complete => Self::Complete,
+            CatalogScopeArg::Unknown => Self::Unknown,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Args)]
+pub struct DiskAuditArgs {
+    #[arg(value_name = "catalog-key", help = "Imported catalog key")]
+    pub catalog: String,
+    #[arg(value_name = "source", help = "Disk source directory")]
+    pub source: Utf8PathBuf,
+    #[arg(long, value_enum, default_value_t = ReportFormatArg::Text, help = "Audit report format")]
+    pub format: ReportFormatArg,
+}
+
+#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+pub enum ReportFormatArg {
+    #[default]
+    Text,
+    Json,
 }
 
 #[derive(Clone, Debug, Args)]
@@ -203,6 +312,12 @@ pub struct BuildOptions {
     )]
     pub dry_run: bool,
     #[arg(
+        long,
+        default_value_t = false,
+        help = "Reuse existing output artifacts only when their logical contents verify against this plan"
+    )]
+    pub reuse_verified: bool,
+    #[arg(
         long = "set",
         value_name = "NAME",
         help = "Select this exact set name (repeatable)"
@@ -213,6 +328,14 @@ pub struct BuildOptions {
 impl BuildOptions {
     pub fn set_selection(&self) -> SetSelection {
         set_selection(&self.set_names)
+    }
+
+    pub const fn artifact_reuse_policy(&self) -> ArtifactReusePolicy {
+        if self.reuse_verified {
+            ArtifactReusePolicy::ReuseVerified
+        } else {
+            ArtifactReusePolicy::Replace
+        }
     }
 }
 
@@ -229,6 +352,8 @@ pub enum OutputContainerArg {
     #[default]
     Zip,
     Directory,
+    #[value(name = "7z")]
+    SevenZip,
 }
 
 impl From<OutputContainerArg> for OutputContainer {
@@ -236,6 +361,7 @@ impl From<OutputContainerArg> for OutputContainer {
         match container {
             OutputContainerArg::Zip => Self::Zip,
             OutputContainerArg::Directory => Self::Directory,
+            OutputContainerArg::SevenZip => Self::SevenZip,
         }
     }
 }

@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use crate::{
     logiqx::RecordLocation,
-    mame::{Element, XmlExtension, parse_xml_element},
+    mame::{Element, ElementContent, XmlExtension, parse_xml_element},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -65,6 +65,7 @@ impl Catalog {
                 root.location,
             ));
         }
+        reject_record_text(&root, "document", None)?;
 
         let mut version = None;
         let mut entries = Vec::new();
@@ -92,38 +93,7 @@ impl Catalog {
                             child.location,
                         ));
                     }
-                    for field in child.children() {
-                        match field.name.as_str() {
-                            "version" => {
-                                if version.replace(field.direct_text()).is_some() {
-                                    return Err(parse_error(
-                                        "duplicate header version",
-                                        "header",
-                                        None,
-                                        field.location,
-                                    ));
-                                }
-                            }
-                            "name" | "description" => extensions.push(XmlExtension {
-                                record_kind: "header".into(),
-                                record_name: None,
-                                field_name: field.name.clone(),
-                                namespace_uri: None,
-                                value: serde_json::json!(field.direct_text()),
-                                location: field.location,
-                            }),
-                            _ => extensions.push(element_extension("header", None, field)?),
-                        }
-                    }
-                    for (name, value) in &child.attributes {
-                        extensions.push(attribute_extension(
-                            "header",
-                            None,
-                            name,
-                            value,
-                            child.location,
-                        ));
-                    }
+                    parse_header(child, &mut version, &mut extensions)?;
                 }
                 "game" => {
                     let entry = parse_entry(child)?;
@@ -157,8 +127,60 @@ impl Catalog {
     }
 }
 
+fn parse_header(
+    node: &Element,
+    version: &mut Option<String>,
+    extensions: &mut Vec<XmlExtension>,
+) -> crate::Result<()> {
+    reject_record_text(node, "header", None)?;
+    for field in node.children() {
+        if matches!(field.name.as_str(), "version" | "name" | "description")
+            && (!field.attributes.is_empty() || field.children().next().is_some())
+        {
+            return Err(parse_error(
+                "structured header fields are unsupported",
+                "header",
+                Some(&field.name),
+                field.location,
+            ));
+        }
+        match field.name.as_str() {
+            "version" => {
+                if version.replace(field.direct_text()).is_some() {
+                    return Err(parse_error(
+                        "duplicate header version",
+                        "header",
+                        None,
+                        field.location,
+                    ));
+                }
+            }
+            "name" | "description" => extensions.push(XmlExtension {
+                record_kind: "header".into(),
+                record_name: None,
+                field_name: field.name.clone(),
+                namespace_uri: None,
+                value: serde_json::json!(field.direct_text()),
+                location: field.location,
+            }),
+            _ => extensions.push(element_extension("header", None, field)?),
+        }
+    }
+    for (name, value) in &node.attributes {
+        extensions.push(attribute_extension(
+            "header",
+            None,
+            name,
+            value,
+            node.location,
+        ));
+    }
+    Ok(())
+}
+
 fn parse_entry(node: &Element) -> crate::Result<Entry> {
     let name = required(node, "name", "game")?.to_owned();
+    reject_record_text(node, "game", Some(&name))?;
     let (metadata, mut extensions) = parse_entry_attributes(node, &name)?;
     let assets = parse_assets(node, &name, &mut extensions)?;
     Ok(Entry {
@@ -304,7 +326,7 @@ fn parse_assets(
             extensions.push(element_extension("game", Some(name), child)?);
             continue;
         }
-        let asset = parse_asset(child, name)?;
+        let asset = parse_asset(child)?;
         if !asset_names.insert(asset.name.clone()) {
             return Err(parse_error(
                 "duplicate ROM name",
@@ -318,8 +340,9 @@ fn parse_assets(
     Ok(assets)
 }
 
-fn parse_asset(node: &Element, entry: &str) -> crate::Result<Asset> {
+fn parse_asset(node: &Element) -> crate::Result<Asset> {
     let name = required(node, "name", "rom")?.to_owned();
+    reject_record_text(node, "rom", Some(&name))?;
     let size = node
         .attributes
         .get("size")
@@ -343,10 +366,10 @@ fn parse_asset(node: &Element, entry: &str) -> crate::Result<Asset> {
         .attributes
         .iter()
         .filter(|(field, _)| !["name", "size", "crc", "sha1"].contains(&field.as_str()))
-        .map(|(field, value)| attribute_extension("rom", Some(entry), field, value, node.location))
+        .map(|(field, value)| attribute_extension("rom", Some(&name), field, value, node.location))
         .collect();
     for child in node.children() {
-        extensions.push(element_extension("rom", Some(entry), child)?);
+        extensions.push(element_extension("rom", Some(&name), child)?);
     }
     Ok(Asset {
         name,
@@ -410,6 +433,22 @@ fn parse_error(
         line: Some(location.line),
         column: Some(location.column),
     }
+}
+
+fn reject_record_text(node: &Element, kind: &str, name: Option<&str>) -> crate::Result<()> {
+    if node
+        .content
+        .iter()
+        .any(|content| matches!(content, ElementContent::Text(text) if !text.trim().is_empty()))
+    {
+        return Err(parse_error(
+            "unexpected non-whitespace text in record",
+            kind,
+            name,
+            node.location,
+        ));
+    }
+    Ok(())
 }
 
 fn attribute_extension(

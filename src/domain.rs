@@ -1,7 +1,10 @@
 use crate::hashes::Sha1Digest;
+use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
+
+pub mod media;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DocumentKey([u8; 32]);
@@ -15,9 +18,37 @@ impl DocumentDigest {
         Self(Sha256::digest(bytes).into())
     }
 
+    pub fn from_hex(value: &str) -> crate::Result<Self> {
+        if value.len() != 64 {
+            return Err(crate::Error::InvalidHash(format!(
+                "SHA-256 digest must contain exactly 64 hexadecimal characters, got {}",
+                value.len()
+            )));
+        }
+
+        let bytes = hex::decode(value).map_err(|error| {
+            crate::Error::InvalidHash(format!("invalid SHA-256 digest: {error}"))
+        })?;
+        let digest = bytes.try_into().map_err(|bytes: Vec<u8>| {
+            crate::Error::InvalidHash(format!(
+                "SHA-256 digest decoded to {} bytes; expected 32",
+                bytes.len()
+            ))
+        })?;
+        Ok(Self(digest))
+    }
+
     #[must_use]
     pub const fn as_bytes(&self) -> &[u8; 32] {
         &self.0
+    }
+}
+
+impl std::str::FromStr for DocumentDigest {
+    type Err = crate::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::from_hex(value)
     }
 }
 
@@ -28,8 +59,24 @@ impl DocumentKey {
     }
 
     #[must_use]
+    pub const fn from_digest(digest: DocumentDigest) -> Self {
+        Self(digest.0)
+    }
+
+    #[must_use]
     pub const fn digest(&self) -> &[u8; 32] {
         &self.0
+    }
+}
+
+impl std::str::FromStr for DocumentKey {
+    type Err = crate::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let digest = value.strip_prefix("sha256:").ok_or_else(|| {
+            crate::Error::InvalidHash("document key must start with `sha256:`".into())
+        })?;
+        Ok(Self::from_digest(DocumentDigest::from_hex(digest)?))
     }
 }
 
@@ -51,6 +98,32 @@ impl PublishingSourceKey {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PublishingSource {
+    key: PublishingSourceKey,
+    display_name: String,
+}
+
+impl PublishingSource {
+    #[must_use]
+    pub fn new(key: impl Into<String>, display_name: impl Into<String>) -> Self {
+        Self {
+            key: PublishingSourceKey::new(key),
+            display_name: display_name.into(),
+        }
+    }
+
+    #[must_use]
+    pub const fn key(&self) -> &PublishingSourceKey {
+        &self.key
+    }
+
+    #[must_use]
+    pub fn display_name(&self) -> &str {
+        &self.display_name
     }
 }
 
@@ -76,13 +149,13 @@ pub struct CatalogKey(String);
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ParserInterpretationKey(String);
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct SnapshotKey(String);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ImportRunKey(uuid::Uuid);
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct SetName(String);
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -116,6 +189,11 @@ impl CatalogKey {
     #[must_use]
     pub fn fresh() -> Self {
         Self(uuid::Uuid::new_v4().to_string())
+    }
+
+    #[must_use]
+    pub(crate) fn for_legacy_data_file(name: &str) -> Self {
+        Self(stable_key("legacy-data-file", &[name]))
     }
 
     #[must_use]
@@ -166,6 +244,22 @@ impl SnapshotKey {
     ) -> Self {
         Self(stable_key(
             "catalog-snapshot-v1",
+            &[
+                catalog.as_str(),
+                &document.to_string(),
+                interpretation.as_str(),
+            ],
+        ))
+    }
+
+    #[must_use]
+    pub fn new_publication(
+        catalog: &CatalogKey,
+        document: &DocumentKey,
+        interpretation: &ParserInterpretationKey,
+    ) -> Self {
+        Self(stable_key(
+            "catalog-snapshot-publication-v1",
             &[
                 catalog.as_str(),
                 &document.to_string(),
@@ -232,6 +326,52 @@ impl CatalogScope {
             Self::Partial(details) => ("partial", Some(details.to_string())),
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SnapshotRecordStatus {
+    AddedWithinScope,
+    RemovedWithinScope,
+    Changed,
+    Unchanged,
+    Unknown,
+    OutOfScope,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SnapshotRequirementChange {
+    pub asset_name: String,
+    pub previous: Option<serde_json::Value>,
+    pub current: Option<serde_json::Value>,
+    pub size_changed: bool,
+    pub hash_changed: bool,
+    pub other_evidence_changed: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SnapshotRecordDiff {
+    pub set_name: String,
+    pub status: SnapshotRecordStatus,
+    pub metadata_changed: bool,
+    pub regrouped: bool,
+    pub requirement_changes: Vec<SnapshotRequirementChange>,
+    pub relationship_evidence: Vec<RelationshipExplanation>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CatalogSnapshotDiff {
+    pub previous: SnapshotKey,
+    pub current: SnapshotKey,
+    pub same_scope: bool,
+    pub records: Vec<SnapshotRecordDiff>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CatalogSnapshotEntry {
+    pub snapshot: SnapshotKey,
+    pub document_key: String,
+    pub declared_version: Option<String>,
+    pub scope: CatalogScope,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -336,6 +476,7 @@ pub struct Md5Digest(pub [u8; 16]);
 pub enum EvidenceScope {
     WholeAsset,
     DiskData,
+    ChdHeaderSha1,
     Track,
     #[default]
     Unknown,
@@ -397,6 +538,301 @@ impl ExpectedEvidence {
             date: rom.date().map(str::to_owned),
         })
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RelationshipType {
+    ExactContentIdentity,
+    RevisionOf,
+    DumpOfIntendedRelease,
+    AlternateRepresentationOf,
+    SourceParentClone,
+    RuntimeDependency,
+    CatalogCorrection,
+    CatalogContinuity,
+}
+
+impl RelationshipType {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ExactContentIdentity => "exact_content_identity",
+            Self::RevisionOf => "revision_of",
+            Self::DumpOfIntendedRelease => "dump_of_intended_release",
+            Self::AlternateRepresentationOf => "alternate_representation_of",
+            Self::SourceParentClone => "source_parent_clone",
+            Self::RuntimeDependency => "runtime_dependency",
+            Self::CatalogCorrection => "catalog_correction",
+            Self::CatalogContinuity => "catalog_continuity",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CatalogRecordKind {
+    Set,
+    AssetRequirement,
+    SoftwareItem,
+}
+
+impl CatalogRecordKind {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Set => "catalog_set",
+            Self::AssetRequirement => "asset_requirement",
+            Self::SoftwareItem => "software_item",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct RelationshipRecordKey(String);
+
+impl RelationshipRecordKey {
+    #[must_use]
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct CatalogRecordRef {
+    pub snapshot: SnapshotKey,
+    pub kind: CatalogRecordKind,
+    pub key: RelationshipRecordKey,
+}
+
+impl CatalogRecordRef {
+    #[must_use]
+    pub fn new(snapshot: SnapshotKey, kind: CatalogRecordKind, key: impl Into<String>) -> Self {
+        Self {
+            snapshot,
+            kind,
+            key: RelationshipRecordKey::new(key),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContentDigestAlgorithm {
+    Crc32,
+    Md5,
+    Sha1,
+    Sha256,
+}
+
+impl ContentDigestAlgorithm {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Crc32 => "crc32",
+            Self::Md5 => "md5",
+            Self::Sha1 => "sha1",
+            Self::Sha256 => "sha256",
+        }
+    }
+
+    const fn hex_length(self) -> usize {
+        match self {
+            Self::Crc32 => 8,
+            Self::Md5 => 32,
+            Self::Sha1 => 40,
+            Self::Sha256 => 64,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+pub struct ContentIdentity {
+    algorithm: ContentDigestAlgorithm,
+    digest: String,
+}
+
+impl ContentIdentity {
+    pub fn new(
+        algorithm: ContentDigestAlgorithm,
+        digest: impl Into<String>,
+    ) -> crate::Result<Self> {
+        let digest = digest.into();
+        if digest.len() != algorithm.hex_length()
+            || !digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(crate::Error::InvalidHash(format!(
+                "{} digest must contain {} hexadecimal characters",
+                algorithm.as_str(),
+                algorithm.hex_length()
+            )));
+        }
+        Ok(Self {
+            algorithm,
+            digest: digest.to_ascii_lowercase(),
+        })
+    }
+
+    #[must_use]
+    pub const fn algorithm(&self) -> ContentDigestAlgorithm {
+        self.algorithm
+    }
+
+    #[must_use]
+    pub fn digest(&self) -> &str {
+        &self.digest
+    }
+}
+
+impl<'de> Deserialize<'de> for ContentIdentity {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct SerializedContentIdentity {
+            algorithm: ContentDigestAlgorithm,
+            digest: String,
+        }
+
+        let value = SerializedContentIdentity::deserialize(deserializer)?;
+        Self::new(value.algorithm, value.digest).map_err(serde::de::Error::custom)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct ExternalRecordRef {
+    pub namespace: String,
+    pub key: RelationshipRecordKey,
+}
+
+impl ExternalRecordRef {
+    #[must_use]
+    pub fn new(namespace: impl Into<String>, key: impl Into<String>) -> Self {
+        Self {
+            namespace: namespace.into(),
+            key: RelationshipRecordKey::new(key),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum RelationshipEndpoint {
+    CatalogRecord(CatalogRecordRef),
+    ContentObject(ContentIdentity),
+    ExternalRecord(ExternalRecordRef),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RelationshipReviewDecision {
+    Accepted,
+    Rejected,
+    Withdrawn,
+    Superseded,
+}
+
+impl RelationshipReviewDecision {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Accepted => "accepted",
+            Self::Rejected => "rejected",
+            Self::Withdrawn => "withdrawn",
+            Self::Superseded => "superseded",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "origin", rename_all = "snake_case")]
+pub enum RelationshipOrigin {
+    SourceAssertion {
+        snapshot: SnapshotKey,
+        field: String,
+        location: Option<DocumentLocation>,
+    },
+    DerivedCandidate {
+        rule_version: String,
+        supporting_assertions: Vec<RelationshipAssertionKey>,
+    },
+    UserConclusion,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DocumentLocation {
+    pub line: i64,
+    pub column: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct RelationshipAssertionKey(String);
+
+impl RelationshipAssertionKey {
+    #[must_use]
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    #[must_use]
+    pub fn fresh() -> Self {
+        Self(uuid::Uuid::new_v4().to_string())
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelationshipClaim {
+    pub relation_type: RelationshipType,
+    pub subject: RelationshipEndpoint,
+    pub target: RelationshipEndpoint,
+    pub origin: RelationshipOrigin,
+    pub evidence: serde_json::Value,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelationshipReview {
+    pub decision: RelationshipReviewDecision,
+    pub note: String,
+    pub superseded_by: Option<RelationshipAssertionKey>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelationshipExplanation {
+    pub assertion_key: RelationshipAssertionKey,
+    pub claim: RelationshipClaim,
+    pub source_field: Option<String>,
+    pub source_location: Option<DocumentLocation>,
+    pub source: Option<RelationshipSourceProvenance>,
+    pub latest_review: Option<RelationshipReview>,
+    pub review_history: Vec<RelationshipReviewEvent>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelationshipReviewEvent {
+    pub review: RelationshipReview,
+    pub created_at: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelationshipSourceProvenance {
+    pub source_key: String,
+    pub source_name: String,
+    pub document_key: String,
+    pub declared_version: Option<String>,
+    pub parser_name: Option<String>,
+    pub parser_version: Option<String>,
+    pub rules_version: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -525,7 +961,7 @@ pub enum BuildMode {
     PerGame,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum MatchingPolicy {
     /// Match only SHA1, ignoring size/CRC/MD5 disagreements for historical compatibility.
     #[default]
@@ -547,6 +983,15 @@ pub enum OutputContainer {
     #[default]
     Zip,
     Directory,
+    #[serde(rename = "7z")]
+    SevenZip,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ArtifactReusePolicy {
+    #[default]
+    Replace,
+    ReuseVerified,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -699,7 +1144,7 @@ impl SourceLocation {
     }
 
     #[must_use]
-    pub const fn priority(&self) -> u8 {
+    pub fn priority(&self) -> u8 {
         match self {
             Self::BareFile { .. } => 0,
             Self::ArchiveMember {
@@ -714,7 +1159,17 @@ impl SourceLocation {
                 backend: ArchiveBackend::Rar,
                 ..
             } => 3,
-            Self::LegacyUnknown { .. } => u8::MAX,
+            Self::LegacyUnknown { path, .. } => {
+                let extension = std::path::Path::new(path)
+                    .extension()
+                    .and_then(std::ffi::OsStr::to_str);
+                match extension {
+                    Some(extension) if extension.eq_ignore_ascii_case("zip") => 1,
+                    Some(extension) if extension.eq_ignore_ascii_case("7z") => 2,
+                    Some(extension) if extension.eq_ignore_ascii_case("rar") => 3,
+                    _ => u8::MAX,
+                }
+            }
         }
     }
 
@@ -731,10 +1186,46 @@ impl SourceLocation {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Canonical filesystem path captured when a source is scanned.
+///
+/// Unlike [`SourceLocation`], this identifies the target of a symlink at scan time while the
+/// location itself remains the path used for scope checks and later reads.
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SourcePhysicalPath(Utf8PathBuf);
+
+impl SourcePhysicalPath {
+    pub fn capture(path: &Utf8Path) -> std::io::Result<Self> {
+        path.canonicalize_utf8().map(Self)
+    }
+
+    #[must_use]
+    pub fn from_location(location: &SourceLocation) -> Self {
+        Self(Utf8PathBuf::from(location.path()))
+    }
+
+    #[must_use]
+    pub fn from_storage(value: String) -> Self {
+        Self(Utf8PathBuf::from(value))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+
+    #[must_use]
+    pub fn as_path(&self) -> &Utf8Path {
+        &self.0
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct SourceFile {
     pub source_root: SourceRoot,
     pub location: SourceLocation,
+    #[serde(default)]
+    pub physical_path: SourcePhysicalPath,
     pub observed: ObservedContent,
     pub fingerprint: Option<SourceFingerprint>,
     pub scan_run: Option<ScanRunKey>,
@@ -747,6 +1238,7 @@ pub struct SourceObservation {
     pub source_root: SourceRoot,
     pub scan_run: ScanRunKey,
     pub location: SourceLocation,
+    pub physical_path: SourcePhysicalPath,
     pub observed: ObservedContent,
     pub fingerprint: SourceFingerprint,
     pub scan_provenance: ScanProvenance,
@@ -854,16 +1346,17 @@ impl BuildPlan {
     /// Decode only the current version; callers must re-resolve/revalidate before execution.
     pub fn from_json(bytes: &[u8]) -> crate::Result<Self> {
         #[derive(Deserialize)]
-        struct Document {
+        struct Document<'a> {
             version: u32,
-            plan: serde_json::Value,
+            #[serde(borrow)]
+            plan: &'a serde_json::value::RawValue,
         }
 
-        let document: Document = serde_json::from_slice(bytes)?;
+        let document: Document<'_> = serde_json::from_slice(bytes)?;
         if document.version != Self::SERIALIZATION_VERSION {
             return Err(crate::Error::UnsupportedPlanVersion(document.version));
         }
-        Ok(serde_json::from_value(document.plan)?)
+        Ok(serde_json::from_str(document.plan.get())?)
     }
 }
 
@@ -897,11 +1390,13 @@ pub struct LogicalEntry {
     pub selection: SelectionProvenance,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct SelectionProvenance {
     pub policy: MatchingPolicy,
     pub strength: crate::resolution::MatchStrength,
     pub assessments: Vec<crate::resolution::SourceAssessment>,
+    #[serde(default)]
+    pub omitted_assessments: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -913,6 +1408,13 @@ pub enum PlanOutcome {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PlanBlockReason {
     MissingContent,
+    InvalidPlan,
+    InvalidSetSelection,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SetSelectionIssue {
+    UnknownSetName { name: SetName },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -922,6 +1424,9 @@ pub struct BuildReport {
     pub resolutions: Vec<crate::resolution::RequirementResolution>,
     /// Pure layout validation findings available before an output backend is invoked.
     pub validation_issues: Vec<crate::build::validation::PlanIssue>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub set_selection_issues: Vec<SetSelectionIssue>,
     pub matched_roms: usize,
     pub outcome: PlanOutcome,
 }
@@ -931,6 +1436,31 @@ pub enum ObservationBasis {
     Cached,
     FreshScan { scan_run: ScanRunKey },
     FreshScans { scan_runs: Vec<RootScanRun> },
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VerificationBasis {
+    #[default]
+    CachedOnly,
+    SelectedSources,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SelectedSourceVerification {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_group: Option<LogicalPath>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requirement: Option<RequirementKey>,
+    pub logical_path: LogicalPath,
+    pub source: SourceLocation,
+    pub outcome: SelectedVerificationOutcome,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SelectedVerificationOutcome {
+    Verified,
+    Stale { reason: String },
+    Unavailable { reason: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -943,18 +1473,40 @@ pub struct RootScanRun {
 pub struct AuditReport {
     schema_version: u32,
     observation_basis: ObservationBasis,
+    #[serde(default)]
+    verification_basis: VerificationBasis,
     report: BuildReport,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    selected_verifications: Vec<SelectedSourceVerification>,
 }
 
 impl AuditReport {
-    pub const SCHEMA_VERSION: u32 = 1;
+    pub const SCHEMA_VERSION: u32 = 3;
 
     #[must_use]
     pub const fn new(observation_basis: ObservationBasis, report: BuildReport) -> Self {
         Self {
             schema_version: Self::SCHEMA_VERSION,
             observation_basis,
+            verification_basis: VerificationBasis::CachedOnly,
             report,
+            selected_verifications: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub const fn with_selected_verifications(
+        observation_basis: ObservationBasis,
+        report: BuildReport,
+        selected_verifications: Vec<SelectedSourceVerification>,
+        verification_basis: VerificationBasis,
+    ) -> Self {
+        Self {
+            schema_version: Self::SCHEMA_VERSION,
+            observation_basis,
+            verification_basis,
+            report,
+            selected_verifications,
         }
     }
 
@@ -969,8 +1521,18 @@ impl AuditReport {
     }
 
     #[must_use]
+    pub const fn verification_basis(&self) -> VerificationBasis {
+        self.verification_basis
+    }
+
+    #[must_use]
     pub const fn report(&self) -> &BuildReport {
         &self.report
+    }
+
+    #[must_use]
+    pub fn selected_verifications(&self) -> &[SelectedSourceVerification] {
+        &self.selected_verifications
     }
 
     pub fn to_json(&self) -> crate::Result<Vec<u8>> {
@@ -982,24 +1544,42 @@ impl AuditReport {
         struct Document {
             schema_version: u32,
             observation_basis: ObservationBasis,
+            #[serde(default)]
+            verification_basis: VerificationBasis,
             report: BuildReport,
+            #[serde(default)]
+            selected_verifications: Vec<SelectedSourceVerification>,
         }
 
         let document: Document = serde_json::from_slice(bytes)?;
-        if document.schema_version != Self::SCHEMA_VERSION {
+        if !matches!(document.schema_version, 1 | 2 | Self::SCHEMA_VERSION) {
             return Err(crate::Error::UnsupportedAuditVersion(
                 document.schema_version,
             ));
         }
-        Ok(Self::new(document.observation_basis, document.report))
+        Ok(Self::with_selected_verifications(
+            document.observation_basis,
+            document.report,
+            document.selected_verifications,
+            document.verification_basis,
+        ))
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ArtifactOutcome {
     Completed,
-    CompletedWithWarning { warning: String },
-    Failed { error: String },
+    Reused,
+    Failed {
+        error: String,
+    },
+    /// The replacement is visible, but syncing its containing directory failed.
+    ReplacedButNotDurable {
+        error: String,
+    },
+    CompletedWithWarning {
+        warning: String,
+    },
     Unattempted,
 }
 
@@ -1016,6 +1596,7 @@ impl Default for BuildReport {
             duplicate_matches: Vec::new(),
             resolutions: Vec::new(),
             validation_issues: Vec::new(),
+            set_selection_issues: Vec::new(),
             matched_roms: 0,
             outcome: PlanOutcome::Ready,
         }
@@ -1034,11 +1615,35 @@ pub struct DuplicateMatch {
     pub rom_name: String,
     pub selected: SourceFile,
     pub candidates: Vec<SourceFile>,
+    #[serde(default)]
+    pub omitted_candidates: usize,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn document_key_display_round_trips_and_rejects_invalid_values() -> crate::Result<()> {
+        let key = DocumentKey::from_bytes(b"catalog");
+        let serialized = key.to_string();
+        let restored: DocumentKey = serialized.parse()?;
+        assert_eq!(restored, key);
+        assert_eq!(
+            DocumentKey::from_digest(DocumentDigest::from_bytes(b"catalog")),
+            key
+        );
+
+        for malformed in [
+            "sha256:not-hex",
+            "sha256:00",
+            "sha1:0000000000000000000000000000000000000000000000000000000000000000",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+        ] {
+            assert!(malformed.parse::<DocumentKey>().is_err(), "{malformed}");
+        }
+        Ok(())
+    }
 
     #[test]
     fn parser_conversion_keeps_partial_evidence_scope_metadata_and_component_order()

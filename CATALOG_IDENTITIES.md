@@ -15,6 +15,8 @@ interpretations, while import runs record separate execution attempts, so a
 parser/rules change does not overwrite prior history.
 When acquisition provenance is present, snapshots and runs are constrained to
 the acquired document they reference.
+Snapshot parents are limited to the same catalog; cross-catalog continuity and
+derivation belong to typed relationship assertions rather than snapshot history.
 
 The migration is additive. Existing `data_files`, `games`, `roms`, and
 `rom_files` rows remain intact, but no identity rows are synthesized from their

@@ -4,20 +4,45 @@ use crate::{
     domain::{
         BuildPlan, BuildReport, BuildRequest, DatRom, DuplicateMatch, LogicalEntry, LogicalPath,
         MissingContentPolicy, MissingRom, OutputGroup, PlanBlockReason, PlanOutcome,
-        SelectionProvenance, SourceFile,
+        SelectionProvenance, SetSelection, SetSelectionIssue, SourceFile,
     },
     resolution::{self, RequirementResolution, ResolutionStatus},
 };
 
+/// Plan after validating selected names against the catalog's complete set list.
 #[must_use]
-pub fn plan_build(
+pub fn plan_build_with_set_names(
+    dat_roms: &[DatRom],
+    available_set_names: &std::collections::BTreeSet<crate::domain::SetName>,
+    source_files: &[SourceFile],
+    request: &BuildRequest,
+) -> BuildPlan {
+    let set_selection_issues = validate_set_selection(&request.set_selection, available_set_names);
+    if !set_selection_issues.is_empty() {
+        let report = BuildReport {
+            outcome: PlanOutcome::Blocked(PlanBlockReason::InvalidSetSelection),
+            set_selection_issues,
+            ..BuildReport::default()
+        };
+        let mut plan = BuildPlan {
+            groups: Vec::new(),
+            report,
+        };
+        plan.report.validation_issues = crate::build::validation::inspect_plan(&plan);
+        return plan;
+    }
+
+    plan_build_selected(dat_roms, source_files, request)
+}
+
+fn plan_build_selected(
     dat_roms: &[DatRom],
     source_files: &[SourceFile],
     request: &BuildRequest,
 ) -> BuildPlan {
     let selected_dat_roms = match &request.set_selection {
-        crate::domain::SetSelection::All => None,
-        crate::domain::SetSelection::ExactNames(_) => Some(
+        SetSelection::All => None,
+        SetSelection::ExactNames(_) => Some(
             dat_roms
                 .iter()
                 .filter(|rom| request.set_selection.includes(rom.key.set()))
@@ -52,7 +77,26 @@ pub fn plan_build(
         report,
     };
     plan.report.validation_issues = crate::build::validation::inspect_plan(&plan);
+    if !plan.report.validation_issues.is_empty() {
+        plan.report.outcome = PlanOutcome::Blocked(PlanBlockReason::InvalidPlan);
+    }
     plan
+}
+
+#[must_use]
+pub fn validate_set_selection(
+    selection: &SetSelection,
+    available_set_names: &std::collections::BTreeSet<crate::domain::SetName>,
+) -> Vec<SetSelectionIssue> {
+    match selection {
+        SetSelection::All => Vec::new(),
+        SetSelection::ExactNames(names) => names
+            .iter()
+            .filter(|name| !available_set_names.contains(*name))
+            .cloned()
+            .map(|name| SetSelectionIssue::UnknownSetName { name })
+            .collect(),
+    }
 }
 
 fn plan_logical_entries(
@@ -67,15 +111,23 @@ fn plan_logical_entries(
                 selected,
                 strength,
                 assessments,
+                omitted_assessments,
                 ..
-            } => Some((resolution, selected, strength, assessments)),
-            ResolutionStatus::AmbiguousWeak { .. }
+            } => Some((
+                resolution,
+                selected,
+                strength,
+                assessments,
+                omitted_assessments,
+            )),
+            ResolutionStatus::Ambiguous { .. }
             | ResolutionStatus::Conflicting { .. }
             | ResolutionStatus::Missing { .. } => None,
         })
         .fold(
             BTreeMap::new(),
-            |mut entries_by_group, (resolution, selected, strength, assessments)| {
+            |mut entries_by_group,
+             (resolution, selected, strength, assessments, omitted_assessments)| {
                 let requirement = &resolution.requirement;
                 entries_by_group
                     .entry(LogicalPath::new(requirement.bundle_name(mode)))
@@ -89,6 +141,7 @@ fn plan_logical_entries(
                             policy,
                             strength: *strength,
                             assessments: assessments.clone(),
+                            omitted_assessments: *omitted_assessments,
                         },
                     });
                 entries_by_group
@@ -107,18 +160,20 @@ fn build_report(
                 ResolutionStatus::Matched {
                     selected,
                     equivalent_copies,
+                    omitted_equivalent_copies,
                     ..
                 } => {
                     report.matched_roms += 1;
-                    if equivalent_copies.len() > 1 {
+                    if equivalent_copies.len() + omitted_equivalent_copies > 1 {
                         report.duplicate_matches.push(DuplicateMatch {
                             rom_name: resolution.requirement.rom_name().to_owned(),
                             selected: selected.as_ref().clone(),
                             candidates: equivalent_copies.clone(),
+                            omitted_candidates: *omitted_equivalent_copies,
                         });
                     }
                 }
-                ResolutionStatus::AmbiguousWeak { .. }
+                ResolutionStatus::Ambiguous { .. }
                 | ResolutionStatus::Conflicting { .. }
                 | ResolutionStatus::Missing { .. } => {
                     report.missing_roms.push(MissingRom {
@@ -147,6 +202,14 @@ mod tests {
         ObservedContent, RequirementKey, SetKey, SourceLocation,
     };
     use proptest::prelude::*;
+
+    fn plan_build(
+        dat_roms: &[DatRom],
+        source_files: &[SourceFile],
+        request: &BuildRequest,
+    ) -> BuildPlan {
+        plan_build_selected(dat_roms, source_files, request)
+    }
 
     #[derive(Clone, Copy)]
     enum SourceKind {
@@ -182,6 +245,7 @@ mod tests {
             role: crate::domain::AssetRole::Rom,
             component_order: Some(0),
             expected: ExpectedEvidence {
+                scope: crate::domain::EvidenceScope::WholeAsset,
                 sha1: Some(digest(sha1)),
                 ..ExpectedEvidence::default()
             },
@@ -216,9 +280,11 @@ mod tests {
                 },
             },
         };
+        let physical_path = crate::domain::SourcePhysicalPath::from_location(&location);
         SourceFile {
             source_root: crate::domain::SourceRoot::new(root),
             location,
+            physical_path,
             observed: ObservedContent {
                 scope: crate::domain::EvidenceScope::WholeAsset,
                 provenance: crate::domain::EvidenceProvenance::Computed,
@@ -283,6 +349,36 @@ mod tests {
     }
 
     #[test]
+    fn unknown_exact_set_names_block_the_plan_with_actionable_diagnostics() {
+        let dat_roms = [rom("known-set", None, "game.rom", "sha1")];
+        let mut request = request(BuildMode::ParentBundles);
+        request.set_selection = SetSelection::exact_names([
+            crate::domain::SetName::new("known-set"),
+            crate::domain::SetName::new("misspelled-set"),
+        ]);
+
+        let plan = plan_build_with_set_names(
+            &dat_roms,
+            &[crate::domain::SetName::new("known-set")].into(),
+            &[],
+            &request,
+        );
+
+        assert_eq!(
+            plan.report.outcome,
+            PlanOutcome::Blocked(PlanBlockReason::InvalidSetSelection)
+        );
+        assert_eq!(
+            plan.report.set_selection_issues,
+            [SetSelectionIssue::UnknownSetName {
+                name: crate::domain::SetName::new("misspelled-set")
+            }]
+        );
+        assert!(plan.report.resolutions.is_empty());
+        assert!(plan.groups.is_empty());
+    }
+
+    #[test]
     fn logical_plan_does_not_capture_dry_run_execution_policy() {
         let dat_roms = [rom("parent", None, "present.rom", "sha1-present")];
         let source_files = [source(
@@ -329,6 +425,10 @@ mod tests {
         assert!(plan.report.validation_issues.iter().any(|issue| {
             issue.kind == crate::build::validation::PlanIssueKind::DuplicateGroup
         }));
+        assert_eq!(
+            plan.report.outcome,
+            PlanOutcome::Blocked(PlanBlockReason::InvalidPlan)
+        );
     }
 
     #[test]
@@ -389,6 +489,76 @@ mod tests {
     }
 
     #[test]
+    fn md5_tie_with_matching_sha1_but_different_xxh3_is_not_planned() {
+        let md5 = crate::domain::Md5Digest([5; 16]);
+        let sha1 = "sha1-shared";
+        let dat_roms = [DatRom {
+            catalog_name: "dat-a".to_owned(),
+            key: RequirementKey::new(SetKey::new(CatalogKey::fresh(), "parent"), "dup.rom"),
+            parent_name: None,
+            set_metadata: crate::domain::SetMetadata::default(),
+            role: crate::domain::AssetRole::Rom,
+            component_order: Some(0),
+            expected: ExpectedEvidence {
+                scope: crate::domain::EvidenceScope::WholeAsset,
+                md5: Some(md5),
+                ..ExpectedEvidence::default()
+            },
+        }];
+        let mut first = source("/src-a", "/src-a/a.rom", None, sha1, SourceKind::BareFile);
+        first.observed.md5 = Some(md5);
+        let mut second = source("/src-a", "/src-a/b.rom", None, sha1, SourceKind::BareFile);
+        second.observed.md5 = Some(md5);
+        first.observed.xxh3 = [1; 8];
+        second.observed.xxh3 = [2; 8];
+        let mut build_request = request(BuildMode::ParentBundles);
+        build_request.matching_policy = MatchingPolicy::EvidenceAware;
+
+        let plan = plan_build(&dat_roms, &[first, second], &build_request);
+
+        assert_eq!(plan.report.matched_roms, 0);
+        assert_eq!(plan.report.missing_roms.len(), 1);
+        assert!(plan.report.duplicate_matches.is_empty());
+        assert!(plan.groups.is_empty());
+    }
+
+    #[test]
+    fn md5_tie_with_matching_sha1_is_reported_as_duplicate_copies() {
+        let md5 = crate::domain::Md5Digest([6; 16]);
+        let sha1 = "sha1-same";
+        let dat_roms = [DatRom {
+            catalog_name: "dat-a".to_owned(),
+            key: RequirementKey::new(SetKey::new(CatalogKey::fresh(), "parent"), "dup.rom"),
+            parent_name: None,
+            set_metadata: crate::domain::SetMetadata::default(),
+            role: crate::domain::AssetRole::Rom,
+            component_order: Some(0),
+            expected: ExpectedEvidence {
+                scope: crate::domain::EvidenceScope::WholeAsset,
+                md5: Some(md5),
+                ..ExpectedEvidence::default()
+            },
+        }];
+        let mut first = source("/src-a", "/src-a/b.rom", None, sha1, SourceKind::BareFile);
+        first.observed.md5 = Some(md5);
+        let mut second = source("/src-a", "/src-a/a.rom", None, sha1, SourceKind::BareFile);
+        second.observed.md5 = Some(md5);
+        let mut build_request = request(BuildMode::ParentBundles);
+        build_request.matching_policy = MatchingPolicy::EvidenceAware;
+
+        let plan = plan_build(&dat_roms, &[first, second], &build_request);
+
+        assert_eq!(plan.report.matched_roms, 1);
+        assert!(plan.report.missing_roms.is_empty());
+        assert_eq!(plan.report.duplicate_matches.len(), 1);
+        assert_eq!(plan.report.duplicate_matches[0].candidates.len(), 2);
+        assert_eq!(
+            plan.groups[0].entries[0].source.location.path(),
+            "/src-a/a.rom"
+        );
+    }
+
+    #[test]
     fn duplicate_matches_prefer_source_kind_path_and_entry_name() {
         let dat_roms = [rom("parent", None, "dup.rom", "sha1-dup")];
         let source_files = [
@@ -431,6 +601,44 @@ mod tests {
                 "/src-a/a.zip:z.rom",
                 "/src-a/c.7z:dup.rom",
             ]
+        );
+    }
+
+    #[test]
+    fn duplicate_matches_prefer_legacy_zip_over_7z_sources() {
+        let dat_roms = [rom("parent", None, "dup.rom", "sha1-dup")];
+        let mut zip = source(
+            "/src-a",
+            "/src-a/a.zip",
+            Some("dup.rom"),
+            "sha1-dup",
+            SourceKind::ArchiveEntry,
+        );
+        zip.location = crate::domain::SourceLocation::LegacyUnknown {
+            path: "/src-a/a.zip".to_owned(),
+            member_name: Some("dup.rom".to_owned()),
+        };
+        let mut seven_zip = source(
+            "/src-a",
+            "/src-a/b.7z",
+            Some("dup.rom"),
+            "sha1-dup",
+            SourceKind::ArchiveEntry,
+        );
+        seven_zip.location = crate::domain::SourceLocation::LegacyUnknown {
+            path: "/src-a/b.7z".to_owned(),
+            member_name: Some("dup.rom".to_owned()),
+        };
+
+        let plan = plan_build(
+            &dat_roms,
+            &[seven_zip, zip],
+            &request(BuildMode::ParentBundles),
+        );
+
+        assert_eq!(
+            plan.report.duplicate_matches[0].selected.location.path(),
+            "/src-a/a.zip"
         );
     }
 
@@ -597,6 +805,32 @@ mod tests {
     }
 
     #[test]
+    fn contradictory_md5_tie_is_reported_missing_and_not_planned() {
+        let md5 = crate::domain::Md5Digest([10; 16]);
+        let sha1 = "shared-sha1";
+        let mut requirement = rom("parent", None, "content.rom", sha1);
+        requirement.expected = ExpectedEvidence {
+            scope: crate::domain::EvidenceScope::WholeAsset,
+            md5: Some(md5),
+            ..ExpectedEvidence::default()
+        };
+        let mut first = source("/src-a", "/src-a/a.rom", None, sha1, SourceKind::BareFile);
+        first.observed.size = Some(10);
+        first.observed.md5 = Some(md5);
+        let mut second = source("/src-a", "/src-a/b.rom", None, sha1, SourceKind::BareFile);
+        second.observed.size = Some(11);
+        second.observed.md5 = Some(md5);
+        let mut build_request = request(BuildMode::ParentBundles);
+        build_request.matching_policy = MatchingPolicy::EvidenceAware;
+
+        let plan = plan_build(&[requirement], &[first, second], &build_request);
+
+        assert_eq!(plan.report.matched_roms, 0);
+        assert_eq!(plan.report.missing_roms.len(), 1);
+        assert!(plan.groups.is_empty());
+    }
+
+    #[test]
     fn per_game_mode_writes_one_zip_per_game() {
         let dat_roms = [
             rom("parent", None, "parent.rom", "sha1-parent"),
@@ -637,6 +871,7 @@ mod tests {
                 role: crate::domain::AssetRole::Rom,
                 component_order: Some(0),
                 expected: ExpectedEvidence {
+                    scope: crate::domain::EvidenceScope::WholeAsset,
                     sha1: Some(digest("sha1-a")),
                     ..ExpectedEvidence::default()
                 },
@@ -649,6 +884,7 @@ mod tests {
                 role: crate::domain::AssetRole::Rom,
                 component_order: Some(0),
                 expected: ExpectedEvidence {
+                    scope: crate::domain::EvidenceScope::WholeAsset,
                     sha1: Some(digest("sha1-b")),
                     ..ExpectedEvidence::default()
                 },
@@ -680,6 +916,7 @@ mod tests {
                 role: crate::domain::AssetRole::Rom,
                 component_order: Some(0),
                 expected: ExpectedEvidence {
+                    scope: crate::domain::EvidenceScope::WholeAsset,
                     sha1: Some(digest("sha1-shared")),
                     ..ExpectedEvidence::default()
                 },
@@ -692,6 +929,7 @@ mod tests {
                 role: crate::domain::AssetRole::Rom,
                 component_order: Some(0),
                 expected: ExpectedEvidence {
+                    scope: crate::domain::EvidenceScope::WholeAsset,
                     sha1: Some(digest("sha1-shared")),
                     ..ExpectedEvidence::default()
                 },
@@ -785,6 +1023,23 @@ mod tests {
         assert_eq!(decoded, plan);
         assert_eq!(decoded.groups[0].path.as_str(), "parent");
         assert_eq!(decoded.report.resolutions.len(), 1);
+
+        let mut legacy_document: serde_json::Value = serde_json::from_slice(&json)?;
+        legacy_document["plan"]["groups"][0]["entries"][0]["source"]
+            .as_object_mut()
+            .ok_or_else(|| {
+                crate::Error::InvalidPath("serialized source is not an object".to_owned())
+            })?
+            .remove("physical_path");
+        let legacy_decoded =
+            crate::domain::BuildPlan::from_json(&serde_json::to_vec(&legacy_document)?)?;
+        assert!(
+            legacy_decoded.groups[0].entries[0]
+                .source
+                .physical_path
+                .as_str()
+                .is_empty()
+        );
         Ok(())
     }
 
@@ -794,6 +1049,7 @@ mod tests {
         let plan = plan_build(&[], &[], &request(BuildMode::ParentBundles));
         let mut document: serde_json::Value = serde_json::from_slice(&plan.to_json()?)?;
         document["version"] = serde_json::json!(999);
+        document["plan"] = serde_json::Value::Null;
 
         assert!(matches!(
             crate::domain::BuildPlan::from_json(&serde_json::to_vec(&document)?),

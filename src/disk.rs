@@ -57,7 +57,8 @@ impl ContainerSha1 {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DiskDigestScope {
-    LogicalDiskData,
+    /// The SHA-1 returned by MAME's CHD header API, whose content varies by CHD version.
+    ChdHeaderSha1,
     Unknown,
 }
 
@@ -65,7 +66,7 @@ impl DiskDigestScope {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::LogicalDiskData => "disk_data",
+            Self::ChdHeaderSha1 => "chd_header_sha1",
             Self::Unknown => "unknown",
         }
     }
@@ -124,7 +125,11 @@ impl DiskRequirement {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DiskObservation {
     Missing,
-    ContainerPresent { byte_sha1: Option<ContainerSha1> },
+    ContainerPresent {
+        byte_sha1: Option<ContainerSha1>,
+    },
+    UnsupportedContainer,
+    /// A CHD identity established by verification, not merely read from its header.
     LogicalIdentity(DiskIdentitySha1),
 }
 
@@ -134,6 +139,7 @@ pub enum DiskVerificationState {
     UnknownDigestScope,
     IdentityNotDeclared,
     UnverifiedContainer,
+    UnsupportedContainer,
     VerifiedLogicalIdentity,
     LogicalIdentityMismatch,
 }
@@ -145,15 +151,16 @@ pub fn audit_disk(
 ) -> DiskVerificationState {
     match observation {
         DiskObservation::Missing => DiskVerificationState::Missing,
+        DiskObservation::UnsupportedContainer => DiskVerificationState::UnsupportedContainer,
         DiskObservation::ContainerPresent { .. } => match requirement.digest_scope {
-            DiskDigestScope::LogicalDiskData if requirement.expected_sha1.is_some() => {
+            DiskDigestScope::ChdHeaderSha1 if requirement.expected_sha1.is_some() => {
                 DiskVerificationState::UnverifiedContainer
             }
-            DiskDigestScope::LogicalDiskData => DiskVerificationState::IdentityNotDeclared,
+            DiskDigestScope::ChdHeaderSha1 => DiskVerificationState::IdentityNotDeclared,
             DiskDigestScope::Unknown => DiskVerificationState::UnknownDigestScope,
         },
         DiskObservation::LogicalIdentity(actual) => {
-            if !matches!(requirement.digest_scope, DiskDigestScope::LogicalDiskData) {
+            if !matches!(requirement.digest_scope, DiskDigestScope::ChdHeaderSha1) {
                 return DiskVerificationState::UnknownDigestScope;
             }
             match requirement.expected_sha1 {
@@ -175,7 +182,7 @@ mod tests {
         DiskRequirement::new(
             DiskName::new("demo_disk"),
             Some(DiskIdentitySha1::new([7; 20])),
-            DiskDigestScope::LogicalDiskData,
+            DiskDigestScope::ChdHeaderSha1,
         )
     }
 
@@ -219,6 +226,14 @@ mod tests {
     }
 
     #[test]
+    fn unsupported_container_is_distinct_from_an_unverified_one() {
+        assert_eq!(
+            audit_disk(&requirement(), DiskObservation::UnsupportedContainer),
+            DiskVerificationState::UnsupportedContainer
+        );
+    }
+
+    #[test]
     fn matching_logical_identity_is_verified() {
         assert_eq!(
             audit_disk(
@@ -254,7 +269,7 @@ mod tests {
         let requirement = DiskRequirement::new(
             DiskName::new("demo_disk"),
             None,
-            DiskDigestScope::LogicalDiskData,
+            DiskDigestScope::ChdHeaderSha1,
         );
         assert_eq!(
             audit_disk(

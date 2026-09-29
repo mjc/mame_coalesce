@@ -1,6 +1,6 @@
 # Architecture and compatibility
 
-This document describes the implementation at the MAMEC-16 evidence pass. It
+This document describes the implementation through snapshot-pinned MAME target views. It
 supersedes the earlier proposed target architecture where the two differ. The
 crate remains pre-1.0; the compatibility promises here describe the command-line
 workflow and existing cache behavior, not a semver-stable public Rust API.
@@ -32,9 +32,29 @@ cached inventory. `resolution` is the format-neutral matching policy layer;
 `build::planner` converts selected evidence into logical output groups, while
 `build::validation` rejects unsafe paths, collisions, and source/output
 overlap. `build::writer` reopens and verifies selected sources, stages archive
-members once per source session, and writes ZIP or directory artifacts. The
+members once per source session, and writes ZIP, 7z, or directory artifacts.
+ZIP and 7z archives share secure file staging and verified replacement; 7z
+entries are streamed through the pinned `r7z` writer. The
 public `app` functions compose these layers without CLI logging, rendering, or
 process exits. The binary owns those presentation concerns.
+
+`build::mame_layout` is a separate pure operation over one snapshot's typed
+dependency closures and already-resolved set contents. Its explicit non-merged
+policy makes each selected machine group self-contained by including the
+resolved BIOS, device, and other runtime dependency contents, plus inherited
+parent ROMs with child merge declarations applied as overrides. Clone ancestry
+is not treated as a runtime-dependency edge. The planner reports incomplete
+dependencies, missing assets, and content/path conflicts before any writer is
+involved; neither legacy CLI layout is reinterpreted.
+
+`build::view_manifest` captures a MAME 0.289 target profile, an exact catalog
+snapshot, selected roots, independently versioned policies, and the pure layout
+result in a versioned JSON envelope. Its layout remains format-neutral: ZIP,
+7z, or directory output is selected later by a materializer, not recorded as a
+layout rule. The existing `parent-bundles`/`per-game` request adapter and ZIP
+writer option retain their current meanings and remain separate from the
+snapshot-aware MAME policies. See
+[the MAME 0.289 target profile decision](target-profile-mame-0.289.md).
 
 The crate root deliberately exposes `app`, `build`, `database`, `disk`,
 `domain`, `error`, `hashes`, `logiqx`, and `resolution`, plus the retained
@@ -47,7 +67,13 @@ parser-internal representations the public contract.
 
 - Existing one-source CLI positionals and defaults remain: ZIP output,
   `parent-bundles`, deflate compression, and permissive missing-content
-  reporting. Additional source roots and directory output are opt-in.
+  reporting. Additional source roots, 7z output, and directory output are
+  opt-in.
+  The `--compression` setting applies only to ZIP; 7z uses the pinned `r7z`
+  LZMA2 defaults, and directory output remains uncompressed.
+- The library's snapshot-aware non-merged MAME policy is an explicit planning
+  operation and does not change the meanings or CLI availability of
+  `parent-bundles` and `per-game`.
 - The database runs embedded forward migrations when it is opened. The tested
   additive migrations preserve populated legacy DAT/game/ROM/source rows.
   Legacy source rows whose bytes or archive-member identity were never retained
@@ -57,6 +83,30 @@ parser-internal representations the public contract.
   record acquisitions/import runs and normalized snapshots; an import's
   snapshot publication is transactional, so a failed parse or persistence
   operation does not publish a partial snapshot.
+- Catalog and version selection is explicit. `CatalogKey` is a caller-supplied
+  stable source/catalog identity, not a display name, header name, or declared
+  version. Multiple catalogs with the same human-readable name remain distinct
+  when they have different keys.
+- A `SnapshotKey` identifies one catalog, retained document, and parser
+  interpretation. Re-importing the same document under the same interpretation
+  is idempotent; changed bytes or a changed interpretation produce a separate
+  immutable snapshot and import history. Earlier snapshots are retained rather
+  than silently replaced.
+- A declared version is descriptive source metadata, not a unique key or an
+  ordering rule. It may be absent or repeated. Catalog history lists immutable
+  snapshots, and reconciliation requires exact `SnapshotKey`s rather than
+  inferring a snapshot from declared version text. Disk audit is a deliberate
+  exception: its catalog-key interface selects the most recently published
+  snapshot.
+- Snapshot history and cross-catalog comparison are separate operations.
+  History diffs compare snapshots of the same `CatalogKey` and use catalog
+  scope to distinguish removals from unknown absence. Requirement
+  reconciliation accepts two explicit, distinct snapshots, including snapshots
+  from different catalog keys; it compares expected asset evidence and related
+  source assertions without consulting local inventory or asserting possession.
+  Incompatible evidence scopes remain unknown; weak matches may be candidates
+  when unambiguous, while unresolved collisions remain ambiguous. Shared assets do not
+  imply that their containing sets are identical.
 - `plan_build` and audit consume the selected catalog plus cached scan evidence
   without writing output. Audit is cached by default; explicit refresh scans
   and persists first. A one-shot build (including dry-run or strict-missing)
@@ -73,9 +123,10 @@ parser-internal representations the public contract.
   Missing or changed stamps and `--force-rehash` paths hash normally. The stamp
   is a freshness hint, never a content digest; build-time source-byte
   verification remains authoritative, and unsupported platforms disable reuse.
-- Outputs are not a single transaction across groups. Each ZIP is written to a
-  sibling temporary file, synced, then replaced atomically on Unix. Each
-  directory is built in a private sibling stage; replacement backs up an
+- Outputs are not a single transaction across groups. Each ZIP or 7z archive is
+  written to a sibling temporary file, synced, then replaced atomically on
+  Linux and macOS.
+  Each directory is built in a private sibling stage; replacement backs up an
   existing real directory and attempts rollback if installation fails. The
   report marks completed, failed, unattempted, and recoverable-backup outcomes.
   A process crash during directory replacement can leave the old tree under
@@ -89,7 +140,7 @@ parser-internal representations the public contract.
 | Add a catalog input format | Add an adapter and format hint/dispatch; map records into the common typed snapshot; add fixture coverage and import compatibility tests. | `storage::catalog_import` owns normalized persistence; test source locations, unsupported-extension retention, malformed input rollback, and idempotent import. |
 | Add a source/archive backend | Implement the backend in `sources`; keep discovery and selected-member identity in the scan/source model. | Exercise listing/read errors, identity/fingerprint changes, duplicate names, and writer verification; preserve scan-before-cache-replace. |
 | Change matching | Add typed evidence/policy behavior in `domain` and pure resolution logic in `resolution`. | Test permutations, partial/conflicting evidence, ambiguity, roots/catalog isolation, and audit/build agreement; keep SQL and CLI out unless their contracts actually change. |
-| Change logical layout | Change `build::planner` and layout types in `domain`. | Re-run portable-path validation, collision/overlap cases, and ZIP/directory equality for both layouts. |
+| Change logical layout | Add or evolve a pure policy in `build::mame_layout` or `build::planner`; keep MAME snapshot dependencies distinct from legacy build modes. | Test explicit group contents, dependency diagnostics, input permutations, path collisions, and provenance before writer integration. |
 | Add an output container | Add the container choice to `domain`, route it in `app`/CLI, and implement it behind the shared validation and verified writer boundary. | Test staging, replace/rollback failures, stale-source rejection, and byte-tree equivalence; document per-artifact and multi-artifact guarantees. |
 | Add a user workflow or frontend | Compose operations in `app`; keep terminal rendering and exit-code mapping in the CLI. | Test the public request/report behavior and ensure reusable operations do not initialize terminal state. |
 
@@ -136,17 +187,21 @@ module line coverage:
 - Plan/writer tests reject unsafe paths, case-folded collisions and
   file/directory overlaps; inject read, write, finalize, and replace failures;
   verify stop/rollback/report outcomes; detect stale source or archive identity;
-  and compare ZIP contents with directory trees under both supported layouts.
+  and compare ZIP/7z contents with directory trees under both supported layouts.
 - Adapter tests use synthetic fixtures to cover supported format records,
   source locations, extensions, malformed input, and catalog import behavior.
 
-The MAMEC-16 final `devenv test` gate passed after this document's changes:
+At the original MAMEC-16 verification tree (`f264943`), `devenv test` passed
 224 Rust tests (168 library, 1 CLI, 4 audit, 4 catalog-fixture, 13
 catalog-import, 32 integration, 2 multi-root), strict all-target/all-feature
 Clippy, repository formatting/script checks, and CLI help smoke. The explicit
 `cargo check --locked --workspace --all-targets --all-features` and
 `RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --all-features
---no-deps` checks also passed. `cargo-machete` reported four candidates:
+--no-deps` checks also passed. After directory-output hardening, the gate at
+`d2b07df` passed 352 Rust tests (269 library, 5 CLI, 4 audit, 4
+catalog-fixture, 23 catalog-import, 10 disk-audit, 33 integration, 4
+multi-root), including strict Clippy, formatting/script checks, and CLI help
+smoke; Linux and macOS CI passed. `cargo-machete` reported four candidates:
 `infer`, `libz-sys`, `md-5`, and `sha-1`. The latter three are expected naming
 or intentional-feature false positives (`libz-sys` is directly retained as a
 documented zlib-ng workaround); `infer` has no source reference and is a
@@ -161,8 +216,9 @@ the MAMEC-3 baseline (`1375390`) with the completed MAMEC-15 implementation
 runner, `parent-bundles`, `--missing fail`, and 5 runs per case (9 for the
 parallel deflate repeat). Baseline means were 157.4 ms (1 job/deflate), 162.7
 ms (1/store), 158.2 ms (8/store), and 161.9 ms (8/deflate, 9-run repeat).
-Current means were 719.7 ms, 712.7 ms, 654.0 ms, and 722.6 ms respectively;
-the last sample is the 9-run repeat (722.6 ± 61.9 ms, range 666.7–852.6 ms).
+Means at `f264943` were 719.7 ms, 712.7 ms, 654.0 ms, and 722.6 ms
+respectively; the last sample is the 9-run repeat (722.6 ± 61.9 ms, range
+666.7–852.6 ms).
 This small-corpus end-to-end result is roughly 4.0–4.6x slower and is a
 material performance regression, not evidence of a speedup. It measures
 startup, parsing/import, scan/cache, planning, and output together and does not
@@ -175,8 +231,8 @@ Prioritized follow-up gaps:
 
 1. Profile the measured small-corpus regression with phase-level timing before
    optimizing; retain the identical corpus and benchmark harness.
-2. Keep broader multi-platform directory replacement guarantees explicit; the
-   current atomic ZIP replacement statement is Unix-specific.
+2. Keep broader multi-platform directory replacement guarantees explicit; ZIP
+   atomic replacement is currently supported on Linux and macOS.
 3. Expand compatibility fixtures when additional real-world catalog dialects
    or archive backends are added. Current behavior is validated primarily with
    focused synthetic fixtures, not a broad external corpus.
