@@ -288,6 +288,28 @@ diesel::table! {
 }
 
 diesel::table! {
+    mame_asset_facts (snapshot_key, set_name, component_order) {
+        snapshot_key -> Text,
+        set_name -> Text,
+        component_order -> BigInt,
+        region -> Nullable<Text>,
+        bios -> Nullable<Text>,
+        offset -> Nullable<BigInt>,
+        optional -> Nullable<BigInt>,
+        sound_only -> Nullable<BigInt>,
+        dispose -> Nullable<BigInt>,
+        load_flag -> Nullable<Text>,
+        value -> Nullable<Text>,
+        inverted -> Nullable<BigInt>,
+        ovha -> Nullable<Text>,
+        no_thread -> Nullable<BigInt>,
+        disk_index -> Nullable<Text>,
+        writable -> Nullable<BigInt>,
+        writeable -> Nullable<BigInt>,
+    }
+}
+
+diesel::table! {
     snapshot_extensions (extension_id) {
         extension_id -> BigInt,
         snapshot_key -> Text,
@@ -470,6 +492,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     acquisition_attempt_transport_headers,
     acquisition_transport_headers,
     asset_requirements,
+    mame_asset_facts,
     archive_files,
     catalogs,
     catalog_snapshots,

@@ -165,8 +165,41 @@ pub struct MachineAsset {
     pub dump_status: Option<String>,
     pub disk_requirement: Option<DiskRequirement>,
     pub location: RecordLocation,
-    pub metadata: BTreeMap<String, serde_json::Value>,
+    pub attributes: MameAssetAttributes,
     pub extensions: Vec<XmlExtension>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MameOffset(pub u64);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MameBoolean {
+    No,
+    Yes,
+}
+
+impl MameBoolean {
+    pub(crate) const fn as_bool(self) -> bool {
+        matches!(self, Self::Yes)
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MameAssetAttributes {
+    pub region: Option<String>,
+    pub bios: Option<String>,
+    pub offset: Option<MameOffset>,
+    pub optional: Option<MameBoolean>,
+    pub sound_only: Option<MameBoolean>,
+    pub dispose: Option<MameBoolean>,
+    pub load_flag: Option<String>,
+    pub value: Option<String>,
+    pub inverted: Option<MameBoolean>,
+    pub ovha: Option<String>,
+    pub no_thread: Option<MameBoolean>,
+    pub disk_index: Option<String>,
+    pub writable: Option<MameBoolean>,
+    pub writeable: Option<MameBoolean>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -662,6 +695,21 @@ fn parse_mame_boolean(value: Option<&String>, field: &str) -> crate::Result<bool
     parse_mame_boolean_with_default(value, false, field)
 }
 
+fn parse_optional_mame_boolean(
+    value: Option<&String>,
+    field: &str,
+) -> crate::Result<Option<MameBoolean>> {
+    value
+        .map(|value| match value.as_str() {
+            "no" => Ok(MameBoolean::No),
+            "yes" => Ok(MameBoolean::Yes),
+            other => Err(crate::Error::XmlValidation(format!(
+                "invalid MAME {field} value {other:?}"
+            ))),
+        })
+        .transpose()
+}
+
 fn parse_mame_boolean_with_default(
     value: Option<&String>,
     default: bool,
@@ -724,6 +772,34 @@ fn parse_mame_integer(value: &str) -> crate::Result<u64> {
     parsed.map_err(|_| crate::Error::XmlValidation(format!("invalid MAME integer {value:?}")))
 }
 
+fn parse_mame_asset_attributes(node: &Element) -> crate::Result<MameAssetAttributes> {
+    let value = |name: &str| node.attributes.get(name).cloned();
+    let number = |name: &str| {
+        node.attributes
+            .get(name)
+            .map(|value| parse_mame_integer(value).map(MameOffset))
+            .transpose()
+    };
+    let boolean = |name: &str| parse_optional_mame_boolean(node.attributes.get(name), name);
+
+    Ok(MameAssetAttributes {
+        region: value("region"),
+        bios: value("bios"),
+        offset: number("offset")?,
+        optional: boolean("optional")?,
+        sound_only: boolean("soundonly")?,
+        dispose: boolean("dispose")?,
+        load_flag: value("loadflag"),
+        value: value("value"),
+        inverted: boolean("inverted")?,
+        ovha: value("ovha"),
+        no_thread: boolean("nothread")?,
+        disk_index: value("index"),
+        writable: boolean("writable")?,
+        writeable: boolean("writeable")?,
+    })
+}
+
 fn parse_asset(node: &Element, retain_extensions: bool) -> crate::Result<MachineAsset> {
     let name = required(node, "name")?;
     let size = node
@@ -753,16 +829,7 @@ fn parse_asset(node: &Element, retain_extensions: bool) -> crate::Result<Machine
     let merge_name = node.attributes.get("merge").cloned();
     let dump_status = node.attributes.get("status").cloned();
     let disk_requirement = parse_disk_requirement(node, name, sha1.as_deref())?;
-    let metadata = node
-        .attributes
-        .iter()
-        .filter(|(key, _)| {
-            known_asset_attribute(&node.name, key)
-                && !["name", "size", "sha1", "crc", "md5", "merge", "status"]
-                    .contains(&key.as_str())
-        })
-        .map(|(key, val)| (key.clone(), serde_json::json!(val)))
-        .collect();
+    let attributes = parse_mame_asset_attributes(node)?;
     let mut extensions = Vec::new();
     if retain_extensions {
         for child in node.children() {
@@ -797,7 +864,7 @@ fn parse_asset(node: &Element, retain_extensions: bool) -> crate::Result<Machine
         dump_status,
         disk_requirement,
         location: node.location,
-        metadata,
+        attributes,
         extensions,
     })
 }
@@ -1099,6 +1166,27 @@ mod tests {
     fn duplicate_machine_text_fields_are_rejected() {
         let xml = br#"<mame><machine name="duplicate"><description>one</description><description>two</description></machine></mame>"#;
         assert!(MameCatalog::parse(xml).is_err());
+    }
+
+    #[test]
+    fn mame_asset_spec_attributes_are_parsed_as_typed_facts() -> crate::Result<()> {
+        let rom = parse_xml_element(
+            br#"<rom name="boot.bin" region="maincpu" bios="rev-a" offset="0x100" optional="yes" soundonly="no" dispose="yes" loadflag="LOAD16_BYTE" value="0x42" inverted="no" ovha="0x80" nothread="yes"/>"#,
+        )?;
+        let rom = parse_asset(&rom, false)?;
+
+        assert_eq!(rom.attributes.region.as_deref(), Some("maincpu"));
+        assert_eq!(rom.attributes.bios.as_deref(), Some("rev-a"));
+        assert_eq!(rom.attributes.offset, Some(MameOffset(0x100)));
+        assert_eq!(rom.attributes.optional, Some(MameBoolean::Yes));
+        assert_eq!(rom.attributes.sound_only, Some(MameBoolean::No));
+        assert_eq!(rom.attributes.dispose, Some(MameBoolean::Yes));
+        assert_eq!(rom.attributes.load_flag.as_deref(), Some("LOAD16_BYTE"));
+        assert_eq!(rom.attributes.value.as_deref(), Some("0x42"));
+        assert_eq!(rom.attributes.inverted, Some(MameBoolean::No));
+        assert_eq!(rom.attributes.ovha.as_deref(), Some("0x80"));
+        assert_eq!(rom.attributes.no_thread, Some(MameBoolean::Yes));
+        Ok(())
     }
 
     #[test]

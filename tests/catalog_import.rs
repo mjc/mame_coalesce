@@ -965,10 +965,9 @@ fn imports_mame_machine_rom_disk_bios_and_device_semantics_loss_aware()
         assets.value,
         "rom:demo_bios.bin,rom:demo_video.bin,disk:demo_disk"
     );
-    let region = sql_query("SELECT metadata_json AS value FROM asset_requirements WHERE snapshot_key = ? AND asset_name = 'demo_bios.bin'")
+    let region = sql_query("SELECT region || ':' || bios AS value FROM mame_asset_facts WHERE snapshot_key = ? AND set_name = 'demo_machine' AND component_order = 0")
         .bind::<Text, _>(snapshot.as_str()).get_result::<TextRow>(&mut connection)?;
-    assert!(region.value.contains("maincpu"));
-    assert!(region.value.contains("demo_bios"));
+    assert_eq!(region.value, "maincpu:demo_bios");
     let disk_scope = sql_query("SELECT evidence_scope AS value FROM asset_requirements WHERE snapshot_key = ? AND asset_name = 'demo_disk'")
         .bind::<Text, _>(snapshot.as_str()).get_result::<TextRow>(&mut connection)?;
     assert_eq!(disk_scope.value, "chd_header_sha1");
@@ -1285,6 +1284,68 @@ fn imports_mame_asset_facts_and_recovers_extensions_from_source()
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<NullableTextRow>(&mut connection)?;
     assert_eq!(format_hint.value.as_deref(), Some("mame-listxml"));
+    Ok(())
+}
+
+#[test]
+fn persists_mame_rom_and_disk_spec_attributes_as_relational_facts()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, mut connection) = setup()?;
+    let path = directory.path().join("mame-asset-facts.xml");
+    std::fs::write(
+        &path,
+        br#"<mame><machine name="facts"><description>Facts</description><rom name="boot.bin" region="maincpu" bios="rev-a" offset="0x100" optional="yes" soundonly="no" dispose="yes" loadflag="LOAD16_BYTE" value="0x42" inverted="no" ovha="0x80" nothread="yes"/><disk name="media.chd" region="cdrom" index="2" writeable="yes"/></machine></mame>"#,
+    )?;
+    let mut request = request(
+        path.clone(),
+        "mame-asset-facts",
+        "mame-asset-facts",
+        "MAME facts",
+    )?;
+    request.format = CatalogDocumentFormat::MameListXml;
+    let snapshot = app::import_catalog(&database, &request)?
+        .snapshot_key
+        .ok_or("MAME snapshot missing")?;
+
+    let rom = sql_query(
+        "SELECT region || ':' || bios || ':' || offset || ':' || optional || ':' || sound_only || ':' || \
+         dispose || ':' || load_flag || ':' || value || ':' || inverted || ':' || ovha || ':' || no_thread AS value \
+         FROM mame_asset_facts WHERE snapshot_key = ? AND set_name = 'facts' AND component_order = 0",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(&mut connection)?;
+    assert_eq!(
+        rom.value,
+        "maincpu:rev-a:256:1:0:1:LOAD16_BYTE:0x42:0:0x80:1"
+    );
+
+    let disk = sql_query(
+        "SELECT region || ':' || disk_index || ':' || writeable AS value FROM mame_asset_facts \
+         WHERE snapshot_key = ? AND set_name = 'facts' AND component_order = 1",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(&mut connection)?;
+    assert_eq!(disk.value, "cdrom:2:1");
+
+    std::fs::write(
+        &path,
+        br#"<mame><machine name="facts"><description>Facts</description><rom name="boot.bin" region="graphics" bios="rev-a" offset="0x100" optional="yes" soundonly="no" dispose="yes" loadflag="LOAD16_BYTE" value="0x42" inverted="no" ovha="0x80" nothread="yes"/><disk name="media.chd" region="cdrom" index="2" writeable="yes"/></machine></mame>"#,
+    )?;
+    let changed_snapshot = app::import_catalog(&database, &request)?
+        .snapshot_key
+        .ok_or("changed MAME snapshot missing")?;
+    let diff = app::diff_catalog_snapshots(&database, &snapshot, &changed_snapshot)?;
+    let changed = diff
+        .records
+        .iter()
+        .find(|record| record.set_name == "facts")
+        .ok_or("MAME asset diff missing")?;
+    assert!(
+        changed
+            .requirement_changes
+            .iter()
+            .any(|change| { change.asset_name == "boot.bin" && change.other_evidence_changed })
+    );
     Ok(())
 }
 

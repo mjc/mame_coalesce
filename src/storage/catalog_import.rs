@@ -137,6 +137,7 @@ struct SnapshotAsset {
     serial: Option<String>,
     date: Option<String>,
     metadata: serde_json::Value,
+    mame_attributes: Option<mame::MameAssetAttributes>,
     location: crate::logiqx::RecordLocation,
 }
 
@@ -200,6 +201,7 @@ impl SnapshotData {
                     serial: expected.serial,
                     date: expected.date,
                     metadata: serde_json::Value::Null,
+                    mame_attributes: None,
                     location: *rom_locations.get(index).ok_or_else(|| {
                         crate::Error::InvalidPath("Logiqx asset source location is missing".into())
                     })?,
@@ -298,6 +300,7 @@ impl SnapshotData {
                             serial: None,
                             date: None,
                             metadata: asset.metadata,
+                            mame_attributes: None,
                             location: asset.location,
                         }
                     })
@@ -361,6 +364,7 @@ impl SnapshotData {
                             serial: None,
                             date: None,
                             metadata: serde_json::Value::Null,
+                            mame_attributes: None,
                             location: asset.location,
                         }
                     })
@@ -474,17 +478,10 @@ fn machine_assets(
                 .map(|digest| digest.as_bytes().to_vec())
                 .or(asset.sha1);
             let merge = asset
-                .metadata
-                .get("merge")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
-                .or_else(|| {
-                    asset
-                        .disk_requirement
-                        .as_ref()
-                        .and_then(crate::disk::DiskRequirement::parent)
-                        .map(|name| name.as_str().to_owned())
-                });
+                .disk_requirement
+                .as_ref()
+                .and_then(crate::disk::DiskRequirement::parent)
+                .map(|name| name.as_str().to_owned());
             SnapshotAsset {
                 name: asset.name,
                 role: match asset.role {
@@ -497,11 +494,12 @@ fn machine_assets(
                 md5: asset.md5,
                 sha1,
                 evidence_scope,
-                merge: merge.or(asset.merge_name),
+                merge: asset.merge_name.or(merge),
                 dump_status: asset.dump_status,
                 serial: None,
                 date: None,
-                metadata: serde_json::Value::Object(asset.metadata.into_iter().collect()),
+                metadata: serde_json::Value::Null,
+                mame_attributes: Some(asset.attributes),
                 location: asset.location,
             }
         })
@@ -1202,9 +1200,53 @@ fn insert_snapshot_set(
         .bind::<BigInt, _>(asset.location.line)
         .bind::<BigInt, _>(asset.location.column)
         .execute(conn)?;
+        if let Some(attributes) = &asset.mame_attributes {
+            insert_mame_asset_facts(conn, snapshot_key, &set.name, component_order, attributes)?;
+        }
     }
     insert_machine_switches(conn, snapshot_key, set)?;
     insert_machine_bios_sets(conn, snapshot_key, set)?;
+    Ok(())
+}
+
+fn insert_mame_asset_facts(
+    conn: &mut SqliteConnection,
+    snapshot_key: &SnapshotKey,
+    set_name: &str,
+    component_order: i64,
+    attributes: &mame::MameAssetAttributes,
+) -> crate::Result<()> {
+    let offset = attributes
+        .offset
+        .map(|value| i64::try_from(value.0))
+        .transpose()
+        .map_err(|_| crate::Error::InvalidPath("MAME asset offset exceeds SQLite range".into()))?;
+    let flag = |value: Option<mame::MameBoolean>| value.map(|value| i64::from(value.as_bool()));
+
+    sql_query(
+        "INSERT INTO mame_asset_facts \
+         (snapshot_key, set_name, component_order, region, bios, offset, optional, sound_only, \
+          dispose, load_flag, value, inverted, ovha, no_thread, disk_index, writable, writeable) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind::<Text, _>(snapshot_key.as_str())
+    .bind::<Text, _>(set_name)
+    .bind::<BigInt, _>(component_order)
+    .bind::<Nullable<Text>, _>(attributes.region.as_deref())
+    .bind::<Nullable<Text>, _>(attributes.bios.as_deref())
+    .bind::<Nullable<BigInt>, _>(offset)
+    .bind::<Nullable<BigInt>, _>(flag(attributes.optional))
+    .bind::<Nullable<BigInt>, _>(flag(attributes.sound_only))
+    .bind::<Nullable<BigInt>, _>(flag(attributes.dispose))
+    .bind::<Nullable<Text>, _>(attributes.load_flag.as_deref())
+    .bind::<Nullable<Text>, _>(attributes.value.as_deref())
+    .bind::<Nullable<BigInt>, _>(flag(attributes.inverted))
+    .bind::<Nullable<Text>, _>(attributes.ovha.as_deref())
+    .bind::<Nullable<BigInt>, _>(flag(attributes.no_thread))
+    .bind::<Nullable<Text>, _>(attributes.disk_index.as_deref())
+    .bind::<Nullable<BigInt>, _>(flag(attributes.writable))
+    .bind::<Nullable<BigInt>, _>(flag(attributes.writeable))
+    .execute(conn)?;
     Ok(())
 }
 

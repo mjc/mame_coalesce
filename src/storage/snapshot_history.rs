@@ -83,6 +83,34 @@ struct RequirementRow {
     date: Option<String>,
     #[diesel(sql_type = Text)]
     metadata_json: String,
+    #[diesel(sql_type = Nullable<Text>)]
+    mame_region: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    mame_bios: Option<String>,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    mame_offset: Option<i64>,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    mame_optional: Option<i64>,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    mame_sound_only: Option<i64>,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    mame_dispose: Option<i64>,
+    #[diesel(sql_type = Nullable<Text>)]
+    mame_load_flag: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    mame_value: Option<String>,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    mame_inverted: Option<i64>,
+    #[diesel(sql_type = Nullable<Text>)]
+    mame_ovha: Option<String>,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    mame_no_thread: Option<i64>,
+    #[diesel(sql_type = Nullable<Text>)]
+    mame_disk_index: Option<String>,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    mame_writable: Option<i64>,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    mame_writeable: Option<i64>,
 }
 
 #[derive(QueryableByName)]
@@ -505,9 +533,18 @@ fn records(
     .bind::<Text, _>(key.as_str())
     .load::<SetRow>(conn)?;
     let requirements = sql_query(
-        "SELECT set_name, component_order, asset_name, role, size, crc, md5, sha1, evidence_scope, \
-         evidence_provenance, merge_name, dump_status, serial, date, metadata_json \
-         FROM asset_requirements WHERE snapshot_key = ? ORDER BY set_name, asset_name, component_order",
+        "SELECT asset.set_name, asset.component_order, asset.asset_name, asset.role, asset.size, \
+         asset.crc, asset.md5, asset.sha1, asset.evidence_scope, asset.evidence_provenance, \
+         asset.merge_name, asset.dump_status, asset.serial, asset.date, asset.metadata_json, \
+         facts.region AS mame_region, facts.bios AS mame_bios, facts.offset AS mame_offset, \
+         facts.optional AS mame_optional, facts.sound_only AS mame_sound_only, \
+         facts.dispose AS mame_dispose, facts.load_flag AS mame_load_flag, facts.value AS mame_value, \
+         facts.inverted AS mame_inverted, facts.ovha AS mame_ovha, facts.no_thread AS mame_no_thread, \
+         facts.disk_index AS mame_disk_index, facts.writable AS mame_writable, \
+         facts.writeable AS mame_writeable \
+         FROM asset_requirements AS asset LEFT JOIN mame_asset_facts AS facts \
+         USING (snapshot_key, set_name, component_order) \
+         WHERE asset.snapshot_key = ? ORDER BY asset.set_name, asset.asset_name, asset.component_order",
     )
     .bind::<Text, _>(key.as_str())
     .load::<RequirementRow>(conn)?;
@@ -564,6 +601,11 @@ fn records(
     for extensions in result.extensions.values_mut() {
         extensions.sort_by_key(serde_json::Value::to_string);
     }
+    assemble_requirements(&mut result, requirements);
+    Ok(result)
+}
+
+fn assemble_requirements(result: &mut CatalogRecords, requirements: Vec<RequirementRow>) {
     for row in requirements {
         let source_extensions = result
             .asset_extensions
@@ -582,6 +624,22 @@ fn records(
             "serial": row.serial,
             "date": row.date,
             "metadata": json(&row.metadata_json),
+            "mame_attributes": {
+                "region": row.mame_region,
+                "bios": row.mame_bios,
+                "offset": row.mame_offset,
+                "optional": row.mame_optional.map(|value| value != 0),
+                "sound_only": row.mame_sound_only.map(|value| value != 0),
+                "dispose": row.mame_dispose.map(|value| value != 0),
+                "load_flag": row.mame_load_flag,
+                "value": row.mame_value,
+                "inverted": row.mame_inverted.map(|value| value != 0),
+                "ovha": row.mame_ovha,
+                "no_thread": row.mame_no_thread.map(|value| value != 0),
+                "disk_index": row.mame_disk_index,
+                "writable": row.mame_writable.map(|value| value != 0),
+                "writeable": row.mame_writeable.map(|value| value != 0),
+            },
             "extensions": source_extensions,
         });
         result
@@ -597,7 +655,6 @@ fn records(
             evidence.sort_by_key(serde_json::Value::to_string);
         }
     }
-    Ok(result)
 }
 
 fn mame_switch_facts(
