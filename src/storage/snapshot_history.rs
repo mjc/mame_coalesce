@@ -218,6 +218,16 @@ struct MameMachineFactsRow {
     is_consumable: bool,
 }
 
+#[derive(QueryableByName)]
+struct NoIntroGameFactsRow {
+    #[diesel(sql_type = Text)]
+    set_name: String,
+    #[diesel(sql_type = Nullable<Text>)]
+    archive_id: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    description: Option<String>,
+}
+
 #[derive(Default)]
 struct CatalogRecords {
     sets: BTreeMap<String, SetRow>,
@@ -227,6 +237,7 @@ struct CatalogRecords {
     machine_switches: BTreeMap<String, Vec<serde_json::Value>>,
     machine_bios_sets: BTreeMap<String, Vec<serde_json::Value>>,
     mame_machine_facts: BTreeMap<String, serde_json::Value>,
+    no_intro_game_facts: BTreeMap<String, serde_json::Value>,
 }
 
 pub fn diff(
@@ -558,6 +569,23 @@ fn records(
     let machine_switches = mame_switch_facts(conn, key)?;
     let machine_bios_sets = mame_bios_set_facts(conn, key)?;
     let mame_machine_facts = load_mame_machine_facts(conn, key)?;
+    let no_intro_game_facts = sql_query(
+        "SELECT set_name, archive_id, description FROM no_intro_game_facts \
+         WHERE snapshot_key = ? ORDER BY set_name",
+    )
+    .bind::<Text, _>(key.as_str())
+    .load::<NoIntroGameFactsRow>(conn)?
+    .into_iter()
+    .map(|row| {
+        (
+            row.set_name,
+            serde_json::json!({
+                "archive_id": row.archive_id,
+                "description": row.description,
+            }),
+        )
+    })
+    .collect();
 
     let mut result = CatalogRecords::default();
     for set in sets {
@@ -598,6 +626,7 @@ fn records(
     result.machine_switches = machine_switches;
     result.machine_bios_sets = machine_bios_sets;
     result.mame_machine_facts = mame_machine_facts;
+    result.no_intro_game_facts = no_intro_game_facts;
     for extensions in result.extensions.values_mut() {
         extensions.sort_by_key(serde_json::Value::to_string);
     }
@@ -856,6 +885,7 @@ fn set_metadata(records: &CatalogRecords, name: &str, set: &SetRow) -> serde_jso
     serde_json::json!({
         "metadata": json(&set.metadata_json),
         "mame_machine_facts": records.mame_machine_facts.get(name),
+        "no_intro_game_facts": records.no_intro_game_facts.get(name),
         "machine_switches": records.machine_switches.get(name),
         "machine_bios_sets": records.machine_bios_sets.get(name),
         "source_extensions": records.extensions.iter()

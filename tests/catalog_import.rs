@@ -152,7 +152,17 @@ struct AssetHashesRow {
     #[diesel(sql_type = Nullable<diesel::sql_types::Binary>)]
     crc: Option<Vec<u8>>,
     #[diesel(sql_type = Nullable<diesel::sql_types::Binary>)]
+    md5: Option<Vec<u8>>,
+    #[diesel(sql_type = Nullable<diesel::sql_types::Binary>)]
     sha1: Option<Vec<u8>>,
+}
+
+#[derive(QueryableByName)]
+struct NoIntroGameFactsRow {
+    #[diesel(sql_type = Nullable<Text>)]
+    archive_id: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    description: Option<String>,
 }
 
 #[derive(QueryableByName)]
@@ -526,20 +536,9 @@ fn imports_no_intro_pc_xml_metadata_without_inventing_title_relationships()
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<CountRow>(&mut connection)?;
     assert_eq!(hashed_requirements.count, 1);
-    let hashes = sql_query(
-        "SELECT crc, sha1 FROM asset_requirements \
-         WHERE snapshot_key = ? AND asset_name = 'synthetic-cartridge.bin'",
-    )
-    .bind::<Text, _>(snapshot.as_str())
-    .get_result::<AssetHashesRow>(&mut connection)?;
-    assert_eq!(hashes.crc, Some(vec![0x12, 0x34, 0x56, 0x78]));
-    assert_eq!(
-        hashes.sha1,
-        Some(vec![
-            0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
-            0xcd, 0xef, 0x01, 0x23, 0x45, 0x67,
-        ])
-    );
+    assert_no_intro_hashes(&mut connection, snapshot.as_str())?;
+
+    assert_no_intro_game_facts(&mut connection, snapshot.as_str())?;
 
     let snapshot_scope =
         sql_query("SELECT scope_json AS value FROM catalog_snapshots WHERE snapshot_key = ?")
@@ -614,6 +613,52 @@ fn imports_no_intro_pc_xml_metadata_without_inventing_title_relationships()
         request.document_path.as_std_path(),
     )?;
 
+    Ok(())
+}
+
+fn assert_no_intro_game_facts(
+    connection: &mut SqliteConnection,
+    snapshot: &str,
+) -> Result<(), diesel::result::Error> {
+    let facts = sql_query(
+        "SELECT archive_id, description FROM no_intro_game_facts \
+         WHERE snapshot_key = ? AND set_name = 'Synthetic Cartridge (World)'",
+    )
+    .bind::<Text, _>(snapshot)
+    .get_result::<NoIntroGameFactsRow>(connection)?;
+    assert_eq!(facts.archive_id.as_deref(), Some("1040"));
+    assert_eq!(
+        facts.description.as_deref(),
+        Some("Synthetic Cartridge (World)")
+    );
+    Ok(())
+}
+
+fn assert_no_intro_hashes(
+    connection: &mut SqliteConnection,
+    snapshot: &str,
+) -> Result<(), diesel::result::Error> {
+    let hashes = sql_query(
+        "SELECT crc, md5, sha1 FROM asset_requirements \
+         WHERE snapshot_key = ? AND asset_name = 'synthetic-cartridge.bin'",
+    )
+    .bind::<Text, _>(snapshot)
+    .get_result::<AssetHashesRow>(connection)?;
+    assert_eq!(hashes.crc, Some(vec![0x12, 0x34, 0x56, 0x78]));
+    assert_eq!(
+        hashes.md5,
+        Some(vec![
+            0, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee,
+            0xff
+        ])
+    );
+    assert_eq!(
+        hashes.sha1,
+        Some(vec![
+            0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
+            0xcd, 0xef, 0x01, 0x23, 0x45, 0x67,
+        ])
+    );
     Ok(())
 }
 
@@ -3439,6 +3484,69 @@ fn snapshot_diff_attributes_no_intro_rom_extensions_to_their_asset()
             && record.status == SnapshotRecordStatus::Unchanged
             && record.requirement_changes.is_empty()
     }));
+    Ok(())
+}
+
+#[test]
+fn snapshot_diff_includes_no_intro_game_specification_facts()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, mut connection) = setup()?;
+    let first_path = directory.path().join("no-intro-game-facts-v1.xml");
+    let second_path = directory.path().join("no-intro-game-facts-v2.xml");
+    std::fs::write(
+        &first_path,
+        br#"<datafile><game name="alpha" id="0640"><description>Alpha</description></game></datafile>"#,
+    )?;
+    std::fs::write(
+        &second_path,
+        br#"<datafile><game name="alpha" id="0641"><description>Alpha II</description></game></datafile>"#,
+    )?;
+    let mut first_request = request(
+        first_path,
+        "publisher-no-intro-facts",
+        "no-intro-game-facts",
+        "No-Intro game facts",
+    )?;
+    first_request.format = CatalogDocumentFormat::NoIntroPcXml;
+    first_request.scope = CatalogScope::Complete;
+    let first = app::import_catalog(&database, &first_request)?;
+    let mut second_request = request(
+        second_path,
+        "publisher-no-intro-facts",
+        "no-intro-game-facts",
+        "No-Intro game facts",
+    )?;
+    second_request.format = CatalogDocumentFormat::NoIntroPcXml;
+    second_request.scope = CatalogScope::Complete;
+    let second = app::import_catalog(&database, &second_request)?;
+
+    let diff = app::diff_catalog_snapshots(
+        &database,
+        first
+            .snapshot_key
+            .as_ref()
+            .ok_or("first snapshot missing")?,
+        second
+            .snapshot_key
+            .as_ref()
+            .ok_or("second snapshot missing")?,
+    )?;
+    let alpha = diff.records.first().ok_or("alpha record diff missing")?;
+    assert_eq!(alpha.status, SnapshotRecordStatus::Changed);
+    assert!(alpha.metadata_changed);
+    let facts = sql_query(
+        "SELECT archive_id, description FROM no_intro_game_facts \
+         WHERE snapshot_key = ? AND set_name = 'alpha'",
+    )
+    .bind::<Text, _>(
+        second
+            .snapshot_key
+            .ok_or("second snapshot missing")?
+            .as_str(),
+    )
+    .get_result::<NoIntroGameFactsRow>(&mut connection)?;
+    assert_eq!(facts.archive_id.as_deref(), Some("0641"));
+    assert_eq!(facts.description.as_deref(), Some("Alpha II"));
     Ok(())
 }
 

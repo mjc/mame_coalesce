@@ -16,6 +16,7 @@ pub struct Catalog {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
     pub name: String,
+    pub facts: GameFacts,
     pub location: RecordLocation,
     pub metadata: BTreeMap<String, serde_json::Value>,
     pub assets: Vec<Asset>,
@@ -23,17 +24,32 @@ pub struct Entry {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GameFacts {
+    pub archive_id: Option<ArchiveId>,
+    pub description: Option<String>,
+    pub description_location: Option<RecordLocation>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Asset {
     pub name: String,
     pub size: Option<u64>,
     pub crc: Option<Vec<u8>>,
+    pub md5: Option<Vec<u8>>,
     pub sha1: Option<Vec<u8>>,
     pub location: RecordLocation,
     pub extensions: Vec<XmlExtension>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct ArchiveId(String);
+pub struct ArchiveId(String);
+
+impl ArchiveId {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
 
 impl TryFrom<&str> for ArchiveId {
     type Error = ();
@@ -183,9 +199,42 @@ fn parse_entry(node: &Element) -> crate::Result<Entry> {
     let name = required(node, "name", "game")?.to_owned();
     reject_record_text(node, "game", Some(&name))?;
     let (metadata, mut extensions) = parse_entry_attributes(node, &name)?;
+    let archive_id = node
+        .attributes
+        .get("id")
+        .map(|value| parse_archive_id(value, "id", &name, node.location))
+        .transpose()?;
+    let mut description = None;
+    let mut description_location = None;
+    for child in node.children() {
+        if child.name == "description" {
+            if description.replace(child.direct_text()).is_some() {
+                return Err(parse_error(
+                    "duplicate game description",
+                    "game",
+                    Some(&name),
+                    child.location,
+                ));
+            }
+            description_location = Some(child.location);
+            if !child.attributes.is_empty() || child.children().next().is_some() {
+                return Err(parse_error(
+                    "structured game description is unsupported",
+                    "game",
+                    Some(&name),
+                    child.location,
+                ));
+            }
+        }
+    }
     let assets = parse_assets(node, &name, &mut extensions)?;
     Ok(Entry {
         name,
+        facts: GameFacts {
+            archive_id,
+            description,
+            description_location,
+        },
         location: node.location,
         metadata,
         assets,
@@ -245,7 +294,7 @@ fn parse_entry_attributes(
     if let Some(value) = node.attributes.get("mergeof") {
         metadata.insert(
             "mergeof".into(),
-            serde_json::json!(parse_archive_id(value, "mergeof", name, node.location)?.0),
+            serde_json::json!(parse_archive_id(value, "mergeof", name, node.location)?.as_str()),
         );
         extensions.push(attribute_extension(
             "game",
@@ -260,6 +309,7 @@ fn parse_entry_attributes(
 
     let known = [
         "name",
+        "id",
         "namealt",
         "region",
         "languages",
@@ -324,6 +374,9 @@ fn parse_assets(
     let mut asset_names = HashSet::new();
     for child in node.children() {
         if child.name != "rom" {
+            if child.name == "description" {
+                continue;
+            }
             extensions.push(element_extension("game", Some(name), child)?);
             continue;
         }
@@ -363,10 +416,15 @@ fn parse_asset(node: &Element) -> crate::Result<Asset> {
         .get("sha1")
         .map(|value| decode_hex(value, 40, "SHA-1", &name, node.location))
         .transpose()?;
+    let md5 = node
+        .attributes
+        .get("md5")
+        .map(|value| decode_hex(value, 32, "MD5", &name, node.location))
+        .transpose()?;
     let mut extensions: Vec<XmlExtension> = node
         .attributes
         .iter()
-        .filter(|(field, _)| !["name", "size", "crc", "sha1"].contains(&field.as_str()))
+        .filter(|(field, _)| !["name", "size", "crc", "md5", "sha1"].contains(&field.as_str()))
         .map(|(field, value)| attribute_extension("rom", Some(&name), field, value, node.location))
         .collect();
     for child in node.children() {
@@ -376,6 +434,7 @@ fn parse_asset(node: &Element) -> crate::Result<Asset> {
         name,
         size,
         crc,
+        md5,
         sha1,
         location: node.location,
         extensions,
@@ -492,4 +551,39 @@ fn split_attribute_name(name: &str) -> (String, Option<String>) {
             || (name.to_owned(), None),
             |(namespace, local)| (local.to_owned(), Some(namespace.to_owned())),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_real_pc_xml_game_identity_description_and_md5() -> crate::Result<()> {
+        let catalog = Catalog::parse(
+            br#"<datafile><game name="Wake (Unknown) (Windows)" id="0640"><description>Wake</description><rom name="Wake_Win.zip" size="64847823" crc="1c68eab9" md5="4177620d57a0c4ff75cf5d6f307aa7c2" sha1="50b756a9768340f71256b366241b1543bf664824" /></game></datafile>"#,
+        )?;
+        let entry = catalog
+            .entries
+            .first()
+            .ok_or_else(|| crate::Error::InvalidPath("No-Intro test entry missing".into()))?;
+        assert_eq!(
+            entry.facts.archive_id.as_ref().map(ArchiveId::as_str),
+            Some("0640")
+        );
+        assert_eq!(entry.facts.description.as_deref(), Some("Wake"));
+        let asset = entry
+            .assets
+            .first()
+            .ok_or_else(|| crate::Error::InvalidPath("No-Intro test ROM missing".into()))?;
+        assert_eq!(
+            asset.md5.as_deref(),
+            Some(
+                &[
+                    0x41, 0x77, 0x62, 0x0d, 0x57, 0xa0, 0xc4, 0xff, 0x75, 0xcf, 0x5d, 0x6f, 0x30,
+                    0x7a, 0xa7, 0xc2,
+                ][..]
+            )
+        );
+        Ok(())
+    }
 }

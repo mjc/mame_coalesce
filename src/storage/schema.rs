@@ -342,6 +342,17 @@ diesel::table! {
 }
 
 diesel::table! {
+    no_intro_game_facts (snapshot_key, set_name) {
+        snapshot_key -> Text,
+        set_name -> Text,
+        archive_id -> Nullable<Text>,
+        description -> Nullable<Text>,
+        description_line -> Nullable<BigInt>,
+        description_column -> Nullable<BigInt>,
+    }
+}
+
+diesel::table! {
     snapshot_extensions (extension_id) {
         extension_id -> BigInt,
         snapshot_key -> Text,
@@ -525,6 +536,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     acquisition_transport_headers,
     asset_requirements,
     mame_asset_facts,
+    no_intro_game_facts,
     archive_files,
     catalogs,
     catalog_snapshots,

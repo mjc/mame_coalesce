@@ -115,6 +115,7 @@ struct SnapshotSet {
     switches: Vec<crate::mame::MachineSwitch>,
     bios_sets: Vec<crate::mame::MachineBiosSet>,
     mame_facts: Option<crate::mame::MachineFacts>,
+    no_intro_facts: Option<crate::no_intro_pc_xml::GameFacts>,
     machine_dependencies: Vec<SnapshotDependency>,
 }
 
@@ -238,6 +239,7 @@ impl SnapshotData {
                 switches: Vec::new(),
                 bios_sets: Vec::new(),
                 mame_facts: None,
+                no_intro_facts: None,
                 machine_dependencies: Vec::new(),
             });
         }
@@ -316,6 +318,7 @@ impl SnapshotData {
                     switches: Vec::new(),
                     bios_sets: Vec::new(),
                     mame_facts: None,
+                    no_intro_facts: None,
                     machine_dependencies: Vec::new(),
                 }
             })
@@ -340,6 +343,11 @@ impl SnapshotData {
             .map(|entry| {
                 extensions.extend(entry.extensions.into_iter().map(stored_extension));
                 let entry_name = entry.name;
+                let no_intro_facts = crate::no_intro_pc_xml::GameFacts {
+                    archive_id: entry.facts.archive_id,
+                    description: entry.facts.description,
+                    description_location: entry.facts.description_location,
+                };
                 let assets = entry
                     .assets
                     .into_iter()
@@ -356,7 +364,7 @@ impl SnapshotData {
                             role: "rom",
                             size: asset.size,
                             crc: asset.crc,
-                            md5: None,
+                            md5: asset.md5,
                             sha1: asset.sha1,
                             evidence_scope: "whole_asset",
                             merge: None,
@@ -380,6 +388,7 @@ impl SnapshotData {
                     switches: Vec::new(),
                     bios_sets: Vec::new(),
                     mame_facts: None,
+                    no_intro_facts: Some(no_intro_facts),
                     machine_dependencies: Vec::new(),
                 }
             })
@@ -446,6 +455,7 @@ fn machine_contents(machine: crate::mame::Machine) -> (SnapshotSet, Vec<StoredEx
         bios_sets,
         machine_dependencies,
         mame_facts: Some(mame_facts),
+        no_intro_facts: None,
     };
     (set, extensions)
 }
@@ -1164,6 +1174,9 @@ fn insert_snapshot_set(
         insert_mame_machine_facts(conn, snapshot_key, set, facts)?;
         insert_mame_machine_dependencies(conn, snapshot_key, set)?;
     }
+    if let Some(facts) = &set.no_intro_facts {
+        insert_no_intro_game_facts(conn, snapshot_key, set, facts)?;
+    }
 
     persist_set_relationships(conn, snapshot_key, set)?;
 
@@ -1206,6 +1219,32 @@ fn insert_snapshot_set(
     }
     insert_machine_switches(conn, snapshot_key, set)?;
     insert_machine_bios_sets(conn, snapshot_key, set)?;
+    Ok(())
+}
+
+fn insert_no_intro_game_facts(
+    conn: &mut SqliteConnection,
+    snapshot_key: &SnapshotKey,
+    set: &SnapshotSet,
+    facts: &crate::no_intro_pc_xml::GameFacts,
+) -> crate::Result<()> {
+    sql_query(
+        "INSERT INTO no_intro_game_facts \
+         (snapshot_key, set_name, archive_id, description, description_line, description_column) \
+         VALUES (?, ?, ?, ?, ?, ?)",
+    )
+    .bind::<Text, _>(snapshot_key.as_str())
+    .bind::<Text, _>(&set.name)
+    .bind::<Nullable<Text>, _>(
+        facts
+            .archive_id
+            .as_ref()
+            .map(crate::no_intro_pc_xml::ArchiveId::as_str),
+    )
+    .bind::<Nullable<Text>, _>(facts.description.as_deref())
+    .bind::<Nullable<BigInt>, _>(facts.description_location.map(|location| location.line))
+    .bind::<Nullable<BigInt>, _>(facts.description_location.map(|location| location.column))
+    .execute(conn)?;
     Ok(())
 }
 
