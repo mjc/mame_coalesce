@@ -759,15 +759,18 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut conn = SqliteConnection::establish(":memory:")?;
         conn.batch_execute("PRAGMA foreign_keys = ON")?;
-        conn.run_pending_migrations(MIGRATIONS)?;
-        let machine_asset_migration = MIGRATIONS
-            .migrations()?
-            .into_iter()
-            .find(|migration| {
+        let migrations = <_ as MigrationSource<diesel::sqlite::Sqlite>>::migrations(&MIGRATIONS)?;
+        conn.applied_migrations()?;
+        let machine_asset_index = migrations
+            .iter()
+            .position(|migration| {
                 migration.name().to_string() == "2026-09-24-000003_mame_machine_asset_semantics"
             })
             .ok_or("machine asset migration not found")?;
-        conn.revert_migration(machine_asset_migration.as_ref())?;
+        for migration in &migrations[..=machine_asset_index] {
+            conn.run_migration(migration.as_ref())?;
+        }
+        conn.revert_migration(migrations[machine_asset_index].as_ref())?;
         conn.batch_execute(
             "INSERT INTO publishing_sources (source_key, display_name)
                  VALUES ('source', 'Source');
@@ -820,13 +823,17 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut conn = SqliteConnection::establish(":memory:")?;
         conn.batch_execute("PRAGMA foreign_keys = ON")?;
-        conn.run_pending_migrations(MIGRATIONS)?;
-        let chd_scope_migration = MIGRATIONS
-            .migrations()?
-            .into_iter()
-            .find(|migration| migration.name().to_string() == "2026-09-26-000000_chd_digest_scope")
+        let migrations = <_ as MigrationSource<diesel::sqlite::Sqlite>>::migrations(&MIGRATIONS)?;
+        conn.applied_migrations()?;
+        let chd_scope_index = migrations
+            .iter()
+            .position(|migration| {
+                migration.name().to_string() == "2026-09-26-000000_chd_digest_scope"
+            })
             .ok_or("CHD scope migration not found")?;
-        conn.revert_migration(chd_scope_migration.as_ref())?;
+        for migration in &migrations[..chd_scope_index] {
+            conn.run_migration(migration.as_ref())?;
+        }
         conn.batch_execute(
             "INSERT INTO publishing_sources (source_key, display_name)
                  VALUES ('source', 'Source');
@@ -897,7 +904,9 @@ mod tests {
              VALUES ('snapshot', 'set', 2, 'invalid-scope.chd', 'disk', 'bogus', \
                      'source_declared', 6, 7)",
         ));
-        conn.revert_migration(chd_scope_migration.as_ref())?;
+        for migration in migrations[chd_scope_index..].iter().rev() {
+            conn.revert_migration(migration.as_ref())?;
+        }
         let rolled_back_disk = sql_query(
             "SELECT evidence_scope AS value FROM asset_requirements WHERE asset_name = 'disk.chd'",
         )
@@ -1466,6 +1475,30 @@ mod tests {
                  VALUES ('run-mismatched-acquisition', 'catalog-a', 'document-a', \
                          'logiqx-v1', 'acquisition-b', 'succeeded')",
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn source_relationship_keys_reserve_the_derived_dependency_namespace()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut conn = SqliteConnection::establish(":memory:")?;
+        conn.run_pending_migrations(MIGRATIONS)?;
+
+        let result = sql_query(
+            "INSERT INTO relationship_assertions (assertion_key) \
+             VALUES ('mame-dependency:1:0')",
+        )
+        .execute(&mut conn);
+        let Err(error) = result else {
+            return Err("source assertion claimed a derived MAME dependency key".into());
+        };
+
+        assert!(
+            error
+                .to_string()
+                .contains("relationship assertions are immutable"),
+            "unexpected rejection: {error}"
+        );
         Ok(())
     }
 

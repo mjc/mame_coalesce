@@ -161,10 +161,54 @@ pub fn with_reader<T, E: From<Error>>(
     parse: impl FnOnce(&mut NsReader<&[u8]>, &mut PositionMap<'_>) -> std::result::Result<T, E>,
 ) -> std::result::Result<T, E> {
     let xml = decode(bytes)?;
+    validate_xml10_characters(&xml)?;
     let mut positions = PositionMap::new(xml.as_bytes());
     let mut reader = NsReader::from_reader(xml.as_bytes());
     reader.config_mut().check_comments = true;
     parse(&mut reader, &mut positions)
+}
+
+fn validate_xml10_characters(xml: &str) -> Result<()> {
+    let mut line = 1_i64;
+    let mut column = 1_i64;
+    let mut previous_was_carriage_return = false;
+
+    for character in xml.chars() {
+        let codepoint = u32::from(character);
+        let valid = matches!(
+            codepoint,
+            0x09 | 0x0a | 0x0d | 0x20..=0xd7ff | 0xe000..=0xfffd | 0x10000..=0x0010_ffff
+        );
+        if !valid {
+            return Err(Error::CatalogParse {
+                message: format!("XML 1.0 forbids U+{codepoint:04X}"),
+                record_kind: Some("document".into()),
+                record_name: None,
+                line: Some(line),
+                column: Some(column),
+            });
+        }
+
+        match character {
+            '\r' => {
+                line = line.saturating_add(1);
+                column = 1;
+                previous_was_carriage_return = true;
+            }
+            '\n' => {
+                if !previous_was_carriage_return {
+                    line = line.saturating_add(1);
+                }
+                column = 1;
+                previous_was_carriage_return = false;
+            }
+            _ => {
+                column = column.saturating_add(1);
+                previous_was_carriage_return = false;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Decode gzip and UTF-16 inputs while borrowing ordinary UTF-8 documents.
@@ -526,5 +570,52 @@ mod tests {
             Err(Error::XmlEntityNotAllowed)
         ));
         assert!(with_reader(&[0xff, 0xfe, 0x3c], |_, _| Ok::<_, Error>(())).is_err());
+    }
+
+    #[test]
+    fn reader_rejects_xml_10_forbidden_characters_in_text_and_attributes() {
+        for xml in [
+            "<root>\u{0000}</root>",
+            "<root>\u{0001}</root>",
+            "<root value='\u{000b}'/>",
+            "<root>\u{fffe}</root>",
+            "<root>\u{ffff}</root>",
+        ] {
+            let result = with_reader(xml.as_bytes(), |reader, positions| {
+                while next(reader, positions)?.1 != Event::Eof {}
+                Ok::<_, Error>(())
+            });
+            assert!(
+                result.is_err(),
+                "accepted forbidden XML character in {xml:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_character_diagnostic_uses_decoded_source_line_and_column() {
+        let xml = "<root>\r\n \u{0000}</root>";
+        let error = with_reader(xml.as_bytes(), |_, _| Ok::<_, Error>(()));
+        assert!(matches!(
+            error,
+            Err(Error::CatalogParse {
+                message,
+                line: Some(2),
+                column: Some(2),
+                ..
+            }) if message.contains("U+0000")
+        ));
+
+        let mut utf16 = vec![0xff, 0xfe];
+        utf16.extend(xml.encode_utf16().flat_map(u16::to_le_bytes));
+        let error = with_reader(&utf16, |_, _| Ok::<_, Error>(()));
+        assert!(matches!(
+            error,
+            Err(Error::CatalogParse {
+                line: Some(2),
+                column: Some(2),
+                ..
+            })
+        ));
     }
 }

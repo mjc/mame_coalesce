@@ -1301,15 +1301,26 @@ fn insert_snapshot_set(
             .map(i64::try_from)
             .transpose()
             .map_err(|_| crate::Error::InvalidRomSize(asset.size.unwrap_or_default()))?;
+        let mame_attributes = asset.mame_attributes.as_ref();
+        let mame_offset = mame_attributes
+            .and_then(|attributes| attributes.offset)
+            .map(|value| i64::try_from(value.0))
+            .transpose()
+            .map_err(|_| {
+                crate::Error::InvalidPath("MAME asset offset exceeds SQLite range".into())
+            })?;
+        let mame_flag =
+            |value: Option<mame::MameBoolean>| value.map(|value| i64::from(value.as_bool()));
         sql_query(
-            "INSERT INTO asset_requirements \
-             (snapshot_key, set_name, component_order, asset_name, role, size, crc, md5, sha1, \
-             evidence_scope, evidence_provenance, merge_name, dump_status, serial, date, metadata_json, \
-              source_line, source_column) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'source_declared', ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO asset_requirement_rows \
+             (set_id, component_order, asset_name, role, size, crc, md5, sha1, evidence_scope, \
+             evidence_provenance, merge_name, dump_status, serial, date, metadata_json, source_line, \
+             source_column, region, bios, offset, optional, sound_only, dispose, load_flag, value, \
+             inverted, ovha, no_thread, disk_index, writable, writeable) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'source_declared', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, \
+             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .bind::<Text, _>(snapshot_key.as_str())
-        .bind::<Text, _>(&set.name)
+        .bind::<BigInt, _>(set_id)
         .bind::<BigInt, _>(component_order)
         .bind::<Text, _>(&asset.name)
         .bind::<Text, _>(asset.role)
@@ -1325,10 +1336,21 @@ fn insert_snapshot_set(
         .bind::<Text, _>(serde_json::to_string(&asset.metadata)?)
         .bind::<BigInt, _>(asset.location.line)
         .bind::<BigInt, _>(asset.location.column)
+        .bind::<Nullable<Text>, _>(mame_attributes.and_then(|attributes| attributes.region.as_deref()))
+        .bind::<Nullable<Text>, _>(mame_attributes.and_then(|attributes| attributes.bios.as_deref()))
+        .bind::<Nullable<BigInt>, _>(mame_offset)
+        .bind::<Nullable<BigInt>, _>(mame_attributes.map(|attributes| i64::from(attributes.optional.as_bool())))
+        .bind::<Nullable<BigInt>, _>(mame_flag(mame_attributes.and_then(|attributes| attributes.sound_only)))
+        .bind::<Nullable<BigInt>, _>(mame_flag(mame_attributes.and_then(|attributes| attributes.dispose)))
+        .bind::<Nullable<Text>, _>(mame_attributes.and_then(|attributes| attributes.load_flag.as_deref()))
+        .bind::<Nullable<Text>, _>(mame_attributes.and_then(|attributes| attributes.value.as_deref()))
+        .bind::<Nullable<BigInt>, _>(mame_flag(mame_attributes.and_then(|attributes| attributes.inverted)))
+        .bind::<Nullable<Text>, _>(mame_attributes.and_then(|attributes| attributes.ovha.as_deref()))
+        .bind::<Nullable<BigInt>, _>(mame_flag(mame_attributes.and_then(|attributes| attributes.no_thread)))
+        .bind::<Nullable<Text>, _>(mame_attributes.and_then(|attributes| attributes.disk_index.as_deref()))
+        .bind::<Nullable<BigInt>, _>(mame_flag(mame_attributes.and_then(|attributes| attributes.writable)))
+        .bind::<Nullable<BigInt>, _>(mame_flag(mame_attributes.and_then(|attributes| attributes.writeable)))
         .execute(conn)?;
-        if let Some(attributes) = &asset.mame_attributes {
-            insert_mame_asset_facts(conn, snapshot_key, &set.name, component_order, attributes)?;
-        }
     }
     insert_machine_switches(conn, set_id, set)?;
     insert_machine_bios_sets(conn, snapshot_key, set)?;
@@ -1412,47 +1434,6 @@ fn insert_no_intro_game_facts(
     .bind::<Nullable<Text>, _>(facts.description.as_deref())
     .bind::<Nullable<BigInt>, _>(facts.description_location.map(|location| location.line))
     .bind::<Nullable<BigInt>, _>(facts.description_location.map(|location| location.column))
-    .execute(conn)?;
-    Ok(())
-}
-
-fn insert_mame_asset_facts(
-    conn: &mut SqliteConnection,
-    snapshot_key: &SnapshotKey,
-    set_name: &str,
-    component_order: i64,
-    attributes: &mame::MameAssetAttributes,
-) -> crate::Result<()> {
-    let offset = attributes
-        .offset
-        .map(|value| i64::try_from(value.0))
-        .transpose()
-        .map_err(|_| crate::Error::InvalidPath("MAME asset offset exceeds SQLite range".into()))?;
-    let flag = |value: Option<mame::MameBoolean>| value.map(|value| i64::from(value.as_bool()));
-
-    sql_query(
-        "INSERT INTO mame_asset_facts \
-         (snapshot_key, set_name, component_order, region, bios, offset, optional, sound_only, \
-          dispose, load_flag, value, inverted, ovha, no_thread, disk_index, writable, writeable) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind::<Text, _>(snapshot_key.as_str())
-    .bind::<Text, _>(set_name)
-    .bind::<BigInt, _>(component_order)
-    .bind::<Nullable<Text>, _>(attributes.region.as_deref())
-    .bind::<Nullable<Text>, _>(attributes.bios.as_deref())
-    .bind::<Nullable<BigInt>, _>(offset)
-    .bind::<Nullable<BigInt>, _>(Some(i64::from(attributes.optional.as_bool())))
-    .bind::<Nullable<BigInt>, _>(flag(attributes.sound_only))
-    .bind::<Nullable<BigInt>, _>(flag(attributes.dispose))
-    .bind::<Nullable<Text>, _>(attributes.load_flag.as_deref())
-    .bind::<Nullable<Text>, _>(attributes.value.as_deref())
-    .bind::<Nullable<BigInt>, _>(flag(attributes.inverted))
-    .bind::<Nullable<Text>, _>(attributes.ovha.as_deref())
-    .bind::<Nullable<BigInt>, _>(flag(attributes.no_thread))
-    .bind::<Nullable<Text>, _>(attributes.disk_index.as_deref())
-    .bind::<Nullable<BigInt>, _>(flag(attributes.writable))
-    .bind::<Nullable<BigInt>, _>(flag(attributes.writeable))
     .execute(conn)?;
     Ok(())
 }
@@ -1926,6 +1907,9 @@ fn persist_set_relationships(
         )?;
     }
     for dependency in &set.runtime_dependencies {
+        if set.mame_facts.is_some() {
+            continue;
+        }
         insert_source_assertion(
             conn,
             SourceRelationshipDraft {

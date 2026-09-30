@@ -14,6 +14,23 @@ supersede that requirement. The user accepted the latest 471,031,808-byte MAME
 database as the size baseline; cross-format schema and query correctness now
 take precedence over the earlier mandatory smaller-than-XML threshold.
 
+The larger user-supplied metadata corpus is now in the checkout-local,
+git-excluded `local/catalog-data/2026-09-30` directory (5,685 files; 1.1 GiB
+apparent size). Its No-Intro DAT and PC packs carry v3/v4 schemaLocations;
+schemaLocation is not proof of strict XSD conformance, and v3-labelled records
+include several observed compatibility cases. “PC” here is a parent-clone pack,
+not proof of the separate DAT-o-MATIC P/C XML export. The 4,743-file TOSEC pack
+is Logiqx XML, including PDF and disc assets encoded as `<rom>` entries. The
+274 No-Intro database XML exports and the
+Family Computer Disk System sample instead nest archive, source, and file
+records; some contain sibling `<header>` and `<datafile>` roots. The Xbox 360
+export has six NUL characters; accept it only through narrow in-memory recovery
+after decoding, with original-location diagnostics and byte-exact external
+source retention. Full field and cardinality evidence is in
+[catalog-schema-redesign.md](catalog-schema-redesign.md) and the corresponding
+tickets MAMEC-60 and MAMEC-61. The DAT-o-MATIC P/C XML
+export itself remains unacquired and is tracked separately in MAMEC-56.
+
 ## Decision matrix
 
 | Ecosystem / pinned sample | Syntax, publisher, version and scope | Requirement semantics and candidate normalized facts | Source-only fields / extension retention | Companion association | Terms, unsupported cases, malformed/partial handling |
@@ -25,7 +42,7 @@ take precedence over the earlier mandatory smaller-than-XML threshold.
 
 ## Chosen next increment
 
-Per-format completeness is tracked for No-Intro PC XML (MAMEC-56), Logiqx XML (MAMEC-57), ClrMamePro text (MAMEC-58), and MAME software-list XML (MAMEC-59). The active MAMEC-55 work covers MAME machine list XML and cross-format storage compaction.
+Per-format completeness is tracked for the unverified DAT-o-MATIC P/C XML export (MAMEC-56), pinned Logiqx XML (MAMEC-57), ClrMamePro text (MAMEC-58), MAME software-list XML (MAMEC-59), the No-Intro DAT v3/v4 dialect (MAMEC-60), and No-Intro database-export XML (MAMEC-61). The active MAMEC-55 work covers MAME machine list XML and cross-format storage compaction.
 
 The active typed-relational completeness work is tracked in [MAMEC-55](https://lific.mjc.lol/MAMEC/issues/MAMEC-55), not the archived adapter roadmap below. No-Intro coverage persists game `id`, `<description>`, and ROM `md5` as typed query facts, in addition to the existing common hashes. This is grounded in a current PC entry whose XML view contains those fields ([entry/XML view](https://data.spludlow.co.uk/no-intro/no-intro/IBM%20-%20PC%20and%20Compatibles%20(Digital)%20(Unknown)/Wake%20(Unknown)%20(Windows))). Logiqx coverage stores root build/debug/file-name/SHA-1 and header name/description/version/date/author/email/homepage/URL/comment/category, plus game source-file/BIOS/board/rebuild-target/description/year/manufacturer, in relational tables included in snapshot diffs. MAME listxml coverage now persists every declared 0.289 machine-child family, including displays, controls, conditions, driver/features, devices/slots/software lists, and RAM options, together with the device-reference tag and DTD defaults. Ordered nested facts and these typed rows participate in snapshot diffs. Remaining format-completeness work is tracked separately for [No-Intro](https://lific.mjc.lol/MAMEC/issues/MAMEC-56), [Logiqx](https://lific.mjc.lol/MAMEC/issues/MAMEC-57), and [ClrMamePro](https://lific.mjc.lol/MAMEC/issues/MAMEC-58). The broader ticket remains open for No-Intro schema verification, remaining fields, JSON removal, compact source facts, and the fresh full-file size proof.
 

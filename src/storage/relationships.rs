@@ -344,7 +344,7 @@ pub fn record_claim(
         {
             for supported in supporting_assertions {
                 let found = sql_query(
-                    "SELECT COUNT(*) AS found FROM relationship_assertions WHERE assertion_key = ?",
+                    "SELECT COUNT(*) AS found FROM relationship_assertion_explanations WHERE assertion_key = ?",
                 )
                 .bind::<Text, _>(supported.as_str())
                 .get_result::<AssertionKeyRow>(conn)?;
@@ -682,7 +682,7 @@ pub fn explain_all(pool: &Pool) -> crate::Result<Vec<RelationshipExplanation>> {
                 source_asset.size AS source_asset_size, a.rule_version, \
                 ps.source_key, ps.display_name AS source_name, \
                 s.document_key, s.declared_version, pi.parser_name, pi.parser_version, pi.rules_version \
-         FROM relationship_assertions a \
+         FROM relationship_assertion_explanations a \
          LEFT JOIN asset_requirements source_asset \
            ON a.origin = 'source_assertion' AND a.subject_kind = 'asset_requirement' \
           AND source_asset.snapshot_key = a.source_snapshot_key \
@@ -724,7 +724,7 @@ pub fn explain_catalog_sets_for_snapshots(
                 source_asset.size AS source_asset_size, a.rule_version, \
                 ps.source_key, ps.display_name AS source_name, \
                 s.document_key, s.declared_version, pi.parser_name, pi.parser_version, pi.rules_version \
-         FROM relationship_assertions a \
+         FROM relationship_assertion_explanations a \
          LEFT JOIN asset_requirements source_asset \
            ON a.origin = 'source_assertion' AND a.subject_kind = 'asset_requirement' \
           AND source_asset.snapshot_key = a.source_snapshot_key \
@@ -755,7 +755,7 @@ pub fn explain_catalog_sets_for_snapshots(
     let reviews = sql_query(
         "SELECT r.assertion_key, r.decision, r.note, r.superseded_by_assertion_key, r.created_at \
          FROM relationship_reviews r \
-         JOIN relationship_assertions a ON a.assertion_key = r.assertion_key \
+         JOIN relationship_assertion_explanations a ON a.assertion_key = r.assertion_key \
          WHERE (a.origin = 'source_assertion' AND a.source_snapshot_key IN (?, ?) \
                 AND (a.subject_kind = 'catalog_set' OR a.target_kind = 'catalog_set')) \
             OR (a.origin != 'source_assertion' AND ( \
@@ -790,7 +790,7 @@ pub fn explain_for_snapshots(
                 source_asset.size AS source_asset_size, a.rule_version, \
                 ps.source_key, ps.display_name AS source_name, \
                 s.document_key, s.declared_version, pi.parser_name, pi.parser_version, pi.rules_version \
-         FROM relationship_assertions a \
+         FROM relationship_assertion_explanations a \
          LEFT JOIN asset_requirements source_asset \
            ON a.origin = 'source_assertion' AND a.subject_kind = 'asset_requirement' \
           AND source_asset.snapshot_key = a.source_snapshot_key \
@@ -819,7 +819,7 @@ pub fn explain_for_snapshots(
     let reviews = sql_query(
         "SELECT r.assertion_key, r.decision, r.note, r.superseded_by_assertion_key, r.created_at \
          FROM relationship_reviews r \
-         JOIN relationship_assertions a ON a.assertion_key = r.assertion_key \
+         JOIN relationship_assertion_explanations a ON a.assertion_key = r.assertion_key \
          WHERE (a.origin = 'source_assertion' AND a.source_snapshot_key IN (?, ?)) \
             OR (a.origin != 'source_assertion' AND ( \
                 a.generic_subject_snapshot_key IN (?, ?) OR a.generic_target_snapshot_key IN (?, ?))) \

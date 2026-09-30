@@ -6,20 +6,25 @@ use std::{
 use camino::Utf8PathBuf;
 use diesel::{
     QueryableByName, SqliteConnection,
+    migration::MigrationSource,
     prelude::*,
     sql_query,
     sql_types::{BigInt, Binary, Nullable, Text},
 };
+use diesel_migrations::MigrationHarness;
 use mame_coalesce::{
     app::{self, CatalogDocumentFormat, CatalogImportRequest},
     database::Database,
     domain::{
         CatalogKey, CatalogRecordKind, CatalogRecordRef, CatalogScope, DocumentKey,
-        ExternalRecordRef, ParserInterpretationKey, PublishingSourceKey, RelationshipClaim,
-        RelationshipEndpoint, RelationshipOrigin, RelationshipType, SnapshotKey,
+        ExternalRecordRef, ParserInterpretationKey, PublishingSourceKey, RelationshipAssertionKey,
+        RelationshipClaim, RelationshipEndpoint, RelationshipOrigin, RelationshipType, SnapshotKey,
         SnapshotRecordStatus,
     },
 };
+
+const TEST_MIGRATIONS: diesel_migrations::EmbeddedMigrations =
+    diesel_migrations::embed_migrations!("migrations");
 
 #[derive(QueryableByName)]
 struct CountRow {
@@ -358,12 +363,12 @@ fn composite_key_catalog_tables_cluster_rows_by_their_primary_keys()
         "SELECT COUNT(*) AS count FROM pragma_table_list \
          WHERE schema = 'main' AND type = 'table' AND wr = 1 AND name IN ( \
              'acquisition_transport_headers', 'acquisition_attempt_transport_headers', \
-             'snapshot_sets', 'asset_requirements', \
+             'snapshot_sets', 'asset_requirement_rows', \
              'software_lists', 'software_items', 'software_parts', 'software_item_info', \
              'software_item_shared_features', 'software_part_features', 'software_areas', \
              'software_components', 'software_item_dependencies', 'machine_switches', \
              'machine_switch_locations', 'machine_switch_values', 'machine_bios_sets', \
-             'mame_machine_facts', 'mame_machine_dependencies', 'mame_asset_facts', \
+             'mame_machine_facts', 'mame_machine_dependencies', \
              'software_part_dipswitches', 'software_part_dip_values', 'no_intro_game_facts', \
              'logiqx_set_facts', 'mame_machine_spec_elements', 'mame_machine_input_controls', \
              'mame_machine_analogs', 'mame_machine_device_extensions', 'mame_machine_slot_options', \
@@ -372,7 +377,7 @@ fn composite_key_catalog_tables_cluster_rows_by_their_primary_keys()
     )
     .get_result::<CountRow>(&mut connection)?;
 
-    assert_eq!(clustered.count, 31);
+    assert_eq!(clustered.count, 30);
     Ok(())
 }
 
@@ -390,7 +395,7 @@ fn mame_machine_dependencies_store_a_compact_set_identity() -> Result<(), Box<dy
         !columns
             .value
             .split(',')
-            .any(|column| { matches!(column, "snapshot_key" | "set_name") })
+            .any(|column| { matches!(column, "snapshot_key" | "set_name" | "assertion_key") })
     );
     Ok(())
 }
@@ -419,6 +424,37 @@ fn mame_switch_facts_store_a_compact_set_identity() -> Result<(), Box<dyn std::e
             "{table} must not repeat the composite text identity"
         );
     }
+    Ok(())
+}
+
+#[test]
+fn asset_requirements_store_compact_set_identity() -> Result<(), Box<dyn std::error::Error>> {
+    let (_directory, _database, mut connection) = setup()?;
+    let columns = sql_query(
+        "SELECT GROUP_CONCAT(name, ',') AS value FROM pragma_table_info('asset_requirement_rows')",
+    )
+    .get_result::<TextRow>(&mut connection)?;
+
+    assert!(columns.value.split(',').any(|column| column == "set_id"));
+    assert!(
+        !columns
+            .value
+            .split(',')
+            .any(|column| matches!(column, "snapshot_key" | "set_name"))
+    );
+
+    let compatibility_view = sql_query(
+        "SELECT COUNT(*) AS count FROM pragma_table_list \
+         WHERE schema = 'main' AND type = 'view' AND name = 'asset_requirements'",
+    )
+    .get_result::<CountRow>(&mut connection)?;
+    assert_eq!(compatibility_view.count, 1);
+    let mame_view = sql_query(
+        "SELECT COUNT(*) AS count FROM pragma_table_list \
+         WHERE schema = 'main' AND type = 'view' AND name = 'mame_asset_facts'",
+    )
+    .get_result::<CountRow>(&mut connection)?;
+    assert_eq!(mame_view.count, 1);
     Ok(())
 }
 
@@ -1047,6 +1083,48 @@ fn malformed_no_intro_xml_does_not_publish_a_snapshot() -> Result<(), Box<dyn st
         .get_result::<DiagnosticLocationRow>(&mut connection)?;
     assert!(location.source_line.is_some_and(|line| line > 0));
     assert!(location.source_column.is_some_and(|column| column > 0));
+    Ok(())
+}
+
+#[test]
+fn xml10_forbidden_characters_never_publish_catalogs() -> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, mut connection) = setup()?;
+    for (name, forbidden) in [
+        ("nul", "\u{0000}"),
+        ("control", "\u{0001}"),
+        ("vertical-tab", "\u{000b}"),
+        ("noncharacter-fffe", "\u{fffe}"),
+        ("noncharacter-ffff", "\u{ffff}"),
+    ] {
+        let path = directory.path().join(format!("{name}.xml"));
+        let xml = format!(
+            "<datafile>\n<!-- {forbidden} -->\n<game name=\"valid\"><rom name=\"a.bin\"/></game></datafile>"
+        );
+        std::fs::write(&path, xml.as_bytes())?;
+        let mut request = no_intro_request()?;
+        request.document_path =
+            Utf8PathBuf::from_path_buf(path).map_err(|_| "non-UTF8 XML fixture path")?;
+
+        let report = app::import_catalog(&database, &request)?;
+        assert_eq!(report.status, app::CatalogImportStatus::Failed, "{name}");
+        assert!(report.snapshot_key.is_none(), "{name}");
+        let diagnostic =
+            sql_query("SELECT message AS value FROM import_diagnostics WHERE run_key = ?")
+                .bind::<Text, _>(report.run_key.to_string())
+                .get_result::<TextRow>(&mut connection)?;
+        assert!(diagnostic.value.contains("XML 1.0 forbids"), "{name}");
+        let location = sql_query(
+            "SELECT source_line, source_column FROM import_diagnostics WHERE run_key = ?",
+        )
+        .bind::<Text, _>(report.run_key.to_string())
+        .get_result::<DiagnosticLocationRow>(&mut connection)?;
+        assert!(location.source_line.is_some_and(|line| line > 0), "{name}");
+        assert!(
+            location.source_column.is_some_and(|column| column > 0),
+            "{name}"
+        );
+    }
+    assert_eq!(count(&mut connection, "catalog_snapshots")?, 0);
     Ok(())
 }
 
@@ -2143,7 +2221,7 @@ fn mame_asset_storage_error_rolls_back_staged_import_and_keeps_document()
 
     let (directory, database, mut connection) = setup()?;
     connection.batch_execute(
-        "CREATE TRIGGER reject_asset_insert BEFORE INSERT ON asset_requirements \
+        "CREATE TRIGGER reject_asset_insert BEFORE INSERT ON asset_requirement_rows \
          BEGIN SELECT RAISE(ABORT, 'injected asset insert failure'); END;",
     )?;
     let path = directory.path().join("asset-insert-storage-error.xml");
@@ -2295,12 +2373,25 @@ fn mame_relationships_resolve_component_keys_and_keep_device_locations()
     let report = app::import_catalog(&database, &request)?;
     let snapshot = report.snapshot_key.ok_or("MAME snapshot missing")?;
 
+    assert_mame_merge_relationships(&database, &mut connection, &snapshot)?;
+    let device_assertion_key = review_mame_device_relationship(&database)?;
+    assert_mame_dependency_projections(&mut connection, &snapshot)?;
+    assert_dependency_migration_round_trip(&mut connection, &device_assertion_key)?;
+    assert_mame_relationship_migration_invariants(&mut connection, &snapshot)?;
+    Ok(())
+}
+
+fn assert_mame_merge_relationships(
+    database: &Database,
+    connection: &mut SqliteConnection,
+    snapshot: &SnapshotKey,
+) -> Result<(), Box<dyn std::error::Error>> {
     let merge = sql_query(
         "SELECT source_subject_a AS subject_key, source_target_a AS target_key, source_line FROM relationship_assertions \
          WHERE source_snapshot_key = ? AND source_field = 'merge'",
     )
     .bind::<Text, _>(snapshot.as_str())
-    .get_result::<RelationshipKeyLocationRow>(&mut connection)?;
+    .get_result::<RelationshipKeyLocationRow>(connection)?;
     assert_eq!(merge.subject_key, "clone");
     assert_eq!(merge.target_key, "rom-parent");
     assert_eq!(merge.source_line, 8);
@@ -2312,7 +2403,7 @@ fn mame_relationships_resolve_component_keys_and_keep_device_locations()
          WHERE source_snapshot_key = ? AND source_field = 'merge'",
     )
     .bind::<Text, _>(snapshot.as_str())
-    .get_result::<TypedSourceAssertionRow>(&mut connection)?;
+    .get_result::<TypedSourceAssertionRow>(connection)?;
     assert_eq!(stored_merge.subject_a.as_deref(), Some("clone"));
     assert_eq!(stored_merge.subject_b.as_deref(), Some("shared.bin"));
     assert_eq!(stored_merge.subject_c, Some(0));
@@ -2320,7 +2411,7 @@ fn mame_relationships_resolve_component_keys_and_keep_device_locations()
     assert_eq!(stored_merge.target_b.as_deref(), Some("shared.bin"));
     assert_eq!(stored_merge.target_c, Some(0));
 
-    let merge_explanation = app::explain_relationships(&database)?
+    let merge_explanation = app::explain_relationships(database)?
         .into_iter()
         .find(|explanation| explanation.source_field.as_deref() == Some("merge"))
         .ok_or("typed merge assertion was not explainable")?;
@@ -2334,24 +2425,65 @@ fn mame_relationships_resolve_component_keys_and_keep_device_locations()
     );
     assert_eq!(merge_explanation.claim.evidence["expected_crc"], "12345678");
     assert_eq!(merge_explanation.claim.evidence["size"], 1);
+    Ok(())
+}
 
+fn review_mame_device_relationship(
+    database: &Database,
+) -> Result<RelationshipAssertionKey, Box<dyn std::error::Error>> {
+    let device_explanation = app::explain_relationships(database)?
+        .into_iter()
+        .find(|explanation| explanation.source_field.as_deref() == Some("device_ref"))
+        .ok_or("typed device dependency was not explainable")?;
+    assert_eq!(
+        device_explanation.claim.relation_type,
+        RelationshipType::RuntimeDependency
+    );
+    assert_eq!(
+        device_explanation
+            .source_location
+            .map(|location| location.line),
+        Some(7)
+    );
+    let device_assertion_key = device_explanation.assertion_key;
+    app::review_relationship(
+        database,
+        &device_assertion_key,
+        &mame_coalesce::domain::RelationshipReview {
+            decision: mame_coalesce::domain::RelationshipReviewDecision::Accepted,
+            note: "typed dependency review remains available".to_owned(),
+            superseded_by: None,
+        },
+    )?;
+    let reviewed_device = app::explain_relationships(database)?
+        .into_iter()
+        .find(|explanation| explanation.assertion_key == device_assertion_key)
+        .ok_or("reviewed typed dependency was not explainable")?;
+    assert!(reviewed_device.latest_review.is_some());
+    Ok(device_assertion_key)
+}
+
+fn assert_mame_dependency_projections(
+    connection: &mut SqliteConnection,
+    snapshot: &SnapshotKey,
+) -> Result<(), Box<dyn std::error::Error>> {
     let device = sql_query(
-        "SELECT source_subject_a AS subject_key, source_target_a AS target_key, source_line FROM relationship_assertions \
+        "SELECT source_subject_a AS subject_key, source_target_a AS target_key, source_line FROM relationship_assertion_explanations \
          WHERE source_snapshot_key = ? AND source_field = 'device_ref'",
     )
     .bind::<Text, _>(snapshot.as_str())
-    .get_result::<RelationshipKeyLocationRow>(&mut connection)?;
+    .get_result::<RelationshipKeyLocationRow>(connection)?;
     assert_eq!(device.subject_key, "clone");
     assert_eq!(device.target_key, "sound");
     assert_eq!(device.source_line, 7);
 
     let dependencies = sql_query(
-        "SELECT source_field || ':' || source_target_a AS value FROM relationship_assertions \
+        "SELECT source_field || ':' || source_target_a AS value FROM relationship_assertion_explanations \
          WHERE source_snapshot_key = ? AND subject_kind = 'catalog_set' AND source_subject_a = 'clone' \
          AND relation_type = 'runtime_dependency' ORDER BY source_field",
     )
     .bind::<Text, _>(snapshot.as_str())
-    .load::<TextRow>(&mut connection)?;
+    .load::<TextRow>(connection)?;
     assert_eq!(
         dependencies
             .iter()
@@ -2359,6 +2491,104 @@ fn mame_relationships_resolve_component_keys_and_keep_device_locations()
             .collect::<Vec<_>>(),
         ["device_ref:sound", "romof:rom-parent"]
     );
+
+    Ok(())
+}
+
+fn assert_dependency_migration_round_trip(
+    connection: &mut SqliteConnection,
+    device_assertion_key: &RelationshipAssertionKey,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let migrations = <_ as MigrationSource<diesel::sqlite::Sqlite>>::migrations(&TEST_MIGRATIONS)
+        .map_err(io::Error::other)?;
+    let typed_dependency_migration = migrations
+        .iter()
+        .find(|migration| {
+            migration.name().to_string() == "2026-09-30-000024_typed_mame_dependency_assertions"
+        })
+        .ok_or("typed MAME dependency migration was not embedded")?;
+    let unused_indexes_migration = migrations
+        .iter()
+        .find(|migration| {
+            migration.name().to_string() == "2026-09-30-000025_remove_unused_catalog_indexes"
+        })
+        .ok_or("unused catalog indexes migration was not embedded")?;
+    let compact_asset_migration = migrations
+        .iter()
+        .find(|migration| {
+            migration.name().to_string() == "2026-09-30-000026_compact_asset_requirement_identity"
+        })
+        .ok_or("compact asset requirement migration was not embedded")?;
+    let derived_dependency_key_migration = migrations
+        .iter()
+        .find(|migration| {
+            migration.name().to_string()
+                == "2026-09-30-000027_derive_mame_dependency_assertion_keys"
+        })
+        .ok_or("derived MAME dependency key migration was not embedded")?;
+    connection
+        .revert_migration(derived_dependency_key_migration.as_ref())
+        .map_err(io::Error::other)?;
+    connection
+        .revert_migration(compact_asset_migration.as_ref())
+        .map_err(io::Error::other)?;
+    connection
+        .revert_migration(unused_indexes_migration.as_ref())
+        .map_err(io::Error::other)?;
+    connection
+        .revert_migration(typed_dependency_migration.as_ref())
+        .map_err(io::Error::other)?;
+    let restored_assertion =
+        sql_query("SELECT COUNT(*) AS count FROM relationship_assertions WHERE assertion_key = ?")
+            .bind::<Text, _>(device_assertion_key.as_str())
+            .get_result::<CountRow>(connection)?;
+    assert_eq!(restored_assertion.count, 1);
+
+    connection
+        .run_migration(typed_dependency_migration.as_ref())
+        .map_err(io::Error::other)?;
+    connection
+        .run_migration(unused_indexes_migration.as_ref())
+        .map_err(io::Error::other)?;
+    connection
+        .run_migration(compact_asset_migration.as_ref())
+        .map_err(io::Error::other)?;
+    connection
+        .run_migration(derived_dependency_key_migration.as_ref())
+        .map_err(io::Error::other)?;
+    let restored_projection = sql_query(
+        "SELECT COUNT(*) AS count FROM relationship_assertion_explanations \
+         WHERE assertion_key = ?",
+    )
+    .bind::<Text, _>(device_assertion_key.as_str())
+    .get_result::<CountRow>(connection)?;
+    assert_eq!(restored_projection.count, 1);
+    let restored_review =
+        sql_query("SELECT COUNT(*) AS count FROM relationship_reviews WHERE assertion_key = ?")
+            .bind::<Text, _>(device_assertion_key.as_str())
+            .get_result::<CountRow>(connection)?;
+    assert_eq!(restored_review.count, 1);
+    Ok(())
+}
+
+fn assert_mame_relationship_migration_invariants(
+    connection: &mut SqliteConnection,
+    snapshot: &SnapshotKey,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let duplicate_runtime_assertions = sql_query(
+        "SELECT COUNT(*) AS count FROM relationship_assertions \
+         WHERE source_snapshot_key = ? AND relation_type = 'runtime_dependency'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<CountRow>(connection)?;
+    assert_eq!(duplicate_runtime_assertions.count, 0);
+    let unused_catalog_indexes = sql_query(
+        "SELECT COUNT(*) AS count FROM sqlite_schema \
+         WHERE type = 'index' AND name IN ( \
+             'requirements_asset_name_index', 'mame_machine_dependencies_target_index')",
+    )
+    .get_result::<CountRow>(connection)?;
+    assert_eq!(unused_catalog_indexes.count, 0);
     Ok(())
 }
 
@@ -2432,13 +2662,20 @@ fn resolves_machine_runtime_closure_without_traversing_clone_ancestry()
     );
 
     let source_assertions = sql_query(
-        "SELECT COUNT(*) AS count FROM relationship_assertions \
+        "SELECT COUNT(*) AS count FROM relationship_assertion_explanations \
          WHERE source_snapshot_key = ? AND source_subject_a = 'game' \
            AND source_field IN ('cloneof', 'romof', 'device_ref', 'sampleof')",
     )
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<CountRow>(&mut connection)?;
     assert_eq!(source_assertions.count, 4);
+    let persisted_runtime_assertions = sql_query(
+        "SELECT COUNT(*) AS count FROM relationship_assertions \
+         WHERE source_snapshot_key = ? AND source_field IN ('romof', 'device_ref', 'sampleof')",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<CountRow>(&mut connection)?;
+    assert_eq!(persisted_runtime_assertions.count, 0);
     Ok(())
 }
 
@@ -4433,15 +4670,23 @@ fn source_relationship_assertions_keep_snapshot_and_field_provenance()
     );
 
     let runtime_claims = sql_query(
-        "SELECT COUNT(*) AS count FROM relationship_assertions \
+        "SELECT COUNT(*) AS count FROM relationship_assertion_explanations \
          WHERE source_snapshot_key = ? AND relation_type = 'runtime_dependency' \
            AND source_field IN ('romof', 'sampleof', 'device_ref')",
     )
     .bind::<Text, _>(snapshot_key.as_str())
     .get_result::<CountRow>(&mut connection)?;
     assert_eq!(runtime_claims.count, 3);
+    let persisted_runtime_claims = sql_query(
+        "SELECT COUNT(*) AS count FROM relationship_assertions \
+         WHERE source_snapshot_key = ? AND relation_type = 'runtime_dependency' \
+           AND source_field IN ('romof', 'sampleof', 'device_ref')",
+    )
+    .bind::<Text, _>(snapshot_key.as_str())
+    .get_result::<CountRow>(&mut connection)?;
+    assert_eq!(persisted_runtime_claims.count, 3);
     let device_claim = sql_query(
-        "SELECT source_target_a AS value FROM relationship_assertions \
+        "SELECT source_target_a AS value FROM relationship_assertion_explanations \
          WHERE source_snapshot_key = ? AND source_field = 'device_ref'",
     )
     .bind::<Text, _>(snapshot_key.as_str())
@@ -4452,7 +4697,7 @@ fn source_relationship_assertions_keep_snapshot_and_field_provenance()
         "SELECT relation_type, origin, source_snapshot_key, source_subject_a AS subject_key, \
                 source_target_a AS target_key, \
                 source_field, source_line, source_column, rule_version \
-         FROM relationship_assertions \
+         FROM relationship_assertion_explanations \
          WHERE source_snapshot_key = ? AND source_field = 'device_ref'",
     )
     .bind::<Text, _>(snapshot_key.as_str())

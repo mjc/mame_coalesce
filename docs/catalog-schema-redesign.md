@@ -1,14 +1,17 @@
 # Catalog schema redesign from all input formats
 
-Status: reviewed proposal, 2026-09-30. This document specifies the next catalog
-storage model; it does not describe an implemented migration. Existing SQLite
-imports and source objects remain the comparison baseline.
+Status: corpus-expanded and adversarially reviewed proposal, 2026-09-30. This
+document specifies the next catalog storage model; it does not describe an
+implemented migration. The original proposal received four Luna audits and a
+repeated Sol review. The expanded Sol review identified the six Xbox 360 NULs,
+the observed-vs-strict v3 distinction, and release/source ownership cases;
+those findings are incorporated here. Existing SQLite imports and source
+objects remain the comparison baseline.
 
 Durable design: [MAMEC-DOC-7](https://lific.mjc.lol/MAMEC/pages/89).
 Implementation sequence: [MAMEC-PLAN-3](https://lific.mjc.lol/MAMEC/plans/108).
-Four Luna audits and a repeated Sol review informed this proposal. The final
-review found no remaining actionable design contradictions; implementation
-and field/query conformance testing remain outstanding.
+The expanded proposal now records the adversarial review findings. Importer
+implementation and field/query conformance testing remain outstanding.
 
 ## Decision and scope
 
@@ -19,10 +22,14 @@ common catalog queries through typed projections over those facts, without
 storing another copy of every projection.
 
 Every field in a supported, pinned document specification belongs in relational
-query storage. Exact original bytes remain in verified zstd source objects.
-Vendor fields outside the supported dialect remain recoverable from those
-objects. No JSON columns, JSON composite keys, universal attribute/value tables,
-or catalog-sized owned syntax trees are part of the proposed model.
+query storage. SQLite stores catalog facts only: declared names, sizes, hashes,
+formats, provenance, and relationships. It never stores ROM, disc, image,
+manual, CUE, or imported DAT/XML byte payloads. Exact input document bytes stay
+in verified zstd source objects outside SQLite; actual media payloads remain
+outside the catalog store entirely. Vendor fields outside the supported
+dialect remain recoverable from the original external document. No JSON
+columns, JSON composite keys, universal attribute/value tables, or catalog-sized
+owned syntax trees are part of the proposed model.
 
 The user accepted the latest 471,031,808-byte MAME SQLite import as a sufficient
 size baseline. Its source object is 15,305,382 bytes; its original XML is
@@ -48,12 +55,88 @@ not validate a DTD or invoke the application's import adapters.
 | 777 unique MAME software-list files | 778 file instances, including an identical extra `vgmplay.xml`; 145,856 software records across those instances, 303,562 parts, 303,586 ROM entries, 11,563 disk entries | Preserve list/item/part/area nesting and ordered load entries; file-instance totals are not deduplicated totals. |
 | `logiqx/PureDOSDAT.xml`, 3,945,595 bytes | 216 games; 21,491 ROM entries; developer/comments/links; nested source, track, and patch metadata | This is a Logiqx-shaped extended dialect. Baseline Logiqx conformance does not prove its additional structures are supported. |
 | `clrmamepro/Atari-2600.dat` | Real text DAT with header, game fields, ROMs, region, and release-date fields | The XML inspector reports a syntax error for this text input; the text adapter must be assessed separately. |
-| `no-intro-pc/pc-engine.xml`, 213,911 bytes | `<dat>/<configuration>` and `<games>/<game>`; 425 records, ROM CRCs and separate image CRCs | It is an OfflineList-style document, not an authentic DAT-o-MATIC P/C XML specimen. The current P/C adapter cannot import it. |
+| `no-intro-pc/pc-engine.xml`, 213,911 bytes | `<dat>/<configuration>` and `<games>/<game>`; 425 records, ROM CRCs and separate image CRCs | It is an OfflineList-style document, not an authentic DAT-o-MATIC P/C XML specimen. The current synthetic No-Intro adapter cannot import it. |
 | Checked-in TOSEC, Redump, and No-Intro examples | Synthetic metadata-only fixtures, identified as such in `fixtures/catalog/manifest.json` | Useful semantic regressions, not proof of production export coverage. Redump CUE is a separate companion document, not a currently supported import adapter. |
 
 The duplicated `vgmplay.xml` instances both have SHA-256
 `61bfa8546cd34be1ac24cf2087c150c0b1af5cbc94219398b459ff10e73a4a08`.
 No ROM or disc data is required for this work.
+
+The user added a larger local corpus under the ignored
+`local/catalog-data/2026-09-30` directory (5,685 files; 1.1 GiB apparent size,
+269 MiB allocated on the compression-enabled filesystem).
+It is local research input, not a checked-in test fixture. A streaming audit
+found several schemas within one publisher and file extension:
+
+| New corpus | Files | First schema observation |
+|---|---:|---|
+| No-Intro DAT pack | 336 DAT + 1 index | No-Intro XML datafile schema v3/v4: 237,787 games and 1,526,732 ROMs. v3/v4 split: 210/126 files. |
+| No-Intro PC pack | 328 DAT + 1 index | Same publisher family with a parent-clone catalog subset: 133,525 games, 450,115 ROMs and 52,473 releases. v3/v4 split: 202/126 files. |
+| TOSEC complete pack | 4,743 DAT | All use the Logiqx XML envelope: 1,062,978 games and 1,333,246 `<rom>` entries, including ISO/CUE images and PDF manuals. Subsets are TOSEC (3,111), TOSEC-ISO (300), and TOSEC-PIX (1,332). |
+| No-Intro database export | 274 XML + 1 index | Distinct `datafile/game/archive/source/details/serials/file` dialect; at least 115,527 games. 170 files have one root; 104 serialize sibling `header` and `datafile` roots. One Xbox 360 export contains six XML-illegal NUL characters in source/release details; narrow recovery permits the complete catalog to import. |
+| Nintendo Family Computer Disk System export | 1 XML | Same observed archive/source export records: 408 games, 1,546 sources, 1,579 files; its header is a sibling of `datafile`. |
+
+The official [No-Intro DAT XSD v3](https://datomatic.no-intro.org/stuff/schema_nointro_datfile_v3.xsd)
+requires a header with typed ID/name/description/version/author, and defines
+ordered game categories, descriptions, ROM claims, and releases. A ROM requires
+name, unsigned 32-bit size, CRC, MD5, and SHA-1; SHA-256, status, serial, and
+header are optional. The current Logiqx reader can parse the shared envelope,
+but it does not satisfy this dialect's field contract: its generic extension
+capture is not typed storage, and some unknown header children or game child
+families are dropped. Both packs also reference a v4 XSD, but that XSD was not
+available at the referenced URL during this audit; v4 fields need their own
+verified specification witness. Version 3 and 4 counts are from each file's
+schemaLocation, not a claim that all documents passed XSD validation. In
+particular, some v3-labelled records have multiple ROMs, missing required
+digests, nested `game_id`, or sizes above the XSD's unsigned 32-bit limit. Keep
+strict v3 validation distinct from an explicitly named observed compatibility
+interpretation; do not silently relax the pinned XSD. Give each schema or
+compatibility revision its own interpretation identity while reusing native
+tables only where the meanings and cardinalities agree.
+
+The database exports need a different model. A game can own an archive record
+and multiple source histories; each source can own details, serials, and one or
+more file records. Numeric IDs, clone markers, and revisions have scopes that
+must be proved before using them as cross-snapshot keys. The captured exports
+show fields such as dump/release dates and confidence flags, region, dumper,
+project, origin, tools, comments, links, serials, formats, sizes, and several
+digest algorithms. The existing `<datafile>/<game>/<rom>` P/C projection does
+not parse these records. The current project-root HTML guidance describes many
+No-Intro archive, source, and file conventions, but it does not establish this
+database-export XML grammar as a versioned public schema. See the upstream
+[archive naming conventions](https://wiki.no-intro.org/index.php?title=Naming_Convention),
+[source conventions](https://wiki.no-intro.org/index.php?title=Source_Convention),
+and [file conventions](https://wiki.no-intro.org/index.php?title=File_Convention);
+keep the exported document itself as the wire evidence. In this corpus, export
+headers also contain `version`, `author`, `url`, `trademarks`, and `piracy`.
+
+The 274-file DB export corpus also has two top-level serialization forms: a
+single `<datafile>` root, or sibling `<header>` and `<datafile>` elements. The
+latter 104 files are not well-formed as a single-root XML document, even though
+their records can be read by framing the sibling elements. The Xbox 360 file
+contains six NUL characters in source and release details. Replacing all six
+with U+FFFD after decoding, in the in-memory parse view, produces 17,445 games,
+12,998 sources, and 35,404 file occurrences. The first NUL is at original-input
+line 17,628, column 269 (one-based). Support must account for the sibling
+envelope, recover only these U+0000 characters, record non-fatal recovery
+diagnostics at original source locations, and continue importing. Decode before
+replacement; replacing raw zero bytes could corrupt UTF-16. Preserve original
+input bytes, digest, and external source object exactly. Publish a recovered
+interpretation only after the remaining document passes strict XML-character,
+grammar, EOF, and transaction checks; persist the recovery diagnostics and
+identify the compatibility interpretation separately from strict parsing.
+Other XML-forbidden characters remain errors. This is separate from the
+No-Intro DAT v3 contract, which requires one root and a header inside
+`datafile`.
+
+The TOSEC sweep changes the shared query model too: `<rom>` is the native
+Logiqx element name, but TOSEC-ISO and TOSEC-PIX use it for CUE/image assets and
+PDF manuals. Keep the source-declared element/role separate from any inferred
+media classification. The DAT does not declare track layouts or prove that a
+CUE and ISO with similar names belong together. TOSEC also has header
+`<clrmamepro/>` markers the current parser skips; those must be typed if their
+semantics affect query behavior. Tokenizing bracketed descriptors out of game
+names would be a separate, evidence-backed TOSEC rule, not part of XML parsing.
 
 ## Problems in the existing fit
 
@@ -302,12 +385,63 @@ Its `data` attribute and source/track hash scopes need producer semantics before
 they can enter generic file matching. A shallow import must report partial
 coverage until that adapter is specified.
 
-## No-Intro and OfflineList
+## No-Intro exports and OfflineList
+
+There are now three separate No-Intro shaped inputs to account for: flat DAT
+XML using the No-Intro schema v3/v4, nested database-export XML, and the
+repository's current synthetic P/C projection. They are not interchangeable
+just because each contains `<game>` records.
+
+### Flat No-Intro DAT XML
+
+Use narrow relations for the document/header; ordered header directives;
+games; repeated game identifiers; categories; ROM declarations; releases; and
+parent declarations. In v3, game `id`/`cloneofid` and name-based `cloneof` have
+different identity semantics; nested `<game_id>` values are additional IDs,
+not duplicate archive names. Preserve zero-game documents, multiple ROMs per
+game, optional status/serial/date/header/SHA-256 fields, and repeated release
+rows. The PC pack alone has 52,473 release records. Resolve only a target key
+whose scope is established for that schema revision; keep unresolved parent
+literals queryable.
+
+The source XSD v3 supplies the required/defaulted field contract. The observed
+v4 schema URL was unavailable during this audit, so the named v4 child and
+attribute families are corpus observations until that contract is obtained.
+Do not silently treat the v3 validator as proof of v4 coverage.
+
+### No-Intro database-export XML
+
+Model each export game, its archive metadata, optional repeated game releases,
+and zero or more repeated source-history records. A source and a release can
+each own details, serials, and file claims; do not force release fields under a
+source or assume every game has a source. Preserve schema cardinalities rather
+than promoting observed counts to constraints. Archive identity, source
+revision identity, source provenance, serials, and file occurrences must remain
+distinct. Numeric file IDs can repeat under different owners, so they are not
+unique occurrence keys; preserve owner and order, and deduplicate only through
+an explicit verified identity relation. A `<file>` row's `crc32` and SHA-256 are
+not the same source fields as a flat DAT's `crc` and SHA-256, even where a
+normalized digest projection can expose equivalent algorithms.
+
+The Nintendo example has 408 games, one archive per game, 1,546 sources and
+1,579 files. Other exports include games with only an archive and zero sources.
+All archive `clone` values are either the `P` parent marker or a
+numeric archive reference in that file; `regparent` is a separate text value.
+Source IDs and archive numbers must not become cross-snapshot keys without a
+verified scope contract. The large export directory contains at least 115,527
+games, with one file excluded from that lower bound by a streaming parse error.
+Keep the one-root and sibling-header/datafile envelope forms explicit in the
+document interpretation, and isolate/report malformed input without dropping
+valid records from unrelated files.
+
+### Synthetic P/C projection and OfflineList
 
 The existing No-Intro adapter accepts a synthetic `<datafile>/<game>/<rom>`
 projection. Its persistent typed facts currently cover only archive ID and
 description beyond shared asset fields. Alternate name, region, languages,
-version, BIOS, clone and merge tokens remain JSON/extensions.
+version, BIOS, clone and merge tokens remain JSON/extensions. Actual flat DAT
+files use attributes and nested releases/game IDs that do not fit that
+projection, and DB exports use nested archive/source/file records instead.
 
 Design native No-Intro archive, ordered language, file, and source relations.
 Archive IDs are snapshot/source-scoped identifiers, not global game identity.
@@ -478,9 +612,10 @@ recipe typestates continue to gate assembly and verification.
    Replace JSON metadata and endpoint persistence with the native typed owners.
 3. Replace the MAME wide union with narrow native tables and compact parents;
    migrate software-list hierarchy and load records as one coherent change.
-4. Complete Logiqx and ClrMamePro standard field coverage; add the proved No-Intro
-   dialect separately from OfflineList. Keep existing MAMEC-56 through MAMEC-59
-   requirements attached to the same design, without reviving archived plan 2.
+4. Complete Logiqx/TOSEC and ClrMamePro standard field coverage; add flat
+   No-Intro DAT v3/v4 and database-export XML dialects separately from the
+   synthetic P/C projection and OfflineList. Track MAMEC-56 through MAMEC-61
+   against this design, without reviving archived plan 2.
 5. Switch source explanations, reviews, history, reconciliation, and manifests
    to the common typed query contract. Remove superseded compatibility copies.
 6. Reimport fresh databases across the entire metadata corpus. Compare each
@@ -494,6 +629,18 @@ load-only ROM entries. Test ambiguous target handling, digest-scope separation,
 idempotence, failed-EOF rollback, snapshot diffs, review/supersession stability,
 exact source recovery and backup/restore. Application tests should assert query
 facts and relationships, not mirror private insert statements.
+
+Add No-Intro regression witnesses for six NULs across source and release
+details recovering after decoding; exact original-source bytes/hash retained;
+all six diagnostics carrying original one-based coordinates; sibling-root
+framing; and rejection/no publication for a different XML-forbidden character.
+Add strict-v3 versus observed-compatibility witnesses for one valid record and
+the corpus deviations (multiple ROMs, missing required digests, nested
+`game_id`, and a size above `u32::MAX`). Add database-export ownership witnesses
+for zero sources, release-owned details/serials/files, and repeated numeric
+file IDs under distinct owners without occurrence collapse. Verify recovered
+imports still require valid EOF and a successful transaction before
+publication.
 
 Record SQLite table/index bytes, native row counts, import time, peak heap/RSS
 and query plans per format. Require justified indexes for real queries and
@@ -511,6 +658,10 @@ specification fields or a misidentified input dialect.
 - [No-Intro naming convention](https://wiki.no-intro.org/index.php?title=Naming_Convention),
   [file convention](https://wiki.no-intro.org/index.php?title=File_Convention),
   [source convention](https://wiki.no-intro.org/index.php?title=Source_Convention).
+- [No-Intro DAT schema v3](https://datomatic.no-intro.org/stuff/schema_nointro_datfile_v3.xsd);
+  v4 is referenced by the local corpus but was unavailable during this audit.
+- User-provided No-Intro DAT/PC, TOSEC, and database-export corpus:
+  `local/catalog-data/2026-09-30` (git-excluded, never imported in this audit).
 - `fixtures/catalog/manifest.json` and `docs/catalog-format-assessment.md` state
   the synthetic fixture limits.
 - sem inspected native MAME enums/structs, `SnapshotSet`/`SnapshotAsset`, and
