@@ -66,6 +66,38 @@ struct MachineSwitchValueRow {
 }
 
 #[derive(QueryableByName)]
+struct MachineBiosSetRow {
+    #[diesel(sql_type = Text)]
+    name: String,
+    #[diesel(sql_type = Nullable<Text>)]
+    description: Option<String>,
+    #[diesel(sql_type = BigInt)]
+    is_default: i64,
+}
+
+#[derive(QueryableByName)]
+struct MameMachineFactsRow {
+    #[diesel(sql_type = Nullable<Text>)]
+    source_file: Option<String>,
+    #[diesel(sql_type = Text)]
+    description: String,
+    #[diesel(sql_type = Nullable<Text>)]
+    year: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    manufacturer: Option<String>,
+    #[diesel(sql_type = BigInt)]
+    is_device: i64,
+    #[diesel(sql_type = BigInt)]
+    runnable: i64,
+    #[diesel(sql_type = BigInt)]
+    is_bios: i64,
+    #[diesel(sql_type = BigInt)]
+    is_mechanical: i64,
+    #[diesel(sql_type = BigInt)]
+    is_consumable: i64,
+}
+
+#[derive(QueryableByName)]
 struct QueryableAssertion {
     #[diesel(sql_type = Text)]
     relation_type: String,
@@ -887,16 +919,45 @@ fn imports_mame_machine_rom_disk_bios_and_device_semantics_loss_aware()
     assert_eq!(Some(snapshot.clone()), repeated.snapshot_key);
     assert_eq!(count(&mut connection, "catalog_snapshots")?, 1);
 
-    let machine = sql_query("SELECT metadata_json AS value FROM snapshot_sets WHERE snapshot_key = ? AND set_name = 'demo_machine'")
-        .bind::<Text, _>(snapshot.as_str()).get_result::<TextRow>(&mut connection)?;
-    assert!(machine.value.contains("Synthetic Machine"));
-    assert!(machine.value.contains("demo_bios"));
-    assert!(machine.value.contains("demo_sound"));
-    assert!(machine.value.contains("2000"));
-    let device = sql_query("SELECT metadata_json AS value FROM snapshot_sets WHERE snapshot_key = ? AND set_name = 'demo_sound'")
-        .bind::<Text, _>(snapshot.as_str()).get_result::<TextRow>(&mut connection)?;
-    assert!(device.value.contains("isdevice"));
-    assert!(device.value.contains("yes"));
+    let machine = sql_query(
+        "SELECT source_file, description, year, manufacturer, is_device, runnable, is_bios, \
+         is_mechanical, is_consumable FROM mame_machine_facts \
+         WHERE snapshot_key = ? AND set_name = 'demo_machine'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<MameMachineFactsRow>(&mut connection)?;
+    assert_eq!(machine.source_file.as_deref(), Some("demo.cpp"));
+    assert_eq!(machine.description, "Synthetic Machine");
+    assert_eq!(machine.year.as_deref(), Some("2000"));
+    assert_eq!(machine.manufacturer.as_deref(), Some("Example"));
+    assert_eq!(
+        (
+            machine.is_device,
+            machine.runnable,
+            machine.is_bios,
+            machine.is_mechanical,
+            machine.is_consumable
+        ),
+        (0, 1, 0, 0, 0)
+    );
+    let bios_sets = sql_query(
+        "SELECT name, description, is_default FROM machine_bios_sets \
+         WHERE snapshot_key = ? AND set_name = 'demo_machine' ORDER BY bios_order",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .load::<MachineBiosSetRow>(&mut connection)?;
+    assert_eq!(bios_sets.len(), 1);
+    assert_eq!(bios_sets[0].name, "demo_bios");
+    assert_eq!(bios_sets[0].description.as_deref(), Some("Demo BIOS"));
+    assert_eq!(bios_sets[0].is_default, 1);
+    let device = sql_query(
+        "SELECT source_file, description, year, manufacturer, is_device, runnable, is_bios, \
+         is_mechanical, is_consumable FROM mame_machine_facts \
+         WHERE snapshot_key = ? AND set_name = 'demo_sound'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<MameMachineFactsRow>(&mut connection)?;
+    assert_eq!((device.is_device, device.runnable), (1, 0));
 
     let assets = sql_query("SELECT GROUP_CONCAT(role || ':' || asset_name, ',') AS value FROM (SELECT role, asset_name FROM asset_requirements WHERE snapshot_key = ? AND set_name = 'demo_machine' ORDER BY component_order)")
         .bind::<Text, _>(snapshot.as_str()).get_result::<TextRow>(&mut connection)?;
@@ -947,7 +1008,7 @@ fn imports_mame_switch_specification_fields_as_ordered_query_facts()
     let path = directory.path().join("machine-switches.xml");
     std::fs::write(
         &path,
-        br#"<mame build="0.289"><machine name="switches"><dipswitch name="Difficulty" tag=":DSW" mask="0x03"><diplocation name="SW1" number="1A" inverted="yes"/><dipvalue name="Easy" value="0x02"/><dipvalue name="Hard" value="0x01" default="yes"/></dipswitch><configuration name="Video" tag=":CFG" mask="4"><conflocation name="JP1" number="2"/><confsetting name="Raster" value="4" default="yes"/></configuration></machine></mame>"#,
+        br#"<mame build="0.289"><machine name="switches"><description>Switch machine</description><dipswitch name="Difficulty" tag=":DSW" mask="0x03"><diplocation name="SW1" number="1A" inverted="yes"/><dipvalue name="Easy" value="0x02"/><dipvalue name="Hard" value="0x01" default="yes"/></dipswitch><configuration name="Video" tag=":CFG" mask="4"><conflocation name="JP1" number="2"/><confsetting name="Raster" value="4" default="yes"/></configuration></machine></mame>"#,
     )?;
     let mut import = request(path, "mame-switches-source", "mame-switches", "Switches")?;
     import.format = CatalogDocumentFormat::MameListXml;
@@ -1042,7 +1103,7 @@ fn snapshot_diff_detects_mame_switch_fact_changes() -> Result<(), Box<dyn std::e
     let current_path = directory.path().join("switches-v2.xml");
     let xml = |mask: &str| {
         format!(
-            "<mame build=\"0.289\"><machine name=\"switches\"><dipswitch name=\"Difficulty\" tag=\":DSW\" mask=\"{mask}\"><dipvalue name=\"Easy\" value=\"1\"/></dipswitch></machine></mame>"
+            "<mame build=\"0.289\"><machine name=\"switches\"><description>Switch machine</description><dipswitch name=\"Difficulty\" tag=\":DSW\" mask=\"{mask}\"><dipvalue name=\"Easy\" value=\"1\"/></dipswitch></machine></mame>"
         )
     };
     std::fs::write(&previous_path, xml("1"))?;
@@ -1070,6 +1131,46 @@ fn snapshot_diff_detects_mame_switch_fact_changes() -> Result<(), Box<dyn std::e
         .iter()
         .find(|record| record.set_name == "switches")
         .ok_or("switches diff missing")?;
+    assert_eq!(machine.status, SnapshotRecordStatus::Changed);
+    assert!(machine.metadata_changed);
+    Ok(())
+}
+
+#[test]
+fn snapshot_diff_detects_mame_bios_set_fact_changes() -> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, _) = setup()?;
+    let previous_path = directory.path().join("bios-v1.xml");
+    let current_path = directory.path().join("bios-v2.xml");
+    let xml = |description: &str| {
+        format!(
+            "<mame build=\"0.289\"><machine name=\"bios-machine\"><description>BIOS machine</description><biosset name=\"base\" description=\"{description}\" default=\"yes\"/></machine></mame>"
+        )
+    };
+    std::fs::write(&previous_path, xml("Original"))?;
+    std::fs::write(&current_path, xml("Revised"))?;
+    let mut previous_request = request(
+        previous_path,
+        "mame-bios-history",
+        "mame-bios-history",
+        "BIOS history",
+    )?;
+    previous_request.format = CatalogDocumentFormat::MameListXml;
+    let mut current_request = previous_request.clone();
+    current_request.document_path =
+        Utf8PathBuf::from_path_buf(current_path).map_err(|_| "non-UTF8 fixture path")?;
+    let previous = app::import_catalog(&database, &previous_request)?
+        .snapshot_key
+        .ok_or("previous snapshot missing")?;
+    let current = app::import_catalog(&database, &current_request)?
+        .snapshot_key
+        .ok_or("current snapshot missing")?;
+
+    let diff = app::diff_catalog_snapshots(&database, &previous, &current)?;
+    let machine = diff
+        .records
+        .iter()
+        .find(|record| record.set_name == "bios-machine")
+        .ok_or("BIOS machine diff missing")?;
     assert_eq!(machine.status, SnapshotRecordStatus::Changed);
     assert!(machine.metadata_changed);
     Ok(())
@@ -1150,12 +1251,12 @@ fn failed_late_mame_duplicate_does_not_publish_streamed_records()
     let (directory, database, mut connection) = setup()?;
     let path = directory.path().join("late-duplicate-machine.xml");
     let document = br#"<mame xmlns:vendor="urn:vendor">
-      <machine name="alpha" cloneof="parent">
+      <machine name="alpha" cloneof="parent"><description>Alpha</description>
         <rom name="alpha.rom" size="4" crc="12345678"/>
         <vendor:extra mode="preserve">unknown</vendor:extra>
       </machine>
       <machine name="alpha"><description>duplicate</description></machine>
-      <machine name="parent"><rom name="parent.rom" size="4" crc="12345678"/></machine>
+      <machine name="parent"><description>Parent</description><rom name="parent.rom" size="4" crc="12345678"/></machine>
     </mame>"#;
     std::fs::write(&path, document)?;
     let mut import = request(
@@ -1205,11 +1306,11 @@ fn mame_merge_rom_resolves_when_parent_machine_follows_child()
     for (file, machines) in [
         (
             "parent-first.xml",
-            "<machine name=\"parent\"><rom name=\"shared.rom\" size=\"4\" crc=\"12345678\"/></machine><machine name=\"child\" romof=\"parent\"><rom name=\"child.rom\" merge=\"shared.rom\" size=\"4\" crc=\"12345678\"/></machine>",
+            "<machine name=\"parent\"><description>Parent</description><rom name=\"shared.rom\" size=\"4\" crc=\"12345678\"/></machine><machine name=\"child\" romof=\"parent\"><description>Child</description><rom name=\"child.rom\" merge=\"shared.rom\" size=\"4\" crc=\"12345678\"/></machine>",
         ),
         (
             "child-first.xml",
-            "<machine name=\"child\" romof=\"parent\"><rom name=\"child.rom\" merge=\"shared.rom\" size=\"4\" crc=\"12345678\"/></machine><machine name=\"parent\"><rom name=\"shared.rom\" size=\"4\" crc=\"12345678\"/></machine>",
+            "<machine name=\"child\" romof=\"parent\"><description>Child</description><rom name=\"child.rom\" merge=\"shared.rom\" size=\"4\" crc=\"12345678\"/></machine><machine name=\"parent\"><description>Parent</description><rom name=\"shared.rom\" size=\"4\" crc=\"12345678\"/></machine>",
         ),
     ] {
         let path = directory.path().join(file);
@@ -1233,13 +1334,15 @@ fn mame_merge_rom_resolves_when_parent_machine_follows_child()
              FROM asset_requirements WHERE snapshot_key = ? AND set_name = 'child'",
         )
         .bind::<Text, _>(snapshot.as_str())
-        .get_result::<TextRow>(&mut connection)?;
+        .get_result::<TextRow>(&mut connection)
+        .map_err(|error| format!("merged asset lookup failed: {error}"))?;
         let relation = sql_query(
             "SELECT target_key AS value FROM relationship_assertions \
              WHERE source_snapshot_key = ? AND source_field = 'merge'",
         )
         .bind::<Text, _>(snapshot.as_str())
-        .get_result::<TextRow>(&mut connection)?;
+        .get_result::<TextRow>(&mut connection)
+        .map_err(|error| format!("merge relationship lookup failed: {error}"))?;
         resolved.push((asset.value, relation.value));
     }
     assert_eq!(
@@ -1261,14 +1364,16 @@ fn mame_forward_merges_resolve_across_asset_pagination() -> Result<(), Box<dyn s
 
     let (directory, database, mut connection) = setup()?;
     let path = directory.path().join("forward-merges-across-pages.xml");
-    let mut document = String::from("<mame><machine name=\"child\" romof=\"parent\">");
+    let mut document = String::from(
+        "<mame><machine name=\"child\" romof=\"parent\"><description>Child</description>",
+    );
     for index in 0..ASSET_COUNT {
         write!(
             document,
             "<rom name=\"child-{index:03}.rom\" merge=\"parent-{index:03}.rom\" size=\"4\" crc=\"12345678\"/>"
         )?;
     }
-    document.push_str("</machine><machine name=\"parent\">");
+    document.push_str("</machine><machine name=\"parent\"><description>Parent</description>");
     for index in 0..ASSET_COUNT {
         write!(
             document,
@@ -1315,7 +1420,7 @@ fn mame_asset_storage_error_rolls_back_staged_import_and_keeps_document()
          BEGIN SELECT RAISE(ABORT, 'injected asset insert failure'); END;",
     )?;
     let path = directory.path().join("asset-insert-storage-error.xml");
-    let document = br#"<mame xmlns:vendor="urn:rollback" vendor:flag="staged"><machine name="set"><rom name="set.rom" size="4" crc="12345678"/></machine></mame>"#;
+    let document = br#"<mame xmlns:vendor="urn:rollback" vendor:flag="staged"><machine name="set"><description>Set</description><rom name="set.rom" size="4" crc="12345678"/></machine></mame>"#;
     std::fs::write(&path, document)?;
     let mut import = request(
         path,
@@ -1451,7 +1556,7 @@ fn mame_relationships_resolve_component_keys_and_keep_device_locations()
     let path = directory.path().join("mame-relationship-identity.xml");
     std::fs::write(
         &path,
-        "<mame>\n<machine name=\"clone-parent\"/>\n<machine name=\"rom-parent\">\n<rom name=\"shared.bin\" size=\"1\" crc=\"12345678\"/>\n</machine>\n<machine name=\"clone\" cloneof=\"clone-parent\" romof=\"rom-parent\">\n<device_ref name=\"sound\"/>\n<rom name=\"shared.bin\" merge=\"shared.bin\" size=\"1\" crc=\"12345678\"/>\n</machine>\n<machine name=\"sound\"/>\n</mame>",
+        "<mame>\n<machine name=\"clone-parent\"><description>Clone parent</description></machine>\n<machine name=\"rom-parent\">\n<description>ROM parent</description><rom name=\"shared.bin\" size=\"1\" crc=\"12345678\"/>\n</machine>\n<machine name=\"clone\" cloneof=\"clone-parent\" romof=\"rom-parent\">\n<description>Clone</description><device_ref name=\"sound\"/>\n<rom name=\"shared.bin\" merge=\"shared.bin\" size=\"1\" crc=\"12345678\"/>\n</machine>\n<machine name=\"sound\"><description>Sound</description></machine>\n</mame>",
     )?;
     let mut request = request(
         path,
@@ -1511,12 +1616,13 @@ fn resolves_machine_runtime_closure_without_traversing_clone_ancestry()
         &document,
         br#"<mame build="fixture">
           <machine name="game" cloneof="parent" romof="bios" sampleof="samples">
+            <description>Game</description>
             <device_ref name="sound"/>
           </machine>
-          <machine name="bios" isbios="yes"/>
-          <machine name="sound" isdevice="yes"/>
-          <machine name="parent"/>
-          <machine name="samples"/>
+          <machine name="bios" isbios="yes"><description>BIOS</description></machine>
+          <machine name="sound" isdevice="yes"><description>Sound</description></machine>
+          <machine name="parent"><description>Parent</description></machine>
+          <machine name="samples"><description>Samples</description></machine>
         </mame>"#,
     )?;
     let mut import = request(
@@ -1667,7 +1773,7 @@ fn dependency_absence_respects_filtered_snapshot_scope() -> Result<(), Box<dyn s
     let document = directory.path().join("filtered-machine.xml");
     std::fs::write(
         &document,
-        br#"<mame build="fixture"><machine name="root" romof="outside"/></mame>"#,
+        br#"<mame build="fixture"><machine name="root" romof="outside"><description>Root</description></machine></mame>"#,
     )?;
     let mut import = request(
         document,

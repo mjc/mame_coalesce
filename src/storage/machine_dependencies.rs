@@ -1,8 +1,8 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use diesel::{
     QueryableByName, RunQueryDsl, sql_query,
-    sql_types::{Nullable, Text},
+    sql_types::{Bool, Nullable, Text},
 };
 
 use crate::{
@@ -23,6 +23,20 @@ struct SetRow {
     parent_name: Option<String>,
     #[diesel(sql_type = Text)]
     metadata_json: String,
+    #[diesel(sql_type = Nullable<Bool>)]
+    is_bios: Option<bool>,
+    #[diesel(sql_type = Nullable<Bool>)]
+    is_device: Option<bool>,
+}
+
+#[derive(QueryableByName)]
+struct MameDependencyRow {
+    #[diesel(sql_type = Text)]
+    set_name: String,
+    #[diesel(sql_type = Text)]
+    dependency_kind: String,
+    #[diesel(sql_type = Text)]
+    target_name: String,
 }
 
 /// Load normalized set relationships from exactly one immutable catalog snapshot.
@@ -60,40 +74,21 @@ pub fn load_catalog(
         _ => SnapshotCompleteness::Unknown,
     };
 
+    let is_mame = header.parser_format == "mame-listxml";
     let rows = sql_query(
-        "SELECT set_name, parent_name, metadata_json FROM snapshot_sets \
-         WHERE snapshot_key = ? ORDER BY set_name",
+        "SELECT s.set_name, s.parent_name, s.metadata_json, mf.is_bios, mf.is_device \
+         FROM snapshot_sets AS s LEFT JOIN mame_machine_facts AS mf \
+           ON mf.snapshot_key = s.snapshot_key AND mf.set_name = s.set_name \
+         WHERE s.snapshot_key = ? ORDER BY s.set_name",
     )
     .bind::<Text, _>(snapshot.as_str())
     .load::<SetRow>(&mut conn)?;
 
+    let mame_dependencies = load_mame_dependencies(&mut conn, snapshot, is_mame)?;
+
     let sets = rows
         .into_iter()
-        .map(|row| {
-            let metadata: serde_json::Value = serde_json::from_str(&row.metadata_json)?;
-            let mut set = MachineSet::new(row.set_name);
-            set.parent_clone = row.parent_name.map(SetName::new);
-            set.is_bios = flag(&metadata, &["is_bios", "isbios"]);
-            set.is_device = flag(&metadata, &["isdevice", "is_device"]);
-
-            if let Some(target) = string(&metadata, &["romof", "rom_of"]) {
-                set.dependencies.push(MachineDependency {
-                    kind: MachineDependencyKind::RomOf,
-                    target: SetName::new(target),
-                });
-            }
-            for target in device_references(&metadata) {
-                set.dependencies.push(MachineDependency {
-                    kind: MachineDependencyKind::DeviceReference,
-                    target: SetName::new(target),
-                });
-            }
-            if let Some(target) = string(&metadata, &["sampleof", "sample_of"]) {
-                set.unsupported_relationships
-                    .push(("sampleof".to_owned(), SetName::new(target)));
-            }
-            Ok(set)
-        })
+        .map(|row| machine_set_from_row(row, is_mame, &mame_dependencies))
         .collect::<crate::Result<Vec<_>>>()?;
 
     Ok(MachineDependencyCatalog::with_completeness(
@@ -101,6 +96,87 @@ pub fn load_catalog(
         completeness,
         sets,
     ))
+}
+
+fn load_mame_dependencies(
+    conn: &mut diesel::SqliteConnection,
+    snapshot: &SnapshotKey,
+    is_mame: bool,
+) -> crate::Result<BTreeMap<String, Vec<MameDependencyRow>>> {
+    if !is_mame {
+        return Ok(BTreeMap::new());
+    }
+    Ok(sql_query(
+        "SELECT set_name, dependency_kind, target_name FROM mame_machine_dependencies \
+         WHERE snapshot_key = ? ORDER BY set_name, dependency_order",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .load::<MameDependencyRow>(conn)?
+    .into_iter()
+    .fold(
+        BTreeMap::<String, Vec<MameDependencyRow>>::new(),
+        |mut by_set, row| {
+            by_set.entry(row.set_name.clone()).or_default().push(row);
+            by_set
+        },
+    ))
+}
+
+fn machine_set_from_row(
+    row: SetRow,
+    is_mame: bool,
+    mame_dependencies: &BTreeMap<String, Vec<MameDependencyRow>>,
+) -> crate::Result<MachineSet> {
+    let metadata: serde_json::Value = serde_json::from_str(&row.metadata_json)?;
+    let mut set = MachineSet::new(row.set_name);
+    set.parent_clone = row.parent_name.map(SetName::new);
+    set.is_bios = row
+        .is_bios
+        .unwrap_or_else(|| flag(&metadata, &["is_bios", "isbios"]));
+    set.is_device = row
+        .is_device
+        .unwrap_or_else(|| flag(&metadata, &["isdevice", "is_device"]));
+
+    if is_mame {
+        for dependency in mame_dependencies
+            .get(set.name.as_str())
+            .into_iter()
+            .flatten()
+        {
+            match dependency.dependency_kind.as_str() {
+                "romof" => set.dependencies.push(MachineDependency {
+                    kind: MachineDependencyKind::RomOf,
+                    target: SetName::new(&dependency.target_name),
+                }),
+                "device_ref" => set.dependencies.push(MachineDependency {
+                    kind: MachineDependencyKind::DeviceReference,
+                    target: SetName::new(&dependency.target_name),
+                }),
+                "sampleof" => set
+                    .unsupported_relationships
+                    .push(("sampleof".to_owned(), SetName::new(&dependency.target_name))),
+                _ => unreachable!("MAME dependency kind is schema constrained"),
+            }
+        }
+    } else {
+        if let Some(target) = string(&metadata, &["romof", "rom_of"]) {
+            set.dependencies.push(MachineDependency {
+                kind: MachineDependencyKind::RomOf,
+                target: SetName::new(target),
+            });
+        }
+        for target in device_references(&metadata) {
+            set.dependencies.push(MachineDependency {
+                kind: MachineDependencyKind::DeviceReference,
+                target: SetName::new(target),
+            });
+        }
+        if let Some(target) = string(&metadata, &["sampleof", "sample_of"]) {
+            set.unsupported_relationships
+                .push(("sampleof".to_owned(), SetName::new(target)));
+        }
+    }
+    Ok(set)
 }
 
 #[derive(QueryableByName)]

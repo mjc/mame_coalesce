@@ -113,6 +113,9 @@ struct SnapshotSet {
     location: crate::logiqx::RecordLocation,
     assets: Vec<SnapshotAsset>,
     switches: Vec<crate::mame::MachineSwitch>,
+    bios_sets: Vec<crate::mame::MachineBiosSet>,
+    mame_facts: Option<crate::mame::MachineFacts>,
+    machine_dependencies: Vec<SnapshotDependency>,
 }
 
 struct SnapshotDependency {
@@ -231,6 +234,9 @@ impl SnapshotData {
                 metadata: serde_json::json!({"source_file": game.sourcefile_opt(), "is_bios": game.isbios_opt(), "rom_of": game.romof_opt(), "sample_of": game.sampleof_opt(), "board": game.board_opt(), "rebuild_to": game.rebuildto_opt(), "description": game.description_opt(), "year": game.year_opt(), "manufacturer": game.manufacturer_opt(), "device_refs": game.device_refs().collect::<Vec<_>>()}),
                 location, assets,
                 switches: Vec::new(),
+                bios_sets: Vec::new(),
+                mame_facts: None,
+                machine_dependencies: Vec::new(),
             });
         }
         Ok(Self {
@@ -305,6 +311,9 @@ impl SnapshotData {
                     location: set.location,
                     assets,
                     switches: Vec::new(),
+                    bios_sets: Vec::new(),
+                    mame_facts: None,
+                    machine_dependencies: Vec::new(),
                 }
             })
             .collect();
@@ -365,6 +374,9 @@ impl SnapshotData {
                     location: entry.location,
                     assets,
                     switches: Vec::new(),
+                    bios_sets: Vec::new(),
+                    mame_facts: None,
+                    machine_dependencies: Vec::new(),
                 }
             })
             .collect();
@@ -381,7 +393,7 @@ fn machine_contents(machine: crate::mame::Machine) -> (SnapshotSet, Vec<StoredEx
     let mut extensions = Vec::new();
     let machine_name = &machine.name;
     extensions.extend(stored_machine_extensions(machine_name, machine.extensions));
-    let runtime_dependencies = machine
+    let runtime_dependencies: Vec<SnapshotDependency> = machine
         .device_refs
         .into_iter()
         .map(|reference| SnapshotDependency {
@@ -405,8 +417,41 @@ fn machine_contents(machine: crate::mame::Machine) -> (SnapshotSet, Vec<StoredEx
                 }),
         )
         .collect();
-    let assets = machine
-        .assets
+    let assets = machine_assets(machine_name, machine.assets, &mut extensions);
+    let parent_field = machine.parent.as_ref().map(|_| "cloneof".to_owned());
+    let switches = machine.switches;
+    let bios_sets = machine.bios_sets;
+    let mame_facts = machine.facts;
+    let machine_dependencies = runtime_dependencies
+        .iter()
+        .map(|dependency| SnapshotDependency {
+            source_field: dependency.source_field.clone(),
+            target_name: dependency.target_name.clone(),
+            location: dependency.location,
+        })
+        .collect();
+    let set = SnapshotSet {
+        name: machine.name,
+        parent: machine.parent,
+        parent_field,
+        runtime_dependencies,
+        metadata: serde_json::Value::Null,
+        location: machine.location,
+        assets,
+        switches,
+        bios_sets,
+        machine_dependencies,
+        mame_facts: Some(mame_facts),
+    };
+    (set, extensions)
+}
+
+fn machine_assets(
+    machine_name: &str,
+    assets: Vec<crate::mame::MachineAsset>,
+    extensions: &mut Vec<StoredExtension>,
+) -> Vec<SnapshotAsset> {
+    assets
         .into_iter()
         .enumerate()
         .map(|(component_order, asset)| {
@@ -460,20 +505,7 @@ fn machine_contents(machine: crate::mame::Machine) -> (SnapshotSet, Vec<StoredEx
                 location: asset.location,
             }
         })
-        .collect();
-    let parent_field = machine.parent.as_ref().map(|_| "cloneof".to_owned());
-    let switches = machine.switches;
-    let set = SnapshotSet {
-        name: machine.name,
-        parent: machine.parent,
-        parent_field,
-        runtime_dependencies,
-        metadata: serde_json::Value::Object(machine.metadata.into_iter().collect()),
-        location: machine.location,
-        assets,
-        switches,
-    };
-    (set, extensions)
+        .collect()
 }
 
 fn stored_extension(ext: crate::mame::XmlExtension) -> StoredExtension {
@@ -669,7 +701,7 @@ impl StreamingImport<'_> {
     fn consume(&mut self, record: MameRecord) -> crate::Result<()> {
         match record {
             MameRecord::Machine(machine) => {
-                let (set, extensions) = machine_contents(machine);
+                let (set, extensions) = machine_contents(*machine);
                 if let SnapshotPublication::Pending(key) = &self.publication {
                     insert_snapshot_set(self.conn, key, &set)?;
                 }
@@ -1120,6 +1152,11 @@ fn insert_snapshot_set(
     .bind::<BigInt, _>(set.location.column)
     .execute(conn)?;
 
+    if let Some(facts) = &set.mame_facts {
+        insert_mame_machine_facts(conn, snapshot_key, set, facts)?;
+        insert_mame_machine_dependencies(conn, snapshot_key, set)?;
+    }
+
     persist_set_relationships(conn, snapshot_key, set)?;
 
     for (order, asset) in set.assets.iter().enumerate() {
@@ -1157,6 +1194,94 @@ fn insert_snapshot_set(
         .execute(conn)?;
     }
     insert_machine_switches(conn, snapshot_key, set)?;
+    insert_machine_bios_sets(conn, snapshot_key, set)?;
+    Ok(())
+}
+
+fn insert_mame_machine_dependencies(
+    conn: &mut SqliteConnection,
+    snapshot_key: &SnapshotKey,
+    set: &SnapshotSet,
+) -> crate::Result<()> {
+    for (order, dependency) in set.machine_dependencies.iter().enumerate() {
+        sql_query(
+            "INSERT INTO mame_machine_dependencies \
+             (snapshot_key, set_name, dependency_order, dependency_kind, target_name, source_line, source_column) \
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind::<Text, _>(snapshot_key.as_str())
+        .bind::<Text, _>(&set.name)
+        .bind::<BigInt, _>(checked_order(order, "MAME machine dependencies")?)
+        .bind::<Text, _>(&dependency.source_field)
+        .bind::<Text, _>(&dependency.target_name)
+        .bind::<BigInt, _>(dependency.location.line)
+        .bind::<BigInt, _>(dependency.location.column)
+        .execute(conn)?;
+    }
+    Ok(())
+}
+
+fn insert_mame_machine_facts(
+    conn: &mut SqliteConnection,
+    snapshot_key: &SnapshotKey,
+    set: &SnapshotSet,
+    facts: &crate::mame::MachineFacts,
+) -> crate::Result<()> {
+    sql_query(
+        "INSERT INTO mame_machine_facts \
+         (snapshot_key, set_name, source_file, description, description_line, description_column, \
+          year, year_line, year_column, manufacturer, manufacturer_line, manufacturer_column, \
+          is_device, runnable, is_bios, is_mechanical, is_consumable, attributes_line, attributes_column) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind::<Text, _>(snapshot_key.as_str())
+    .bind::<Text, _>(&set.name)
+    .bind::<Nullable<Text>, _>(facts.source_file.as_deref())
+    .bind::<Text, _>(&facts.description)
+    .bind::<BigInt, _>(facts.description_location.line)
+    .bind::<BigInt, _>(facts.description_location.column)
+    .bind::<Nullable<Text>, _>(facts.year.as_deref())
+    .bind::<Nullable<BigInt>, _>(facts.year_location.map(|location| location.line))
+    .bind::<Nullable<BigInt>, _>(facts.year_location.map(|location| location.column))
+    .bind::<Nullable<Text>, _>(facts.manufacturer.as_deref())
+    .bind::<Nullable<BigInt>, _>(
+        facts.manufacturer_location.map(|location| location.line),
+    )
+    .bind::<Nullable<BigInt>, _>(
+        facts.manufacturer_location.map(|location| location.column),
+    )
+    .bind::<diesel::sql_types::Bool, _>(facts.flags.is_device())
+    .bind::<diesel::sql_types::Bool, _>(facts.flags.is_runnable())
+    .bind::<diesel::sql_types::Bool, _>(facts.flags.is_bios())
+    .bind::<diesel::sql_types::Bool, _>(facts.flags.is_mechanical())
+    .bind::<diesel::sql_types::Bool, _>(facts.flags.is_consumable())
+    .bind::<BigInt, _>(facts.attributes_location.line)
+    .bind::<BigInt, _>(facts.attributes_location.column)
+    .execute(conn)?;
+    Ok(())
+}
+
+fn insert_machine_bios_sets(
+    conn: &mut SqliteConnection,
+    snapshot_key: &SnapshotKey,
+    set: &SnapshotSet,
+) -> crate::Result<()> {
+    for (bios_order, bios_set) in set.bios_sets.iter().enumerate() {
+        sql_query(
+            "INSERT INTO machine_bios_sets \
+             (snapshot_key, set_name, bios_order, name, description, is_default, source_line, source_column) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind::<Text, _>(snapshot_key.as_str())
+        .bind::<Text, _>(&set.name)
+        .bind::<BigInt, _>(checked_order(bios_order, "MAME BIOS sets")?)
+        .bind::<Text, _>(&bios_set.name)
+        .bind::<Nullable<Text>, _>(bios_set.description.as_deref())
+        .bind::<diesel::sql_types::Bool, _>(bios_set.is_default)
+        .bind::<BigInt, _>(bios_set.location.line)
+        .bind::<BigInt, _>(bios_set.location.column)
+        .execute(conn)?;
+    }
     Ok(())
 }
 

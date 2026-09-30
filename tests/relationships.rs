@@ -222,7 +222,7 @@ fn parent_claims_keep_their_adapter_specific_source_provenance()
     let machine_path = utf8(directory.path().join("machine.xml"))?;
     std::fs::write(
         &machine_path,
-        br#"<mame><machine name="mame_clone" cloneof="mame_parent"/></mame>"#,
+        br#"<mame><machine name="mame_clone" cloneof="mame_parent"><description>MAME clone</description></machine></mame>"#,
     )?;
     let mut machine = request(machine_path, "machine-source", "machine-catalog");
     machine.format = CatalogDocumentFormat::MameListXml;

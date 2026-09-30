@@ -360,7 +360,7 @@ fn disk_audit_follows_explicit_machine_clone_parent_layout() -> mame_coalesce::R
         .map_err(|path| mame_coalesce::Error::InvalidPath(path.display().to_string()))?;
     std::fs::write(
         &document_path,
-        br#"<mame><machine name="parent"><disk name="parent-media" sha1="1123456789abcdef0123456789abcdef01234567"/></machine><machine name="clone" cloneof="parent"><disk name="clone-media" merge="parent-media" sha1="2123456789abcdef0123456789abcdef01234567"/></machine></mame>"#,
+        br#"<mame><machine name="parent"><description>Parent</description><disk name="parent-media" sha1="1123456789abcdef0123456789abcdef01234567"/></machine><machine name="clone" cloneof="parent"><description>Clone</description><disk name="clone-media" merge="parent-media" sha1="2123456789abcdef0123456789abcdef01234567"/></machine></mame>"#,
     )?;
     let mut request = mame_request()?;
     request.document_path = document_path;

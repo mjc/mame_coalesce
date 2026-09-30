@@ -119,13 +119,16 @@ pub(super) fn persist_snapshot_merges(
     loop {
         let rows = sql_query(
             "SELECT a.set_name, a.component_order, a.asset_name, a.merge_name AS merged_name, \
-                    COALESCE(json_extract(s.metadata_json, '$.romof'), s.parent_name) AS parent, \
+                    COALESCE(mf_romof.target_name, json_extract(s.metadata_json, '$.romof'), s.parent_name) AS parent, \
                     a.role, a.sha1, a.crc, a.size, a.source_line, a.source_column \
              FROM asset_requirements AS a \
              JOIN snapshot_sets AS s \
                ON s.snapshot_key = a.snapshot_key AND s.set_name = a.set_name \
+             LEFT JOIN mame_machine_dependencies AS mf_romof \
+               ON mf_romof.snapshot_key = s.snapshot_key AND mf_romof.set_name = s.set_name \
+              AND mf_romof.dependency_kind = 'romof' \
              WHERE a.snapshot_key = ? AND a.merge_name IS NOT NULL \
-               AND COALESCE(json_extract(s.metadata_json, '$.romof'), s.parent_name) IS NOT NULL \
+               AND COALESCE(mf_romof.target_name, json_extract(s.metadata_json, '$.romof'), s.parent_name) IS NOT NULL \
                AND (a.set_name, a.component_order) > (?, ?) \
              ORDER BY a.set_name, a.component_order LIMIT ?",
         )

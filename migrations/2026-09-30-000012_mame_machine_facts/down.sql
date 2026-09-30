@@ -1,0 +1,4 @@
+DROP TRIGGER mame_machine_facts_are_immutable_delete;
+DROP TRIGGER mame_machine_facts_are_immutable_update;
+DROP INDEX mame_machine_facts_source_file_index;
+DROP TABLE mame_machine_facts;

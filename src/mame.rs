@@ -26,11 +26,81 @@ pub struct Machine {
     pub rom_of: Option<String>,
     pub sample_of: Option<String>,
     pub location: RecordLocation,
-    pub metadata: BTreeMap<String, serde_json::Value>,
+    pub facts: MachineFacts,
     pub assets: Vec<MachineAsset>,
     pub device_refs: Vec<DeviceReference>,
     pub switches: Vec<MachineSwitch>,
+    pub bios_sets: Vec<MachineBiosSet>,
     pub extensions: Vec<XmlExtension>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MachineFacts {
+    pub source_file: Option<String>,
+    pub description: String,
+    pub description_location: RecordLocation,
+    pub year: Option<String>,
+    pub year_location: Option<RecordLocation>,
+    pub manufacturer: Option<String>,
+    pub manufacturer_location: Option<RecordLocation>,
+    pub flags: MachineFlags,
+    pub attributes_location: RecordLocation,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MachineFlags(u8);
+
+impl MachineFlags {
+    const DEVICE: u8 = 1 << 0;
+    const RUNNABLE: u8 = 1 << 1;
+    const BIOS: u8 = 1 << 2;
+    const MECHANICAL: u8 = 1 << 3;
+    const CONSUMABLE: u8 = 1 << 4;
+
+    fn parse(attributes: &BTreeMap<String, String>) -> crate::Result<Self> {
+        let mut flags = 0;
+        for (attribute, flag, default) in [
+            ("isdevice", Self::DEVICE, false),
+            ("runnable", Self::RUNNABLE, true),
+            ("isbios", Self::BIOS, false),
+            ("ismechanical", Self::MECHANICAL, false),
+            ("isconsumable", Self::CONSUMABLE, false),
+        ] {
+            if parse_mame_boolean_with_default(attributes.get(attribute), default, attribute)? {
+                flags |= flag;
+            }
+        }
+        Ok(Self(flags))
+    }
+
+    #[must_use]
+    pub const fn is_device(self) -> bool {
+        self.0 & Self::DEVICE != 0
+    }
+    #[must_use]
+    pub const fn is_runnable(self) -> bool {
+        self.0 & Self::RUNNABLE != 0
+    }
+    #[must_use]
+    pub const fn is_bios(self) -> bool {
+        self.0 & Self::BIOS != 0
+    }
+    #[must_use]
+    pub const fn is_mechanical(self) -> bool {
+        self.0 & Self::MECHANICAL != 0
+    }
+    #[must_use]
+    pub const fn is_consumable(self) -> bool {
+        self.0 & Self::CONSUMABLE != 0
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MachineBiosSet {
+    pub name: String,
+    pub description: Option<String>,
+    pub is_default: bool,
+    pub location: RecordLocation,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -135,7 +205,7 @@ pub struct MameHeader {
 }
 
 pub enum MameRecord {
-    Machine(Machine),
+    Machine(Box<Machine>),
     Extension(XmlExtension),
 }
 
@@ -234,7 +304,7 @@ impl MameCatalog {
             },
             |catalog, record| {
                 match record {
-                    MameRecord::Machine(machine) => catalog.machines.push(machine),
+                    MameRecord::Machine(machine) => catalog.machines.push(*machine),
                     MameRecord::Extension(extension) => catalog.extensions.push(extension),
                 }
                 Ok(())
@@ -316,7 +386,7 @@ fn parse_record(
                 machine.name
             )));
         }
-        Ok(Some(MameRecord::Machine(machine)))
+        Ok(Some(MameRecord::Machine(Box::new(machine))))
     } else if retain_extensions {
         extension("document", None, node)
             .map(MameRecord::Extension)
@@ -373,16 +443,6 @@ pub fn parse_xml_element(bytes: &[u8]) -> crate::Result<Element> {
     })
 }
 
-fn device_reference_metadata(references: &[DeviceReference]) -> serde_json::Value {
-    serde_json::json!(
-        references
-            .iter()
-            .enumerate()
-            .map(|(order, reference)| serde_json::json!({"name": reference.name, "order": order}))
-            .collect::<Vec<_>>()
-    )
-}
-
 fn parse_device_reference(node: &Element) -> crate::Result<DeviceReference> {
     Ok(DeviceReference {
         name: required(node, "name")?.to_owned(),
@@ -422,32 +482,66 @@ fn machine_attribute_extensions(name: &str, node: &Element) -> Vec<XmlExtension>
         .collect()
 }
 
+struct MachineChildren {
+    description: String,
+    description_location: RecordLocation,
+    year: Option<String>,
+    year_location: Option<RecordLocation>,
+    manufacturer: Option<String>,
+    manufacturer_location: Option<RecordLocation>,
+    bios_sets: Vec<MachineBiosSet>,
+    device_refs: Vec<DeviceReference>,
+    switches: Vec<MachineSwitch>,
+    assets: Vec<MachineAsset>,
+    extensions: Vec<XmlExtension>,
+}
+
 fn parse_machine(node: &Element, retain_extensions: bool) -> crate::Result<Machine> {
     let name = required(node, "name")?;
-    let parent = node.attributes.get("cloneof").cloned();
-    let rom_of = node.attributes.get("romof").cloned();
-    let sample_of = node.attributes.get("sampleof").cloned();
-    let mut metadata = BTreeMap::new();
-    metadata.insert(
-        "sourcefile".into(),
-        value(node.attributes.get("sourcefile")),
-    );
-    if let Some(parent) = &parent {
-        metadata.insert("cloneof".into(), serde_json::json!(parent));
+    let flags = MachineFlags::parse(&node.attributes)?;
+    let mut children = parse_machine_children(node, name, retain_extensions)?;
+    if retain_extensions {
+        children
+            .extensions
+            .extend(machine_attribute_extensions(name, node));
     }
-    copy_machine_relationship_metadata(node, &mut metadata);
-    for flag in [
-        "isdevice",
-        "runnable",
-        "isbios",
-        "ismechanical",
-        "isconsumable",
-    ] {
-        if let Some(flag_value) = node.attributes.get(flag) {
-            metadata.insert(flag.into(), value(Some(flag_value)));
-        }
-    }
-    let mut biossets = Vec::new();
+    Ok(Machine {
+        name: name.into(),
+        parent: node.attributes.get("cloneof").cloned(),
+        rom_of: node.attributes.get("romof").cloned(),
+        sample_of: node.attributes.get("sampleof").cloned(),
+        location: node.location,
+        facts: MachineFacts {
+            source_file: node.attributes.get("sourcefile").cloned(),
+            description: children.description,
+            description_location: children.description_location,
+            year: children.year,
+            year_location: children.year_location,
+            manufacturer: children.manufacturer,
+            manufacturer_location: children.manufacturer_location,
+            flags,
+            attributes_location: node.location,
+        },
+        assets: children.assets,
+        device_refs: children.device_refs,
+        switches: children.switches,
+        bios_sets: children.bios_sets,
+        extensions: children.extensions,
+    })
+}
+
+fn parse_machine_children(
+    node: &Element,
+    machine_name: &str,
+    retain_extensions: bool,
+) -> crate::Result<MachineChildren> {
+    let mut description = None;
+    let mut description_location = None;
+    let mut year = None;
+    let mut year_location = None;
+    let mut manufacturer = None;
+    let mut manufacturer_location = None;
+    let mut bios_sets = Vec::new();
     let mut device_refs = Vec::new();
     let mut switches = Vec::new();
     let mut assets = Vec::new();
@@ -459,29 +553,42 @@ fn parse_machine(node: &Element, retain_extensions: bool) -> crate::Result<Machi
                 if !machine_text_fields.insert(child.name.as_str()) {
                     return Err(crate::Error::XmlValidation(format!(
                         "duplicate machine {} field for {:?}",
-                        child.name, name
+                        child.name, machine_name
                     )));
                 }
-                metadata.insert(
-                    child.name.clone(),
-                    serde_json::Value::String(child.direct_text()),
-                );
+                let text = child.direct_text();
+                match child.name.as_str() {
+                    "description" => {
+                        description = Some(text);
+                        description_location = Some(child.location);
+                    }
+                    "year" => {
+                        year = Some(text);
+                        year_location = Some(child.location);
+                    }
+                    "manufacturer" => {
+                        manufacturer = Some(text);
+                        manufacturer_location = Some(child.location);
+                    }
+                    _ => {}
+                }
                 if retain_extensions && child.children().next().is_some() {
-                    extensions.push(extension("machine", Some(name), child)?);
+                    extensions.push(extension("machine", Some(machine_name), child)?);
                 }
             }
-            "biosset" => biossets.push(serde_json::json!({"name": required(child, "name")?, "description": child.attributes.get("description"), "default": child.attributes.get("default")})),
+            "biosset" => bios_sets.push(parse_machine_bios_set(child)?),
             "device_ref" => device_refs.push(parse_device_reference(child)?),
-            "dipswitch" => switches.push(parse_machine_switch(
-                child,
-                MachineSwitchKind::DipSwitch,
-            )?),
+            "dipswitch" => {
+                switches.push(parse_machine_switch(child, MachineSwitchKind::DipSwitch)?);
+            }
             "configuration" => switches.push(parse_machine_switch(
                 child,
                 MachineSwitchKind::Configuration,
             )?),
             "rom" | "disk" => assets.push(parse_asset(child, retain_extensions)?),
-            _ if retain_extensions => extensions.push(extension("machine", Some(name), child)?),
+            _ if retain_extensions => {
+                extensions.push(extension("machine", Some(machine_name), child)?);
+            }
             _ => {}
         }
         if retain_extensions {
@@ -502,26 +609,57 @@ fn parse_machine(node: &Element, retain_extensions: bool) -> crate::Result<Machi
             }
         }
     }
-    metadata.insert("biossets".into(), serde_json::json!(biossets));
-    metadata.insert(
-        "device_refs".into(),
-        device_reference_metadata(&device_refs),
-    );
-    if retain_extensions {
-        extensions.extend(machine_attribute_extensions(name, node));
-    }
-    Ok(Machine {
-        name: name.into(),
-        parent,
-        rom_of,
-        sample_of,
-        location: node.location,
-        metadata,
-        assets,
+    let description = description.ok_or_else(|| {
+        crate::Error::XmlValidation(format!(
+            "MAME machine {machine_name:?} is missing description"
+        ))
+    })?;
+    let description_location = description_location.ok_or_else(|| {
+        crate::Error::XmlValidation(format!(
+            "MAME machine {machine_name:?} is missing description"
+        ))
+    })?;
+    Ok(MachineChildren {
+        description,
+        description_location,
+        year,
+        year_location,
+        manufacturer,
+        manufacturer_location,
+        bios_sets,
         device_refs,
         switches,
+        assets,
         extensions,
     })
+}
+
+fn parse_machine_bios_set(node: &Element) -> crate::Result<MachineBiosSet> {
+    Ok(MachineBiosSet {
+        name: required(node, "name")?.to_owned(),
+        description: node.attributes.get("description").cloned(),
+        is_default: parse_mame_boolean(node.attributes.get("default"), "biosset default")?,
+        location: node.location,
+    })
+}
+
+fn parse_mame_boolean(value: Option<&String>, field: &str) -> crate::Result<bool> {
+    parse_mame_boolean_with_default(value, false, field)
+}
+
+fn parse_mame_boolean_with_default(
+    value: Option<&String>,
+    default: bool,
+    field: &str,
+) -> crate::Result<bool> {
+    match value.map(String::as_str) {
+        None => Ok(default),
+        Some("no") => Ok(false),
+        Some("yes") => Ok(true),
+        Some(other) => Err(crate::Error::XmlValidation(format!(
+            "invalid MAME {field} value {other:?}"
+        ))),
+    }
 }
 
 fn parse_machine_switch(node: &Element, kind: MachineSwitchKind) -> crate::Result<MachineSwitch> {
@@ -535,19 +673,19 @@ fn parse_machine_switch(node: &Element, kind: MachineSwitchKind) -> crate::Resul
             "diplocation" | "conflocation" => locations.push(MachineSwitchLocation {
                 name: required(child, "name")?.to_owned(),
                 number: required(child, "number")?.to_owned(),
-                inverted: child
-                    .attributes
-                    .get("inverted")
-                    .is_some_and(|value| value == "yes"),
+                inverted: parse_mame_boolean(
+                    child.attributes.get("inverted"),
+                    "switch location inverted",
+                )?,
                 location: child.location,
             }),
             "dipvalue" | "confsetting" => values.push(MachineSwitchValue {
                 name: required(child, "name")?.to_owned(),
                 value: parse_mame_integer(required(child, "value")?)?,
-                default: child
-                    .attributes
-                    .get("default")
-                    .is_some_and(|value| value == "yes"),
+                default: parse_mame_boolean(
+                    child.attributes.get("default"),
+                    "switch value default",
+                )?,
                 location: child.location,
             }),
             _ => {}
@@ -569,17 +707,6 @@ fn parse_mame_integer(value: &str) -> crate::Result<u64> {
         .strip_prefix("0x")
         .map_or_else(|| value.parse::<u64>(), |hex| u64::from_str_radix(hex, 16));
     parsed.map_err(|_| crate::Error::XmlValidation(format!("invalid MAME integer {value:?}")))
-}
-
-fn copy_machine_relationship_metadata(
-    node: &Element,
-    metadata: &mut BTreeMap<String, serde_json::Value>,
-) {
-    for relationship in ["romof", "sampleof"] {
-        if let Some(target) = node.attributes.get(relationship) {
-            metadata.insert(relationship.into(), serde_json::json!(target));
-        }
-    }
 }
 
 fn parse_asset(node: &Element, retain_extensions: bool) -> crate::Result<MachineAsset> {
@@ -793,10 +920,6 @@ fn required<'a>(element: &'a Element, name: &str) -> crate::Result<&'a str> {
         })
 }
 
-fn value(value: Option<&String>) -> serde_json::Value {
-    value.map_or(serde_json::Value::Null, |s| serde_json::json!(s))
-}
-
 fn attribute_name(name: &str) -> (String, Option<String>) {
     name.strip_prefix('{')
         .and_then(|name| name.split_once('}'))
@@ -846,7 +969,7 @@ mod tests {
     fn streaming_delivers_records_before_a_late_parse_error() {
         let mut names = Vec::new();
         let result = read_with::<_, crate::Error>(
-            br#"<mame><machine name="first"/><machine name="broken">"#,
+            br#"<mame><machine name="first"><description>First</description></machine><machine name="broken">"#,
             |_| Ok(()),
             |(), record| {
                 if let MameRecord::Machine(machine) = record {
@@ -862,7 +985,9 @@ mod tests {
     #[test]
     fn content_before_the_root_never_starts_publication() {
         for prefix in ["junk", "<![CDATA[junk]]>", "&amp;", "\u{a0}"] {
-            let xml = format!("{prefix}<mame><machine name='x'/></mame>");
+            let xml = format!(
+                "{prefix}<mame><machine name='x'><description>X</description></machine></mame>"
+            );
             let mut started = false;
             let result = read_with::<_, crate::Error>(
                 xml.as_bytes(),
@@ -880,11 +1005,15 @@ mod tests {
     #[test]
     fn only_xml_whitespace_is_allowed_outside_the_root() {
         for whitespace in [" ", "\t", "\r", "\n", " \t\r\n"] {
-            let xml = format!("{whitespace}<mame><machine name='x'/></mame>{whitespace}");
+            let xml = format!(
+                "{whitespace}<mame><machine name='x'><description>X</description></machine></mame>{whitespace}"
+            );
             assert!(MameCatalog::parse(xml.as_bytes()).is_ok());
         }
         for suffix in ["\u{a0}", "\u{2003}", "\u{85}"] {
-            let xml = format!("<mame><machine name='x'/></mame>{suffix}");
+            let xml = format!(
+                "<mame><machine name='x'><description>X</description></machine></mame>{suffix}"
+            );
             assert!(
                 MameCatalog::parse(xml.as_bytes()).is_err(),
                 "accepted invalid suffix {suffix:?}"
@@ -909,10 +1038,13 @@ mod tests {
     {
         let missing = || std::io::Error::other("synthetic XML structure is incomplete");
         let root = parse_xml_element(
-            br#"<mame><machine name="x"><future>before<x/>after</future></machine></mame>"#,
+            br#"<mame><machine name="x"><description>X</description><future>before<x/>after</future></machine></mame>"#,
         )?;
         let machine = root.children().next().ok_or_else(missing)?;
-        let future = machine.children().next().ok_or_else(missing)?;
+        let future = machine
+            .children()
+            .find(|child| child.name == "future")
+            .ok_or_else(missing)?;
         let serialized = serde_json::to_value(future)?;
         let content = serialized
             .get("content")

@@ -151,6 +151,45 @@ struct MachineSwitchValueRow {
     is_default: bool,
 }
 
+#[derive(QueryableByName)]
+struct MachineBiosSetRow {
+    #[diesel(sql_type = Text)]
+    set_name: String,
+    #[diesel(sql_type = BigInt)]
+    bios_order: i64,
+    #[diesel(sql_type = Text)]
+    name: String,
+    #[diesel(sql_type = Nullable<Text>)]
+    description: Option<String>,
+    #[diesel(sql_type = Bool)]
+    is_default: bool,
+}
+
+#[derive(QueryableByName)]
+#[allow(clippy::struct_excessive_bools)] // Mirrors independent MAME DTD flags from one SQLite row.
+struct MameMachineFactsRow {
+    #[diesel(sql_type = Text)]
+    set_name: String,
+    #[diesel(sql_type = Nullable<Text>)]
+    source_file: Option<String>,
+    #[diesel(sql_type = Text)]
+    description: String,
+    #[diesel(sql_type = Nullable<Text>)]
+    year: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    manufacturer: Option<String>,
+    #[diesel(sql_type = Bool)]
+    is_device: bool,
+    #[diesel(sql_type = Bool)]
+    runnable: bool,
+    #[diesel(sql_type = Bool)]
+    is_bios: bool,
+    #[diesel(sql_type = Bool)]
+    is_mechanical: bool,
+    #[diesel(sql_type = Bool)]
+    is_consumable: bool,
+}
+
 #[derive(Default)]
 struct CatalogRecords {
     sets: BTreeMap<String, SetRow>,
@@ -158,6 +197,8 @@ struct CatalogRecords {
     extensions: BTreeMap<(String, String), Vec<serde_json::Value>>,
     asset_extensions: BTreeMap<(String, String), Vec<serde_json::Value>>,
     machine_switches: BTreeMap<String, Vec<serde_json::Value>>,
+    machine_bios_sets: BTreeMap<String, Vec<serde_json::Value>>,
+    mame_machine_facts: BTreeMap<String, serde_json::Value>,
 }
 
 pub fn diff(
@@ -455,6 +496,8 @@ fn records(
     .bind::<Text, _>(key.as_str())
     .load::<ExtensionRow>(conn)?;
     let machine_switches = mame_switch_facts(conn, key)?;
+    let machine_bios_sets = mame_bios_set_facts(conn, key)?;
+    let mame_machine_facts = load_mame_machine_facts(conn, key)?;
 
     let mut result = CatalogRecords::default();
     for set in sets {
@@ -493,6 +536,8 @@ fn records(
         }
     }
     result.machine_switches = machine_switches;
+    result.machine_bios_sets = machine_bios_sets;
+    result.mame_machine_facts = mame_machine_facts;
     for extensions in result.extensions.values_mut() {
         extensions.sort_by_key(serde_json::Value::to_string);
     }
@@ -597,6 +642,63 @@ fn mame_switch_facts(
     Ok(result)
 }
 
+fn mame_bios_set_facts(
+    conn: &mut diesel::SqliteConnection,
+    key: &SnapshotKey,
+) -> crate::Result<BTreeMap<String, Vec<serde_json::Value>>> {
+    let rows = sql_query(
+        "SELECT set_name, bios_order, name, description, is_default FROM machine_bios_sets \
+         WHERE snapshot_key = ? ORDER BY set_name, bios_order",
+    )
+    .bind::<Text, _>(key.as_str())
+    .load::<MachineBiosSetRow>(conn)?;
+    let mut facts = BTreeMap::<String, Vec<serde_json::Value>>::new();
+    for row in rows {
+        facts
+            .entry(row.set_name)
+            .or_default()
+            .push(serde_json::json!({
+                "order": row.bios_order,
+                "name": row.name,
+                "description": row.description,
+                "default": row.is_default,
+            }));
+    }
+    Ok(facts)
+}
+
+fn load_mame_machine_facts(
+    conn: &mut diesel::SqliteConnection,
+    key: &SnapshotKey,
+) -> crate::Result<BTreeMap<String, serde_json::Value>> {
+    let rows = sql_query(
+        "SELECT set_name, source_file, description, year, manufacturer, is_device, runnable, \
+         is_bios, is_mechanical, is_consumable FROM mame_machine_facts \
+         WHERE snapshot_key = ? ORDER BY set_name",
+    )
+    .bind::<Text, _>(key.as_str())
+    .load::<MameMachineFactsRow>(conn)?;
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            (
+                row.set_name,
+                serde_json::json!({
+                    "source_file": row.source_file,
+                    "description": row.description,
+                    "year": row.year,
+                    "manufacturer": row.manufacturer,
+                    "is_device": row.is_device,
+                    "runnable": row.runnable,
+                    "is_bios": row.is_bios,
+                    "is_mechanical": row.is_mechanical,
+                    "is_consumable": row.is_consumable,
+                }),
+            )
+        })
+        .collect())
+}
+
 fn requirement_changes(
     previous: Option<&BTreeMap<String, Vec<serde_json::Value>>>,
     current: Option<&BTreeMap<String, Vec<serde_json::Value>>>,
@@ -673,7 +775,9 @@ fn json(value: &str) -> serde_json::Value {
 fn set_metadata(records: &CatalogRecords, name: &str, set: &SetRow) -> serde_json::Value {
     serde_json::json!({
         "metadata": json(&set.metadata_json),
+        "mame_machine_facts": records.mame_machine_facts.get(name),
         "machine_switches": records.machine_switches.get(name),
+        "machine_bios_sets": records.machine_bios_sets.get(name),
         "source_extensions": records.extensions.iter()
             .filter(|((kind, record_name), _)| {
                 record_name == name && matches!(kind.as_str(), "game" | "machine" | "set")
