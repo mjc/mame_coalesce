@@ -265,8 +265,8 @@ devenv test                  # the same gate, Git hooks and CLI smoke test
 ```
 
 Inside an already activated shell, run `cargo` or `build` directly.
-Do not nest `nix develop` inside devenv. For automatic activation, configure
-`devenv hook` for your shell and run `devenv allow` after reviewing the checkout.
+For automatic activation, configure `devenv hook` for your shell and run
+`devenv allow` after reviewing the checkout.
 The project does not require `.envrc` or automatically load `.env`.
 
 | Feature | Usage |
@@ -281,9 +281,6 @@ The project does not require `.envrc` or automatically load `.env`.
 Normal builds and tests use `--locked`; entering a shell does not update
 Cargo dependencies or run the full test suite. No services are needed for this
 CLI: tests use temporary SQLite databases and synthetic archive fixtures.
-
-The older `nix develop -c ...` entrypoint remains available for compatibility,
-but devenv is the primary development and CI gate.
 
 ## MAME XML catalog import
 

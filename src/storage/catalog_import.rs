@@ -17,6 +17,11 @@ use crate::{
     mame_softwarelist::SoftwareListCatalog,
     no_intro_pc_xml::Catalog as NoIntroCatalog,
     storage::{
+        catalog_content::{
+            CatalogContentOccurrence, ContentDigestAssertions, ContentIdentityResolution,
+            record_content_identity_conflict, record_occurrence_digest_assertions,
+            resolve_content_identity,
+        },
         db::Pool,
         documents::DocumentStore,
         relationships::{SourceRelationshipDraft, insert_source_assertion},
@@ -1294,67 +1299,153 @@ fn insert_snapshot_set(
     persist_set_relationships(conn, snapshot_key, set)?;
 
     for (order, asset) in set.assets.iter().enumerate() {
-        let component_order = i64::try_from(order)
-            .map_err(|_| crate::Error::InvalidPath("too many catalog assets".into()))?;
-        let size = asset
-            .size
-            .map(i64::try_from)
-            .transpose()
-            .map_err(|_| crate::Error::InvalidRomSize(asset.size.unwrap_or_default()))?;
-        let mame_attributes = asset.mame_attributes.as_ref();
-        let mame_offset = mame_attributes
-            .and_then(|attributes| attributes.offset)
-            .map(|value| i64::try_from(value.0))
-            .transpose()
-            .map_err(|_| {
-                crate::Error::InvalidPath("MAME asset offset exceeds SQLite range".into())
-            })?;
-        let mame_flag =
-            |value: Option<mame::MameBoolean>| value.map(|value| i64::from(value.as_bool()));
-        sql_query(
-            "INSERT INTO asset_requirement_rows \
-             (set_id, component_order, asset_name, role, size, crc, md5, sha1, evidence_scope, \
-             evidence_provenance, merge_name, dump_status, serial, date, metadata_json, source_line, \
-             source_column, region, bios, offset, optional, sound_only, dispose, load_flag, value, \
-             inverted, ovha, no_thread, disk_index, writable, writeable) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'source_declared', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, \
-             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind::<BigInt, _>(set_id)
-        .bind::<BigInt, _>(component_order)
-        .bind::<Text, _>(&asset.name)
-        .bind::<Text, _>(asset.role)
-        .bind::<Nullable<BigInt>, _>(size)
-        .bind::<Nullable<Binary>, _>(asset.crc.as_deref())
-        .bind::<Nullable<Binary>, _>(asset.md5.as_deref())
-        .bind::<Nullable<Binary>, _>(asset.sha1.as_deref())
-        .bind::<Text, _>(asset.evidence_scope)
-        .bind::<Nullable<Text>, _>(asset.merge.as_deref())
-        .bind::<Nullable<Text>, _>(asset.dump_status.as_deref())
-        .bind::<Nullable<Text>, _>(asset.serial.as_deref())
-        .bind::<Nullable<Text>, _>(asset.date.as_deref())
-        .bind::<Text, _>(serde_json::to_string(&asset.metadata)?)
-        .bind::<BigInt, _>(asset.location.line)
-        .bind::<BigInt, _>(asset.location.column)
-        .bind::<Nullable<Text>, _>(mame_attributes.and_then(|attributes| attributes.region.as_deref()))
-        .bind::<Nullable<Text>, _>(mame_attributes.and_then(|attributes| attributes.bios.as_deref()))
-        .bind::<Nullable<BigInt>, _>(mame_offset)
-        .bind::<Nullable<BigInt>, _>(mame_attributes.map(|attributes| i64::from(attributes.optional.as_bool())))
-        .bind::<Nullable<BigInt>, _>(mame_flag(mame_attributes.and_then(|attributes| attributes.sound_only)))
-        .bind::<Nullable<BigInt>, _>(mame_flag(mame_attributes.and_then(|attributes| attributes.dispose)))
-        .bind::<Nullable<Text>, _>(mame_attributes.and_then(|attributes| attributes.load_flag.as_deref()))
-        .bind::<Nullable<Text>, _>(mame_attributes.and_then(|attributes| attributes.value.as_deref()))
-        .bind::<Nullable<BigInt>, _>(mame_flag(mame_attributes.and_then(|attributes| attributes.inverted)))
-        .bind::<Nullable<Text>, _>(mame_attributes.and_then(|attributes| attributes.ovha.as_deref()))
-        .bind::<Nullable<BigInt>, _>(mame_flag(mame_attributes.and_then(|attributes| attributes.no_thread)))
-        .bind::<Nullable<Text>, _>(mame_attributes.and_then(|attributes| attributes.disk_index.as_deref()))
-        .bind::<Nullable<BigInt>, _>(mame_flag(mame_attributes.and_then(|attributes| attributes.writable)))
-        .bind::<Nullable<BigInt>, _>(mame_flag(mame_attributes.and_then(|attributes| attributes.writeable)))
-        .execute(conn)?;
+        insert_asset_requirement(conn, set_id, checked_order(order, "catalog assets")?, asset)?;
     }
     insert_machine_switches(conn, set_id, set)?;
     insert_machine_bios_sets(conn, snapshot_key, set)?;
     Ok(())
+}
+
+fn insert_asset_requirement(
+    conn: &mut SqliteConnection,
+    set_id: i64,
+    component_order: i64,
+    asset: &SnapshotAsset,
+) -> crate::Result<()> {
+    let size = asset
+        .size
+        .map(i64::try_from)
+        .transpose()
+        .map_err(|_| crate::Error::InvalidRomSize(asset.size.unwrap_or_default()))?;
+    let digests = ContentDigestAssertions::new(
+        asset.evidence_scope,
+        asset.crc.as_deref(),
+        asset.md5.as_deref(),
+        asset.sha1.as_deref(),
+        None,
+    );
+    let resolution = if asset.role == "other" {
+        ContentIdentityResolution::NoEligibleEvidence
+    } else {
+        resolve_content_identity(conn, size, digests)?
+    };
+    let content_uuid = resolution
+        .content_id()
+        .map(|content_id| content_id.as_bytes().to_vec());
+    insert_asset_requirement_row(conn, set_id, component_order, asset, size, content_uuid)?;
+    record_occurrence_digest_assertions(
+        conn,
+        CatalogContentOccurrence::MachineAsset {
+            set_id,
+            component_order,
+        },
+        digests,
+        "source_declared",
+    )?;
+    record_content_identity_conflict(
+        conn,
+        CatalogContentOccurrence::MachineAsset {
+            set_id,
+            component_order,
+        },
+        &resolution,
+    )?;
+    Ok(())
+}
+
+fn insert_asset_requirement_row(
+    conn: &mut SqliteConnection,
+    set_id: i64,
+    component_order: i64,
+    asset: &SnapshotAsset,
+    size: Option<i64>,
+    content_uuid: Option<Vec<u8>>,
+) -> crate::Result<()> {
+    let mame_attributes = asset.mame_attributes.as_ref();
+    let mame_offset = sqlite_mame_offset(mame_attributes)?;
+    sql_query(
+        "INSERT INTO asset_requirement_rows \
+         (set_id, component_order, asset_name, role, size, evidence_scope, \
+         evidence_provenance, merge_name, dump_status, serial, date, metadata_json, source_line, \
+         source_column, region, bios, offset, optional, sound_only, dispose, load_flag, value, \
+         inverted, ovha, no_thread, disk_index, writable, writeable, content_uuid) \
+         VALUES (?, ?, ?, ?, ?, ?, 'source_declared', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, \
+         ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind::<BigInt, _>(set_id)
+    .bind::<BigInt, _>(component_order)
+    .bind::<Text, _>(&asset.name)
+    .bind::<Text, _>(asset.role)
+    .bind::<Nullable<BigInt>, _>(size)
+    .bind::<Text, _>(asset.evidence_scope)
+    .bind::<Nullable<Text>, _>(asset.merge.as_deref())
+    .bind::<Nullable<Text>, _>(asset.dump_status.as_deref())
+    .bind::<Nullable<Text>, _>(asset.serial.as_deref())
+    .bind::<Nullable<Text>, _>(asset.date.as_deref())
+    .bind::<Text, _>(serde_json::to_string(&asset.metadata)?)
+    .bind::<BigInt, _>(asset.location.line)
+    .bind::<BigInt, _>(asset.location.column)
+    .bind::<Nullable<Text>, _>(mame_attributes.and_then(|attributes| attributes.region.as_deref()))
+    .bind::<Nullable<Text>, _>(mame_attributes.and_then(|attributes| attributes.bios.as_deref()))
+    .bind::<Nullable<BigInt>, _>(mame_offset)
+    .bind::<Nullable<BigInt>, _>(
+        mame_attributes.map(|attributes| i64::from(attributes.optional.as_bool())),
+    )
+    .bind::<Nullable<BigInt>, _>(
+        mame_attributes
+            .and_then(|attributes| attributes.sound_only)
+            .map(sqlite_mame_boolean),
+    )
+    .bind::<Nullable<BigInt>, _>(
+        mame_attributes
+            .and_then(|attributes| attributes.dispose)
+            .map(sqlite_mame_boolean),
+    )
+    .bind::<Nullable<Text>, _>(
+        mame_attributes.and_then(|attributes| attributes.load_flag.as_deref()),
+    )
+    .bind::<Nullable<Text>, _>(mame_attributes.and_then(|attributes| attributes.value.as_deref()))
+    .bind::<Nullable<BigInt>, _>(
+        mame_attributes
+            .and_then(|attributes| attributes.inverted)
+            .map(sqlite_mame_boolean),
+    )
+    .bind::<Nullable<Text>, _>(mame_attributes.and_then(|attributes| attributes.ovha.as_deref()))
+    .bind::<Nullable<BigInt>, _>(
+        mame_attributes
+            .and_then(|attributes| attributes.no_thread)
+            .map(sqlite_mame_boolean),
+    )
+    .bind::<Nullable<Text>, _>(
+        mame_attributes.and_then(|attributes| attributes.disk_index.as_deref()),
+    )
+    .bind::<Nullable<BigInt>, _>(
+        mame_attributes
+            .and_then(|attributes| attributes.writable)
+            .map(sqlite_mame_boolean),
+    )
+    .bind::<Nullable<BigInt>, _>(
+        mame_attributes
+            .and_then(|attributes| attributes.writeable)
+            .map(sqlite_mame_boolean),
+    )
+    .bind::<Nullable<Binary>, _>(content_uuid)
+    .execute(conn)?;
+    Ok(())
+}
+
+fn sqlite_mame_offset(
+    attributes: Option<&mame::MameAssetAttributes>,
+) -> crate::Result<Option<i64>> {
+    attributes
+        .and_then(|attributes| attributes.offset)
+        .map(|value| i64::try_from(value.0))
+        .transpose()
+        .map_err(|_| crate::Error::InvalidPath("MAME asset offset exceeds SQLite range".into()))
+}
+
+fn sqlite_mame_boolean(value: mame::MameBoolean) -> i64 {
+    i64::from(value.as_bool())
 }
 
 fn insert_logiqx_document_facts(
@@ -2295,21 +2386,33 @@ fn insert_software_component(
         .map(i64::try_from)
         .transpose()
         .map_err(|_| crate::Error::InvalidRomSize(offset.unwrap_or_default()))?;
+    let area_order = checked_order(area_order, "software areas")?;
+    let component_order = checked_order(component_order, "software components")?;
+    let digests =
+        ContentDigestAssertions::new(evidence_scope, crc.as_deref(), None, sha1.as_deref(), None);
+    let content_resolution = if component.is_file_declaration() {
+        resolve_content_identity(conn, size, digests)?
+    } else {
+        ContentIdentityResolution::NoEligibleEvidence
+    };
+    let content_uuid = content_resolution
+        .content_id()
+        .map(|content_id| content_id.as_bytes().to_vec());
     sql_query(
         "INSERT INTO software_components \
          (snapshot_key, list_name, item_name, part_name, area_order, area_kind, area_name, component_order, \
           component_kind, component_name, size, crc, sha1, evidence_scope, offset, value, dump_status, writeable, \
-          load_instruction, source_line, source_column) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          load_instruction, source_line, source_column, content_uuid) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind::<Text, _>(part.item.snapshot_key.as_str())
     .bind::<Text, _>(part.item.list_name)
     .bind::<Text, _>(part.item.item_name)
     .bind::<Text, _>(part.part_name)
-    .bind::<BigInt, _>(checked_order(area_order, "software areas")?)
+    .bind::<BigInt, _>(area_order)
     .bind::<Text, _>(area.kind.as_str())
     .bind::<Text, _>(area.name.as_str())
-    .bind::<BigInt, _>(checked_order(component_order, "software components")?)
+    .bind::<BigInt, _>(component_order)
     .bind::<Text, _>(component.kind())
     .bind::<Nullable<Text>, _>(name)
     .bind::<Nullable<BigInt>, _>(size)
@@ -2323,7 +2426,20 @@ fn insert_software_component(
     .bind::<Nullable<Text>, _>(load)
     .bind::<BigInt, _>(component.location().line)
     .bind::<BigInt, _>(component.location().column)
+    .bind::<Nullable<Binary>, _>(content_uuid)
     .execute(conn)?;
+    record_content_identity_conflict(
+        conn,
+        CatalogContentOccurrence::SoftwareComponent {
+            snapshot_key: part.item.snapshot_key.as_str(),
+            list_name: part.item.list_name,
+            item_name: part.item.item_name,
+            part_name: part.part_name,
+            area_order,
+            component_order,
+        },
+        &content_resolution,
+    )?;
     Ok(())
 }
 

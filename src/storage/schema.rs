@@ -314,6 +314,8 @@ diesel::table! {
         load_instruction -> Nullable<Text>,
         source_line -> BigInt,
         source_column -> BigInt,
+        evidence_scope -> Text,
+        content_uuid -> Nullable<Binary>,
     }
 }
 
@@ -349,6 +351,7 @@ diesel::table! {
         metadata_json -> Text,
         source_line -> BigInt,
         source_column -> BigInt,
+        content_uuid -> Nullable<Binary>,
     }
 }
 
@@ -371,6 +374,83 @@ diesel::table! {
         disk_index -> Nullable<Text>,
         writable -> Nullable<BigInt>,
         writeable -> Nullable<BigInt>,
+    }
+}
+
+diesel::table! {
+    catalog_contents (content_uuid) {
+        content_uuid -> Binary,
+        expected_size -> Nullable<BigInt>,
+    }
+}
+
+diesel::table! {
+    digest_values (digest_id) {
+        digest_id -> BigInt,
+        algorithm -> Text,
+        digest -> Binary,
+    }
+}
+
+diesel::table! {
+    catalog_content_digest_assertions (content_uuid, digest_id, scope) {
+        content_uuid -> Binary,
+        digest_id -> BigInt,
+        scope -> Text,
+    }
+}
+
+diesel::table! {
+    asset_requirement_digest_assertions (set_id, component_order, digest_id, scope, provenance) {
+        set_id -> BigInt,
+        component_order -> BigInt,
+        digest_id -> BigInt,
+        scope -> Text,
+        provenance -> Text,
+    }
+}
+
+diesel::table! {
+    software_component_occurrences (
+        snapshot_key, list_name, item_name, part_name, area_order, component_order
+    ) {
+        snapshot_key -> Text,
+        list_name -> Text,
+        item_name -> Text,
+        part_name -> Text,
+        area_order -> BigInt,
+        area_kind -> Text,
+        area_name -> Text,
+        component_order -> BigInt,
+        component_kind -> Text,
+        component_name -> Nullable<Text>,
+        size -> Nullable<BigInt>,
+        offset -> Nullable<BigInt>,
+        value -> Nullable<Text>,
+        dump_status -> Nullable<Text>,
+        writeable -> Nullable<BigInt>,
+        load_instruction -> Nullable<Text>,
+        source_line -> BigInt,
+        source_column -> BigInt,
+        evidence_scope -> Text,
+        content_uuid -> Nullable<Binary>,
+    }
+}
+
+diesel::table! {
+    software_component_digest_assertions (
+        snapshot_key, list_name, item_name, part_name, area_order,
+        component_order, digest_id, scope, provenance
+    ) {
+        snapshot_key -> Text,
+        list_name -> Text,
+        item_name -> Text,
+        part_name -> Text,
+        area_order -> BigInt,
+        component_order -> BigInt,
+        digest_id -> BigInt,
+        scope -> Text,
+        provenance -> Text,
     }
 }
 
@@ -602,6 +682,10 @@ diesel::allow_tables_to_appear_in_same_query!(
     acquisition_attempt_transport_headers,
     acquisition_transport_headers,
     asset_requirements,
+    asset_requirement_digest_assertions,
+    catalog_contents,
+    catalog_content_digest_assertions,
+    digest_values,
     mame_asset_facts,
     no_intro_game_facts,
     logiqx_document_facts,
@@ -624,6 +708,8 @@ diesel::allow_tables_to_appear_in_same_query!(
     relationship_reviews,
     software_areas,
     software_components,
+    software_component_occurrences,
+    software_component_digest_assertions,
     software_item_dependencies,
     software_item_info,
     software_item_shared_features,

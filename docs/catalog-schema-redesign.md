@@ -183,8 +183,27 @@ game/content identities.
 | `snapshot_scope`, `scope_member_names` | Unknown/complete/filtered/partial scope and ordered or set-valued members according to the actual scope contract. No serialized name list. |
 | `record_namespaces` | A snapshot root namespace, or a software-list namespace. This keeps software-list item names scoped to their own list. |
 | `records` | Namespace FK, native record kind, source order and source name; native facts attach by `RecordId`. Name lookup may be ambiguous unless the supported dialect guarantees uniqueness. |
-| `asset_claims` | Compact identity and owning record for actual declared file/media claims. Each native claim table owns its values; this relation is an FK target, not a duplicate hash/name payload. |
+| `asset_occurrences` | One source occurrence in a record: either a file/media claim or a digest-bearing source/load operation. It preserves owner and order; file/media claims may reference a shared content UUID. List-specific name, role, status and native semantics remain occurrence/native facts. |
+| `catalog_contents` | One deduplicated catalog-level whole-file content identity with a persistent 128-bit UUID stored as its 16 canonical bytes in one SQLite BLOB; any number of asset occurrences can reference it. It contains no ROM bytes and no list-specific naming/role metadata. |
+| `digest_values` / `occurrence_digest_assertions` | Interned algorithm and bytes, plus a source-attributed occurrence link carrying scope and provenance. This is the authoritative owner of common digest assertions; native subtype rows do not duplicate those values. |
+| `content_identity_digest_aliases` | Eligible whole-file digest aliases for a UUID, carrying the asserted scope. Lookup is non-unique: contradictory source data may make one digest value point at multiple identities, which remains a conflict rather than an automatic merge. |
 | `assertions` | Compact identity and source/derived/user origin. Source-native declaration tables own source fields; derived/user subtype tables own explicit endpoints and rules. |
+
+The current SQLite slice implements the shared identity and normalized digest
+storage in migrations 28–29. `catalog_contents.content_uuid` is a persistent
+16-byte BLOB; `digest_values` interns only `(algorithm, digest bytes)`;
+`catalog_content_digest_assertions` records eligible identity aliases with
+scope. `asset_requirement_digest_assertions` and
+`software_component_digest_assertions` retain each occurrence's native key,
+digest, scope, and provenance. The physical occurrence rows no longer store
+CRC/MD5/SHA-1 bytes. `asset_requirements` and `software_components` currently
+derive the former single-hash columns as compatibility projections; direct
+query consumers still need to move to long-form assertion queries as the
+remaining schema migration proceeds. MAME software-list and machine imports
+share eligible SHA-1 identities without collapsing their occurrence rows;
+operation-only and scoped disk assertions remain unlinked. SHA-256 parser
+coverage, explicit digest-bridge review/redirects, and interchange conversion
+remain outstanding.
 
 Foreign keys must keep a record, its namespace, and its snapshot consistent.
 Source name/order uniqueness is decided per pinned dialect, not imposed on every
@@ -192,15 +211,79 @@ catalog. Source-location columns live with the authoritative native fact; a
 generic node/location row is not added for every XML token.
 
 The minimal key shapes are `record_namespaces(namespace_id, snapshot_id, kind)`,
-`records(record_id, namespace_id, kind, source_order, source_name)`, and
-`asset_claims(claim_id, record_id, native_claim_kind)`. A native claim payload has
-`claim_id` as its primary key and FK; it stores no second copy of the owning
-record's name or snapshot key. Its discriminator must match its native subtype.
-Nested payload owners must belong to that same record/namespace/snapshot,
-enforced with composite FKs or specific checked insert rules, not merely Rust
-conventions. Exactly one native payload must exist for each published claim.
-Snapshot publication validation and immutable source tables enforce completion
-of those subtype relationships.
+`records(record_id, namespace_id, kind, source_order, source_name)`,
+`asset_occurrences(occurrence_id, record_id, occurrence_order,
+native_claim_kind, content_uuid?)`,
+and `catalog_contents(content_uuid BLOB PRIMARY KEY NOT NULL
+CHECK(length(content_uuid) = 16))`.
+The 16 bytes use canonical UUID octet order; this is a single exact BLOB key,
+not SQLite `REAL`, decimal text, or a truncated integer. Textual interchange,
+when needed, uses 32 lowercase hexadecimal characters without dashes and is not
+the stored key. An optional occurrence FK is either NULL or exactly 16 bytes.
+A native claim payload has its occurrence ID as primary key and FK; it stores
+no second copy of the owning record's name or
+snapshot key. Its discriminator must match its native subtype. Nested payload
+owners must belong to that same record/namespace/snapshot, enforced with
+composite FKs or specific checked insert rules, not merely Rust conventions.
+`UNIQUE(record_id, occurrence_order)` preserves repeated declarations while
+giving each its exact document-preorder position across nested parts, areas,
+and file/media families. Native payload rows reference the occurrence ID and
+matching discriminator; native area/operation ordinals are retained separately
+for their scoped semantics. Common digest bytes are interned by
+`(algorithm, value)`; `occurrence_digest_assertions` links those bytes to each
+digest-bearing source occurrence and carries that occurrence's scope and
+provenance. It is the single authoritative owner of common digest assertions.
+Operation-only digest facts remain attached to the source operation occurrence
+and are not promoted to a shared file identity.
+`content_identity_digest_aliases(content_uuid, digest_id, scope)` links
+eligible aliases to identities without enforcing global uniqueness. A
+per-occurrence digest query returns multiple assertions without multiplying the
+one-row-per-occurrence catalog projection.
+
+Every published occurrence has exactly one native payload; a content identity
+may have any number of occurrences, including occurrences from different
+catalogs and formats. Assign its UUID once and preserve it through reimports,
+backups and restores; never regenerate a different UUID for an already-known
+identity. Digest aliases find an existing UUID or qualify a new identity, but
+the digest itself is not used as the cross-list key. A destructive full rebuild
+must either restore the identity registry or be explicitly treated as a new
+catalog generation; it must not silently claim the old UUIDs remain stable.
+
+Deduplicate identity, not source-list membership. Two identical ROM
+declarations in different lists remain two occurrences, preserving each list's
+record, source order, declared name/role/status, source location, explicit vs
+defaulted fields, and source-attributed digest assertions. Both may reference
+one `catalog_contents` row, so global content queries return one identity with
+all source occurrences. Native query projections join those occurrences and
+their authoritative native facts; they do not clone a ROM row per list.
+
+This identity represents catalog-asserted expected whole-file content, not
+verified physical bytes. A matching parsed source SHA-1 or SHA-256 explicitly
+scoped to the whole file is eligible to share a UUID; this is an assertion-based
+deduplication rule, not a cryptographic guarantee that source claims are true.
+CRC32/MD5-only evidence, filenames, size, merge tokens, scoped CHD/track/
+subcomponent digests and parser guesses never assign a shared UUID; they may
+produce candidate matches. Exact byte identity requires separately observed
+bytes and their own verified digest.
+
+Before associating an occurrence, compare every supplied size and digest
+assertion against the candidate identity. Any contradictory size or digest
+assertion blocks automatic sharing and remains visible on the source
+occurrence. If eligible aliases resolve to no identity, create one UUID. If
+they resolve to exactly one compatible identity, reuse its UUID. If they
+resolve to multiple UUIDs or conflict, leave the occurrence unlinked and
+record the candidate/conflict; never silently merge or pick a UUID. UUIDs are
+immutable; a later reviewed resolution explicitly selects the canonical UUID,
+redirects the other UUIDs with audit history, and updates alias lookup without
+reassigning any issued key. Import-order permutations must preserve the same
+occurrences, source assertions and unresolved candidate relationships; only
+the generated opaque UUID values may differ in a new identity registry.
+Missing eligible digests leave the occurrence unlinked. Observed local bytes
+and locations remain separate inventory entities. The shared identity
+relation is catalog metadata; it never stores ROM/media payload bytes. Only a
+file/media-claim occurrence may carry `content_uuid`; operation occurrences
+remain unlinked and associate with a file only through validated native
+declaration/use relations.
 
 For example, `mame_chips(machine_id, chip_order, ...)` has a clustered composite
 PK, and `mame_input_controls(machine_id, control_order, ...)` references the
@@ -214,6 +297,14 @@ retargeting an external review or manifest. Idempotence still binds identical
 document bytes, catalog identity, interpretation, and scope.
 
 ## MAME machine native relations
+
+The field lists below describe logical source/query fields, not a requirement
+to duplicate every common digest in each native table. Whole-file CRC/MD5/SHA
+assertions are owned once by interned `digest_values` plus the source-scoped
+`occurrence_digest_assertions` link. Native field queries join those facts.
+Digest-bearing software load/source operations receive their own ordered source
+occurrence; operation-specific digests remain attached there and never become a
+file claim unless the pinned format semantics establish one.
 
 The embedded DTD in the full 0.289 XML defines the baseline below. `*` families
 retain occurrence order. Singletons retain absence. Each family has its own
@@ -305,9 +396,11 @@ File-claim construction requires documented file-declaration semantics, a
 consistent area-local chain and checked ownership. Attribute-free or otherwise
 unclassifiable entries remain queryable with an explicit unclassified state;
 they do not fabricate filename or byte-length requirements. The native
-declaring entry owns the file's declared hashes. Any additional digest on a
-later operation remains that operation's source evidence until its scope is
-proved. The complete expected file length is a derived query value only when
+declaring entry is the source owner of the file's declared hashes; their values
+are stored once in `digest_values` and linked from that occurrence by
+`occurrence_digest_assertions`. Any additional digest on a later operation
+remains that operation's source evidence until its scope is proved. The complete
+expected file length is a derived query value only when
 the pinned loading rules and complete chain determine it; otherwise it is
 unknown. Segment sizes/offsets remain native values. Reload/fill lengths must
 not be naively summed into physical file size. Tests cover load+continue,
@@ -471,12 +564,43 @@ coverage gap, not evidence that the existing No-Intro parser handles this file.
 ## Common query contract and physical ownership
 
 The authoritative owner of each native field is exactly one native table.
-`asset_claims` supplies stable relational identity for actual file/media claims;
-format-native tables own the name/size/hash/status declaration once. A
-`catalog_file_claims` projection combines eligible native declarations, with
-typed digest algorithm, evidence scope and provenance. It never includes an
+`asset_occurrences` supplies source-scoped identity for each file/media claim
+and digest-bearing source operation. Format-native tables own the relevant
+name/size/status or operation facts once. The normalized
+`occurrence_digest_assertions` relation is the sole owner of common digest
+assertions, keyed through interned algorithm/value bytes with scope and
+provenance on each occurrence link.
+`catalog_contents` supplies a separately qualified cross-catalog whole-file
+identity, addressed by its persistent binary UUID, when the evidence supports
+one. A `catalog_file_claims` projection returns one row per source occurrence
+and its optional shared content identity. Digests are queried as a separate
+one-to-many child relation, so a join does not multiply occurrence rows. It
+never includes an
 instruction-only fill/reload as another file and never equates a track digest,
-CHD header SHA-1, logical disk digest, and whole-container digest.
+CHD header SHA-1, logical disk digest, and whole-container digest. APIs,
+history, and manifests remain snapshot/occurrence-scoped and return source
+provenance even when exposing the shared identity; global content lookup returns
+the identity plus paginated occurrences, never a list-specific declaration as
+if it were global metadata. Existing relationship endpoints using the current
+algorithm-plus-digest key migrate to a UUID only when an unambiguous whole-file
+alias identifies one; otherwise their evidence remains unresolved with no
+invented scope or target. Observed-byte identities remain a separate typed
+endpoint (`ObservedContentDigest` with whole-file scope and verified
+algorithm/value), never rewritten as catalog-assertion UUIDs. Source-native query rows join a single authoritative
+digest-assertion owner rather than repeating the same digest in both native
+payloads and a generic digest table.
+
+Specify the persistent identity's exact key and digest-scope policy together;
+the existing Rust `ContentIdentity` (algorithm plus digest) is insufficient to
+represent differently scoped evidence. Existing relationship endpoints using
+that type must migrate to a UUID only when an unambiguous whole-file alias maps
+to one identity; unscoped or ambiguous legacy endpoints remain unresolved with
+their original evidence rather than receiving an invented scope or UUID. Query
+common cases in bulk: occurrence
+to content identity, content identity to paginated occurrences, and candidate
+matching from incomplete evidence. Measure their cardinalities, query plans,
+and justified indexes in the import corpus so deduplication does not introduce
+per-occurrence lookup loops or oversized redundant indexes.
 
 Native sample declarations are expected audio-media claims with a `ClaimId`,
 unknown size and unknown digests. This includes MAME and Logiqx sample names and
@@ -608,8 +732,10 @@ recipe typestates continue to gate assembly and verification.
 1. Pin every supported format/dialect grammar and make a field-to-column/child
    coverage ledger, with required/optional/repeated/default rules. Label
    synthetic samples and unsupported production dialects honestly.
-2. Implement shared compact identities and source/snapshot/scope/option tables.
-   Replace JSON metadata and endpoint persistence with the native typed owners.
+2. Implement shared compact identities—including persistent 16-byte content
+   UUID BLOBs, source-attributed digest aliases and ordered occurrences—and
+   source/snapshot/scope/option tables. Replace JSON metadata and endpoint
+   persistence with the native typed owners.
 3. Replace the MAME wide union with narrow native tables and compact parents;
    migrate software-list hierarchy and load records as one coherent change.
 4. Complete Logiqx/TOSEC and ClrMamePro standard field coverage; add flat
@@ -625,10 +751,21 @@ recipe typestates continue to gate assembly and verification.
 Use schema-backed minimal witnesses for every declared field family, including
 valid empty values, duplicate name/value entries, repeated same-named areas,
 missing optional attributes, explicit defaults, out-of-order references, and
-load-only ROM entries. Test ambiguous target handling, digest-scope separation,
-idempotence, failed-EOF rollback, snapshot diffs, review/supersession stability,
-exact source recovery and backup/restore. Application tests should assert query
-facts and relationships, not mirror private insert statements.
+load-only ROM entries. Add cross-format witnesses proving equal eligible
+whole-file SHA-1/SHA-256 assertions share one content identity across catalogs while retaining
+separate ordered/source-attributed occurrences; same filenames with different
+digests do not merge; CRC-only, missing-digest, scoped-digest and conflicting
+size/digest claims do not merge unsafely. Test the SHA-1-only, SHA-256-only,
+then dual-digest bridge sequence in both import orders: the bridge to two
+existing UUIDs remains an explicit unresolved candidate until reviewed, and a
+reviewed merge redirects aliases without rewriting old UUIDs. UUID
+binary/undashed-hex conversion, stable reimport, and backup/restore preserve
+the same UUID; every occurrence assertion, field presence/default, source byte
+stream and order still round-trips. Test
+ambiguous target handling, digest-scope separation, idempotence, failed-EOF
+rollback, snapshot diffs, review/supersession stability, exact source recovery
+and backup/restore. Application tests should assert query facts and
+relationships, not mirror private insert statements.
 
 Add No-Intro regression witnesses for six NULs across source and release
 details recovering after decoding; exact original-source bytes/hash retained;

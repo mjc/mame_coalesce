@@ -171,6 +171,22 @@ impl SoftwareComponent {
         }
     }
 
+    pub const fn is_file_declaration(&self) -> bool {
+        match self {
+            Self::Rom(rom) => !matches!(
+                rom.load,
+                Some(
+                    LoadInstruction::Reload
+                        | LoadInstruction::Fill
+                        | LoadInstruction::Continue
+                        | LoadInstruction::ReloadPlain
+                        | LoadInstruction::Ignore
+                )
+            ),
+            Self::Disk(_) => true,
+        }
+    }
+
     pub const fn location(&self) -> RecordLocation {
         match self {
             Self::Rom(rom) => rom.location,

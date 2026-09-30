@@ -33,6 +33,26 @@ struct CountRow {
 }
 
 #[derive(QueryableByName)]
+struct SharedContentStats {
+    #[diesel(sql_type = BigInt)]
+    occurrences: i64,
+    #[diesel(sql_type = BigInt)]
+    linked_occurrences: i64,
+    #[diesel(sql_type = BigInt)]
+    identities: i64,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    minimum_uuid_bytes: Option<i64>,
+    #[diesel(sql_type = Nullable<Text>)]
+    storage_class: Option<String>,
+}
+
+#[derive(QueryableByName)]
+struct NullableBinaryRow {
+    #[diesel(sql_type = Nullable<Binary>)]
+    value: Option<Vec<u8>>,
+}
+
+#[derive(QueryableByName)]
 struct MachineSwitchRow {
     #[diesel(sql_type = BigInt)]
     switch_order: i64,
@@ -366,7 +386,7 @@ fn composite_key_catalog_tables_cluster_rows_by_their_primary_keys()
              'snapshot_sets', 'asset_requirement_rows', \
              'software_lists', 'software_items', 'software_parts', 'software_item_info', \
              'software_item_shared_features', 'software_part_features', 'software_areas', \
-             'software_components', 'software_item_dependencies', 'machine_switches', \
+             'software_component_occurrences', 'software_item_dependencies', 'machine_switches', \
              'machine_switch_locations', 'machine_switch_values', 'machine_bios_sets', \
              'mame_machine_facts', 'mame_machine_dependencies', \
              'software_part_dipswitches', 'software_part_dip_values', 'no_intro_game_facts', \
@@ -619,6 +639,46 @@ fn imports_overlapping_catalogs_and_reimports_idempotently()
     assert_eq!(count(&mut connection, "import_runs")?, 3);
     assert_eq!(count(&mut connection, "snapshot_publications")?, 2);
 
+    let shared_content = sql_query(
+        "SELECT COUNT(*) AS occurrences, COUNT(content_uuid) AS linked_occurrences, \
+         COUNT(DISTINCT content_uuid) AS identities, MIN(length(content_uuid)) AS minimum_uuid_bytes, \
+         MIN(typeof(content_uuid)) AS storage_class FROM asset_requirements WHERE sha1 = ?",
+    )
+    .bind::<Binary, _>([0xaa; 20].as_slice())
+    .get_result::<SharedContentStats>(&mut connection)?;
+    assert_eq!(shared_content.occurrences, 2);
+    assert_eq!(shared_content.linked_occurrences, 2);
+    assert_eq!(shared_content.identities, 1);
+    assert_eq!(shared_content.minimum_uuid_bytes, Some(16));
+    assert_eq!(shared_content.storage_class.as_deref(), Some("blob"));
+    let interned_sha1 = sql_query(
+        "SELECT COUNT(*) AS count FROM digest_values \
+         WHERE algorithm = 'sha1' AND digest = ?",
+    )
+    .bind::<Binary, _>([0xaa; 20].as_slice())
+    .get_result::<CountRow>(&mut connection)?;
+    assert_eq!(interned_sha1.count, 1);
+    let preserved_occurrence_assertions = sql_query(
+        "SELECT COUNT(*) AS count FROM asset_requirement_digest_assertions AS assertion \
+         JOIN digest_values AS digest USING (digest_id) \
+         WHERE digest.algorithm = 'sha1' AND digest.digest = ? \
+           AND assertion.scope = 'whole_asset' AND assertion.provenance = 'source_declared'",
+    )
+    .bind::<Binary, _>([0xaa; 20].as_slice())
+    .get_result::<CountRow>(&mut connection)?;
+    assert_eq!(preserved_occurrence_assertions.count, 2);
+    for table in ["asset_requirement_rows", "software_component_occurrences"] {
+        let duplicated_hash_columns = sql_query(format!(
+            "SELECT COUNT(*) AS count FROM pragma_table_info('{table}') \
+             WHERE name IN ('crc', 'md5', 'sha1')"
+        ))
+        .get_result::<CountRow>(&mut connection)?;
+        assert_eq!(
+            duplicated_hash_columns.count, 0,
+            "{table} stores no digest bytes"
+        );
+    }
+
     let unknown_attribute = sql_query(
         "SELECT field_name AS value FROM snapshot_extensions WHERE field_name = 'future-policy'",
     )
@@ -656,6 +716,116 @@ fn imports_overlapping_catalogs_and_reimports_idempotently()
     )
     .get_result::<NullableTextRow>(&mut connection)?;
     assert_eq!(namespace.value.as_deref(), Some("urn:vendor"));
+    Ok(())
+}
+
+#[test]
+fn conflicting_catalog_digest_claims_remain_unlinked() -> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, mut connection) = setup()?;
+    let baseline = request(
+        fixture("catalog-a-v1.dat"),
+        "publisher-a",
+        "catalog-a",
+        "Catalog A",
+    )?;
+    app::import_catalog(&database, &baseline)?;
+
+    for (name, size, crc) in [
+        ("contradictory-size.bin", 17, "12345678"),
+        ("contradictory-crc.bin", 16, "99999999"),
+    ] {
+        let path = directory.path().join(format!("{name}.dat"));
+        std::fs::write(
+            &path,
+            format!(
+                "<datafile><header><name>Conflict</name></header><game name=\"conflict-{name}\"><rom name=\"{name}\" size=\"{size}\" crc=\"{crc}\" sha1=\"{}\"/></game></datafile>",
+                "a".repeat(40)
+            ),
+        )?;
+        app::import_catalog(
+            &database,
+            &request(
+                path,
+                "publisher-conflict",
+                &format!("conflict-{name}"),
+                "Conflict",
+            )?,
+        )?;
+        let content_uuid =
+            sql_query("SELECT content_uuid AS value FROM asset_requirements WHERE asset_name = ?")
+                .bind::<Text, _>(name)
+                .get_result::<NullableBinaryRow>(&mut connection)?;
+        assert!(content_uuid.value.is_none());
+        let conflicts = sql_query(
+            "SELECT COUNT(*) AS count FROM asset_requirement_content_conflicts AS conflict \
+             JOIN asset_requirement_rows AS occurrence \
+               USING (set_id, component_order) WHERE occurrence.asset_name = ?",
+        )
+        .bind::<Text, _>(name)
+        .get_result::<CountRow>(&mut connection)?;
+        assert_eq!(conflicts.count, 1, "candidate conflict for {name}");
+    }
+
+    assert_ambiguous_digest_alias(&directory, &database, &mut connection)?;
+    Ok(())
+}
+
+fn assert_ambiguous_digest_alias(
+    directory: &tempfile::TempDir,
+    database: &Database,
+    connection: &mut SqliteConnection,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let colliding_identity = [0x5a; 16];
+    sql_query("INSERT INTO catalog_contents (content_uuid, expected_size) VALUES (?, 16)")
+        .bind::<Binary, _>(colliding_identity.as_slice())
+        .execute(connection)?;
+    sql_query("INSERT OR IGNORE INTO digest_values (algorithm, digest) VALUES ('sha1', ?)")
+        .bind::<Binary, _>([0xaa; 20].as_slice())
+        .execute(connection)?;
+    let digest_id = sql_query(
+        "SELECT digest_id AS value FROM digest_values \
+         WHERE algorithm = 'sha1' AND digest = ?",
+    )
+    .bind::<Binary, _>([0xaa; 20].as_slice())
+    .get_result::<IntegerRow>(connection)?
+    .value;
+    sql_query(
+        "INSERT INTO catalog_content_digest_assertions (content_uuid, digest_id, scope) \
+         VALUES (?, ?, 'whole_asset')",
+    )
+    .bind::<Binary, _>(colliding_identity.as_slice())
+    .bind::<BigInt, _>(digest_id)
+    .execute(connection)?;
+
+    let ambiguous_path = directory.path().join("ambiguous-alias.dat");
+    std::fs::write(
+        &ambiguous_path,
+        format!(
+            "<datafile><header><name>Ambiguous</name></header><game name=\"ambiguous\"><rom name=\"ambiguous.bin\" size=\"16\" crc=\"12345678\" sha1=\"{}\"/></game></datafile>",
+            "a".repeat(40)
+        ),
+    )?;
+    app::import_catalog(
+        database,
+        &request(
+            ambiguous_path,
+            "publisher-ambiguous",
+            "ambiguous-alias",
+            "Ambiguous",
+        )?,
+    )?;
+    let ambiguous_uuid = sql_query(
+        "SELECT content_uuid AS value FROM asset_requirements WHERE asset_name = 'ambiguous.bin'",
+    )
+    .get_result::<NullableBinaryRow>(connection)?;
+    assert!(ambiguous_uuid.value.is_none());
+    let conflicts = sql_query(
+        "SELECT COUNT(*) AS count FROM asset_requirement_content_conflicts AS conflict \
+         JOIN asset_requirement_rows AS occurrence USING (set_id, component_order) \
+         WHERE occurrence.asset_name = 'ambiguous.bin' AND conflict.reason = 'ambiguous_alias'",
+    )
+    .get_result::<CountRow>(connection)?;
+    assert_eq!(conflicts.count, 2);
     Ok(())
 }
 
@@ -2526,6 +2696,24 @@ fn assert_dependency_migration_round_trip(
                 == "2026-09-30-000027_derive_mame_dependency_assertion_keys"
         })
         .ok_or("derived MAME dependency key migration was not embedded")?;
+    let identity_migration = migrations
+        .iter()
+        .find(|migration| {
+            migration.name().to_string() == "2026-09-30-000028_shared_catalog_content_identity"
+        })
+        .ok_or("shared catalog content identity migration was not embedded")?;
+    let normalized_digests_migration = migrations
+        .iter()
+        .find(|migration| {
+            migration.name().to_string() == "2026-09-30-000029_normalized_catalog_digest_assertions"
+        })
+        .ok_or("normalized catalog digest migration was not embedded")?;
+    connection
+        .revert_migration(normalized_digests_migration.as_ref())
+        .map_err(io::Error::other)?;
+    connection
+        .revert_migration(identity_migration.as_ref())
+        .map_err(io::Error::other)?;
     connection
         .revert_migration(derived_dependency_key_migration.as_ref())
         .map_err(io::Error::other)?;
@@ -2555,6 +2743,12 @@ fn assert_dependency_migration_round_trip(
         .map_err(io::Error::other)?;
     connection
         .run_migration(derived_dependency_key_migration.as_ref())
+        .map_err(io::Error::other)?;
+    connection
+        .run_migration(identity_migration.as_ref())
+        .map_err(io::Error::other)?;
+    connection
+        .run_migration(normalized_digests_migration.as_ref())
         .map_err(io::Error::other)?;
     let restored_projection = sql_query(
         "SELECT COUNT(*) AS count FROM relationship_assertion_explanations \
@@ -2844,6 +3038,155 @@ fn imports_mame_softwarelists_with_nested_order_dependencies_and_load_claims()
     assert_software_list_components(&mut connection, &snapshot)?;
     assert_software_list_extensions(&mut connection, &snapshot)?;
     assert_malformed_software_list_fails(directory.path(), &database, &mut connection, &request)?;
+    Ok(())
+}
+
+#[test]
+fn software_list_occurrences_share_binary_content_identity_without_collapsing_rows()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (_directory, database, mut connection) = setup()?;
+    let first_request = mame_softwarelist_request()?;
+    let first = app::import_catalog(&database, &first_request)?;
+    let mut second_request = mame_softwarelist_request()?;
+    second_request.catalog_key = CatalogKey::new("second-software-list-catalog");
+    second_request.catalog_display_name = "Second software-list catalog".to_owned();
+    let second = app::import_catalog(&database, &second_request)?;
+    assert_ne!(first.snapshot_key, second.snapshot_key);
+
+    let shared_content = sql_query(
+        "SELECT COUNT(*) AS occurrences, COUNT(content_uuid) AS linked_occurrences, \
+         COUNT(DISTINCT content_uuid) AS identities, MIN(length(content_uuid)) AS minimum_uuid_bytes, \
+         MIN(typeof(content_uuid)) AS storage_class FROM software_components \
+         WHERE sha1 = ? AND evidence_scope = 'whole_asset'",
+    )
+    .bind::<Binary, _>(
+        hex::decode("0123456789abcdef0123456789abcdef01234567")?.as_slice(),
+    )
+    .get_result::<SharedContentStats>(&mut connection)?;
+    assert_eq!(shared_content.occurrences, 2);
+    assert_eq!(shared_content.linked_occurrences, 2);
+    assert_eq!(shared_content.identities, 1);
+    assert_eq!(shared_content.minimum_uuid_bytes, Some(16));
+    assert_eq!(shared_content.storage_class.as_deref(), Some("blob"));
+
+    let names = sql_query(
+        "SELECT component_name AS value FROM software_components \
+         WHERE sha1 = ? ORDER BY snapshot_key",
+    )
+    .bind::<Binary, _>(hex::decode("0123456789abcdef0123456789abcdef01234567")?.as_slice())
+    .load::<TextRow>(&mut connection)?;
+    assert_eq!(names.len(), 2);
+    assert_eq!(names[0].value, "program.bin");
+    assert_eq!(names[1].value, "program.bin");
+    Ok(())
+}
+
+#[test]
+fn operation_only_software_rom_digest_is_not_promoted_to_file_identity()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, mut connection) = setup()?;
+    let path = directory.path().join("software-list-operation-digest.xml");
+    std::fs::write(
+        &path,
+        r#"<softwarelists><softwarelist name="operations"><software name="sample">
+          <description>Sample</description><year>2000</year><publisher>Example</publisher>
+          <part name="cart" interface="cart"><dataarea name="rom" size="32">
+            <rom name="program.bin" size="16" sha1="0123456789abcdef0123456789abcdef01234567" loadflag="load16_word"/>
+            <rom name="program.bin" size="16" sha1="0123456789abcdef0123456789abcdef01234567" loadflag="continue"/>
+          </dataarea></part></software></softwarelist></softwarelists>"#,
+    )?;
+    let mut request = request(
+        path,
+        "publisher-operations",
+        "operation-digests",
+        "Operations",
+    )?;
+    request.format = CatalogDocumentFormat::MameSoftwareListXml;
+    app::import_catalog(&database, &request)?;
+
+    let continuation_identity = sql_query(
+        "SELECT content_uuid AS value FROM software_components \
+         WHERE load_instruction = 'continue'",
+    )
+    .get_result::<NullableBinaryRow>(&mut connection)?;
+    assert!(continuation_identity.value.is_none());
+    assert_eq!(
+        sql_query("SELECT COUNT(*) AS count FROM software_components WHERE sha1 IS NOT NULL")
+            .get_result::<CountRow>(&mut connection)?
+            .count,
+        2,
+        "operation digest source facts remain queryable"
+    );
+    assert_eq!(count(&mut connection, "catalog_contents")?, 1);
+    assert_eq!(
+        sql_query(
+            "SELECT COUNT(*) AS count FROM software_component_digest_assertions \
+             WHERE scope = 'whole_asset' AND provenance = 'source_declared'",
+        )
+        .get_result::<CountRow>(&mut connection)?
+        .count,
+        2,
+        "operation digests remain attached to their own source occurrences"
+    );
+    Ok(())
+}
+
+#[test]
+fn interned_digest_bytes_keep_occurrence_scope_and_provenance()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, mut connection) = setup()?;
+    let digest = "0123456789abcdef0123456789abcdef01234567";
+    let path = directory.path().join("same-digest-different-scopes.xml");
+    std::fs::write(
+        &path,
+        format!(
+            "<softwarelist name=\"scopes\"><software name=\"item\"><description>Item</description><year>2000</year><publisher>Example</publisher><part name=\"cart\" interface=\"cart\"><dataarea name=\"rom\" size=\"1\"><rom name=\"program.bin\" size=\"1\" sha1=\"{digest}\"/></dataarea><diskarea name=\"media\"><disk name=\"media.chd\" sha1=\"{digest}\"/></diskarea></part></software></softwarelist>"
+        ),
+    )?;
+    let mut import = request(path, "publisher-scopes", "digest-scopes", "Digest scopes")?;
+    import.format = CatalogDocumentFormat::MameSoftwareListXml;
+    app::import_catalog(&database, &import)?;
+    let digest_bytes = hex::decode(digest)?;
+
+    assert_eq!(
+        sql_query(
+            "SELECT COUNT(*) AS count FROM digest_values WHERE algorithm = 'sha1' AND digest = ?"
+        )
+        .bind::<Binary, _>(digest_bytes.as_slice())
+        .get_result::<CountRow>(&mut connection)?
+        .count,
+        1,
+        "identical algorithm/bytes are stored once regardless of scope"
+    );
+    let scopes = sql_query(
+        "SELECT scope AS value FROM software_component_digest_assertions AS assertion \
+         JOIN digest_values AS digest USING (digest_id) \
+         WHERE digest.algorithm = 'sha1' AND digest.digest = ? ORDER BY scope",
+    )
+    .bind::<Binary, _>(digest_bytes.as_slice())
+    .load::<TextRow>(&mut connection)?;
+    assert_eq!(
+        scopes
+            .iter()
+            .map(|row| row.value.as_str())
+            .collect::<Vec<_>>(),
+        ["chd_header_sha1", "whole_asset"]
+    );
+    let digest_owners = sql_query(
+        "SELECT DISTINCT provenance AS value FROM software_component_digest_assertions AS assertion \
+         JOIN digest_values AS digest USING (digest_id) \
+         WHERE digest.algorithm = 'sha1' AND digest.digest = ?",
+    )
+    .bind::<Binary, _>(digest_bytes.as_slice())
+    .load::<TextRow>(&mut connection)?;
+    assert_eq!(digest_owners.len(), 1);
+    assert_eq!(digest_owners[0].value, "source_declared");
+    let disk_identity = sql_query(
+        "SELECT content_uuid AS value FROM software_components WHERE component_kind = 'disk'",
+    )
+    .get_result::<NullableBinaryRow>(&mut connection)?;
+    assert!(disk_identity.value.is_none());
+    assert_eq!(count(&mut connection, "catalog_contents")?, 1);
     Ok(())
 }
 

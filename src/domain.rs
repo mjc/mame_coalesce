@@ -7,6 +7,26 @@ use std::collections::BTreeSet;
 pub mod media;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CatalogContentId([u8; 16]);
+
+impl CatalogContentId {
+    #[must_use]
+    pub fn generate() -> Self {
+        Self(*uuid::Uuid::new_v4().as_bytes())
+    }
+
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; 16]) -> Self {
+        Self(bytes)
+    }
+
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 16] {
+        &self.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DocumentKey([u8; 32]);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -1623,6 +1643,17 @@ pub struct DuplicateMatch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn catalog_content_id_is_exactly_sixteen_persistable_bytes() {
+        let bytes = [
+            0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x46, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd,
+            0xee, 0xff,
+        ];
+        let id = CatalogContentId::from_bytes(bytes);
+
+        assert_eq!(id.as_bytes(), &bytes);
+    }
 
     #[test]
     fn document_key_display_round_trips_and_rejects_invalid_values() -> crate::Result<()> {
