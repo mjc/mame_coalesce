@@ -8,7 +8,7 @@ use diesel::{
     QueryableByName, SqliteConnection,
     prelude::*,
     sql_query,
-    sql_types::{BigInt, Nullable, Text},
+    sql_types::{BigInt, Binary, Nullable, Text},
 };
 use mame_coalesce::{
     app::{self, CatalogDocumentFormat, CatalogImportRequest},
@@ -275,6 +275,56 @@ struct StoredExtensionRow {
     value: String,
 }
 
+#[derive(QueryableByName)]
+struct LogiqxDocumentFactsRow {
+    #[diesel(sql_type = Nullable<Text>)]
+    build: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    debug: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    file_name: Option<String>,
+    #[diesel(sql_type = Nullable<Binary>)]
+    sha1: Option<Vec<u8>>,
+    #[diesel(sql_type = Text)]
+    header_name: String,
+    #[diesel(sql_type = Nullable<Text>)]
+    header_description: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    header_version: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    header_date: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    header_author: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    header_email: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    header_homepage: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    header_url: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    header_comment: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    header_category: Option<String>,
+}
+
+#[derive(QueryableByName)]
+struct LogiqxSetFactsRow {
+    #[diesel(sql_type = Nullable<Text>)]
+    source_file: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    is_bios: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    board: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    rebuild_to: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    description: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    year: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    manufacturer: Option<String>,
+}
+
 fn setup() -> Result<(tempfile::TempDir, Database, SqliteConnection), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("catalog.sqlite");
@@ -452,6 +502,90 @@ fn imports_overlapping_catalogs_and_reimports_idempotently()
     )
     .get_result::<NullableTextRow>(&mut connection)?;
     assert_eq!(namespace.value.as_deref(), Some("urn:vendor"));
+    Ok(())
+}
+
+#[test]
+fn persists_logiqx_document_and_set_specification_fields_and_diffs_them()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, mut connection) = setup()?;
+    let mut snapshots = Vec::new();
+    for (revision, date, year) in [("one", "2026-01-01", "1994"), ("two", "2026-02-01", "1995")] {
+        let path = directory.path().join(format!("{revision}.dat"));
+        let xml = format!(
+            r#"<datafile build="build-id" debug="yes"><header>
+              <name>Complete DAT</name><description>Full description</description>
+              <version>v1</version><date>{date}</date><author>Author</author>
+              <email>author@example.test</email><homepage>https://example.test</homepage>
+              <url>https://example.test/dat</url><comment>Comment</comment><category>Games</category>
+            </header><file_name>declared.dat</file_name><sha1>0123456789012345678901234567890123456789</sha1>
+            <game name="sample" sourcefile="driver.cpp" isbios="no" board="board-a" rebuildto="merged">
+              <description>Sample game</description><year>{year}</year><manufacturer>Maker</manufacturer>
+            </game></datafile>"#
+        );
+        std::fs::write(&path, xml)?;
+        let import = app::import_catalog(
+            &database,
+            &request(path, "logiqx-spec", "logiqx-spec", "Logiqx specification")?,
+        )?;
+        snapshots.push(import.snapshot_key.ok_or("Logiqx snapshot missing")?);
+    }
+
+    let document = sql_query(
+        "SELECT build, debug, file_name, sha1, header_name, header_description, header_version, \
+         header_date, header_author, header_email, header_homepage, header_url, header_comment, \
+         header_category FROM logiqx_document_facts WHERE snapshot_key = ?",
+    )
+    .bind::<Text, _>(snapshots[0].as_str())
+    .get_result::<LogiqxDocumentFactsRow>(&mut connection)?;
+    assert_eq!(document.build.as_deref(), Some("build-id"));
+    assert_eq!(document.debug.as_deref(), Some("yes"));
+    assert!(document.file_name.is_some());
+    assert_eq!(
+        document.sha1.as_deref(),
+        Some(b"\x01#Eg\x89\x01#Eg\x89\x01#Eg\x89\x01#Eg\x89".as_slice())
+    );
+    assert_eq!(document.header_name, "Complete DAT");
+    assert_eq!(
+        document.header_description.as_deref(),
+        Some("Full description")
+    );
+    assert_eq!(document.header_version.as_deref(), Some("v1"));
+    assert_eq!(document.header_date.as_deref(), Some("2026-01-01"));
+    assert_eq!(document.header_author.as_deref(), Some("Author"));
+    assert_eq!(
+        document.header_email.as_deref(),
+        Some("author@example.test")
+    );
+    assert_eq!(
+        document.header_homepage.as_deref(),
+        Some("https://example.test")
+    );
+    assert_eq!(
+        document.header_url.as_deref(),
+        Some("https://example.test/dat")
+    );
+    assert_eq!(document.header_comment.as_deref(), Some("Comment"));
+    assert_eq!(document.header_category.as_deref(), Some("Games"));
+
+    let set = sql_query(
+        "SELECT source_file, is_bios, board, rebuild_to, description, year, manufacturer \
+         FROM logiqx_set_facts WHERE snapshot_key = ? AND set_name = 'sample'",
+    )
+    .bind::<Text, _>(snapshots[0].as_str())
+    .get_result::<LogiqxSetFactsRow>(&mut connection)?;
+    assert_eq!(set.source_file.as_deref(), Some("driver.cpp"));
+    assert_eq!(set.is_bios.as_deref(), Some("no"));
+    assert_eq!(set.board.as_deref(), Some("board-a"));
+    assert_eq!(set.rebuild_to.as_deref(), Some("merged"));
+    assert_eq!(set.description.as_deref(), Some("Sample game"));
+    assert_eq!(set.year.as_deref(), Some("1994"));
+    assert_eq!(set.manufacturer.as_deref(), Some("Maker"));
+
+    let diff = app::diff_catalog_snapshots(&database, &snapshots[0], &snapshots[1])?;
+    assert!(diff.document_metadata_changed);
+    assert!(diff.records[0].metadata_changed);
+    assert_eq!(diff.records[0].status, SnapshotRecordStatus::Changed);
     Ok(())
 }
 
@@ -2776,21 +2910,24 @@ fn clrmamepro_and_logiqx_normalize_shared_set_and_rom_facts_equivalently()
         .ok_or("ClrMamePro snapshot missing")?;
 
     for field in ["description", "year", "manufacturer"] {
-        let logiqx_metadata = sql_query(
-            "SELECT metadata_json AS value FROM snapshot_sets \
-             WHERE snapshot_key = ? AND set_name = 'equiv'",
-        )
+        let logiqx_value = sql_query(format!(
+            "SELECT {field} AS value FROM logiqx_set_facts \
+             WHERE snapshot_key = ? AND set_name = 'equiv'"
+        ))
         .bind::<Text, _>(logiqx_snapshot.as_str())
-        .get_result::<TextRow>(&mut connection)?;
+        .get_result::<NullableTextRow>(&mut connection)?;
         let dat_metadata = sql_query(
             "SELECT metadata_json AS value FROM snapshot_sets \
              WHERE snapshot_key = ? AND set_name = 'equiv'",
         )
         .bind::<Text, _>(clrmamepro_snapshot.as_str())
         .get_result::<TextRow>(&mut connection)?;
-        let logiqx_value: serde_json::Value = serde_json::from_str(&logiqx_metadata.value)?;
         let dat_value: serde_json::Value = serde_json::from_str(&dat_metadata.value)?;
-        assert_eq!(logiqx_value[field], dat_value[field], "{field}");
+        assert_eq!(
+            logiqx_value.value.as_deref(),
+            dat_value[field].as_str(),
+            "{field}"
+        );
     }
     let logiqx_size = sql_query(
         "SELECT CAST(size AS TEXT) AS value FROM asset_requirements \

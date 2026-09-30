@@ -12,7 +12,7 @@ use crate::{
         CatalogRecordKind, CatalogRecordRef, DocumentKey, DocumentLocation, ImportRunKey,
         ParserInterpretationKey, RelationshipType, SnapshotKey,
     },
-    logiqx::{DataFile, XmlSourceMap},
+    logiqx::{DataFile, Game, XmlSourceMap},
     mame::{self, ExtensionValue, MameRecord, ValidatedMame},
     mame_softwarelist::SoftwareListCatalog,
     no_intro_pc_xml::Catalog as NoIntroCatalog,
@@ -102,6 +102,72 @@ struct SnapshotData {
     sets: Vec<SnapshotSet>,
     software_lists: Option<SoftwareListCatalog>,
     extensions: Vec<StoredExtension>,
+    logiqx_document_facts: Option<LogiqxDocumentFacts>,
+}
+
+#[derive(Clone)]
+struct LogiqxDocumentFacts {
+    build: Option<String>,
+    debug: Option<String>,
+    file_name: Option<String>,
+    sha1: Option<Vec<u8>>,
+    header_name: String,
+    header_description: Option<String>,
+    header_version: Option<String>,
+    header_date: Option<String>,
+    header_author: Option<String>,
+    header_email: Option<String>,
+    header_homepage: Option<String>,
+    header_url: Option<String>,
+    header_comment: Option<String>,
+    header_category: Option<String>,
+}
+
+impl LogiqxDocumentFacts {
+    fn from_data_file(data_file: &DataFile) -> Self {
+        let header = data_file.header();
+        Self {
+            build: data_file.build().map(str::to_owned),
+            debug: data_file.debug().map(str::to_owned),
+            file_name: data_file.file_name().map(str::to_owned),
+            sha1: data_file.sha1().map(<[u8]>::to_vec),
+            header_name: header.name().to_owned(),
+            header_description: header.description().cloned(),
+            header_version: header.version().cloned(),
+            header_date: header.date().cloned(),
+            header_author: header.author().cloned(),
+            header_email: header.email().cloned(),
+            header_homepage: header.homepage().cloned(),
+            header_url: header.url().cloned(),
+            header_comment: header.comment().cloned(),
+            header_category: header.category().cloned(),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct LogiqxSetFacts {
+    source_file: Option<String>,
+    is_bios: Option<String>,
+    board: Option<String>,
+    rebuild_to: Option<String>,
+    description: Option<String>,
+    year: Option<String>,
+    manufacturer: Option<String>,
+}
+
+impl LogiqxSetFacts {
+    fn from_game(game: &Game) -> Self {
+        Self {
+            source_file: game.sourcefile_opt().map(str::to_owned),
+            is_bios: game.isbios_opt().map(str::to_owned),
+            board: game.board_opt().map(str::to_owned),
+            rebuild_to: game.rebuildto_opt().map(str::to_owned),
+            description: game.description_opt().map(str::to_owned),
+            year: game.year_opt().map(str::to_owned),
+            manufacturer: game.manufacturer_opt().map(str::to_owned),
+        }
+    }
 }
 
 struct SnapshotSet {
@@ -116,6 +182,7 @@ struct SnapshotSet {
     bios_sets: Vec<crate::mame::MachineBiosSet>,
     mame_facts: Option<crate::mame::MachineFacts>,
     no_intro_facts: Option<crate::no_intro_pc_xml::GameFacts>,
+    logiqx_facts: Option<LogiqxSetFacts>,
     machine_dependencies: Vec<SnapshotDependency>,
 }
 
@@ -209,7 +276,8 @@ impl SnapshotData {
                 });
             }
             sets.push(SnapshotSet {
-                name: game.name().into(), parent: game.cloneof().map(str::to_owned),
+                name: game.name().into(),
+                parent: game.cloneof().map(str::to_owned),
                 parent_field: game.cloneof().map(|_| "cloneof".to_owned()),
                 runtime_dependencies: game
                     .romof_opt()
@@ -225,21 +293,23 @@ impl SnapshotData {
                         location,
                     }))
                     .chain(
-                    game.device_refs()
-                        .zip(device_ref_locations)
-                        .map(|(name, location)| SnapshotDependency {
-                            source_field: "device_ref".to_owned(),
-                            target_name: name.to_owned(),
-                            location: *location,
-                        }),
+                        game.device_refs()
+                            .zip(device_ref_locations)
+                            .map(|(name, location)| SnapshotDependency {
+                                source_field: "device_ref".to_owned(),
+                                target_name: name.to_owned(),
+                                location: *location,
+                            }),
                     )
                     .collect(),
-                metadata: serde_json::json!({"source_file": game.sourcefile_opt(), "is_bios": game.isbios_opt(), "rom_of": game.romof_opt(), "sample_of": game.sampleof_opt(), "board": game.board_opt(), "rebuild_to": game.rebuildto_opt(), "description": game.description_opt(), "year": game.year_opt(), "manufacturer": game.manufacturer_opt(), "device_refs": game.device_refs().collect::<Vec<_>>()}),
-                location, assets,
+                metadata: serde_json::Value::Null,
+                location,
+                assets,
                 switches: Vec::new(),
                 bios_sets: Vec::new(),
                 mame_facts: None,
                 no_intro_facts: None,
+                logiqx_facts: Some(LogiqxSetFacts::from_game(game)),
                 machine_dependencies: Vec::new(),
             });
         }
@@ -248,6 +318,7 @@ impl SnapshotData {
             sets,
             software_lists: None,
             extensions: stored_logiqx_extensions(data_file, source_map),
+            logiqx_document_facts: Some(LogiqxDocumentFacts::from_data_file(data_file)),
         })
     }
 
@@ -264,6 +335,7 @@ impl SnapshotData {
             sets: Vec::new(),
             software_lists: Some(catalog),
             extensions,
+            logiqx_document_facts: None,
         }
     }
 
@@ -319,6 +391,7 @@ impl SnapshotData {
                     bios_sets: Vec::new(),
                     mame_facts: None,
                     no_intro_facts: None,
+                    logiqx_facts: None,
                     machine_dependencies: Vec::new(),
                 }
             })
@@ -328,6 +401,7 @@ impl SnapshotData {
             sets,
             software_lists: None,
             extensions,
+            logiqx_document_facts: None,
         }
     }
 
@@ -389,6 +463,7 @@ impl SnapshotData {
                     bios_sets: Vec::new(),
                     mame_facts: None,
                     no_intro_facts: Some(no_intro_facts),
+                    logiqx_facts: None,
                     machine_dependencies: Vec::new(),
                 }
             })
@@ -398,6 +473,7 @@ impl SnapshotData {
             sets,
             software_lists: None,
             extensions,
+            logiqx_document_facts: None,
         }
     }
 }
@@ -456,6 +532,7 @@ fn machine_contents(machine: crate::mame::Machine) -> (SnapshotSet, Vec<StoredEx
         machine_dependencies,
         mame_facts: Some(mame_facts),
         no_intro_facts: None,
+        logiqx_facts: None,
     };
     (set, extensions)
 }
@@ -1146,6 +1223,10 @@ fn insert_snapshot_contents(
         insert_software_list_contents(conn, snapshot_key, catalog)?;
     }
 
+    if let Some(facts) = &snapshot_data.logiqx_document_facts {
+        insert_logiqx_document_facts(conn, snapshot_key, facts)?;
+    }
+
     for extension in &snapshot_data.extensions {
         insert_snapshot_extension(conn, snapshot_key, extension)?;
     }
@@ -1176,6 +1257,9 @@ fn insert_snapshot_set(
     }
     if let Some(facts) = &set.no_intro_facts {
         insert_no_intro_game_facts(conn, snapshot_key, set, facts)?;
+    }
+    if let Some(facts) = &set.logiqx_facts {
+        insert_logiqx_set_facts(conn, snapshot_key, set, facts)?;
     }
 
     persist_set_relationships(conn, snapshot_key, set)?;
@@ -1219,6 +1303,61 @@ fn insert_snapshot_set(
     }
     insert_machine_switches(conn, snapshot_key, set)?;
     insert_machine_bios_sets(conn, snapshot_key, set)?;
+    Ok(())
+}
+
+fn insert_logiqx_document_facts(
+    conn: &mut SqliteConnection,
+    snapshot_key: &SnapshotKey,
+    facts: &LogiqxDocumentFacts,
+) -> crate::Result<()> {
+    sql_query(
+        "INSERT INTO logiqx_document_facts \
+         (snapshot_key, build, debug, file_name, sha1, header_name, header_description, \
+          header_version, header_date, header_author, header_email, header_homepage, header_url, \
+          header_comment, header_category) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind::<Text, _>(snapshot_key.as_str())
+    .bind::<Nullable<Text>, _>(facts.build.as_deref())
+    .bind::<Nullable<Text>, _>(facts.debug.as_deref())
+    .bind::<Nullable<Text>, _>(facts.file_name.as_deref())
+    .bind::<Nullable<Binary>, _>(facts.sha1.as_deref())
+    .bind::<Text, _>(&facts.header_name)
+    .bind::<Nullable<Text>, _>(facts.header_description.as_deref())
+    .bind::<Nullable<Text>, _>(facts.header_version.as_deref())
+    .bind::<Nullable<Text>, _>(facts.header_date.as_deref())
+    .bind::<Nullable<Text>, _>(facts.header_author.as_deref())
+    .bind::<Nullable<Text>, _>(facts.header_email.as_deref())
+    .bind::<Nullable<Text>, _>(facts.header_homepage.as_deref())
+    .bind::<Nullable<Text>, _>(facts.header_url.as_deref())
+    .bind::<Nullable<Text>, _>(facts.header_comment.as_deref())
+    .bind::<Nullable<Text>, _>(facts.header_category.as_deref())
+    .execute(conn)?;
+    Ok(())
+}
+
+fn insert_logiqx_set_facts(
+    conn: &mut SqliteConnection,
+    snapshot_key: &SnapshotKey,
+    set: &SnapshotSet,
+    facts: &LogiqxSetFacts,
+) -> crate::Result<()> {
+    sql_query(
+        "INSERT INTO logiqx_set_facts \
+         (snapshot_key, set_name, source_file, is_bios, board, rebuild_to, description, year, manufacturer) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind::<Text, _>(snapshot_key.as_str())
+    .bind::<Text, _>(&set.name)
+    .bind::<Nullable<Text>, _>(facts.source_file.as_deref())
+    .bind::<Nullable<Text>, _>(facts.is_bios.as_deref())
+    .bind::<Nullable<Text>, _>(facts.board.as_deref())
+    .bind::<Nullable<Text>, _>(facts.rebuild_to.as_deref())
+    .bind::<Nullable<Text>, _>(facts.description.as_deref())
+    .bind::<Nullable<Text>, _>(facts.year.as_deref())
+    .bind::<Nullable<Text>, _>(facts.manufacturer.as_deref())
+    .execute(conn)?;
     Ok(())
 }
 

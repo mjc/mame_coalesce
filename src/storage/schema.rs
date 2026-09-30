@@ -353,6 +353,40 @@ diesel::table! {
 }
 
 diesel::table! {
+    logiqx_document_facts (snapshot_key) {
+        snapshot_key -> Text,
+        build -> Nullable<Text>,
+        debug -> Nullable<Text>,
+        file_name -> Nullable<Text>,
+        sha1 -> Nullable<Binary>,
+        header_name -> Text,
+        header_description -> Nullable<Text>,
+        header_version -> Nullable<Text>,
+        header_date -> Nullable<Text>,
+        header_author -> Nullable<Text>,
+        header_email -> Nullable<Text>,
+        header_homepage -> Nullable<Text>,
+        header_url -> Nullable<Text>,
+        header_comment -> Nullable<Text>,
+        header_category -> Nullable<Text>,
+    }
+}
+
+diesel::table! {
+    logiqx_set_facts (snapshot_key, set_name) {
+        snapshot_key -> Text,
+        set_name -> Text,
+        source_file -> Nullable<Text>,
+        is_bios -> Nullable<Text>,
+        board -> Nullable<Text>,
+        rebuild_to -> Nullable<Text>,
+        description -> Nullable<Text>,
+        year -> Nullable<Text>,
+        manufacturer -> Nullable<Text>,
+    }
+}
+
+diesel::table! {
     snapshot_extensions (extension_id) {
         extension_id -> BigInt,
         snapshot_key -> Text,
@@ -537,6 +571,8 @@ diesel::allow_tables_to_appear_in_same_query!(
     asset_requirements,
     mame_asset_facts,
     no_intro_game_facts,
+    logiqx_document_facts,
+    logiqx_set_facts,
     archive_files,
     catalogs,
     catalog_snapshots,

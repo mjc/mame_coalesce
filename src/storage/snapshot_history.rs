@@ -228,6 +228,26 @@ struct NoIntroGameFactsRow {
     description: Option<String>,
 }
 
+#[derive(QueryableByName)]
+struct LogiqxSetFactsRow {
+    #[diesel(sql_type = Text)]
+    set_name: String,
+    #[diesel(sql_type = Nullable<Text>)]
+    source_file: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    is_bios: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    board: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    rebuild_to: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    description: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    year: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    manufacturer: Option<String>,
+}
+
 #[derive(Default)]
 struct CatalogRecords {
     sets: BTreeMap<String, SetRow>,
@@ -238,6 +258,7 @@ struct CatalogRecords {
     machine_bios_sets: BTreeMap<String, Vec<serde_json::Value>>,
     mame_machine_facts: BTreeMap<String, serde_json::Value>,
     no_intro_game_facts: BTreeMap<String, serde_json::Value>,
+    logiqx_set_facts: BTreeMap<String, serde_json::Value>,
 }
 
 pub fn diff(
@@ -263,7 +284,7 @@ pub fn diff(
 
         let same_scope = comparable_scope(&previous_header, &current_header);
         let document_metadata_changed =
-            mame_document_metadata(conn, previous)? != mame_document_metadata(conn, current)?;
+            document_metadata(conn, previous)? != document_metadata(conn, current)?;
         let previous_records = records(conn, previous)?;
         let current_records = records(conn, current)?;
         let explanations =
@@ -355,16 +376,59 @@ struct MameDocumentMetadataRow {
     config_version: Option<String>,
 }
 
-fn mame_document_metadata(
+#[derive(QueryableByName, PartialEq, Eq)]
+struct LogiqxDocumentMetadataRow {
+    #[diesel(sql_type = Nullable<Text>)]
+    build: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    debug: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    file_name: Option<String>,
+    #[diesel(sql_type = Nullable<Binary>)]
+    sha1: Option<Vec<u8>>,
+    #[diesel(sql_type = Text)]
+    header_name: String,
+    #[diesel(sql_type = Nullable<Text>)]
+    header_description: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    header_version: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    header_date: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    header_author: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    header_email: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    header_homepage: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    header_url: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    header_comment: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    header_category: Option<String>,
+}
+
+fn document_metadata(
     conn: &mut diesel::SqliteConnection,
     snapshot: &SnapshotKey,
-) -> crate::Result<Option<MameDocumentMetadataRow>> {
-    Ok(
+) -> crate::Result<(
+    Option<MameDocumentMetadataRow>,
+    Option<LogiqxDocumentMetadataRow>,
+)> {
+    let mame =
         sql_query("SELECT debug, config_version FROM mame_document_facts WHERE snapshot_key = ?")
             .bind::<Text, _>(snapshot.as_str())
             .get_result::<MameDocumentMetadataRow>(conn)
-            .optional()?,
+            .optional()?;
+    let logiqx = sql_query(
+        "SELECT build, debug, file_name, sha1, header_name, header_description, \
+         header_version, header_date, header_author, header_email, header_homepage, header_url, \
+         header_comment, header_category FROM logiqx_document_facts WHERE snapshot_key = ?",
     )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<LogiqxDocumentMetadataRow>(conn)
+    .optional()?;
+    Ok((mame, logiqx))
 }
 
 fn is_software_list_snapshot(snapshot: &SnapshotRow) -> bool {
@@ -586,6 +650,7 @@ fn records(
         )
     })
     .collect();
+    let logiqx_set_facts = load_logiqx_set_facts(conn, key)?;
 
     let mut result = CatalogRecords::default();
     for set in sets {
@@ -627,11 +692,41 @@ fn records(
     result.machine_bios_sets = machine_bios_sets;
     result.mame_machine_facts = mame_machine_facts;
     result.no_intro_game_facts = no_intro_game_facts;
+    result.logiqx_set_facts = logiqx_set_facts;
     for extensions in result.extensions.values_mut() {
         extensions.sort_by_key(serde_json::Value::to_string);
     }
     assemble_requirements(&mut result, requirements);
     Ok(result)
+}
+
+fn load_logiqx_set_facts(
+    conn: &mut diesel::SqliteConnection,
+    key: &SnapshotKey,
+) -> crate::Result<BTreeMap<String, serde_json::Value>> {
+    let rows = sql_query(
+        "SELECT set_name, source_file, is_bios, board, rebuild_to, description, year, manufacturer \
+         FROM logiqx_set_facts WHERE snapshot_key = ? ORDER BY set_name",
+    )
+    .bind::<Text, _>(key.as_str())
+    .load::<LogiqxSetFactsRow>(conn)?;
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            (
+                row.set_name,
+                serde_json::json!({
+                    "source_file": row.source_file,
+                    "is_bios": row.is_bios,
+                    "board": row.board,
+                    "rebuild_to": row.rebuild_to,
+                    "description": row.description,
+                    "year": row.year,
+                    "manufacturer": row.manufacturer,
+                }),
+            )
+        })
+        .collect())
 }
 
 fn assemble_requirements(result: &mut CatalogRecords, requirements: Vec<RequirementRow>) {
@@ -886,6 +981,7 @@ fn set_metadata(records: &CatalogRecords, name: &str, set: &SetRow) -> serde_jso
         "metadata": json(&set.metadata_json),
         "mame_machine_facts": records.mame_machine_facts.get(name),
         "no_intro_game_facts": records.no_intro_game_facts.get(name),
+        "logiqx_set_facts": records.logiqx_set_facts.get(name),
         "machine_switches": records.machine_switches.get(name),
         "machine_bios_sets": records.machine_bios_sets.get(name),
         "source_extensions": records.extensions.iter()
