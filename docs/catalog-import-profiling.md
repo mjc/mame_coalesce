@@ -373,6 +373,48 @@ the source size. Continue normalizing high-cardinality set-owned child tables,
 remove remaining JSON persistence/encoded identities, and replace duplicate
 source assertions with queryable typed facts before the next full-file size
 check.
-Continue normalizing high-cardinality set-owned child tables, remove remaining
-JSON persistence/encoded identities, and replace duplicate source assertions
-with queryable typed facts before the next full-file size check.
+
+## Fresh full import with compact MAME specification identity, 2026-09-30
+
+The MAME specification element, input-control, analog, device-extension, and
+slot-option tables now store `set_id` and local element order rather than
+repeating the snapshot key and set name. History reconstruction joins through
+`snapshot_sets`; importer results and public set names are unchanged. The full
+MAME 0.289 source was reimported to a new database at
+`target/profiling/mamec55-spec-id-2026-09-30-e/`.
+
+| Measurement | Result |
+| --- | ---: |
+| Source XML | 326,688,140 bytes |
+| SQLite database | 938,496,000 bytes |
+| Compressed source sidecar | 15,305,382 bytes |
+| Database + sidecar | 953,801,382 bytes (2.92× source) |
+| CPU samples | 515,519 |
+| Import elapsed (profiling run) | 9m 41.6s |
+
+`PRAGMA quick_check` returned `ok`, foreign-key violations were zero, and the
+database had no free pages. Compared with the preceding fresh import, database
+plus sidecar is 204,828,672 bytes (17.7%) smaller. The specification element
+table and type index fell from 241,262,592 to 97,845,248 bytes; slot options
+fell from 71,913,472 to 23,334,912 bytes. Together those groups save
+191,995,904 bytes.
+
+| Current table/index group | Bytes |
+| --- | ---: |
+| relationship assertions and their indexes | 412,930,048 |
+| asset requirements and asset-name index | 124,354,560 |
+| switches, values, locations, conditions, and their indexes | 114,843,648 |
+| MAME specification elements and type index | 97,845,248 |
+| compact machine dependencies and target index | 69,677,056 |
+| MAME asset facts | 46,653,440 |
+| slot options | 23,334,912 |
+
+The flamegraph is `mame.svg`; the raw capture is `mame.data`. `parse_flamegraph`
+classifies 74.90% of exclusive cycle samples as SQLite/Diesel. SQLite statement
+preparation remains dominant (`sqlite3_prepare_v3`: 59.63%).
+
+The database is still 2.92 times the source, and database plus sidecar exceeds
+the source-size acceptance limit by 627,113,242 bytes. The next structural
+targets are the duplicated relationship-assertion payload/indexes and repeated
+snapshot/set identities in asset requirements; JSON persistence and encoded
+keys also remain unaddressed.

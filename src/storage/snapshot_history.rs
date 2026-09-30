@@ -1055,20 +1055,30 @@ fn mame_switch_facts(
     key: &SnapshotKey,
 ) -> crate::Result<BTreeMap<String, Vec<serde_json::Value>>> {
     let switches = sql_query(
-        "SELECT set_name, switch_order, kind, name, tag, mask FROM machine_switches \
-         WHERE snapshot_key = ? ORDER BY set_name, switch_order",
+        "SELECT sets.set_name, switches.switch_order, switches.kind, switches.name, \
+                switches.tag, switches.mask \
+         FROM machine_switches AS switches JOIN snapshot_sets AS sets USING (set_id) \
+         WHERE sets.snapshot_key = ? ORDER BY sets.set_name, switches.switch_order",
     )
     .bind::<Text, _>(key.as_str())
     .load::<MachineSwitchRow>(conn)?;
     let switch_locations = sql_query(
-        "SELECT set_name, switch_order, location_order, name, number, inverted \
-         FROM machine_switch_locations WHERE snapshot_key = ? ORDER BY set_name, switch_order, location_order",
+        "SELECT sets.set_name, locations.switch_order, locations.location_order, \
+                locations.name, locations.number, locations.inverted \
+         FROM machine_switch_locations AS locations \
+         JOIN snapshot_sets AS sets USING (set_id) \
+         WHERE sets.snapshot_key = ? \
+         ORDER BY sets.set_name, locations.switch_order, locations.location_order",
     )
     .bind::<Text, _>(key.as_str())
     .load::<MachineSwitchLocationRow>(conn)?;
     let switch_values = sql_query(
-        "SELECT set_name, switch_order, value_order, name, value, is_default \
-         FROM machine_switch_values WHERE snapshot_key = ? ORDER BY set_name, switch_order, value_order",
+        "SELECT sets.set_name, switch_values.switch_order, switch_values.value_order, \
+                switch_values.name, switch_values.value, switch_values.is_default \
+         FROM machine_switch_values AS switch_values \
+         JOIN snapshot_sets AS sets USING (set_id) \
+         WHERE sets.snapshot_key = ? \
+         ORDER BY sets.set_name, switch_values.switch_order, switch_values.value_order",
     )
     .bind::<Text, _>(key.as_str())
     .load::<MachineSwitchValueRow>(conn)?;
@@ -1177,8 +1187,9 @@ fn load_mame_machine_specification_facts(
     key: &SnapshotKey,
 ) -> crate::Result<BTreeMap<String, Vec<serde_json::Value>>> {
     let rows = sql_query(
-        "SELECT * FROM mame_machine_spec_elements \
-         WHERE snapshot_key = ? ORDER BY set_name, element_order",
+        "SELECT sets.set_name, elements.* FROM mame_machine_spec_elements AS elements \
+         JOIN snapshot_sets AS sets USING (set_id) \
+         WHERE sets.snapshot_key = ? ORDER BY sets.set_name, elements.element_order",
     )
     .bind::<Text, _>(key.as_str())
     .load::<MachineSpecificationRow>(conn)?;
@@ -1191,9 +1202,11 @@ fn load_mame_machine_specification_facts(
     }
 
     for row in sql_query(
-        "SELECT set_name, element_order, control_order, control_type, player, buttons, minimum, maximum, \
-         sensitivity, keydelta, reverse, ways, ways2, ways3 \
-         FROM mame_machine_input_controls WHERE snapshot_key = ? ORDER BY set_name, element_order, control_order",
+        "SELECT sets.set_name, facts.element_order, facts.control_order, facts.control_type, \
+         facts.player, facts.buttons, facts.minimum, facts.maximum, facts.sensitivity, \
+         facts.keydelta, facts.reverse, facts.ways, facts.ways2, facts.ways3 \
+         FROM mame_machine_input_controls AS facts JOIN snapshot_sets AS sets USING (set_id) \
+         WHERE sets.snapshot_key = ? ORDER BY sets.set_name, facts.element_order, facts.control_order",
     )
     .bind::<Text, _>(key.as_str())
     .load::<MachineInputControlRow>(conn)?
@@ -1208,8 +1221,9 @@ fn load_mame_machine_specification_facts(
         append_nested_spec_fact(&mut elements, &identity, "controls", value);
     }
     for row in sql_query(
-        "SELECT set_name, element_order, analog_order, mask \
-         FROM mame_machine_analogs WHERE snapshot_key = ? ORDER BY set_name, element_order, analog_order",
+        "SELECT sets.set_name, facts.element_order, facts.analog_order, facts.mask \
+         FROM mame_machine_analogs AS facts JOIN snapshot_sets AS sets USING (set_id) \
+         WHERE sets.snapshot_key = ? ORDER BY sets.set_name, facts.element_order, facts.analog_order",
     )
     .bind::<Text, _>(key.as_str())
     .load::<MachineAnalogRow>(conn)?
@@ -1221,8 +1235,9 @@ fn load_mame_machine_specification_facts(
         append_nested_spec_fact(&mut elements, &identity, "analogs", value);
     }
     for row in sql_query(
-        "SELECT set_name, element_order, extension_order, name \
-         FROM mame_machine_device_extensions WHERE snapshot_key = ? ORDER BY set_name, element_order, extension_order",
+        "SELECT sets.set_name, facts.element_order, facts.extension_order, facts.name \
+         FROM mame_machine_device_extensions AS facts JOIN snapshot_sets AS sets USING (set_id) \
+         WHERE sets.snapshot_key = ? ORDER BY sets.set_name, facts.element_order, facts.extension_order",
     )
     .bind::<Text, _>(key.as_str())
     .load::<MachineDeviceExtensionRow>(conn)?
@@ -1234,8 +1249,10 @@ fn load_mame_machine_specification_facts(
         append_nested_spec_fact(&mut elements, &identity, "extensions", value);
     }
     for row in sql_query(
-        "SELECT set_name, element_order, option_order, name, devname, is_default \
-         FROM mame_machine_slot_options WHERE snapshot_key = ? ORDER BY set_name, element_order, option_order",
+        "SELECT sets.set_name, facts.element_order, facts.option_order, facts.name, \
+         facts.devname, facts.is_default \
+         FROM mame_machine_slot_options AS facts JOIN snapshot_sets AS sets USING (set_id) \
+         WHERE sets.snapshot_key = ? ORDER BY sets.set_name, facts.element_order, facts.option_order",
     )
     .bind::<Text, _>(key.as_str())
     .load::<MachineSlotOptionRow>(conn)?
@@ -1252,12 +1269,31 @@ fn load_mame_machine_specification_facts(
     for ((set_name, _), value) in elements {
         result.entry(set_name).or_default().push(value);
     }
+    let conditions_by_set = load_mame_conditions(conn, key)?;
+    for (set_name, conditions) in conditions_by_set {
+        result
+            .entry(set_name)
+            .or_default()
+            .push(serde_json::json!({"conditions": conditions}));
+    }
+    Ok(result)
+}
+
+fn load_mame_conditions(
+    conn: &mut diesel::SqliteConnection,
+    key: &SnapshotKey,
+) -> crate::Result<BTreeMap<String, Vec<serde_json::Value>>> {
     let mut conditions_by_set = BTreeMap::<String, Vec<serde_json::Value>>::new();
     for row in sql_query(
-        "SELECT set_name, owner_kind, owner_element_order, owner_switch_order, owner_child_order, \
-         condition_order, tag, mask, relation, value \
-         FROM mame_machine_conditions WHERE snapshot_key = ? \
-         ORDER BY set_name, owner_kind, owner_element_order, owner_switch_order, owner_child_order, condition_order",
+        "SELECT sets.set_name, conditions.owner_kind, conditions.owner_element_order, \
+                conditions.owner_switch_order, conditions.owner_child_order, \
+                conditions.condition_order, conditions.tag, conditions.mask, \
+                conditions.relation, conditions.value \
+         FROM mame_machine_conditions AS conditions \
+         JOIN snapshot_sets AS sets USING (set_id) \
+         WHERE sets.snapshot_key = ? \
+         ORDER BY sets.set_name, conditions.owner_kind, conditions.owner_element_order, \
+                  conditions.owner_switch_order, conditions.owner_child_order, conditions.condition_order",
     )
     .bind::<Text, _>(key.as_str())
     .load::<MachineConditionRow>(conn)?
@@ -1269,13 +1305,7 @@ fn load_mame_machine_specification_facts(
             "relation": row.relation, "value": row.value,
         }));
     }
-    for (set_name, conditions) in conditions_by_set {
-        result
-            .entry(set_name)
-            .or_default()
-            .push(serde_json::json!({"conditions": conditions}));
-    }
-    Ok(result)
+    Ok(conditions_by_set)
 }
 
 fn remove_source_locations(value: &mut serde_json::Value) {

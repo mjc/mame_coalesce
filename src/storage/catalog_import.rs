@@ -1282,7 +1282,7 @@ fn insert_snapshot_set(
     if let Some(facts) = &set.mame_facts {
         insert_mame_machine_facts(conn, snapshot_key, set, facts)?;
         insert_mame_machine_dependencies(conn, set_id, set)?;
-        insert_mame_machine_specification(conn, snapshot_key, set)?;
+        insert_mame_machine_specification(conn, set_id, set)?;
     }
     if let Some(facts) = &set.no_intro_facts {
         insert_no_intro_game_facts(conn, snapshot_key, set, facts)?;
@@ -1330,7 +1330,7 @@ fn insert_snapshot_set(
             insert_mame_asset_facts(conn, snapshot_key, &set.name, component_order, attributes)?;
         }
     }
-    insert_machine_switches(conn, snapshot_key, set)?;
+    insert_machine_switches(conn, set_id, set)?;
     insert_machine_bios_sets(conn, snapshot_key, set)?;
     Ok(())
 }
@@ -1485,7 +1485,7 @@ fn insert_mame_machine_dependencies(
 #[allow(clippy::too_many_lines)]
 fn insert_mame_machine_specification(
     conn: &mut SqliteConnection,
-    snapshot_key: &SnapshotKey,
+    set_id: i64,
     set: &SnapshotSet,
 ) -> crate::Result<()> {
     macro_rules! insert_element {
@@ -1494,12 +1494,11 @@ fn insert_mame_machine_specification(
             let placeholders = vec!["?"; [$( stringify!($column) ),*].len()].join(", ");
             let statement = format!(
                 "INSERT INTO mame_machine_spec_elements \
-                 (snapshot_key, set_name, element_order, element_type, source_line, source_column, {columns}) \
-                 VALUES (?, ?, ?, ?, ?, ?, {placeholders})"
+                 (set_id, element_order, element_type, source_line, source_column, {columns}) \
+                 VALUES (?, ?, ?, ?, ?, {placeholders})"
             );
             sql_query(statement)
-                .bind::<Text, _>(snapshot_key.as_str())
-                .bind::<Text, _>(&set.name)
+                .bind::<BigInt, _>(set_id)
                 .bind::<BigInt, _>($order)
                 .bind::<Text, _>($kind)
                 .bind::<BigInt, _>($location.line)
@@ -1546,12 +1545,11 @@ fn insert_mame_machine_specification(
                 for (control_order, control) in value.controls.iter().enumerate() {
                     sql_query(
                         "INSERT INTO mame_machine_input_controls \
-                         (snapshot_key, set_name, element_order, control_order, control_type, player, buttons, \
+                         (set_id, element_order, control_order, control_type, player, buttons, \
                           minimum, maximum, sensitivity, keydelta, reverse, ways, ways2, ways3, source_line, source_column) \
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     )
-                    .bind::<Text, _>(snapshot_key.as_str())
-                    .bind::<Text, _>(&set.name)
+                    .bind::<BigInt, _>(set_id)
                     .bind::<BigInt, _>(order)
                     .bind::<BigInt, _>(checked_order(control_order, "MAME controls")?)
                     .bind::<Text, _>(&control.kind)
@@ -1576,11 +1574,10 @@ fn insert_mame_machine_specification(
                 for (analog_order, analog) in value.analogs.iter().enumerate() {
                     sql_query(
                         "INSERT INTO mame_machine_analogs \
-                         (snapshot_key, set_name, element_order, analog_order, mask, source_line, source_column) \
-                         VALUES (?, ?, ?, ?, ?, ?, ?)",
+                         (set_id, element_order, analog_order, mask, source_line, source_column) \
+                         VALUES (?, ?, ?, ?, ?, ?)",
                     )
-                    .bind::<Text, _>(snapshot_key.as_str())
-                    .bind::<Text, _>(&set.name)
+                    .bind::<BigInt, _>(set_id)
                     .bind::<BigInt, _>(order)
                     .bind::<BigInt, _>(checked_order(analog_order, "MAME analogs")?)
                     .bind::<Text, _>(&analog.mask)
@@ -1596,8 +1593,7 @@ fn insert_mame_machine_specification(
                 if let Some(condition) = &value.condition {
                     insert_mame_condition(
                         conn,
-                        snapshot_key,
-                        &set.name,
+                        set_id,
                         MameConditionOwner::Element { order },
                         condition,
                     )?;
@@ -1630,11 +1626,10 @@ fn insert_mame_machine_specification(
                 for (extension_order, extension) in value.extensions.iter().enumerate() {
                     sql_query(
                         "INSERT INTO mame_machine_device_extensions \
-                         (snapshot_key, set_name, element_order, extension_order, name, source_line, source_column) \
-                         VALUES (?, ?, ?, ?, ?, ?, ?)",
+                         (set_id, element_order, extension_order, name, source_line, source_column) \
+                         VALUES (?, ?, ?, ?, ?, ?)",
                     )
-                    .bind::<Text, _>(snapshot_key.as_str())
-                    .bind::<Text, _>(&set.name)
+                    .bind::<BigInt, _>(set_id)
                     .bind::<BigInt, _>(order)
                     .bind::<BigInt, _>(checked_order(extension_order, "MAME device extensions")?)
                     .bind::<Text, _>(&extension.name)
@@ -1649,11 +1644,10 @@ fn insert_mame_machine_specification(
                 for (option_order, option) in value.options.iter().enumerate() {
                     sql_query(
                         "INSERT INTO mame_machine_slot_options \
-                         (snapshot_key, set_name, element_order, option_order, name, devname, is_default, source_line, source_column) \
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                         (set_id, element_order, option_order, name, devname, is_default, source_line, source_column) \
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     )
-                    .bind::<Text, _>(snapshot_key.as_str())
-                    .bind::<Text, _>(&set.name)
+                    .bind::<BigInt, _>(set_id)
                     .bind::<BigInt, _>(order)
                     .bind::<BigInt, _>(checked_order(option_order, "MAME slot options")?)
                     .bind::<Text, _>(&option.name)
@@ -1680,8 +1674,7 @@ fn insert_mame_machine_specification(
 
 fn insert_mame_condition(
     conn: &mut SqliteConnection,
-    snapshot_key: &SnapshotKey,
-    set_name: &str,
+    set_id: i64,
     owner: MameConditionOwner,
     condition: &crate::mame::MachineCondition,
 ) -> crate::Result<()> {
@@ -1695,12 +1688,11 @@ fn insert_mame_condition(
     };
     sql_query(
         "INSERT INTO mame_machine_conditions \
-         (snapshot_key, set_name, owner_kind, owner_element_order, owner_switch_order, owner_child_order, \
+         (set_id, owner_kind, owner_element_order, owner_switch_order, owner_child_order, \
           condition_order, tag, mask, relation, value, source_line, source_column) \
-         VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)",
     )
-    .bind::<Text, _>(snapshot_key.as_str())
-    .bind::<Text, _>(set_name)
+    .bind::<BigInt, _>(set_id)
     .bind::<Text, _>(owner_kind)
     .bind::<Nullable<BigInt>, _>(element_order)
     .bind::<Nullable<BigInt>, _>(switch_order)
@@ -1802,7 +1794,7 @@ fn insert_machine_bios_sets(
 
 fn insert_machine_switches(
     conn: &mut SqliteConnection,
-    snapshot_key: &SnapshotKey,
+    set_id: i64,
     set: &SnapshotSet,
 ) -> crate::Result<()> {
     for (switch_order, switch) in set.switches.iter().enumerate() {
@@ -1812,11 +1804,10 @@ fn insert_machine_switches(
         })?;
         sql_query(
             "INSERT INTO machine_switches \
-             (snapshot_key, set_name, switch_order, kind, name, tag, mask, source_line, source_column) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             (set_id, switch_order, kind, name, tag, mask, source_line, source_column) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .bind::<Text, _>(snapshot_key.as_str())
-        .bind::<Text, _>(&set.name)
+        .bind::<BigInt, _>(set_id)
         .bind::<BigInt, _>(switch_order)
         .bind::<Text, _>(switch.kind.as_str())
         .bind::<Text, _>(&switch.name)
@@ -1828,8 +1819,7 @@ fn insert_machine_switches(
         if let Some(condition) = &switch.condition {
             insert_mame_condition(
                 conn,
-                snapshot_key,
-                &set.name,
+                set_id,
                 MameConditionOwner::Switch {
                     order: switch_order,
                 },
@@ -1840,11 +1830,10 @@ fn insert_machine_switches(
         for (location_order, location) in switch.locations.iter().enumerate() {
             sql_query(
                 "INSERT INTO machine_switch_locations \
-                 (snapshot_key, set_name, switch_order, location_order, name, number, inverted, source_line, source_column) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 (set_id, switch_order, location_order, name, number, inverted, source_line, source_column) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             )
-            .bind::<Text, _>(snapshot_key.as_str())
-            .bind::<Text, _>(&set.name)
+            .bind::<BigInt, _>(set_id)
             .bind::<BigInt, _>(switch_order)
             .bind::<BigInt, _>(checked_order(location_order, "machine switch locations")?)
             .bind::<Text, _>(&location.name)
@@ -1861,11 +1850,10 @@ fn insert_machine_switches(
             })?;
             sql_query(
                 "INSERT INTO machine_switch_values \
-                 (snapshot_key, set_name, switch_order, value_order, name, value, is_default, source_line, source_column) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 (set_id, switch_order, value_order, name, value, is_default, source_line, source_column) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             )
-            .bind::<Text, _>(snapshot_key.as_str())
-            .bind::<Text, _>(&set.name)
+            .bind::<BigInt, _>(set_id)
             .bind::<BigInt, _>(switch_order)
             .bind::<BigInt, _>(checked_order(value_order, "machine switch values")?)
             .bind::<Text, _>(&switch_value.name)
@@ -1877,8 +1865,7 @@ fn insert_machine_switches(
             if let Some(condition) = &switch_value.condition {
                 insert_mame_condition(
                     conn,
-                    snapshot_key,
-                    &set.name,
+                    set_id,
                     MameConditionOwner::SwitchValue {
                         switch_order,
                         value_order: checked_order(value_order, "MAME switch values")?,

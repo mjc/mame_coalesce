@@ -1046,6 +1046,153 @@ mod tests {
     }
 
     #[test]
+    fn compact_mame_switch_identity_downgrade_restores_composite_facts()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut conn = SqliteConnection::establish(":memory:")?;
+        conn.batch_execute("PRAGMA foreign_keys = ON")?;
+        let migrations = MIGRATIONS.migrations()?;
+        conn.applied_migrations()?;
+        for migration in &migrations {
+            conn.run_migration(migration.as_ref())?;
+        }
+        conn.batch_execute(
+            "INSERT INTO publishing_sources (source_key, display_name)
+                 VALUES ('source', 'Source');
+             INSERT INTO catalogs (catalog_key, source_key, display_name)
+                 VALUES ('catalog', 'source', 'Catalog');
+             INSERT INTO documents (document_key) VALUES ('document');
+             INSERT INTO parser_interpretations (interpretation_key, format)
+                 VALUES ('interpretation', 'mame-listxml');
+             INSERT INTO catalog_snapshots
+                 (snapshot_key, catalog_key, document_key, interpretation_key, scope_kind)
+                 VALUES ('snapshot', 'catalog', 'document', 'interpretation', 'unknown');
+             INSERT INTO snapshot_sets
+                 (snapshot_key, set_name, metadata_json, source_line, source_column, set_id)
+                 VALUES ('snapshot', 'set', '{}', 1, 1, 1);
+             INSERT INTO machine_switches
+                 (set_id, switch_order, kind, name, tag, mask, source_line, source_column)
+                 VALUES (1, 0, 'dipswitch', 'Difficulty', ':DSW', 3, 2, 4);
+             INSERT INTO machine_switch_locations
+                 (set_id, switch_order, location_order, name, number, inverted,
+                  source_line, source_column)
+                 VALUES (1, 0, 0, 'SW1', '1A', 1, 3, 5);
+             INSERT INTO machine_switch_values
+                 (set_id, switch_order, value_order, name, value, is_default,
+                  source_line, source_column)
+                 VALUES (1, 0, 0, 'Easy', 2, 1, 4, 6);
+             INSERT INTO mame_machine_conditions
+                 (set_id, owner_kind, owner_switch_order, owner_child_order,
+                  condition_order, tag, mask,
+                  relation, value, source_line, source_column)
+                 VALUES (1, 'switch_value', 0, 0, 0, ':DSW', '3', 'eq', '2', 4, 6);",
+        )?;
+
+        let compact_switch_migration = migrations
+            .iter()
+            .find(|migration| {
+                migration.name().to_string() == "2026-09-30-000022_compact_mame_switch_identity"
+            })
+            .ok_or("compact MAME switch identity migration not found")?;
+        let compact_specification_migration = migrations
+            .iter()
+            .find(|migration| {
+                migration.name().to_string()
+                    == "2026-09-30-000023_compact_mame_specification_identity"
+            })
+            .ok_or("compact MAME specification identity migration not found")?;
+        conn.revert_migration(compact_specification_migration.as_ref())?;
+        conn.revert_migration(compact_switch_migration.as_ref())?;
+
+        let facts = sql_query(
+            "SELECT switches.name || ':' || locations.name || ':' || switch_values.name || ':' || conditions.value AS value \
+             FROM machine_switches AS switches \
+             JOIN machine_switch_locations AS locations USING (snapshot_key, set_name, switch_order) \
+             JOIN machine_switch_values AS switch_values USING (snapshot_key, set_name, switch_order) \
+             JOIN mame_machine_conditions AS conditions USING (snapshot_key, set_name) \
+             WHERE switches.snapshot_key = 'snapshot' AND switches.set_name = 'set'",
+        )
+        .get_result::<TextRow>(&mut conn)?;
+        assert_eq!(facts.value, "Difficulty:SW1:Easy:2");
+        let foreign_key_violations =
+            sql_query("SELECT COUNT(*) AS count FROM pragma_foreign_key_check")
+                .get_result::<CountRow>(&mut conn)?
+                .count;
+        assert_eq!(foreign_key_violations, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn compact_mame_specification_identity_downgrade_restores_composite_facts()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut conn = SqliteConnection::establish(":memory:")?;
+        conn.batch_execute("PRAGMA foreign_keys = ON")?;
+        let migrations = MIGRATIONS.migrations()?;
+        conn.applied_migrations()?;
+        for migration in &migrations {
+            conn.run_migration(migration.as_ref())?;
+        }
+        conn.batch_execute(
+            "INSERT INTO publishing_sources (source_key, display_name)
+                 VALUES ('source', 'Source');
+             INSERT INTO catalogs (catalog_key, source_key, display_name)
+                 VALUES ('catalog', 'source', 'Catalog');
+             INSERT INTO documents (document_key) VALUES ('document');
+             INSERT INTO parser_interpretations (interpretation_key, format)
+                 VALUES ('interpretation', 'mame-listxml');
+             INSERT INTO catalog_snapshots
+                 (snapshot_key, catalog_key, document_key, interpretation_key, scope_kind)
+                 VALUES ('snapshot', 'catalog', 'document', 'interpretation', 'unknown');
+             INSERT INTO snapshot_sets
+                 (snapshot_key, set_name, metadata_json, source_line, source_column, set_id)
+                 VALUES ('snapshot', 'set', '{}', 1, 1, 1);
+             INSERT INTO mame_machine_spec_elements
+                 (set_id, element_order, element_type, adjuster_name, adjuster_default,
+                  source_line, source_column)
+                 VALUES (1, 0, 'adjuster', 'Volume', '80', 2, 3);
+             INSERT INTO mame_machine_spec_elements
+                 (set_id, element_order, element_type, slot_name, source_line, source_column)
+                 VALUES (1, 1, 'slot', ':cartslot', 3, 4);
+             INSERT INTO mame_machine_slot_options
+                 (set_id, element_order, option_order, name, devname, is_default,
+                  source_line, source_column)
+                 VALUES (1, 1, 0, 'game', 'cart', 1, 3, 4);
+             INSERT INTO mame_machine_conditions
+                 (set_id, owner_kind, owner_element_order, condition_order, tag, mask,
+                  relation, value, source_line, source_column)
+                 VALUES (1, 'element', 0, 0, ':CFG', '1', 'eq', '1', 2, 3);",
+        )?;
+
+        let compact_specification_migration = migrations
+            .iter()
+            .find(|migration| {
+                migration.name().to_string()
+                    == "2026-09-30-000023_compact_mame_specification_identity"
+            })
+            .ok_or("compact MAME specification identity migration not found")?;
+        conn.revert_migration(compact_specification_migration.as_ref())?;
+
+        let facts = sql_query(
+            "SELECT (SELECT element_type || ':' || adjuster_name || ':' || adjuster_default \
+                    FROM mame_machine_spec_elements WHERE snapshot_key = 'snapshot' \
+                      AND set_name = 'set' AND element_order = 0) || ':' || \
+                   (SELECT options.name || ':' || options.devname \
+                    FROM mame_machine_spec_elements AS elements \
+                    JOIN mame_machine_slot_options AS options \
+                      USING (snapshot_key, set_name, element_order) \
+                    WHERE elements.snapshot_key = 'snapshot' AND elements.set_name = 'set') \
+             AS value",
+        )
+        .get_result::<TextRow>(&mut conn)?;
+        assert_eq!(facts.value, "adjuster:Volume:80:game:cart");
+        let foreign_key_violations =
+            sql_query("SELECT COUNT(*) AS count FROM pragma_foreign_key_check")
+                .get_result::<CountRow>(&mut conn)?
+                .count;
+        assert_eq!(foreign_key_violations, 0);
+        Ok(())
+    }
+
+    #[test]
     fn asset_extension_migration_backfills_ownership_from_source_locations()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut conn = SqliteConnection::establish(":memory:")?;

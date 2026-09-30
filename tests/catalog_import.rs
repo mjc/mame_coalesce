@@ -395,6 +395,63 @@ fn mame_machine_dependencies_store_a_compact_set_identity() -> Result<(), Box<dy
     Ok(())
 }
 
+#[test]
+fn mame_switch_facts_store_a_compact_set_identity() -> Result<(), Box<dyn std::error::Error>> {
+    let (_directory, _database, mut connection) = setup()?;
+    for table in [
+        "machine_switches",
+        "machine_switch_locations",
+        "machine_switch_values",
+    ] {
+        let columns = sql_query(format!(
+            "SELECT GROUP_CONCAT(name, ',') AS value FROM pragma_table_info('{table}')"
+        ))
+        .get_result::<TextRow>(&mut connection)?;
+        assert!(
+            columns.value.split(',').any(|column| column == "set_id"),
+            "{table} must use its compact parent identity"
+        );
+        assert!(
+            !columns
+                .value
+                .split(',')
+                .any(|column| matches!(column, "snapshot_key" | "set_name")),
+            "{table} must not repeat the composite text identity"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn mame_specification_facts_store_a_compact_set_identity() -> Result<(), Box<dyn std::error::Error>>
+{
+    let (_directory, _database, mut connection) = setup()?;
+    for table in [
+        "mame_machine_spec_elements",
+        "mame_machine_input_controls",
+        "mame_machine_analogs",
+        "mame_machine_device_extensions",
+        "mame_machine_slot_options",
+    ] {
+        let columns = sql_query(format!(
+            "SELECT GROUP_CONCAT(name, ',') AS value FROM pragma_table_info('{table}')"
+        ))
+        .get_result::<TextRow>(&mut connection)?;
+        assert!(
+            columns.value.split(',').any(|column| column == "set_id"),
+            "{table} must use its compact parent identity"
+        );
+        assert!(
+            !columns
+                .value
+                .split(',')
+                .any(|column| matches!(column, "snapshot_key" | "set_name")),
+            "{table} must not repeat the composite text identity"
+        );
+    }
+    Ok(())
+}
+
 fn retained_document(
     directory: &tempfile::TempDir,
     key: &DocumentKey,
@@ -1255,8 +1312,10 @@ fn imports_mame_switch_specification_fields_as_ordered_query_facts()
     let snapshot = report.snapshot_key.ok_or("MAME snapshot missing")?;
 
     let switches = sql_query(
-        "SELECT switch_order, kind, name, tag, mask FROM machine_switches \
-         WHERE snapshot_key = ? AND set_name = 'switches' ORDER BY switch_order",
+        "SELECT switches.switch_order, switches.kind, switches.name, switches.tag, switches.mask \
+         FROM machine_switches AS switches JOIN snapshot_sets AS sets USING (set_id) \
+         WHERE sets.snapshot_key = ? AND sets.set_name = 'switches' \
+         ORDER BY switches.switch_order",
     )
     .bind::<Text, _>(snapshot.as_str())
     .load::<MachineSwitchRow>(&mut connection)?;
@@ -1283,8 +1342,10 @@ fn imports_mame_switch_specification_fields_as_ordered_query_facts()
     );
 
     let locations = sql_query(
-        "SELECT location_order, name, number, inverted FROM machine_switch_locations \
-         WHERE snapshot_key = ? AND set_name = 'switches' AND switch_order = 0 ORDER BY location_order",
+        "SELECT locations.location_order, locations.name, locations.number, locations.inverted \
+         FROM machine_switch_locations AS locations JOIN snapshot_sets AS sets USING (set_id) \
+         WHERE sets.snapshot_key = ? AND sets.set_name = 'switches' \
+           AND locations.switch_order = 0 ORDER BY locations.location_order",
     )
     .bind::<Text, _>(snapshot.as_str())
     .load::<MachineSwitchLocationRow>(&mut connection)?;
@@ -1300,8 +1361,11 @@ fn imports_mame_switch_specification_fields_as_ordered_query_facts()
     );
 
     let values = sql_query(
-        "SELECT value_order, name, value, is_default FROM machine_switch_values \
-         WHERE snapshot_key = ? AND set_name = 'switches' AND switch_order = 0 ORDER BY value_order",
+        "SELECT switch_values.value_order, switch_values.name, switch_values.value, switch_values.is_default \
+         FROM machine_switch_values AS switch_values \
+         JOIN snapshot_sets AS sets USING (set_id) \
+         WHERE sets.snapshot_key = ? AND sets.set_name = 'switches' \
+           AND switch_values.switch_order = 0 ORDER BY switch_values.value_order",
     )
     .bind::<Text, _>(snapshot.as_str())
     .load::<MachineSwitchValueRow>(&mut connection)?;
@@ -1374,7 +1438,7 @@ fn imports_every_mame_machine_dtd_family_as_typed_query_facts()
     let snapshot = report.snapshot_key.ok_or("MAME snapshot missing")?;
 
     let kinds = sql_query(
-        "SELECT GROUP_CONCAT(element_type, ',') AS value FROM (SELECT element_type FROM mame_machine_spec_elements WHERE snapshot_key = ? AND set_name = 'complete' ORDER BY element_order)",
+        "SELECT GROUP_CONCAT(element_type, ',') AS value FROM (SELECT element_type FROM mame_machine_spec_elements WHERE set_id = (SELECT set_id FROM snapshot_sets WHERE snapshot_key = ? AND set_name = 'complete') ORDER BY element_order)",
     )
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<TextRow>(&mut connection)
@@ -1385,14 +1449,14 @@ fn imports_every_mame_machine_dtd_family_as_typed_query_facts()
     );
 
     let display = sql_query(
-        "SELECT display_type AS value FROM mame_machine_spec_elements WHERE snapshot_key = ? AND set_name = 'complete' AND element_type = 'display'",
+        "SELECT display_type AS value FROM mame_machine_spec_elements WHERE set_id = (SELECT set_id FROM snapshot_sets WHERE snapshot_key = ? AND set_name = 'complete') AND element_type = 'display'",
     )
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<TextRow>(&mut connection)
     .map_err(|error| io::Error::other(format!("read MAME display type: {error}")))?;
     assert_eq!(display.value, "svg");
     let chip_fields = sql_query(
-        "SELECT GROUP_CONCAT(chip_name || ':' || COALESCE(chip_tag, '') || ':' || chip_type || ':' || COALESCE(chip_clock, ''), ',') AS value FROM (SELECT chip_name, chip_tag, chip_type, chip_clock FROM mame_machine_spec_elements WHERE snapshot_key = ? AND set_name = 'complete' AND element_type = 'chip' ORDER BY element_order)",
+        "SELECT GROUP_CONCAT(chip_name || ':' || COALESCE(chip_tag, '') || ':' || chip_type || ':' || COALESCE(chip_clock, ''), ',') AS value FROM (SELECT chip_name, chip_tag, chip_type, chip_clock FROM mame_machine_spec_elements WHERE set_id = (SELECT set_id FROM snapshot_sets WHERE snapshot_key = ? AND set_name = 'complete') AND element_type = 'chip' ORDER BY element_order)",
     )
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<TextRow>(&mut connection)?;
@@ -1401,7 +1465,7 @@ fn imports_every_mame_machine_dtd_family_as_typed_query_facts()
         "CPU::maincpu:cpu:4000000,Speaker::audio:"
     );
     let display_fields = sql_query(
-        "SELECT display_tag || ':' || display_type || ':' || display_rotate || ':' || flipx || ':' || display_width || ':' || display_height || ':' || display_refresh || ':' || display_pixclock || ':' || display_htotal || ':' || display_hbend || ':' || display_hbstart || ':' || display_vtotal || ':' || display_vbend || ':' || display_vbstart AS value FROM mame_machine_spec_elements WHERE snapshot_key = ? AND set_name = 'complete' AND element_type = 'display'",
+        "SELECT display_tag || ':' || display_type || ':' || display_rotate || ':' || flipx || ':' || display_width || ':' || display_height || ':' || display_refresh || ':' || display_pixclock || ':' || display_htotal || ':' || display_hbend || ':' || display_hbstart || ':' || display_vtotal || ':' || display_vbend || ':' || display_vbstart AS value FROM mame_machine_spec_elements WHERE set_id = (SELECT set_id FROM snapshot_sets WHERE snapshot_key = ? AND set_name = 'complete') AND element_type = 'display'",
     )
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<TextRow>(&mut connection)?;
@@ -1410,25 +1474,25 @@ fn imports_every_mame_machine_dtd_family_as_typed_query_facts()
         ":screen:svg:90:1:320:240:60.0:12000000:400:10:330:260:5:245"
     );
     let input_fields = sql_query(
-        "SELECT input_service || ':' || input_tilt || ':' || input_players || ':' || input_coins AS value FROM mame_machine_spec_elements WHERE snapshot_key = ? AND set_name = 'complete' AND element_type = 'input'",
+        "SELECT input_service || ':' || input_tilt || ':' || input_players || ':' || input_coins AS value FROM mame_machine_spec_elements WHERE set_id = (SELECT set_id FROM snapshot_sets WHERE snapshot_key = ? AND set_name = 'complete') AND element_type = 'input'",
     )
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<TextRow>(&mut connection)?;
     assert_eq!(input_fields.value, "1:1:2:1");
     let controls = sql_query(
-        "SELECT control_type || ':' || player || ':' || buttons || ':' || minimum || ':' || maximum || ':' || sensitivity || ':' || keydelta || ':' || reverse || ':' || ways || ':' || ways2 || ':' || ways3 AS value FROM mame_machine_input_controls WHERE snapshot_key = ? AND set_name = 'complete'",
+        "SELECT control_type || ':' || player || ':' || buttons || ':' || minimum || ':' || maximum || ':' || sensitivity || ':' || keydelta || ':' || reverse || ':' || ways || ':' || ways2 || ':' || ways3 AS value FROM mame_machine_input_controls WHERE set_id = (SELECT set_id FROM snapshot_sets WHERE snapshot_key = ? AND set_name = 'complete')",
     )
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<TextRow>(&mut connection)?;
     assert_eq!(controls.value, "joy:1:2:0:255:50:10:1:8:4:2");
     let analog = sql_query(
-        "SELECT port_tag || ':' || analog.mask AS value FROM mame_machine_spec_elements AS port JOIN mame_machine_analogs AS analog USING (snapshot_key, set_name, element_order) WHERE port.snapshot_key = ? AND port.set_name = 'complete'",
+        "SELECT port_tag || ':' || analog.mask AS value FROM mame_machine_spec_elements AS port JOIN mame_machine_analogs AS analog USING (set_id, element_order) WHERE port.set_id = (SELECT set_id FROM snapshot_sets WHERE snapshot_key = ? AND set_name = 'complete')",
     )
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<TextRow>(&mut connection)?;
     assert_eq!(analog.value, ":IN0:255");
     let scalar_families = sql_query(
-        "SELECT (SELECT sound_channels FROM mame_machine_spec_elements WHERE snapshot_key = ? AND set_name = 'complete' AND element_type = 'sound') || ':' || (SELECT adjuster_name || ':' || adjuster_default FROM mame_machine_spec_elements WHERE snapshot_key = ? AND set_name = 'complete' AND element_type = 'adjuster') || ':' || (SELECT driver_status || ':' || driver_emulation || ':' || cocktail || ':' || savestate || ':' || requiresartwork || ':' || unofficial || ':' || nosoundhardware || ':' || incomplete FROM (SELECT driver_status, driver_emulation, driver_cocktail AS cocktail, driver_savestate AS savestate, driver_requiresartwork AS requiresartwork, driver_unofficial AS unofficial, driver_nosoundhardware AS nosoundhardware, driver_incomplete AS incomplete FROM mame_machine_spec_elements WHERE snapshot_key = ? AND set_name = 'complete' AND element_type = 'driver')) AS value",
+        "SELECT (SELECT sound_channels FROM mame_machine_spec_elements WHERE set_id = (SELECT set_id FROM snapshot_sets WHERE snapshot_key = ? AND set_name = 'complete') AND element_type = 'sound') || ':' || (SELECT adjuster_name || ':' || adjuster_default FROM mame_machine_spec_elements WHERE set_id = (SELECT set_id FROM snapshot_sets WHERE snapshot_key = ? AND set_name = 'complete') AND element_type = 'adjuster') || ':' || (SELECT driver_status || ':' || driver_emulation || ':' || cocktail || ':' || savestate || ':' || requiresartwork || ':' || unofficial || ':' || nosoundhardware || ':' || incomplete FROM (SELECT driver_status, driver_emulation, driver_cocktail AS cocktail, driver_savestate AS savestate, driver_requiresartwork AS requiresartwork, driver_unofficial AS unofficial, driver_nosoundhardware AS nosoundhardware, driver_incomplete AS incomplete FROM mame_machine_spec_elements WHERE set_id = (SELECT set_id FROM snapshot_sets WHERE snapshot_key = ? AND set_name = 'complete') AND element_type = 'driver')) AS value",
     )
     .bind::<Text, _>(snapshot.as_str())
     .bind::<Text, _>(snapshot.as_str())
@@ -1439,7 +1503,7 @@ fn imports_every_mame_machine_dtd_family_as_typed_query_facts()
         "2:Volume:80:imperfect:good:preliminary:supported:1:1:1:1"
     );
     let spec_children = sql_query(
-        "SELECT (SELECT feature_type || ':' || feature_status || ':' || feature_overall FROM mame_machine_spec_elements WHERE snapshot_key = ? AND set_name = 'complete' AND element_type = 'feature') || ':' || (SELECT device_type || ':' || device_tag || ':' || device_fixed_image || ':' || device_mandatory || ':' || device_interface || ':' || device_instance_name || ':' || device_instance_briefname FROM mame_machine_spec_elements WHERE snapshot_key = ? AND set_name = 'complete' AND element_type = 'device') || ':' || (SELECT name || ':' || devname || ':' || is_default FROM mame_machine_slot_options WHERE snapshot_key = ? AND set_name = 'complete') || ':' || (SELECT softwarelist_tag || ':' || softwarelist_name || ':' || softwarelist_status || ':' || softwarelist_filter FROM mame_machine_spec_elements WHERE snapshot_key = ? AND set_name = 'complete' AND element_type = 'softwarelist') || ':' || (SELECT ramoption_name || ':' || ramoption_default || ':' || ramoption_text FROM mame_machine_spec_elements WHERE snapshot_key = ? AND set_name = 'complete' AND element_type = 'ramoption') AS value",
+        "SELECT (SELECT feature_type || ':' || feature_status || ':' || feature_overall FROM mame_machine_spec_elements WHERE set_id = (SELECT set_id FROM snapshot_sets WHERE snapshot_key = ? AND set_name = 'complete') AND element_type = 'feature') || ':' || (SELECT device_type || ':' || device_tag || ':' || device_fixed_image || ':' || device_mandatory || ':' || device_interface || ':' || device_instance_name || ':' || device_instance_briefname FROM mame_machine_spec_elements WHERE set_id = (SELECT set_id FROM snapshot_sets WHERE snapshot_key = ? AND set_name = 'complete') AND element_type = 'device') || ':' || (SELECT name || ':' || devname || ':' || is_default FROM mame_machine_slot_options WHERE set_id = (SELECT set_id FROM snapshot_sets WHERE snapshot_key = ? AND set_name = 'complete')) || ':' || (SELECT softwarelist_tag || ':' || softwarelist_name || ':' || softwarelist_status || ':' || softwarelist_filter FROM mame_machine_spec_elements WHERE set_id = (SELECT set_id FROM snapshot_sets WHERE snapshot_key = ? AND set_name = 'complete') AND element_type = 'softwarelist') || ':' || (SELECT ramoption_name || ':' || ramoption_default || ':' || ramoption_text FROM mame_machine_spec_elements WHERE set_id = (SELECT set_id FROM snapshot_sets WHERE snapshot_key = ? AND set_name = 'complete') AND element_type = 'ramoption') AS value",
     )
     .bind::<Text, _>(snapshot.as_str())
     .bind::<Text, _>(snapshot.as_str())
@@ -1452,19 +1516,19 @@ fn imports_every_mame_machine_dtd_family_as_typed_query_facts()
         "graphics:imperfect:unemulated:floppy::fd:disk:yes:floppy:floppy1:FDD:game:cart:1::software:softlist:compatible:original:ram:2M:2M"
     );
     let device_extension = sql_query(
-        "SELECT GROUP_CONCAT(name, ',') AS value FROM (SELECT name FROM mame_machine_device_extensions WHERE snapshot_key = ? AND set_name = 'complete' ORDER BY extension_order)",
+        "SELECT GROUP_CONCAT(name, ',') AS value FROM (SELECT name FROM mame_machine_device_extensions WHERE set_id = (SELECT set_id FROM snapshot_sets WHERE snapshot_key = ? AND set_name = 'complete') ORDER BY extension_order)",
     )
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<TextRow>(&mut connection)?;
     assert_eq!(device_extension.value, "dsk,");
     let device_instance_location = sql_query(
-        "SELECT device_instance_line > 0 AND device_instance_column > 0 AS value FROM mame_machine_spec_elements WHERE snapshot_key = ? AND set_name = 'complete' AND element_type = 'device'",
+        "SELECT device_instance_line > 0 AND device_instance_column > 0 AS value FROM mame_machine_spec_elements WHERE set_id = (SELECT set_id FROM snapshot_sets WHERE snapshot_key = ? AND set_name = 'complete') AND element_type = 'device'",
     )
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<IntegerRow>(&mut connection)?;
     assert_eq!(device_instance_location.value, 1);
     let defaults = sql_query(
-        "SELECT flipx AS value FROM mame_machine_spec_elements WHERE snapshot_key = ? AND set_name = 'complete' AND element_type = 'display'",
+        "SELECT flipx AS value FROM mame_machine_spec_elements WHERE set_id = (SELECT set_id FROM snapshot_sets WHERE snapshot_key = ? AND set_name = 'complete') AND element_type = 'display'",
     )
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<IntegerRow>(&mut connection)
@@ -1472,7 +1536,7 @@ fn imports_every_mame_machine_dtd_family_as_typed_query_facts()
     assert_eq!(defaults.value, 1);
 
     let nested_counts = sql_query(
-        "SELECT (SELECT COUNT(*) FROM mame_machine_input_controls WHERE snapshot_key = ? AND set_name = 'complete') + (SELECT COUNT(*) FROM mame_machine_analogs WHERE snapshot_key = ? AND set_name = 'complete') + (SELECT COUNT(*) FROM mame_machine_device_extensions WHERE snapshot_key = ? AND set_name = 'complete') + (SELECT COUNT(*) FROM mame_machine_slot_options WHERE snapshot_key = ? AND set_name = 'complete') + (SELECT COUNT(*) FROM mame_machine_conditions WHERE snapshot_key = ? AND set_name = 'complete') AS value",
+        "SELECT (SELECT COUNT(*) FROM mame_machine_input_controls WHERE set_id = (SELECT set_id FROM snapshot_sets WHERE snapshot_key = ? AND set_name = 'complete')) + (SELECT COUNT(*) FROM mame_machine_analogs WHERE set_id = (SELECT set_id FROM snapshot_sets WHERE snapshot_key = ? AND set_name = 'complete')) + (SELECT COUNT(*) FROM mame_machine_device_extensions WHERE set_id = (SELECT set_id FROM snapshot_sets WHERE snapshot_key = ? AND set_name = 'complete')) + (SELECT COUNT(*) FROM mame_machine_slot_options WHERE set_id = (SELECT set_id FROM snapshot_sets WHERE snapshot_key = ? AND set_name = 'complete')) + (SELECT COUNT(*) FROM mame_machine_conditions AS conditions JOIN snapshot_sets AS sets USING (set_id) WHERE sets.snapshot_key = ? AND sets.set_name = 'complete') AS value",
     )
     .bind::<Text, _>(snapshot.as_str())
     .bind::<Text, _>(snapshot.as_str())
@@ -1483,19 +1547,25 @@ fn imports_every_mame_machine_dtd_family_as_typed_query_facts()
     .map_err(|error| io::Error::other(format!("read MAME nested facts: {error}")))?;
     assert_eq!(nested_counts.value, 1 + 1 + 2 + 1 + 5);
     let empty_extension = sql_query(
-        "SELECT COUNT(*) AS value FROM mame_machine_device_extensions WHERE snapshot_key = ? AND set_name = 'complete' AND name = ''",
+        "SELECT COUNT(*) AS value FROM mame_machine_device_extensions WHERE set_id = (SELECT set_id FROM snapshot_sets WHERE snapshot_key = ? AND set_name = 'complete') AND name = ''",
     )
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<IntegerRow>(&mut connection)?;
     assert_eq!(empty_extension.value, 1);
     let empty_setting_name = sql_query(
-        "SELECT COUNT(*) AS count FROM machine_switch_values WHERE snapshot_key = ? AND set_name = 'complete' AND name = ''",
+        "SELECT COUNT(*) AS count FROM machine_switch_values AS switch_values \
+         JOIN snapshot_sets AS sets USING (set_id) \
+         WHERE sets.snapshot_key = ? AND sets.set_name = 'complete' AND switch_values.name = ''",
     )
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<CountRow>(&mut connection)?;
     assert_eq!(empty_setting_name.count, 1);
     let conditions = sql_query(
-        "SELECT GROUP_CONCAT(owner_kind || ':' || relation || ':' || mask || ':' || value, ',') AS value FROM (SELECT owner_kind, relation, mask, value FROM mame_machine_conditions WHERE snapshot_key = ? AND set_name = 'complete' ORDER BY owner_kind, owner_switch_order, owner_child_order)",
+        "SELECT GROUP_CONCAT(owner_kind || ':' || relation || ':' || mask || ':' || value, ',') AS value \
+         FROM (SELECT conditions.owner_kind, conditions.relation, conditions.mask, conditions.value \
+               FROM mame_machine_conditions AS conditions JOIN snapshot_sets AS sets USING (set_id) \
+               WHERE sets.snapshot_key = ? AND sets.set_name = 'complete' \
+               ORDER BY conditions.owner_kind, conditions.owner_switch_order, conditions.owner_child_order)",
     )
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<TextRow>(&mut connection)?;
@@ -1504,7 +1574,7 @@ fn imports_every_mame_machine_dtd_family_as_typed_query_facts()
         "element:lt:1:2,switch:eq:1:1,switch:gt:2:0,switch_value:ne:1:0,switch_value:le:2:1"
     );
     let default_values = sql_query(
-        "SELECT (SELECT flipx FROM mame_machine_spec_elements WHERE snapshot_key = ? AND set_name = 'defaults' AND element_type = 'display') || ':' || (SELECT input_service || ':' || input_tilt FROM mame_machine_spec_elements WHERE snapshot_key = ? AND set_name = 'defaults' AND element_type = 'input') || ':' || (SELECT reverse FROM mame_machine_input_controls WHERE snapshot_key = ? AND set_name = 'defaults') || ':' || (SELECT driver_requiresartwork || ':' || driver_unofficial || ':' || driver_nosoundhardware || ':' || driver_incomplete FROM mame_machine_spec_elements WHERE snapshot_key = ? AND set_name = 'defaults' AND element_type = 'driver') || ':' || (SELECT is_default FROM mame_machine_slot_options WHERE snapshot_key = ? AND set_name = 'defaults') AS value",
+        "SELECT (SELECT flipx FROM mame_machine_spec_elements WHERE set_id = (SELECT set_id FROM snapshot_sets WHERE snapshot_key = ? AND set_name = 'defaults') AND element_type = 'display') || ':' || (SELECT input_service || ':' || input_tilt FROM mame_machine_spec_elements WHERE set_id = (SELECT set_id FROM snapshot_sets WHERE snapshot_key = ? AND set_name = 'defaults') AND element_type = 'input') || ':' || (SELECT reverse FROM mame_machine_input_controls WHERE set_id = (SELECT set_id FROM snapshot_sets WHERE snapshot_key = ? AND set_name = 'defaults')) || ':' || (SELECT driver_requiresartwork || ':' || driver_unofficial || ':' || driver_nosoundhardware || ':' || driver_incomplete FROM mame_machine_spec_elements WHERE set_id = (SELECT set_id FROM snapshot_sets WHERE snapshot_key = ? AND set_name = 'defaults') AND element_type = 'driver') || ':' || (SELECT is_default FROM mame_machine_slot_options WHERE set_id = (SELECT set_id FROM snapshot_sets WHERE snapshot_key = ? AND set_name = 'defaults')) AS value",
     )
     .bind::<Text, _>(snapshot.as_str())
     .bind::<Text, _>(snapshot.as_str())
