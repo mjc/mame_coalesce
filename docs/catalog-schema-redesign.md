@@ -1,0 +1,518 @@
+# Catalog schema redesign from all input formats
+
+Status: reviewed proposal, 2026-09-30. This document specifies the next catalog
+storage model; it does not describe an implemented migration. Existing SQLite
+imports and source objects remain the comparison baseline.
+
+Durable design: [MAMEC-DOC-7](https://lific.mjc.lol/MAMEC/pages/89).
+Implementation sequence: [MAMEC-PLAN-3](https://lific.mjc.lol/MAMEC/plans/108).
+Four Luna audits and a repeated Sol review informed this proposal. The final
+review found no remaining actionable design contradictions; implementation
+and field/query conformance testing remain outstanding.
+
+## Decision and scope
+
+Design from document entities, field meaning, cardinality, and actual queries.
+Keep a small shared identity/provenance model and narrow tables for each native
+entity. Share a fact only when its meaning is equivalent across formats. Expose
+common catalog queries through typed projections over those facts, without
+storing another copy of every projection.
+
+Every field in a supported, pinned document specification belongs in relational
+query storage. Exact original bytes remain in verified zstd source objects.
+Vendor fields outside the supported dialect remain recoverable from those
+objects. No JSON columns, JSON composite keys, universal attribute/value tables,
+or catalog-sized owned syntax trees are part of the proposed model.
+
+The user accepted the latest 471,031,808-byte MAME SQLite import as a sufficient
+size baseline. Its source object is 15,305,382 bytes; its original XML is
+326,688,140 bytes. Further byte reduction is measured alongside field coverage
+and queries, rather than treating a database smaller than XML as a prerequisite
+for this redesign. No new memory cap or field truncation is proposed.
+
+## Evidence and corpus coverage
+
+The CLI currently exposes five parser families: Logiqx XML, MAME machine XML,
+MAME software-list XML, ClrMamePro text, and the synthetic No-Intro P/C projection.
+Compression is a transport property, not a sixth document schema. Publisher
+identity (No-Intro, TOSEC, Redump, etc.) is independent of syntax and dialect.
+
+A streaming structural pass over all unpacked XML/DAT files in
+`target/profiling/external-catalogs-2026-09-29` found the following. The inspector
+counted element paths and attribute names and cleared parsed elements; it did
+not validate a DTD or invoke the application's import adapters.
+
+| Corpus input | Observed structure | Coverage consequence |
+|---|---|---|
+| MAME 0.289 full machine XML, 326,688,140 bytes | 50,368 machines; 371,752 ROMs; 1,402 disks; 781,216 device references; 609,206 DIP/configuration switches; 1,783,403 switch values | The embedded DTD is a concrete, versioned machine-format contract. All its native families need tables. |
+| 777 unique MAME software-list files | 778 file instances, including an identical extra `vgmplay.xml`; 145,856 software records across those instances, 303,562 parts, 303,586 ROM entries, 11,563 disk entries | Preserve list/item/part/area nesting and ordered load entries; file-instance totals are not deduplicated totals. |
+| `logiqx/PureDOSDAT.xml`, 3,945,595 bytes | 216 games; 21,491 ROM entries; developer/comments/links; nested source, track, and patch metadata | This is a Logiqx-shaped extended dialect. Baseline Logiqx conformance does not prove its additional structures are supported. |
+| `clrmamepro/Atari-2600.dat` | Real text DAT with header, game fields, ROMs, region, and release-date fields | The XML inspector reports a syntax error for this text input; the text adapter must be assessed separately. |
+| `no-intro-pc/pc-engine.xml`, 213,911 bytes | `<dat>/<configuration>` and `<games>/<game>`; 425 records, ROM CRCs and separate image CRCs | It is an OfflineList-style document, not an authentic DAT-o-MATIC P/C XML specimen. The current P/C adapter cannot import it. |
+| Checked-in TOSEC, Redump, and No-Intro examples | Synthetic metadata-only fixtures, identified as such in `fixtures/catalog/manifest.json` | Useful semantic regressions, not proof of production export coverage. Redump CUE is a separate companion document, not a currently supported import adapter. |
+
+The duplicated `vgmplay.xml` instances both have SHA-256
+`61bfa8546cd34be1ac24cf2087c150c0b1af5cbc94219398b459ff10e73a4a08`.
+No ROM or disc data is required for this work.
+
+## Problems in the existing fit
+
+- `SnapshotSet` combines all format adapters using optional MAME, No-Intro, and
+  Logiqx fields plus JSON metadata. The shared storage shape is influencing what
+  survives an import.
+- `MachineSpecification` is already a Rust enum with native variant structs.
+  SQLite flattens those variants into the 60-column
+  `mame_machine_spec_elements` table. A port row carries the record header for
+  display, driver, device, and other unrelated fields.
+- Software-list child keys repeat snapshot/list/item/part/area strings. Integer
+  parents should carry those identities once through foreign keys.
+- A software-list ROM entry can be a load, reload, continue, fill, or ignore
+  instruction. Its `size` can describe a segment rather than the entire input
+  file. It cannot always be treated as a new ordinary file requirement.
+- Logiqx fields have dedicated facts that equivalent ClrMamePro fields currently
+  lack. No-Intro archive facts are divided between columns, JSON, and extensions.
+- Generic source and derived relationship rows carry different kinds of
+  endpoint information in one wide nullable shape. Source declarations should
+  be queried from their authoritative facts rather than copied into a second
+  explanation payload.
+- The downloaded corpus contains dialects the named parser paths do not fully
+  cover. A successful shallow import is not a field-completeness result.
+- The MAME DTD audit found concrete contract mismatches to address with the
+  redesign: required root `mameconfig` and BIOS-set `description` are optional
+  in current models/storage. The software-list ROM parser already materializes
+  the effective status default `good`. These checks are not a complete proof
+  of every grammar rule.
+
+## Shared identity and provenance
+
+Use integer primary/foreign keys internally, with distinct Rust newtypes.
+Persist external stable document/snapshot identities once at the relevant
+parent. Never make names, declared versions, or local integer row IDs global
+game/content identities.
+
+| Relation | Owned data and constraints |
+|---|---|
+| `sources`, `catalogs` | Publisher identity, locator, collection identity and display name. |
+| `documents` | SHA-256, exact byte length, compression codec and relative object key; source bytes are external. |
+| `acquisitions`, `acquisition_attempts`, ordered transport-header children | URI/path, method, time, expected digest, verification/outcome and provenance. Repeated header names and order survive. |
+| `interpretations` | Syntax family, supported dialect/spec revision, parser version and rules version. Real parser options use dedicated typed columns/relations. |
+| `snapshots`, `snapshot_publications`, `import_runs` | Catalog/document/interpretation identity, lineage, publication state, declared version and import result. Immutable facts publish only after valid EOF and transaction completion. |
+| `snapshot_scope`, `scope_member_names` | Unknown/complete/filtered/partial scope and ordered or set-valued members according to the actual scope contract. No serialized name list. |
+| `record_namespaces` | A snapshot root namespace, or a software-list namespace. This keeps software-list item names scoped to their own list. |
+| `records` | Namespace FK, native record kind, source order and source name; native facts attach by `RecordId`. Name lookup may be ambiguous unless the supported dialect guarantees uniqueness. |
+| `asset_claims` | Compact identity and owning record for actual declared file/media claims. Each native claim table owns its values; this relation is an FK target, not a duplicate hash/name payload. |
+| `assertions` | Compact identity and source/derived/user origin. Source-native declaration tables own source fields; derived/user subtype tables own explicit endpoints and rules. |
+
+Foreign keys must keep a record, its namespace, and its snapshot consistent.
+Source name/order uniqueness is decided per pinned dialect, not imposed on every
+catalog. Source-location columns live with the authoritative native fact; a
+generic node/location row is not added for every XML token.
+
+The minimal key shapes are `record_namespaces(namespace_id, snapshot_id, kind)`,
+`records(record_id, namespace_id, kind, source_order, source_name)`, and
+`asset_claims(claim_id, record_id, native_claim_kind)`. A native claim payload has
+`claim_id` as its primary key and FK; it stores no second copy of the owning
+record's name or snapshot key. Its discriminator must match its native subtype.
+Nested payload owners must belong to that same record/namespace/snapshot,
+enforced with composite FKs or specific checked insert rules, not merely Rust
+conventions. Exactly one native payload must exist for each published claim.
+Snapshot publication validation and immutable source tables enforce completion
+of those subtype relationships.
+
+For example, `mame_chips(machine_id, chip_order, ...)` has a clustered composite
+PK, and `mame_input_controls(machine_id, control_order, ...)` references the
+singleton input owner. Software parts and areas use distinct integer parent
+IDs; native operations key by `(area_id, operation_order)`. There is no general
+`node_kind/key/value` table behind those keys.
+
+Public references include snapshot identity and native namespace/record/
+occurrence identity. Internal IDs can change on rebuild without silently
+retargeting an external review or manifest. Idempotence still binds identical
+document bytes, catalog identity, interpretation, and scope.
+
+## MAME machine native relations
+
+The embedded DTD in the full 0.289 XML defines the baseline below. `*` families
+retain occurrence order. Singletons retain absence. Each family has its own
+narrow row, including source location and explicit/defaulted attribute presence
+where that distinction affects source queries.
+
+| Native relation | Fields beyond its integer parent/key |
+|---|---|
+| `mame_documents` | build, debug, mameconfig |
+| `mame_machines` | sourcefile, description, year?, manufacturer?, isbios, isdevice, ismechanical, runnable |
+| `mame_machine_links` | cloneof/romof/sampleof declarations as distinct source fields, target literal and assertion identity |
+| `mame_device_references` | target name, required tag, source assertion identity |
+| `mame_bios_sets` | name, description, default |
+| `mame_roms` | claim ID; name, size, CRC, SHA-1, BIOS?, merge?, region?, offset?, status, optional |
+| `mame_disks` | claim ID; name, SHA-1?, merge?, region?, index?, writable, status, optional |
+| `mame_samples` | claim ID, declared name; audio-sample claims have unknown size/digests unless the source supplies them |
+| `mame_chips` | name, tag?, CPU/audio kind, clock? |
+| `mame_displays` | tag?, kind, rotation?, flipx, width?, height?, refresh, pixclock?, htotal?, hbend?, hbstart?, vtotal?, vbend?, vbstart? |
+| `mame_sound` | channels; zero or one per machine |
+| `mame_inputs`, `mame_input_controls` | input service/tilt/players/coins?; ordered controls with type, player?, buttons?, minimum?, maximum?, sensitivity?, keydelta?, reverse, ways?, ways2?, ways3? |
+| `mame_switches` | DIP/configuration kind, name, tag, mask; integer switch identity |
+| `mame_switch_locations`, `mame_switch_values` | location name/number/inverted; value name/value/default; ordered children with the native DIP/configuration distinction preserved |
+| `mame_switch_conditions`, `mame_switch_value_conditions` | tag, mask, comparison enum, value; zero or one for each owner |
+| `mame_ports`, `mame_analogs` | port tag; ordered analog masks |
+| `mame_adjusters`, `mame_adjuster_conditions` | adjuster name/default; optional tag/mask/comparison/value condition |
+| `mame_drivers` | status, emulation, cocktail?, savestate, requiresartwork, unofficial, nosoundhardware, incomplete |
+| `mame_features` | feature type, status?, overall? |
+| `mame_devices`, `mame_device_instances`, `mame_device_extensions` | device type/tag?/fixed_image?/mandatory?/interface?; optional instance name/briefname; ordered extension names |
+| `mame_slots`, `mame_slot_options` | slot name; ordered name/devname/default options |
+| `mame_softwarelist_references` | tag, name, original/compatible status, filter? |
+| `mame_ram_options` | name, optional default attribute, PCDATA value |
+
+Historical accepted attributes such as soundonly/dispose and alternate disk
+spellings belong to an explicitly identified compatible dialect. They must not
+be falsely attributed to the 0.289 DTD.
+
+Keep native element order with an ordinal on each family. If cross-family order
+is queried, a `UNION ALL` view joins those ordinals; avoid a redundant, globally
+registered node row for each element. Conditions use typed owner tables so
+foreign keys cannot point a switch condition at an unrelated display.
+
+## MAME software-list native relations
+
+Pin the upstream 0.289 `hash/softwarelist.dtd`, independently from machine XML.
+The accepted plural `<softwarelists>` wrapper is an application compatibility
+dialect, not the canonical DTD root.
+
+| Native relation | Fields and nesting |
+|---|---|
+| `software_lists` | name, description?, notes?; provides a record namespace |
+| `software_items` | native record FK, cloneof?, supported, description, year, publisher, notes? |
+| `software_item_info`, `software_shared_features` | item FK, occurrence order, declared name, optional value |
+| `software_parts` | item FK, order, name, interface |
+| `software_part_features` | part FK, order, declared name, optional value |
+| `software_data_areas` | part FK, order, name, declared size, width, endianness |
+| `software_disk_areas` | part FK, order, name |
+| `software_rom_entries` | area FK, operation order, optional name/size/CRC/SHA-1/offset/value/loadflag, status |
+| `software_file_declarations` | claim FK, unique declaring-entry FK; identifies the native entry that declares a file without copying its name/hashes |
+| `software_rom_file_uses` | entry FK, file-declaration FK, load/continue/reload/ignore use kind; several ordered entries may refer to one file |
+| `software_disk_entries` | area FK, order, claim FK, name, SHA-1?, status, writeable |
+| `software_part_switches`, `software_part_switch_values` | part FK; switch name/tag/mask; ordered value name/value/default |
+
+`info`, `sharedfeat`, and `feature` are intentionally named-value records in this
+specification. Their own typed, owner-constrained tables preserve repeated names,
+NULL optional values and explicit empty values; they do not introduce a generic
+catalog EAV storage mechanism.
+
+Defaults include supported=yes, width=8, endianness=little, dump status=good,
+writeable=no and DIP value default=no. Preserve omitted versus explicit defaults
+using per-entity presence information, not fabricated source locations.
+
+For file requirements, distinguish file declarations from load operations.
+Reload/continue/fill/ignore remain ordered native entries. A continue segment's
+length is not automatically the complete file size. Preserve unresolved or
+underspecified operations as source facts; validated recipe types gate any
+assembly. The real NES `10yardj1` entry supplies a named 16 KiB ROM followed by an
+unnamed reload at offset `0x4000`, demonstrating why every `<rom>` cannot become
+a new required file.
+
+Every XML ROM entry, including an unusual combination of name/hash/loadflag,
+has one `software_rom_entries` row that owns its original attributes. A separate
+file-declaration row points at its declaring entry and supplies the FK identity
+for common claims. Ordered use rows connect an initial load and its continuation,
+reload or ignore entries to that declaration. A fill has no file declaration.
+These relationships interpret source facts and never justify discarding a
+DTD-valid source entry.
+
+File-claim construction requires documented file-declaration semantics, a
+consistent area-local chain and checked ownership. Attribute-free or otherwise
+unclassifiable entries remain queryable with an explicit unclassified state;
+they do not fabricate filename or byte-length requirements. The native
+declaring entry owns the file's declared hashes. Any additional digest on a
+later operation remains that operation's source evidence until its scope is
+proved. The complete expected file length is a derived query value only when
+the pinned loading rules and complete chain determine it; otherwise it is
+unknown. Segment sizes/offsets remain native values. Reload/fill lengths must
+not be naively summed into physical file size. Tests cover load+continue,
+load+reload, ignored bytes, fill, conflicting declarations and an unresolved
+chain. No derived full-file hash or size is asserted as a source declaration.
+
+## Logiqx and ClrMamePro native relations
+
+Logiqx and ClrMamePro overlap semantically, but have distinct declared syntax,
+headers, flags, and supported dialects. The complete pinned specification
+inventory must cover more than the currently parsed field subset.
+
+The baseline Logiqx contract is DTD revision 1.5, dated 2008-10-28, from the
+producer's repository at commit
+`1575f8da6706e159b51e3bb8b511f546909927cc` (DTD blob
+`ab86446ee415761077dcec602c0a54cf0088d84d`). It allows an optional header followed
+by one or more games. When present, the header requires name, description,
+version and author in its declared sequence; each game requires description.
+This differs from the current parser's mandatory header and optional values.
+
+| Native Logiqx relation | Declared fields/cardinality |
+|---|---|
+| `logiqx_documents` | build?, debug default no |
+| `logiqx_headers` | zero or one; name, description, category?, version, date?, author, email?, homepage?, URL?, comment? in DTD order |
+| `logiqx_clrmamepro_options` | optional header singleton; header-definition filename?, forcemerging default split, forcenodump default obsolete, forcepacking default zip |
+| `logiqx_romcenter_options` | optional header singleton; plugin?, rommode/biosmode default split, samplemode default merged, lockrommode/lockbiosmode/locksamplemode default no |
+| `logiqx_games` | source name from record identity; sourcefile?, isbios default no, cloneof?/romof?/sampleof? declaration owners, board?, rebuildto?, description, year?, manufacturer? |
+| `logiqx_game_comments` | ordered repeated PCDATA comments |
+| `logiqx_releases` | repeated name/region, language?, date?, default no |
+| `logiqx_bios_sets` | repeated name/description/default no |
+| `logiqx_roms` | claim ID; required name/size, CRC?/SHA-1?/MD5?, merge?, date?, status default good including verified enum value |
+| `logiqx_disks` | claim ID; required name, SHA-1?/MD5?, merge?, status default good including verified |
+| `logiqx_samples` | claim ID; repeated required name, audio-sample role, unknown size/digests |
+| `logiqx_archives` | repeated required archive name; named container references, distinct from contained file claims |
+
+Each game sequence preserves comments, description, year?, manufacturer?, then
+release/BIOS/ROM/disk/sample/archive families in the declared order. Fixed option
+enums are checked against the DTD; no app policy silently rewrites the source
+settings. Current accepted file-name/SHA-1 metadata, ROM serial fields and
+device references are outside this pinned DTD and belong to an explicitly named
+compatible dialect if retained as supported input. The current baseline adapter
+also lacks typed releases, BIOS sets, disk/sample/archive and option blocks and
+does not materialize all Logiqx defaults; those are coverage tasks, not merely
+schema-size optimizations.
+
+ClrMamePro's own documentation defines listinfo tags and examples, not a complete
+DTD-equivalent grammar. Its documented tag order/case rules differ from XML.
+Use these native tables with a pinned, explicit supported text grammar:
+
+| Native CMP relation | Documented fields/structures |
+|---|---|
+| `cmp_headers` | name, description, version, author, comment; category/date/email/homepage/URL metadata documented by the profiler |
+| `cmp_header_directives` | header-definition filename, forcemerging, forcezipping, forcenodump; exact source spelling and explicitness |
+| `cmp_sets` | game/set name identity, cloneof, description, year, manufacturer, rebuildto |
+| `cmp_roms` | claim ID; name, size?, CRC/CRC32 alias, MD5?, SHA-1?, declared nodump/baddump flags; explicitly supported merge/status dialect fields |
+| `cmp_samples`, `cmp_sample_parent_links` | scalar sample filename claims with unknown size/digests; sampleof source declaration |
+
+`forcezipping` in documented text and Logiqx's `forcepacking` are distinct source
+fields. BIOS/disk/resource engine aliases are documented transformation
+vocabulary, not sufficient proof of a text block grammar; require a pinned
+shape/specimen before declaring those forms supported. Real corpus region and
+releaseyear/releasemonth/releaseday fields similarly need an explicit dialect
+contract. Do not claim unspecified multiplicity/default rules as published facts.
+Preserve quoted strings and valid flags as typed values; CMP descriptions/year/
+manufacturer no longer live in `metadata_json`. TOSEC naming conventions and
+Redump publisher identity are adapter rules over their actual wire dialect, not
+substitute XML grammars.
+
+PureDOS declares a Logiqx DTD while adding developer/comments/link and nested
+ROM source/track/patch structures. Those are observed dialect fields, not proof
+that baseline Logiqx defines them. A supported PureDOS dialect would add explicit
+`puredos_game_links`, `puredos_rom_sources`, `puredos_tracks`, and
+`puredos_patches` with the observed typed fields and owner/order constraints.
+Its `data` attribute and source/track hash scopes need producer semantics before
+they can enter generic file matching. A shallow import must report partial
+coverage until that adapter is specified.
+
+## No-Intro and OfflineList
+
+The existing No-Intro adapter accepts a synthetic `<datafile>/<game>/<rom>`
+projection. Its persistent typed facts currently cover only archive ID and
+description beyond shared asset fields. Alternate name, region, languages,
+version, BIOS, clone and merge tokens remain JSON/extensions.
+
+Design native No-Intro archive, ordered language, file, and source relations.
+Archive IDs are snapshot/source-scoped identifiers, not global game identity.
+`clone="P"` is a marker; numeric clone values are archive references;
+`mergeof` is a distinct source declaration. Do not manufacture parent names or
+infer exact merge semantics from those tokens.
+
+The published archive vocabulary also includes development/additional/special
+status, licensed/BIOS/display-language flags, distribution/physical/public/DAT
+flags, regional parent, game ID and notes. Published file/source conventions
+describe further hashes (including SHA-256), format/filename overrides, item,
+extension, serial/bad/unique/merge fields and dumping/media provenance. Some
+references are observational and lack exact XML names or nesting. These are
+candidate explicit columns/child tables, not a claim of verified wire coverage.
+Require an authentic production export and a versioned dialect contract before
+claiming P/C XML conformance; UI defaults are not XML DTD defaults.
+
+OfflineList receives its own proposed adapter and relations if it is added to
+supported imports: document configuration, field-display configuration,
+download/search instructions, and ordered game records. The observed game
+fields are imageNumber, releaseNumber, title, saveType, romSize, publisher,
+location, sourceRom, language, files/romCRC, im1CRC, im2CRC, comment, duplicateID.
+Separate ROM CRCs from screenshot/image CRCs. The referenced `datas.xsd` is
+missing from the downloaded corpus. Treat that missing specification as a
+coverage gap, not evidence that the existing No-Intro parser handles this file.
+
+## Common query contract and physical ownership
+
+The authoritative owner of each native field is exactly one native table.
+`asset_claims` supplies stable relational identity for actual file/media claims;
+format-native tables own the name/size/hash/status declaration once. A
+`catalog_file_claims` projection combines eligible native declarations, with
+typed digest algorithm, evidence scope and provenance. It never includes an
+instruction-only fill/reload as another file and never equates a track digest,
+CHD header SHA-1, logical disk digest, and whole-container digest.
+
+Native sample declarations are expected audio-media claims with a `ClaimId`,
+unknown size and unknown digests. This includes MAME and Logiqx sample names and
+CMP scalar samples. A source sample name may be a logical audio name rather
+than a complete filesystem filename; target-profile rules decide admissible
+representations without inventing an extension during import. Common queries
+expose their weak/unknown evidence instead of omitting samples or declaring
+exact content identity. Archive names remain typed container-reference facts,
+not fabricated size/hash claims for their contents.
+
+Common APIs cover record enumeration/selection, expected file/media claims,
+source dependencies/merges, relationship explanations and adjudication, scoped
+snapshot diffs, catalog reconciliation, and pinned manifests. Namespaces and
+integer FK joins replace concatenated/JSON composite endpoint strings. Native
+fields remain individually queryable even if a generic query does not expose
+them. Descriptive values only share a physical column when their source meaning
+and cardinality truly agree; manufacturer and publisher are not silently
+collapsed into one canonical organization assertion.
+
+| Existing query | Required redesign behavior |
+|---|---|
+| Scoped history/diffs | Keep selected-but-absent scope names as names, not only FKs to records that happened to import. Removal requires coverage in both snapshots; location-only changes are excluded from semantic fact comparison. |
+| Reconciliation | Require published snapshots; preserve claim roles and digest scopes, native software hierarchy, area kind and every relevant ordinal. |
+| Machine dependencies | Keep clone, ROM-parent, device and sample declarations distinct; current resolver capabilities do not turn unsupported sample edges into resolved dependencies. |
+| Relationship explanations/reviews | Preserve source provenance, derivation rules, support ordering, latest review and append-only history, review notes and supersession targets. |
+| Pinned manifests/recipes | Preserve external snapshot/record references and canonical order; storage ID changes do not redefine a recipe or its verification. |
+| Inventory/retrieval | Keep expected catalog claims separate from observed bytes, locations, archive member selectors, scan provenance and freshness. |
+| Backup/restore | Update exact schema validation and durable/rebuildable classification; retain and verify the matching source-object directory. |
+
+Versioned JSON interchange for CLI reports/manifests is independent of the
+no-JSON SQLite contract. This redesign does not require changing those public
+serialization envelopes or adding persistent layout tables without a consumer.
+
+Source assertions keep compact identity and authoritative source-native facts.
+Derived/user assertions have distinct tables with explicit record/asset/content/
+external endpoint FKs and rule/evidence/support relations. A source declaration
+does not require a second copy of its snapshot name, subjects, targets, or raw
+payload merely to explain it. Reviews and supersession point at assertion
+identity, and unresolved/ambiguous source targets remain queryable literals.
+
+Every reviewable source declaration uses `assertion_id UNIQUE NOT NULL` as an
+FK to a source-origin assertion identity. The identity records its closed native
+declaration kind and snapshot FK; that kind must agree with exactly one owning
+native row. Owner identity/field/occurrence is unique. Source targets may be
+unresolved literals; resolution is separate from the existence of the source
+declaration. Snapshot consistency follows the subject's native record and is
+checked before publication, including any optional resolved target.
+
+| Source declaration owner | Owned declaration and assertion link |
+|---|---|
+| `mame_machine_links`, `mame_device_references` | cloneof/romof/sampleof or device_ref, including the reference tag |
+| `mame_rom_merges`, `mame_disk_merges` | owning claim FK and declared merge name; no second merge-name copy in the asset payload |
+| `software_clone_links` | item FK and declared cloneof name; optional singleton |
+| `logiqx_record_links`, `logiqx_asset_merges` | native record/claim FK and distinct cloneof/romof/sampleof/device/merge source field |
+| `cmp_record_links`, `cmp_asset_merges` | native record/claim FK and documented parent/runtime/sample/merge declarations |
+| `no_intro_archive_links`, `no_intro_file_merge_links` | declared archive-ID or merge token with its own known/unknown semantics; a parent marker remains a marker fact, not a fabricated target edge |
+
+The attribute value listed in a native family inventory is stored in this
+declaration owner when it is reviewable, and is exposed on that family's query
+view by joining. It is not also copied into the owning machine/item/ROM row.
+Derived/user assertion subtypes carry explicit endpoint FKs, rule/evidence and
+ordered support. Publication rejects assertion identities missing a native
+owner, assigned to multiple owners, of the wrong origin/kind, or attached to a
+different snapshot. Source tables and identities are immutable after publication.
+
+For history correspondence, occurrence ordinals identify a row only inside an
+immutable snapshot. Prefer a publisher-declared stable key only when its pinned
+dialect establishes its scope and continuity semantics. Otherwise unique
+qualified names establish a match only when they are unique in both selected
+snapshots. Duplicate-name groups are compared as fact multisets and may expose
+unique exact fact matches, but ambiguous changed occurrences produce an explicit
+ambiguous-correspondence result. Do not invent continuity, rename, or removal by
+matching ordinal positions after an insertion/reorder. Reconciliation can
+compare independent content evidence without asserting record continuity.
+Reviews and manifests stay pinned to their original snapshot/source occurrence;
+carrying a conclusion to another snapshot requires an explicit validated
+association or supersession, not automatic name/position retargeting.
+
+SQLite and every source object referenced by its captured state form one logical
+backup unit. Capture the database first, enumerate references from that captured
+database rather than a changing live connection, and verify each object's codec,
+decompressed length and digest before reporting a complete backup. Restore into
+staging, verify schema/foreign keys/publications and every captured object, and
+reject a missing or mismatched object before publishing the restored database.
+Finalization must publish verified objects before their database references;
+it must not claim cross-filesystem atomicity that the platform cannot provide.
+Source objects cannot be classified as rebuildable scan-cache data.
+When replacing an existing restored database, publish verified content-addressed
+objects append-only into the destination object store and retain every object
+referenced by the old database until the new database is durable. Never replace
+the entire object directory while the old database can still reference it.
+Reclaim unreferenced objects only as a separate, explicit operation after the
+replacement is durable. A crash during object publication leaves the old backup
+unit usable; a crash after database replacement leaves the new references valid.
+
+Hash columns use fixed-length binary values and checked scope/algorithm codes.
+Closed format enums have stable documented storage codes and Rust enums.
+Repeated free-text labels may be interned only after measuring repetition and
+query cost across the corpus. Do not require every short string to use a
+dictionary or claim a size win before a fresh import proves it.
+
+Absent, explicitly empty, defaulted, and explicitly specified values remain
+distinct when the source specification distinguishes them. PCDATA/CDATAs such
+as year, mask, clock and refresh are not narrowed to arbitrary numeric domains
+solely because the representative source happens to contain numbers. Validated
+numeric views/newtypes can serve operations without losing the source fact.
+For example, an optional digest that is explicitly empty uses presence state
+alongside the nullable binary digest; it is distinguishable from an absent
+attribute without storing a second copy of every valid hex digest. Presence
+bits have documented field meanings and are decoded through native Rust enums.
+
+## Rust boundaries and import state
+
+Use `SnapshotId`, `RecordId`, `MachineId`, `SoftwareItemId`, `PartId`, `AreaId`,
+`ClaimId`, and `AssertionId` newtypes; avoid interchangeable `i64` IDs across
+writers. Keep native record enums and structs rather than an optional-field
+`SnapshotSet` union. Share storage/iteration helpers for identical operations,
+not semantics by calling unrelated records the same kind of game or ROM.
+
+An `ImportSession<Parsing>` consumes one native record at a time. EOF and native
+grammar validation produce `ImportSession<Validated>`; successful source-object
+verification and transaction completion produce `PublishedSnapshot`. An enum
+distinguishes syntax, dialect/field validation, storage, and source-object errors.
+Invalid or partial streams cannot reach publication. Existing validated media
+recipe typestates continue to gate assembly and verification.
+
+## Implementation and verification sequence
+
+1. Pin every supported format/dialect grammar and make a field-to-column/child
+   coverage ledger, with required/optional/repeated/default rules. Label
+   synthetic samples and unsupported production dialects honestly.
+2. Implement shared compact identities and source/snapshot/scope/option tables.
+   Replace JSON metadata and endpoint persistence with the native typed owners.
+3. Replace the MAME wide union with narrow native tables and compact parents;
+   migrate software-list hierarchy and load records as one coherent change.
+4. Complete Logiqx and ClrMamePro standard field coverage; add the proved No-Intro
+   dialect separately from OfflineList. Keep existing MAMEC-56 through MAMEC-59
+   requirements attached to the same design, without reviving archived plan 2.
+5. Switch source explanations, reviews, history, reconciliation, and manifests
+   to the common typed query contract. Remove superseded compatibility copies.
+6. Reimport fresh databases across the entire metadata corpus. Compare each
+   native field, defaults, ordering and ownership, not only record counts or a
+   success exit code. Run the complete repository `devenv test` gate.
+
+Use schema-backed minimal witnesses for every declared field family, including
+valid empty values, duplicate name/value entries, repeated same-named areas,
+missing optional attributes, explicit defaults, out-of-order references, and
+load-only ROM entries. Test ambiguous target handling, digest-scope separation,
+idempotence, failed-EOF rollback, snapshot diffs, review/supersession stability,
+exact source recovery and backup/restore. Application tests should assert query
+facts and relationships, not mirror private insert statements.
+
+Record SQLite table/index bytes, native row counts, import time, peak heap/RSS
+and query plans per format. Require justified indexes for real queries and
+verify union projection plans. Size/profile comparisons never excuse missing
+specification fields or a misidentified input dialect.
+
+## Primary references and local evidence
+
+- MAME 0.289 embedded machine DTD and source document:
+  `target/profiling/external-catalogs-2026-09-29/mame-full-test/mame-listxml/mame0289.xml`.
+- [MAME 0.289 software-list DTD](https://github.com/mamedev/mame/blob/mame0289/hash/softwarelist.dtd).
+- [MAME software-list interpretation code](https://github.com/mamedev/mame/blob/mame0289/src/emu/softlist.cpp).
+- [Pinned Logiqx revision 1.5 DTD](https://github.com/Logiqx/logiqx-dev/blob/1575f8da6706e159b51e3bb8b511f546909927cc/DatLib/datafile.dtd).
+- [ClrMamePro DAT documentation](https://mamedev.emulab.it/clrmamepro/docs/htm/datfile.htm).
+- [No-Intro naming convention](https://wiki.no-intro.org/index.php?title=Naming_Convention),
+  [file convention](https://wiki.no-intro.org/index.php?title=File_Convention),
+  [source convention](https://wiki.no-intro.org/index.php?title=Source_Convention).
+- `fixtures/catalog/manifest.json` and `docs/catalog-format-assessment.md` state
+  the synthetic fixture limits.
+- sem inspected native MAME enums/structs, `SnapshotSet`/`SnapshotAsset`, and
+  software-list persistence. Absolute checkout paths were necessary when bare
+  entity lookup failed.

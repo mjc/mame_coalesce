@@ -2,6 +2,18 @@
 
 This is a bounded adapter decision, not a claim that the three preservation projects share one publisher model. The four checked-in examples are synthetic CC0 fixtures built from each project's published field vocabulary and workflow documentation. They contain no ROM/disc bytes and do not reproduce upstream records. The manifest pins their exact bytes and records provenance and open limits.
 
+The next schema design is recorded in
+[Catalog schema redesign from all input formats](catalog-schema-redesign.md).
+The 2026-09-30 corpus audit identifies the downloaded `pc-engine.xml` as
+OfflineList-style `<dat>/<configuration>/<games>` XML, not production
+DAT-o-MATIC P/C XML. PureDOS contains additional source/track/patch structures
+beyond baseline Logiqx. Those inputs do not establish complete coverage of the
+named adapters. Supported specification fields require native typed relations;
+the source-only/extension choices in the historical assessment below do not
+supersede that requirement. The user accepted the latest 471,031,808-byte MAME
+database as the size baseline; cross-format schema and query correctness now
+take precedence over the earlier mandatory smaller-than-XML threshold.
+
 ## Decision matrix
 
 | Ecosystem / pinned sample | Syntax, publisher, version and scope | Requirement semantics and candidate normalized facts | Source-only fields / extension retention | Companion association | Terms, unsupported cases, malformed/partial handling |

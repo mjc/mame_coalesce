@@ -418,3 +418,54 @@ the source-size acceptance limit by 627,113,242 bytes. The next structural
 targets are the duplicated relationship-assertion payload/indexes and repeated
 snapshot/set identities in asset requirements; JSON persistence and encoded
 keys also remain unaddressed.
+
+## Accepted size baseline before cross-format redesign, 2026-09-30
+
+After source-dependency assertion compaction, unused index removal, combined
+asset-row identity, and derived MAME dependency keys, a fresh profiling import
+completed in
+`target/profiling/mamec55-derived-dependency-keys-2026-09-30-i/`.
+The earlier failed partial run in the `-h/` directory is not this measurement.
+
+| Measurement | Result |
+| --- | ---: |
+| Source XML | 326,688,140 bytes |
+| Fresh SQLite database, migration 27 | 471,031,808 bytes |
+| Compressed source object | 15,305,382 bytes |
+| Database + source object | 486,337,190 bytes |
+| CPU samples | 172,587 |
+
+Source SHA-256 is
+`340f4e9362ec1b5f208de43a6330dd3551dfa63b3d67bf198e540380b03fbeeb`.
+The completed run has `quick_check=ok`, zero FK violations, zero freelist pages,
+812,532 dependency rows and 812,532 distinct derived dependency assertion keys.
+The source object's expanded length is the exact source length above. The raw
+capture is `perf/mame.data`; the rendered graph is `flamegraphs/mame.svg`.
+
+| Largest table/index object | Allocated bytes |
+| --- | ---: |
+| MAME machine specification elements | 84,180,992 |
+| Generic source relationship assertions | 58,474,496 |
+| Combined asset requirement rows | 56,004,608 |
+| Machine switch values | 50,348,032 |
+| MAME machine dependencies | 42,790,912 |
+| Machine switches | 33,480,704 |
+| Slot options | 23,334,912 |
+| Switch tag/name index | 20,697,088 |
+| Relationship source-snapshot index | 18,747,392 |
+| Machine specification type index | 13,664,256 |
+| Relationship primary-key index | 10,125,312 |
+
+The 810,448 machine specification rows use a 60-column union. Switch values
+have 1,783,403 rows; switch definitions have 609,206 rows. Native fields, row
+headers, source locations, repeated text and lookup indexes explain the size;
+there is no large pool of free pages to reclaim. This is diagnostic evidence,
+not a requirement to drop fields or normalize every string.
+
+The user accepted this size baseline and requested a redesign from all input
+schemas. The earlier smaller-than-source acceptance statements in this document
+describe prior goals. The current field/ownership/query design and cross-format
+validation sequence are in
+[Catalog schema redesign from all input formats](catalog-schema-redesign.md).
+Future comparisons must measure native field completeness and query correctness
+across the corpus as well as SQLite size and profiling results.
