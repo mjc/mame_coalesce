@@ -28,6 +28,44 @@ struct CountRow {
 }
 
 #[derive(QueryableByName)]
+struct MachineSwitchRow {
+    #[diesel(sql_type = BigInt)]
+    switch_order: i64,
+    #[diesel(sql_type = Text)]
+    kind: String,
+    #[diesel(sql_type = Text)]
+    name: String,
+    #[diesel(sql_type = Text)]
+    tag: String,
+    #[diesel(sql_type = BigInt)]
+    mask: i64,
+}
+
+#[derive(QueryableByName)]
+struct MachineSwitchLocationRow {
+    #[diesel(sql_type = BigInt)]
+    location_order: i64,
+    #[diesel(sql_type = Text)]
+    name: String,
+    #[diesel(sql_type = Text)]
+    number: String,
+    #[diesel(sql_type = BigInt)]
+    inverted: i64,
+}
+
+#[derive(QueryableByName)]
+struct MachineSwitchValueRow {
+    #[diesel(sql_type = BigInt)]
+    value_order: i64,
+    #[diesel(sql_type = Text)]
+    name: String,
+    #[diesel(sql_type = BigInt)]
+    value: i64,
+    #[diesel(sql_type = BigInt)]
+    is_default: i64,
+}
+
+#[derive(QueryableByName)]
 struct QueryableAssertion {
     #[diesel(sql_type = Text)]
     relation_type: String,
@@ -604,7 +642,7 @@ fn assert_no_intro_source_assertions(
     )
     .bind::<Text, _>(run_key)
     .get_result::<CountRow>(connection)?;
-    assert_eq!(diagnostics.count, 2);
+    assert_eq!(diagnostics.count, 0);
     Ok(())
 }
 
@@ -888,23 +926,157 @@ fn imports_mame_machine_rom_disk_bios_and_device_semantics_loss_aware()
             .get_result::<TextRow>(&mut connection)?;
     assert_eq!(version.value, "0.216-synthetic");
     assert!(count(&mut connection, "snapshot_extensions")? >= 2);
-    assert!(report.diagnostic_count >= 2);
-    let namespace = sql_query(
-        "SELECT namespace_uri AS value FROM snapshot_extensions WHERE field_name = 'flag'",
-    )
-    .get_result::<NullableTextRow>(&mut connection)?;
-    assert_eq!(namespace.value.as_deref(), Some("urn:mame:future"));
-    let feature = sql_query("SELECT raw_value_json AS value FROM snapshot_extensions WHERE field_name = 'element:feature'")
-        .get_result::<TextRow>(&mut connection)?;
-    assert!(feature.value.contains("protection"));
-    assert!(sql_query("SELECT COUNT(*) AS count FROM import_diagnostics WHERE run_key = ? AND code = 'unsupported_element'")
-        .bind::<Text, _>(report.run_key.to_string())
-        .get_result::<CountRow>(&mut connection)?.count > 0);
+    let source = app::load_snapshot_source(&database, &snapshot)?;
+    assert!(
+        source
+            .windows(b"urn:mame:future".len())
+            .any(|window| window == b"urn:mame:future")
+    );
+    assert!(
+        source
+            .windows(b"<feature".len())
+            .any(|window| window == b"<feature")
+    );
     Ok(())
 }
 
 #[test]
-fn imports_mame_relationship_asset_fields_extensions_and_format_hint()
+fn imports_mame_switch_specification_fields_as_ordered_query_facts()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, mut connection) = setup()?;
+    let path = directory.path().join("machine-switches.xml");
+    std::fs::write(
+        &path,
+        br#"<mame build="0.289"><machine name="switches"><dipswitch name="Difficulty" tag=":DSW" mask="0x03"><diplocation name="SW1" number="1A" inverted="yes"/><dipvalue name="Easy" value="0x02"/><dipvalue name="Hard" value="0x01" default="yes"/></dipswitch><configuration name="Video" tag=":CFG" mask="4"><conflocation name="JP1" number="2"/><confsetting name="Raster" value="4" default="yes"/></configuration></machine></mame>"#,
+    )?;
+    let mut import = request(path, "mame-switches-source", "mame-switches", "Switches")?;
+    import.format = CatalogDocumentFormat::MameListXml;
+    let report = app::import_catalog(&database, &import)?;
+    let snapshot = report.snapshot_key.ok_or("MAME snapshot missing")?;
+
+    let switches = sql_query(
+        "SELECT switch_order, kind, name, tag, mask FROM machine_switches \
+         WHERE snapshot_key = ? AND set_name = 'switches' ORDER BY switch_order",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .load::<MachineSwitchRow>(&mut connection)?;
+    assert_eq!(switches.len(), 2);
+    assert_eq!(
+        (
+            switches[0].switch_order,
+            switches[0].kind.as_str(),
+            switches[0].name.as_str(),
+            switches[0].tag.as_str(),
+            switches[0].mask
+        ),
+        (0, "dipswitch", "Difficulty", ":DSW", 3)
+    );
+    assert_eq!(
+        (
+            switches[1].switch_order,
+            switches[1].kind.as_str(),
+            switches[1].name.as_str(),
+            switches[1].tag.as_str(),
+            switches[1].mask
+        ),
+        (1, "configuration", "Video", ":CFG", 4)
+    );
+
+    let locations = sql_query(
+        "SELECT location_order, name, number, inverted FROM machine_switch_locations \
+         WHERE snapshot_key = ? AND set_name = 'switches' AND switch_order = 0 ORDER BY location_order",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .load::<MachineSwitchLocationRow>(&mut connection)?;
+    assert_eq!(locations.len(), 1);
+    assert_eq!(
+        (
+            locations[0].location_order,
+            locations[0].name.as_str(),
+            locations[0].number.as_str(),
+            locations[0].inverted
+        ),
+        (0, "SW1", "1A", 1)
+    );
+
+    let values = sql_query(
+        "SELECT value_order, name, value, is_default FROM machine_switch_values \
+         WHERE snapshot_key = ? AND set_name = 'switches' AND switch_order = 0 ORDER BY value_order",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .load::<MachineSwitchValueRow>(&mut connection)?;
+    assert_eq!(values.len(), 2);
+    assert_eq!(
+        (
+            values[0].value_order,
+            values[0].name.as_str(),
+            values[0].value,
+            values[0].is_default
+        ),
+        (0, "Easy", 2, 0)
+    );
+    assert_eq!(
+        (
+            values[1].value_order,
+            values[1].name.as_str(),
+            values[1].value,
+            values[1].is_default
+        ),
+        (1, "Hard", 1, 1)
+    );
+
+    let switch_extensions = sql_query(
+        "SELECT COUNT(*) AS count FROM snapshot_extensions \
+         WHERE snapshot_key = ? AND record_kind IN ('dipswitch', 'diplocation', 'dipvalue', 'configuration', 'conflocation', 'confsetting')",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<CountRow>(&mut connection)?;
+    assert_eq!(switch_extensions.count, 0);
+    Ok(())
+}
+
+#[test]
+fn snapshot_diff_detects_mame_switch_fact_changes() -> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, _) = setup()?;
+    let previous_path = directory.path().join("switches-v1.xml");
+    let current_path = directory.path().join("switches-v2.xml");
+    let xml = |mask: &str| {
+        format!(
+            "<mame build=\"0.289\"><machine name=\"switches\"><dipswitch name=\"Difficulty\" tag=\":DSW\" mask=\"{mask}\"><dipvalue name=\"Easy\" value=\"1\"/></dipswitch></machine></mame>"
+        )
+    };
+    std::fs::write(&previous_path, xml("1"))?;
+    std::fs::write(&current_path, xml("3"))?;
+    let mut previous_request = request(
+        previous_path,
+        "mame-switch-history",
+        "mame-switch-history",
+        "Switch history",
+    )?;
+    previous_request.format = CatalogDocumentFormat::MameListXml;
+    let mut current_request = previous_request.clone();
+    current_request.document_path =
+        Utf8PathBuf::from_path_buf(current_path).map_err(|_| "non-UTF8 fixture path")?;
+    let previous = app::import_catalog(&database, &previous_request)?
+        .snapshot_key
+        .ok_or("previous snapshot missing")?;
+    let current = app::import_catalog(&database, &current_request)?
+        .snapshot_key
+        .ok_or("current snapshot missing")?;
+
+    let diff = app::diff_catalog_snapshots(&database, &previous, &current)?;
+    let machine = diff
+        .records
+        .iter()
+        .find(|record| record.set_name == "switches")
+        .ok_or("switches diff missing")?;
+    assert_eq!(machine.status, SnapshotRecordStatus::Changed);
+    assert!(machine.metadata_changed);
+    Ok(())
+}
+
+#[test]
+fn imports_mame_asset_facts_and_recovers_extensions_from_source()
 -> Result<(), Box<dyn std::error::Error>> {
     let (_directory, database, mut connection) = setup()?;
     let mut request = request(
@@ -948,6 +1120,12 @@ fn imports_mame_relationship_asset_fields_extensions_and_format_hint()
     .get_result::<CountRow>(&mut connection)?
     .count;
     assert_eq!(asset_extension_count, 1);
+    let source = app::load_snapshot_source(&database, &snapshot)?;
+    assert!(
+        source
+            .windows(b"future:flag".len())
+            .any(|window| window == b"future:flag")
+    );
     let asset_metadata = sql_query(
         "SELECT metadata_json AS value FROM asset_requirements \
          WHERE snapshot_key = ? AND asset_name = 'clone.rom'",
@@ -1729,6 +1907,14 @@ fn assert_software_list_nesting(
     connection: &mut SqliteConnection,
     snapshot: &mame_coalesce::domain::SnapshotKey,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let item_line = assert_software_list_fields(connection, snapshot)?;
+    assert_software_list_parts(connection, snapshot, item_line)
+}
+
+fn assert_software_list_fields(
+    connection: &mut SqliteConnection,
+    snapshot: &mame_coalesce::domain::SnapshotKey,
+) -> Result<i64, Box<dyn std::error::Error>> {
     let item = sql_query(
         "SELECT supported, source_line \
          FROM software_items WHERE snapshot_key = ? AND list_name = 'demo_cart' \
@@ -1815,7 +2001,14 @@ fn assert_software_list_nesting(
     )
     .get_result::<CountRow>(connection)?;
     assert_eq!(removed_part_column.count, 0);
+    Ok(item.source_line)
+}
 
+fn assert_software_list_parts(
+    connection: &mut SqliteConnection,
+    snapshot: &mame_coalesce::domain::SnapshotKey,
+    item_line: i64,
+) -> Result<(), Box<dyn std::error::Error>> {
     let parts = sql_query(
         "SELECT GROUP_CONCAT(part_name, ',') AS value FROM ( \
          SELECT part_name FROM software_parts WHERE snapshot_key = ? \
@@ -1854,7 +2047,7 @@ fn assert_software_list_nesting(
     assert_eq!(area.declared_size, Some(32));
     assert_eq!(area.width, Some(16));
     assert_eq!(area.endianness.as_deref(), Some("big"));
-    assert!(item.source_line < area.source_line);
+    assert!(item_line < area.source_line);
 
     let sparse_area = sql_query(
         "SELECT declared_size, width, endianness, source_line FROM software_areas \
@@ -2083,7 +2276,7 @@ fn imports_clrmamepro_sets_rom_statuses_and_retained_source_tokens()
     assert_clrmamepro_set_metadata(&mut connection, &snapshot)?;
     assert_clrmamepro_rom_facts(&mut connection, &snapshot)?;
     assert_clrmamepro_retained_tokens(&mut connection, &snapshot)?;
-    assert!(report.diagnostic_count >= 3);
+    assert_eq!(report.diagnostic_count, 0);
     Ok(())
 }
 

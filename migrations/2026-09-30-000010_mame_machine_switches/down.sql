@@ -1,0 +1,10 @@
+DROP TRIGGER machine_switch_values_are_immutable_delete;
+DROP TRIGGER machine_switch_values_are_immutable_update;
+DROP TRIGGER machine_switch_locations_are_immutable_delete;
+DROP TRIGGER machine_switch_locations_are_immutable_update;
+DROP TRIGGER machine_switches_are_immutable_delete;
+DROP TRIGGER machine_switches_are_immutable_update;
+DROP INDEX machine_switches_tag_index;
+DROP TABLE machine_switch_values;
+DROP TABLE machine_switch_locations;
+DROP TABLE machine_switches;

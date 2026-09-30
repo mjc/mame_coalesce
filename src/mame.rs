@@ -29,7 +29,50 @@ pub struct Machine {
     pub metadata: BTreeMap<String, serde_json::Value>,
     pub assets: Vec<MachineAsset>,
     pub device_refs: Vec<DeviceReference>,
+    pub switches: Vec<MachineSwitch>,
     pub extensions: Vec<XmlExtension>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MachineSwitchKind {
+    DipSwitch,
+    Configuration,
+}
+
+impl MachineSwitchKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::DipSwitch => "dipswitch",
+            Self::Configuration => "configuration",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MachineSwitch {
+    pub kind: MachineSwitchKind,
+    pub name: String,
+    pub tag: String,
+    pub mask: u64,
+    pub location: RecordLocation,
+    pub locations: Vec<MachineSwitchLocation>,
+    pub values: Vec<MachineSwitchValue>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MachineSwitchLocation {
+    pub name: String,
+    pub number: String,
+    pub inverted: bool,
+    pub location: RecordLocation,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MachineSwitchValue {
+    pub name: String,
+    pub value: u64,
+    pub default: bool,
+    pub location: RecordLocation,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -153,7 +196,7 @@ pub fn read_with<S, E: From<crate::Error>>(
             .into());
         }
         let build = root.attributes.get("build").cloned();
-        let extensions: Vec<XmlExtension> = root
+        let extensions = root
             .attributes
             .iter()
             .filter(|(name, _)| name.as_str() != "build")
@@ -170,7 +213,7 @@ pub fn read_with<S, E: From<crate::Error>>(
             })
             .collect();
         let mut sink = start(MameHeader { build, extensions })?;
-        parse_machine_records(reader, positions, &mut budget, empty, |record| {
+        parse_machine_records(reader, positions, &mut budget, empty, true, |record| {
             consume(&mut sink, record)
         })?;
         Ok(ValidatedMame(sink))
@@ -206,6 +249,7 @@ fn parse_machine_records<E: From<crate::Error>>(
     positions: &mut xml_reader::PositionMap<'_>,
     budget: &mut NodeBudget,
     empty: bool,
+    retain_extensions: bool,
     mut consume: impl FnMut(MameRecord) -> Result<(), E>,
 ) -> Result<(), E> {
     let mut machine_names = std::collections::HashSet::new();
@@ -228,9 +272,11 @@ fn parse_machine_records<E: From<crate::Error>>(
                 }
                 _ => continue,
             };
-            let record = parse_record(&node, &mut machine_names)?;
+            let record = parse_record(&node, &mut machine_names, retain_extensions)?;
             drop(node);
-            consume(record)?;
+            if let Some(record) = record {
+                consume(record)?;
+            }
         }
     }
     loop {
@@ -260,18 +306,23 @@ fn parse_machine_records<E: From<crate::Error>>(
 fn parse_record(
     node: &Element,
     machine_names: &mut std::collections::HashSet<String>,
-) -> crate::Result<MameRecord> {
+    retain_extensions: bool,
+) -> crate::Result<Option<MameRecord>> {
     if node.name == "machine" {
-        let machine = parse_machine(node)?;
+        let machine = parse_machine(node, retain_extensions)?;
         if !machine_names.insert(machine.name.clone()) {
             return Err(crate::Error::XmlValidation(format!(
                 "duplicate MAME machine name {:?}",
                 machine.name
             )));
         }
-        Ok(MameRecord::Machine(machine))
+        Ok(Some(MameRecord::Machine(machine)))
+    } else if retain_extensions {
+        extension("document", None, node)
+            .map(MameRecord::Extension)
+            .map(Some)
     } else {
-        extension("document", None, node).map(MameRecord::Extension)
+        Ok(None)
     }
 }
 
@@ -371,7 +422,7 @@ fn machine_attribute_extensions(name: &str, node: &Element) -> Vec<XmlExtension>
         .collect()
 }
 
-fn parse_machine(node: &Element) -> crate::Result<Machine> {
+fn parse_machine(node: &Element, retain_extensions: bool) -> crate::Result<Machine> {
     let name = required(node, "name")?;
     let parent = node.attributes.get("cloneof").cloned();
     let rom_of = node.attributes.get("romof").cloned();
@@ -398,6 +449,7 @@ fn parse_machine(node: &Element) -> crate::Result<Machine> {
     }
     let mut biossets = Vec::new();
     let mut device_refs = Vec::new();
+    let mut switches = Vec::new();
     let mut assets = Vec::new();
     let mut extensions = Vec::new();
     let mut machine_text_fields = std::collections::HashSet::new();
@@ -414,28 +466,39 @@ fn parse_machine(node: &Element) -> crate::Result<Machine> {
                     child.name.clone(),
                     serde_json::Value::String(child.direct_text()),
                 );
-                if child.children().next().is_some() {
+                if retain_extensions && child.children().next().is_some() {
                     extensions.push(extension("machine", Some(name), child)?);
                 }
             }
             "biosset" => biossets.push(serde_json::json!({"name": required(child, "name")?, "description": child.attributes.get("description"), "default": child.attributes.get("default")})),
             "device_ref" => device_refs.push(parse_device_reference(child)?),
-            "rom" | "disk" => assets.push(parse_asset(child)?),
-            _ => extensions.push(extension("machine", Some(name), child)?),
+            "dipswitch" => switches.push(parse_machine_switch(
+                child,
+                MachineSwitchKind::DipSwitch,
+            )?),
+            "configuration" => switches.push(parse_machine_switch(
+                child,
+                MachineSwitchKind::Configuration,
+            )?),
+            "rom" | "disk" => assets.push(parse_asset(child, retain_extensions)?),
+            _ if retain_extensions => extensions.push(extension("machine", Some(name), child)?),
+            _ => {}
         }
-        for (key, val) in &child.attributes {
-            if !matches!(child.name.as_str(), "rom" | "disk")
-                && !known_child_attribute(&child.name, key)
-            {
-                let (field_name, namespace_uri) = attribute_name(key);
-                extensions.push(XmlExtension {
-                    record_kind: child.name.clone(),
-                    record_name: child.attributes.get("name").cloned(),
-                    field_name,
-                    namespace_uri,
-                    value: serde_json::json!(val).into(),
-                    location: child.location,
-                });
+        if retain_extensions {
+            for (key, val) in &child.attributes {
+                if !matches!(child.name.as_str(), "rom" | "disk")
+                    && !known_child_attribute(&child.name, key)
+                {
+                    let (field_name, namespace_uri) = attribute_name(key);
+                    extensions.push(XmlExtension {
+                        record_kind: child.name.clone(),
+                        record_name: child.attributes.get("name").cloned(),
+                        field_name,
+                        namespace_uri,
+                        value: serde_json::json!(val).into(),
+                        location: child.location,
+                    });
+                }
             }
         }
     }
@@ -444,7 +507,9 @@ fn parse_machine(node: &Element) -> crate::Result<Machine> {
         "device_refs".into(),
         device_reference_metadata(&device_refs),
     );
-    extensions.extend(machine_attribute_extensions(name, node));
+    if retain_extensions {
+        extensions.extend(machine_attribute_extensions(name, node));
+    }
     Ok(Machine {
         name: name.into(),
         parent,
@@ -454,8 +519,56 @@ fn parse_machine(node: &Element) -> crate::Result<Machine> {
         metadata,
         assets,
         device_refs,
+        switches,
         extensions,
     })
+}
+
+fn parse_machine_switch(node: &Element, kind: MachineSwitchKind) -> crate::Result<MachineSwitch> {
+    let name = required(node, "name")?.to_owned();
+    let tag = required(node, "tag")?.to_owned();
+    let mask = parse_mame_integer(required(node, "mask")?)?;
+    let mut locations = Vec::new();
+    let mut values = Vec::new();
+    for child in node.children() {
+        match child.name.as_str() {
+            "diplocation" | "conflocation" => locations.push(MachineSwitchLocation {
+                name: required(child, "name")?.to_owned(),
+                number: required(child, "number")?.to_owned(),
+                inverted: child
+                    .attributes
+                    .get("inverted")
+                    .is_some_and(|value| value == "yes"),
+                location: child.location,
+            }),
+            "dipvalue" | "confsetting" => values.push(MachineSwitchValue {
+                name: required(child, "name")?.to_owned(),
+                value: parse_mame_integer(required(child, "value")?)?,
+                default: child
+                    .attributes
+                    .get("default")
+                    .is_some_and(|value| value == "yes"),
+                location: child.location,
+            }),
+            _ => {}
+        }
+    }
+    Ok(MachineSwitch {
+        kind,
+        name,
+        tag,
+        mask,
+        location: node.location,
+        locations,
+        values,
+    })
+}
+
+fn parse_mame_integer(value: &str) -> crate::Result<u64> {
+    let parsed = value
+        .strip_prefix("0x")
+        .map_or_else(|| value.parse::<u64>(), |hex| u64::from_str_radix(hex, 16));
+    parsed.map_err(|_| crate::Error::XmlValidation(format!("invalid MAME integer {value:?}")))
 }
 
 fn copy_machine_relationship_metadata(
@@ -469,7 +582,7 @@ fn copy_machine_relationship_metadata(
     }
 }
 
-fn parse_asset(node: &Element) -> crate::Result<MachineAsset> {
+fn parse_asset(node: &Element, retain_extensions: bool) -> crate::Result<MachineAsset> {
     let name = required(node, "name")?;
     let size = node
         .attributes
@@ -509,20 +622,22 @@ fn parse_asset(node: &Element) -> crate::Result<MachineAsset> {
         .map(|(key, val)| (key.clone(), serde_json::json!(val)))
         .collect();
     let mut extensions = Vec::new();
-    for child in node.children() {
-        extensions.push(extension(node.name.as_str(), Some(name), child)?);
-    }
-    for (key, val) in &node.attributes {
-        if !known_asset_attribute(&node.name, key) {
-            let (field_name, namespace_uri) = attribute_name(key);
-            extensions.push(XmlExtension {
-                record_kind: node.name.clone(),
-                record_name: Some(name.into()),
-                field_name,
-                namespace_uri,
-                value: serde_json::json!(val).into(),
-                location: node.location,
-            });
+    if retain_extensions {
+        for child in node.children() {
+            extensions.push(extension(node.name.as_str(), Some(name), child)?);
+        }
+        for (key, val) in &node.attributes {
+            if !known_asset_attribute(&node.name, key) {
+                let (field_name, namespace_uri) = attribute_name(key);
+                extensions.push(XmlExtension {
+                    record_kind: node.name.clone(),
+                    record_name: Some(name.into()),
+                    field_name,
+                    namespace_uri,
+                    value: serde_json::json!(val).into(),
+                    location: node.location,
+                });
+            }
         }
     }
     Ok(MachineAsset {
@@ -585,6 +700,9 @@ fn known_child_attribute(element: &str, attribute: &str) -> bool {
     match element {
         "biosset" => ["name", "description", "default"].contains(&attribute),
         "device_ref" => ["name"].contains(&attribute),
+        "dipswitch" | "configuration" => ["name", "tag", "mask"].contains(&attribute),
+        "diplocation" | "conflocation" => ["name", "number", "inverted"].contains(&attribute),
+        "dipvalue" | "confsetting" => ["name", "value", "default"].contains(&attribute),
         "rom" => [
             "name",
             "size",

@@ -13,7 +13,10 @@ use sha1::{Digest as _, Sha1};
 
 use crate::{
     document_input::{self, MAX_DOCUMENT_BYTES},
-    domain::{AcquisitionKey, DocumentDigest, DocumentKey, PublishingSource, PublishingSourceKey},
+    domain::{
+        AcquisitionKey, DocumentDigest, DocumentKey, PublishingSource, PublishingSourceKey,
+        SnapshotKey,
+    },
     hashes::Sha1Digest,
     logiqx::DataFile,
     storage::db::{Pool, create_db_pool},
@@ -79,6 +82,18 @@ pub struct RetainedDocument {
     pub acquisition_key: AcquisitionKey,
 }
 
+struct RetainedPublication {
+    document_key: DocumentKey,
+    acquisition_key: AcquisitionKey,
+    acquisition_key_string: String,
+    attempt_key: String,
+    document_key_string: String,
+    object_key: String,
+    sha1: [u8; 20],
+    byte_length: i64,
+    format_hint: FormatHint,
+}
+
 pub struct DocumentStore {
     pool: Pool,
     object_store: Utf8PathBuf,
@@ -112,6 +127,12 @@ struct RetainedPayload {
     byte_length: i64,
     #[diesel(sql_type = Text)]
     object_key: String,
+}
+
+#[derive(QueryableByName)]
+struct SnapshotDocument {
+    #[diesel(sql_type = Text)]
+    document_key: String,
 }
 
 #[derive(QueryableByName)]
@@ -325,6 +346,20 @@ impl DocumentStore {
         Ok(payload)
     }
 
+    pub fn load_snapshot(&self, snapshot: &SnapshotKey) -> crate::Result<Vec<u8>> {
+        let mut conn = self.pool.get()?;
+        let document_key =
+            sql_query("SELECT document_key FROM catalog_snapshots WHERE snapshot_key = ?")
+                .bind::<Text, _>(snapshot.as_str())
+                .get_result::<SnapshotDocument>(&mut conn)
+                .optional()?
+                .ok_or_else(|| crate::Error::DocumentUnavailable(snapshot.as_str().to_owned()))?
+                .document_key
+                .parse::<DocumentKey>()?;
+        drop(conn);
+        self.load(&document_key)
+    }
+
     fn retain_with_limit_and_validation<R: Read>(
         &self,
         metadata: &AcquisitionMetadata,
@@ -382,56 +417,58 @@ impl DocumentStore {
         limit: usize,
         requested_format: Option<FormatHint>,
     ) -> crate::Result<RetainedDocument> {
-        let verification_status = if metadata.expected_sha256.is_some() {
-            "verified"
-        } else {
-            "unverified"
-        };
         let sha1 = sha1(raw);
         let byte_length =
             i64::try_from(raw.len()).map_err(|_| crate::Error::DocumentTooLarge { limit })?;
-        let format_hint = requested_format.map_or_else(
-            || FormatHint::for_bytes(raw),
-            |hint| match (hint, raw.starts_with(&[0x1f, 0x8b])) {
-                (FormatHint::MameListXml | FormatHint::MameListXmlGzip, false) => {
-                    FormatHint::MameListXml
-                }
-                (FormatHint::MameListXml | FormatHint::MameListXmlGzip, true) => {
-                    FormatHint::MameListXmlGzip
-                }
-                (FormatHint::MameSoftwareListXml | FormatHint::MameSoftwareListXmlGzip, false) => {
-                    FormatHint::MameSoftwareListXml
-                }
-                (FormatHint::MameSoftwareListXml | FormatHint::MameSoftwareListXmlGzip, true) => {
-                    FormatHint::MameSoftwareListXmlGzip
-                }
-                (FormatHint::ClrMameProText | FormatHint::ClrMameProTextGzip, false) => {
-                    FormatHint::ClrMameProText
-                }
-                (FormatHint::ClrMameProText | FormatHint::ClrMameProTextGzip, true) => {
-                    FormatHint::ClrMameProTextGzip
-                }
-                (FormatHint::NoIntroPcXml | FormatHint::NoIntroPcXmlGzip, false) => {
-                    FormatHint::NoIntroPcXml
-                }
-                (FormatHint::NoIntroPcXml | FormatHint::NoIntroPcXmlGzip, true) => {
-                    FormatHint::NoIntroPcXmlGzip
-                }
-                (_, false) => FormatHint::LogiqxXml,
-                (_, true) => FormatHint::LogiqxXmlGzip,
-            },
-        );
+        let format_hint = format_hint(raw, requested_format);
         let acquisition_key = AcquisitionKey::fresh();
         let attempt_key = uuid::Uuid::new_v4().to_string();
         let acquisition_key_string = acquisition_key.to_string();
         let document_key_string = key.to_string();
         let object_key = self.store_object(raw, key)?;
+        self.persist_retained_rows(
+            metadata,
+            RetainedPublication {
+                document_key: key,
+                acquisition_key,
+                acquisition_key_string,
+                attempt_key,
+                document_key_string,
+                object_key,
+                sha1,
+                byte_length,
+                format_hint,
+            },
+        )
+    }
+
+    fn persist_retained_rows(
+        &self,
+        metadata: &AcquisitionMetadata,
+        publication: RetainedPublication,
+    ) -> crate::Result<RetainedDocument> {
+        let RetainedPublication {
+            document_key,
+            acquisition_key,
+            acquisition_key_string,
+            attempt_key,
+            document_key_string,
+            object_key,
+            sha1,
+            byte_length,
+            format_hint,
+        } = publication;
+        let verification_status = if metadata.expected_sha256.is_some() {
+            "verified"
+        } else {
+            "unverified"
+        };
         {
             let mut conn = self.pool.get()?;
             conn.immediate_transaction::<_, crate::Error, _>(|conn| {
                 ensure_document_retained(
                     conn,
-                    key.digest().as_slice(),
+                    document_key.digest().as_slice(),
                     &document_key_string,
                     &object_key,
                     &sha1,
@@ -489,7 +526,7 @@ impl DocumentStore {
                 )?;
 
                 Ok(RetainedDocument {
-                    document_key: key,
+                    document_key,
                     acquisition_key,
                 })
             })
@@ -579,6 +616,39 @@ impl DocumentStore {
 enum TransportHeaderOwner<'a> {
     Acquisition(&'a str),
     Attempt(&'a str),
+}
+
+fn format_hint(raw: &[u8], requested: Option<FormatHint>) -> FormatHint {
+    let is_gzip = raw.starts_with(&[0x1f, 0x8b]);
+    match (requested, is_gzip) {
+        (Some(FormatHint::MameListXml | FormatHint::MameListXmlGzip), false) => {
+            FormatHint::MameListXml
+        }
+        (Some(FormatHint::MameListXml | FormatHint::MameListXmlGzip), true) => {
+            FormatHint::MameListXmlGzip
+        }
+        (Some(FormatHint::MameSoftwareListXml | FormatHint::MameSoftwareListXmlGzip), false) => {
+            FormatHint::MameSoftwareListXml
+        }
+        (Some(FormatHint::MameSoftwareListXml | FormatHint::MameSoftwareListXmlGzip), true) => {
+            FormatHint::MameSoftwareListXmlGzip
+        }
+        (Some(FormatHint::ClrMameProText | FormatHint::ClrMameProTextGzip), false) => {
+            FormatHint::ClrMameProText
+        }
+        (Some(FormatHint::ClrMameProText | FormatHint::ClrMameProTextGzip), true) => {
+            FormatHint::ClrMameProTextGzip
+        }
+        (Some(FormatHint::NoIntroPcXml | FormatHint::NoIntroPcXmlGzip), false) => {
+            FormatHint::NoIntroPcXml
+        }
+        (Some(FormatHint::NoIntroPcXml | FormatHint::NoIntroPcXmlGzip), true) => {
+            FormatHint::NoIntroPcXmlGzip
+        }
+        (Some(FormatHint::LogiqxXml | FormatHint::LogiqxXmlGzip) | None, _) => {
+            FormatHint::for_bytes(raw)
+        }
+    }
 }
 
 fn insert_transport_headers(

@@ -754,6 +754,12 @@ pub fn import_catalog(
     crate::storage::catalog_import::import(database.pool(), request)
 }
 
+/// Recover the exact source document retained for one catalog snapshot.
+pub fn load_snapshot_source(database: &Database, snapshot: &SnapshotKey) -> crate::Result<Vec<u8>> {
+    crate::storage::documents::DocumentStore::from_pool(database.pool().clone())?
+        .load_snapshot(snapshot)
+}
+
 /// Persist a derived candidate or user-authored relationship without conflating it with a source claim.
 pub fn record_relationship(
     database: &Database,

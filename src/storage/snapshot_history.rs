@@ -103,12 +103,61 @@ struct ExtensionRow {
     raw_value_json: String,
 }
 
+#[derive(QueryableByName)]
+struct MachineSwitchRow {
+    #[diesel(sql_type = Text)]
+    set_name: String,
+    #[diesel(sql_type = BigInt)]
+    switch_order: i64,
+    #[diesel(sql_type = Text)]
+    kind: String,
+    #[diesel(sql_type = Text)]
+    name: String,
+    #[diesel(sql_type = Text)]
+    tag: String,
+    #[diesel(sql_type = BigInt)]
+    mask: i64,
+}
+
+#[derive(QueryableByName)]
+struct MachineSwitchLocationRow {
+    #[diesel(sql_type = Text)]
+    set_name: String,
+    #[diesel(sql_type = BigInt)]
+    switch_order: i64,
+    #[diesel(sql_type = BigInt)]
+    location_order: i64,
+    #[diesel(sql_type = Text)]
+    name: String,
+    #[diesel(sql_type = Text)]
+    number: String,
+    #[diesel(sql_type = Bool)]
+    inverted: bool,
+}
+
+#[derive(QueryableByName)]
+struct MachineSwitchValueRow {
+    #[diesel(sql_type = Text)]
+    set_name: String,
+    #[diesel(sql_type = BigInt)]
+    switch_order: i64,
+    #[diesel(sql_type = BigInt)]
+    value_order: i64,
+    #[diesel(sql_type = Text)]
+    name: String,
+    #[diesel(sql_type = BigInt)]
+    value: i64,
+    #[diesel(sql_type = Bool)]
+    is_default: bool,
+}
+
 #[derive(Default)]
 struct CatalogRecords {
     sets: BTreeMap<String, SetRow>,
     requirements: BTreeMap<String, BTreeMap<String, Vec<serde_json::Value>>>,
     extensions: BTreeMap<(String, String), Vec<serde_json::Value>>,
     asset_extensions: BTreeMap<(String, String), Vec<serde_json::Value>>,
+    machine_switches: BTreeMap<String, Vec<serde_json::Value>>,
 }
 
 pub fn diff(
@@ -405,6 +454,7 @@ fn records(
     )
     .bind::<Text, _>(key.as_str())
     .load::<ExtensionRow>(conn)?;
+    let machine_switches = mame_switch_facts(conn, key)?;
 
     let mut result = CatalogRecords::default();
     for set in sets {
@@ -442,6 +492,7 @@ fn records(
             }
         }
     }
+    result.machine_switches = machine_switches;
     for extensions in result.extensions.values_mut() {
         extensions.sort_by_key(serde_json::Value::to_string);
     }
@@ -477,6 +528,71 @@ fn records(
         for evidence in assets.values_mut() {
             evidence.sort_by_key(serde_json::Value::to_string);
         }
+    }
+    Ok(result)
+}
+
+fn mame_switch_facts(
+    conn: &mut diesel::SqliteConnection,
+    key: &SnapshotKey,
+) -> crate::Result<BTreeMap<String, Vec<serde_json::Value>>> {
+    let switches = sql_query(
+        "SELECT set_name, switch_order, kind, name, tag, mask FROM machine_switches \
+         WHERE snapshot_key = ? ORDER BY set_name, switch_order",
+    )
+    .bind::<Text, _>(key.as_str())
+    .load::<MachineSwitchRow>(conn)?;
+    let switch_locations = sql_query(
+        "SELECT set_name, switch_order, location_order, name, number, inverted \
+         FROM machine_switch_locations WHERE snapshot_key = ? ORDER BY set_name, switch_order, location_order",
+    )
+    .bind::<Text, _>(key.as_str())
+    .load::<MachineSwitchLocationRow>(conn)?;
+    let switch_values = sql_query(
+        "SELECT set_name, switch_order, value_order, name, value, is_default \
+         FROM machine_switch_values WHERE snapshot_key = ? ORDER BY set_name, switch_order, value_order",
+    )
+    .bind::<Text, _>(key.as_str())
+    .load::<MachineSwitchValueRow>(conn)?;
+
+    let mut locations = BTreeMap::<(String, i64), Vec<serde_json::Value>>::new();
+    for location in switch_locations {
+        locations
+            .entry((location.set_name, location.switch_order))
+            .or_default()
+            .push(serde_json::json!({
+                "order": location.location_order,
+                "name": location.name,
+                "number": location.number,
+                "inverted": location.inverted,
+            }));
+    }
+    let mut values = BTreeMap::<(String, i64), Vec<serde_json::Value>>::new();
+    for value in switch_values {
+        values
+            .entry((value.set_name, value.switch_order))
+            .or_default()
+            .push(serde_json::json!({
+                "order": value.value_order,
+                "name": value.name,
+                "value": value.value,
+                "default": value.is_default,
+            }));
+    }
+    let mut result = BTreeMap::<String, Vec<serde_json::Value>>::new();
+    for switch in switches {
+        let key = (switch.set_name.clone(), switch.switch_order);
+        result
+            .entry(switch.set_name)
+            .or_default()
+            .push(serde_json::json!({
+                "kind": switch.kind,
+                "name": switch.name,
+                "tag": switch.tag,
+                "mask": switch.mask,
+                "locations": locations.remove(&key).unwrap_or_default(),
+                "values": values.remove(&key).unwrap_or_default(),
+            }));
     }
     Ok(result)
 }
@@ -557,6 +673,7 @@ fn json(value: &str) -> serde_json::Value {
 fn set_metadata(records: &CatalogRecords, name: &str, set: &SetRow) -> serde_json::Value {
     serde_json::json!({
         "metadata": json(&set.metadata_json),
+        "machine_switches": records.machine_switches.get(name),
         "source_extensions": records.extensions.iter()
             .filter(|((kind, record_name), _)| {
                 record_name == name && matches!(kind.as_str(), "game" | "machine" | "set")

@@ -112,6 +112,7 @@ struct SnapshotSet {
     metadata: serde_json::Value,
     location: crate::logiqx::RecordLocation,
     assets: Vec<SnapshotAsset>,
+    switches: Vec<crate::mame::MachineSwitch>,
 }
 
 struct SnapshotDependency {
@@ -229,6 +230,7 @@ impl SnapshotData {
                     .collect(),
                 metadata: serde_json::json!({"source_file": game.sourcefile_opt(), "is_bios": game.isbios_opt(), "rom_of": game.romof_opt(), "sample_of": game.sampleof_opt(), "board": game.board_opt(), "rebuild_to": game.rebuildto_opt(), "description": game.description_opt(), "year": game.year_opt(), "manufacturer": game.manufacturer_opt(), "device_refs": game.device_refs().collect::<Vec<_>>()}),
                 location, assets,
+                switches: Vec::new(),
             });
         }
         Ok(Self {
@@ -302,6 +304,7 @@ impl SnapshotData {
                     metadata: set.metadata,
                     location: set.location,
                     assets,
+                    switches: Vec::new(),
                 }
             })
             .collect();
@@ -361,6 +364,7 @@ impl SnapshotData {
                     metadata: serde_json::json!(entry.metadata),
                     location: entry.location,
                     assets,
+                    switches: Vec::new(),
                 }
             })
             .collect();
@@ -458,6 +462,7 @@ fn machine_contents(machine: crate::mame::Machine) -> (SnapshotSet, Vec<StoredEx
         })
         .collect();
     let parent_field = machine.parent.as_ref().map(|_| "cloneof".to_owned());
+    let switches = machine.switches;
     let set = SnapshotSet {
         name: machine.name,
         parent: machine.parent,
@@ -466,6 +471,7 @@ fn machine_contents(machine: crate::mame::Machine) -> (SnapshotSet, Vec<StoredEx
         metadata: serde_json::Value::Object(machine.metadata.into_iter().collect()),
         location: machine.location,
         assets,
+        switches,
     };
     (set, extensions)
 }
@@ -1149,6 +1155,75 @@ fn insert_snapshot_set(
         .bind::<BigInt, _>(asset.location.line)
         .bind::<BigInt, _>(asset.location.column)
         .execute(conn)?;
+    }
+    insert_machine_switches(conn, snapshot_key, set)?;
+    Ok(())
+}
+
+fn insert_machine_switches(
+    conn: &mut SqliteConnection,
+    snapshot_key: &SnapshotKey,
+    set: &SnapshotSet,
+) -> crate::Result<()> {
+    for (switch_order, switch) in set.switches.iter().enumerate() {
+        let switch_order = checked_order(switch_order, "machine switches")?;
+        let mask = i64::try_from(switch.mask).map_err(|_| {
+            crate::Error::InvalidPath("MAME switch mask exceeds SQLite INTEGER".into())
+        })?;
+        sql_query(
+            "INSERT INTO machine_switches \
+             (snapshot_key, set_name, switch_order, kind, name, tag, mask, source_line, source_column) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind::<Text, _>(snapshot_key.as_str())
+        .bind::<Text, _>(&set.name)
+        .bind::<BigInt, _>(switch_order)
+        .bind::<Text, _>(switch.kind.as_str())
+        .bind::<Text, _>(&switch.name)
+        .bind::<Text, _>(&switch.tag)
+        .bind::<BigInt, _>(mask)
+        .bind::<BigInt, _>(switch.location.line)
+        .bind::<BigInt, _>(switch.location.column)
+        .execute(conn)?;
+
+        for (location_order, location) in switch.locations.iter().enumerate() {
+            sql_query(
+                "INSERT INTO machine_switch_locations \
+                 (snapshot_key, set_name, switch_order, location_order, name, number, inverted, source_line, source_column) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind::<Text, _>(snapshot_key.as_str())
+            .bind::<Text, _>(&set.name)
+            .bind::<BigInt, _>(switch_order)
+            .bind::<BigInt, _>(checked_order(location_order, "machine switch locations")?)
+            .bind::<Text, _>(&location.name)
+            .bind::<Text, _>(&location.number)
+            .bind::<diesel::sql_types::Bool, _>(location.inverted)
+            .bind::<BigInt, _>(location.location.line)
+            .bind::<BigInt, _>(location.location.column)
+            .execute(conn)?;
+        }
+
+        for (value_order, switch_value) in switch.values.iter().enumerate() {
+            let value = i64::try_from(switch_value.value).map_err(|_| {
+                crate::Error::InvalidPath("MAME switch value exceeds SQLite INTEGER".into())
+            })?;
+            sql_query(
+                "INSERT INTO machine_switch_values \
+                 (snapshot_key, set_name, switch_order, value_order, name, value, is_default, source_line, source_column) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind::<Text, _>(snapshot_key.as_str())
+            .bind::<Text, _>(&set.name)
+            .bind::<BigInt, _>(switch_order)
+            .bind::<BigInt, _>(checked_order(value_order, "machine switch values")?)
+            .bind::<Text, _>(&switch_value.name)
+            .bind::<BigInt, _>(value)
+            .bind::<diesel::sql_types::Bool, _>(switch_value.default)
+            .bind::<BigInt, _>(switch_value.location.line)
+            .bind::<BigInt, _>(switch_value.location.column)
+            .execute(conn)?;
+        }
     }
     Ok(())
 }
