@@ -90,20 +90,53 @@ diesel::table! {
         assertion_key -> Text,
         relation_type -> Text,
         origin -> Text,
-        subject_snapshot_key -> Nullable<Text>,
-        subject_kind -> Text,
-        subject_key -> Text,
-        target_snapshot_key -> Nullable<Text>,
-        target_kind -> Text,
-        target_key -> Text,
         source_snapshot_key -> Nullable<Text>,
         source_field -> Nullable<Text>,
         source_line -> Nullable<BigInt>,
         source_column -> Nullable<BigInt>,
-        evidence_json -> Text,
+        generic_subject_snapshot_key -> Nullable<Text>,
+        subject_snapshot_key -> Nullable<Text>,
+        subject_kind -> Text,
+        generic_subject_a -> Nullable<Text>,
+        generic_subject_b -> Nullable<Text>,
+        generic_subject_c -> Nullable<BigInt>,
+        source_subject_a -> Nullable<Text>,
+        source_subject_b -> Nullable<Text>,
+        source_subject_c -> Nullable<BigInt>,
+        generic_target_snapshot_key -> Nullable<Text>,
+        target_snapshot_key -> Nullable<Text>,
+        target_kind -> Text,
+        generic_target_a -> Nullable<Text>,
+        generic_target_b -> Nullable<Text>,
+        generic_target_c -> Nullable<BigInt>,
+        source_target_a -> Nullable<Text>,
+        source_target_b -> Nullable<Text>,
+        source_target_c -> Nullable<BigInt>,
         rule_version -> Nullable<Text>,
-        supporting_assertion_keys_json -> Text,
         created_at -> Timestamp,
+    }
+}
+
+diesel::table! {
+    relationship_assertion_evidence (assertion_key, node_id) {
+        assertion_key -> Text,
+        node_id -> BigInt,
+        parent_node_id -> Nullable<BigInt>,
+        object_key -> Nullable<Text>,
+        array_index -> Nullable<BigInt>,
+        value_type -> Text,
+        text_value -> Nullable<Text>,
+        integer_value -> Nullable<BigInt>,
+        unsigned_integer_value -> Nullable<Text>,
+        real_value -> Nullable<Double>,
+    }
+}
+
+diesel::table! {
+    relationship_assertion_support (assertion_key, position) {
+        assertion_key -> Text,
+        position -> BigInt,
+        supported_assertion_key -> Text,
     }
 }
 
@@ -586,6 +619,8 @@ diesel::allow_tables_to_appear_in_same_query!(
     rom_files,
     roms,
     relationship_assertions,
+    relationship_assertion_evidence,
+    relationship_assertion_support,
     relationship_reviews,
     software_areas,
     software_components,

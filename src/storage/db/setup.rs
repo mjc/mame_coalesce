@@ -907,7 +907,7 @@ mod tests {
     }
 
     #[test]
-    fn relationship_migration_backfills_legacy_parent_claims_and_keeps_them_immutable()
+    fn relationship_migration_discards_legacy_rows_and_installs_compact_schema()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut conn = SqliteConnection::establish(":memory:")?;
         conn.batch_execute("PRAGMA foreign_keys = ON")?;
@@ -951,63 +951,97 @@ mod tests {
             conn.run_migration(migration.as_ref())?;
         }
 
-        let count = count(&mut conn, "relationship_assertions")?;
-        assert_eq!(count, 5);
-        let field = sql_query(
-            "SELECT source_field AS value FROM relationship_assertions WHERE assertion_key = \
-             (SELECT assertion_key FROM relationship_assertions \
-              WHERE source_field = 'parent_name (legacy normalized)' LIMIT 1)",
+        assert_eq!(count(&mut conn, "relationship_assertions")?, 0);
+        assert_eq!(count(&mut conn, "relationship_reviews")?, 0);
+        assert_eq!(count(&mut conn, "snapshot_sets")?, 3);
+        assert_eq!(count(&mut conn, "asset_requirements")?, 2);
+        let serialized_columns = sql_query(
+            "SELECT COUNT(*) AS count FROM ( \
+                 SELECT name FROM pragma_table_info('relationship_assertions') \
+                 UNION ALL SELECT name FROM pragma_table_info('relationship_assertion_evidence') \
+                 UNION ALL SELECT name FROM pragma_table_info('relationship_assertion_support') \
+             ) WHERE lower(name) LIKE '%json%' \
+                 OR name IN ('subject_key', 'target_key', 'generic_subject_key', 'generic_target_key')",
+        )
+        .get_result::<CountRow>(&mut conn)?;
+        assert_eq!(serialized_columns.count, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn compact_relationship_downgrade_reconstructs_legacy_values()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut conn = SqliteConnection::establish(":memory:")?;
+        conn.batch_execute("PRAGMA foreign_keys = ON")?;
+        let migrations = MIGRATIONS.migrations()?;
+        conn.applied_migrations()?;
+        for migration in &migrations {
+            conn.run_migration(migration.as_ref())?;
+        }
+        conn.batch_execute(
+            "INSERT INTO relationship_assertions
+                 (assertion_key, relation_type, origin, subject_kind, generic_subject_a,
+                  generic_subject_b, target_kind, generic_target_a, generic_target_b,
+                  rule_version)
+             VALUES ('assertion-a', 'catalog_correction', 'user_conclusion',
+                     'external_record', 'registry', '[\"part-a\",\"part-b\"]',
+                     'external_record', 'registry', 'target', NULL),
+                    ('assertion-b', 'revision_of', 'derived_candidate',
+                     'content_object', 'sha1', '0123456789abcdef0123456789abcdef01234567',
+                     'content_object', 'sha1', '1123456789abcdef0123456789abcdef01234567',
+                     'test-rule');
+             INSERT INTO relationship_assertion_evidence
+                 (assertion_key, node_id, parent_node_id, object_key, array_index, value_type,
+                  text_value)
+             VALUES ('assertion-a', 0, NULL, NULL, NULL, 'object', NULL),
+                    ('assertion-a', 1, 0, 'reason', NULL, 'string', 'manual'),
+                    ('assertion-b', 0, NULL, NULL, NULL, 'object', NULL),
+                    ('assertion-b', 1, 0, 'details', NULL, 'array', NULL),
+                    ('assertion-b', 2, 1, NULL, 0, 'string', 'typed');
+             INSERT INTO relationship_assertion_support
+                 (assertion_key, position, supported_assertion_key)
+             VALUES ('assertion-b', 0, 'assertion-a');
+             INSERT INTO relationship_reviews
+                 (review_key, assertion_key, decision, note, superseded_by_assertion_key)
+             VALUES ('review-a', 'assertion-a', 'superseded', 'replaced', 'assertion-b');",
+        )?;
+
+        let compact_relationship_migration = migrations
+            .iter()
+            .find(|migration| {
+                migration.name().to_string() == "2026-09-30-000020_compact_source_relationships"
+            })
+            .ok_or("compact relationship migration not found")?;
+        conn.revert_migration(compact_relationship_migration.as_ref())?;
+
+        let endpoint = sql_query(
+            "SELECT subject_key AS value FROM relationship_assertions \
+             WHERE assertion_key = 'assertion-a'",
         )
         .get_result::<TextRow>(&mut conn)?;
-        assert_eq!(field.value, "parent_name (legacy normalized)");
-        let merge_target = sql_query(
-            "SELECT target_key AS value FROM relationship_assertions \
-             WHERE source_field = 'merge'",
-        )
-        .get_result::<TextRow>(&mut conn)?;
-        assert_eq!(merge_target.value, "[\"rom-parent\",\"shared.rom\",0]");
-        let runtime_edges = sql_query(
-            "SELECT source_field || ':' || target_key AS value \
-             FROM relationship_assertions WHERE relation_type = 'runtime_dependency' \
-             ORDER BY source_field",
-        )
-        .load::<TextRow>(&mut conn)?;
         assert_eq!(
-            runtime_edges
-                .iter()
-                .map(|edge| edge.value.as_str())
-                .collect::<Vec<_>>(),
-            ["device_ref:sound", "romof:rom-parent", "sampleof:samples"]
+            serde_json::from_str::<serde_json::Value>(&endpoint.value)?,
+            serde_json::json!({"namespace": "registry", "key": "[\"part-a\",\"part-b\"]"})
         );
-        assert!(sql_fails(
-            &mut conn,
-            "UPDATE relationship_assertions SET target_key = 'changed'"
-        ));
-        assert!(sql_fails(&mut conn, "DELETE FROM relationship_assertions"));
-        assert!(sql_fails(
-            &mut conn,
-            "INSERT OR REPLACE INTO relationship_assertions \
-             SELECT * FROM relationship_assertions LIMIT 1"
-        ));
-        let assertion =
-            sql_query("SELECT assertion_key AS value FROM relationship_assertions LIMIT 1")
-                .get_result::<TextRow>(&mut conn)?;
-        sql_query(
-            "INSERT INTO relationship_reviews (review_key, assertion_key, decision, note) \
-             VALUES ('review-key', ?, 'accepted', 'initial review')",
+        let evidence = sql_query(
+            "SELECT evidence_json AS value FROM relationship_assertions \
+             WHERE assertion_key = 'assertion-b'",
         )
-        .bind::<diesel::sql_types::Text, _>(assertion.value)
-        .execute(&mut conn)?;
-        assert!(sql_fails(
-            &mut conn,
-            "INSERT OR REPLACE INTO relationship_reviews \
-             SELECT * FROM relationship_reviews LIMIT 1"
-        ));
-        assert!(sql_fails(
-            &mut conn,
-            "UPDATE relationship_reviews SET note = 'overwritten'"
-        ));
-        assert!(sql_fails(&mut conn, "DELETE FROM relationship_reviews"));
+        .get_result::<TextRow>(&mut conn)?;
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&evidence.value)?,
+            serde_json::json!({"details": ["typed"]})
+        );
+        let support = sql_query(
+            "SELECT supporting_assertion_keys_json AS value FROM relationship_assertions \
+             WHERE assertion_key = 'assertion-b'",
+        )
+        .get_result::<TextRow>(&mut conn)?;
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&support.value)?,
+            serde_json::json!(["assertion-a"])
+        );
+        assert_eq!(count(&mut conn, "relationship_reviews")?, 1);
         Ok(())
     }
 

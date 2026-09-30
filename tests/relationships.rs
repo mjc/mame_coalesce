@@ -4,15 +4,22 @@ use std::{
 };
 
 use camino::Utf8PathBuf;
+use diesel::{Connection, RunQueryDsl, sql_query, sql_types::BigInt};
 use mame_coalesce::{
     app::{self, CatalogDocumentFormat, CatalogImportReport, CatalogImportRequest},
     database::Database,
     domain::{
-        CatalogKey, CatalogScope, ContentDigestAlgorithm, ContentIdentity, PublishingSourceKey,
-        RelationshipAssertionKey, RelationshipClaim, RelationshipEndpoint, RelationshipOrigin,
-        RelationshipReview, RelationshipReviewDecision, RelationshipType,
+        CatalogKey, CatalogScope, ContentDigestAlgorithm, ContentIdentity, ExternalRecordRef,
+        PublishingSourceKey, RelationshipAssertionKey, RelationshipClaim, RelationshipEndpoint,
+        RelationshipOrigin, RelationshipReview, RelationshipReviewDecision, RelationshipType,
     },
 };
+
+#[derive(diesel::QueryableByName)]
+struct RelationshipSchemaColumns {
+    #[diesel(sql_type = BigInt)]
+    found: i64,
+}
 
 fn request(path: Utf8PathBuf, source: &str, catalog: &str) -> CatalogImportRequest {
     CatalogImportRequest {
@@ -86,7 +93,11 @@ fn record_candidate(
                 rule_version: "sha1-equality-v1".to_owned(),
                 supporting_assertions: vec![supporting_assertion],
             },
-            evidence: serde_json::json!({"algorithm": "sha1", "comparison": "equal"}),
+            evidence: serde_json::json!({
+                "algorithm": "sha1",
+                "comparison": "equal",
+                "details": ["typed", 3, 1.25, true, null, {"nested": "value"}]
+            }),
         },
     )?)
 }
@@ -152,8 +163,25 @@ fn explanations_preserve_conflicts_candidates_and_reversible_reviews()
             supporting_assertions
         } if rule_version == "sha1-equality-v1" && supporting_assertions.len() == 1
     ));
+    assert_eq!(
+        candidate_explanation.claim.evidence,
+        serde_json::json!({
+            "algorithm": "sha1",
+            "comparison": "equal",
+            "details": ["typed", 3, 1.25, true, null, {"nested": "value"}]
+        })
+    );
 
     review_candidate(&database, &candidate)?;
+    app::review_relationship(
+        &database,
+        &source_claims[0].assertion_key,
+        &RelationshipReview {
+            decision: RelationshipReviewDecision::Superseded,
+            note: "the second source snapshot supersedes this claim".to_owned(),
+            superseded_by: Some(source_claims[1].assertion_key.clone()),
+        },
+    )?;
 
     app::import_catalog(
         &database,
@@ -176,6 +204,17 @@ fn explanations_preserve_conflicts_candidates_and_reversible_reviews()
         Some(RelationshipReviewDecision::Withdrawn)
     );
     assert_eq!(reviewed.review_history.len(), 2);
+    let reviewed_source = after
+        .iter()
+        .find(|item| item.assertion_key == source_claims[0].assertion_key)
+        .ok_or_else(|| io::Error::other("reviewed source claim is not explainable"))?;
+    assert_eq!(
+        reviewed_source
+            .latest_review
+            .as_ref()
+            .and_then(|review| review.superseded_by.as_ref()),
+        Some(&source_claims[1].assertion_key)
+    );
     assert_eq!(
         after
             .iter()
@@ -185,6 +224,46 @@ fn explanations_preserve_conflicts_candidates_and_reversible_reviews()
         "reviewing a candidate must not overwrite contradictory source claims"
     );
     assert_ne!(first.snapshot_key, second.snapshot_key);
+    Ok(())
+}
+
+#[test]
+fn generic_endpoint_components_round_trip_without_encoded_keys()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let database_path = utf8(directory.path().join("typed-endpoints.sqlite"))?;
+    let database = Database::open(&database_path)?;
+    let claim = RelationshipClaim {
+        relation_type: RelationshipType::CatalogCorrection,
+        subject: RelationshipEndpoint::ExternalRecord(ExternalRecordRef::new(
+            "registry",
+            "[\"part-a\",\"part-b\"]",
+        )),
+        target: RelationshipEndpoint::ExternalRecord(ExternalRecordRef::new(
+            "registry",
+            "{\"not\":\"a persisted composite key\"}",
+        )),
+        origin: RelationshipOrigin::UserConclusion,
+        evidence: serde_json::json!({"reason": "manual reconciliation"}),
+    };
+    let key = app::record_relationship(&database, &claim)?;
+    let explanation = app::explain_relationships(&database)?
+        .into_iter()
+        .find(|item| item.assertion_key == key)
+        .ok_or_else(|| io::Error::other("typed endpoint claim is not explainable"))?;
+    assert_eq!(explanation.claim, claim);
+
+    let mut connection = diesel::SqliteConnection::establish(database_path.as_str())?;
+    let legacy_columns = sql_query(
+        "SELECT COUNT(*) AS found FROM ( \
+             SELECT name FROM pragma_table_info('relationship_assertions') \
+             UNION ALL SELECT name FROM pragma_table_info('relationship_assertion_evidence') \
+             UNION ALL SELECT name FROM pragma_table_info('relationship_assertion_support') \
+         ) WHERE lower(name) LIKE '%json%' \
+             OR name IN ('subject_key', 'target_key', 'generic_subject_key', 'generic_target_key')",
+    )
+    .get_result::<RelationshipSchemaColumns>(&mut connection)?;
+    assert_eq!(legacy_columns.found, 0);
     Ok(())
 }
 

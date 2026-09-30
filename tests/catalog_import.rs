@@ -142,6 +142,22 @@ struct NullableTextRow {
 }
 
 #[derive(QueryableByName)]
+struct TypedSourceAssertionRow {
+    #[diesel(sql_type = Nullable<Text>, column_name = source_subject_a)]
+    subject_a: Option<String>,
+    #[diesel(sql_type = Nullable<Text>, column_name = source_subject_b)]
+    subject_b: Option<String>,
+    #[diesel(sql_type = Nullable<BigInt>, column_name = source_subject_c)]
+    subject_c: Option<i64>,
+    #[diesel(sql_type = Nullable<Text>, column_name = source_target_a)]
+    target_a: Option<String>,
+    #[diesel(sql_type = Nullable<Text>, column_name = source_target_b)]
+    target_b: Option<String>,
+    #[diesel(sql_type = Nullable<BigInt>, column_name = source_target_c)]
+    target_c: Option<i64>,
+}
+
+#[derive(QueryableByName)]
 struct BytesRow {
     #[diesel(sql_type = diesel::sql_types::Binary)]
     value: Vec<u8>,
@@ -1920,7 +1936,7 @@ fn mame_merge_rom_resolves_when_parent_machine_follows_child()
         .get_result::<TextRow>(&mut connection)
         .map_err(|error| format!("merged asset lookup failed: {error}"))?;
         let relation = sql_query(
-            "SELECT target_key AS value FROM relationship_assertions \
+            "SELECT source_target_a AS value FROM relationship_assertions \
              WHERE source_snapshot_key = ? AND source_field = 'merge'",
         )
         .bind::<Text, _>(snapshot.as_str())
@@ -1930,10 +1946,7 @@ fn mame_merge_rom_resolves_when_parent_machine_follows_child()
     }
     assert_eq!(
         resolved[0],
-        (
-            "child.rom:shared.rom:12345678".into(),
-            "[\"parent\",\"shared.rom\",0]".into()
-        )
+        ("child.rom:shared.rom:12345678".into(), "parent".into())
     );
     assert_eq!(resolved[1], resolved[0]);
     Ok(())
@@ -1977,8 +1990,9 @@ fn mame_forward_merges_resolve_across_asset_pagination() -> Result<(), Box<dyn s
     let snapshot = report.snapshot_key.ok_or("MAME snapshot missing")?;
 
     let assertion_counts = sql_query(
-        "SELECT COUNT(*) || ':' || COUNT(DISTINCT subject_key) || ':' || \
-                COUNT(DISTINCT target_key) AS value \
+        "SELECT COUNT(*) || ':' || \
+                COUNT(DISTINCT source_subject_a || ':' || source_subject_b || ':' || source_subject_c) || ':' || \
+                COUNT(DISTINCT source_target_a || ':' || source_target_b || ':' || source_target_c) AS value \
          FROM relationship_assertions \
          WHERE source_snapshot_key = ? AND relation_type = 'exact_content_identity' \
            AND source_field = 'merge'",
@@ -2152,17 +2166,47 @@ fn mame_relationships_resolve_component_keys_and_keep_device_locations()
     let snapshot = report.snapshot_key.ok_or("MAME snapshot missing")?;
 
     let merge = sql_query(
-        "SELECT subject_key, target_key, source_line FROM relationship_assertions \
+        "SELECT source_subject_a AS subject_key, source_target_a AS target_key, source_line FROM relationship_assertions \
          WHERE source_snapshot_key = ? AND source_field = 'merge'",
     )
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<RelationshipKeyLocationRow>(&mut connection)?;
-    assert_eq!(merge.subject_key, "[\"clone\",\"shared.bin\",0]");
-    assert_eq!(merge.target_key, "[\"rom-parent\",\"shared.bin\",0]");
+    assert_eq!(merge.subject_key, "clone");
+    assert_eq!(merge.target_key, "rom-parent");
     assert_eq!(merge.source_line, 8);
 
+    let stored_merge = sql_query(
+        "SELECT source_subject_a, source_subject_b, source_subject_c, \
+                source_target_a, source_target_b, source_target_c \
+         FROM relationship_assertions \
+         WHERE source_snapshot_key = ? AND source_field = 'merge'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TypedSourceAssertionRow>(&mut connection)?;
+    assert_eq!(stored_merge.subject_a.as_deref(), Some("clone"));
+    assert_eq!(stored_merge.subject_b.as_deref(), Some("shared.bin"));
+    assert_eq!(stored_merge.subject_c, Some(0));
+    assert_eq!(stored_merge.target_a.as_deref(), Some("rom-parent"));
+    assert_eq!(stored_merge.target_b.as_deref(), Some("shared.bin"));
+    assert_eq!(stored_merge.target_c, Some(0));
+
+    let merge_explanation = app::explain_relationships(&database)?
+        .into_iter()
+        .find(|explanation| explanation.source_field.as_deref() == Some("merge"))
+        .ok_or("typed merge assertion was not explainable")?;
+    assert_eq!(
+        merge_explanation.claim.evidence["declared_merge_name"],
+        "shared.bin"
+    );
+    assert_eq!(
+        merge_explanation.claim.evidence["parent_set_name"],
+        "rom-parent"
+    );
+    assert_eq!(merge_explanation.claim.evidence["expected_crc"], "12345678");
+    assert_eq!(merge_explanation.claim.evidence["size"], 1);
+
     let device = sql_query(
-        "SELECT subject_key, target_key, source_line FROM relationship_assertions \
+        "SELECT source_subject_a AS subject_key, source_target_a AS target_key, source_line FROM relationship_assertions \
          WHERE source_snapshot_key = ? AND source_field = 'device_ref'",
     )
     .bind::<Text, _>(snapshot.as_str())
@@ -2172,8 +2216,8 @@ fn mame_relationships_resolve_component_keys_and_keep_device_locations()
     assert_eq!(device.source_line, 7);
 
     let dependencies = sql_query(
-        "SELECT source_field || ':' || target_key AS value FROM relationship_assertions \
-         WHERE source_snapshot_key = ? AND subject_kind = 'catalog_set' AND subject_key = 'clone' \
+        "SELECT source_field || ':' || source_target_a AS value FROM relationship_assertions \
+         WHERE source_snapshot_key = ? AND subject_kind = 'catalog_set' AND source_subject_a = 'clone' \
          AND relation_type = 'runtime_dependency' ORDER BY source_field",
     )
     .bind::<Text, _>(snapshot.as_str())
@@ -2259,7 +2303,7 @@ fn resolves_machine_runtime_closure_without_traversing_clone_ancestry()
 
     let source_assertions = sql_query(
         "SELECT COUNT(*) AS count FROM relationship_assertions \
-         WHERE source_snapshot_key = ? AND subject_key = 'game' \
+         WHERE source_snapshot_key = ? AND source_subject_a = 'game' \
            AND source_field IN ('cloneof', 'romof', 'device_ref', 'sampleof')",
     )
     .bind::<Text, _>(snapshot.as_str())
@@ -2288,14 +2332,15 @@ fn software_item_relationship_keys_do_not_collide_on_slashes()
         return Err(io::Error::other(diagnostic.value).into());
     };
     let keys = sql_query(
-        "SELECT subject_key AS value FROM relationship_assertions \
-         WHERE source_snapshot_key = ? AND source_field = 'cloneof' ORDER BY subject_key",
+        "SELECT source_subject_a || ':' || source_subject_b AS value FROM relationship_assertions \
+         WHERE source_snapshot_key = ? AND source_field = 'cloneof' \
+         ORDER BY source_subject_a, source_subject_b",
     )
     .bind::<Text, _>(snapshot.as_str())
     .load::<TextRow>(&mut connection)?;
     assert_eq!(keys.len(), 2);
-    assert_eq!(keys[0].value, "[\"a\",\"b/c\"]");
-    assert_eq!(keys[1].value, "[\"a/b\",\"c\"]");
+    assert_eq!(keys[0].value, "a:b/c");
+    assert_eq!(keys[1].value, "a/b:c");
     Ok(())
 }
 
@@ -4236,7 +4281,8 @@ fn source_relationship_assertions_keep_snapshot_and_field_provenance()
         .as_ref()
         .ok_or_else(|| io::Error::other("successful import has no snapshot key"))?;
     let assertion = sql_query(
-        "SELECT relation_type, origin, source_snapshot_key, subject_key, target_key, \
+        "SELECT relation_type, origin, source_snapshot_key, source_subject_a AS subject_key, \
+                source_target_a AS target_key, \
                 source_field, source_line, source_column, rule_version \
          FROM relationship_assertions \
          WHERE source_snapshot_key = ? AND source_field = 'cloneof'",
@@ -4265,7 +4311,7 @@ fn source_relationship_assertions_keep_snapshot_and_field_provenance()
     .get_result::<CountRow>(&mut connection)?;
     assert_eq!(runtime_claims.count, 3);
     let device_claim = sql_query(
-        "SELECT target_key AS value FROM relationship_assertions \
+        "SELECT source_target_a AS value FROM relationship_assertions \
          WHERE source_snapshot_key = ? AND source_field = 'device_ref'",
     )
     .bind::<Text, _>(snapshot_key.as_str())
@@ -4273,7 +4319,8 @@ fn source_relationship_assertions_keep_snapshot_and_field_provenance()
     assert_eq!(device_claim.value, "fixture-sound");
 
     let device_claim = sql_query(
-        "SELECT relation_type, origin, source_snapshot_key, subject_key, target_key, \
+        "SELECT relation_type, origin, source_snapshot_key, source_subject_a AS subject_key, \
+                source_target_a AS target_key, \
                 source_field, source_line, source_column, rule_version \
          FROM relationship_assertions \
          WHERE source_snapshot_key = ? AND source_field = 'device_ref'",
