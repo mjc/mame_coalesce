@@ -840,7 +840,15 @@ fn parse_machine_switch(node: &Element, kind: MachineSwitchKind) -> crate::Resul
 fn parse_mame_integer(value: &str) -> crate::Result<u64> {
     let parsed = value
         .strip_prefix("0x")
-        .map_or_else(|| value.parse::<u64>(), |hex| u64::from_str_radix(hex, 16));
+        .or_else(|| value.strip_prefix("0X"))
+        .map_or_else(
+            || {
+                value
+                    .parse::<u64>()
+                    .or_else(|_| u64::from_str_radix(value, 16))
+            },
+            |hex| u64::from_str_radix(hex, 16),
+        );
     parsed.map_err(|_| crate::Error::XmlValidation(format!("invalid MAME integer {value:?}")))
 }
 
@@ -1099,7 +1107,6 @@ fn required<'a>(element: &'a Element, name: &str) -> crate::Result<&'a str> {
         .attributes
         .get(name)
         .map(String::as_str)
-        .filter(|value| !value.is_empty())
         .ok_or_else(|| {
             crate::Error::XmlValidation(format!(
                 "<{}> is missing required {name:?} attribute",

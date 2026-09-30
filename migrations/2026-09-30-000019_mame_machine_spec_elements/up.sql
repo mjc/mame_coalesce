@@ -15,7 +15,7 @@ CREATE TABLE mame_machine_spec_elements (
     chip_clock TEXT,
 
     display_tag TEXT,
-    display_type TEXT CHECK (display_type IS NULL OR display_type IN ('raster', 'vector', 'lcd', 'unknown')),
+    display_type TEXT CHECK (display_type IS NULL OR display_type IN ('raster', 'vector', 'lcd', 'svg', 'unknown')),
     display_rotate TEXT CHECK (display_rotate IS NULL OR display_rotate IN ('0', '90', '180', '270')),
     flipx INTEGER NOT NULL DEFAULT 0 CHECK (flipx IN (0, 1)),
     display_width TEXT,

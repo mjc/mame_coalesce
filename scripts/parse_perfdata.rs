@@ -435,6 +435,13 @@ fn categorize(name: &str) -> &'static str {
             "libsqlite3",
             "storage::repositories",
             "storage::db",
+            "yy_reduce",
+            "exprdup",
+            "getrowtrigger",
+            "coderowtrigger",
+            "getpagenormal",
+            "getandinitpage",
+            "balance",
         ],
     ) {
         return "SQLite/Diesel";
@@ -503,6 +510,14 @@ mod tests {
             categorize("zip::read::read_zipfile_from_stream"),
             "Archive/Compression"
         );
+    }
+
+    #[test]
+    fn categorizes_sqlite_internal_symbols() {
+        assert_eq!(categorize("yy_reduce.isra.0"), "SQLite/Diesel");
+        assert_eq!(categorize("exprDup"), "SQLite/Diesel");
+        assert_eq!(categorize("getRowTrigger"), "SQLite/Diesel");
+        assert_eq!(categorize("getPageNormal"), "SQLite/Diesel");
     }
 
     #[test]

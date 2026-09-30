@@ -44,7 +44,7 @@ profile_import() {
     --event cycles:u \
     --freq 997 \
     --call-graph dwarf,8192 \
-    --mmap-pages 1024 \
+    --mmap-pages 128 \
     --output "$perf_data" \
     -- "$binary" "$format" "$database" "$@" || record_status=$?
   bash scripts/render_catalog_flamegraph.sh \

@@ -200,3 +200,40 @@ baseline capture. The ownership comparison above measures the replacement
 pipeline. The profiling source and renderer are
 `examples/catalog_import_profile.rs`, `scripts/profile_catalog_imports.sh`,
 and `scripts/render_catalog_flamegraph.sh`.
+
+## Fresh full machine import: storage and CPU/heap profiles, 2026-09-30
+
+A separate clean-database import of that same 326,688,140-byte MAME 0.289
+machine XML completed successfully (`succeeded=1 failed=0`). The CPU-profiled
+database file was 2,641,801,216 bytes (2.46 GiB); the compressed
+retained-document sidecar was 15,305,382 bytes. Together they total
+2,657,106,598 bytes, about 8.1 times the source XML. This is a fresh
+measurement and replaces neither the earlier 6,361,706,496-byte run nor its
+artifacts. The 2.66 GB result still fails the storage goal; these profiles
+were captured before compacting source relationship assertions.
+
+The CPU capture sampled 515,644 user-space cycle samples across a 568.6-second
+sample interval. The SQLite/Diesel category accounts for 77.42% of exclusive
+samples; `sqlite3_prepare_v3` accounts for 57.83% inclusive coverage. The
+inclusive function percentages overlap. The dominant path is repeated SQLite
+statement preparation/execution during relational inserts, making prepared
+statement reuse the first CPU optimization to measure. The raw perf recording
+is 4,343,461,784 bytes; the rendered flamegraph is `mame-final.svg`.
+
+Heaptrack completed the same full import in a separate fresh database. It
+recorded 772,859,173 allocations. The largest peak allocation stack is input
+buffer growth in `std::io::default_read_to_end` via
+`document_input::read_bounded` and `documents::retain_with_options`: 536.87 MB
+across 15 `Vec` growth calls, for a 326.7 MB source. That points to avoidable
+transient reallocations while retaining the source; it is not evidence that the
+XML parser builds a second whole-document tree. SQLite's allocator dominated
+call count, with 563,612,089 calls. The trace is 101,779,462 bytes compressed.
+
+All artifacts are in
+`target/profiling/mamec55-full-2026-09-30-8VXYGN/`: `mame-final.data`,
+`mame-final.svg`, `mame-heap.trace.zst`, `mame-heap.report.txt`,
+`mame-heap.peak.folded`, `mame-heap.peak.svg`, and the separate CPU/heap
+databases. `scripts/parse_flamegraph ... summary` now classifies SQLite's
+internal parser/B-tree symbols (`yy_reduce`, `exprDup`, `getRowTrigger`,
+`getPageNormal`, `balance`, and related frames) with SQLite/Diesel instead of
+leaving them in `Other`.

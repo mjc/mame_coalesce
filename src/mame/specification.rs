@@ -79,6 +79,7 @@ pub enum DisplayKind {
     Raster,
     Vector,
     Lcd,
+    Svg,
     Unknown,
 }
 
@@ -88,6 +89,7 @@ impl DisplayKind {
             Self::Raster => "raster",
             Self::Vector => "vector",
             Self::Lcd => "lcd",
+            Self::Svg => "svg",
             Self::Unknown => "unknown",
         }
     }
@@ -395,16 +397,12 @@ fn attribute(node: &Element, name: &str) -> Option<String> {
 }
 
 fn required(node: &Element, name: &str) -> crate::Result<String> {
-    node.attributes
-        .get(name)
-        .filter(|value| !value.is_empty())
-        .cloned()
-        .ok_or_else(|| {
-            crate::Error::XmlValidation(format!(
-                "<{}> is missing required {name:?} attribute",
-                node.name
-            ))
-        })
+    node.attributes.get(name).cloned().ok_or_else(|| {
+        crate::Error::XmlValidation(format!(
+            "<{}> is missing required {name:?} attribute",
+            node.name
+        ))
+    })
 }
 
 fn choice<T>(node: &Element, name: &str, variants: &[(&str, T)]) -> crate::Result<T>
@@ -488,6 +486,7 @@ pub(super) fn parse_element(node: &Element) -> crate::Result<MachineSpecificatio
                     ("raster", DisplayKind::Raster),
                     ("vector", DisplayKind::Vector),
                     ("lcd", DisplayKind::Lcd),
+                    ("svg", DisplayKind::Svg),
                     ("unknown", DisplayKind::Unknown),
                 ],
             )?,

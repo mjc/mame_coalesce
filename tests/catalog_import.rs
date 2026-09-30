@@ -1303,13 +1303,13 @@ fn imports_every_mame_machine_dtd_family_as_typed_query_facts()
         br#"<mame build="0.289"><machine name="complete"><description>Complete spec</description>
           <device_ref tag=":cpu" name="cpu_device"/>
           <sample name="sample-set"/><chip name="CPU" tag=":maincpu" type="cpu" clock="4000000"/>
-          <chip name="Speaker" type="audio"/><display tag=":screen" type="raster" rotate="90" width="320" height="240" refresh="60.0" pixclock="12000000" htotal="400" hbend="10" hbstart="330" vtotal="260" vbend="5" vbstart="245" flipx="yes"/>
+          <chip name="Speaker" type="audio"/><display tag=":screen" type="svg" rotate="90" width="320" height="240" refresh="60.0" pixclock="12000000" htotal="400" hbend="10" hbstart="330" vtotal="260" vbend="5" vbstart="245" flipx="yes"/>
           <sound channels="2"/><input players="2" coins="1" service="yes" tilt="yes"><control type="joy" player="1" buttons="2" minimum="0" maximum="255" sensitivity="50" keydelta="10" reverse="yes" ways="8" ways2="4" ways3="2"/></input>
           <dipswitch name="Mode" tag=":DSW" mask="3"><condition tag=":CFG" mask="1" relation="eq" value="1"/><diplocation name="SW1" number="1"/><dipvalue name="On" value="1"><condition tag=":CFG" mask="1" relation="ne" value="0"/></dipvalue></dipswitch>
-          <configuration name="Video" tag=":CFG" mask="4"><condition tag=":CFG" mask="2" relation="gt" value="0"/><conflocation name="JP1" number="2"/><confsetting name="Raster" value="4"><condition tag=":CFG" mask="2" relation="le" value="1"/></confsetting></configuration>
+          <configuration name="Video" tag=":CFG" mask="4"><condition tag=":CFG" mask="2" relation="gt" value="0"/><conflocation name="JP1" number="2"/><confsetting name="" value="4"><condition tag=":CFG" mask="2" relation="le" value="1"/></confsetting></configuration>
           <port tag=":IN0"><analog mask="255"/></port><adjuster name="Volume" default="80"><condition tag=":CFG" mask="1" relation="lt" value="2"/></adjuster>
           <driver status="imperfect" emulation="good" cocktail="preliminary" savestate="supported" requiresartwork="yes" unofficial="yes" nosoundhardware="yes" incomplete="yes"/>
-          <feature type="graphics" status="imperfect" overall="unemulated"/><device type="floppy" tag=":fd" fixed_image="disk" mandatory="yes" interface="floppy"><instance name="floppy1" briefname="FDD"/><extension name="dsk"/></device>
+          <feature type="graphics" status="imperfect" overall="unemulated"/><device type="floppy" tag=":fd" fixed_image="disk" mandatory="yes" interface="floppy"><instance name="floppy1" briefname="FDD"/><extension name="dsk"/><extension name=""/></device>
           <slot name=":cartslot"><slotoption name="game" devname="cart" default="yes"/></slot><softwarelist tag=":software" name="softlist" status="compatible" filter="original"/>
           <ramoption name="ram" default="2M">2M</ramoption>
         </machine><machine name="defaults"><description>Defaults</description>
@@ -1345,7 +1345,7 @@ fn imports_every_mame_machine_dtd_family_as_typed_query_facts()
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<TextRow>(&mut connection)
     .map_err(|error| io::Error::other(format!("read MAME display type: {error}")))?;
-    assert_eq!(display.value, "raster");
+    assert_eq!(display.value, "svg");
     let chip_fields = sql_query(
         "SELECT GROUP_CONCAT(chip_name || ':' || COALESCE(chip_tag, '') || ':' || chip_type || ':' || COALESCE(chip_clock, ''), ',') AS value FROM (SELECT chip_name, chip_tag, chip_type, chip_clock FROM mame_machine_spec_elements WHERE snapshot_key = ? AND set_name = 'complete' AND element_type = 'chip' ORDER BY element_order)",
     )
@@ -1362,7 +1362,7 @@ fn imports_every_mame_machine_dtd_family_as_typed_query_facts()
     .get_result::<TextRow>(&mut connection)?;
     assert_eq!(
         display_fields.value,
-        ":screen:raster:90:1:320:240:60.0:12000000:400:10:330:260:5:245"
+        ":screen:svg:90:1:320:240:60.0:12000000:400:10:330:260:5:245"
     );
     let input_fields = sql_query(
         "SELECT input_service || ':' || input_tilt || ':' || input_players || ':' || input_coins AS value FROM mame_machine_spec_elements WHERE snapshot_key = ? AND set_name = 'complete' AND element_type = 'input'",
@@ -1407,11 +1407,11 @@ fn imports_every_mame_machine_dtd_family_as_typed_query_facts()
         "graphics:imperfect:unemulated:floppy::fd:disk:yes:floppy:floppy1:FDD:game:cart:1::software:softlist:compatible:original:ram:2M:2M"
     );
     let device_extension = sql_query(
-        "SELECT name AS value FROM mame_machine_device_extensions WHERE snapshot_key = ? AND set_name = 'complete'",
+        "SELECT GROUP_CONCAT(name, ',') AS value FROM (SELECT name FROM mame_machine_device_extensions WHERE snapshot_key = ? AND set_name = 'complete' ORDER BY extension_order)",
     )
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<TextRow>(&mut connection)?;
-    assert_eq!(device_extension.value, "dsk");
+    assert_eq!(device_extension.value, "dsk,");
     let device_instance_location = sql_query(
         "SELECT device_instance_line > 0 AND device_instance_column > 0 AS value FROM mame_machine_spec_elements WHERE snapshot_key = ? AND set_name = 'complete' AND element_type = 'device'",
     )
@@ -1436,7 +1436,19 @@ fn imports_every_mame_machine_dtd_family_as_typed_query_facts()
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<IntegerRow>(&mut connection)
     .map_err(|error| io::Error::other(format!("read MAME nested facts: {error}")))?;
-    assert_eq!(nested_counts.value, 1 + 1 + 1 + 1 + 5);
+    assert_eq!(nested_counts.value, 1 + 1 + 2 + 1 + 5);
+    let empty_extension = sql_query(
+        "SELECT COUNT(*) AS value FROM mame_machine_device_extensions WHERE snapshot_key = ? AND set_name = 'complete' AND name = ''",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<IntegerRow>(&mut connection)?;
+    assert_eq!(empty_extension.value, 1);
+    let empty_setting_name = sql_query(
+        "SELECT COUNT(*) AS count FROM machine_switch_values WHERE snapshot_key = ? AND set_name = 'complete' AND name = ''",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<CountRow>(&mut connection)?;
+    assert_eq!(empty_setting_name.count, 1);
     let conditions = sql_query(
         "SELECT GROUP_CONCAT(owner_kind || ':' || relation || ':' || mask || ':' || value, ',') AS value FROM (SELECT owner_kind, relation, mask, value FROM mame_machine_conditions WHERE snapshot_key = ? AND set_name = 'complete' ORDER BY owner_kind, owner_switch_order, owner_child_order)",
     )
@@ -1555,7 +1567,7 @@ fn mame_rejects_values_outside_the_dtd_and_duplicate_singletons()
 -> Result<(), Box<dyn std::error::Error>> {
     let (directory, database, _) = setup()?;
     for (index, machine_fields) in [
-        "<display type=\"svg\" refresh=\"60\"/>",
+        "<display type=\"plasma\" refresh=\"60\"/>",
         "<sound channels=\"1\"/><sound channels=\"2\"/>",
         "<input players=\"1\"/><input players=\"2\"/>",
         "<driver status=\"good\" emulation=\"good\" savestate=\"supported\"/><driver status=\"good\" emulation=\"good\" savestate=\"supported\"/>",
@@ -1783,7 +1795,7 @@ fn persists_mame_rom_and_disk_spec_attributes_as_relational_facts()
     let path = directory.path().join("mame-asset-facts.xml");
     std::fs::write(
         &path,
-        br#"<mame><machine name="facts"><description>Facts</description><rom name="boot.bin" region="maincpu" bios="rev-a" offset="0x100" optional="yes" soundonly="no" dispose="yes" loadflag="LOAD16_BYTE" value="0x42" inverted="no" ovha="0x80" nothread="yes"/><disk name="media.chd" region="cdrom" index="2" writeable="yes"/></machine></mame>"#,
+        br#"<mame><machine name="facts"><description>Facts</description><rom name="boot.bin" region="maincpu" bios="rev-a" offset="a000" optional="yes" soundonly="no" dispose="yes" loadflag="LOAD16_BYTE" value="0x42" inverted="no" ovha="0x80" nothread="yes"/><disk name="media.chd" region="cdrom" index="2" writeable="yes"/></machine></mame>"#,
     )?;
     let mut request = request(
         path.clone(),
@@ -1805,7 +1817,7 @@ fn persists_mame_rom_and_disk_spec_attributes_as_relational_facts()
     .get_result::<TextRow>(&mut connection)?;
     assert_eq!(
         rom.value,
-        "maincpu:rev-a:256:1:0:1:LOAD16_BYTE:0x42:0:0x80:1"
+        "maincpu:rev-a:40960:1:0:1:LOAD16_BYTE:0x42:0:0x80:1"
     );
 
     let disk = sql_query(
@@ -1824,7 +1836,7 @@ fn persists_mame_rom_and_disk_spec_attributes_as_relational_facts()
 
     std::fs::write(
         &path,
-        br#"<mame><machine name="facts"><description>Facts</description><rom name="boot.bin" region="graphics" bios="rev-a" offset="0x100" optional="yes" soundonly="no" dispose="yes" loadflag="LOAD16_BYTE" value="0x42" inverted="no" ovha="0x80" nothread="yes"/><disk name="media.chd" region="cdrom" index="2" writeable="yes"/></machine></mame>"#,
+        br#"<mame><machine name="facts"><description>Facts</description><rom name="boot.bin" region="graphics" bios="rev-a" offset="a000" optional="yes" soundonly="no" dispose="yes" loadflag="LOAD16_BYTE" value="0x42" inverted="no" ovha="0x80" nothread="yes"/><disk name="media.chd" region="cdrom" index="2" writeable="yes"/></machine></mame>"#,
     )?;
     let changed_snapshot = app::import_catalog(&database, &request)?
         .snapshot_key
