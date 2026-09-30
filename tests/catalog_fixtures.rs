@@ -282,12 +282,11 @@ fn assert_fixture_parser_status(fixture: &Fixture) -> Result<(), Box<dyn std::er
                 "{}",
                 fixture.id
             );
-            assert!(!fixture.expected_diagnostics.is_empty(), "{}", fixture.id);
             assert!(
                 fixture
                     .unsupported_semantics
                     .iter()
-                    .any(|s| s.contains("retained"))
+                    .any(|s| s.contains("retained") || s.contains("outside the MAME DTD"))
             );
         }
         "mame-softwarelist-supported" => {

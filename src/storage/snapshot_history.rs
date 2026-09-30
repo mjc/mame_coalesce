@@ -194,6 +194,20 @@ struct MachineBiosSetRow {
 }
 
 #[derive(QueryableByName)]
+struct MameMachineDependencyRow {
+    #[diesel(sql_type = Text)]
+    set_name: String,
+    #[diesel(sql_type = BigInt)]
+    dependency_order: i64,
+    #[diesel(sql_type = Text)]
+    dependency_kind: String,
+    #[diesel(sql_type = Text)]
+    target_name: String,
+    #[diesel(sql_type = Nullable<Text>)]
+    reference_tag: Option<String>,
+}
+
+#[derive(QueryableByName)]
 #[allow(clippy::struct_excessive_bools)] // Mirrors independent MAME DTD flags from one SQLite row.
 struct MameMachineFactsRow {
     #[diesel(sql_type = Text)]
@@ -248,6 +262,227 @@ struct LogiqxSetFactsRow {
     manufacturer: Option<String>,
 }
 
+#[derive(QueryableByName, serde::Serialize)]
+#[allow(clippy::struct_excessive_bools)] // Mirrors independent DTD boolean columns for snapshot comparison.
+struct MachineSpecificationRow {
+    #[diesel(sql_type = Text)]
+    set_name: String,
+    #[diesel(sql_type = BigInt)]
+    element_order: i64,
+    #[diesel(sql_type = Text)]
+    element_type: String,
+    #[diesel(sql_type = Nullable<Text>)]
+    sample_name: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    chip_name: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    chip_tag: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    chip_type: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    chip_clock: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    display_tag: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    display_type: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    display_rotate: Option<String>,
+    #[diesel(sql_type = Bool)]
+    flipx: bool,
+    #[diesel(sql_type = Nullable<Text>)]
+    display_width: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    display_height: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    display_refresh: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    display_pixclock: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    display_htotal: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    display_hbend: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    display_hbstart: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    display_vtotal: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    display_vbend: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    display_vbstart: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    sound_channels: Option<String>,
+    #[diesel(sql_type = Bool)]
+    input_service: bool,
+    #[diesel(sql_type = Bool)]
+    input_tilt: bool,
+    #[diesel(sql_type = Nullable<Text>)]
+    input_players: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    input_coins: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    port_tag: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    adjuster_name: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    adjuster_default: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    driver_status: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    driver_emulation: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    driver_cocktail: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    driver_savestate: Option<String>,
+    #[diesel(sql_type = Bool)]
+    driver_requiresartwork: bool,
+    #[diesel(sql_type = Bool)]
+    driver_unofficial: bool,
+    #[diesel(sql_type = Bool)]
+    driver_nosoundhardware: bool,
+    #[diesel(sql_type = Bool)]
+    driver_incomplete: bool,
+    #[diesel(sql_type = Nullable<Text>)]
+    feature_type: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    feature_status: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    feature_overall: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    device_type: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    device_tag: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    device_fixed_image: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    device_mandatory: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    device_interface: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    device_instance_name: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    device_instance_briefname: Option<String>,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    device_instance_line: Option<i64>,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    device_instance_column: Option<i64>,
+    #[diesel(sql_type = Nullable<Text>)]
+    slot_name: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    softwarelist_tag: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    softwarelist_name: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    softwarelist_status: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    softwarelist_filter: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    ramoption_name: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    ramoption_default: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    ramoption_text: Option<String>,
+    #[diesel(sql_type = BigInt)]
+    source_line: i64,
+    #[diesel(sql_type = BigInt)]
+    source_column: i64,
+}
+
+#[derive(QueryableByName)]
+struct MachineInputControlRow {
+    #[diesel(sql_type = Text)]
+    set_name: String,
+    #[diesel(sql_type = BigInt)]
+    element_order: i64,
+    #[diesel(sql_type = BigInt)]
+    control_order: i64,
+    #[diesel(sql_type = Text)]
+    control_type: String,
+    #[diesel(sql_type = Nullable<Text>)]
+    player: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    buttons: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    minimum: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    maximum: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    sensitivity: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    keydelta: Option<String>,
+    #[diesel(sql_type = Bool)]
+    reverse: bool,
+    #[diesel(sql_type = Nullable<Text>)]
+    ways: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    ways2: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    ways3: Option<String>,
+}
+
+#[derive(QueryableByName)]
+struct MachineAnalogRow {
+    #[diesel(sql_type = Text)]
+    set_name: String,
+    #[diesel(sql_type = BigInt)]
+    element_order: i64,
+    #[diesel(sql_type = BigInt)]
+    analog_order: i64,
+    #[diesel(sql_type = Text)]
+    mask: String,
+}
+
+#[derive(QueryableByName)]
+struct MachineDeviceExtensionRow {
+    #[diesel(sql_type = Text)]
+    set_name: String,
+    #[diesel(sql_type = BigInt)]
+    element_order: i64,
+    #[diesel(sql_type = BigInt)]
+    extension_order: i64,
+    #[diesel(sql_type = Text)]
+    name: String,
+}
+
+#[derive(QueryableByName)]
+struct MachineSlotOptionRow {
+    #[diesel(sql_type = Text)]
+    set_name: String,
+    #[diesel(sql_type = BigInt)]
+    element_order: i64,
+    #[diesel(sql_type = BigInt)]
+    option_order: i64,
+    #[diesel(sql_type = Text)]
+    name: String,
+    #[diesel(sql_type = Text)]
+    devname: String,
+    #[diesel(sql_type = Bool)]
+    is_default: bool,
+}
+
+#[derive(QueryableByName)]
+struct MachineConditionRow {
+    #[diesel(sql_type = Text)]
+    set_name: String,
+    #[diesel(sql_type = Text)]
+    owner_kind: String,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    owner_element_order: Option<i64>,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    owner_switch_order: Option<i64>,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    owner_child_order: Option<i64>,
+    #[diesel(sql_type = BigInt)]
+    condition_order: i64,
+    #[diesel(sql_type = Text)]
+    tag: String,
+    #[diesel(sql_type = Text)]
+    mask: String,
+    #[diesel(sql_type = Text)]
+    relation: String,
+    #[diesel(sql_type = Text)]
+    value: String,
+}
+
 #[derive(Default)]
 struct CatalogRecords {
     sets: BTreeMap<String, SetRow>,
@@ -256,7 +491,9 @@ struct CatalogRecords {
     asset_extensions: BTreeMap<(String, String), Vec<serde_json::Value>>,
     machine_switches: BTreeMap<String, Vec<serde_json::Value>>,
     machine_bios_sets: BTreeMap<String, Vec<serde_json::Value>>,
+    mame_machine_dependencies: BTreeMap<String, Vec<serde_json::Value>>,
     mame_machine_facts: BTreeMap<String, serde_json::Value>,
+    mame_machine_specification_facts: BTreeMap<String, Vec<serde_json::Value>>,
     no_intro_game_facts: BTreeMap<String, serde_json::Value>,
     logiqx_set_facts: BTreeMap<String, serde_json::Value>,
 }
@@ -633,6 +870,8 @@ fn records(
     let machine_switches = mame_switch_facts(conn, key)?;
     let machine_bios_sets = mame_bios_set_facts(conn, key)?;
     let mame_machine_facts = load_mame_machine_facts(conn, key)?;
+    let mame_machine_specification_facts = load_mame_machine_specification_facts(conn, key)?;
+    let mame_machine_dependencies = load_mame_machine_dependencies(conn, key)?;
     let no_intro_game_facts = sql_query(
         "SELECT set_name, archive_id, description FROM no_intro_game_facts \
          WHERE snapshot_key = ? ORDER BY set_name",
@@ -691,6 +930,8 @@ fn records(
     result.machine_switches = machine_switches;
     result.machine_bios_sets = machine_bios_sets;
     result.mame_machine_facts = mame_machine_facts;
+    result.mame_machine_specification_facts = mame_machine_specification_facts;
+    result.mame_machine_dependencies = mame_machine_dependencies;
     result.no_intro_game_facts = no_intro_game_facts;
     result.logiqx_set_facts = logiqx_set_facts;
     for extensions in result.extensions.values_mut() {
@@ -698,6 +939,32 @@ fn records(
     }
     assemble_requirements(&mut result, requirements);
     Ok(result)
+}
+
+fn load_mame_machine_dependencies(
+    conn: &mut diesel::SqliteConnection,
+    key: &SnapshotKey,
+) -> crate::Result<BTreeMap<String, Vec<serde_json::Value>>> {
+    let rows = sql_query(
+        "SELECT set_name, dependency_order, dependency_kind, target_name, reference_tag \
+         FROM mame_machine_dependencies WHERE snapshot_key = ? \
+         ORDER BY set_name, dependency_order",
+    )
+    .bind::<Text, _>(key.as_str())
+    .load::<MameMachineDependencyRow>(conn)?;
+    let mut facts = BTreeMap::<String, Vec<serde_json::Value>>::new();
+    for row in rows {
+        facts
+            .entry(row.set_name)
+            .or_default()
+            .push(serde_json::json!({
+                "order": row.dependency_order,
+                "kind": row.dependency_kind,
+                "target": row.target_name,
+                "reference_tag": row.reference_tag,
+            }));
+    }
+    Ok(facts)
 }
 
 fn load_logiqx_set_facts(
@@ -903,6 +1170,141 @@ fn load_mame_machine_facts(
         .collect())
 }
 
+fn load_mame_machine_specification_facts(
+    conn: &mut diesel::SqliteConnection,
+    key: &SnapshotKey,
+) -> crate::Result<BTreeMap<String, Vec<serde_json::Value>>> {
+    let rows = sql_query(
+        "SELECT * FROM mame_machine_spec_elements \
+         WHERE snapshot_key = ? ORDER BY set_name, element_order",
+    )
+    .bind::<Text, _>(key.as_str())
+    .load::<MachineSpecificationRow>(conn)?;
+    let mut elements = BTreeMap::<(String, i64), serde_json::Value>::new();
+    for row in rows {
+        let identity = (row.set_name.clone(), row.element_order);
+        let mut value = serde_json::to_value(row)?;
+        remove_source_locations(&mut value);
+        elements.insert(identity, value);
+    }
+
+    for row in sql_query(
+        "SELECT set_name, element_order, control_order, control_type, player, buttons, minimum, maximum, \
+         sensitivity, keydelta, reverse, ways, ways2, ways3 \
+         FROM mame_machine_input_controls WHERE snapshot_key = ? ORDER BY set_name, element_order, control_order",
+    )
+    .bind::<Text, _>(key.as_str())
+    .load::<MachineInputControlRow>(conn)?
+    {
+        let identity = (row.set_name.clone(), row.element_order);
+        let value = serde_json::json!({
+            "order": row.control_order, "type": row.control_type, "player": row.player,
+            "buttons": row.buttons, "minimum": row.minimum, "maximum": row.maximum,
+            "sensitivity": row.sensitivity, "keydelta": row.keydelta, "reverse": row.reverse,
+            "ways": row.ways, "ways2": row.ways2, "ways3": row.ways3,
+        });
+        append_nested_spec_fact(&mut elements, &identity, "controls", value);
+    }
+    for row in sql_query(
+        "SELECT set_name, element_order, analog_order, mask \
+         FROM mame_machine_analogs WHERE snapshot_key = ? ORDER BY set_name, element_order, analog_order",
+    )
+    .bind::<Text, _>(key.as_str())
+    .load::<MachineAnalogRow>(conn)?
+    {
+        let identity = (row.set_name.clone(), row.element_order);
+        let value = serde_json::json!({
+            "order": row.analog_order, "mask": row.mask,
+        });
+        append_nested_spec_fact(&mut elements, &identity, "analogs", value);
+    }
+    for row in sql_query(
+        "SELECT set_name, element_order, extension_order, name \
+         FROM mame_machine_device_extensions WHERE snapshot_key = ? ORDER BY set_name, element_order, extension_order",
+    )
+    .bind::<Text, _>(key.as_str())
+    .load::<MachineDeviceExtensionRow>(conn)?
+    {
+        let identity = (row.set_name.clone(), row.element_order);
+        let value = serde_json::json!({
+            "order": row.extension_order, "name": row.name,
+        });
+        append_nested_spec_fact(&mut elements, &identity, "extensions", value);
+    }
+    for row in sql_query(
+        "SELECT set_name, element_order, option_order, name, devname, is_default \
+         FROM mame_machine_slot_options WHERE snapshot_key = ? ORDER BY set_name, element_order, option_order",
+    )
+    .bind::<Text, _>(key.as_str())
+    .load::<MachineSlotOptionRow>(conn)?
+    {
+        let identity = (row.set_name.clone(), row.element_order);
+        let value = serde_json::json!({
+            "order": row.option_order, "name": row.name, "devname": row.devname,
+            "default": row.is_default,
+        });
+        append_nested_spec_fact(&mut elements, &identity, "options", value);
+    }
+
+    let mut result = BTreeMap::<String, Vec<serde_json::Value>>::new();
+    for ((set_name, _), value) in elements {
+        result.entry(set_name).or_default().push(value);
+    }
+    let mut conditions_by_set = BTreeMap::<String, Vec<serde_json::Value>>::new();
+    for row in sql_query(
+        "SELECT set_name, owner_kind, owner_element_order, owner_switch_order, owner_child_order, \
+         condition_order, tag, mask, relation, value \
+         FROM mame_machine_conditions WHERE snapshot_key = ? \
+         ORDER BY set_name, owner_kind, owner_element_order, owner_switch_order, owner_child_order, condition_order",
+    )
+    .bind::<Text, _>(key.as_str())
+    .load::<MachineConditionRow>(conn)?
+    {
+        conditions_by_set.entry(row.set_name).or_default().push(serde_json::json!({
+            "owner_kind": row.owner_kind, "element_order": row.owner_element_order,
+            "switch_order": row.owner_switch_order, "child_order": row.owner_child_order,
+            "order": row.condition_order, "tag": row.tag, "mask": row.mask,
+            "relation": row.relation, "value": row.value,
+        }));
+    }
+    for (set_name, conditions) in conditions_by_set {
+        result
+            .entry(set_name)
+            .or_default()
+            .push(serde_json::json!({"conditions": conditions}));
+    }
+    Ok(result)
+}
+
+fn remove_source_locations(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(object) => {
+            object.remove("source_line");
+            object.remove("source_column");
+            object.values_mut().for_each(remove_source_locations);
+        }
+        serde_json::Value::Array(values) => values.iter_mut().for_each(remove_source_locations),
+        _ => {}
+    }
+}
+
+fn append_nested_spec_fact(
+    elements: &mut BTreeMap<(String, i64), serde_json::Value>,
+    identity: &(String, i64),
+    field: &str,
+    value: serde_json::Value,
+) {
+    if let Some(parent) = elements
+        .get_mut(identity)
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        let nested = parent.entry(field).or_insert_with(|| serde_json::json!([]));
+        if let Some(array) = nested.as_array_mut() {
+            array.push(value);
+        }
+    }
+}
+
 fn requirement_changes(
     previous: Option<&BTreeMap<String, Vec<serde_json::Value>>>,
     current: Option<&BTreeMap<String, Vec<serde_json::Value>>>,
@@ -980,6 +1382,8 @@ fn set_metadata(records: &CatalogRecords, name: &str, set: &SetRow) -> serde_jso
     serde_json::json!({
         "metadata": json(&set.metadata_json),
         "mame_machine_facts": records.mame_machine_facts.get(name),
+        "mame_machine_specification_facts": records.mame_machine_specification_facts.get(name),
+        "mame_machine_dependencies": records.mame_machine_dependencies.get(name),
         "no_intro_game_facts": records.no_intro_game_facts.get(name),
         "logiqx_set_facts": records.logiqx_set_facts.get(name),
         "machine_switches": records.machine_switches.get(name),

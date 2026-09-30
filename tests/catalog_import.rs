@@ -1164,7 +1164,7 @@ fn imports_mame_machine_rom_disk_bios_and_device_semantics_loss_aware()
             .bind::<Text, _>(snapshot.as_str())
             .get_result::<TextRow>(&mut connection)?;
     assert_eq!(version.value, "0.216-synthetic");
-    assert!(count(&mut connection, "snapshot_extensions")? >= 2);
+    assert!(count(&mut connection, "snapshot_extensions")? >= 1);
     let source = app::load_snapshot_source(&database, &snapshot)?;
     assert!(
         source
@@ -1271,6 +1271,300 @@ fn imports_mame_switch_specification_fields_as_ordered_query_facts()
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<CountRow>(&mut connection)?;
     assert_eq!(switch_extensions.count, 0);
+    Ok(())
+}
+
+#[test]
+// One end-to-end DTD fixture intentionally exercises every field family in a
+// single import so missing persistence is caught at the real storage boundary.
+#[allow(clippy::too_many_lines)]
+fn imports_every_mame_machine_dtd_family_as_typed_query_facts()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, mut connection) = setup()?;
+    let path = directory.path().join("all-machine-dtd-fields.xml");
+    std::fs::write(
+        &path,
+        br#"<mame build="0.289"><machine name="complete"><description>Complete spec</description>
+          <device_ref tag=":cpu" name="cpu_device"/>
+          <sample name="sample-set"/><chip name="CPU" tag=":maincpu" type="cpu" clock="4000000"/>
+          <chip name="Speaker" type="audio"/><display tag=":screen" type="raster" rotate="90" width="320" height="240" refresh="60.0" pixclock="12000000" htotal="400" hbend="10" hbstart="330" vtotal="260" vbend="5" vbstart="245" flipx="yes"/>
+          <sound channels="2"/><input players="2" coins="1" service="yes" tilt="yes"><control type="joy" player="1" buttons="2" minimum="0" maximum="255" sensitivity="50" keydelta="10" reverse="yes" ways="8" ways2="4" ways3="2"/></input>
+          <dipswitch name="Mode" tag=":DSW" mask="3"><condition tag=":CFG" mask="1" relation="eq" value="1"/><diplocation name="SW1" number="1"/><dipvalue name="On" value="1"><condition tag=":CFG" mask="1" relation="ne" value="0"/></dipvalue></dipswitch>
+          <configuration name="Video" tag=":CFG" mask="4"><condition tag=":CFG" mask="2" relation="gt" value="0"/><conflocation name="JP1" number="2"/><confsetting name="Raster" value="4"><condition tag=":CFG" mask="2" relation="le" value="1"/></confsetting></configuration>
+          <port tag=":IN0"><analog mask="255"/></port><adjuster name="Volume" default="80"><condition tag=":CFG" mask="1" relation="lt" value="2"/></adjuster>
+          <driver status="imperfect" emulation="good" cocktail="preliminary" savestate="supported" requiresartwork="yes" unofficial="yes" nosoundhardware="yes" incomplete="yes"/>
+          <feature type="graphics" status="imperfect" overall="unemulated"/><device type="floppy" tag=":fd" fixed_image="disk" mandatory="yes" interface="floppy"><instance name="floppy1" briefname="FDD"/><extension name="dsk"/></device>
+          <slot name=":cartslot"><slotoption name="game" devname="cart" default="yes"/></slot><softwarelist tag=":software" name="softlist" status="compatible" filter="original"/>
+          <ramoption name="ram" default="2M">2M</ramoption>
+        </machine><machine name="defaults"><description>Defaults</description>
+          <display type="unknown" refresh="0"/><input players="1"><control type="button"/></input>
+          <driver status="good" emulation="good" savestate="supported"/><slot name="empty"><slotoption name="default-option" devname="device"/></slot>
+        </machine></mame>"#,
+    )?;
+    let mut import = request(
+        path,
+        "mame-complete-fields",
+        "mame-complete-fields",
+        "Complete fields",
+    )?;
+    import.format = CatalogDocumentFormat::MameListXml;
+    let report = app::import_catalog(&database, &import)?;
+    assert_eq!(report.status, app::CatalogImportStatus::Succeeded);
+    let snapshot = report.snapshot_key.ok_or("MAME snapshot missing")?;
+
+    let kinds = sql_query(
+        "SELECT GROUP_CONCAT(element_type, ',') AS value FROM (SELECT element_type FROM mame_machine_spec_elements WHERE snapshot_key = ? AND set_name = 'complete' ORDER BY element_order)",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(&mut connection)
+    .map_err(|error| io::Error::other(format!("read MAME element types: {error}")))?;
+    assert_eq!(
+        kinds.value,
+        "sample,chip,chip,display,sound,input,port,adjuster,driver,feature,device,slot,softwarelist,ramoption"
+    );
+
+    let display = sql_query(
+        "SELECT display_type AS value FROM mame_machine_spec_elements WHERE snapshot_key = ? AND set_name = 'complete' AND element_type = 'display'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(&mut connection)
+    .map_err(|error| io::Error::other(format!("read MAME display type: {error}")))?;
+    assert_eq!(display.value, "raster");
+    let chip_fields = sql_query(
+        "SELECT GROUP_CONCAT(chip_name || ':' || COALESCE(chip_tag, '') || ':' || chip_type || ':' || COALESCE(chip_clock, ''), ',') AS value FROM (SELECT chip_name, chip_tag, chip_type, chip_clock FROM mame_machine_spec_elements WHERE snapshot_key = ? AND set_name = 'complete' AND element_type = 'chip' ORDER BY element_order)",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(&mut connection)?;
+    assert_eq!(
+        chip_fields.value,
+        "CPU::maincpu:cpu:4000000,Speaker::audio:"
+    );
+    let display_fields = sql_query(
+        "SELECT display_tag || ':' || display_type || ':' || display_rotate || ':' || flipx || ':' || display_width || ':' || display_height || ':' || display_refresh || ':' || display_pixclock || ':' || display_htotal || ':' || display_hbend || ':' || display_hbstart || ':' || display_vtotal || ':' || display_vbend || ':' || display_vbstart AS value FROM mame_machine_spec_elements WHERE snapshot_key = ? AND set_name = 'complete' AND element_type = 'display'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(&mut connection)?;
+    assert_eq!(
+        display_fields.value,
+        ":screen:raster:90:1:320:240:60.0:12000000:400:10:330:260:5:245"
+    );
+    let input_fields = sql_query(
+        "SELECT input_service || ':' || input_tilt || ':' || input_players || ':' || input_coins AS value FROM mame_machine_spec_elements WHERE snapshot_key = ? AND set_name = 'complete' AND element_type = 'input'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(&mut connection)?;
+    assert_eq!(input_fields.value, "1:1:2:1");
+    let controls = sql_query(
+        "SELECT control_type || ':' || player || ':' || buttons || ':' || minimum || ':' || maximum || ':' || sensitivity || ':' || keydelta || ':' || reverse || ':' || ways || ':' || ways2 || ':' || ways3 AS value FROM mame_machine_input_controls WHERE snapshot_key = ? AND set_name = 'complete'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(&mut connection)?;
+    assert_eq!(controls.value, "joy:1:2:0:255:50:10:1:8:4:2");
+    let analog = sql_query(
+        "SELECT port_tag || ':' || analog.mask AS value FROM mame_machine_spec_elements AS port JOIN mame_machine_analogs AS analog USING (snapshot_key, set_name, element_order) WHERE port.snapshot_key = ? AND port.set_name = 'complete'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(&mut connection)?;
+    assert_eq!(analog.value, ":IN0:255");
+    let scalar_families = sql_query(
+        "SELECT (SELECT sound_channels FROM mame_machine_spec_elements WHERE snapshot_key = ? AND set_name = 'complete' AND element_type = 'sound') || ':' || (SELECT adjuster_name || ':' || adjuster_default FROM mame_machine_spec_elements WHERE snapshot_key = ? AND set_name = 'complete' AND element_type = 'adjuster') || ':' || (SELECT driver_status || ':' || driver_emulation || ':' || cocktail || ':' || savestate || ':' || requiresartwork || ':' || unofficial || ':' || nosoundhardware || ':' || incomplete FROM (SELECT driver_status, driver_emulation, driver_cocktail AS cocktail, driver_savestate AS savestate, driver_requiresartwork AS requiresartwork, driver_unofficial AS unofficial, driver_nosoundhardware AS nosoundhardware, driver_incomplete AS incomplete FROM mame_machine_spec_elements WHERE snapshot_key = ? AND set_name = 'complete' AND element_type = 'driver')) AS value",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .bind::<Text, _>(snapshot.as_str())
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(&mut connection)?;
+    assert_eq!(
+        scalar_families.value,
+        "2:Volume:80:imperfect:good:preliminary:supported:1:1:1:1"
+    );
+    let spec_children = sql_query(
+        "SELECT (SELECT feature_type || ':' || feature_status || ':' || feature_overall FROM mame_machine_spec_elements WHERE snapshot_key = ? AND set_name = 'complete' AND element_type = 'feature') || ':' || (SELECT device_type || ':' || device_tag || ':' || device_fixed_image || ':' || device_mandatory || ':' || device_interface || ':' || device_instance_name || ':' || device_instance_briefname FROM mame_machine_spec_elements WHERE snapshot_key = ? AND set_name = 'complete' AND element_type = 'device') || ':' || (SELECT name || ':' || devname || ':' || is_default FROM mame_machine_slot_options WHERE snapshot_key = ? AND set_name = 'complete') || ':' || (SELECT softwarelist_tag || ':' || softwarelist_name || ':' || softwarelist_status || ':' || softwarelist_filter FROM mame_machine_spec_elements WHERE snapshot_key = ? AND set_name = 'complete' AND element_type = 'softwarelist') || ':' || (SELECT ramoption_name || ':' || ramoption_default || ':' || ramoption_text FROM mame_machine_spec_elements WHERE snapshot_key = ? AND set_name = 'complete' AND element_type = 'ramoption') AS value",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .bind::<Text, _>(snapshot.as_str())
+    .bind::<Text, _>(snapshot.as_str())
+    .bind::<Text, _>(snapshot.as_str())
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(&mut connection)?;
+    assert_eq!(
+        spec_children.value,
+        "graphics:imperfect:unemulated:floppy::fd:disk:yes:floppy:floppy1:FDD:game:cart:1::software:softlist:compatible:original:ram:2M:2M"
+    );
+    let device_extension = sql_query(
+        "SELECT name AS value FROM mame_machine_device_extensions WHERE snapshot_key = ? AND set_name = 'complete'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(&mut connection)?;
+    assert_eq!(device_extension.value, "dsk");
+    let device_instance_location = sql_query(
+        "SELECT device_instance_line > 0 AND device_instance_column > 0 AS value FROM mame_machine_spec_elements WHERE snapshot_key = ? AND set_name = 'complete' AND element_type = 'device'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<IntegerRow>(&mut connection)?;
+    assert_eq!(device_instance_location.value, 1);
+    let defaults = sql_query(
+        "SELECT flipx AS value FROM mame_machine_spec_elements WHERE snapshot_key = ? AND set_name = 'complete' AND element_type = 'display'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<IntegerRow>(&mut connection)
+    .map_err(|error| io::Error::other(format!("read MAME display default: {error}")))?;
+    assert_eq!(defaults.value, 1);
+
+    let nested_counts = sql_query(
+        "SELECT (SELECT COUNT(*) FROM mame_machine_input_controls WHERE snapshot_key = ? AND set_name = 'complete') + (SELECT COUNT(*) FROM mame_machine_analogs WHERE snapshot_key = ? AND set_name = 'complete') + (SELECT COUNT(*) FROM mame_machine_device_extensions WHERE snapshot_key = ? AND set_name = 'complete') + (SELECT COUNT(*) FROM mame_machine_slot_options WHERE snapshot_key = ? AND set_name = 'complete') + (SELECT COUNT(*) FROM mame_machine_conditions WHERE snapshot_key = ? AND set_name = 'complete') AS value",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .bind::<Text, _>(snapshot.as_str())
+    .bind::<Text, _>(snapshot.as_str())
+    .bind::<Text, _>(snapshot.as_str())
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<IntegerRow>(&mut connection)
+    .map_err(|error| io::Error::other(format!("read MAME nested facts: {error}")))?;
+    assert_eq!(nested_counts.value, 1 + 1 + 1 + 1 + 5);
+    let conditions = sql_query(
+        "SELECT GROUP_CONCAT(owner_kind || ':' || relation || ':' || mask || ':' || value, ',') AS value FROM (SELECT owner_kind, relation, mask, value FROM mame_machine_conditions WHERE snapshot_key = ? AND set_name = 'complete' ORDER BY owner_kind, owner_switch_order, owner_child_order)",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(&mut connection)?;
+    assert_eq!(
+        conditions.value,
+        "element:lt:1:2,switch:eq:1:1,switch:gt:2:0,switch_value:ne:1:0,switch_value:le:2:1"
+    );
+    let default_values = sql_query(
+        "SELECT (SELECT flipx FROM mame_machine_spec_elements WHERE snapshot_key = ? AND set_name = 'defaults' AND element_type = 'display') || ':' || (SELECT input_service || ':' || input_tilt FROM mame_machine_spec_elements WHERE snapshot_key = ? AND set_name = 'defaults' AND element_type = 'input') || ':' || (SELECT reverse FROM mame_machine_input_controls WHERE snapshot_key = ? AND set_name = 'defaults') || ':' || (SELECT driver_requiresartwork || ':' || driver_unofficial || ':' || driver_nosoundhardware || ':' || driver_incomplete FROM mame_machine_spec_elements WHERE snapshot_key = ? AND set_name = 'defaults' AND element_type = 'driver') || ':' || (SELECT is_default FROM mame_machine_slot_options WHERE snapshot_key = ? AND set_name = 'defaults') AS value",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .bind::<Text, _>(snapshot.as_str())
+    .bind::<Text, _>(snapshot.as_str())
+    .bind::<Text, _>(snapshot.as_str())
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(&mut connection)?;
+    assert_eq!(default_values.value, "0:0:0:0:0:0:0:0:0");
+
+    let reference_tag = sql_query(
+        "SELECT reference_tag AS value FROM mame_machine_dependencies WHERE snapshot_key = ? AND set_name = 'complete' AND dependency_kind = 'device_ref'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(&mut connection)
+    .map_err(|error| io::Error::other(format!("read MAME dependency tag: {error}")))?;
+    assert_eq!(reference_tag.value, ":cpu");
+
+    let opaque_spec_fields = sql_query(
+        "SELECT COUNT(*) AS count FROM snapshot_extensions WHERE snapshot_key = ? AND record_kind IN ('sample', 'chip', 'display', 'sound', 'input', 'control', 'port', 'analog', 'adjuster', 'driver', 'feature', 'device', 'instance', 'extension', 'slot', 'slotoption', 'softwarelist', 'ramoption')",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<CountRow>(&mut connection)
+    .map_err(|error| io::Error::other(format!("read MAME extensions: {error}")))?;
+    assert_eq!(opaque_spec_fields.count, 0);
+    Ok(())
+}
+
+#[test]
+fn snapshot_diff_detects_mame_machine_specification_and_nested_fact_changes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, _) = setup()?;
+    let previous_path = directory.path().join("specification-v1.xml");
+    let current_path = directory.path().join("specification-v2.xml");
+    let xml = |refresh: &str, control_reverse: &str, reference_tag: &str| {
+        format!(
+            "<mame><machine name=\"spec\"><description>Spec</description><device_ref tag=\"{reference_tag}\" name=\"sound\"/><display type=\"raster\" refresh=\"{refresh}\"/><input players=\"2\"><control type=\"joy\" reverse=\"{control_reverse}\"/></input></machine></mame>"
+        )
+    };
+    std::fs::write(&previous_path, xml("60", "no", ":sound"))?;
+    std::fs::write(&current_path, xml("59.94", "yes", ":sound"))?;
+    let mut previous_request = request(
+        previous_path,
+        "mame-specification-history",
+        "mame-specification-history",
+        "MAME specification history",
+    )?;
+    previous_request.format = CatalogDocumentFormat::MameListXml;
+    let mut current_request = previous_request.clone();
+    current_request.document_path =
+        Utf8PathBuf::from_path_buf(current_path).map_err(|_| "non-UTF8 fixture path")?;
+    let previous = app::import_catalog(&database, &previous_request)?
+        .snapshot_key
+        .ok_or("previous MAME snapshot missing")?;
+    let current = app::import_catalog(&database, &current_request)?
+        .snapshot_key
+        .ok_or("current MAME snapshot missing")?;
+
+    let diff = app::diff_catalog_snapshots(&database, &previous, &current)?;
+    let machine = diff
+        .records
+        .iter()
+        .find(|record| record.set_name == "spec")
+        .ok_or("MAME specification diff missing")?;
+    assert_eq!(machine.status, SnapshotRecordStatus::Changed);
+    assert!(machine.metadata_changed);
+
+    let tag_path = directory.path().join("specification-tag.xml");
+    std::fs::write(&tag_path, xml("60", "no", ":speaker"))?;
+    let mut tag_request = previous_request.clone();
+    tag_request.document_path =
+        Utf8PathBuf::from_path_buf(tag_path).map_err(|_| "non-UTF8 fixture path")?;
+    let tag_snapshot = app::import_catalog(&database, &tag_request)?
+        .snapshot_key
+        .ok_or("tag-only MAME snapshot missing")?;
+    let diff = app::diff_catalog_snapshots(&database, &previous, &tag_snapshot)?;
+    let machine = diff
+        .records
+        .iter()
+        .find(|record| record.set_name == "spec")
+        .ok_or("device reference tag diff missing")?;
+    assert_eq!(machine.status, SnapshotRecordStatus::Changed);
+    assert!(machine.metadata_changed);
+
+    let shifted_path = directory.path().join("specification-shifted.xml");
+    std::fs::write(&shifted_path, format!("\n{}", xml("60", "no", ":sound")))?;
+    let mut shifted_request = previous_request;
+    shifted_request.document_path =
+        Utf8PathBuf::from_path_buf(shifted_path).map_err(|_| "non-UTF8 fixture path")?;
+    let shifted = app::import_catalog(&database, &shifted_request)?
+        .snapshot_key
+        .ok_or("shifted MAME snapshot missing")?;
+    let diff = app::diff_catalog_snapshots(&database, &previous, &shifted)?;
+    let machine = diff
+        .records
+        .iter()
+        .find(|record| record.set_name == "spec")
+        .ok_or("source-location-only diff missing")?;
+    assert_eq!(machine.status, SnapshotRecordStatus::Unchanged);
+    assert!(!machine.metadata_changed);
+    Ok(())
+}
+
+#[test]
+fn mame_rejects_values_outside_the_dtd_and_duplicate_singletons()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, _) = setup()?;
+    for (index, machine_fields) in [
+        "<display type=\"svg\" refresh=\"60\"/>",
+        "<sound channels=\"1\"/><sound channels=\"2\"/>",
+        "<input players=\"1\"/><input players=\"2\"/>",
+        "<driver status=\"good\" emulation=\"good\" savestate=\"supported\"/><driver status=\"good\" emulation=\"good\" savestate=\"supported\"/>",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let path = directory.path().join(format!("invalid-spec-{index}.xml"));
+        std::fs::write(
+            &path,
+            format!("<mame><machine name=\"invalid\"><description>Invalid</description>{machine_fields}</machine></mame>"),
+        )?;
+        let mut import = request(
+            path,
+            &format!("mame-invalid-spec-{index}"),
+            &format!("mame-invalid-spec-{index}"),
+            "Invalid MAME specification test",
+        )?;
+        import.format = CatalogDocumentFormat::MameListXml;
+        let result = app::import_catalog(&database, &import)?;
+        assert!(
+            result.snapshot_key.is_none(),
+            "accepted invalid MAME DTD fixture {index}"
+        );
+    }
     Ok(())
 }
 
@@ -1505,6 +1799,12 @@ fn persists_mame_rom_and_disk_spec_attributes_as_relational_facts()
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<TextRow>(&mut connection)?;
     assert_eq!(disk.value, "cdrom:2:1");
+    let dtd_defaults = sql_query(
+        "SELECT GROUP_CONCAT(role || ':' || dump_status || ':' || optional || ':' || COALESCE(writable, -1), ',') AS value FROM (SELECT asset.role, asset.dump_status, facts.optional, facts.writable FROM asset_requirements AS asset JOIN mame_asset_facts AS facts USING (snapshot_key, set_name, component_order) WHERE asset.snapshot_key = ? AND asset.set_name = 'facts' ORDER BY asset.component_order)",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(&mut connection)?;
+    assert_eq!(dtd_defaults.value, "rom:good:1:-1,disk:good:0:0");
 
     std::fs::write(
         &path,
@@ -1839,7 +2139,7 @@ fn mame_relationships_resolve_component_keys_and_keep_device_locations()
     let path = directory.path().join("mame-relationship-identity.xml");
     std::fs::write(
         &path,
-        "<mame>\n<machine name=\"clone-parent\"><description>Clone parent</description></machine>\n<machine name=\"rom-parent\">\n<description>ROM parent</description><rom name=\"shared.bin\" size=\"1\" crc=\"12345678\"/>\n</machine>\n<machine name=\"clone\" cloneof=\"clone-parent\" romof=\"rom-parent\">\n<description>Clone</description><device_ref name=\"sound\"/>\n<rom name=\"shared.bin\" merge=\"shared.bin\" size=\"1\" crc=\"12345678\"/>\n</machine>\n<machine name=\"sound\"><description>Sound</description></machine>\n</mame>",
+        "<mame>\n<machine name=\"clone-parent\"><description>Clone parent</description></machine>\n<machine name=\"rom-parent\">\n<description>ROM parent</description><rom name=\"shared.bin\" size=\"1\" crc=\"12345678\"/>\n</machine>\n<machine name=\"clone\" cloneof=\"clone-parent\" romof=\"rom-parent\">\n<description>Clone</description><device_ref tag=\":sound\" name=\"sound\"/>\n<rom name=\"shared.bin\" merge=\"shared.bin\" size=\"1\" crc=\"12345678\"/>\n</machine>\n<machine name=\"sound\"><description>Sound</description></machine>\n</mame>",
     )?;
     let mut request = request(
         path,
@@ -1900,7 +2200,7 @@ fn resolves_machine_runtime_closure_without_traversing_clone_ancestry()
         br#"<mame build="fixture">
           <machine name="game" cloneof="parent" romof="bios" sampleof="samples">
             <description>Game</description>
-            <device_ref name="sound"/>
+            <device_ref tag=":sound" name="sound"/>
           </machine>
           <machine name="bios" isbios="yes"><description>BIOS</description></machine>
           <machine name="sound" isdevice="yes"><description>Sound</description></machine>
@@ -3438,7 +3738,7 @@ fn snapshot_diff_attributes_device_ref_extensions_to_the_owning_set()
         std::fs::write(
             path,
             format!(
-                "<mame><machine name=\"owner\"><description>Owner</description><device_ref name=\"target\" future=\"{value}\"/></machine><machine name=\"target\"><description>Target</description></machine></mame>"
+                "<mame><machine name=\"owner\"><description>Owner</description><device_ref tag=\":target\" name=\"target\" future=\"{value}\"/></machine><machine name=\"target\"><description>Target</description></machine></mame>"
             ),
         )?;
     }

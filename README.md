@@ -288,8 +288,11 @@ but devenv is the primary development and CI gate.
 ## MAME XML catalog import
 
 The machine `-listxml` adapter imports machine records, clone relationships, ROM
-and disk declarations, selected machine metadata, BIOS sets, and device
-references. The separate software-list adapter imports list-scoped items, parts,
+and disk declarations, BIOS sets, and every machine-child family declared by the
+MAME 0.289 DTD, including displays, input controls, switch conditions, drivers,
+features, devices, slots, software-list references, and RAM options. DTD defaults
+and required device-reference tags are stored as typed facts, with ordered nested
+rows and snapshot-diff coverage. The separate software-list adapter imports list-scoped items, parts,
 data/disk areas, component evidence, and load instructions as source data; it
 does not execute those instructions or expand dependencies. Both adapters
 preserve unrecognized XML as extensions. Imports accept retained documents and
