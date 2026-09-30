@@ -645,7 +645,6 @@ struct StreamingImport<'a> {
     conn: &'a mut SqliteConnection,
     publication: SnapshotPublication,
     run_key: ImportRunKey,
-    diagnostic_count: usize,
 }
 
 impl StreamingImport<'_> {
@@ -657,8 +656,6 @@ impl StreamingImport<'_> {
             if let SnapshotPublication::Pending(key) = &self.publication {
                 insert_snapshot_extension(self.conn, key, &extension)?;
             }
-            insert_extension_diagnostic(self.conn, &self.run_key, &extension)?;
-            self.diagnostic_count += 1;
         }
         Ok(())
     }
@@ -718,7 +715,6 @@ fn import_mame(
                     conn,
                     publication,
                     run_key,
-                    diagnostic_count: 0,
                 };
                 sink.extensions(header.extensions.into_iter().map(stored_extension))
                     .map_err(StreamingImportError::Storage)?;
@@ -757,7 +753,7 @@ fn publish_mame_import(
         snapshot_key: Some(snapshot_key),
         run_key: sink.run_key,
         status: CatalogImportStatus::Succeeded,
-        diagnostic_count: sink.diagnostic_count,
+        diagnostic_count: 0,
     })
 }
 
@@ -874,47 +870,13 @@ fn publish_snapshot(
             "succeeded",
             None,
         )?;
-        for extension in &snapshot_data.extensions {
-            insert_extension_diagnostic(conn, &run_key, extension)?;
-        }
         Ok(CatalogImportReport {
             snapshot_key: Some(snapshot_key.clone()),
             run_key,
             status: CatalogImportStatus::Succeeded,
-            diagnostic_count: snapshot_data.extensions.len(),
+            diagnostic_count: 0,
         })
     })
-}
-
-fn insert_extension_diagnostic(
-    conn: &mut SqliteConnection,
-    run_key: &ImportRunKey,
-    extension: &StoredExtension,
-) -> crate::Result<()> {
-    let raw_value_json = extension.value.as_str();
-    let code = if extension.field_name.starts_with("element:") {
-        "unsupported_element"
-    } else {
-        "unsupported_attribute"
-    };
-    sql_query(
-        "INSERT INTO import_diagnostics \
-         (diagnostic_key, run_key, code, message, record_kind, record_name, \
-          field_name, raw_value_json, source_line, source_column) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind::<Text, _>(uuid::Uuid::new_v4().to_string())
-    .bind::<Text, _>(run_key.to_string())
-    .bind::<Text, _>(code)
-    .bind::<Text, _>(format!("uninterpreted XML field {}", extension.field_name))
-    .bind::<Text, _>(&extension.record_kind)
-    .bind::<Nullable<Text>, _>(&extension.record_name)
-    .bind::<Nullable<Text>, _>(Some(extension.field_name.clone()))
-    .bind::<Nullable<Text>, _>(Some(raw_value_json))
-    .bind::<Nullable<BigInt>, _>(Some(extension.location.line))
-    .bind::<Nullable<BigInt>, _>(Some(extension.location.column))
-    .execute(conn)?;
-    Ok(())
 }
 
 fn ensure_snapshot_publication(

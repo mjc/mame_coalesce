@@ -1197,6 +1197,10 @@ fn mame_nested_unknown_extension_and_reimport_keep_semantics_and_diagnostics()
 
     let first = app::import_catalog(&database, &import)?;
     let snapshot = first.snapshot_key.ok_or("MAME snapshot missing")?;
+    assert_eq!(
+        first.diagnostic_count, 0,
+        "unknown source XML is not a failed import"
+    );
     let first_diagnostics = sql_query(
         "SELECT code, message, record_kind, record_name, field_name, raw_value_json, source_line, source_column \
          FROM import_diagnostics WHERE run_key = ? \
@@ -1204,7 +1208,7 @@ fn mame_nested_unknown_extension_and_reimport_keep_semantics_and_diagnostics()
     )
     .bind::<Text, _>(first.run_key.to_string())
     .load::<ImportDiagnosticRow>(&mut connection)?;
-    assert!(!first_diagnostics.is_empty());
+    assert!(first_diagnostics.is_empty());
 
     let extension = sql_query(
         "SELECT field_name, namespace_uri, raw_value_json AS value FROM snapshot_extensions \
@@ -1239,6 +1243,7 @@ fn mame_nested_unknown_extension_and_reimport_keep_semantics_and_diagnostics()
 
     let repeated = app::import_catalog(&database, &import)?;
     assert_eq!(repeated.snapshot_key.as_ref(), Some(&snapshot));
+    assert_eq!(repeated.diagnostic_count, 0);
     assert_eq!(count(&mut connection, "catalog_snapshots")?, 1);
     let repeated_diagnostics = sql_query(
         "SELECT code, message, record_kind, record_name, field_name, raw_value_json, source_line, source_column \
@@ -1247,7 +1252,7 @@ fn mame_nested_unknown_extension_and_reimport_keep_semantics_and_diagnostics()
     )
     .bind::<Text, _>(repeated.run_key.to_string())
     .load::<ImportDiagnosticRow>(&mut connection)?;
-    assert_eq!(repeated_diagnostics, first_diagnostics);
+    assert!(repeated_diagnostics.is_empty());
     Ok(())
 }
 
