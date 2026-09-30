@@ -10,7 +10,6 @@ CREATE UNIQUE INDEX documents_sha256_unique ON documents (sha256)
     WHERE sha256 IS NOT NULL;
 CREATE INDEX documents_byte_length_index ON documents (byte_length);
 
-ALTER TABLE acquisitions ADD COLUMN transport_metadata_json TEXT;
 ALTER TABLE acquisitions ADD COLUMN expected_sha256 BLOB
     CHECK (expected_sha256 IS NULL OR length(expected_sha256) = 32);
 ALTER TABLE acquisitions
@@ -26,7 +25,6 @@ CREATE TABLE acquisition_attempts (
     source_uri              TEXT,
     method                  TEXT,
     attempted_at            DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    transport_metadata_json TEXT,
     expected_sha256         BLOB CHECK (expected_sha256 IS NULL OR length(expected_sha256) = 32),
     outcome                 TEXT NOT NULL CHECK (outcome IN ('retained', 'failed')),
     verification_status     TEXT NOT NULL
@@ -48,6 +46,43 @@ CREATE TABLE acquisition_attempts (
 CREATE INDEX acquisition_attempts_source_key_index ON acquisition_attempts (source_key);
 CREATE INDEX acquisition_attempts_document_key_index ON acquisition_attempts (document_key);
 CREATE INDEX acquisition_attempts_acquisition_key_index ON acquisition_attempts (acquisition_key);
+
+CREATE TABLE acquisition_transport_headers (
+    acquisition_key TEXT NOT NULL REFERENCES acquisitions (acquisition_key) ON DELETE RESTRICT,
+    header_order INTEGER NOT NULL CHECK (header_order >= 0),
+    name TEXT NOT NULL,
+    value TEXT NOT NULL,
+    PRIMARY KEY (acquisition_key, header_order)
+);
+
+CREATE TABLE acquisition_attempt_transport_headers (
+    attempt_key TEXT NOT NULL REFERENCES acquisition_attempts (attempt_key) ON DELETE RESTRICT,
+    header_order INTEGER NOT NULL CHECK (header_order >= 0),
+    name TEXT NOT NULL,
+    value TEXT NOT NULL,
+    PRIMARY KEY (attempt_key, header_order)
+);
+
+CREATE TRIGGER acquisition_transport_headers_are_immutable_update
+BEFORE UPDATE ON acquisition_transport_headers
+BEGIN
+    SELECT RAISE(ABORT, 'acquisition transport headers are immutable');
+END;
+CREATE TRIGGER acquisition_transport_headers_are_immutable_delete
+BEFORE DELETE ON acquisition_transport_headers
+BEGIN
+    SELECT RAISE(ABORT, 'acquisition transport headers are immutable');
+END;
+CREATE TRIGGER acquisition_attempt_transport_headers_are_immutable_update
+BEFORE UPDATE ON acquisition_attempt_transport_headers
+BEGIN
+    SELECT RAISE(ABORT, 'acquisition attempt transport headers are immutable');
+END;
+CREATE TRIGGER acquisition_attempt_transport_headers_are_immutable_delete
+BEFORE DELETE ON acquisition_attempt_transport_headers
+BEGIN
+    SELECT RAISE(ABORT, 'acquisition attempt transport headers are immutable');
+END;
 
 CREATE TRIGGER retained_documents_require_payload_insert
 BEFORE INSERT ON documents

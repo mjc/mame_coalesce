@@ -14,7 +14,6 @@ diesel::table! {
         source_uri -> Nullable<Text>,
         method -> Nullable<Text>,
         acquired_at -> Nullable<Timestamp>,
-        transport_metadata_json -> Nullable<Text>,
         expected_sha256 -> Nullable<Binary>,
         verification_status -> Text,
     }
@@ -27,13 +26,30 @@ diesel::table! {
         source_uri -> Nullable<Text>,
         method -> Nullable<Text>,
         attempted_at -> Timestamp,
-        transport_metadata_json -> Nullable<Text>,
         expected_sha256 -> Nullable<Binary>,
         outcome -> Text,
         verification_status -> Text,
         document_key -> Nullable<Text>,
         acquisition_key -> Nullable<Text>,
         diagnostic -> Nullable<Text>,
+    }
+}
+
+diesel::table! {
+    acquisition_transport_headers (acquisition_key, header_order) {
+        acquisition_key -> Text,
+        header_order -> BigInt,
+        name -> Text,
+        value -> Text,
+    }
+}
+
+diesel::table! {
+    acquisition_attempt_transport_headers (attempt_key, header_order) {
+        attempt_key -> Text,
+        header_order -> BigInt,
+        name -> Text,
+        value -> Text,
     }
 }
 
@@ -430,6 +446,8 @@ diesel::joinable!(catalogs -> publishing_sources (source_key));
 diesel::joinable!(acquisition_attempts -> publishing_sources (source_key));
 diesel::joinable!(acquisition_attempts -> documents (document_key));
 diesel::joinable!(acquisition_attempts -> acquisitions (acquisition_key));
+diesel::joinable!(acquisition_attempt_transport_headers -> acquisition_attempts (attempt_key));
+diesel::joinable!(acquisition_transport_headers -> acquisitions (acquisition_key));
 diesel::joinable!(acquisitions -> publishing_sources (source_key));
 diesel::joinable!(acquisitions -> documents (document_key));
 diesel::joinable!(catalog_snapshots -> catalogs (catalog_key));
@@ -449,6 +467,8 @@ diesel::joinable!(roms -> games (game_id));
 diesel::allow_tables_to_appear_in_same_query!(
     acquisitions,
     acquisition_attempts,
+    acquisition_attempt_transport_headers,
+    acquisition_transport_headers,
     asset_requirements,
     archive_files,
     catalogs,

@@ -24,8 +24,14 @@ pub struct AcquisitionMetadata {
     pub source_key: PublishingSourceKey,
     pub source_uri: Option<String>,
     pub method: Option<String>,
-    pub transport_metadata: Option<serde_json::Value>,
+    pub transport_headers: Vec<TransportHeader>,
     pub expected_sha256: Option<DocumentDigest>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TransportHeader {
+    pub name: String,
+    pub value: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -249,7 +255,7 @@ impl DocumentStore {
             source_key,
             source_uri: Some(path.as_str().to_owned()),
             method: Some("local-file".to_owned()),
-            transport_metadata: None,
+            transport_headers: Vec::new(),
             expected_sha256: None,
         };
         let canonical_path = match path.canonicalize() {
@@ -337,11 +343,6 @@ impl DocumentStore {
         validate_xml: bool,
         requested_format: Option<FormatHint>,
     ) -> crate::Result<RetainedDocument> {
-        let transport_metadata = metadata
-            .transport_metadata
-            .as_ref()
-            .map(serde_json::to_string)
-            .transpose()?;
         let raw = match document_input::read_bounded(reader, limit) {
             Ok(raw) => raw,
             Err(error) => {
@@ -363,14 +364,7 @@ impl DocumentStore {
             return Err(error);
         }
 
-        let result = self.persist_retained(
-            metadata,
-            transport_metadata.as_deref(),
-            &raw,
-            key,
-            limit,
-            requested_format,
-        );
+        let result = self.persist_retained(metadata, &raw, key, limit, requested_format);
         match result {
             Ok(retained) => Ok(retained),
             Err(error) => {
@@ -383,7 +377,6 @@ impl DocumentStore {
     fn persist_retained(
         &self,
         metadata: &AcquisitionMetadata,
-        transport_metadata: Option<&str>,
         raw: &[u8],
         key: DocumentKey,
         limit: usize,
@@ -449,39 +442,51 @@ impl DocumentStore {
                 sql_query(
                     "INSERT INTO acquisitions \
                      (acquisition_key, source_key, document_key, source_uri, method, acquired_at, \
-                      transport_metadata_json, expected_sha256, verification_status) \
-                     VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?)",
+                      expected_sha256, verification_status) \
+                     VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?)",
                 )
                 .bind::<Text, _>(&acquisition_key_string)
                 .bind::<Text, _>(metadata.source_key.as_str())
                 .bind::<Text, _>(&document_key_string)
                 .bind::<Nullable<Text>, _>(&metadata.source_uri)
                 .bind::<Nullable<Text>, _>(&metadata.method)
-                .bind::<Nullable<Text>, _>(&transport_metadata)
                 .bind::<Nullable<Binary>, _>(
-                    metadata.expected_sha256.map(|digest| digest.as_bytes().to_vec()),
+                    metadata
+                        .expected_sha256
+                        .map(|digest| digest.as_bytes().to_vec()),
                 )
                 .bind::<Text, _>(verification_status)
                 .execute(conn)?;
+                insert_transport_headers(
+                    conn,
+                    TransportHeaderOwner::Acquisition(&acquisition_key_string),
+                    &metadata.transport_headers,
+                )?;
 
                 sql_query(
                     "INSERT INTO acquisition_attempts \
-                     (attempt_key, source_key, source_uri, method, transport_metadata_json, expected_sha256, outcome, \
+                     (attempt_key, source_key, source_uri, method, expected_sha256, outcome, \
                       verification_status, document_key, acquisition_key) \
-                     VALUES (?, ?, ?, ?, ?, ?, 'retained', ?, ?, ?)",
+                     VALUES (?, ?, ?, ?, ?, 'retained', ?, ?, ?)",
                 )
                 .bind::<Text, _>(&attempt_key)
                 .bind::<Text, _>(metadata.source_key.as_str())
                 .bind::<Nullable<Text>, _>(&metadata.source_uri)
                 .bind::<Nullable<Text>, _>(&metadata.method)
-                .bind::<Nullable<Text>, _>(&transport_metadata)
                 .bind::<Nullable<Binary>, _>(
-                    metadata.expected_sha256.map(|digest| digest.as_bytes().to_vec()),
+                    metadata
+                        .expected_sha256
+                        .map(|digest| digest.as_bytes().to_vec()),
                 )
                 .bind::<Text, _>(verification_status)
                 .bind::<Text, _>(&document_key_string)
                 .bind::<Text, _>(&acquisition_key_string)
                 .execute(conn)?;
+                insert_transport_headers(
+                    conn,
+                    TransportHeaderOwner::Attempt(&attempt_key),
+                    &metadata.transport_headers,
+                )?;
 
                 Ok(RetainedDocument {
                     document_key: key,
@@ -541,30 +546,67 @@ impl DocumentStore {
         code: &str,
         diagnostic: &str,
     ) -> crate::Result<()> {
-        let transport_metadata = metadata
-            .transport_metadata
-            .as_ref()
-            .map(serde_json::to_string)
-            .transpose()?;
+        let attempt_key = uuid::Uuid::new_v4().to_string();
         let mut conn = self.pool.get()?;
-        sql_query(
-            "INSERT INTO acquisition_attempts \
-             (attempt_key, source_key, source_uri, method, transport_metadata_json, expected_sha256, outcome, \
-              verification_status, diagnostic) \
-             VALUES (?, ?, ?, ?, ?, ?, 'failed', 'rejected', ?)",
-        )
-        .bind::<Text, _>(uuid::Uuid::new_v4().to_string())
-        .bind::<Text, _>(metadata.source_key.as_str())
-        .bind::<Nullable<Text>, _>(&metadata.source_uri)
-        .bind::<Nullable<Text>, _>(&metadata.method)
-        .bind::<Nullable<Text>, _>(transport_metadata)
-        .bind::<Nullable<Binary>, _>(
-            metadata.expected_sha256.map(|digest| digest.as_bytes().to_vec()),
-        )
-        .bind::<Text, _>(format!("{code}: {diagnostic}"))
-        .execute(&mut conn)?;
-        Ok(())
+        conn.immediate_transaction::<_, crate::Error, _>(|conn| {
+            sql_query(
+                "INSERT INTO acquisition_attempts \
+                 (attempt_key, source_key, source_uri, method, expected_sha256, outcome, \
+                  verification_status, diagnostic) \
+                 VALUES (?, ?, ?, ?, ?, 'failed', 'rejected', ?)",
+            )
+            .bind::<Text, _>(&attempt_key)
+            .bind::<Text, _>(metadata.source_key.as_str())
+            .bind::<Nullable<Text>, _>(&metadata.source_uri)
+            .bind::<Nullable<Text>, _>(&metadata.method)
+            .bind::<Nullable<Binary>, _>(
+                metadata
+                    .expected_sha256
+                    .map(|digest| digest.as_bytes().to_vec()),
+            )
+            .bind::<Text, _>(format!("{code}: {diagnostic}"))
+            .execute(conn)?;
+            insert_transport_headers(
+                conn,
+                TransportHeaderOwner::Attempt(&attempt_key),
+                &metadata.transport_headers,
+            )
+        })
     }
+}
+
+#[derive(Clone, Copy)]
+enum TransportHeaderOwner<'a> {
+    Acquisition(&'a str),
+    Attempt(&'a str),
+}
+
+fn insert_transport_headers(
+    conn: &mut diesel::SqliteConnection,
+    owner: TransportHeaderOwner<'_>,
+    headers: &[TransportHeader],
+) -> crate::Result<()> {
+    let (table, owner_column, owner_key) = match owner {
+        TransportHeaderOwner::Acquisition(key) => {
+            ("acquisition_transport_headers", "acquisition_key", key)
+        }
+        TransportHeaderOwner::Attempt(key) => {
+            ("acquisition_attempt_transport_headers", "attempt_key", key)
+        }
+    };
+    for (order, header) in headers.iter().enumerate() {
+        let order = i64::try_from(order)
+            .map_err(|_| crate::Error::InvalidPath("too many transport headers".into()))?;
+        sql_query(format!(
+            "INSERT INTO {table} ({owner_column}, header_order, name, value) VALUES (?, ?, ?, ?)"
+        ))
+        .bind::<Text, _>(owner_key)
+        .bind::<diesel::sql_types::BigInt, _>(order)
+        .bind::<Text, _>(&header.name)
+        .bind::<Text, _>(&header.value)
+        .execute(conn)?;
+    }
+    Ok(())
 }
 
 fn object_store_for_pool(pool: &Pool) -> crate::Result<(Utf8PathBuf, bool)> {
@@ -736,6 +778,14 @@ mod tests {
     }
 
     #[derive(QueryableByName)]
+    struct TransportHeaderRow {
+        #[diesel(sql_type = Text)]
+        name: String,
+        #[diesel(sql_type = Text)]
+        value: String,
+    }
+
+    #[derive(QueryableByName)]
     struct ColumnNameRow {
         #[diesel(sql_type = Text)]
         name: String,
@@ -755,7 +805,10 @@ mod tests {
             source_key: PublishingSourceKey::new(source_key),
             source_uri: Some(format!("https://example.invalid/{source_key}/catalog.dat")),
             method: Some("https".to_owned()),
-            transport_metadata: Some(serde_json::json!({"content-type": "application/xml"})),
+            transport_headers: vec![TransportHeader {
+                name: "content-type".to_owned(),
+                value: "application/xml".to_owned(),
+            }],
             expected_sha256: None,
         }
     }
@@ -814,6 +867,55 @@ mod tests {
     }
 
     #[test]
+    fn acquisition_transport_headers_are_ordered_relational_values() -> TestResult {
+        let (_directory, store) = setup_store()?;
+        let mut metadata = acquisition("source-a");
+        metadata.transport_headers.push(TransportHeader {
+            name: "etag".to_owned(),
+            value: "\"catalog-v1\"".to_owned(),
+        });
+        let retained = store.retain(&metadata, VALID_DAT)?;
+        let mut conn = store.pool.get()?;
+        let acquisition_key = retained.acquisition_key.to_string();
+        let headers = sql_query(
+            "SELECT name, value FROM acquisition_transport_headers \
+             WHERE acquisition_key = ? ORDER BY header_order",
+        )
+        .bind::<Text, _>(&acquisition_key)
+        .load::<TransportHeaderRow>(&mut conn)?;
+        assert_eq!(
+            headers
+                .into_iter()
+                .map(|header| (header.name, header.value))
+                .collect::<Vec<_>>(),
+            vec![
+                ("content-type".to_owned(), "application/xml".to_owned()),
+                ("etag".to_owned(), "\"catalog-v1\"".to_owned()),
+            ]
+        );
+        let attempt_headers = sql_query(
+            "SELECT name, value FROM acquisition_attempt_transport_headers \
+             WHERE attempt_key IN \
+                (SELECT attempt_key FROM acquisition_attempts WHERE acquisition_key = ?) \
+             ORDER BY header_order",
+        )
+        .bind::<Text, _>(&acquisition_key)
+        .load::<TransportHeaderRow>(&mut conn)?;
+        assert_eq!(attempt_headers.len(), 2);
+        let json_columns = sql_query(
+            "SELECT COUNT(*) AS count FROM ( \
+                SELECT name FROM pragma_table_info('acquisitions') \
+                UNION ALL \
+                SELECT name FROM pragma_table_info('acquisition_attempts') \
+             ) WHERE name LIKE '%json'",
+        )
+        .get_result::<CountRow>(&mut conn)?
+        .count;
+        assert_eq!(json_columns, 0);
+        Ok(())
+    }
+
+    #[test]
     fn fresh_store_persists_failed_attempt_after_source_registration() -> TestResult {
         let directory = tempfile::tempdir()?;
         let database_path = directory.path().join("fresh-failure.sqlite");
@@ -842,6 +944,11 @@ mod tests {
         assert_eq!(count(&store, "documents")?, 0);
         assert_eq!(count(&store, "acquisitions")?, 0);
         assert_eq!(count(&store, "acquisition_attempts")?, 1);
+        assert_eq!(
+            count(&store, "acquisition_attempt_transport_headers")?,
+            1,
+            "failed acquisition transport provenance must be retained with its attempt"
+        );
         Ok(())
     }
 

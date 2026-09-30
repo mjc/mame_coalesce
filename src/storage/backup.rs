@@ -904,7 +904,7 @@ mod tests {
                 source_key: source.key().clone(),
                 source_uri: None,
                 method: Some("test".to_owned()),
-                transport_metadata: None,
+                transport_headers: Vec::new(),
                 expected_sha256: None,
             },
             payload,

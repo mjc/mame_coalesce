@@ -28,7 +28,9 @@ pub use storage::backup::{
     BackupOutcome, IntegrityReport, RestoreOutcome, RestorePolicy, check_integrity, create_backup,
     restore_backup,
 };
-pub use storage::documents::{AcquisitionMetadata, DocumentStore, RetainedDocument};
+pub use storage::documents::{
+    AcquisitionMetadata, DocumentStore, RetainedDocument, TransportHeader,
+};
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[cfg(test)]
