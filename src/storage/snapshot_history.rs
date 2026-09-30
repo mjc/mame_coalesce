@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use diesel::{
-    Connection, QueryableByName, RunQueryDsl, sql_query,
+    Connection, OptionalExtension, QueryableByName, RunQueryDsl, sql_query,
     sql_types::{BigInt, Binary, Bool, Nullable, Text},
 };
 
@@ -223,6 +223,8 @@ pub fn diff(
         }
 
         let same_scope = comparable_scope(&previous_header, &current_header);
+        let document_metadata_changed =
+            mame_document_metadata(conn, previous)? != mame_document_metadata(conn, current)?;
         let previous_records = records(conn, previous)?;
         let current_records = records(conn, current)?;
         let explanations =
@@ -300,9 +302,30 @@ pub fn diff(
             previous: previous.clone(),
             current: current.clone(),
             same_scope,
+            document_metadata_changed,
             records,
         })
     })
+}
+
+#[derive(QueryableByName, PartialEq, Eq)]
+struct MameDocumentMetadataRow {
+    #[diesel(sql_type = diesel::sql_types::Bool)]
+    debug: bool,
+    #[diesel(sql_type = Nullable<Text>)]
+    config_version: Option<String>,
+}
+
+fn mame_document_metadata(
+    conn: &mut diesel::SqliteConnection,
+    snapshot: &SnapshotKey,
+) -> crate::Result<Option<MameDocumentMetadataRow>> {
+    Ok(
+        sql_query("SELECT debug, config_version FROM mame_document_facts WHERE snapshot_key = ?")
+            .bind::<Text, _>(snapshot.as_str())
+            .get_result::<MameDocumentMetadataRow>(conn)
+            .optional()?,
+    )
 }
 
 fn is_software_list_snapshot(snapshot: &SnapshotRow) -> bool {

@@ -15,6 +15,8 @@ use crate::xml_reader::Element;
 #[cfg(test)]
 pub struct MameCatalog {
     pub build: Option<String>,
+    pub debug: bool,
+    pub config_version: Option<String>,
     pub machines: Vec<Machine>,
     pub extensions: Vec<XmlExtension>,
 }
@@ -201,6 +203,9 @@ impl From<serde_json::Value> for ExtensionValue {
 
 pub struct MameHeader {
     pub build: Option<String>,
+    pub debug: bool,
+    pub config_version: Option<String>,
+    pub location: RecordLocation,
     pub extensions: Vec<XmlExtension>,
 }
 
@@ -266,10 +271,12 @@ pub fn read_with<S, E: From<crate::Error>>(
             .into());
         }
         let build = root.attributes.get("build").cloned();
+        let debug = parse_mame_boolean(root.attributes.get("debug"), "debug")?;
+        let config_version = root.attributes.get("mameconfig").cloned();
         let extensions = root
             .attributes
             .iter()
-            .filter(|(name, _)| name.as_str() != "build")
+            .filter(|(name, _)| !["build", "debug", "mameconfig"].contains(&name.as_str()))
             .map(|(name, value)| {
                 let (field_name, namespace_uri) = attribute_name(name);
                 XmlExtension {
@@ -282,7 +289,13 @@ pub fn read_with<S, E: From<crate::Error>>(
                 }
             })
             .collect();
-        let mut sink = start(MameHeader { build, extensions })?;
+        let mut sink = start(MameHeader {
+            build,
+            debug,
+            config_version,
+            location: root.location,
+            extensions,
+        })?;
         parse_machine_records(reader, positions, &mut budget, empty, true, |record| {
             consume(&mut sink, record)
         })?;
@@ -298,6 +311,8 @@ impl MameCatalog {
             |header| {
                 Ok(Self {
                     build: header.build,
+                    debug: header.debug,
+                    config_version: header.config_version,
                     machines: Vec::new(),
                     extensions: header.extensions,
                 })

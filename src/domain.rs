@@ -363,6 +363,7 @@ pub struct CatalogSnapshotDiff {
     pub previous: SnapshotKey,
     pub current: SnapshotKey,
     pub same_scope: bool,
+    pub document_metadata_changed: bool,
     pub records: Vec<SnapshotRecordDiff>,
 }
 

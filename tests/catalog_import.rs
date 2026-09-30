@@ -1177,6 +1177,41 @@ fn snapshot_diff_detects_mame_bios_set_fact_changes() -> Result<(), Box<dyn std:
 }
 
 #[test]
+fn snapshot_diff_detects_mame_document_fact_changes() -> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, _) = setup()?;
+    let previous_path = directory.path().join("document-v1.xml");
+    let current_path = directory.path().join("document-v2.xml");
+    let xml = |debug: &str, config| {
+        format!(
+            "<mame debug=\"{debug}\" mameconfig=\"{config}\"><machine name=\"system\"><description>System</description></machine></mame>"
+        )
+    };
+    std::fs::write(&previous_path, xml("no", 10))?;
+    std::fs::write(&current_path, xml("yes", 11))?;
+    let mut previous_request = request(
+        previous_path,
+        "mame-document-history",
+        "mame-document-history",
+        "MAME document history",
+    )?;
+    previous_request.format = CatalogDocumentFormat::MameListXml;
+    let mut current_request = previous_request.clone();
+    current_request.document_path =
+        Utf8PathBuf::from_path_buf(current_path).map_err(|_| "non-UTF8 fixture path")?;
+    let previous = app::import_catalog(&database, &previous_request)?
+        .snapshot_key
+        .ok_or("previous MAME snapshot missing")?;
+    let current = app::import_catalog(&database, &current_request)?
+        .snapshot_key
+        .ok_or("current MAME snapshot missing")?;
+
+    let diff = app::diff_catalog_snapshots(&database, &previous, &current)?;
+    assert!(diff.document_metadata_changed);
+    assert_eq!(diff.records[0].status, SnapshotRecordStatus::Unchanged);
+    Ok(())
+}
+
+#[test]
 fn imports_mame_asset_facts_and_recovers_extensions_from_source()
 -> Result<(), Box<dyn std::error::Error>> {
     let (_directory, database, mut connection) = setup()?;
@@ -1189,6 +1224,14 @@ fn imports_mame_asset_facts_and_recovers_extensions_from_source()
     request.format = CatalogDocumentFormat::MameListXml;
     let report = app::import_catalog(&database, &request)?;
     let snapshot = report.snapshot_key.ok_or("MAME snapshot missing")?;
+
+    let document_facts = sql_query(
+        "SELECT CAST(debug AS TEXT) || ':' || config_version AS value \
+         FROM mame_document_facts WHERE snapshot_key = ?",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(&mut connection)?;
+    assert_eq!(document_facts.value, "1:10");
 
     let parent = sql_query(
         "SELECT parent_name AS value FROM snapshot_sets \

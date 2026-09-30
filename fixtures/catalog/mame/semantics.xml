@@ -1,4 +1,4 @@
-<mame build="synthetic" xmlns:future="urn:future">
+<mame build="synthetic" debug="yes" mameconfig="10" xmlns:future="urn:future">
   <machine name="parent">
     <description>Parent</description>
     <rom name="parent.rom" size="1" crc="12345678" />

@@ -737,6 +737,16 @@ fn import_mame(
                     header.build.as_deref(),
                 )
                 .map_err(StreamingImportError::Storage)?;
+                if let SnapshotPublication::Pending(key) = &publication {
+                    insert_mame_document_facts(
+                        conn,
+                        key,
+                        header.debug,
+                        header.config_version.as_deref(),
+                        header.location,
+                    )
+                    .map_err(StreamingImportError::Storage)?;
+                }
                 let run_key = ImportRunKey::fresh();
                 insert_import_run(
                     conn,
@@ -1257,6 +1267,27 @@ fn insert_mame_machine_facts(
     .bind::<diesel::sql_types::Bool, _>(facts.flags.is_consumable())
     .bind::<BigInt, _>(facts.attributes_location.line)
     .bind::<BigInt, _>(facts.attributes_location.column)
+    .execute(conn)?;
+    Ok(())
+}
+
+fn insert_mame_document_facts(
+    conn: &mut SqliteConnection,
+    snapshot_key: &SnapshotKey,
+    debug: bool,
+    config_version: Option<&str>,
+    location: crate::logiqx::RecordLocation,
+) -> crate::Result<()> {
+    sql_query(
+        "INSERT INTO mame_document_facts \
+         (snapshot_key, debug, config_version, source_line, source_column) \
+         VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind::<Text, _>(snapshot_key.as_str())
+    .bind::<diesel::sql_types::Bool, _>(debug)
+    .bind::<Nullable<Text>, _>(config_version)
+    .bind::<BigInt, _>(location.line)
+    .bind::<BigInt, _>(location.column)
     .execute(conn)?;
     Ok(())
 }
