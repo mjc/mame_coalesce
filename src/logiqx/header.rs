@@ -1,5 +1,7 @@
 use serde::Deserialize;
 
+use crate::xml_reader::Element;
+
 #[derive(Debug, Deserialize)]
 pub struct Header {
     name: String,
@@ -11,6 +13,21 @@ pub struct Header {
 }
 
 impl Header {
+    pub(crate) fn from_xml(element: &Element) -> crate::Result<Self> {
+        let name = element
+            .child_text("name")?
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| crate::Error::XmlValidation("missing required <header><name>".into()))?;
+        Ok(Self {
+            name,
+            description: element.child_text("description")?,
+            version: element.child_text("version")?,
+            author: element.child_text("author")?,
+            homepage: element.child_text("homepage")?,
+            url: element.child_text("url")?,
+        })
+    }
+
     /// Get a reference to the header's name.
     #[must_use]
     pub fn name(&self) -> &str {

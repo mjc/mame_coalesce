@@ -4,6 +4,6 @@ mod header;
 mod rom;
 
 pub use data_file::DataFile;
-pub(crate) use data_file::{RecordLocation, XmlSourceMap, contains_entity_declaration};
+pub(crate) use data_file::{RecordLocation, XmlSourceMap};
 pub use game::Game;
 pub use rom::Rom;

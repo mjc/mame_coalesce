@@ -292,10 +292,16 @@ and disk declarations, selected machine metadata, BIOS sets, and device
 references. The separate software-list adapter imports list-scoped items, parts,
 data/disk areas, component evidence, and load instructions as source data; it
 does not execute those instructions or expand dependencies. Both adapters
-preserve unrecognized XML as extensions. Imports accept retained documents up
-to 64 MiB, gzip-expanded XML up to 128 MiB, at most 200,000 XML elements, and
-nesting up to 256 levels. These limits bound retained input and the in-memory
-XML tree; larger exports are rejected.
+preserve unrecognized XML as extensions. Imports accept retained documents and
+gzip-expanded XML up to 384 MiB. XML tree adapters are limited to 200,000
+elements; the record-streaming MAME machine and software-list adapters allow up
+to 6,000,000 elements to accommodate official full catalogs and larger lists.
+Nesting is limited to 256 levels. These bounds limit retained input, parser
+work, and per-record trees; larger documents are rejected.
+
+Real catalog import CPU flamegraphs and a partial full-machine-XML heap trace are
+documented in [catalog import profiling](docs/catalog-import-profiling.md).
+The repeatable CPU helper is `scripts/profile_catalog_imports.sh`.
 
 ### CPU Flamegraphs
 

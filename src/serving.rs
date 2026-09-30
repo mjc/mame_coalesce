@@ -847,7 +847,7 @@ fn verify_7z_archive_entries(
             )
         });
     if let Err(error) = stream_result {
-        invalidate_7z_verification_results(&mut batch.results, &error.to_string());
+        invalidate_7z_verification_results(&mut batch.results, &error);
     }
     batch
         .results
@@ -976,13 +976,21 @@ fn verify_7z_member(
 
 fn invalidate_7z_verification_results(
     results: &mut [Option<Result<(), ServingError>>],
-    reason: &str,
+    error: &crate::Error,
 ) {
+    let message = match &error {
+        crate::Error::InvalidPath(message) => message.clone(),
+        _ => error.to_string(),
+    };
     for result in results {
         if result.as_ref().is_none_or(Result::is_ok) {
-            *result = Some(Err(ServingError::Source(crate::Error::InvalidPath(
-                reason.to_owned(),
-            ))));
+            let error = match &error {
+                crate::Error::ArchiveDecoderLimitExceeded { maximum } => {
+                    crate::Error::ArchiveDecoderLimitExceeded { maximum: *maximum }
+                }
+                _ => crate::Error::InvalidPath(message.clone()),
+            };
+            *result = Some(Err(ServingError::Source(error)));
         }
     }
 }
@@ -1658,23 +1666,68 @@ mod tests {
             Some((1, "second.rom")),
         )?;
 
-        let verified = verify_archive_entries_with_fingerprint(
-            &[&first_entry, &second_entry],
-            file_fingerprint,
-        )?;
-        assert!(verified.into_iter().all(|result| result.is_ok()));
+        let entries = [&first_entry, &second_entry];
+        let mut capacity_retries = 0;
+        let verified = loop {
+            let verified = match verify_archive_entries_with_fingerprint(&entries, file_fingerprint)
+            {
+                Err(ServingError::Source(crate::Error::ArchiveDecoderLimitExceeded { .. }))
+                    if capacity_retries < 500 =>
+                {
+                    capacity_retries += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
+                Ok(verified) => verified,
+            };
+            let decoder_is_busy = verified.iter().all(|result| {
+                matches!(
+                    result,
+                    Err(ServingError::Source(
+                        crate::Error::ArchiveDecoderLimitExceeded { .. }
+                    ))
+                )
+            });
+            if decoder_is_busy && capacity_retries < 500 {
+                capacity_retries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                continue;
+            }
+            break verified;
+        };
+        assert!(
+            verified.iter().all(Result::is_ok),
+            "selected 7z members failed verification: {verified:?}"
+        );
         Ok(())
     }
 
     #[test]
     fn late_7z_integrity_error_invalidates_provisional_member_successes() {
         let mut results = vec![Some(Ok(())), None];
-        invalidate_7z_verification_results(&mut results, "archive CRC mismatch");
-        assert!(
-            results
-                .iter()
-                .all(|result| result.as_ref().is_some_and(Result::is_err))
+        invalidate_7z_verification_results(
+            &mut results,
+            &crate::Error::InvalidPath("archive CRC mismatch".to_owned()),
         );
+        assert!(results.iter().all(|result| result
+            .as_ref()
+            .is_some_and(|result| matches!(result, Err(ServingError::Source(crate::Error::InvalidPath(message))) if message == "archive CRC mismatch"))));
+    }
+
+    #[test]
+    fn decoder_capacity_remains_classified_after_7z_batch_invalidation() {
+        let mut results = vec![Some(Ok(())), None];
+        invalidate_7z_verification_results(
+            &mut results,
+            &crate::Error::ArchiveDecoderLimitExceeded { maximum: 2 },
+        );
+        assert!(results.iter().all(|result| matches!(
+            result,
+            Some(Err(ServingError::Source(
+                crate::Error::ArchiveDecoderLimitExceeded { maximum: 2 }
+            )))
+        )));
     }
 
     #[test]

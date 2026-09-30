@@ -1,6 +1,7 @@
 use serde::Deserialize;
 
 use super::Rom;
+use crate::xml_reader::Element;
 
 #[derive(Debug, Deserialize)]
 pub struct Game {
@@ -39,6 +40,35 @@ struct DeviceRef {
 }
 
 impl Game {
+    pub(crate) fn from_xml(element: &Element) -> crate::Result<Self> {
+        let mut device_refs = Vec::new();
+        let mut roms = Vec::new();
+        for child in element.children() {
+            match child.name.as_str() {
+                "device_ref" => device_refs.push(DeviceRef {
+                    name: child.required_attribute("name")?,
+                }),
+                "rom" => roms.push(Rom::from_xml(child)?),
+                _ => {}
+            }
+        }
+        Ok(Self {
+            name: element.required_attribute("name")?,
+            sourcefile: element.attributes.get("sourcefile").cloned(),
+            isbios: element.attributes.get("isbios").cloned(),
+            cloneof: element.attributes.get("cloneof").cloned(),
+            romof: element.attributes.get("romof").cloned(),
+            sampleof: element.attributes.get("sampleof").cloned(),
+            board: element.attributes.get("board").cloned(),
+            rebuildto: element.attributes.get("rebuildto").cloned(),
+            description: element.child_text("description")?,
+            year: element.child_text("year")?,
+            manufacturer: element.child_text("manufacturer")?,
+            device_refs,
+            roms,
+        })
+    }
+
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name

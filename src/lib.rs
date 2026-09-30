@@ -20,6 +20,7 @@ pub mod resolution;
 pub mod serving;
 pub(crate) mod sources;
 mod storage;
+pub(crate) mod xml_reader;
 
 pub use domain::PublishingSource;
 pub use error::Error;

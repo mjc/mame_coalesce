@@ -4,7 +4,7 @@
   pkgs,
   ...
 }: let
-  scriptCheck = "${pkgs.shellcheck}/bin/shellcheck scripts/fetch_public_domain_test_data.sh scripts/profile_flamegraph.sh scripts/benchmark_run.sh scripts/generate_synthetic_benchmark_corpus.sh scripts/parse_flamegraph scripts/parse_perfdata";
+  scriptCheck = "${pkgs.shellcheck}/bin/shellcheck scripts/fetch_public_domain_test_data.sh scripts/profile_flamegraph.sh scripts/profile_catalog_imports.sh scripts/render_catalog_flamegraph.sh scripts/benchmark_run.sh scripts/generate_synthetic_benchmark_corpus.sh scripts/generate_xml_import_benchmark_corpus.sh scripts/benchmark_xml_import.sh scripts/parse_flamegraph scripts/parse_perfdata";
 in {
   languages.rust = {
     enable = true;
@@ -27,6 +27,7 @@ in {
     curl
     jq
     cargo-nextest
+    time
   ];
 
   env = {
@@ -103,7 +104,7 @@ in {
       languages.rust.components = ["llvm-tools-preview"];
       packages = with pkgs;
         [cargo-flamegraph hyperfine]
-        ++ lib.optionals stdenv.isLinux [perf];
+        ++ lib.optionals stdenv.isLinux [perf heaptrack];
     };
     maintenance.module = {
       packages = with pkgs; [cargo-audit cargo-deny cargo-outdated cargo-machete];

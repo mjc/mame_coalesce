@@ -1,3 +1,4 @@
+use crate::xml_reader::Element;
 use serde::{Deserialize, Deserializer, de::Error as _};
 
 #[derive(Debug, Deserialize)]
@@ -23,6 +24,29 @@ pub struct Rom {
 }
 
 impl Rom {
+    pub(crate) fn from_xml(element: &Element) -> crate::Result<Self> {
+        let size = element
+            .attributes
+            .get("size")
+            .map(|value| {
+                value.parse().map_err(|error| {
+                    crate::Error::XmlValidation(format!("invalid ROM size {value:?}: {error}"))
+                })
+            })
+            .transpose()?;
+        Ok(Self {
+            name: element.required_attribute("name")?,
+            size,
+            md5: xml_hash(element, "md5", 16)?,
+            sha1: xml_hash(element, "sha1", 20)?,
+            crc: xml_hash(element, "crc", 4)?,
+            merge: element.attributes.get("merge").cloned(),
+            status: element.attributes.get("status").cloned(),
+            serial: element.attributes.get("serial").cloned(),
+            date: element.attributes.get("date").cloned(),
+        })
+    }
+
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
@@ -67,6 +91,29 @@ impl Rom {
     pub fn date(&self) -> Option<&str> {
         self.date.as_deref()
     }
+}
+
+fn xml_hash(
+    element: &Element,
+    name: &str,
+    expected_bytes: usize,
+) -> crate::Result<Option<Vec<u8>>> {
+    element
+        .attributes
+        .get(name)
+        .map(|value| {
+            let bytes = hex::decode(value).map_err(|error| {
+                crate::Error::XmlValidation(format!("invalid {name} digest: {error}"))
+            })?;
+            if bytes.len() != expected_bytes {
+                return Err(crate::Error::XmlValidation(format!(
+                    "{name} digest has {} bytes; expected {expected_bytes}",
+                    bytes.len()
+                )));
+            }
+            Ok(bytes)
+        })
+        .transpose()
 }
 
 fn deserialize_hash<'de, D>(deserializer: D, byte_len: usize) -> Result<Option<Vec<u8>>, D::Error>

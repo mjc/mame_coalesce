@@ -1,6 +1,9 @@
-use std::{fs::File, io::Read};
+use std::{
+    fs::{self, File, OpenOptions},
+    io::{Read, Write},
+};
 
-use camino::Utf8Path;
+use camino::{Utf8Path, Utf8PathBuf};
 use diesel::{
     prelude::*,
     sql_query,
@@ -72,6 +75,8 @@ pub struct RetainedDocument {
 
 pub struct DocumentStore {
     pool: Pool,
+    object_store: Utf8PathBuf,
+    temporary_object_store: bool,
     _database_guard: Option<crate::database::Database>,
 }
 
@@ -81,8 +86,8 @@ struct ExistingDocument {
     document_key: String,
     #[diesel(sql_type = Nullable<Binary>)]
     sha256: Option<Vec<u8>>,
-    #[diesel(sql_type = Nullable<Binary>)]
-    payload: Option<Vec<u8>>,
+    #[diesel(sql_type = Nullable<Text>)]
+    object_key: Option<String>,
     #[diesel(sql_type = Nullable<Binary>)]
     sha1: Option<Vec<u8>>,
     #[diesel(sql_type = Nullable<diesel::sql_types::BigInt>)]
@@ -94,33 +99,19 @@ struct ExistingDocument {
 #[derive(QueryableByName)]
 struct RetainedPayload {
     #[diesel(sql_type = Binary)]
-    payload: Vec<u8>,
-}
-
-#[derive(QueryableByName)]
-struct LegacyPayload {
-    #[diesel(sql_type = Binary)]
     sha256: Vec<u8>,
     #[diesel(sql_type = Binary)]
     sha1: Vec<u8>,
     #[diesel(sql_type = diesel::sql_types::BigInt)]
     byte_length: i64,
-    #[diesel(sql_type = Binary)]
-    payload: Vec<u8>,
+    #[diesel(sql_type = Text)]
+    object_key: String,
 }
 
 #[derive(QueryableByName)]
-struct LegacyLoadPayload {
-    #[diesel(sql_type = Binary)]
-    sha256: Vec<u8>,
-    #[diesel(sql_type = Binary)]
-    sha1: Vec<u8>,
-    #[diesel(sql_type = diesel::sql_types::BigInt)]
-    byte_length: i64,
-    #[diesel(sql_type = Binary)]
-    payload: Vec<u8>,
-    #[diesel(sql_type = Nullable<Binary>)]
-    document_sha1: Option<Vec<u8>>,
+struct DatabaseFile {
+    #[diesel(sql_type = Text)]
+    file: String,
 }
 
 #[derive(QueryableByName)]
@@ -132,23 +123,27 @@ struct PublishingSourceRow {
 }
 
 impl DocumentStore {
-    pub(crate) const fn from_pool(pool: Pool) -> Self {
-        Self {
+    pub(crate) fn from_pool(pool: Pool) -> crate::Result<Self> {
+        let (object_store, temporary_object_store) = object_store_for_pool(&pool)?;
+        Ok(Self {
             pool,
+            object_store,
+            temporary_object_store,
             _database_guard: None,
-        }
+        })
     }
 
     pub fn open(database_url: &str) -> crate::Result<Self> {
         if database_url == ":memory:" {
-            return Ok(Self {
-                pool: create_db_pool(database_url)?,
-                _database_guard: None,
-            });
+            return Self::from_pool(create_db_pool(database_url)?);
         }
         let database = crate::database::Database::open(&camino::Utf8PathBuf::from(database_url))?;
+        let pool = database.pool().clone();
+        let (object_store, temporary_object_store) = object_store_for_pool(&pool)?;
         Ok(Self {
-            pool: database.pool().clone(),
+            pool,
+            object_store,
+            temporary_object_store,
             _database_guard: Some(database),
         })
     }
@@ -187,12 +182,23 @@ impl DocumentStore {
         self.retain_with_limit_and_validation(metadata, reader, MAX_DOCUMENT_BYTES, true)
     }
 
+    #[cfg(test)]
+    pub(crate) fn retain_unvalidated<R: Read>(
+        &self,
+        metadata: &AcquisitionMetadata,
+        reader: R,
+    ) -> crate::Result<RetainedDocument> {
+        self.retain_with_options(metadata, reader, MAX_DOCUMENT_BYTES, false, None)
+    }
+
     pub fn retain_path(
         &self,
         source_key: PublishingSourceKey,
         path: &Utf8Path,
     ) -> crate::Result<RetainedDocument> {
-        self.retain_path_with_options(source_key, path, true, None)
+        // Catalog import performs format validation while parsing this same
+        // retained byte sequence; a preliminary XML walk would traverse it twice.
+        self.retain_path_with_options(source_key, path, false, None)
     }
 
     pub(crate) fn retain_path_mame(
@@ -281,46 +287,34 @@ impl DocumentStore {
         let mut conn = self.pool.get()?;
         let key_string = key.to_string();
         let retained = sql_query(
-            "SELECT payload FROM documents \
-             WHERE document_key = ? AND retention_status = 'retained' AND payload IS NOT NULL",
+            "SELECT sha256, sha1, byte_length, object_key FROM documents \
+             WHERE document_key = ? AND retention_status = 'retained'",
         )
         .bind::<Text, _>(&key_string)
         .get_result::<RetainedPayload>(&mut conn)
-        .optional()?;
-        let payload = if let Some(row) = retained {
-            row.payload
-        } else {
-            let row = sql_query(
-                "SELECT legacy.sha256, legacy.sha1, legacy.byte_length, legacy.payload, \
-                        documents.sha1 AS document_sha1 \
-                 FROM legacy_document_payloads AS legacy \
-                 JOIN documents USING (document_key) \
-                 WHERE legacy.document_key = ?",
-            )
-            .bind::<Text, _>(&key_string)
-            .get_result::<LegacyLoadPayload>(&mut conn)
-            .optional()?
-            .filter(|row| {
-                row.sha256.as_slice() == key.digest()
-                    && usize::try_from(row.byte_length).ok() == Some(row.payload.len())
-            })
-            .ok_or_else(|| crate::Error::DocumentUnavailable(key_string.clone()))?;
-            if DocumentKey::from_bytes(&row.payload) != *key {
-                return Err(crate::Error::DocumentDigestCollision);
-            }
-            let payload_sha1 = sha1(&row.payload);
-            if row.sha1.as_slice() != payload_sha1
-                || row
-                    .document_sha1
-                    .as_deref()
-                    .is_some_and(|stored| stored != payload_sha1)
-            {
-                return Err(crate::Error::DocumentUnavailable(key_string.clone()));
-            }
-            row.payload
-        };
-        if DocumentKey::from_bytes(&payload) != *key {
+        .optional()?
+        .ok_or_else(|| crate::Error::DocumentUnavailable(key_string.clone()))?;
+        if retained.sha256.as_slice() != key.digest() {
             return Err(crate::Error::DocumentDigestCollision);
+        }
+        let expected_length = usize::try_from(retained.byte_length)
+            .map_err(|_| crate::Error::DocumentUnavailable(key_string.clone()))?;
+        let object_path = self.object_store.join(&retained.object_key);
+        let mut decoder = zstd::Decoder::new(File::open(object_path)?)?;
+        let mut payload = Vec::with_capacity(expected_length.min(MAX_DOCUMENT_BYTES));
+        decoder
+            .by_ref()
+            .take(
+                u64::try_from(expected_length)
+                    .unwrap_or(u64::MAX)
+                    .saturating_add(1),
+            )
+            .read_to_end(&mut payload)?;
+        if payload.len() != expected_length
+            || DocumentKey::from_bytes(&payload) != *key
+            || sha1(&payload).as_slice() != retained.sha1
+        {
+            return Err(crate::Error::DocumentUnavailable(key_string));
         }
         Ok(payload)
     }
@@ -438,14 +432,15 @@ impl DocumentStore {
         let attempt_key = uuid::Uuid::new_v4().to_string();
         let acquisition_key_string = acquisition_key.to_string();
         let document_key_string = key.to_string();
+        let object_key = self.store_object(raw, key)?;
         {
             let mut conn = self.pool.get()?;
             conn.immediate_transaction::<_, crate::Error, _>(|conn| {
                 ensure_document_retained(
                     conn,
-                    raw,
                     key.digest().as_slice(),
                     &document_key_string,
+                    &object_key,
                     &sha1,
                     byte_length,
                     format_hint,
@@ -496,6 +491,50 @@ impl DocumentStore {
         }
     }
 
+    fn store_object(&self, raw: &[u8], key: DocumentKey) -> crate::Result<String> {
+        let object_key = format!("sha256/{}.zst", hex::encode(key.digest()));
+        let object_path = self.object_store.join(&object_key);
+        let parent = object_path
+            .parent()
+            .ok_or_else(|| crate::Error::InvalidPath(object_path.to_string()))?;
+        fs::create_dir_all(parent)?;
+        if object_path.exists() {
+            let existing = read_object(&object_path, raw.len())?;
+            if existing != raw {
+                return Err(crate::Error::DocumentDigestCollision);
+            }
+            return Ok(object_key);
+        }
+        let compressed = zstd::encode_all(raw, 3)?;
+        let temporary = parent.join(format!(
+            ".{}.{}.tmp",
+            hex::encode(key.digest()),
+            uuid::Uuid::new_v4()
+        ));
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        file.write_all(&compressed)?;
+        file.sync_all()?;
+        drop(file);
+        match fs::hard_link(&temporary, &object_path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                if read_object(&object_path, raw.len())? != raw {
+                    let _ = fs::remove_file(&temporary);
+                    return Err(crate::Error::DocumentDigestCollision);
+                }
+            }
+            Err(error) => {
+                let _ = fs::remove_file(&temporary);
+                return Err(error.into());
+            }
+        }
+        fs::remove_file(temporary)?;
+        Ok(object_key)
+    }
+
     fn record_failed_attempt(
         &self,
         metadata: &AcquisitionMetadata,
@@ -528,17 +567,46 @@ impl DocumentStore {
     }
 }
 
+fn object_store_for_pool(pool: &Pool) -> crate::Result<(Utf8PathBuf, bool)> {
+    let file = sql_query("PRAGMA database_list")
+        .load::<DatabaseFile>(&mut pool.get()?)?
+        .into_iter()
+        .find(|database| !database.file.is_empty())
+        .map(|database| database.file);
+    if let Some(file) = file {
+        return Ok((Utf8PathBuf::from(format!("{file}.documents")), false));
+    }
+    let path = std::env::temp_dir().join(format!(
+        "mame-coalesce-{}-{}.documents",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    Ok((
+        Utf8PathBuf::from_path_buf(path)
+            .map_err(|path| crate::Error::InvalidPath(path.display().to_string()))?,
+        true,
+    ))
+}
+
+impl Drop for DocumentStore {
+    fn drop(&mut self) {
+        if self.temporary_object_store {
+            let _ = fs::remove_dir_all(&self.object_store);
+        }
+    }
+}
+
 fn ensure_document_retained(
     conn: &mut diesel::SqliteConnection,
-    raw: &[u8],
     digest: &[u8],
     document_key: &str,
+    object_key: &str,
     sha1: &Sha1Digest,
     byte_length: i64,
     format_hint: FormatHint,
 ) -> crate::Result<()> {
     let existing = sql_query(
-        "SELECT document_key, sha256, payload, retention_status, sha1, byte_length FROM documents \
+        "SELECT document_key, sha256, object_key, retention_status, sha1, byte_length FROM documents \
          WHERE sha256 = ? OR document_key = ?",
     )
     .bind::<Binary, _>(digest)
@@ -552,12 +620,12 @@ fn ensure_document_retained(
             if document.document_key == document_key
                 && document.retention_status == "retained"
                 && document.sha256.as_deref() == Some(digest)
-                && document.payload.as_deref() == Some(raw) => {}
+                && document.object_key.as_deref() == Some(object_key) => {}
         Some(document)
             if document.document_key == document_key
                 && document.retention_status == "unavailable"
                 && document.sha256.is_none()
-                && document.payload.is_none() =>
+                && document.object_key.is_none() =>
         {
             if document
                 .sha1
@@ -569,53 +637,52 @@ fn ensure_document_retained(
             {
                 return Err(crate::Error::DocumentDigestCollision);
             }
-            let existing_payload = sql_query(
-                "SELECT sha256, sha1, byte_length, payload FROM legacy_document_payloads \
-                 WHERE document_key = ?",
+            sql_query(
+                "UPDATE documents SET sha256 = ?, sha1 = ?, byte_length = ?, object_key = ?, \
+                 retention_status = 'retained', format_hint = ? WHERE document_key = ?",
             )
+            .bind::<Binary, _>(digest)
+            .bind::<Binary, _>(sha1.as_slice())
+            .bind::<diesel::sql_types::BigInt, _>(byte_length)
+            .bind::<Text, _>(object_key)
+            .bind::<Text, _>(format_hint.as_str())
             .bind::<Text, _>(document_key)
-            .get_result::<LegacyPayload>(conn)
-            .optional()?;
-            match existing_payload {
-                Some(existing)
-                    if existing.sha256.as_slice() == digest
-                        && existing.sha1.as_slice() == sha1
-                        && existing.byte_length == byte_length
-                        && existing.payload.as_slice() == raw => {}
-                Some(_) => return Err(crate::Error::DocumentDigestCollision),
-                None => {
-                    sql_query(
-                        "INSERT INTO legacy_document_payloads \
-                         (document_key, sha256, sha1, byte_length, payload, format_hint) \
-                         VALUES (?, ?, ?, ?, ?, ?)",
-                    )
-                    .bind::<Text, _>(document_key)
-                    .bind::<Binary, _>(digest)
-                    .bind::<Binary, _>(sha1.as_slice())
-                    .bind::<diesel::sql_types::BigInt, _>(byte_length)
-                    .bind::<Binary, _>(raw)
-                    .bind::<Text, _>(format_hint.as_str())
-                    .execute(conn)?;
-                }
-            }
+            .execute(conn)?;
         }
         Some(_) => return Err(crate::Error::DocumentDigestCollision),
         None => {
             sql_query(
                 "INSERT INTO documents \
-                 (document_key, sha1, byte_length, sha256, payload, format_hint, retention_status) \
+                 (document_key, sha1, byte_length, sha256, object_key, format_hint, retention_status) \
                  VALUES (?, ?, ?, ?, ?, ?, 'retained')",
             )
             .bind::<Text, _>(document_key)
             .bind::<Binary, _>(sha1.as_slice())
             .bind::<diesel::sql_types::BigInt, _>(byte_length)
             .bind::<Binary, _>(digest)
-            .bind::<Binary, _>(raw)
+            .bind::<Text, _>(object_key)
             .bind::<Text, _>(format_hint.as_str())
             .execute(conn)?;
         }
     }
     Ok(())
+}
+
+fn read_object(path: &Utf8Path, expected_length: usize) -> crate::Result<Vec<u8>> {
+    let mut decoder = zstd::Decoder::new(File::open(path)?)?;
+    let mut payload = Vec::with_capacity(expected_length.min(MAX_DOCUMENT_BYTES));
+    decoder
+        .by_ref()
+        .take(
+            u64::try_from(expected_length)
+                .unwrap_or(u64::MAX)
+                .saturating_add(1),
+        )
+        .read_to_end(&mut payload)?;
+    if payload.len() != expected_length {
+        return Err(crate::Error::DocumentDigestCollision);
+    }
+    Ok(payload)
 }
 
 fn sha1(bytes: &[u8]) -> Sha1Digest {
@@ -660,6 +727,18 @@ mod tests {
     struct CountRow {
         #[diesel(sql_type = BigInt)]
         count: i64,
+    }
+
+    #[derive(QueryableByName)]
+    struct ValueRow {
+        #[diesel(sql_type = Text)]
+        value: String,
+    }
+
+    #[derive(QueryableByName)]
+    struct ColumnNameRow {
+        #[diesel(sql_type = Text)]
+        name: String,
     }
 
     fn setup_store() -> TestResult<(TempDir, DocumentStore)> {
@@ -719,6 +798,16 @@ mod tests {
         );
         let retained = store.retain(&acquisition("fresh-source"), VALID_DAT)?;
         assert_eq!(store.load(&retained.document_key)?, VALID_DAT);
+        let object_key =
+            sql_query("SELECT object_key AS value FROM documents WHERE document_key = ?")
+                .bind::<Text, _>(retained.document_key.to_string())
+                .get_result::<ValueRow>(&mut store.pool.get()?)?
+                .value;
+        assert!(object_key.starts_with("sha256/"));
+        assert!(store.object_store.join(&object_key).is_file());
+        let columns = sql_query("PRAGMA table_info(documents)")
+            .load::<ColumnNameRow>(&mut store.pool.get()?)?;
+        assert!(!columns.iter().any(|column| column.name == "payload"));
         assert_eq!(count(&store, "acquisitions")?, 1);
         assert_eq!(count(&store, "acquisition_attempts")?, 1);
         Ok(())
@@ -872,11 +961,20 @@ mod tests {
         let (directory, store) = setup_store()?;
         let retained = store.retain(&acquisition("source-a"), VALID_DAT)?;
         let serialized_key = retained.document_key.to_string();
-        let backup_path = directory.path().join("restored.sqlite");
+        let backup_path = directory.path().join("backup.sqlite");
+        let restored_path = directory.path().join("restored.sqlite");
         let original_path = directory.path().join("catalog.sqlite");
         drop(store);
-        std::fs::copy(&original_path, &backup_path)?;
-        let restored = DocumentStore::open(&backup_path.to_string_lossy())?;
+        let original_path = Utf8Path::from_path(&original_path).ok_or("non-UTF-8 path")?;
+        let backup_path = Utf8Path::from_path(&backup_path).ok_or("non-UTF-8 path")?;
+        let restored_path = Utf8Path::from_path(&restored_path).ok_or("non-UTF-8 path")?;
+        crate::storage::backup::create_backup(original_path, backup_path)?;
+        crate::storage::backup::restore_backup(
+            backup_path,
+            restored_path,
+            crate::storage::backup::RestorePolicy::CreateNew,
+        )?;
+        let restored = DocumentStore::open(restored_path.as_str())?;
         let restored_key = serialized_key.parse()?;
         assert_eq!(restored.load(&restored_key)?, VALID_DAT);
         assert_eq!(count(&restored, "acquisitions")?, 1);
@@ -1102,11 +1200,10 @@ mod tests {
 
         conn.run_pending_migrations(crate::storage::db::MIGRATIONS)?;
         let document = sql_query(
-            "SELECT retention_status, payload FROM documents WHERE document_key = 'metadata-only'",
+            "SELECT retention_status FROM documents WHERE document_key = 'metadata-only'",
         )
         .get_result::<DocumentStatusRow>(&mut conn)?;
         assert_eq!(document.retention_status, "unavailable");
-        assert!(document.payload.is_none());
         let status = sql_query(
             "SELECT verification_status FROM acquisitions WHERE acquisition_key = 'legacy-acquisition'",
         )
@@ -1121,7 +1218,7 @@ mod tests {
     }
 
     #[test]
-    fn retained_import_hydrates_legacy_content_derived_document_key() -> TestResult {
+    fn retained_import_keeps_source_outside_sqlite() -> TestResult {
         let (_directory, store) = setup_store()?;
         let key = DocumentKey::from_bytes(VALID_DAT);
         let mut conn = store.pool.get()?;
@@ -1146,28 +1243,19 @@ mod tests {
 
         let mut conn = store.pool.get()?;
         let document = sql_query(
-            "SELECT retention_status, sha256, payload FROM documents WHERE document_key = ?",
+            "SELECT retention_status, sha256, object_key AS value FROM documents WHERE document_key = ?",
         )
         .bind::<Text, _>(key.to_string())
-        .get_result::<HydratedDocumentRow>(&mut conn)?;
-        assert_eq!(document.retention_status, "unavailable");
-        assert_eq!(document.sha256, None);
-        assert_eq!(document.payload, None);
-        let sidecar = sql_query(
-            "SELECT sha256, sha1, byte_length, payload FROM legacy_document_payloads \
-             WHERE document_key = ?",
-        )
-        .bind::<Text, _>(key.to_string())
-        .get_result::<LegacyPayload>(&mut conn)?;
-        assert_eq!(sidecar.sha256, key.digest());
-        assert_eq!(sidecar.sha1, sha1(VALID_DAT));
-        assert_eq!(sidecar.byte_length, i64::try_from(VALID_DAT.len())?);
-        assert_eq!(sidecar.payload, VALID_DAT);
+        .get_result::<DocumentObjectRow>(&mut conn)?;
+        assert_eq!(document.retention_status, "retained");
+        assert_eq!(document.sha256.as_deref(), Some(key.digest().as_slice()));
+        assert!(store.object_store.join(document.value).is_file());
+        assert_eq!(store.load(&key)?, VALID_DAT);
         Ok(())
     }
 
     #[test]
-    fn replace_cannot_overwrite_retained_legacy_payload() -> TestResult {
+    fn changed_sidecar_content_cannot_be_silently_replaced() -> TestResult {
         let (_directory, store) = setup_store()?;
         let key = DocumentKey::from_bytes(VALID_DAT);
         let mut conn = store.pool.get()?;
@@ -1181,24 +1269,11 @@ mod tests {
         store.retain(&acquisition("source-a"), VALID_DAT)?;
         assert_eq!(store.load(&key)?, VALID_DAT);
 
-        let mut corrupt_payload = VALID_DAT.to_vec();
-        corrupt_payload[0] ^= 1;
-        let mut conn = store.pool.get()?;
-        let replace = sql_query(
-            "INSERT OR REPLACE INTO legacy_document_payloads \
-             (document_key, sha256, sha1, byte_length, payload, format_hint) \
-             VALUES (?, ?, ?, ?, ?, 'logiqx+xml')",
-        )
-        .bind::<Text, _>(key.to_string())
-        .bind::<Binary, _>(key.digest().as_slice())
-        .bind::<Binary, _>(sha1(VALID_DAT).as_slice())
-        .bind::<BigInt, _>(i64::try_from(corrupt_payload.len())?)
-        .bind::<Binary, _>(&corrupt_payload)
-        .execute(&mut conn);
-        assert!(replace.is_err());
-        drop(conn);
-
-        assert_eq!(store.load(&key)?, VALID_DAT);
+        let object_path = store
+            .object_store
+            .join(format!("sha256/{}.zst", hex::encode(key.digest())));
+        fs::write(&object_path, b"corrupt")?;
+        assert!(store.retain(&acquisition("source-a"), VALID_DAT).is_err());
         Ok(())
     }
 
@@ -1229,14 +1304,13 @@ mod tests {
                 store.load(&key),
                 Err(crate::Error::DocumentUnavailable(_))
             ));
-            assert_eq!(count(&store, "legacy_document_payloads")?, 0);
             assert_eq!(count(&store, "acquisitions")?, 0);
         }
         Ok(())
     }
 
     #[test]
-    fn legacy_payload_with_matching_but_incorrect_sha1_is_rejected_on_load() -> TestResult {
+    fn sidecar_with_mismatched_sha1_metadata_is_rejected_on_load() -> TestResult {
         let (_directory, store) = setup_store()?;
         let key = DocumentKey::from_bytes(VALID_DAT);
         let incorrect_sha1 = [0_u8; 20];
@@ -1247,16 +1321,14 @@ mod tests {
             .bind::<Binary, _>(incorrect_sha1.as_slice())
             .bind::<BigInt, _>(i64::try_from(VALID_DAT.len())?)
             .execute(&mut conn)?;
+        let object_key = store.store_object(VALID_DAT, key)?;
         sql_query(
-            "INSERT INTO legacy_document_payloads \
-             (document_key, sha256, sha1, byte_length, payload, format_hint) \
-             VALUES (?, ?, ?, ?, ?, 'logiqx+xml')",
+            "UPDATE documents SET sha256 = ?, object_key = ?, retention_status = 'retained' \
+             WHERE document_key = ?",
         )
-        .bind::<Text, _>(key.to_string())
         .bind::<Binary, _>(key.digest().as_slice())
-        .bind::<Binary, _>(incorrect_sha1.as_slice())
-        .bind::<BigInt, _>(i64::try_from(VALID_DAT.len())?)
-        .bind::<Binary, _>(VALID_DAT)
+        .bind::<Text, _>(object_key)
+        .bind::<Text, _>(key.to_string())
         .execute(&mut conn)?;
         drop(conn);
 
@@ -1268,52 +1340,11 @@ mod tests {
     }
 
     #[test]
-    fn arbitrary_sql_cannot_hydrate_a_forged_legacy_payload() -> TestResult {
+    fn sqlite_has_no_inline_source_payload_column() -> TestResult {
         let (_directory, store) = setup_store()?;
-        let key = DocumentKey::from_bytes(VALID_DAT);
         let mut conn = store.pool.get()?;
-        sql_query("INSERT INTO documents (document_key, sha1, byte_length) VALUES (?, ?, ?)")
-            .bind::<Text, _>(key.to_string())
-            .bind::<Binary, _>(sha1(VALID_DAT).as_slice())
-            .bind::<BigInt, _>(i64::try_from(VALID_DAT.len())?)
-            .execute(&mut conn)?;
-
-        assert!(
-            sql_query("UPDATE documents SET payload = ? WHERE document_key = ?")
-                .bind::<Binary, _>(VALID_DAT)
-                .bind::<Text, _>(key.to_string())
-                .execute(&mut conn)
-                .is_err()
-        );
-
-        let mut forged = VALID_DAT.to_vec();
-        forged[0] ^= 1;
-        sql_query(
-            "INSERT INTO legacy_document_payloads \
-             (document_key, sha256, sha1, byte_length, payload, format_hint) \
-             VALUES (?, ?, ?, ?, ?, 'logiqx+xml')",
-        )
-        .bind::<Text, _>(key.to_string())
-        .bind::<Binary, _>(key.digest().as_slice())
-        .bind::<Binary, _>(sha1(VALID_DAT).as_slice())
-        .bind::<BigInt, _>(i64::try_from(forged.len())?)
-        .bind::<Binary, _>(&forged)
-        .execute(&mut conn)?;
-        drop(conn);
-
-        assert!(matches!(
-            store.load(&key),
-            Err(crate::Error::DocumentDigestCollision)
-        ));
-        let mut conn = store.pool.get()?;
-        let document = sql_query(
-            "SELECT retention_status, sha256, payload FROM documents WHERE document_key = ?",
-        )
-        .bind::<Text, _>(key.to_string())
-        .get_result::<HydratedDocumentRow>(&mut conn)?;
-        assert_eq!(document.retention_status, "unavailable");
-        assert!(document.sha256.is_none());
-        assert!(document.payload.is_none());
+        let columns = sql_query("PRAGMA table_info(documents)").load::<ColumnNameRow>(&mut conn)?;
+        assert!(!columns.iter().any(|column| column.name == "payload"));
         Ok(())
     }
 
@@ -1429,17 +1460,15 @@ mod tests {
     struct DocumentStatusRow {
         #[diesel(sql_type = Text)]
         retention_status: String,
-        #[diesel(sql_type = Nullable<Binary>)]
-        payload: Option<Vec<u8>>,
     }
 
     #[derive(QueryableByName)]
-    struct HydratedDocumentRow {
+    struct DocumentObjectRow {
         #[diesel(sql_type = Text)]
         retention_status: String,
         #[diesel(sql_type = Nullable<Binary>)]
         sha256: Option<Vec<u8>>,
-        #[diesel(sql_type = Nullable<Binary>)]
-        payload: Option<Vec<u8>>,
+        #[diesel(sql_type = Text)]
+        value: String,
     }
 }

@@ -4,8 +4,10 @@ pub use crate::domain::media::SourceLoadInstruction as LoadInstruction;
 
 use crate::{
     logiqx::RecordLocation,
-    mame::{Element, XmlExtension, parse_xml_element},
+    mame::{ExtensionValue, XmlExtension},
+    xml_reader::{self, Element, NodeBudget},
 };
+use quick_xml::events::Event;
 
 macro_rules! string_identity {
     ($name:ident) => {
@@ -198,47 +200,168 @@ impl DumpStatus {
 
 impl SoftwareListCatalog {
     pub fn parse(bytes: &[u8]) -> crate::Result<Self> {
-        let root = parse_xml_element(bytes)?;
-        let build = root.attributes.get("build").cloned();
-        let mut extensions = Vec::new();
-        let lists = match root.name.as_str() {
-            "softwarelist" => vec![parse_list(&root, &mut extensions)?],
-            "softwarelists" => {
-                retain_unknown_attributes(&root, &["build"], "document", None, &mut extensions);
-                let mut lists = Vec::new();
-                for child in root.children() {
-                    if child.name == "softwarelist" {
-                        lists.push(parse_list(child, &mut extensions)?);
-                    } else {
-                        extensions.push(extension("document", None, child)?);
-                    }
+        xml_reader::with_reader(bytes, |reader, positions| {
+            let mut budget = NodeBudget::with_limit(xml_reader::MAX_MAME_XML_NODES);
+            let (namespace, event) = loop {
+                let (namespace, event) = xml_reader::next(reader, positions)?;
+                if matches!(event, Event::Start(_) | Event::Empty(_)) {
+                    break (namespace, event);
                 }
-                lists
-            }
-            other => {
-                return Err(crate::Error::XmlValidation(format!(
-                    "expected <softwarelist> or <softwarelists>, found <{other}>"
-                )));
-            }
-        };
-        let mut names = HashSet::new();
-        for list in &lists {
-            if !names.insert(list.name.as_str()) {
-                return Err(crate::Error::XmlValidation(format!(
-                    "duplicate software-list name {:?}",
-                    list.name.as_str()
-                )));
-            }
-        }
-        Ok(Self {
-            build,
-            lists,
-            extensions,
+                if event == Event::Eof {
+                    return Err(crate::Error::XmlValidation("missing document root".into()));
+                }
+            };
+            let (root, empty) = match event {
+                Event::Start(start) if start.local_name().as_ref() == "softwarelist" => {
+                    let mut extensions = Vec::new();
+                    let (list, build) = parse_list_events(
+                        reader,
+                        positions,
+                        namespace,
+                        &start,
+                        &mut budget,
+                        &mut extensions,
+                    )?;
+                    finish_softwarelist_document(reader, positions)?;
+                    return Ok(Self {
+                        build,
+                        lists: vec![list],
+                        extensions,
+                    });
+                }
+                Event::Empty(start) if start.local_name().as_ref() == "softwarelist" => {
+                    let node = xml_reader::element_from_start(
+                        reader,
+                        namespace,
+                        &start,
+                        &mut budget,
+                        0,
+                        positions,
+                    )?;
+                    let mut extensions = Vec::new();
+                    let _ = parse_empty_list(&node, &mut extensions)?;
+                    unreachable!("empty software lists have no items")
+                }
+                Event::Start(start) => (
+                    xml_reader::element_from_start(
+                        reader,
+                        namespace,
+                        &start,
+                        &mut budget,
+                        0,
+                        positions,
+                    )?,
+                    false,
+                ),
+                Event::Empty(start) => (
+                    xml_reader::element_from_start(
+                        reader,
+                        namespace,
+                        &start,
+                        &mut budget,
+                        0,
+                        positions,
+                    )?,
+                    true,
+                ),
+                _ => unreachable!(),
+            };
+            parse_softwarelists(reader, positions, &root, empty, &mut budget)
         })
     }
 }
 
-fn parse_list(node: &Element, extensions: &mut Vec<XmlExtension>) -> crate::Result<SoftwareList> {
+fn parse_softwarelists(
+    reader: &mut quick_xml::reader::NsReader<&[u8]>,
+    positions: &mut xml_reader::PositionMap<'_>,
+    root: &Element,
+    empty: bool,
+    budget: &mut NodeBudget,
+) -> crate::Result<SoftwareListCatalog> {
+    if root.name != "softwarelists" {
+        return Err(crate::Error::XmlValidation(format!(
+            "expected <softwarelist> or <softwarelists>, found <{}>",
+            root.name
+        )));
+    }
+    let build = root.attributes.get("build").cloned();
+    let mut extensions = Vec::new();
+    retain_unknown_attributes(root, &["build"], "document", None, &mut extensions);
+    let mut lists = Vec::new();
+    let mut names = HashSet::new();
+    if !empty {
+        loop {
+            let (namespace, event) = xml_reader::next(reader, positions)?;
+            match event {
+                Event::Start(start) if start.local_name().as_ref() == "softwarelist" => {
+                    let (list, _) = parse_list_events(
+                        reader,
+                        positions,
+                        namespace,
+                        &start,
+                        budget,
+                        &mut extensions,
+                    )?;
+                    insert_list(list, &mut names, &mut lists)?;
+                }
+                Event::Empty(start) if start.local_name().as_ref() == "softwarelist" => {
+                    let node = xml_reader::element_from_start(
+                        reader, namespace, &start, budget, 1, positions,
+                    )?;
+                    insert_list(
+                        parse_empty_list(&node, &mut extensions)?,
+                        &mut names,
+                        &mut lists,
+                    )?;
+                }
+                Event::Start(start) => {
+                    let node =
+                        xml_reader::read_element(reader, namespace, &start, budget, 1, positions)?;
+                    extensions.push(extension("document", None, &node)?);
+                }
+                Event::Empty(start) => {
+                    let node = xml_reader::element_from_start(
+                        reader, namespace, &start, budget, 1, positions,
+                    )?;
+                    extensions.push(extension("document", None, &node)?);
+                }
+                Event::End(_) => break,
+                Event::Eof => {
+                    return Err(crate::Error::XmlValidation(
+                        "unexpected end of input inside <softwarelists>".into(),
+                    ));
+                }
+                _ => {}
+            }
+        }
+    }
+    finish_softwarelist_document(reader, positions)?;
+    Ok(SoftwareListCatalog {
+        build,
+        lists,
+        extensions,
+    })
+}
+
+fn insert_list(
+    list: SoftwareList,
+    names: &mut HashSet<String>,
+    lists: &mut Vec<SoftwareList>,
+) -> crate::Result<()> {
+    if !names.insert(list.name.as_str().to_owned()) {
+        return Err(crate::Error::XmlValidation(format!(
+            "duplicate software-list name {:?}",
+            list.name.as_str()
+        )));
+    }
+    lists.push(list);
+    Ok(())
+}
+
+fn parse_empty_list(
+    node: &Element,
+    extensions: &mut Vec<XmlExtension>,
+) -> crate::Result<SoftwareList> {
     let name = SoftwareListName::new(required(node, "name")?);
     retain_unknown_attributes(
         node,
@@ -247,24 +370,97 @@ fn parse_list(node: &Element, extensions: &mut Vec<XmlExtension>) -> crate::Resu
         Some(name.as_str()),
         extensions,
     );
+    parse_list_parts(node, name, Vec::new())
+}
+
+fn parse_list_events(
+    reader: &mut quick_xml::reader::NsReader<&[u8]>,
+    positions: &mut xml_reader::PositionMap<'_>,
+    namespace: Option<String>,
+    start: &quick_xml::events::BytesStart<'_>,
+    budget: &mut NodeBudget,
+    extensions: &mut Vec<XmlExtension>,
+) -> crate::Result<(SoftwareList, Option<String>)> {
+    let node = xml_reader::element_from_start(reader, namespace, start, budget, 1, positions)?;
+    let name = SoftwareListName::new(required(&node, "name")?);
+    retain_unknown_attributes(
+        &node,
+        &["name", "description"],
+        "software_list",
+        Some(name.as_str()),
+        extensions,
+    );
     let mut items = Vec::new();
     let mut item_names = HashSet::<String>::new();
-    for child in node.children() {
-        match child.name.as_str() {
-            "software" => {
-                let item = parse_item(child, &name, extensions)?;
-                if !item_names.insert(item.name.as_str().to_owned()) {
-                    return Err(crate::Error::XmlValidation(format!(
-                        "duplicate software item {:?} in list {:?}",
-                        item.name.as_str(),
-                        name.as_str()
-                    )));
-                }
-                items.push(item);
+    loop {
+        let (namespace, event) = xml_reader::next(reader, positions)?;
+        let item_node = match event {
+            Event::Start(start) if start.local_name().as_ref() == "software" => Some(
+                xml_reader::read_element(reader, namespace, &start, budget, 2, positions)?,
+            ),
+            Event::Empty(start) if start.local_name().as_ref() == "software" => Some(
+                xml_reader::element_from_start(reader, namespace, &start, budget, 2, positions)?,
+            ),
+            Event::Start(start) => {
+                let unknown =
+                    xml_reader::read_element(reader, namespace, &start, budget, 2, positions)?;
+                extensions.push(extension("software_list", Some(name.as_str()), &unknown)?);
+                continue;
             }
-            _ => extensions.push(extension("software_list", Some(name.as_str()), child)?),
+            Event::Empty(start) => {
+                let unknown = xml_reader::element_from_start(
+                    reader, namespace, &start, budget, 2, positions,
+                )?;
+                extensions.push(extension("software_list", Some(name.as_str()), &unknown)?);
+                continue;
+            }
+            Event::End(_) => break,
+            Event::Eof => {
+                return Err(crate::Error::XmlValidation(
+                    "unexpected end of input inside <softwarelist>".into(),
+                ));
+            }
+            _ => continue,
+        };
+        if let Some(item_node) = item_node {
+            let item = parse_item(&item_node, &name, extensions)?;
+            if !item_names.insert(item.name.as_str().to_owned()) {
+                return Err(crate::Error::XmlValidation(format!(
+                    "duplicate software item {:?} in list {:?}",
+                    item.name.as_str(),
+                    name.as_str()
+                )));
+            }
+            items.push(item);
         }
     }
+    let build = node.attributes.get("build").cloned();
+    Ok((parse_list_parts(&node, name, items)?, build))
+}
+
+fn finish_softwarelist_document(
+    reader: &mut quick_xml::reader::NsReader<&[u8]>,
+    positions: &mut xml_reader::PositionMap<'_>,
+) -> crate::Result<()> {
+    loop {
+        match xml_reader::next(reader, positions)?.1 {
+            Event::Eof => return Ok(()),
+            Event::Text(text) if text.xml10_content().trim().is_empty() => {}
+            Event::Comment(_) | Event::PI(_) => {}
+            _ => {
+                return Err(crate::Error::XmlValidation(
+                    "content after the document root".into(),
+                ));
+            }
+        }
+    }
+}
+
+fn parse_list_parts(
+    node: &Element,
+    name: SoftwareListName,
+    items: Vec<SoftwareItem>,
+) -> crate::Result<SoftwareList> {
     if items.is_empty() {
         return Err(crate::Error::XmlValidation(format!(
             "software list {:?} has no software items",
@@ -773,8 +969,7 @@ fn extension(
     record_name: Option<&str>,
     node: &Element,
 ) -> crate::Result<XmlExtension> {
-    let value = serde_json::to_value(node)
-        .map_err(|error| crate::Error::XmlValidation(error.to_string()))?;
+    let value = ExtensionValue::encode(node)?;
     Ok(XmlExtension {
         record_kind: record_kind.into(),
         record_name: record_name.map(str::to_owned),
@@ -808,7 +1003,7 @@ fn retain_unknown_attributes(
             record_name: record_name.map(str::to_owned),
             field_name,
             namespace_uri,
-            value: serde_json::json!(raw_value),
+            value: serde_json::json!(raw_value).into(),
             location: node.location,
         });
     }
@@ -906,7 +1101,7 @@ mod tests {
         }));
         assert!(catalog.extensions.iter().any(|extension| {
             extension.field_name == "@future-flag"
-                && extension.value == serde_json::json!("retained")
+                && extension.value == serde_json::json!("retained").into()
                 && extension.record_name.as_deref() == Some("demo_cart:demo_game")
         }));
         Ok(())
@@ -955,7 +1150,7 @@ mod tests {
                 .iter()
                 .filter(|extension| {
                     extension.field_name == "@future-root"
-                        && extension.value == serde_json::json!("kept")
+                        && extension.value == serde_json::json!("kept").into()
                 })
                 .count(),
             1
@@ -963,22 +1158,24 @@ mod tests {
         assert!(catalog.extensions.iter().any(|extension| {
             extension.record_kind == "software_list"
                 && extension.field_name == "@future-root"
-                && extension.value == serde_json::json!("kept")
+                && extension.value == serde_json::json!("kept").into()
         }));
         assert!(catalog.extensions.iter().any(|extension| {
             extension.record_kind == "software_item"
                 && extension.field_name == "@future-text-attribute"
-                && extension.value == serde_json::json!("retained")
+                && extension.value == serde_json::json!("retained").into()
         }));
         assert!(catalog.extensions.iter().any(|extension| {
             extension.record_kind == "software_rom"
                 && extension.field_name == "element:future-component-claim"
-                && extension.value["attributes"]["value"] == "kept"
+                && serde_json::from_str::<serde_json::Value>(extension.value.as_str())
+                    .is_ok_and(|value| value["attributes"]["value"] == "kept")
         }));
         assert!(catalog.extensions.iter().any(|extension| {
             extension.record_kind == "software_disk"
                 && extension.field_name == "element:future-disk-claim"
-                && extension.value["attributes"]["value"] == "also-kept"
+                && serde_json::from_str::<serde_json::Value>(extension.value.as_str())
+                    .is_ok_and(|value| value["attributes"]["value"] == "also-kept")
         }));
         Ok(())
     }

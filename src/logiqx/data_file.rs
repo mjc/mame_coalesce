@@ -1,26 +1,24 @@
-use std::io::{Cursor, Read};
+use std::io::Read;
 
 use camino::Utf8Path;
 use fmmap::MmapFileExt;
-use serde::Deserialize;
-use xml::common::Position;
-use xml::reader::{ParserConfig, XmlEvent};
+use quick_xml::events::Event;
 
 use super::game::Game;
 use super::header::Header;
 
-use crate::{document_input, hashes};
+use crate::{
+    document_input, hashes,
+    xml_reader::{self, Element, NodeBudget},
+};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub struct DataFile {
     file_name: Option<String>,
-    #[serde(rename = "@build", default)]
     build: Option<String>,
-    #[serde(rename = "@debug", default)]
     debug: Option<String>, // bool
     header: Header,
     sha1: Option<Vec<u8>>,
-    #[serde(rename = "game", default)]
     games: Vec<Game>,
 }
 
@@ -76,31 +74,103 @@ impl DataFile {
     }
 
     pub(crate) fn validate_document_bytes(raw: &[u8]) -> crate::Result<()> {
-        let xml = document_input::decode_xml(raw)?;
-        validate_xml(&xml).map(|_| ())
+        Self::parse_bytes(raw).map(|_| ())
     }
 
     fn parse_bytes(raw: &[u8]) -> crate::Result<(Self, XmlSourceMap)> {
-        let xml = document_input::decode_xml(raw)?;
-        let source_map = validate_xml(&xml)?;
-        let data_file = serde_xml_rs::SerdeXml::new()
-            .parser(
-                ParserConfig::new()
-                    .trim_whitespace(true)
-                    .whitespace_to_characters(true)
-                    .cdata_to_characters(true)
-                    .ignore_comments(true)
-                    .coalesce_characters(true)
-                    .max_entity_expansion_length(1024)
-                    .max_entity_expansion_depth(4)
-                    .max_name_length(4096)
-                    .max_attributes(1024)
-                    .max_attribute_length(1024 * 1024)
-                    .max_data_length(1024 * 1024)
-                    .allow_multiple_root_elements(false),
-            )
-            .from_reader(Cursor::new(xml.as_ref()))?;
-        Ok((data_file, source_map))
+        xml_reader::with_reader(raw, |reader, positions| {
+            let mut budget = NodeBudget::default();
+            let (root, empty) = read_datafile_root(reader, positions, &mut budget)?;
+            let mut source_map = XmlSourceMap::default();
+            collect_unsupported_attributes(&root, None, &mut source_map);
+            let build = root.attributes.get("build").cloned();
+            let debug = root.attributes.get("debug").cloned();
+            let mut header = None;
+            let mut file_name = None;
+            let mut sha1 = None;
+            let mut games = Vec::new();
+            if !empty {
+                loop {
+                    let (namespace, event) = xml_reader::next(reader, positions)?;
+                    let node = match event {
+                        Event::Start(start) => Some(xml_reader::read_element(
+                            reader,
+                            namespace,
+                            &start,
+                            &mut budget,
+                            1,
+                            positions,
+                        )?),
+                        Event::Empty(start) => Some(xml_reader::element_from_start(
+                            reader,
+                            namespace,
+                            &start,
+                            &mut budget,
+                            1,
+                            positions,
+                        )?),
+                        Event::End(_) => break,
+                        Event::Eof => {
+                            return Err(crate::Error::XmlValidation(
+                                "unexpected end of input inside <datafile>".into(),
+                            ));
+                        }
+                        _ => None,
+                    };
+                    let Some(node) = node else { continue };
+                    match local_name(&node.name) {
+                        "header" => {
+                            if header.replace(Header::from_xml(&node)?).is_some() {
+                                return Err(crate::Error::XmlValidation(
+                                    "duplicate <header> in <datafile>".into(),
+                                ));
+                            }
+                            collect_subtree_attributes(&node, None, &mut source_map);
+                        }
+                        "game" => {
+                            let game_index = games.len();
+                            source_map.game_locations.push(node.location);
+                            source_map.rom_locations.push(Vec::new());
+                            source_map.device_ref_locations.push(Vec::new());
+                            collect_game_source_map(&node, game_index, &mut source_map);
+                            games.push(Game::from_xml(&node)?);
+                        }
+                        "file_name" => set_once(&mut file_name, node.direct_text(), "file_name")?,
+                        "sha1" => {
+                            let value = node.direct_text();
+                            let value = value.trim();
+                            let digest = hex::decode(value).map_err(|error| {
+                                crate::Error::XmlValidation(format!(
+                                    "invalid datafile SHA1: {error}"
+                                ))
+                            })?;
+                            if digest.len() != 20 {
+                                return Err(crate::Error::XmlValidation(
+                                    "datafile SHA1 must be 20 bytes".into(),
+                                ));
+                            }
+                            set_once(&mut sha1, digest, "sha1")?;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            finish_document(reader, positions)?;
+            let header = header.ok_or_else(|| {
+                crate::Error::XmlValidation("missing required <datafile><header>".into())
+            })?;
+            Ok((
+                Self {
+                    file_name,
+                    build,
+                    debug,
+                    header,
+                    sha1,
+                    games,
+                },
+                source_map,
+            ))
+        })
     }
 
     /// Get a reference to the data file's header.
@@ -140,108 +210,127 @@ impl DataFile {
     }
 }
 
-fn validate_xml(bytes: &[u8]) -> crate::Result<XmlSourceMap> {
-    if contains_entity_declaration(bytes)
-        .map_err(|()| crate::Error::XmlValidation("malformed UTF-16 encoding".into()))?
-    {
-        return Err(crate::Error::XmlEntityNotAllowed);
+fn read_datafile_root(
+    reader: &mut quick_xml::reader::NsReader<&[u8]>,
+    positions: &mut xml_reader::PositionMap<'_>,
+    budget: &mut NodeBudget,
+) -> crate::Result<(Element, bool)> {
+    let (namespace, event) = loop {
+        let (namespace, event) = xml_reader::next(reader, positions)?;
+        if matches!(event, Event::Start(_) | Event::Empty(_)) {
+            break (namespace, event);
+        }
+        if event == Event::Eof {
+            return Err(crate::Error::XmlValidation("missing document root".into()));
+        }
+    };
+    let (root, empty) = match event {
+        Event::Start(start) => (
+            xml_reader::element_from_start(reader, namespace, &start, budget, 0, positions)?,
+            false,
+        ),
+        Event::Empty(start) => (
+            xml_reader::element_from_start(reader, namespace, &start, budget, 0, positions)?,
+            true,
+        ),
+        _ => unreachable!(),
+    };
+    if local_name(&root.name) != "datafile" {
+        return Err(crate::Error::XmlValidation(format!(
+            "expected <datafile>, found <{}>",
+            root.name
+        )));
     }
-    let config = ParserConfig::new()
-        .max_entity_expansion_length(1024)
-        .max_entity_expansion_depth(4)
-        .max_name_length(4096)
-        .max_attributes(1024)
-        .max_attribute_length(1024 * 1024)
-        .max_data_length(1024 * 1024)
-        .allow_multiple_root_elements(false);
-    let mut reader = config.create_reader(bytes);
-    let mut source_map = XmlSourceMap::default();
-    let mut element_depth = 0_usize;
-    let mut datafile_root = false;
-    let mut current_game: Option<(usize, usize)> = None;
+    Ok((root, empty))
+}
+
+fn set_once<T>(slot: &mut Option<T>, value: T, name: &str) -> crate::Result<()> {
+    if slot.replace(value).is_some() {
+        return Err(crate::Error::XmlValidation(format!(
+            "duplicate <{name}> in <datafile>"
+        )));
+    }
+    Ok(())
+}
+
+fn finish_document(
+    reader: &mut quick_xml::reader::NsReader<&[u8]>,
+    positions: &mut xml_reader::PositionMap<'_>,
+) -> crate::Result<()> {
     loop {
-        let event = reader.next();
-        match event {
-            Ok(XmlEvent::StartElement {
-                name, attributes, ..
-            }) => {
-                let local_name = name.local_name;
-                if element_depth == 0 {
-                    datafile_root = local_name == "datafile";
-                }
-                let position = reader.position();
-                let location = RecordLocation {
-                    line: i64::try_from(position.row.saturating_add(1)).unwrap_or(i64::MAX),
-                    column: i64::try_from(position.column.saturating_add(1)).unwrap_or(i64::MAX),
-                };
-                let record_name = attributes
-                    .iter()
-                    .find(|attribute| attribute.name.local_name == "name")
-                    .map(|attribute| attribute.value.clone());
-                match local_name.as_str() {
-                    "game" if datafile_root && element_depth == 1 => {
-                        let game_index = source_map.game_locations.len();
-                        current_game = Some((game_index, element_depth));
-                        source_map.game_locations.push(location);
-                        source_map.rom_locations.push(Vec::new());
-                        source_map.device_ref_locations.push(Vec::new());
-                    }
-                    "rom" if element_depth == 2 => {
-                        if let Some((index, game_depth)) = current_game
-                            && game_depth + 1 == element_depth
-                        {
-                            source_map.rom_locations[index].push(location);
-                        }
-                    }
-                    "device_ref" => {
-                        if let Some((index, game_depth)) = current_game
-                            && game_depth + 1 == element_depth
-                        {
-                            source_map.device_ref_locations[index].push(location);
-                        }
-                    }
-                    _ => {}
-                }
-                element_depth = element_depth.saturating_add(1);
-                for attribute in &attributes {
-                    if attribute.name.namespace.is_some()
-                        || !known_attribute(&local_name, &attribute.name.local_name)
-                    {
-                        let record_kind = match local_name.as_str() {
-                            "game" => "game",
-                            "rom" => "rom",
-                            _ if current_game.is_some() => local_name.as_str(),
-                            _ => "document",
-                        };
-                        source_map
-                            .unsupported_attributes
-                            .push(UnsupportedAttribute {
-                                record_kind: record_kind.to_owned(),
-                                record_name: record_name.clone(),
-                                field_name: attribute.name.local_name.clone(),
-                                namespace_uri: attribute.name.namespace.clone(),
-                                value: attribute.value.clone(),
-                                location,
-                            });
-                    }
-                }
+        match xml_reader::next(reader, positions)?.1 {
+            Event::Eof => return Ok(()),
+            Event::Text(text) if text.xml10_content().trim().is_empty() => {}
+            Event::Comment(_) | Event::PI(_) => {}
+            _ => {
+                return Err(crate::Error::XmlValidation(
+                    "content after the document root".into(),
+                ));
             }
-            Ok(XmlEvent::EndElement { name }) => {
-                if name.local_name == "game"
-                    && current_game.is_some_and(|(_, game_depth)| game_depth + 1 == element_depth)
-                {
-                    current_game = None;
-                }
-                element_depth = element_depth.saturating_sub(1);
-            }
-            Ok(XmlEvent::EndDocument) => break,
-            // xml-rs reports declarations without fetching external subsets.
-            // Entity declarations were rejected above.
-            Ok(XmlEvent::Doctype { .. } | _) => {}
-            Err(error) => return Err(crate::Error::XmlValidation(error.to_string())),
         }
     }
-    Ok(source_map)
+}
+
+fn local_name(name: &str) -> &str {
+    name.rsplit_once('}').map_or(name, |(_, local)| local)
+}
+
+fn collect_game_source_map(element: &Element, game_index: usize, source_map: &mut XmlSourceMap) {
+    collect_unsupported_attributes(element, Some(game_index), source_map);
+    for child in element.children() {
+        match local_name(&child.name) {
+            "rom" => source_map.rom_locations[game_index].push(child.location),
+            "device_ref" => source_map.device_ref_locations[game_index].push(child.location),
+            _ => {}
+        }
+        collect_subtree_attributes(child, Some(game_index), source_map);
+    }
+}
+
+fn collect_subtree_attributes(
+    element: &Element,
+    in_game: Option<usize>,
+    source_map: &mut XmlSourceMap,
+) {
+    collect_unsupported_attributes(element, in_game, source_map);
+    for child in element.children() {
+        collect_subtree_attributes(child, in_game, source_map);
+    }
+}
+
+fn collect_unsupported_attributes(
+    element: &Element,
+    in_game: Option<usize>,
+    source_map: &mut XmlSourceMap,
+) {
+    let element_name = local_name(&element.name);
+    let record_name = element.attributes.get("name").cloned();
+    for (attribute_name, value) in &element.attributes {
+        let (namespace_uri, field_name) = attribute_name
+            .strip_prefix('{')
+            .and_then(|name| name.split_once('}'))
+            .map_or((None, attribute_name.as_str()), |(namespace, local)| {
+                (Some(namespace.to_owned()), local)
+            });
+        if namespace_uri.is_some() || !known_attribute(element_name, field_name) {
+            let record_kind = match element_name {
+                "game" => "game",
+                "rom" => "rom",
+                _ if in_game.is_some() => element_name,
+                _ => "document",
+            };
+            source_map
+                .unsupported_attributes
+                .push(UnsupportedAttribute {
+                    record_kind: record_kind.to_owned(),
+                    record_name: record_name.clone(),
+                    field_name: field_name.to_owned(),
+                    namespace_uri,
+                    value: value.clone(),
+                    location: element.location,
+                });
+        }
+    }
 }
 
 fn known_attribute(element: &str, attribute: &str) -> bool {
@@ -264,111 +353,6 @@ fn known_attribute(element: &str, attribute: &str) -> bool {
         _ => &[][..],
     };
     known.contains(&attribute)
-}
-
-pub fn contains_entity_declaration(bytes: &[u8]) -> Result<bool, ()> {
-    let decoded = utf16_inspection_bytes(bytes)?;
-    let bytes = decoded.as_deref().unwrap_or(bytes);
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index..].starts_with(b"<!--") {
-            index = after_markup(bytes, index + b"<!--".len(), b"-->");
-        } else if bytes[index..].starts_with(b"<![CDATA[") {
-            index = after_markup(bytes, index + b"<![CDATA[".len(), b"]]>");
-        } else if bytes[index..].starts_with(b"<?") {
-            index = after_markup(bytes, index + b"<?".len(), b"?>");
-        } else if bytes[index..].starts_with(b"<!DOCTYPE") {
-            let (has_entity, end) =
-                doctype_contains_entity_declaration(bytes, index + b"<!DOCTYPE".len());
-            if has_entity {
-                return Ok(true);
-            }
-            index = end;
-        } else {
-            index += 1;
-        }
-    }
-    Ok(false)
-}
-
-/// Return a byte-oriented inspection view for UTF-16, preserving ASCII markup
-/// while replacing non-ASCII characters with non-markup bytes.
-fn utf16_inspection_bytes(bytes: &[u8]) -> Result<Option<Vec<u8>>, ()> {
-    let (encoding, start) = if bytes.starts_with(&[0xFE, 0xFF]) {
-        (Some(true), 2)
-    } else if bytes.starts_with(&[0xFF, 0xFE]) {
-        (Some(false), 2)
-    } else if bytes.starts_with(b"<\0") {
-        (Some(false), 0)
-    } else if bytes.starts_with(b"\0<") {
-        (Some(true), 0)
-    } else {
-        (None, 0)
-    };
-    let Some(big_endian) = encoding else {
-        return Ok(None);
-    };
-    let encoded = bytes.get(start..).ok_or(())?;
-    let (pairs, remainder) = encoded.as_chunks::<2>();
-    if !remainder.is_empty() {
-        return Err(());
-    }
-    let units = pairs.iter().map(|pair| {
-        if big_endian {
-            u16::from_be_bytes([pair[0], pair[1]])
-        } else {
-            u16::from_le_bytes([pair[0], pair[1]])
-        }
-    });
-    let mut inspection = Vec::with_capacity(encoded.len() / 2);
-    for character in char::decode_utf16(units) {
-        let character = character.map_err(|_| ())?;
-        inspection.push(if character.is_ascii() {
-            character as u8
-        } else {
-            0x80
-        });
-    }
-    Ok(Some(inspection))
-}
-
-fn doctype_contains_entity_declaration(bytes: &[u8], mut index: usize) -> (bool, usize) {
-    let mut subset_depth = 0_usize;
-    let mut quote = None;
-    while index < bytes.len() {
-        if let Some(delimiter) = quote {
-            if bytes[index] == delimiter {
-                quote = None;
-            }
-            index += 1;
-        } else if bytes[index..].starts_with(b"<!--") {
-            index = after_markup(bytes, index + b"<!--".len(), b"-->");
-        } else if bytes[index..].starts_with(b"<?") {
-            index = after_markup(bytes, index + b"<?".len(), b"?>");
-        } else if bytes[index..].starts_with(b"<!ENTITY") && subset_depth > 0 {
-            return (true, index + b"<!ENTITY".len());
-        } else {
-            match bytes[index] {
-                b'\'' | b'"' => quote = Some(bytes[index]),
-                b'[' => subset_depth += 1,
-                b']' => subset_depth = subset_depth.saturating_sub(1),
-                b'>' if subset_depth == 0 => return (false, index + 1),
-                _ => {}
-            }
-            index += 1;
-        }
-    }
-    (false, bytes.len())
-}
-
-fn after_markup(bytes: &[u8], mut index: usize, terminator: &[u8]) -> usize {
-    while index < bytes.len() {
-        if bytes[index..].starts_with(terminator) {
-            return index + terminator.len();
-        }
-        index += 1;
-    }
-    bytes.len()
 }
 
 #[cfg(test)]
@@ -578,11 +562,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_malformed_utf16_before_declaration_inspection_can_be_bypassed() {
-        assert!(matches!(
-            contains_entity_declaration(&[0xFF, 0xFE, b'<']),
-            Err(())
-        ));
+    fn rejects_malformed_utf16_during_streaming_decode() {
         assert!(matches!(
             DataFile::from_reader([0xFF, 0xFE, b'<'].as_slice()),
             Err(crate::Error::XmlValidation(_))
@@ -590,18 +570,13 @@ mod tests {
     }
 
     #[test]
-    fn malformed_repeated_doctype_prefixes_are_scanned_once_and_fail_xml_validation() {
+    fn malformed_repeated_doctype_prefixes_fail_during_streaming_parse() {
         let prefix = b"<!DOCTYPE";
         let mut malformed = Vec::with_capacity(prefix.len() * 4096);
         for _ in 0..4096 {
             malformed.extend_from_slice(prefix);
         }
-        let (_, end) = doctype_contains_entity_declaration(&malformed, prefix.len());
-        assert_eq!(end, malformed.len());
-        assert!(matches!(
-            DataFile::from_reader(malformed.as_slice()),
-            Err(crate::Error::XmlValidation(_))
-        ));
+        assert!(DataFile::from_reader(malformed.as_slice()).is_err());
     }
 
     fn utf16_bytes(value: &str, big_endian: bool) -> Vec<u8> {

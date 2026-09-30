@@ -155,6 +155,36 @@ struct FailedLocationRow {
     source_column: Option<i64>,
 }
 
+#[derive(QueryableByName, PartialEq, Debug)]
+struct ImportDiagnosticRow {
+    #[diesel(sql_type = Text)]
+    code: String,
+    #[diesel(sql_type = Text)]
+    message: String,
+    #[diesel(sql_type = Nullable<Text>)]
+    record_kind: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    record_name: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    field_name: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    raw_value_json: Option<String>,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    source_line: Option<i64>,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    source_column: Option<i64>,
+}
+
+#[derive(QueryableByName)]
+struct StoredExtensionRow {
+    #[diesel(sql_type = Text)]
+    field_name: String,
+    #[diesel(sql_type = Nullable<Text>)]
+    namespace_uri: Option<String>,
+    #[diesel(sql_type = Text)]
+    value: String,
+}
+
 fn setup() -> Result<(tempfile::TempDir, Database, SqliteConnection), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("catalog.sqlite");
@@ -162,6 +192,28 @@ fn setup() -> Result<(tempfile::TempDir, Database, SqliteConnection), Box<dyn st
         Database::open(&Utf8PathBuf::from_path_buf(path.clone()).map_err(|_| "non-UTF8 db path")?)?;
     let connection = SqliteConnection::establish(path.to_str().ok_or("non-UTF8 db path")?)?;
     Ok((directory, database, connection))
+}
+
+fn retained_document(
+    directory: &tempfile::TempDir,
+    key: &DocumentKey,
+) -> mame_coalesce::Result<Vec<u8>> {
+    let path = Utf8PathBuf::from_path_buf(directory.path().join("catalog.sqlite"))
+        .map_err(|path| mame_coalesce::Error::InvalidPath(path.display().to_string()))?;
+    mame_coalesce::DocumentStore::open(path.as_str())?.load(key)
+}
+
+fn retained_document_for_run(
+    directory: &tempfile::TempDir,
+    connection: &mut SqliteConnection,
+    run_key: &str,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let key = sql_query("SELECT document_key AS value FROM import_runs WHERE run_key = ?")
+        .bind::<Text, _>(run_key)
+        .get_result::<TextRow>(connection)?
+        .value
+        .parse::<DocumentKey>()?;
+    Ok(retained_document(directory, &key)?)
 }
 
 fn fixture(name: &str) -> PathBuf {
@@ -376,7 +428,7 @@ fn publishing_completes_a_matching_identity_only_snapshot() -> Result<(), Box<dy
 #[test]
 fn imports_no_intro_pc_xml_metadata_without_inventing_title_relationships()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (_directory, database, mut connection) = setup()?;
+    let (directory, database, mut connection) = setup()?;
     let request = no_intro_request()?;
     let report = app::import_catalog(&database, &request)?;
     let repeated = app::import_catalog(&database, &request)?;
@@ -476,6 +528,7 @@ fn imports_no_intro_pc_xml_metadata_without_inventing_title_relationships()
     assert_eq!(retained_unknown.value, "\"retained\"");
 
     assert_no_intro_retained_document(
+        &directory,
         &mut connection,
         snapshot.as_str(),
         request.document_path.as_std_path(),
@@ -485,17 +538,19 @@ fn imports_no_intro_pc_xml_metadata_without_inventing_title_relationships()
 }
 
 fn assert_no_intro_retained_document(
+    directory: &tempfile::TempDir,
     connection: &mut SqliteConnection,
     snapshot: &str,
     path: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let document = sql_query(
-        "SELECT payload AS value FROM documents \
+        "SELECT document_key AS value FROM documents \
          JOIN catalog_snapshots USING (document_key) WHERE snapshot_key = ?",
     )
     .bind::<Text, _>(snapshot)
-    .get_result::<BytesRow>(connection)?;
-    assert_eq!(document.value, std::fs::read(path)?);
+    .get_result::<TextRow>(connection)?;
+    let key = document.value.parse::<DocumentKey>()?;
+    assert_eq!(retained_document(directory, &key)?, std::fs::read(path)?);
     let format_hint = sql_query(
         "SELECT documents.format_hint AS value FROM documents \
          JOIN catalog_snapshots USING (document_key) WHERE snapshot_key = ?",
@@ -898,6 +953,301 @@ fn imports_mame_relationship_asset_fields_extensions_and_format_hint()
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<NullableTextRow>(&mut connection)?;
     assert_eq!(format_hint.value.as_deref(), Some("mame-listxml"));
+    Ok(())
+}
+
+#[test]
+fn failed_late_mame_duplicate_does_not_publish_streamed_records()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, mut connection) = setup()?;
+    let path = directory.path().join("late-duplicate-machine.xml");
+    let document = br#"<mame xmlns:vendor="urn:vendor">
+      <machine name="alpha" cloneof="parent">
+        <rom name="alpha.rom" size="4" crc="12345678"/>
+        <vendor:extra mode="preserve">unknown</vendor:extra>
+      </machine>
+      <machine name="alpha"><description>duplicate</description></machine>
+      <machine name="parent"><rom name="parent.rom" size="4" crc="12345678"/></machine>
+    </mame>"#;
+    std::fs::write(&path, document)?;
+    let mut import = request(
+        path,
+        "mame-late-duplicate",
+        "mame-late-duplicate",
+        "MAME late duplicate",
+    )?;
+    import.format = CatalogDocumentFormat::MameListXml;
+
+    let failed = app::import_catalog(&database, &import)?;
+    assert_eq!(failed.status, app::CatalogImportStatus::Failed);
+    assert!(failed.snapshot_key.is_none());
+    assert!(failed.diagnostic_count > 0);
+    for table in [
+        "catalog_snapshots",
+        "snapshot_publications",
+        "snapshot_sets",
+        "asset_requirements",
+        "snapshot_extensions",
+        "relationship_assertions",
+    ] {
+        assert_eq!(
+            count(&mut connection, table)?,
+            0,
+            "unexpected rows in {table}"
+        );
+    }
+    let run_diagnostic = sql_query(
+        "SELECT diagnostic AS value FROM import_runs WHERE run_key = ? AND status = 'failed'",
+    )
+    .bind::<Text, _>(failed.run_key.to_string())
+    .get_result::<NullableTextRow>(&mut connection)?;
+    assert!(run_diagnostic.value.is_some());
+    assert_eq!(
+        retained_document_for_run(&directory, &mut connection, &failed.run_key.to_string())?,
+        document,
+    );
+    Ok(())
+}
+
+#[test]
+fn mame_merge_rom_resolves_when_parent_machine_follows_child()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, mut connection) = setup()?;
+    let mut snapshots = Vec::new();
+    for (file, machines) in [
+        (
+            "parent-first.xml",
+            "<machine name=\"parent\"><rom name=\"shared.rom\" size=\"4\" crc=\"12345678\"/></machine><machine name=\"child\" romof=\"parent\"><rom name=\"child.rom\" merge=\"shared.rom\" size=\"4\" crc=\"12345678\"/></machine>",
+        ),
+        (
+            "child-first.xml",
+            "<machine name=\"child\" romof=\"parent\"><rom name=\"child.rom\" merge=\"shared.rom\" size=\"4\" crc=\"12345678\"/></machine><machine name=\"parent\"><rom name=\"shared.rom\" size=\"4\" crc=\"12345678\"/></machine>",
+        ),
+    ] {
+        let path = directory.path().join(file);
+        std::fs::write(&path, format!("<mame>{machines}</mame>"))?;
+        let mut import = request(
+            path,
+            "mame-merge-order",
+            "mame-merge-order",
+            "MAME merge order",
+        )?;
+        import.format = CatalogDocumentFormat::MameListXml;
+        let report = app::import_catalog(&database, &import)?;
+        snapshots.push(report.snapshot_key.ok_or("MAME snapshot missing")?);
+    }
+    assert_eq!(count(&mut connection, "catalog_snapshots")?, 2);
+
+    let mut resolved = Vec::new();
+    for snapshot in &snapshots {
+        let asset = sql_query(
+            "SELECT asset_name || ':' || merge_name || ':' || hex(crc) AS value \
+             FROM asset_requirements WHERE snapshot_key = ? AND set_name = 'child'",
+        )
+        .bind::<Text, _>(snapshot.as_str())
+        .get_result::<TextRow>(&mut connection)?;
+        let relation = sql_query(
+            "SELECT target_key AS value FROM relationship_assertions \
+             WHERE source_snapshot_key = ? AND source_field = 'merge'",
+        )
+        .bind::<Text, _>(snapshot.as_str())
+        .get_result::<TextRow>(&mut connection)?;
+        resolved.push((asset.value, relation.value));
+    }
+    assert_eq!(
+        resolved[0],
+        (
+            "child.rom:shared.rom:12345678".into(),
+            "[\"parent\",\"shared.rom\",0]".into()
+        )
+    );
+    assert_eq!(resolved[1], resolved[0]);
+    Ok(())
+}
+
+#[test]
+fn mame_forward_merges_resolve_across_asset_pagination() -> Result<(), Box<dyn std::error::Error>> {
+    use std::fmt::Write as _;
+
+    const ASSET_COUNT: usize = 300;
+
+    let (directory, database, mut connection) = setup()?;
+    let path = directory.path().join("forward-merges-across-pages.xml");
+    let mut document = String::from("<mame><machine name=\"child\" romof=\"parent\">");
+    for index in 0..ASSET_COUNT {
+        write!(
+            document,
+            "<rom name=\"child-{index:03}.rom\" merge=\"parent-{index:03}.rom\" size=\"4\" crc=\"12345678\"/>"
+        )?;
+    }
+    document.push_str("</machine><machine name=\"parent\">");
+    for index in 0..ASSET_COUNT {
+        write!(
+            document,
+            "<rom name=\"parent-{index:03}.rom\" size=\"4\" crc=\"12345678\"/>"
+        )?;
+    }
+    document.push_str("</machine></mame>");
+    std::fs::write(&path, document)?;
+
+    let mut import = request(
+        path,
+        "mame-paginated-merges",
+        "mame-paginated-merges",
+        "MAME paginated merges",
+    )?;
+    import.format = CatalogDocumentFormat::MameListXml;
+    let report = app::import_catalog(&database, &import)?;
+    let snapshot = report.snapshot_key.ok_or("MAME snapshot missing")?;
+
+    let assertion_counts = sql_query(
+        "SELECT COUNT(*) || ':' || COUNT(DISTINCT subject_key) || ':' || \
+                COUNT(DISTINCT target_key) AS value \
+         FROM relationship_assertions \
+         WHERE source_snapshot_key = ? AND relation_type = 'exact_content_identity' \
+           AND source_field = 'merge'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(&mut connection)?;
+    assert_eq!(
+        assertion_counts.value,
+        format!("{ASSET_COUNT}:{ASSET_COUNT}:{ASSET_COUNT}")
+    );
+    Ok(())
+}
+
+#[test]
+fn mame_asset_storage_error_rolls_back_staged_import_and_keeps_document()
+-> Result<(), Box<dyn std::error::Error>> {
+    use diesel::connection::SimpleConnection;
+
+    let (directory, database, mut connection) = setup()?;
+    connection.batch_execute(
+        "CREATE TRIGGER reject_asset_insert BEFORE INSERT ON asset_requirements \
+         BEGIN SELECT RAISE(ABORT, 'injected asset insert failure'); END;",
+    )?;
+    let path = directory.path().join("asset-insert-storage-error.xml");
+    let document = br#"<mame xmlns:vendor="urn:rollback" vendor:flag="staged"><machine name="set"><rom name="set.rom" size="4" crc="12345678"/></machine></mame>"#;
+    std::fs::write(&path, document)?;
+    let mut import = request(
+        path,
+        "mame-storage-error",
+        "mame-storage-error",
+        "MAME storage error",
+    )?;
+    import.format = CatalogDocumentFormat::MameListXml;
+
+    let error = match app::import_catalog(&database, &import) {
+        Ok(report) => {
+            return Err(io::Error::other(format!(
+                "injected SQLite failure returned import report with status {}",
+                report.status.as_str()
+            ))
+            .into());
+        }
+        Err(error) => error,
+    };
+    assert!(matches!(
+        &error,
+        mame_coalesce::Error::Diesel(diesel::result::Error::DatabaseError(..))
+    ));
+    assert!(error.to_string().contains("injected asset insert failure"));
+
+    for table in [
+        "catalog_snapshots",
+        "snapshot_publications",
+        "snapshot_sets",
+        "asset_requirements",
+        "snapshot_extensions",
+        "relationship_assertions",
+        "import_runs",
+        "import_diagnostics",
+    ] {
+        assert_eq!(
+            count(&mut connection, table)?,
+            0,
+            "unexpected rows in {table}"
+        );
+    }
+    assert_eq!(count(&mut connection, "documents")?, 1);
+    let document_key = sql_query("SELECT document_key AS value FROM documents")
+        .get_result::<TextRow>(&mut connection)?
+        .value
+        .parse::<DocumentKey>()?;
+    assert_eq!(retained_document(&directory, &document_key)?, document);
+    Ok(())
+}
+
+#[test]
+fn mame_nested_unknown_extension_and_reimport_keep_semantics_and_diagnostics()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, mut connection) = setup()?;
+    let path = directory.path().join("nested-extension.xml");
+    std::fs::write(
+        &path,
+        br#"<mame xmlns:v="urn:vendor"><machine name="alpha"><description>Alpha</description><v:payload code="A &amp; B">left &lt;middle&gt;<v:part code="x">inside &amp; out</v:part> right</v:payload></machine></mame>"#,
+    )?;
+    let mut import = request(
+        path,
+        "mame-nested-extension",
+        "mame-nested-extension",
+        "MAME nested extension",
+    )?;
+    import.format = CatalogDocumentFormat::MameListXml;
+
+    let first = app::import_catalog(&database, &import)?;
+    let snapshot = first.snapshot_key.ok_or("MAME snapshot missing")?;
+    let first_diagnostics = sql_query(
+        "SELECT code, message, record_kind, record_name, field_name, raw_value_json, source_line, source_column \
+         FROM import_diagnostics WHERE run_key = ? \
+         ORDER BY code, message, record_kind, record_name, field_name, source_line, source_column",
+    )
+    .bind::<Text, _>(first.run_key.to_string())
+    .load::<ImportDiagnosticRow>(&mut connection)?;
+    assert!(!first_diagnostics.is_empty());
+
+    let extension = sql_query(
+        "SELECT field_name, namespace_uri, raw_value_json AS value FROM snapshot_extensions \
+         WHERE snapshot_key = ? AND record_kind = 'machine' AND record_name = 'alpha' \
+           AND field_name = 'element:payload'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<StoredExtensionRow>(&mut connection)?;
+    assert_eq!(extension.field_name, "element:payload");
+    assert_eq!(extension.namespace_uri.as_deref(), Some("urn:vendor"));
+    let extension_json: serde_json::Value = serde_json::from_str(&extension.value)?;
+    assert_eq!(extension_json["name"], "{urn:vendor}payload");
+    assert_eq!(extension_json["attributes"]["code"], "A & B");
+    assert_eq!(
+        extension_json["content"],
+        serde_json::json!([
+            {"kind": "text", "value": "left "},
+            {"kind": "text", "value": "<"},
+            {"kind": "text", "value": "middle"},
+            {"kind": "text", "value": ">"},
+            {"kind": "element", "value": {
+                "name": "{urn:vendor}part", "attributes": {"code": "x"},
+                "content": [
+                    {"kind": "text", "value": "inside "},
+                    {"kind": "text", "value": "&"},
+                    {"kind": "text", "value": " out"}
+                ]
+            }},
+            {"kind": "text", "value": " right"}
+        ])
+    );
+
+    let repeated = app::import_catalog(&database, &import)?;
+    assert_eq!(repeated.snapshot_key.as_ref(), Some(&snapshot));
+    assert_eq!(count(&mut connection, "catalog_snapshots")?, 1);
+    let repeated_diagnostics = sql_query(
+        "SELECT code, message, record_kind, record_name, field_name, raw_value_json, source_line, source_column \
+         FROM import_diagnostics WHERE run_key = ? \
+         ORDER BY code, message, record_kind, record_name, field_name, source_line, source_column",
+    )
+    .bind::<Text, _>(repeated.run_key.to_string())
+    .load::<ImportDiagnosticRow>(&mut connection)?;
+    assert_eq!(repeated_diagnostics, first_diagnostics);
     Ok(())
 }
 
@@ -2899,11 +3249,11 @@ fn malformed_record_creates_failed_run_without_hiding_prior_snapshot()
         sql_query("SELECT diagnostic AS value FROM import_runs WHERE status = 'failed'")
             .get_result::<NullableTextRow>(&mut connection)?;
     assert!(diagnostic.value.is_some());
-    let retained_payload = sql_query(
-        "SELECT payload AS value FROM documents \
-         WHERE document_key = (SELECT document_key FROM import_runs WHERE status = 'failed')",
-    )
-    .get_result::<BytesRow>(&mut connection)?;
-    assert!(String::from_utf8_lossy(&retained_payload.value).contains("not-hex"));
+    let failed_run_key =
+        sql_query("SELECT run_key AS value FROM import_runs WHERE status = 'failed'")
+            .get_result::<TextRow>(&mut connection)?
+            .value;
+    let retained = retained_document_for_run(&directory, &mut connection, &failed_run_key)?;
+    assert!(String::from_utf8_lossy(&retained).contains("not-hex"));
     Ok(())
 }

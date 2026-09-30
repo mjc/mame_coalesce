@@ -2,8 +2,8 @@ use std::{borrow::Cow, io::Read};
 
 use flate2::read::MultiGzDecoder;
 
-pub const MAX_DOCUMENT_BYTES: usize = 64 * 1024 * 1024;
-pub const MAX_DECOMPRESSED_DOCUMENT_BYTES: usize = 128 * 1024 * 1024;
+pub const MAX_DOCUMENT_BYTES: usize = 384 * 1024 * 1024;
+pub const MAX_DECOMPRESSED_DOCUMENT_BYTES: usize = 384 * 1024 * 1024;
 
 pub fn read_bounded<R: Read>(reader: R, limit: usize) -> crate::Result<Vec<u8>> {
     let read_limit = limit
@@ -55,13 +55,12 @@ mod tests {
 
     #[test]
     fn retained_document_limit_rejects_the_first_excess_byte() {
-        assert_eq!(MAX_DOCUMENT_BYTES, 64 * 1024 * 1024);
-        let input = std::io::repeat(0).take((MAX_DOCUMENT_BYTES + 1) as u64);
+        assert_eq!(MAX_DOCUMENT_BYTES, 384 * 1024 * 1024);
+        assert_eq!(MAX_DECOMPRESSED_DOCUMENT_BYTES, 384 * 1024 * 1024);
+        let input = std::io::repeat(0).take(9);
         assert!(matches!(
-            read_bounded(input, MAX_DOCUMENT_BYTES),
-            Err(crate::Error::DocumentTooLarge {
-                limit: MAX_DOCUMENT_BYTES
-            })
+            read_bounded(input, 8),
+            Err(crate::Error::DocumentTooLarge { limit: 8 })
         ));
     }
 

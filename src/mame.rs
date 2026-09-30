@@ -1,19 +1,18 @@
 use std::collections::BTreeMap;
 
-use serde::Serialize;
-use xml::{
-    common::Position,
-    reader::{ParserConfig, XmlEvent},
-};
+use quick_xml::events::Event;
 
 use crate::{
     disk::{DiskDigestScope, DiskIdentitySha1, DiskName, DiskRequirement, ParentDiskName},
-    document_input,
     domain::AssetRole,
-    logiqx::{RecordLocation, contains_entity_declaration},
+    logiqx::RecordLocation,
+    xml_reader::{self, NodeBudget},
 };
 
+use crate::xml_reader::Element;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg(test)]
 pub struct MameCatalog {
     pub build: Option<String>,
     pub machines: Vec<Machine>,
@@ -61,59 +60,100 @@ pub struct XmlExtension {
     pub record_name: Option<String>,
     pub field_name: String,
     pub namespace_uri: Option<String>,
-    pub value: serde_json::Value,
+    pub value: ExtensionValue,
     pub location: RecordLocation,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct Element {
-    pub name: String,
-    pub attributes: BTreeMap<String, String>,
-    pub content: Vec<ElementContent>,
-    #[serde(skip)]
-    pub location: RecordLocation,
-}
+/// Valid JSON encoded once, without retaining a second tree of JSON objects.
+/// The private representation prevents arbitrary text or double encoding at storage boundaries.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExtensionValue(String);
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
-pub enum ElementContent {
-    Text(String),
-    Element(Element),
-}
-
-impl Element {
-    pub fn children(&self) -> impl Iterator<Item = &Self> {
-        self.content.iter().filter_map(|content| match content {
-            ElementContent::Element(child) => Some(child),
-            ElementContent::Text(_) => None,
-        })
+impl ExtensionValue {
+    pub(crate) fn encode(value: &impl serde::Serialize) -> crate::Result<Self> {
+        serde_json::to_string(value).map(Self).map_err(Into::into)
     }
 
-    pub fn direct_text(&self) -> String {
-        self.content
-            .iter()
-            .filter_map(|content| match content {
-                ElementContent::Text(text) => Some(text.as_str()),
-                ElementContent::Element(_) => None,
-            })
-            .collect()
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 }
 
-const MAX_XML_DEPTH: usize = 256;
-const MAX_XML_NODES: usize = 200_000;
+impl From<serde_json::Value> for ExtensionValue {
+    fn from(value: serde_json::Value) -> Self {
+        Self(value.to_string())
+    }
+}
 
-impl MameCatalog {
-    pub fn parse(bytes: &[u8]) -> crate::Result<Self> {
-        let root = parse_xml_element(bytes)?;
+pub struct MameHeader {
+    pub build: Option<String>,
+    pub extensions: Vec<XmlExtension>,
+}
+
+pub enum MameRecord {
+    Machine(Machine),
+    Extension(XmlExtension),
+}
+
+/// Only a successful traversal through the closing root and EOF produces this state.
+pub struct ValidatedMame<S>(S);
+
+impl<S> ValidatedMame<S> {
+    pub(crate) fn into_inner(self) -> S {
+        self.0
+    }
+}
+
+/// Consume each record before reading the next. Only a complete document returns
+/// a validated sink. Parser errors convert through `E::from`; consumers can use
+/// a separate error variant for persistence failures.
+pub fn read_with<S, E: From<crate::Error>>(
+    bytes: &[u8],
+    start: impl FnOnce(MameHeader) -> Result<S, E>,
+    mut consume: impl FnMut(&mut S, MameRecord) -> Result<(), E>,
+) -> Result<ValidatedMame<S>, E> {
+    xml_reader::with_reader(bytes, |reader, positions| {
+        let (namespace, root_start, empty) = loop {
+            let (namespace, event) = xml_reader::next(reader, positions)?;
+            match event {
+                Event::Start(start) => break (namespace, start, false),
+                Event::Empty(start) => break (namespace, start, true),
+                Event::Text(text)
+                    if text
+                        .xml10_content()
+                        .bytes()
+                        .all(quick_xml::utils::is_whitespace) => {}
+                Event::Decl(_) | Event::DocType(_) | Event::Comment(_) | Event::PI(_) => {}
+                Event::Eof => {
+                    return Err(crate::Error::XmlValidation("missing document root".into()).into());
+                }
+                _ => {
+                    return Err(crate::Error::XmlValidation(
+                        "content before the document root".into(),
+                    )
+                    .into());
+                }
+            }
+        };
+        let mut budget = NodeBudget::with_limit(xml_reader::MAX_MAME_XML_NODES);
+        let root = xml_reader::element_from_start(
+            reader,
+            namespace,
+            &root_start,
+            &mut budget,
+            0,
+            positions,
+        )?;
         if root.name != "mame" {
             return Err(crate::Error::XmlValidation(format!(
                 "expected <mame>, found <{}>",
                 root.name
-            )));
+            ))
+            .into());
         }
         let build = root.attributes.get("build").cloned();
-        let mut root_extensions: Vec<XmlExtension> = root
+        let extensions: Vec<XmlExtension> = root
             .attributes
             .iter()
             .filter(|(name, _)| name.as_str() != "build")
@@ -124,127 +164,162 @@ impl MameCatalog {
                     record_name: None,
                     field_name,
                     namespace_uri,
-                    value: serde_json::json!(value),
+                    value: serde_json::json!(value).into(),
                     location: root.location,
                 }
             })
             .collect();
-        let mut machines = Vec::new();
-        let mut machine_names = std::collections::HashSet::new();
-        for node in root.children() {
-            if node.name == "machine" {
-                let machine = parse_machine(node)?;
-                if !machine_names.insert(machine.name.clone()) {
-                    return Err(crate::Error::XmlValidation(format!(
-                        "duplicate MAME machine name {:?}",
-                        machine.name
-                    )));
+        let mut sink = start(MameHeader { build, extensions })?;
+        parse_machine_records(reader, positions, &mut budget, empty, |record| {
+            consume(&mut sink, record)
+        })?;
+        Ok(ValidatedMame(sink))
+    })
+}
+
+#[cfg(test)]
+impl MameCatalog {
+    pub fn parse(bytes: &[u8]) -> crate::Result<Self> {
+        read_with::<_, crate::Error>(
+            bytes,
+            |header| {
+                Ok(Self {
+                    build: header.build,
+                    machines: Vec::new(),
+                    extensions: header.extensions,
+                })
+            },
+            |catalog, record| {
+                match record {
+                    MameRecord::Machine(machine) => catalog.machines.push(machine),
+                    MameRecord::Extension(extension) => catalog.extensions.push(extension),
                 }
-                machines.push(machine);
-            } else {
-                root_extensions.push(extension("document", None, node)?);
+                Ok(())
+            },
+        )
+        .map(ValidatedMame::into_inner)
+    }
+}
+
+fn parse_machine_records<E: From<crate::Error>>(
+    reader: &mut quick_xml::reader::NsReader<&[u8]>,
+    positions: &mut xml_reader::PositionMap<'_>,
+    budget: &mut NodeBudget,
+    empty: bool,
+    mut consume: impl FnMut(MameRecord) -> Result<(), E>,
+) -> Result<(), E> {
+    let mut machine_names = std::collections::HashSet::new();
+    if !empty {
+        loop {
+            let (namespace, event) = xml_reader::next(reader, positions)?;
+            let node = match event {
+                Event::Start(child) => {
+                    xml_reader::read_element(reader, namespace, &child, budget, 1, positions)?
+                }
+                Event::Empty(child) => {
+                    xml_reader::element_from_start(reader, namespace, &child, budget, 1, positions)?
+                }
+                Event::End(_) => break,
+                Event::Eof => {
+                    return Err(crate::Error::XmlValidation(
+                        "unexpected end of input inside <mame>".into(),
+                    )
+                    .into());
+                }
+                _ => continue,
+            };
+            let record = parse_record(&node, &mut machine_names)?;
+            drop(node);
+            consume(record)?;
+        }
+    }
+    loop {
+        match xml_reader::next(reader, positions)?.1 {
+            Event::Eof => break,
+            Event::Text(text)
+                if text
+                    .xml10_content()
+                    .bytes()
+                    .all(quick_xml::utils::is_whitespace) => {}
+            Event::Comment(_) | Event::PI(_) => {}
+            _ => {
+                return Err(
+                    crate::Error::XmlValidation("content after the document root".into()).into(),
+                );
             }
         }
-        if machines.is_empty() {
-            return Err(crate::Error::XmlValidation(
-                "MAME document has no machine records".into(),
-            ));
+    }
+    if machine_names.is_empty() {
+        return Err(
+            crate::Error::XmlValidation("MAME document has no machine records".into()).into(),
+        );
+    }
+    Ok(())
+}
+
+fn parse_record(
+    node: &Element,
+    machine_names: &mut std::collections::HashSet<String>,
+) -> crate::Result<MameRecord> {
+    if node.name == "machine" {
+        let machine = parse_machine(node)?;
+        if !machine_names.insert(machine.name.clone()) {
+            return Err(crate::Error::XmlValidation(format!(
+                "duplicate MAME machine name {:?}",
+                machine.name
+            )));
         }
-        Ok(Self {
-            build,
-            machines,
-            extensions: root_extensions,
-        })
+        Ok(MameRecord::Machine(machine))
+    } else {
+        extension("document", None, node).map(MameRecord::Extension)
     }
 }
 
 pub fn parse_xml_element(bytes: &[u8]) -> crate::Result<Element> {
-    let xml = document_input::decode_xml(bytes)?;
-    if contains_entity_declaration(&xml)
-        .map_err(|()| crate::Error::XmlValidation("malformed UTF-16 encoding".into()))?
-    {
-        return Err(crate::Error::XmlEntityNotAllowed);
-    }
-    let mut reader = ParserConfig::new()
-        .max_entity_expansion_length(1024)
-        .max_entity_expansion_depth(4)
-        .max_name_length(4096)
-        .max_attributes(1024)
-        .max_attribute_length(1024 * 1024)
-        .max_data_length(1024 * 1024)
-        .allow_multiple_root_elements(false)
-        .create_reader(xml.as_ref());
-    let mut stack: Vec<Element> = Vec::new();
-    let mut root = None;
-    let mut node_count = 0_usize;
-    loop {
-        match reader.next() {
-            Ok(XmlEvent::StartElement {
-                name, attributes, ..
-            }) => {
-                node_count = node_count.checked_add(1).ok_or_else(|| {
-                    crate::Error::XmlValidation("XML element count overflow".into())
-                })?;
-                if node_count > MAX_XML_NODES {
-                    return Err(crate::Error::XmlValidation(format!(
-                        "XML element count exceeds {MAX_XML_NODES} nodes"
-                    )));
+    xml_reader::with_reader(bytes, |reader, positions| {
+        let mut budget = NodeBudget::default();
+        let root = loop {
+            let (namespace, event) = xml_reader::next(reader, positions)?;
+            match event {
+                Event::Start(start) => {
+                    break xml_reader::read_element(
+                        reader,
+                        namespace,
+                        &start,
+                        &mut budget,
+                        0,
+                        positions,
+                    )?;
                 }
-                if stack.len() >= MAX_XML_DEPTH {
-                    return Err(crate::Error::XmlValidation(format!(
-                        "XML element nesting exceeds {MAX_XML_DEPTH} levels"
-                    )));
+                Event::Empty(start) => {
+                    break xml_reader::element_from_start(
+                        reader,
+                        namespace,
+                        &start,
+                        &mut budget,
+                        0,
+                        positions,
+                    )?;
                 }
-                let element_name = name.namespace.map_or_else(
-                    || name.local_name.clone(),
-                    |namespace| format!("{{{namespace}}}{}", name.local_name),
-                );
-                stack.push(Element {
-                    name: element_name,
-                    attributes: attributes
-                        .into_iter()
-                        .map(|attribute| {
-                            let name = attribute.name.namespace.map_or_else(
-                                || attribute.name.local_name.clone(),
-                                |namespace| format!("{{{namespace}}}{}", attribute.name.local_name),
-                            );
-                            (name, attribute.value)
-                        })
-                        .collect(),
-                    content: Vec::new(),
-                    location: location(reader.position()),
-                });
+                Event::Eof => {
+                    return Err(crate::Error::XmlValidation("missing document root".into()));
+                }
+                _ => {}
             }
-            Ok(XmlEvent::Characters(text) | XmlEvent::CData(text)) => {
-                if let Some(element) = stack.last_mut() {
-                    element.content.push(ElementContent::Text(text));
+        };
+        loop {
+            match xml_reader::next(reader, positions)?.1 {
+                Event::Eof => return Ok(root),
+                Event::Text(text) if text.xml10_content().trim().is_empty() => {}
+                Event::Comment(_) | Event::PI(_) => {}
+                _ => {
+                    return Err(crate::Error::XmlValidation(
+                        "content after the document root".into(),
+                    ));
                 }
-            }
-            Ok(XmlEvent::EndElement { .. }) => {
-                let element = stack.pop().ok_or_else(|| {
-                    crate::Error::XmlValidation("unexpected closing element".into())
-                })?;
-                if let Some(parent) = stack.last_mut() {
-                    parent.content.push(ElementContent::Element(element));
-                } else {
-                    root = Some(element);
-                }
-            }
-            Ok(XmlEvent::EndDocument) => break,
-            Ok(_) => {}
-            Err(error) => {
-                let position = location(reader.position());
-                return Err(crate::Error::CatalogParse {
-                    message: error.to_string(),
-                    record_kind: Some("document".into()),
-                    record_name: None,
-                    line: Some(position.line),
-                    column: Some(position.column),
-                });
             }
         }
-    }
-    root.ok_or_else(|| crate::Error::XmlValidation("missing document root".into()))
+    })
 }
 
 fn device_reference_metadata(references: &[DeviceReference]) -> serde_json::Value {
@@ -289,7 +364,7 @@ fn machine_attribute_extensions(name: &str, node: &Element) -> Vec<XmlExtension>
                 record_name: Some(name.into()),
                 field_name,
                 namespace_uri,
-                value: serde_json::json!(val),
+                value: serde_json::json!(val).into(),
                 location: node.location,
             }
         })
@@ -358,7 +433,7 @@ fn parse_machine(node: &Element) -> crate::Result<Machine> {
                     record_name: child.attributes.get("name").cloned(),
                     field_name,
                     namespace_uri,
-                    value: serde_json::json!(val),
+                    value: serde_json::json!(val).into(),
                     location: child.location,
                 });
             }
@@ -445,7 +520,7 @@ fn parse_asset(node: &Element) -> crate::Result<MachineAsset> {
                 record_name: Some(name.into()),
                 field_name,
                 namespace_uri,
-                value: serde_json::json!(val),
+                value: serde_json::json!(val).into(),
                 location: node.location,
             });
         }
@@ -501,7 +576,7 @@ fn extension(kind: &str, record_name: Option<&str>, node: &Element) -> crate::Re
         record_name: record_name.map(str::to_owned),
         field_name: format!("element:{field_name}"),
         namespace_uri,
-        value: serde_json::to_value(node)?,
+        value: ExtensionValue::encode(node)?,
         location: node.location,
     })
 }
@@ -643,16 +718,73 @@ fn decode_hex_sized(value: &str, length: usize) -> crate::Result<Vec<u8>> {
         .collect()
 }
 
-fn location(position: xml::common::TextPosition) -> RecordLocation {
-    RecordLocation {
-        line: i64::try_from(position.row.saturating_add(1)).unwrap_or(i64::MAX),
-        column: i64::try_from(position.column.saturating_add(1)).unwrap_or(i64::MAX),
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use crate::xml_reader::{MAX_XML_DEPTH, MAX_XML_NODES};
+
     use super::*;
+
+    #[test]
+    fn streaming_delivers_records_before_a_late_parse_error() {
+        let mut names = Vec::new();
+        let result = read_with::<_, crate::Error>(
+            br#"<mame><machine name="first"/><machine name="broken">"#,
+            |_| Ok(()),
+            |(), record| {
+                if let MameRecord::Machine(machine) = record {
+                    names.push(machine.name);
+                }
+                Ok(())
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(names, ["first"]);
+    }
+
+    #[test]
+    fn content_before_the_root_never_starts_publication() {
+        for prefix in ["junk", "<![CDATA[junk]]>", "&amp;", "\u{a0}"] {
+            let xml = format!("{prefix}<mame><machine name='x'/></mame>");
+            let mut started = false;
+            let result = read_with::<_, crate::Error>(
+                xml.as_bytes(),
+                |_| {
+                    started = true;
+                    Ok(())
+                },
+                |(), _| Ok(()),
+            );
+            assert!(result.is_err(), "accepted invalid prefix {prefix:?}");
+            assert!(!started);
+        }
+    }
+
+    #[test]
+    fn only_xml_whitespace_is_allowed_outside_the_root() {
+        for whitespace in [" ", "\t", "\r", "\n", " \t\r\n"] {
+            let xml = format!("{whitespace}<mame><machine name='x'/></mame>{whitespace}");
+            assert!(MameCatalog::parse(xml.as_bytes()).is_ok());
+        }
+        for suffix in ["\u{a0}", "\u{2003}", "\u{85}"] {
+            let xml = format!("<mame><machine name='x'/></mame>{suffix}");
+            assert!(
+                MameCatalog::parse(xml.as_bytes()).is_err(),
+                "accepted invalid suffix {suffix:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn encoded_extension_preserves_existing_json_bytes() -> crate::Result<()> {
+        let node = parse_xml_element(
+            br#"<future xmlns:x="urn:future" z="&amp;" a="one">before<x:item/>after</future>"#,
+        )?;
+        assert_eq!(
+            ExtensionValue::encode(&node)?.as_str(),
+            serde_json::to_value(&node)?.to_string(),
+        );
+        Ok(())
+    }
 
     #[test]
     fn extension_tree_keeps_mixed_text_and_element_order() -> Result<(), Box<dyn std::error::Error>>

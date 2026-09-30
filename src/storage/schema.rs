@@ -271,7 +271,7 @@ diesel::table! {
         sha1 -> Nullable<Binary>,
         byte_length -> Nullable<BigInt>,
         sha256 -> Nullable<Binary>,
-        payload -> Nullable<Binary>,
+        object_key -> Nullable<Text>,
         format_hint -> Nullable<Text>,
         retention_status -> Text,
     }

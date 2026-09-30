@@ -2,7 +2,8 @@ use std::collections::{BTreeMap, HashSet};
 
 use crate::{
     logiqx::RecordLocation,
-    mame::{Element, ElementContent, XmlExtension, parse_xml_element},
+    mame::{ExtensionValue, XmlExtension, parse_xml_element},
+    xml_reader::{Element, ElementContent},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -160,7 +161,7 @@ fn parse_header(
                 record_name: None,
                 field_name: field.name.clone(),
                 namespace_uri: None,
-                value: serde_json::json!(field.direct_text()),
+                value: serde_json::json!(field.direct_text()).into(),
                 location: field.location,
             }),
             _ => extensions.push(element_extension("header", None, field)?),
@@ -464,7 +465,7 @@ fn attribute_extension(
         record_name: name.map(str::to_owned),
         field_name,
         namespace_uri,
-        value: serde_json::json!(value),
+        value: serde_json::json!(value).into(),
         location,
     }
 }
@@ -479,7 +480,7 @@ fn element_extension(
         record_name: name.map(str::to_owned),
         field_name: format!("element:{}", element.name),
         namespace_uri: None,
-        value: serde_json::to_value(element)?,
+        value: ExtensionValue::encode(element)?,
         location: element.location,
     })
 }

@@ -2,6 +2,7 @@ use std::{
     collections::BTreeSet,
     fs::{self, File},
     io::{Read, copy},
+    path::{Path, PathBuf},
 };
 
 use atomic_write_file::AtomicWriteFile;
@@ -81,8 +82,8 @@ struct RetainedDocumentRow {
     rowid: i64,
     #[diesel(sql_type = Text)]
     document_key: String,
-    #[diesel(sql_type = Nullable<Binary>)]
-    payload: Option<Vec<u8>>,
+    #[diesel(sql_type = Nullable<Text>)]
+    object_key: Option<String>,
     #[diesel(sql_type = Nullable<Binary>)]
     sha1: Option<Vec<u8>>,
     #[diesel(sql_type = Nullable<Binary>)]
@@ -92,25 +93,17 @@ struct RetainedDocumentRow {
 }
 
 #[derive(QueryableByName)]
-struct LegacyDocumentRow {
-    #[diesel(sql_type = BigInt)]
-    rowid: i64,
+struct RetainedObjectRow {
     #[diesel(sql_type = Text)]
     document_key: String,
-    #[diesel(sql_type = Binary)]
-    payload: Vec<u8>,
-    #[diesel(sql_type = Binary)]
-    sha1: Vec<u8>,
-    #[diesel(sql_type = Binary)]
-    sha256: Vec<u8>,
-    #[diesel(sql_type = BigInt)]
-    byte_length: i64,
     #[diesel(sql_type = Nullable<Binary>)]
-    parent_sha1: Option<Vec<u8>>,
+    sha1: Option<Vec<u8>>,
     #[diesel(sql_type = Nullable<Binary>)]
-    parent_sha256: Option<Vec<u8>>,
+    sha256: Option<Vec<u8>>,
     #[diesel(sql_type = Nullable<BigInt>)]
-    parent_byte_length: Option<i64>,
+    byte_length: Option<i64>,
+    #[diesel(sql_type = Nullable<Text>)]
+    object_key: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, QueryableByName)]
@@ -149,12 +142,20 @@ pub fn create_backup(source: &Utf8Path, destination: &Utf8Path) -> Result<Backup
         )));
     }
     reject_sqlite_sidecars(destination)?;
+    let destination_objects = document_sidecar_path(destination);
+    if fs::symlink_metadata(&destination_objects).is_ok() {
+        return Err(backup_error(format!(
+            "backup document sidecar already exists: {destination_objects}"
+        )));
+    }
     let (canonical_source, _cache_lock) =
         crate::database::lock_cache_file(source, crate::database::CacheLockMode::Shared)?;
+    check_document_sidecar(&canonical_source)?;
     let parent = destination
         .parent()
         .filter(|parent| !parent.as_str().is_empty())
         .unwrap_or_else(|| Utf8Path::new("."));
+    let staged_objects = stage_document_sidecar(&canonical_source, parent)?;
     let stage = NamedTempFile::new_in(parent)?;
     let stage_path = stage
         .path()
@@ -184,9 +185,18 @@ pub fn create_backup(source: &Utf8Path, destination: &Utf8Path) -> Result<Backup
     }
     drop(staged);
     stage.as_file().sync_all()?;
-    stage
+    if let Some(staged_objects) = staged_objects.as_ref() {
+        fs::rename(staged_objects, &destination_objects)?;
+    }
+    if let Err(error) = stage
         .persist_noclobber(destination)
-        .map_err(|error| backup_error(format!("could not publish backup: {}", error.error)))?;
+        .map_err(|error| backup_error(format!("could not publish backup: {}", error.error)))
+    {
+        if staged_objects.is_some() {
+            let _ = fs::remove_dir_all(&destination_objects);
+        }
+        return Err(error);
+    }
     Ok(match sync_parent_directory(destination) {
         Ok(true) => BackupOutcome::Published,
         Ok(false) => BackupOutcome::PublishedDurabilityUnconfirmed {
@@ -216,11 +226,17 @@ pub fn check_integrity(path: &Utf8Path) -> Result<IntegrityReport> {
                 "could not enable read-only integrity checks: {error}"
             ))
         })?;
-    check_connection(&mut conn, false)
+    let mut report = check_connection(&mut conn, false)?;
+    drop(conn);
+    if report.durable_issues.is_empty() {
+        check_sidecar_contents(&canonical_path, &mut report)?;
+    }
+    Ok(report)
 }
 
 /// Validate a backup in a same-directory staging copy, then atomically replace the cache.
 /// An existing cache is only replaced with `RestorePolicy::ReplaceExisting`.
+#[allow(clippy::too_many_lines)] // The restore protocol keeps the database and object directory paired.
 pub fn restore_backup(
     backup: &Utf8Path,
     destination: &Utf8Path,
@@ -245,6 +261,7 @@ pub fn restore_backup(
     let (canonical_backup, _backup_lock) =
         crate::database::lock_cache_file(&backup, crate::database::CacheLockMode::Exclusive)?;
     reject_sqlite_sidecars(&canonical_backup)?;
+    check_document_sidecar(&canonical_backup)?;
     let destination = canonical_destination.as_path();
     let destination_exists = match fs::symlink_metadata(destination) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
@@ -277,12 +294,22 @@ pub fn restore_backup(
         .filter(|parent| !parent.as_str().is_empty())
         .unwrap_or_else(|| Utf8Path::new("."));
     let stage = validated_restore_stage(&backup, parent)?;
+    let staged_objects = stage_document_sidecar(&canonical_backup, parent)?;
+    let destination_objects = document_sidecar_path(destination);
 
     match policy {
         RestorePolicy::CreateNew => {
-            stage.persist_noclobber(destination).map_err(|error| {
+            if let Some(staged_objects) = staged_objects.as_ref() {
+                fs::rename(staged_objects, &destination_objects)?;
+            }
+            if let Err(error) = stage.persist_noclobber(destination).map_err(|error| {
                 backup_error(format!("could not publish restored cache: {}", error.error))
-            })?;
+            }) {
+                if staged_objects.is_some() {
+                    let _ = fs::remove_dir_all(&destination_objects);
+                }
+                return Err(error);
+            }
             Ok(match sync_parent_directory(destination) {
                 Ok(true) => RestoreOutcome::Published,
                 Ok(false) => RestoreOutcome::PublishedDurabilityUnconfirmed {
@@ -296,7 +323,9 @@ pub fn restore_backup(
         RestorePolicy::ReplaceExisting => {
             let mut replacement = AtomicWriteFile::open(destination)?;
             copy(&mut File::open(stage.path())?, &mut replacement)?;
-            match replacement.commit() {
+            let previous_objects =
+                replace_sidecar(staged_objects.as_deref(), &destination_objects)?;
+            let outcome = match replacement.commit() {
                 Ok(()) => Ok(match sync_parent_directory(destination) {
                     Ok(true) => RestoreOutcome::Published,
                     Ok(false) => RestoreOutcome::PublishedDurabilityUnconfirmed {
@@ -316,6 +345,23 @@ pub fn restore_backup(
                         error: format!("{error}; could not verify publication: {inspect_error}"),
                     }),
                 },
+            };
+            match outcome {
+                Ok(outcome) => {
+                    if let Some(previous_objects) = previous_objects {
+                        let _ = fs::remove_dir_all(previous_objects);
+                    }
+                    Ok(outcome)
+                }
+                Err(error) => {
+                    if let Some(previous_objects) = previous_objects {
+                        if destination_objects.exists() {
+                            let _ = fs::remove_dir_all(&destination_objects);
+                        }
+                        let _ = fs::rename(previous_objects, &destination_objects);
+                    }
+                    Err(error)
+                }
             }
         }
     }
@@ -461,7 +507,6 @@ fn check_connection(
         return Ok(report);
     }
     check_retained_documents(conn, &mut report)?;
-    check_legacy_documents(conn, &mut report)?;
     check_publication_states(conn, &mut report)?;
     Ok(report)
 }
@@ -550,10 +595,10 @@ fn check_retained_documents(
     let mut inclusive = true;
     loop {
         let Some(document) = sql_query(if inclusive {
-            "SELECT rowid, document_key, payload, sha1, sha256, byte_length FROM documents \
+            "SELECT rowid, document_key, object_key, sha1, sha256, byte_length FROM documents \
                  WHERE retention_status = 'retained' AND rowid >= ? ORDER BY rowid LIMIT 1"
         } else {
-            "SELECT rowid, document_key, payload, sha1, sha256, byte_length FROM documents \
+            "SELECT rowid, document_key, object_key, sha1, sha256, byte_length FROM documents \
                  WHERE retention_status = 'retained' AND rowid > ? ORDER BY rowid LIMIT 1"
         })
         .bind::<BigInt, _>(last_rowid)
@@ -565,27 +610,20 @@ fn check_retained_documents(
         };
         last_rowid = document.rowid;
         inclusive = false;
-        match (
-            document.payload,
-            document.sha1,
-            document.sha256,
-            document.byte_length,
-        ) {
-            (Some(payload), expected_sha1, Some(expected_digest), Some(byte_length))
-                if usize::try_from(byte_length).ok() == Some(payload.len())
-                    && Sha256::digest(&payload).as_slice() == expected_digest.as_slice()
-                    && crate::domain::DocumentKey::from_bytes(&payload).to_string()
-                        == document.document_key.as_str()
-                    && expected_sha1.as_ref().is_none_or(|digest| {
-                        sha1::Sha1::digest(&payload).as_slice() == digest.as_slice()
-                    }) => {}
-            _ => push_issue(
+        if document.object_key.is_none()
+            || document.sha1.is_none()
+            || document.sha256.as_deref().is_none_or(|digest| {
+                format!("sha256:{}", hex::encode(digest)) != document.document_key
+            })
+            || document.byte_length.is_none_or(|length| length < 0)
+        {
+            push_issue(
                 &mut report.durable_issues,
                 format!(
-                    "retained document {} has invalid bytes or digest metadata",
+                    "retained document {} has invalid object metadata",
                     document.document_key
                 ),
-            ),
+            );
         }
         if report.durable_issues.len() >= MAX_REPORTED_ISSUES {
             break;
@@ -594,50 +632,84 @@ fn check_retained_documents(
     Ok(())
 }
 
-fn check_legacy_documents(conn: &mut SqliteConnection, report: &mut IntegrityReport) -> Result<()> {
-    let mut last_rowid = i64::MIN;
-    let mut inclusive = true;
-    loop {
-        let Some(document) = sql_query(if inclusive {
-            "SELECT payloads.rowid, payloads.document_key, payloads.payload, payloads.sha1, \
-                payloads.sha256, payloads.byte_length, documents.sha1 AS parent_sha1, \
-                documents.sha256 AS parent_sha256, documents.byte_length AS parent_byte_length \
-         FROM legacy_document_payloads AS payloads \
-         LEFT JOIN documents ON documents.document_key = payloads.document_key \
-         WHERE payloads.rowid >= ? ORDER BY payloads.rowid LIMIT 1"
-        } else {
-            "SELECT payloads.rowid, payloads.document_key, payloads.payload, payloads.sha1, \
-                payloads.sha256, payloads.byte_length, documents.sha1 AS parent_sha1, \
-                documents.sha256 AS parent_sha256, documents.byte_length AS parent_byte_length \
-         FROM legacy_document_payloads AS payloads \
-         LEFT JOIN documents ON documents.document_key = payloads.document_key \
-         WHERE payloads.rowid > ? ORDER BY payloads.rowid LIMIT 1"
-        })
-        .bind::<BigInt, _>(last_rowid)
-        .get_result::<LegacyDocumentRow>(conn)
-        .optional()
-        .map_err(|error| backup_error(format!("could not inspect legacy documents: {error}")))?
-        else {
-            break;
-        };
-        last_rowid = document.rowid;
-        inclusive = false;
-        if usize::try_from(document.byte_length).ok() != Some(document.payload.len())
-            || Sha256::digest(&document.payload).as_slice() != document.sha256.as_slice()
-            || sha1::Sha1::digest(&document.payload).as_slice() != document.sha1.as_slice()
-            || crate::domain::DocumentKey::from_bytes(&document.payload).to_string()
-                != document.document_key.as_str()
-            || document.parent_sha1.as_deref() != Some(document.sha1.as_slice())
-            || document.parent_byte_length != Some(document.byte_length)
-            || document
-                .parent_sha256
-                .as_deref()
-                .is_some_and(|digest| digest != document.sha256.as_slice())
-        {
+fn check_document_sidecar(database: &Utf8Path) -> Result<()> {
+    let mut report = IntegrityReport::default();
+    check_sidecar_contents(database, &mut report)?;
+    if report.durable_issues.is_empty() {
+        Ok(())
+    } else {
+        Err(backup_error(report_summary(&report)))
+    }
+}
+
+fn check_sidecar_contents(database: &Utf8Path, report: &mut IntegrityReport) -> Result<()> {
+    let mut conn = connect(database)?;
+    let documents = sql_query(
+        "SELECT document_key, sha1, sha256, byte_length, object_key \
+         FROM documents WHERE retention_status = 'retained' ORDER BY document_key",
+    )
+    .load::<RetainedObjectRow>(&mut conn)
+    .map_err(|error| backup_error(format!("could not inspect document objects: {error}")))?;
+    drop(conn);
+    let root = document_sidecar_path(database);
+    for document in documents {
+        let valid_key = document.object_key.as_deref().is_some_and(|key| {
+            key.starts_with("sha256/")
+                && !key
+                    .split('/')
+                    .any(|component| component == ".." || component.is_empty())
+        });
+        let Some(key) = document.object_key.filter(|_| valid_key) else {
             push_issue(
                 &mut report.durable_issues,
                 format!(
-                    "legacy retained document {} has invalid bytes or digest metadata",
+                    "retained document {} has an invalid object key",
+                    document.document_key
+                ),
+            );
+            continue;
+        };
+        let (Some(expected_sha1), Some(expected_sha256), Some(expected_length)) =
+            (document.sha1, document.sha256, document.byte_length)
+        else {
+            push_issue(
+                &mut report.durable_issues,
+                format!(
+                    "retained document {} is missing digest metadata",
+                    document.document_key
+                ),
+            );
+            continue;
+        };
+        let path = root.join(key);
+        let actual = (|| -> std::io::Result<(Vec<u8>, Vec<u8>, u64)> {
+            let mut decoder = zstd::Decoder::new(File::open(path)?)?;
+            let mut sha256 = Sha256::new();
+            let mut sha1 = sha1::Sha1::new();
+            let mut length = 0_u64;
+            let mut buffer = vec![0_u8; 64 * 1024].into_boxed_slice();
+            loop {
+                let read = decoder.read(&mut buffer)?;
+                if read == 0 {
+                    break;
+                }
+                length = length.saturating_add(read as u64);
+                sha256.update(&buffer[..read]);
+                sha1.update(&buffer[..read]);
+            }
+            Ok((sha256.finalize().to_vec(), sha1.finalize().to_vec(), length))
+        })();
+        let matches = actual.is_ok_and(|(sha256, sha1, length)| {
+            sha256 == expected_sha256
+                && sha1 == expected_sha1
+                && length == u64::try_from(expected_length).unwrap_or(u64::MAX)
+                && format!("sha256:{}", hex::encode(sha256)) == document.document_key
+        });
+        if !matches {
+            push_issue(
+                &mut report.durable_issues,
+                format!(
+                    "retained document {} has a missing or invalid sidecar object",
                     document.document_key
                 ),
             );
@@ -691,6 +763,70 @@ fn reject_sqlite_sidecars(destination: &Utf8Path) -> Result<()> {
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
+fn document_sidecar_path(database: &Utf8Path) -> Utf8PathBuf {
+    Utf8PathBuf::from(format!("{database}.documents"))
+}
+
+fn stage_document_sidecar(database: &Utf8Path, parent: &Utf8Path) -> Result<Option<PathBuf>> {
+    let source = document_sidecar_path(database);
+    match fs::symlink_metadata(&source) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+        Ok(_) => return Err(backup_error("document sidecar is not a regular directory")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    }
+    let stage = tempfile::tempdir_in(parent)?;
+    copy_directory_contents(source.as_std_path(), stage.path())?;
+    Ok(Some(stage.keep()))
+}
+
+fn replace_sidecar(staged: Option<&Path>, destination: &Utf8Path) -> Result<Option<PathBuf>> {
+    let previous = if destination.exists() {
+        let parent = destination
+            .parent()
+            .filter(|parent| !parent.as_str().is_empty())
+            .unwrap_or_else(|| Utf8Path::new("."));
+        let backup = parent.join(format!(
+            ".{}.{}.documents-old",
+            destination.file_name().unwrap_or("cache"),
+            uuid::Uuid::new_v4()
+        ));
+        fs::rename(destination, &backup)?;
+        Some(backup.into_std_path_buf())
+    } else {
+        None
+    };
+    if let Some(staged) = staged
+        && let Err(error) = fs::rename(staged, destination)
+    {
+        if let Some(previous) = previous.as_ref() {
+            let _ = fs::rename(previous, destination);
+        }
+        return Err(error.into());
+    }
+    Ok(previous)
+}
+
+fn copy_directory_contents(source: &Path, destination: &Path) -> Result<()> {
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let metadata = fs::symlink_metadata(entry.path())?;
+        if metadata.file_type().is_symlink() {
+            return Err(backup_error("document sidecar contains a symbolic link"));
+        }
+        let target = destination.join(entry.file_name());
+        if metadata.is_dir() {
+            fs::create_dir(&target)?;
+            copy_directory_contents(&entry.path(), &target)?;
+        } else if metadata.is_file() {
+            fs::copy(entry.path(), target)?;
+        } else {
+            return Err(backup_error("document sidecar contains a special file"));
         }
     }
     Ok(())
@@ -760,30 +896,25 @@ mod tests {
     }
 
     fn add_retained_document(path: &Utf8Path, payload: &[u8]) -> Result<()> {
-        let _database = database(path)?;
-        let mut conn = connect(path)?;
-        let document_key = crate::domain::DocumentKey::from_bytes(payload).to_string();
-        sql_query(
-            "INSERT INTO publishing_sources (source_key, display_name) VALUES ('source', 'Source')",
-        )
-        .execute(&mut conn)?;
-        sql_query(
-            "INSERT INTO documents (document_key, sha1, byte_length, sha256, payload, retention_status) \
-             VALUES (?, ?, ?, ?, ?, 'retained')",
-        )
-        .bind::<Text, _>(&document_key)
-        .bind::<Binary, _>(sha1::Sha1::digest(payload).as_slice())
-            .bind::<BigInt, _>(i64::try_from(payload.len()).map_err(|error| backup_error(error.to_string()))?)
-        .bind::<Binary, _>(Sha256::digest(payload).as_slice())
-        .bind::<Binary, _>(payload)
-        .execute(&mut conn)?;
-        sql_query(
-            "INSERT INTO acquisitions (acquisition_key, source_key, document_key, method) \
-             VALUES ('acquisition', 'source', ?, 'test')",
-        )
-        .bind::<Text, _>(&document_key)
-        .execute(&mut conn)?;
+        let store = crate::storage::documents::DocumentStore::open(path.as_str())?;
+        let source = crate::domain::PublishingSource::new("source", "Source");
+        store.register_source(&source)?;
+        store.retain_unvalidated(
+            &crate::storage::documents::AcquisitionMetadata {
+                source_key: source.key().clone(),
+                source_uri: None,
+                method: Some("test".to_owned()),
+                transport_metadata: None,
+                expected_sha256: None,
+            },
+            payload,
+        )?;
         Ok(())
+    }
+
+    fn load_document(path: &Utf8Path, payload: &[u8]) -> Result<Vec<u8>> {
+        let store = crate::storage::documents::DocumentStore::open(path.as_str())?;
+        store.load(&crate::domain::DocumentKey::from_bytes(payload))
     }
 
     #[test]
@@ -798,16 +929,12 @@ mod tests {
         create_backup(&source, &backup)?;
         restore_backup(&backup, &restored, RestorePolicy::CreateNew)?;
 
+        assert_eq!(load_document(&restored, payload)?, payload);
         let mut conn = connect(&restored)?;
-        let retained = sql_query("SELECT payload FROM documents WHERE sha256 = ?")
-            .bind::<Binary, _>(Sha256::digest(payload).as_slice())
-            .get_result::<RetainedPayload>(&mut conn)?;
-        assert_eq!(retained.payload, payload);
-        let acquisition_count = sql_query(
-            "SELECT COUNT(*) AS count FROM acquisitions WHERE acquisition_key = 'acquisition'",
-        )
-        .get_result::<CountRow>(&mut conn)?
-        .count;
+        let acquisition_count =
+            sql_query("SELECT COUNT(*) AS count FROM acquisitions WHERE source_key = 'source'")
+                .get_result::<CountRow>(&mut conn)?
+                .count;
         assert_eq!(acquisition_count, 1);
         assert!(check_integrity(&restored)?.is_clean());
         Ok(())
@@ -911,10 +1038,7 @@ mod tests {
         .count;
         assert_eq!(unknown_fields, 1);
         for bytes in [&machine_bytes, &logiqx_bytes] {
-            let payload = sql_query("SELECT payload FROM documents WHERE sha256 = ?")
-                .bind::<Binary, _>(Sha256::digest(bytes).as_slice())
-                .get_result::<RetainedPayload>(&mut restored)?;
-            assert_eq!(payload.payload, *bytes);
+            assert_eq!(load_document(&restored_path, bytes)?, *bytes);
         }
         drop(restored);
         assert!(check_integrity(&restored_path)?.is_clean());
@@ -954,11 +1078,7 @@ mod tests {
         add_retained_document(&destination, b"keep me")?;
 
         assert!(restore_backup(&backup, &destination, RestorePolicy::ReplaceExisting).is_err());
-        let mut conn = connect(&destination)?;
-        let retained = sql_query("SELECT payload FROM documents WHERE sha256 = ?")
-            .bind::<Binary, _>(Sha256::digest(b"keep me").as_slice())
-            .get_result::<RetainedPayload>(&mut conn)?;
-        assert_eq!(retained.payload, b"keep me");
+        assert_eq!(load_document(&destination, b"keep me")?, b"keep me");
         Ok(())
     }
 
@@ -974,11 +1094,7 @@ mod tests {
         File::options().write(true).open(&backup)?.set_len(128)?;
 
         assert!(restore_backup(&backup, &destination, RestorePolicy::ReplaceExisting).is_err());
-        let mut conn = connect(&destination)?;
-        let retained = sql_query("SELECT payload FROM documents WHERE sha256 = ?")
-            .bind::<Binary, _>(Sha256::digest(b"keep me").as_slice())
-            .get_result::<RetainedPayload>(&mut conn)?;
-        assert_eq!(retained.payload, b"keep me");
+        assert_eq!(load_document(&destination, b"keep me")?, b"keep me");
         Ok(())
     }
 
@@ -1000,11 +1116,7 @@ mod tests {
         drop(conn);
 
         assert!(restore_backup(&backup, &destination, RestorePolicy::ReplaceExisting).is_err());
-        let mut conn = connect(&destination)?;
-        let retained = sql_query("SELECT payload FROM documents WHERE sha256 = ?")
-            .bind::<Binary, _>(Sha256::digest(b"keep me").as_slice())
-            .get_result::<RetainedPayload>(&mut conn)?;
-        assert_eq!(retained.payload, b"keep me");
+        assert_eq!(load_document(&destination, b"keep me")?, b"keep me");
         Ok(())
     }
 
@@ -1019,11 +1131,7 @@ mod tests {
         add_retained_document(&destination, b"destination")?;
 
         assert!(restore_backup(&backup, &destination, RestorePolicy::CreateNew).is_err());
-        let mut conn = connect(&destination)?;
-        let retained = sql_query("SELECT payload FROM documents WHERE sha256 = ?")
-            .bind::<Binary, _>(Sha256::digest(b"destination").as_slice())
-            .get_result::<RetainedPayload>(&mut conn)?;
-        assert_eq!(retained.payload, b"destination");
+        assert_eq!(load_document(&destination, b"destination")?, b"destination");
         Ok(())
     }
 
@@ -1032,19 +1140,17 @@ mod tests {
         let directory = tempdir()?;
         let path = utf8(directory.path().join("cache.sqlite"))?;
         add_retained_document(&path, b"original")?;
-        let mut conn = connect(&path)?;
-        let immutable_trigger = sql_query(
-            "SELECT sql AS value FROM sqlite_schema \
-             WHERE type = 'trigger' AND name = 'documents_are_immutable_update'",
-        )
-        .get_result::<TextValue>(&mut conn)?
-        .value;
-        sql_query("DROP TRIGGER documents_are_immutable_update").execute(&mut conn)?;
-        sql_query("UPDATE documents SET payload = ? WHERE sha256 = ?")
-            .bind::<Binary, _>(b"corrupt!".as_slice())
-            .bind::<Binary, _>(Sha256::digest(b"original").as_slice())
-            .execute(&mut conn)?;
-        sql_query(immutable_trigger).execute(&mut conn)?;
+        let object_dir = document_sidecar_path(&path);
+        let mut objects = fs::read_dir(&object_dir)?;
+        let shard = objects
+            .next()
+            .ok_or_else(|| backup_error("missing object shard"))??
+            .path();
+        let object = fs::read_dir(shard)?
+            .next()
+            .ok_or_else(|| backup_error("missing object"))??
+            .path();
+        fs::write(object, b"corrupt")?;
 
         let report = check_integrity(&path)?;
         assert!(
@@ -1149,11 +1255,7 @@ mod tests {
 
         assert!(restore_backup(&backup, &destination, RestorePolicy::ReplaceExisting).is_err());
         drop(open_database);
-        let mut conn = connect(&destination)?;
-        let retained = sql_query("SELECT payload FROM documents WHERE sha256 = ?")
-            .bind::<Binary, _>(Sha256::digest(b"keep me").as_slice())
-            .get_result::<RetainedPayload>(&mut conn)?;
-        assert_eq!(retained.payload, b"keep me");
+        assert_eq!(load_document(&destination, b"keep me")?, b"keep me");
         Ok(())
     }
 
@@ -1170,11 +1272,7 @@ mod tests {
 
         assert!(restore_backup(&backup, &destination, RestorePolicy::ReplaceExisting).is_err());
         drop(open_store);
-        let mut conn = connect(&destination)?;
-        let retained = sql_query("SELECT payload FROM documents WHERE sha256 = ?")
-            .bind::<Binary, _>(Sha256::digest(b"keep me").as_slice())
-            .get_result::<RetainedPayload>(&mut conn)?;
-        assert_eq!(retained.payload, b"keep me");
+        assert_eq!(load_document(&destination, b"keep me")?, b"keep me");
         Ok(())
     }
 
@@ -1294,58 +1392,6 @@ mod tests {
         assert!(!target.exists());
         assert!(!directory.path().join("target.sqlite.lock").exists());
         Ok(())
-    }
-
-    #[test]
-    fn integrity_checks_legacy_payload_against_parent_document_metadata() -> Result<()> {
-        let directory = tempdir()?;
-        let path = utf8(directory.path().join("cache.sqlite"))?;
-        let database = database(&path)?;
-        let mut conn = connect(&path)?;
-        let payload = b"legacy bytes";
-        let key = crate::domain::DocumentKey::from_bytes(payload).to_string();
-        sql_query("INSERT INTO documents (document_key, sha1, byte_length) VALUES (?, ?, ?)")
-            .bind::<Text, _>(&key)
-            .bind::<Binary, _>(sha1::Sha1::digest(payload).as_slice())
-            .bind::<BigInt, _>(
-                i64::try_from(payload.len()).map_err(|error| backup_error(error.to_string()))?,
-            )
-            .execute(&mut conn)?;
-        sql_query(
-            "INSERT INTO legacy_document_payloads \
-             (document_key, sha256, sha1, byte_length, payload, format_hint) \
-             VALUES (?, ?, ?, ?, ?, 'test')",
-        )
-        .bind::<Text, _>(&key)
-        .bind::<Binary, _>(Sha256::digest(payload).as_slice())
-        .bind::<Binary, _>(sha1::Sha1::digest(payload).as_slice())
-        .bind::<BigInt, _>(
-            i64::try_from(payload.len()).map_err(|error| backup_error(error.to_string()))?,
-        )
-        .bind::<Binary, _>(payload)
-        .execute(&mut conn)?;
-        sql_query("DROP TRIGGER documents_are_immutable_update").execute(&mut conn)?;
-        sql_query("UPDATE documents SET sha1 = zeroblob(20) WHERE document_key = ?")
-            .bind::<Text, _>(&key)
-            .execute(&mut conn)?;
-        let mut report = IntegrityReport::default();
-        check_legacy_documents(&mut conn, &mut report)?;
-        drop(conn);
-        drop(database);
-        assert!(
-            report
-                .durable_issues
-                .iter()
-                .any(|issue| issue.contains("legacy retained document")),
-            "{report:?}"
-        );
-        Ok(())
-    }
-
-    #[derive(QueryableByName)]
-    struct RetainedPayload {
-        #[diesel(sql_type = Binary)]
-        payload: Vec<u8>,
     }
 
     #[derive(QueryableByName)]
