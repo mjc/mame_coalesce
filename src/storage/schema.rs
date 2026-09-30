@@ -136,6 +136,7 @@ diesel::table! {
         list_name -> Text,
         list_order -> BigInt,
         description -> Nullable<Text>,
+        notes -> Nullable<Text>,
         source_line -> BigInt,
         source_column -> BigInt,
     }
@@ -205,6 +206,37 @@ diesel::table! {
         value_order -> BigInt,
         name -> Text,
         value -> Nullable<Text>,
+        source_line -> BigInt,
+        source_column -> BigInt,
+    }
+}
+
+diesel::table! {
+    software_part_dipswitches (snapshot_key, list_name, item_name, part_name, dipswitch_order) {
+        snapshot_key -> Text,
+        list_name -> Text,
+        item_name -> Text,
+        part_name -> Text,
+        dipswitch_order -> BigInt,
+        name -> Text,
+        tag -> Text,
+        mask -> Text,
+        source_line -> BigInt,
+        source_column -> BigInt,
+    }
+}
+
+diesel::table! {
+    software_part_dip_values (snapshot_key, list_name, item_name, part_name, dipswitch_order, value_order) {
+        snapshot_key -> Text,
+        list_name -> Text,
+        item_name -> Text,
+        part_name -> Text,
+        dipswitch_order -> BigInt,
+        value_order -> BigInt,
+        name -> Text,
+        value -> Text,
+        is_default -> BigInt,
         source_line -> BigInt,
         source_column -> BigInt,
     }
@@ -516,6 +548,8 @@ diesel::allow_tables_to_appear_in_same_query!(
     software_lists,
     software_parts,
     software_part_features,
+    software_part_dipswitches,
+    software_part_dip_values,
     snapshot_extensions,
     snapshot_sets,
     snapshot_publications,

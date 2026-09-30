@@ -1957,6 +1957,62 @@ fn imports_mame_softwarelists_with_nested_order_dependencies_and_load_claims()
 }
 
 #[test]
+fn persists_softwarelist_dtd_notes_dipswitches_and_defaults_relationally()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, mut connection) = setup()?;
+    let path = directory.path().join("softwarelist-spec-facts.xml");
+    std::fs::write(
+        &path,
+        br#"<softwarelist name="list"><notes>list notes</notes><software name="game"><description>Game</description><year>2000</year><publisher>Pub</publisher><part name="cart" interface="cart"><dataarea name="rom" size="1"><rom name="game.bin"/></dataarea><diskarea name="media"><disk name="game.chd"/></diskarea><dipswitch name="Difficulty" tag=":DSW" mask="0x03"><dipvalue name="Easy" value="0x01" default="yes"/><dipvalue name="Hard" value="0x02"/></dipswitch></part></software></softwarelist>"#,
+    )?;
+    let mut request = request(
+        path,
+        "softwarelist-spec-facts",
+        "softwarelist-spec-facts",
+        "Software-list spec facts",
+    )?;
+    request.format = CatalogDocumentFormat::MameSoftwareListXml;
+    let snapshot = app::import_catalog(&database, &request)?
+        .snapshot_key
+        .ok_or("software-list snapshot missing")?;
+
+    let notes = sql_query(
+        "SELECT notes AS value FROM software_lists WHERE snapshot_key = ? AND list_name = 'list'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(&mut connection)?;
+    assert_eq!(notes.value, "list notes");
+    let defaults = sql_query(
+        "SELECT software_items.supported || ':' || software_areas.width || ':' || software_areas.endianness AS value \
+         FROM software_items JOIN software_areas USING (snapshot_key, list_name, item_name) \
+         WHERE snapshot_key = ? AND list_name = 'list' AND item_name = 'game' AND area_order = 0",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(&mut connection)?;
+    assert_eq!(defaults.value, "yes:8:little");
+    let components = sql_query(
+        "SELECT GROUP_CONCAT(component_kind || ':' || dump_status || ':' || COALESCE(writeable, -1), ',') AS value \
+         FROM (SELECT component_kind, dump_status, writeable FROM software_components \
+               WHERE snapshot_key = ? AND list_name = 'list' ORDER BY component_order)",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(&mut connection)?;
+    assert_eq!(components.value, "rom:good:-1,disk:good:0");
+    let switch = sql_query(
+        "SELECT dipswitch.name || ':' || dipswitch.tag || ':' || dipswitch.mask || ':' || \
+         GROUP_CONCAT(value.name || '=' || value.value || ':' || value.is_default, ',') AS value \
+         FROM software_part_dipswitches AS dipswitch JOIN software_part_dip_values AS value \
+         USING (snapshot_key, list_name, item_name, part_name, dipswitch_order) \
+         WHERE dipswitch.snapshot_key = ? AND dipswitch.list_name = 'list' AND dipswitch.item_name = 'game' \
+         GROUP BY dipswitch.snapshot_key, dipswitch.list_name, dipswitch.item_name, dipswitch.part_name, dipswitch.dipswitch_order",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(&mut connection)?;
+    assert_eq!(switch.value, "Difficulty::DSW:0x03:Easy=0x01:1,Hard=0x02:0");
+    Ok(())
+}
+
+#[test]
 fn imports_metadata_only_software_without_parts() -> Result<(), Box<dyn std::error::Error>> {
     let (directory, database, mut connection) = setup()?;
     let path = directory.path().join("metadata-only-softwarelist.xml");
@@ -1977,12 +2033,12 @@ fn imports_metadata_only_software_without_parts() -> Result<(), Box<dyn std::err
     assert_eq!(count(&mut connection, "software_parts")?, 0);
     let supported = sql_query("SELECT supported AS value FROM software_items")
         .get_result::<NullableTextRow>(&mut connection)?;
-    assert_eq!(supported.value, None);
+    assert_eq!(supported.value.as_deref(), Some("yes"));
     Ok(())
 }
 
 #[test]
-fn imports_repeated_area_names_without_merging_components_or_defaults()
+fn imports_repeated_area_names_and_materializes_component_defaults()
 -> Result<(), Box<dyn std::error::Error>> {
     let (directory, database, mut connection) = setup()?;
     let path = directory.path().join("repeated-software-areas.xml");
@@ -2015,7 +2071,7 @@ fn imports_repeated_area_names_without_merging_components_or_defaults()
         "SELECT writeable AS value FROM software_components WHERE component_name = 'explicit'",
     )
     .get_result::<NullableIntegerRow>(&mut connection)?;
-    assert_eq!(absent.value, None);
+    assert_eq!(absent.value, Some(0));
     assert_eq!(explicit.value, Some(0));
     Ok(())
 }
@@ -2267,8 +2323,8 @@ fn assert_software_list_parts(
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<SoftwareAreaRow>(connection)?;
     assert_eq!(sparse_area.declared_size, Some(16));
-    assert_eq!(sparse_area.width, None);
-    assert_eq!(sparse_area.endianness, None);
+    assert_eq!(sparse_area.width, Some(8));
+    assert_eq!(sparse_area.endianness.as_deref(), Some("little"));
     Ok(())
 }
 
@@ -2330,7 +2386,7 @@ fn assert_software_list_components(
     )
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<SoftwareComponentRow>(connection)?;
-    assert!(disk.dump_status.is_none());
+    assert_eq!(disk.dump_status.as_deref(), Some("good"));
     assert!(disk.sha1.is_some());
     assert_eq!(disk.writeable, Some(1));
     let disk_scope = sql_query(
@@ -2348,7 +2404,7 @@ fn assert_software_list_components(
     )
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<SoftwareComponentRow>(connection)?;
-    assert!(absent_status.dump_status.is_none());
+    assert_eq!(absent_status.dump_status.as_deref(), Some("good"));
     Ok(())
 }
 

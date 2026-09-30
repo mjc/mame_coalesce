@@ -1553,13 +1553,14 @@ fn insert_software_list(
 ) -> crate::Result<()> {
     sql_query(
         "INSERT INTO software_lists \
-         (snapshot_key, list_name, list_order, description, source_line, source_column) \
-         VALUES (?, ?, ?, ?, ?, ?)",
+         (snapshot_key, list_name, list_order, description, notes, source_line, source_column) \
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
     .bind::<Text, _>(snapshot_key.as_str())
     .bind::<Text, _>(list.name.as_str())
     .bind::<BigInt, _>(checked_order(list_order, "software lists")?)
     .bind::<Nullable<Text>, _>(list.description.as_deref())
+    .bind::<Nullable<Text>, _>(list.notes.as_deref())
     .bind::<BigInt, _>(list.location.line)
     .bind::<BigInt, _>(list.location.column)
     .execute(conn)?;
@@ -1717,6 +1718,46 @@ fn insert_software_part(
         .bind::<BigInt, _>(value.location.line)
         .bind::<BigInt, _>(value.location.column)
         .execute(conn)?;
+    }
+
+    for (switch_order, switch) in part.dipswitches.iter().enumerate() {
+        let switch_order = checked_order(switch_order, "software part DIP switches")?;
+        sql_query(
+            "INSERT INTO software_part_dipswitches \
+             (snapshot_key, list_name, item_name, part_name, dipswitch_order, name, tag, mask, \
+              source_line, source_column) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind::<Text, _>(item.snapshot_key.as_str())
+        .bind::<Text, _>(item.list_name)
+        .bind::<Text, _>(item.item_name)
+        .bind::<Text, _>(part.name.as_str())
+        .bind::<BigInt, _>(switch_order)
+        .bind::<Text, _>(switch.name.as_str())
+        .bind::<Text, _>(&switch.tag)
+        .bind::<Text, _>(&switch.mask)
+        .bind::<BigInt, _>(switch.location.line)
+        .bind::<BigInt, _>(switch.location.column)
+        .execute(conn)?;
+        for (value_order, value) in switch.values.iter().enumerate() {
+            sql_query(
+                "INSERT INTO software_part_dip_values \
+                 (snapshot_key, list_name, item_name, part_name, dipswitch_order, value_order, \
+                  name, value, is_default, source_line, source_column) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind::<Text, _>(item.snapshot_key.as_str())
+            .bind::<Text, _>(item.list_name)
+            .bind::<Text, _>(item.item_name)
+            .bind::<Text, _>(part.name.as_str())
+            .bind::<BigInt, _>(switch_order)
+            .bind::<BigInt, _>(checked_order(value_order, "software DIP values")?)
+            .bind::<Text, _>(&value.name)
+            .bind::<Text, _>(&value.value)
+            .bind::<BigInt, _>(i64::from(value.is_default))
+            .bind::<BigInt, _>(value.location.line)
+            .bind::<BigInt, _>(value.location.column)
+            .execute(conn)?;
+        }
     }
 
     let scope = SoftwarePartScope {

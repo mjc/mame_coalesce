@@ -31,6 +31,7 @@ string_identity!(SoftwareItemName);
 string_identity!(PartName);
 string_identity!(AreaName);
 string_identity!(ComponentName);
+string_identity!(DipSwitchName);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SupportedStatus {
@@ -68,6 +69,7 @@ pub struct SoftwareListCatalog {
 pub struct SoftwareList {
     pub name: SoftwareListName,
     pub description: Option<String>,
+    pub notes: Option<String>,
     pub location: RecordLocation,
     pub items: Vec<SoftwareItem>,
 }
@@ -92,7 +94,25 @@ pub struct SoftwarePart {
     pub name: PartName,
     pub interface: String,
     pub features: Vec<NamedValue>,
+    pub dipswitches: Vec<SoftwareDipSwitch>,
     pub areas: Vec<SoftwareArea>,
+    pub location: RecordLocation,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SoftwareDipSwitch {
+    pub name: DipSwitchName,
+    pub tag: String,
+    pub mask: String,
+    pub values: Vec<SoftwareDipValue>,
+    pub location: RecordLocation,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SoftwareDipValue {
+    pub name: String,
+    pub value: String,
+    pub is_default: bool,
     pub location: RecordLocation,
 }
 
@@ -370,7 +390,7 @@ fn parse_empty_list(
         Some(name.as_str()),
         extensions,
     );
-    parse_list_parts(node, name, Vec::new())
+    parse_list_parts(node, name, Vec::new(), None)
 }
 
 fn parse_list_events(
@@ -391,10 +411,48 @@ fn parse_list_events(
         extensions,
     );
     let mut items = Vec::new();
+    let mut notes = None;
     let mut item_names = HashSet::<String>::new();
     loop {
         let (namespace, event) = xml_reader::next(reader, positions)?;
         let item_node = match event {
+            Event::Start(start) if start.local_name().as_ref() == "notes" => {
+                let notes_node =
+                    xml_reader::read_element(reader, namespace, &start, budget, 2, positions)?;
+                retain_unknown_node_content(
+                    &notes_node,
+                    &[],
+                    "software_list_notes",
+                    Some(name.as_str()),
+                    extensions,
+                )?;
+                if notes.replace(notes_node.direct_text()).is_some() {
+                    return Err(crate::Error::XmlValidation(format!(
+                        "duplicate software-list notes for {:?}",
+                        name.as_str()
+                    )));
+                }
+                continue;
+            }
+            Event::Empty(start) if start.local_name().as_ref() == "notes" => {
+                let notes_node = xml_reader::element_from_start(
+                    reader, namespace, &start, budget, 2, positions,
+                )?;
+                retain_unknown_node_content(
+                    &notes_node,
+                    &[],
+                    "software_list_notes",
+                    Some(name.as_str()),
+                    extensions,
+                )?;
+                if notes.replace(notes_node.direct_text()).is_some() {
+                    return Err(crate::Error::XmlValidation(format!(
+                        "duplicate software-list notes for {:?}",
+                        name.as_str()
+                    )));
+                }
+                continue;
+            }
             Event::Start(start) if start.local_name().as_ref() == "software" => Some(
                 xml_reader::read_element(reader, namespace, &start, budget, 2, positions)?,
             ),
@@ -435,7 +493,7 @@ fn parse_list_events(
         }
     }
     let build = node.attributes.get("build").cloned();
-    Ok((parse_list_parts(&node, name, items)?, build))
+    Ok((parse_list_parts(&node, name, items, notes)?, build))
 }
 
 fn finish_softwarelist_document(
@@ -460,6 +518,7 @@ fn parse_list_parts(
     node: &Element,
     name: SoftwareListName,
     items: Vec<SoftwareItem>,
+    notes: Option<String>,
 ) -> crate::Result<SoftwareList> {
     if items.is_empty() {
         return Err(crate::Error::XmlValidation(format!(
@@ -470,6 +529,7 @@ fn parse_list_parts(
     Ok(SoftwareList {
         name,
         description: node.attributes.get("description").cloned(),
+        notes,
         location: node.location,
         items,
     })
@@ -495,8 +555,7 @@ fn parse_item(
         .cloned()
         .map(SoftwareItemName::new);
     let supported = match node.attributes.get("supported").map(String::as_str) {
-        None => None,
-        Some("yes") => Some(SupportedStatus::Yes),
+        None | Some("yes") => Some(SupportedStatus::Yes),
         Some("partial") => Some(SupportedStatus::Partial),
         Some("no") => Some(SupportedStatus::No),
         Some(other) => {
@@ -593,6 +652,7 @@ fn parse_part(
         extensions,
     );
     let mut features = Vec::new();
+    let mut dipswitches = Vec::new();
     let mut areas = Vec::new();
     for child in node.children() {
         match child.name.as_str() {
@@ -611,6 +671,7 @@ fn parse_part(
                 let area = parse_area(child, &record, extensions)?;
                 areas.push(area);
             }
+            "dipswitch" => dipswitches.push(parse_dipswitch(child, &record, extensions)?),
             _ => extensions.push(extension("software_part", Some(&record), child)?),
         }
     }
@@ -618,7 +679,57 @@ fn parse_part(
         name,
         interface,
         features,
+        dipswitches,
         areas,
+        location: node.location,
+    })
+}
+
+fn parse_dipswitch(
+    node: &Element,
+    part_record: &str,
+    extensions: &mut Vec<XmlExtension>,
+) -> crate::Result<SoftwareDipSwitch> {
+    let name = DipSwitchName::new(required(node, "name")?);
+    let record = format!("{part_record}:{}", name.as_str());
+    retain_unknown_attributes(
+        node,
+        &["name", "tag", "mask"],
+        "software_dipswitch",
+        Some(&record),
+        extensions,
+    );
+    let mut values = Vec::new();
+    for child in node.children() {
+        if child.name == "dipvalue" {
+            retain_unknown_attributes(
+                child,
+                &["name", "value", "default"],
+                "software_dipvalue",
+                Some(&record),
+                extensions,
+            );
+            retain_child_elements(child, "software_dipvalue", Some(&record), extensions)?;
+            let is_default = match child.attributes.get("default").map(String::as_str) {
+                None | Some("no") => false,
+                Some("yes") => true,
+                Some(other) => return Err(invalid_value(child, &record, "default", other)),
+            };
+            values.push(SoftwareDipValue {
+                name: required(child, "name")?,
+                value: required(child, "value")?,
+                is_default,
+                location: child.location,
+            });
+        } else {
+            extensions.push(extension("software_dipswitch", Some(&record), child)?);
+        }
+    }
+    Ok(SoftwareDipSwitch {
+        name,
+        tag: required(node, "tag")?,
+        mask: required(node, "mask")?,
+        values,
         location: node.location,
     })
 }
@@ -654,14 +765,20 @@ fn parse_area(
                 "size",
                 &required(node, "size")?,
             )?),
-            node.attributes
-                .get("width")
-                .map(|value| parse_width(node, &record, value))
-                .transpose()?,
-            node.attributes
-                .get("endianness")
-                .map(|value| parse_endianness(node, &record, value))
-                .transpose()?,
+            Some(
+                node.attributes
+                    .get("width")
+                    .map(|value| parse_width(node, &record, value))
+                    .transpose()?
+                    .unwrap_or(8),
+            ),
+            Some(
+                node.attributes
+                    .get("endianness")
+                    .map(|value| parse_endianness(node, &record, value))
+                    .transpose()?
+                    .unwrap_or(Endianness::Little),
+            ),
             "rom",
         ),
         AreaKind::Disk => (None, None, None, "disk"),
@@ -707,26 +824,6 @@ fn parse_rom(
     for child in node.children() {
         extensions.push(extension("software_rom", Some(record), child)?);
     }
-    let has_name = node
-        .attributes
-        .get("name")
-        .is_some_and(|name| !name.trim().is_empty());
-    let has_other_evidence = ["size", "crc", "sha1", "offset", "value", "loadflag"]
-        .iter()
-        .any(|attribute| {
-            node.attributes
-                .get(*attribute)
-                .is_some_and(|value| !value.trim().is_empty())
-        });
-    if !has_name && !has_other_evidence {
-        return Err(crate::Error::CatalogParse {
-            message: "ROM record has no identifying or load evidence".into(),
-            record_kind: Some("rom".into()),
-            record_name: None,
-            line: Some(node.location.line),
-            column: Some(node.location.column),
-        });
-    }
     Ok(SoftwareRom {
         name: node.attributes.get("name").cloned().map(ComponentName::new),
         size: parse_optional_number(node, record, "size")?,
@@ -734,7 +831,7 @@ fn parse_rom(
         sha1: parse_digest(node, record, "sha1")?,
         offset: parse_optional_number(node, record, "offset")?,
         value: node.attributes.get("value").cloned(),
-        status: parse_status(node, record)?,
+        status: Some(parse_status(node, record)?.unwrap_or_default()),
         load: parse_load(node, record)?,
         location: node.location,
     })
@@ -767,8 +864,8 @@ fn parse_disk(
             sha1.map(crate::disk::DiskIdentitySha1::new),
             crate::disk::DiskDigestScope::ChdHeaderSha1,
         ),
-        status: parse_status(node, record)?,
-        writeable,
+        status: Some(parse_status(node, record)?.unwrap_or_default()),
+        writeable: Some(writeable.unwrap_or(false)),
         location: node.location,
     })
 }
@@ -931,11 +1028,9 @@ fn set_item_text(
 }
 
 fn required_text(value: Option<String>, field: &str, record: &str) -> crate::Result<String> {
-    value
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| {
-            crate::Error::XmlValidation(format!("missing required {field} for software {record:?}"))
-        })
+    value.ok_or_else(|| {
+        crate::Error::XmlValidation(format!("missing required {field} for software {record:?}"))
+    })
 }
 
 fn required(node: &Element, field: &str) -> crate::Result<String> {
@@ -1088,8 +1183,8 @@ mod tests {
         let disk = disk(at(&media.components, 0)?)?;
         assert_eq!(disk.writeable, Some(true));
         let manual_area = at(&at(&item.parts, 1)?.areas, 0)?;
-        assert_eq!(manual_area.width, None);
-        assert_eq!(manual_area.endianness, None);
+        assert_eq!(manual_area.width, Some(8));
+        assert_eq!(manual_area.endianness, Some(Endianness::Little));
         assert!(item.location.line < cart.location.line);
         assert!(cart.location.line < rom.location.line);
         let second_list = at(&catalog.lists, 1)?;
@@ -1181,15 +1276,34 @@ mod tests {
     }
 
     #[test]
-    fn parser_rejects_empty_rom_records_and_values_outside_storage_range() {
+    fn parser_preserves_spec_valid_empty_rom_records_and_rejects_out_of_range_numbers()
+    -> crate::Result<()> {
         let empty_rom = br#"<softwarelist name="one"><software name="game"><description>Game</description><year>2000</year><publisher>Pub</publisher><part name="cart" interface="cart"><dataarea name="rom" size="1"><rom/></dataarea></part></software></softwarelist>"#;
-        assert!(SoftwareListCatalog::parse(empty_rom).is_err());
+        let catalog = SoftwareListCatalog::parse(empty_rom)?;
+        let rom = as_rom(
+            &at(
+                &at(&at(&at(&catalog.lists, 0)?.items, 0)?.parts, 0)?.areas,
+                0,
+            )?
+            .components[0],
+        )?;
+        assert_eq!(rom.name, None);
+        assert_eq!(rom.status, Some(DumpStatus::Good));
         let empty_name = br#"<softwarelist name="one"><software name="game"><description>Game</description><year>2000</year><publisher>Pub</publisher><part name="cart" interface="cart"><dataarea name="rom" size="1"><rom name=""/></dataarea></part></software></softwarelist>"#;
-        assert!(SoftwareListCatalog::parse(empty_name).is_err());
+        let catalog = SoftwareListCatalog::parse(empty_name)?;
+        let rom = as_rom(
+            &at(
+                &at(&at(&at(&catalog.lists, 0)?.items, 0)?.parts, 0)?.areas,
+                0,
+            )?
+            .components[0],
+        )?;
+        assert_eq!(rom.name.as_ref().map(ComponentName::as_str), Some(""));
         let unnamed_load = br#"<softwarelist name="one"><software name="game"><description>Game</description><year>2000</year><publisher>Pub</publisher><part name="cart" interface="cart"><dataarea name="rom" size="1"><rom loadflag="continue"/></dataarea></part></software></softwarelist>"#;
         assert!(SoftwareListCatalog::parse(unnamed_load).is_ok());
         assert!(parse_number("9223372036854775808").is_err());
         assert!(parse_number("0x8000000000000000").is_err());
+        Ok(())
     }
 
     #[test]
@@ -1208,16 +1322,24 @@ mod tests {
     }
 
     #[test]
-    fn parser_preserves_absent_defaults_and_repeated_area_names() -> crate::Result<()> {
-        let xml = br#"<softwarelist name="one"><software name="game"><description>Game</description><year>2000</year><publisher>Pub</publisher><part name="cart" interface="cart"><dataarea name="rom" size="1"><rom name="first.bin"/></dataarea><dataarea name="rom" size="2"><rom name="second.bin"/></dataarea><diskarea name="media"><disk name="implicit"/><disk name="explicit" writeable="no"/></diskarea></part></software></softwarelist>"#;
+    fn parser_materializes_dtd_defaults_and_parses_dipswitches() -> crate::Result<()> {
+        let xml = br#"<softwarelist name="one"><notes>list notes</notes><software name="game"><description>Game</description><year>2000</year><publisher>Pub</publisher><part name="cart" interface="cart"><dataarea name="rom" size="1"><rom name="first.bin"/></dataarea><dataarea name="rom" size="2"><rom name="second.bin"/></dataarea><diskarea name="media"><disk name="implicit"/><disk name="explicit" writeable="no"/></diskarea><dipswitch name="Difficulty" tag=":DSW" mask="0x03"><dipvalue name="Easy" value="0x01" default="yes"/><dipvalue name="Hard" value="0x02"/></dipswitch></part></software></softwarelist>"#;
         let catalog = SoftwareListCatalog::parse(xml)?;
+        assert_eq!(catalog.lists[0].notes.as_deref(), Some("list notes"));
         let item = at(&at(&catalog.lists, 0)?.items, 0)?;
-        assert_eq!(item.supported, None);
-        let areas = &at(&item.parts, 0)?.areas;
+        assert_eq!(item.supported, Some(SupportedStatus::Yes));
+        let part = at(&item.parts, 0)?;
+        let areas = &part.areas;
         assert_eq!(areas.len(), 3);
         assert_eq!(areas[0].name, areas[1].name);
         assert_eq!(areas[0].declared_size, Some(1));
         assert_eq!(areas[1].declared_size, Some(2));
+        assert_eq!(areas[0].width, Some(8));
+        assert_eq!(areas[0].endianness, Some(Endianness::Little));
+        assert_eq!(
+            as_rom(at(&areas[0].components, 0)?)?.status,
+            Some(DumpStatus::Good)
+        );
         assert_eq!(
             as_rom(at(&areas[1].components, 0)?)?
                 .name
@@ -1225,8 +1347,27 @@ mod tests {
                 .map(ComponentName::as_str),
             Some("second.bin")
         );
-        assert_eq!(disk(at(&areas[2].components, 0)?)?.writeable, None);
+        assert_eq!(disk(at(&areas[2].components, 0)?)?.writeable, Some(false));
         assert_eq!(disk(at(&areas[2].components, 1)?)?.writeable, Some(false));
+        assert_eq!(
+            disk(at(&areas[2].components, 0)?)?.status,
+            Some(DumpStatus::Good)
+        );
+        let switch = at(&part.dipswitches, 0)?;
+        assert_eq!(switch.name.as_str(), "Difficulty");
+        assert_eq!(switch.tag, ":DSW");
+        assert_eq!(switch.mask, "0x03");
+        assert_eq!(switch.values[0].name, "Easy");
+        assert_eq!(switch.values[0].value, "0x01");
+        assert!(switch.values[0].is_default);
+        assert!(!switch.values[1].is_default);
+
+        let empty_text_fields = br#"<softwarelist name="empty-text"><software name="game"><description/><year/><publisher/></software></softwarelist>"#;
+        let empty_text_catalog = SoftwareListCatalog::parse(empty_text_fields)?;
+        let empty_text_item = &empty_text_catalog.lists[0].items[0];
+        assert_eq!(empty_text_item.description, "");
+        assert_eq!(empty_text_item.year, "");
+        assert_eq!(empty_text_item.publisher, "");
         Ok(())
     }
 
