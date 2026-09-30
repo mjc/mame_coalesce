@@ -109,12 +109,22 @@ struct DiagnosticLocationRow {
 struct SoftwareItemRow {
     #[diesel(sql_type = Text)]
     supported: String,
-    #[diesel(sql_type = Text)]
-    info: String,
-    #[diesel(sql_type = Text)]
-    shared_features: String,
     #[diesel(sql_type = diesel::sql_types::BigInt)]
     source_line: i64,
+}
+
+#[derive(QueryableByName)]
+struct SoftwareNamedValueRow {
+    #[diesel(sql_type = BigInt)]
+    value_order: i64,
+    #[diesel(sql_type = Text)]
+    name: String,
+    #[diesel(sql_type = Nullable<Text>)]
+    value: Option<String>,
+    #[diesel(sql_type = BigInt)]
+    source_line: i64,
+    #[diesel(sql_type = BigInt)]
+    source_column: i64,
 }
 
 #[derive(QueryableByName)]
@@ -1541,6 +1551,9 @@ fn imports_mame_softwarelists_with_nested_order_dependencies_and_load_claims()
     assert_eq!(count(&mut connection, "software_lists")?, 2);
     assert_eq!(count(&mut connection, "software_items")?, 3);
     assert_eq!(count(&mut connection, "software_parts")?, 4);
+    assert_eq!(count(&mut connection, "software_item_info")?, 4);
+    assert_eq!(count(&mut connection, "software_item_shared_features")?, 1);
+    assert_eq!(count(&mut connection, "software_part_features")?, 1);
     assert_eq!(count(&mut connection, "software_areas")?, 5);
     assert_eq!(count(&mut connection, "software_components")?, 6);
     assert_eq!(count(&mut connection, "software_item_dependencies")?, 1);
@@ -1717,21 +1730,91 @@ fn assert_software_list_nesting(
     snapshot: &mame_coalesce::domain::SnapshotKey,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let item = sql_query(
-        "SELECT supported, info_json AS info, shared_features_json AS shared_features, source_line \
+        "SELECT supported, source_line \
          FROM software_items WHERE snapshot_key = ? AND list_name = 'demo_cart' \
          AND item_name = 'demo_game'",
     )
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<SoftwareItemRow>(connection)?;
     assert_eq!(item.supported, "partial");
-    assert_eq!(item.info.matches("language").count(), 2);
-    let english = item
-        .info
-        .find("English")
-        .ok_or("English metadata missing")?;
-    let french = item.info.find("French").ok_or("French metadata missing")?;
-    assert!(english < french);
-    assert!(item.shared_features.contains("compatibility"));
+    let info = sql_query(
+        "SELECT value_order, name, value, source_line, source_column \
+         FROM software_item_info WHERE snapshot_key = ? AND list_name = 'demo_cart' \
+         AND item_name = 'demo_game' ORDER BY value_order",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .load::<SoftwareNamedValueRow>(connection)?;
+    assert_eq!(
+        info.iter()
+            .map(|row| (row.value_order, row.name.as_str(), row.value.as_deref()))
+            .collect::<Vec<_>>(),
+        vec![
+            (0, "serial", Some("SYN-001")),
+            (1, "language", Some("English")),
+            (2, "language", Some("French")),
+        ]
+    );
+    assert_eq!((info[0].source_line, info[0].source_column), (9, 7));
+    assert_eq!((info[2].source_line, info[2].source_column), (11, 7));
+
+    let shared_feature = sql_query(
+        "SELECT value_order, name, value, source_line, source_column \
+         FROM software_item_shared_features WHERE snapshot_key = ? AND list_name = 'demo_cart' \
+         AND item_name = 'demo_game' ORDER BY value_order",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .load::<SoftwareNamedValueRow>(connection)?;
+    assert_eq!(shared_feature.len(), 1);
+    assert_eq!(shared_feature[0].value_order, 0);
+    assert_eq!(shared_feature[0].name, "compatibility");
+    assert_eq!(shared_feature[0].value.as_deref(), Some("PAL"));
+    assert_eq!(
+        (
+            shared_feature[0].source_line,
+            shared_feature[0].source_column
+        ),
+        (12, 7)
+    );
+
+    let part_feature = sql_query(
+        "SELECT value_order, name, value, source_line, source_column \
+         FROM software_part_features WHERE snapshot_key = ? AND list_name = 'demo_cart' \
+         AND item_name = 'demo_game' AND part_name = 'cart' ORDER BY value_order",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .load::<SoftwareNamedValueRow>(connection)?;
+    assert_eq!(part_feature.len(), 1);
+    assert_eq!(part_feature[0].value_order, 0);
+    assert_eq!(part_feature[0].name, "pcb");
+    assert_eq!(part_feature[0].value.as_deref(), Some("standard"));
+    assert_eq!(
+        (part_feature[0].source_line, part_feature[0].source_column),
+        (14, 9)
+    );
+
+    let absent_value = sql_query(
+        "SELECT value_order, name, value, source_line, source_column \
+         FROM software_item_info WHERE snapshot_key = ? AND list_name = 'demo_cart' \
+         AND item_name = 'demo_original' ORDER BY value_order",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<SoftwareNamedValueRow>(connection)?;
+    assert_eq!(absent_value.value_order, 0);
+    assert_eq!(absent_value.name, "region");
+    assert_eq!(absent_value.value, None);
+
+    let removed_columns = sql_query(
+        "SELECT COUNT(*) AS count FROM pragma_table_info('software_items') \
+         WHERE name IN ('info_json', 'shared_features_json')",
+    )
+    .get_result::<CountRow>(connection)?;
+    assert_eq!(removed_columns.count, 0);
+    let removed_part_column = sql_query(
+        "SELECT COUNT(*) AS count FROM pragma_table_info('software_parts') \
+         WHERE name = 'features_json'",
+    )
+    .get_result::<CountRow>(connection)?;
+    assert_eq!(removed_part_column.count, 0);
 
     let parts = sql_query(
         "SELECT GROUP_CONCAT(part_name, ',') AS value FROM ( \

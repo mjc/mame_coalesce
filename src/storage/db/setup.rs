@@ -854,13 +854,13 @@ mod tests {
                  VALUES ('snapshot', 'list', 0, 1, 1);
              INSERT INTO software_items
                  (snapshot_key, list_name, item_name, item_order, description, year,
-                  publisher, info_json, shared_features_json, source_line, source_column)
+                  publisher, source_line, source_column)
                  VALUES ('snapshot', 'list', 'item', 0, 'Item', '2000', 'Publisher',
-                         '[]', '[]', 1, 1);
+                         1, 1);
              INSERT INTO software_parts
                  (snapshot_key, list_name, item_name, part_name, part_order,
-                  interface, features_json, source_line, source_column)
-                 VALUES ('snapshot', 'list', 'item', 'part', 0, 'disk', '[]', 1, 1);
+                  interface, source_line, source_column)
+                 VALUES ('snapshot', 'list', 'item', 'part', 0, 'disk', 1, 1);
              INSERT INTO software_areas
                  (snapshot_key, list_name, item_name, part_name, area_name,
                   area_kind, area_order, source_line, source_column)

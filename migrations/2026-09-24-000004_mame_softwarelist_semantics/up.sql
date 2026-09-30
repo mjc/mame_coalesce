@@ -19,8 +19,6 @@ CREATE TABLE software_items (
     year               TEXT NOT NULL,
     publisher          TEXT NOT NULL,
     notes              TEXT,
-    info_json          TEXT NOT NULL CHECK (json_valid(info_json)),
-    shared_features_json TEXT NOT NULL CHECK (json_valid(shared_features_json)),
     source_line        INTEGER NOT NULL CHECK (source_line > 0),
     source_column      INTEGER NOT NULL CHECK (source_column > 0),
     PRIMARY KEY (snapshot_key, list_name, item_name),
@@ -36,13 +34,56 @@ CREATE TABLE software_parts (
     part_name      TEXT NOT NULL,
     part_order     INTEGER NOT NULL CHECK (part_order >= 0),
     interface      TEXT NOT NULL,
-    features_json  TEXT NOT NULL CHECK (json_valid(features_json)),
     source_line    INTEGER NOT NULL CHECK (source_line > 0),
     source_column  INTEGER NOT NULL CHECK (source_column > 0),
     PRIMARY KEY (snapshot_key, list_name, item_name, part_name),
     UNIQUE (snapshot_key, list_name, item_name, part_order),
     FOREIGN KEY (snapshot_key, list_name, item_name)
         REFERENCES software_items (snapshot_key, list_name, item_name) ON DELETE RESTRICT
+);
+
+CREATE TABLE software_item_info (
+    snapshot_key   TEXT NOT NULL,
+    list_name      TEXT NOT NULL,
+    item_name      TEXT NOT NULL,
+    value_order    INTEGER NOT NULL CHECK (value_order >= 0),
+    name           TEXT NOT NULL,
+    value          TEXT,
+    source_line    INTEGER NOT NULL CHECK (source_line > 0),
+    source_column  INTEGER NOT NULL CHECK (source_column > 0),
+    PRIMARY KEY (snapshot_key, list_name, item_name, value_order),
+    FOREIGN KEY (snapshot_key, list_name, item_name)
+        REFERENCES software_items (snapshot_key, list_name, item_name) ON DELETE RESTRICT
+);
+
+CREATE TABLE software_item_shared_features (
+    snapshot_key   TEXT NOT NULL,
+    list_name      TEXT NOT NULL,
+    item_name      TEXT NOT NULL,
+    value_order    INTEGER NOT NULL CHECK (value_order >= 0),
+    name           TEXT NOT NULL,
+    value          TEXT,
+    source_line    INTEGER NOT NULL CHECK (source_line > 0),
+    source_column  INTEGER NOT NULL CHECK (source_column > 0),
+    PRIMARY KEY (snapshot_key, list_name, item_name, value_order),
+    FOREIGN KEY (snapshot_key, list_name, item_name)
+        REFERENCES software_items (snapshot_key, list_name, item_name) ON DELETE RESTRICT
+);
+
+CREATE TABLE software_part_features (
+    snapshot_key   TEXT NOT NULL,
+    list_name      TEXT NOT NULL,
+    item_name      TEXT NOT NULL,
+    part_name      TEXT NOT NULL,
+    value_order    INTEGER NOT NULL CHECK (value_order >= 0),
+    name           TEXT NOT NULL,
+    value          TEXT,
+    source_line    INTEGER NOT NULL CHECK (source_line > 0),
+    source_column  INTEGER NOT NULL CHECK (source_column > 0),
+    PRIMARY KEY (snapshot_key, list_name, item_name, part_name, value_order),
+    FOREIGN KEY (snapshot_key, list_name, item_name, part_name)
+        REFERENCES software_parts (snapshot_key, list_name, item_name, part_name)
+        ON DELETE RESTRICT
 );
 
 CREATE TABLE software_areas (

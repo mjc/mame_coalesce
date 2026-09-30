@@ -31,6 +31,7 @@
       <description>Synthetic Original</description>
       <year>1999</year>
       <publisher>Example Publisher</publisher>
+      <info name="region" />
       <part name="cart" interface="demo_cart">
         <dataarea name="rom" size="16">
           <rom name="original.bin" size="16" crc="87654321" />

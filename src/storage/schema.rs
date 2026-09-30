@@ -136,8 +136,6 @@ diesel::table! {
         year -> Text,
         publisher -> Text,
         notes -> Nullable<Text>,
-        info_json -> Text,
-        shared_features_json -> Text,
         source_line -> BigInt,
         source_column -> BigInt,
     }
@@ -151,7 +149,46 @@ diesel::table! {
         part_name -> Text,
         part_order -> BigInt,
         interface -> Text,
-        features_json -> Text,
+        source_line -> BigInt,
+        source_column -> BigInt,
+    }
+}
+
+diesel::table! {
+    software_item_info (snapshot_key, list_name, item_name, value_order) {
+        snapshot_key -> Text,
+        list_name -> Text,
+        item_name -> Text,
+        value_order -> BigInt,
+        name -> Text,
+        value -> Nullable<Text>,
+        source_line -> BigInt,
+        source_column -> BigInt,
+    }
+}
+
+diesel::table! {
+    software_item_shared_features (snapshot_key, list_name, item_name, value_order) {
+        snapshot_key -> Text,
+        list_name -> Text,
+        item_name -> Text,
+        value_order -> BigInt,
+        name -> Text,
+        value -> Nullable<Text>,
+        source_line -> BigInt,
+        source_column -> BigInt,
+    }
+}
+
+diesel::table! {
+    software_part_features (snapshot_key, list_name, item_name, part_name, value_order) {
+        snapshot_key -> Text,
+        list_name -> Text,
+        item_name -> Text,
+        part_name -> Text,
+        value_order -> BigInt,
+        name -> Text,
+        value -> Nullable<Text>,
         source_line -> BigInt,
         source_column -> BigInt,
     }
@@ -430,9 +467,12 @@ diesel::allow_tables_to_appear_in_same_query!(
     software_areas,
     software_components,
     software_item_dependencies,
+    software_item_info,
+    software_item_shared_features,
     software_items,
     software_lists,
     software_parts,
+    software_part_features,
     snapshot_extensions,
     snapshot_sets,
     snapshot_publications,

@@ -1307,8 +1307,8 @@ fn insert_software_item(
     sql_query(
         "INSERT INTO software_items \
          (snapshot_key, list_name, item_name, item_order, supported, description, year, \
-          publisher, notes, info_json, shared_features_json, source_line, source_column) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          publisher, notes, source_line, source_column) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind::<Text, _>(snapshot_key.as_str())
     .bind::<Text, _>(list_name)
@@ -1322,11 +1322,26 @@ fn insert_software_item(
     .bind::<Text, _>(&item.year)
     .bind::<Text, _>(&item.publisher)
     .bind::<Nullable<Text>, _>(item.notes.as_deref())
-    .bind::<Text, _>(named_values_json(&item.info))
-    .bind::<Text, _>(named_values_json(&item.shared_features))
     .bind::<BigInt, _>(item.location.line)
     .bind::<BigInt, _>(item.location.column)
     .execute(conn)?;
+
+    insert_software_item_named_values(
+        conn,
+        "software_item_info",
+        snapshot_key,
+        list_name,
+        item.name.as_str(),
+        &item.info,
+    )?;
+    insert_software_item_named_values(
+        conn,
+        "software_item_shared_features",
+        snapshot_key,
+        list_name,
+        item.name.as_str(),
+        &item.shared_features,
+    )?;
 
     if let Some(parent) = &item.clone_of {
         sql_query(
@@ -1400,8 +1415,8 @@ fn insert_software_part(
 ) -> crate::Result<()> {
     sql_query(
         "INSERT INTO software_parts \
-         (snapshot_key, list_name, item_name, part_name, part_order, interface, features_json, \
-          source_line, source_column) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         (snapshot_key, list_name, item_name, part_name, part_order, interface, \
+          source_line, source_column) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind::<Text, _>(item.snapshot_key.as_str())
     .bind::<Text, _>(item.list_name)
@@ -1409,10 +1424,27 @@ fn insert_software_part(
     .bind::<Text, _>(part.name.as_str())
     .bind::<BigInt, _>(checked_order(part_order, "software parts")?)
     .bind::<Text, _>(&part.interface)
-    .bind::<Text, _>(named_values_json(&part.features))
     .bind::<BigInt, _>(part.location.line)
     .bind::<BigInt, _>(part.location.column)
     .execute(conn)?;
+
+    for (value_order, value) in part.features.iter().enumerate() {
+        sql_query(
+            "INSERT INTO software_part_features \
+             (snapshot_key, list_name, item_name, part_name, value_order, name, value, \
+              source_line, source_column) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind::<Text, _>(item.snapshot_key.as_str())
+        .bind::<Text, _>(item.list_name)
+        .bind::<Text, _>(item.item_name)
+        .bind::<Text, _>(part.name.as_str())
+        .bind::<BigInt, _>(checked_order(value_order, "software part features")?)
+        .bind::<Text, _>(&value.name)
+        .bind::<Nullable<Text>, _>(value.value.as_deref())
+        .bind::<BigInt, _>(value.location.line)
+        .bind::<BigInt, _>(value.location.column)
+        .execute(conn)?;
+    }
 
     let scope = SoftwarePartScope {
         item,
@@ -1545,19 +1577,31 @@ fn insert_software_component(
     Ok(())
 }
 
-fn named_values_json(values: &[crate::mame_softwarelist::NamedValue]) -> String {
-    serde_json::json!(
-        values
-            .iter()
-            .map(|value| serde_json::json!({
-                "name": value.name,
-                "value": value.value,
-                "source_line": value.location.line,
-                "source_column": value.location.column,
-            }))
-            .collect::<Vec<_>>()
-    )
-    .to_string()
+fn insert_software_item_named_values(
+    conn: &mut SqliteConnection,
+    table: &str,
+    snapshot_key: &SnapshotKey,
+    list_name: &str,
+    item_name: &str,
+    values: &[crate::mame_softwarelist::NamedValue],
+) -> crate::Result<()> {
+    for (value_order, value) in values.iter().enumerate() {
+        sql_query(format!(
+            "INSERT INTO {table} \
+             (snapshot_key, list_name, item_name, value_order, name, value, source_line, \
+              source_column) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+        ))
+        .bind::<Text, _>(snapshot_key.as_str())
+        .bind::<Text, _>(list_name)
+        .bind::<Text, _>(item_name)
+        .bind::<BigInt, _>(checked_order(value_order, "software item values")?)
+        .bind::<Text, _>(&value.name)
+        .bind::<Nullable<Text>, _>(value.value.as_deref())
+        .bind::<BigInt, _>(value.location.line)
+        .bind::<BigInt, _>(value.location.column)
+        .execute(conn)?;
+    }
+    Ok(())
 }
 
 fn checked_order(order: usize, kind: &str) -> crate::Result<i64> {
