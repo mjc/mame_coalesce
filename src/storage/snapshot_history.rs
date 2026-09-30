@@ -844,22 +844,7 @@ fn records(
     )
     .bind::<Text, _>(key.as_str())
     .load::<SetRow>(conn)?;
-    let requirements = sql_query(
-        "SELECT asset.set_name, asset.component_order, asset.asset_name, asset.role, asset.size, \
-         asset.crc, asset.md5, asset.sha1, asset.evidence_scope, asset.evidence_provenance, \
-         asset.merge_name, asset.dump_status, asset.serial, asset.date, asset.metadata_json, \
-         facts.region AS mame_region, facts.bios AS mame_bios, facts.offset AS mame_offset, \
-         facts.optional AS mame_optional, facts.sound_only AS mame_sound_only, \
-         facts.dispose AS mame_dispose, facts.load_flag AS mame_load_flag, facts.value AS mame_value, \
-         facts.inverted AS mame_inverted, facts.ovha AS mame_ovha, facts.no_thread AS mame_no_thread, \
-         facts.disk_index AS mame_disk_index, facts.writable AS mame_writable, \
-         facts.writeable AS mame_writeable \
-         FROM asset_requirements AS asset LEFT JOIN mame_asset_facts AS facts \
-         USING (snapshot_key, set_name, component_order) \
-         WHERE asset.snapshot_key = ? ORDER BY asset.set_name, asset.asset_name, asset.component_order",
-    )
-    .bind::<Text, _>(key.as_str())
-    .load::<RequirementRow>(conn)?;
+    let requirements = load_requirements(conn, key)?;
     let extensions = sql_query(
         "SELECT record_kind, record_name, owner_set_name, owner_component_order, field_name, namespace_uri, raw_value_json \
          FROM snapshot_extensions WHERE snapshot_key = ? \
@@ -939,6 +924,47 @@ fn records(
     }
     assemble_requirements(&mut result, requirements);
     Ok(result)
+}
+
+fn load_requirements(
+    conn: &mut diesel::SqliteConnection,
+    key: &SnapshotKey,
+) -> crate::Result<Vec<RequirementRow>> {
+    Ok(sql_query(
+        "SELECT sets.set_name, asset.component_order, asset.asset_name, asset.role, asset.size, \
+         (SELECT digest.digest FROM asset_requirement_digest_assertions AS assertion \
+          JOIN digest_values AS digest USING (digest_id) \
+          WHERE assertion.set_id = asset.set_id \
+            AND assertion.component_order = asset.component_order \
+            AND assertion.scope = asset.evidence_scope AND digest.algorithm = 'crc32') AS crc, \
+         (SELECT digest.digest FROM asset_requirement_digest_assertions AS assertion \
+          JOIN digest_values AS digest USING (digest_id) \
+          WHERE assertion.set_id = asset.set_id \
+            AND assertion.component_order = asset.component_order \
+            AND assertion.scope = asset.evidence_scope AND digest.algorithm = 'md5') AS md5, \
+         (SELECT digest.digest FROM asset_requirement_digest_assertions AS assertion \
+          JOIN digest_values AS digest USING (digest_id) \
+          WHERE assertion.set_id = asset.set_id \
+            AND assertion.component_order = asset.component_order \
+            AND assertion.scope = asset.evidence_scope AND digest.algorithm = 'sha1') AS sha1, \
+         asset.evidence_scope, asset.evidence_provenance, \
+         asset.merge_name, asset.dump_status, asset.serial, asset.date, asset.metadata_json, \
+         facts.region AS mame_region, facts.bios AS mame_bios, facts.offset AS mame_offset, \
+         facts.optional AS mame_optional, facts.sound_only AS mame_sound_only, \
+         facts.dispose AS mame_dispose, facts.load_flag AS mame_load_flag, facts.value AS mame_value, \
+         facts.inverted AS mame_inverted, facts.ovha AS mame_ovha, facts.no_thread AS mame_no_thread, \
+         facts.disk_index AS mame_disk_index, facts.writable AS mame_writable, \
+         facts.writeable AS mame_writeable \
+         FROM asset_requirement_rows AS asset \
+         JOIN snapshot_sets AS sets USING (set_id) \
+         LEFT JOIN mame_asset_facts AS facts \
+           ON facts.snapshot_key = sets.snapshot_key AND facts.set_name = sets.set_name \
+          AND facts.component_order = asset.component_order \
+         WHERE sets.snapshot_key = ? \
+         ORDER BY sets.set_name, asset.asset_name, asset.component_order",
+    )
+    .bind::<Text, _>(key.as_str())
+    .load::<RequirementRow>(conn)?)
 }
 
 fn load_mame_machine_dependencies(

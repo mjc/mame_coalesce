@@ -59,9 +59,11 @@ pub(super) fn persist_merge_relationship(
     declaration: MergeDeclaration<'_>,
 ) -> crate::Result<()> {
     let parent_components = sql_query(
-        "SELECT component_order FROM asset_requirements \
-         WHERE snapshot_key = ? AND set_name = ? AND asset_name = ? AND role = ? \
-         ORDER BY component_order LIMIT 2",
+        "SELECT asset.component_order FROM asset_requirement_rows AS asset \
+         JOIN snapshot_sets AS sets USING (set_id) \
+         WHERE sets.snapshot_key = ? AND sets.set_name = ? \
+           AND asset.asset_name = ? AND asset.role = ? \
+         ORDER BY asset.component_order LIMIT 2",
     )
     .bind::<Text, _>(snapshot.as_str())
     .bind::<Text, _>(declaration.parent)
@@ -118,19 +120,31 @@ pub(super) fn persist_snapshot_merges(
     let mut cursor = (String::new(), -1_i64);
     loop {
         let rows = sql_query(
-            "SELECT a.set_name, a.component_order, a.asset_name, a.merge_name AS merged_name, \
+            "SELECT s.set_name, a.component_order, a.asset_name, a.merge_name AS merged_name, \
                     COALESCE(mf_romof.target_name, json_extract(s.metadata_json, '$.romof'), s.parent_name) AS parent, \
-                    a.role, a.sha1, a.crc, a.size, a.source_line, a.source_column \
-             FROM asset_requirements AS a \
-             JOIN snapshot_sets AS s \
-               ON s.snapshot_key = a.snapshot_key AND s.set_name = a.set_name \
+                    a.role, \
+                    (SELECT digest.digest FROM asset_requirement_digest_assertions AS assertion \
+                     JOIN digest_values AS digest USING (digest_id) \
+                     WHERE assertion.set_id = a.set_id \
+                       AND assertion.component_order = a.component_order \
+                       AND assertion.scope = a.evidence_scope \
+                       AND digest.algorithm = 'sha1') AS sha1, \
+                    (SELECT digest.digest FROM asset_requirement_digest_assertions AS assertion \
+                     JOIN digest_values AS digest USING (digest_id) \
+                     WHERE assertion.set_id = a.set_id \
+                       AND assertion.component_order = a.component_order \
+                       AND assertion.scope = a.evidence_scope \
+                       AND digest.algorithm = 'crc32') AS crc, \
+                    a.size, a.source_line, a.source_column \
+             FROM asset_requirement_rows AS a \
+             JOIN snapshot_sets AS s USING (set_id) \
              LEFT JOIN mame_machine_dependencies AS mf_romof \
                ON mf_romof.set_id = s.set_id \
               AND mf_romof.dependency_kind = 'romof' \
-             WHERE a.snapshot_key = ? AND a.merge_name IS NOT NULL \
+             WHERE s.snapshot_key = ? AND a.merge_name IS NOT NULL \
                AND COALESCE(mf_romof.target_name, json_extract(s.metadata_json, '$.romof'), s.parent_name) IS NOT NULL \
-               AND (a.set_name, a.component_order) > (?, ?) \
-             ORDER BY a.set_name, a.component_order LIMIT ?",
+               AND (s.set_name, a.component_order) > (?, ?) \
+             ORDER BY s.set_name, a.component_order LIMIT ?",
         )
         .bind::<Text, _>(snapshot.as_str())
         .bind::<Text, _>(&cursor.0)

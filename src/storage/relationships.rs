@@ -678,15 +678,28 @@ pub fn explain_all(pool: &Pool) -> crate::Result<Vec<RelationshipExplanation>> {
                 a.generic_target_c, a.source_target_a, a.source_target_b, a.source_target_c, \
                 a.source_snapshot_key, a.source_field, a.source_line, a.source_column, \
                 source_asset.merge_name AS source_asset_merge_name, \
-                source_asset.sha1 AS source_asset_sha1, source_asset.crc AS source_asset_crc, \
+                (SELECT digest.digest FROM asset_requirement_digest_assertions AS assertion \
+                 JOIN digest_values AS digest USING (digest_id) \
+                 WHERE assertion.set_id = source_asset.set_id \
+                   AND assertion.component_order = source_asset.component_order \
+                   AND assertion.scope = source_asset.evidence_scope \
+                   AND digest.algorithm = 'sha1') AS source_asset_sha1, \
+                (SELECT digest.digest FROM asset_requirement_digest_assertions AS assertion \
+                 JOIN digest_values AS digest USING (digest_id) \
+                 WHERE assertion.set_id = source_asset.set_id \
+                   AND assertion.component_order = source_asset.component_order \
+                   AND assertion.scope = source_asset.evidence_scope \
+                   AND digest.algorithm = 'crc32') AS source_asset_crc, \
                 source_asset.size AS source_asset_size, a.rule_version, \
                 ps.source_key, ps.display_name AS source_name, \
                 s.document_key, s.declared_version, pi.parser_name, pi.parser_version, pi.rules_version \
          FROM relationship_assertion_explanations a \
-         LEFT JOIN asset_requirements source_asset \
+         LEFT JOIN snapshot_sets source_asset_set \
            ON a.origin = 'source_assertion' AND a.subject_kind = 'asset_requirement' \
-          AND source_asset.snapshot_key = a.source_snapshot_key \
-          AND source_asset.set_name = a.source_subject_a \
+          AND source_asset_set.snapshot_key = a.source_snapshot_key \
+          AND source_asset_set.set_name = a.source_subject_a \
+         LEFT JOIN asset_requirement_rows source_asset \
+           ON source_asset.set_id = source_asset_set.set_id \
           AND source_asset.component_order = a.source_subject_c \
          LEFT JOIN catalog_snapshots s ON s.snapshot_key = a.source_snapshot_key \
          LEFT JOIN catalogs c ON c.catalog_key = s.catalog_key \
@@ -720,15 +733,28 @@ pub fn explain_catalog_sets_for_snapshots(
                 a.generic_target_c, a.source_target_a, a.source_target_b, a.source_target_c, \
                 a.source_snapshot_key, a.source_field, a.source_line, a.source_column, \
                 source_asset.merge_name AS source_asset_merge_name, \
-                source_asset.sha1 AS source_asset_sha1, source_asset.crc AS source_asset_crc, \
+                (SELECT digest.digest FROM asset_requirement_digest_assertions AS assertion \
+                 JOIN digest_values AS digest USING (digest_id) \
+                 WHERE assertion.set_id = source_asset.set_id \
+                   AND assertion.component_order = source_asset.component_order \
+                   AND assertion.scope = source_asset.evidence_scope \
+                   AND digest.algorithm = 'sha1') AS source_asset_sha1, \
+                (SELECT digest.digest FROM asset_requirement_digest_assertions AS assertion \
+                 JOIN digest_values AS digest USING (digest_id) \
+                 WHERE assertion.set_id = source_asset.set_id \
+                   AND assertion.component_order = source_asset.component_order \
+                   AND assertion.scope = source_asset.evidence_scope \
+                   AND digest.algorithm = 'crc32') AS source_asset_crc, \
                 source_asset.size AS source_asset_size, a.rule_version, \
                 ps.source_key, ps.display_name AS source_name, \
                 s.document_key, s.declared_version, pi.parser_name, pi.parser_version, pi.rules_version \
          FROM relationship_assertion_explanations a \
-         LEFT JOIN asset_requirements source_asset \
+         LEFT JOIN snapshot_sets source_asset_set \
            ON a.origin = 'source_assertion' AND a.subject_kind = 'asset_requirement' \
-          AND source_asset.snapshot_key = a.source_snapshot_key \
-          AND source_asset.set_name = a.source_subject_a \
+          AND source_asset_set.snapshot_key = a.source_snapshot_key \
+          AND source_asset_set.set_name = a.source_subject_a \
+         LEFT JOIN asset_requirement_rows source_asset \
+           ON source_asset.set_id = source_asset_set.set_id \
           AND source_asset.component_order = a.source_subject_c \
          LEFT JOIN catalog_snapshots s ON s.snapshot_key = a.source_snapshot_key \
          LEFT JOIN catalogs c ON c.catalog_key = s.catalog_key \
@@ -786,15 +812,28 @@ pub fn explain_for_snapshots(
                 a.generic_target_c, a.source_target_a, a.source_target_b, a.source_target_c, \
                 a.source_snapshot_key, a.source_field, a.source_line, a.source_column, \
                 source_asset.merge_name AS source_asset_merge_name, \
-                source_asset.sha1 AS source_asset_sha1, source_asset.crc AS source_asset_crc, \
+                (SELECT digest.digest FROM asset_requirement_digest_assertions AS assertion \
+                 JOIN digest_values AS digest USING (digest_id) \
+                 WHERE assertion.set_id = source_asset.set_id \
+                   AND assertion.component_order = source_asset.component_order \
+                   AND assertion.scope = source_asset.evidence_scope \
+                   AND digest.algorithm = 'sha1') AS source_asset_sha1, \
+                (SELECT digest.digest FROM asset_requirement_digest_assertions AS assertion \
+                 JOIN digest_values AS digest USING (digest_id) \
+                 WHERE assertion.set_id = source_asset.set_id \
+                   AND assertion.component_order = source_asset.component_order \
+                   AND assertion.scope = source_asset.evidence_scope \
+                   AND digest.algorithm = 'crc32') AS source_asset_crc, \
                 source_asset.size AS source_asset_size, a.rule_version, \
                 ps.source_key, ps.display_name AS source_name, \
                 s.document_key, s.declared_version, pi.parser_name, pi.parser_version, pi.rules_version \
          FROM relationship_assertion_explanations a \
-         LEFT JOIN asset_requirements source_asset \
+         LEFT JOIN snapshot_sets source_asset_set \
            ON a.origin = 'source_assertion' AND a.subject_kind = 'asset_requirement' \
-          AND source_asset.snapshot_key = a.source_snapshot_key \
-          AND source_asset.set_name = a.source_subject_a \
+          AND source_asset_set.snapshot_key = a.source_snapshot_key \
+          AND source_asset_set.set_name = a.source_subject_a \
+         LEFT JOIN asset_requirement_rows source_asset \
+           ON source_asset.set_id = source_asset_set.set_id \
           AND source_asset.component_order = a.source_subject_c \
          LEFT JOIN catalog_snapshots s ON s.snapshot_key = a.source_snapshot_key \
          LEFT JOIN catalogs c ON c.catalog_key = s.catalog_key \

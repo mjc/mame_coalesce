@@ -37,6 +37,50 @@ size baseline. Its source object is 15,305,382 bytes; its original XML is
 and queries, rather than treating a database smaller than XML as a prerequisite
 for this redesign. No new memory cap or field truncation is proposed.
 
+## Schema shape and implementation state
+
+The shared identity/digest migration is only the first part of this redesign.
+It does not establish field coverage for another input format. The existing
+`snapshot_sets` and software hierarchy still use source names in their keys;
+those tables are not the proposed native record model.
+
+The target hierarchy uses integer IDs for ownership and retains names and
+publisher IDs as source fields:
+
+```text
+snapshot -> namespace -> record
+                           |
+                           +-- exactly one native record payload
+                           |
+                           +-- ordered native child facts
+                           |
+                           +-- asset/source-operation occurrence
+                                 +-- exactly one native claim/operation payload
+                                 +-- digest assertions (scope and provenance)
+                                 +-- optional shared content UUID
+```
+
+Each row below describes a different source structure, with its own typed
+columns and child relations. They meet at record/occurrence identity and digest
+assertions; they are not reduced to a shared game name and ROM tuple.
+
+| Input | Native structure and facts | Current implementation gap |
+|---|---|---|
+| MAME machine XML | Machine -> ROM/disk/sample, chips, displays, input/controls, switches/values/conditions, ports, devices, slots, driver/features, software-list references and RAM options. | Many fields exist, but specification families still occupy one wide union; native sample claims and full presence/default ownership remain incomplete. |
+| MAME software-list XML | List -> item -> part -> data/disk area -> ordered ROM/disk entries. File declarations and load/continue/reload/ignore uses are separate relations; fill has no file claim. | Hierarchy still repeats name keys; source entries and physical file declarations are not yet separated. |
+| Logiqx XML / TOSEC | Document/header/options -> game -> comments, releases, BIOS sets, ROM/disk/sample claims, archive references and distinct parent declarations. | Partial document/game facts and ROMs exist; native options, releases, BIOS/disk/sample/archive families and specification defaults remain incomplete. |
+| ClrMamePro text | Header/directives -> set -> ROM claims and scalar sample claims; native flags and sample-parent declarations. | No native CMP tables; descriptions/year/manufacturer still use shared JSON metadata and directives/sample families are incomplete. |
+| No-Intro flat DAT v3/v4 | Document/header/directives -> game -> scoped identifiers, categories, releases and ROM declarations; name-based and ID-based parents stay distinct. | A Logiqx envelope import is not dialect coverage. Native field/cardinality/default storage and SHA-256 parsing remain incomplete; observed compatibility cases require their own interpretation. |
+| No-Intro database XML | Game -> archive, source histories and releases. A source or release owns its own details, serials and files; numeric file IDs may repeat under different owners. | No database-export parser/native schema yet. Source/release ownership, sibling-root framing and documented NUL recovery need end-to-end importer coverage. |
+| Synthetic No-Intro P/C projection | Archive record -> ordered language/native fields and file claims, with parent-marker/reference/merge-token distinctions. | Only archive ID and description have narrow native rows; remaining fields still need typed ownership. |
+
+TOSEC ISO/PIX assets retain their source `rom` declaration even when the file
+is a CUE, image or manual. OfflineList and PureDOS-specific structures remain
+explicit coverage gaps until their adapters and dialect contracts are supported.
+The family inventories below specify fields, cardinalities and ordering in
+detail. Completion requires those native tables and importer/query witnesses,
+not just the common identity layer.
+
 ## Evidence and corpus coverage
 
 The CLI currently exposes five parser families: Logiqx XML, MAME machine XML,

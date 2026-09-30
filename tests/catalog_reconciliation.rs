@@ -730,6 +730,81 @@ fn mame_software_disk_reconciliation_preserves_chd_header_scope()
 }
 
 #[test]
+fn software_reconciliation_provenance_uses_only_reported_digest_scope()
+-> Result<(), Box<dyn std::error::Error>> {
+    use diesel::{Connection, RunQueryDsl, SqliteConnection, sql_query, sql_types::Text};
+    use mame_coalesce::domain::EvidenceProvenance;
+
+    let directory = tempfile::tempdir()?;
+    let database_path =
+        camino::Utf8PathBuf::from_path_buf(directory.path().join("provenance.sqlite"))
+            .map_err(|path| std::io::Error::other(format!("non-UTF-8 path: {}", path.display())))?;
+    let database = Database::open(&database_path)?;
+    let import = |catalog: &str| CatalogImportRequest {
+        document_path: camino::Utf8PathBuf::from(format!(
+            "{}/fixtures/catalog/mame/software-list.xml",
+            env!("CARGO_MANIFEST_DIR")
+        )),
+        format: CatalogDocumentFormat::MameSoftwareListXml,
+        source_key: PublishingSourceKey::new(catalog),
+        source_display_name: catalog.to_owned(),
+        catalog_key: CatalogKey::new(catalog),
+        catalog_display_name: catalog.to_owned(),
+        scope: CatalogScope::Complete,
+    };
+    let left = app::import_catalog(&database, &import("left"))?
+        .snapshot_key
+        .ok_or("left snapshot missing")?;
+    let right = app::import_catalog(&database, &import("right"))?
+        .snapshot_key
+        .ok_or("right snapshot missing")?;
+    let mut conn = SqliteConnection::establish(database_path.as_str())?;
+    sql_query(
+        "INSERT INTO software_component_digest_assertions \
+         SELECT snapshot_key, list_name, item_name, part_name, area_order, component_order, \
+                digest_id, 'track', 'computed' \
+         FROM software_component_digest_assertions WHERE snapshot_key = ?",
+    )
+    .bind::<Text, _>(left.as_str())
+    .execute(&mut conn)?;
+    let report = app::reconcile_catalog_snapshots(&database, &left, &right)?;
+    assert!(!report.outcomes.is_empty());
+    assert!(
+        report
+            .outcomes
+            .iter()
+            .filter_map(|row| row.left_expected.as_ref())
+            .all(|expected| expected.provenance == EvidenceProvenance::SourceDeclared)
+    );
+
+    sql_query(
+        "INSERT INTO software_component_digest_assertions \
+         SELECT snapshot_key, list_name, item_name, part_name, area_order, component_order, \
+                digest_id, scope, 'legacy_cache' \
+         FROM software_component_digest_assertions \
+         WHERE snapshot_key = ? AND provenance = 'source_declared'",
+    )
+    .bind::<Text, _>(left.as_str())
+    .execute(&mut conn)?;
+    let mixed = app::reconcile_catalog_snapshots(&database, &left, &right)?;
+    let expected: Vec<_> = mixed
+        .outcomes
+        .iter()
+        .filter_map(|row| row.left_expected.as_ref())
+        .collect();
+    assert!(expected.iter().any(|value| value.sha1.is_some()));
+    assert!(expected.iter().all(|value| {
+        let provenance = if value.crc.is_some() || value.sha1.is_some() {
+            EvidenceProvenance::Unknown
+        } else {
+            EvidenceProvenance::SourceDeclared
+        };
+        value.provenance == provenance
+    }));
+    Ok(())
+}
+
+#[test]
 fn merge_assertion_targets_the_unique_asset_requirement_record()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;

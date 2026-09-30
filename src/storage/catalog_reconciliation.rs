@@ -83,6 +83,8 @@ struct SoftwareRequirementRow {
     sha1: Option<Vec<u8>>,
     #[diesel(sql_type = Text)]
     evidence_scope: String,
+    #[diesel(sql_type = Text)]
+    evidence_provenance: String,
     #[diesel(sql_type = Nullable<Text>)]
     dump_status: Option<String>,
 }
@@ -127,9 +129,26 @@ fn snapshot_requirements(
         error => error.into(),
     })?;
     let mut requirements = sql_query(
-        "SELECT set_name, component_order, asset_name, role, size, crc, md5, sha1, \
-         evidence_scope, evidence_provenance, merge_name, dump_status, serial, date \
-         FROM asset_requirements WHERE snapshot_key = ?",
+        "SELECT sets.set_name, rows.component_order, rows.asset_name, rows.role, rows.size, \
+         (SELECT digest.digest FROM asset_requirement_digest_assertions AS assertion \
+          JOIN digest_values AS digest USING (digest_id) \
+          WHERE assertion.set_id = rows.set_id \
+            AND assertion.component_order = rows.component_order \
+            AND assertion.scope = rows.evidence_scope AND digest.algorithm = 'crc32') AS crc, \
+         (SELECT digest.digest FROM asset_requirement_digest_assertions AS assertion \
+          JOIN digest_values AS digest USING (digest_id) \
+          WHERE assertion.set_id = rows.set_id \
+            AND assertion.component_order = rows.component_order \
+            AND assertion.scope = rows.evidence_scope AND digest.algorithm = 'md5') AS md5, \
+         (SELECT digest.digest FROM asset_requirement_digest_assertions AS assertion \
+          JOIN digest_values AS digest USING (digest_id) \
+          WHERE assertion.set_id = rows.set_id \
+            AND assertion.component_order = rows.component_order \
+            AND assertion.scope = rows.evidence_scope AND digest.algorithm = 'sha1') AS sha1, \
+         rows.evidence_scope, rows.evidence_provenance, rows.merge_name, rows.dump_status, \
+         rows.serial, rows.date \
+         FROM asset_requirement_rows AS rows JOIN snapshot_sets AS sets USING (set_id) \
+         WHERE sets.snapshot_key = ?",
     )
     .bind::<Text, _>(snapshot.as_str())
     .load::<RequirementRow>(conn)?
@@ -182,9 +201,45 @@ fn software_requirements(
     snapshot: &SnapshotKey,
 ) -> crate::Result<Vec<ExpectedAssetRequirement>> {
     let rows = sql_query(
-        "SELECT list_name, item_name, part_name, area_kind, area_name, area_order, component_order, \
-         component_kind, component_name, size, crc, sha1, evidence_scope, dump_status \
-         FROM software_components WHERE snapshot_key = ?",
+        "SELECT occurrence.list_name, occurrence.item_name, occurrence.part_name, \
+         occurrence.area_kind, occurrence.area_name, occurrence.area_order, \
+         occurrence.component_order, occurrence.component_kind, occurrence.component_name, \
+         occurrence.size, \
+         (SELECT digest.digest FROM software_component_digest_assertions AS assertion \
+          JOIN digest_values AS digest USING (digest_id) \
+          WHERE assertion.snapshot_key = occurrence.snapshot_key \
+            AND assertion.list_name = occurrence.list_name \
+            AND assertion.item_name = occurrence.item_name \
+            AND assertion.part_name = occurrence.part_name \
+            AND assertion.area_order = occurrence.area_order \
+            AND assertion.component_order = occurrence.component_order \
+            AND assertion.scope = occurrence.evidence_scope AND digest.algorithm = 'crc32') AS crc, \
+         (SELECT digest.digest FROM software_component_digest_assertions AS assertion \
+          JOIN digest_values AS digest USING (digest_id) \
+          WHERE assertion.snapshot_key = occurrence.snapshot_key \
+            AND assertion.list_name = occurrence.list_name \
+            AND assertion.item_name = occurrence.item_name \
+            AND assertion.part_name = occurrence.part_name \
+            AND assertion.area_order = occurrence.area_order \
+            AND assertion.component_order = occurrence.component_order \
+            AND assertion.scope = occurrence.evidence_scope AND digest.algorithm = 'sha1') AS sha1, \
+         occurrence.evidence_scope, \
+         (SELECT CASE COUNT(DISTINCT assertion.provenance) \
+                     WHEN 0 THEN 'source_declared' \
+                     WHEN 1 THEN MIN(assertion.provenance) \
+                     ELSE 'unknown' END \
+                   FROM software_component_digest_assertions AS assertion \
+                   JOIN digest_values AS digest USING (digest_id) \
+                   WHERE assertion.snapshot_key = occurrence.snapshot_key \
+                     AND assertion.list_name = occurrence.list_name \
+                     AND assertion.item_name = occurrence.item_name \
+                     AND assertion.part_name = occurrence.part_name \
+                     AND assertion.area_order = occurrence.area_order \
+                     AND assertion.component_order = occurrence.component_order \
+                     AND assertion.scope = occurrence.evidence_scope \
+                     AND digest.algorithm IN ('crc32', 'sha1')) AS evidence_provenance, \
+         occurrence.dump_status \
+         FROM software_component_occurrences AS occurrence WHERE occurrence.snapshot_key = ?",
     )
     .bind::<Text, _>(snapshot.as_str())
     .load::<SoftwareRequirementRow>(conn)?;
@@ -213,7 +268,7 @@ fn software_requirements(
                 role: parse_role(&row.component_kind),
                 expected: ExpectedEvidence {
                     scope: parse_scope(&row.evidence_scope),
-                    provenance: EvidenceProvenance::SourceDeclared,
+                    provenance: parse_provenance(&row.evidence_provenance),
                     size: row
                         .size
                         .map(|size| {

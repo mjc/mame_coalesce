@@ -469,20 +469,39 @@ fn load_published_disk_requirements(
         error => error.into(),
     })?;
     let mut requirements = sql_query(
-        "SELECT asset.set_name, asset.asset_name, asset.sha1, asset.evidence_scope, \
+        "SELECT sets.set_name, asset.asset_name, \
+                (SELECT digest.digest \
+                 FROM asset_requirement_digest_assertions AS assertion \
+                 JOIN digest_values AS digest USING (digest_id) \
+                 WHERE assertion.set_id = asset.set_id \
+                   AND assertion.component_order = asset.component_order \
+                   AND assertion.scope = asset.evidence_scope \
+                   AND digest.algorithm = 'sha1') AS sha1, asset.evidence_scope, \
                 asset.merge_name, NULL AS list_name, NULL AS item_name, NULL AS part_name \
-         FROM asset_requirements AS asset \
-         WHERE asset.snapshot_key = ? AND asset.role = 'disk' \
-         ORDER BY asset.set_name, asset.component_order",
+         FROM asset_requirement_rows AS asset \
+         JOIN snapshot_sets AS sets USING (set_id) \
+         WHERE sets.snapshot_key = ? AND asset.role = 'disk' \
+         ORDER BY sets.set_name, asset.component_order",
     )
     .bind::<Text, _>(&snapshot.snapshot_key)
     .load::<DiskRequirementRow>(&mut conn)?;
     requirements.extend(
         sql_query(
             "SELECT component.item_name AS set_name, component.component_name AS asset_name, \
-                component.sha1, component.evidence_scope, NULL AS merge_name, \
+                (SELECT digest.digest \
+                 FROM software_component_digest_assertions AS assertion \
+                 JOIN digest_values AS digest USING (digest_id) \
+                 WHERE assertion.snapshot_key = component.snapshot_key \
+                   AND assertion.list_name = component.list_name \
+                   AND assertion.item_name = component.item_name \
+                   AND assertion.part_name = component.part_name \
+                   AND assertion.area_order = component.area_order \
+                   AND assertion.component_order = component.component_order \
+                   AND assertion.scope = component.evidence_scope \
+                   AND digest.algorithm = 'sha1') AS sha1, \
+                component.evidence_scope, NULL AS merge_name, \
                 component.list_name, component.item_name, component.part_name \
-         FROM software_components AS component \
+         FROM software_component_occurrences AS component \
          JOIN software_items AS item \
            ON item.snapshot_key = component.snapshot_key \
           AND item.list_name = component.list_name AND item.item_name = component.item_name \
