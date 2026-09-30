@@ -350,6 +350,32 @@ fn setup() -> Result<(tempfile::TempDir, Database, SqliteConnection), Box<dyn st
     Ok((directory, database, connection))
 }
 
+#[test]
+fn composite_key_catalog_tables_cluster_rows_by_their_primary_keys()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (_directory, _database, mut connection) = setup()?;
+    let clustered = sql_query(
+        "SELECT COUNT(*) AS count FROM pragma_table_list \
+         WHERE schema = 'main' AND type = 'table' AND wr = 1 AND name IN ( \
+             'acquisition_transport_headers', 'acquisition_attempt_transport_headers', \
+             'snapshot_sets', 'asset_requirements', \
+             'software_lists', 'software_items', 'software_parts', 'software_item_info', \
+             'software_item_shared_features', 'software_part_features', 'software_areas', \
+             'software_components', 'software_item_dependencies', 'machine_switches', \
+             'machine_switch_locations', 'machine_switch_values', 'machine_bios_sets', \
+             'mame_machine_facts', 'mame_machine_dependencies', 'mame_asset_facts', \
+             'software_part_dipswitches', 'software_part_dip_values', 'no_intro_game_facts', \
+             'logiqx_set_facts', 'mame_machine_spec_elements', 'mame_machine_input_controls', \
+             'mame_machine_analogs', 'mame_machine_device_extensions', 'mame_machine_slot_options', \
+             'relationship_assertion_evidence', 'relationship_assertion_support' \
+         )",
+    )
+    .get_result::<CountRow>(&mut connection)?;
+
+    assert_eq!(clustered.count, 31);
+    Ok(())
+}
+
 fn retained_document(
     directory: &tempfile::TempDir,
     key: &DocumentKey,

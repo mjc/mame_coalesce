@@ -11,4 +11,4 @@ CREATE TABLE no_intro_game_facts (
     CHECK ((description_line IS NULL) = (description_column IS NULL)),
     CHECK (description_line IS NULL OR description_line > 0),
     CHECK (description_column IS NULL OR description_column > 0)
-);
+) WITHOUT ROWID;

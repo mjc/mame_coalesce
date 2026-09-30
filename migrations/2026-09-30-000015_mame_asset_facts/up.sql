@@ -19,7 +19,7 @@ CREATE TABLE mame_asset_facts (
     PRIMARY KEY (snapshot_key, set_name, component_order),
     FOREIGN KEY (snapshot_key, set_name, component_order)
         REFERENCES asset_requirements (snapshot_key, set_name, component_order) ON DELETE RESTRICT
-);
+) WITHOUT ROWID;
 
 CREATE TRIGGER mame_asset_facts_are_immutable_update
 BEFORE UPDATE ON mame_asset_facts

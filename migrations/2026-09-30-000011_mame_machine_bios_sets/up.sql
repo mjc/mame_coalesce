@@ -10,7 +10,7 @@ CREATE TABLE machine_bios_sets (
     PRIMARY KEY (snapshot_key, set_name, bios_order),
     FOREIGN KEY (snapshot_key, set_name)
         REFERENCES snapshot_sets (snapshot_key, set_name) ON DELETE RESTRICT
-);
+) WITHOUT ROWID;
 
 CREATE INDEX machine_bios_sets_name_index ON machine_bios_sets (name);
 

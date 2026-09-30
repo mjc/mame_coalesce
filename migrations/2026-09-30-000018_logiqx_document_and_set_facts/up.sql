@@ -31,4 +31,4 @@ CREATE TABLE logiqx_set_facts (
     PRIMARY KEY (snapshot_key, set_name),
     FOREIGN KEY (snapshot_key, set_name)
         REFERENCES snapshot_sets (snapshot_key, set_name) ON DELETE RESTRICT
-);
+) WITHOUT ROWID;

@@ -7,7 +7,7 @@ CREATE TABLE software_lists (
     source_column  INTEGER NOT NULL CHECK (source_column > 0),
     PRIMARY KEY (snapshot_key, list_name),
     UNIQUE (snapshot_key, list_order)
-);
+) WITHOUT ROWID;
 
 CREATE TABLE software_items (
     snapshot_key       TEXT NOT NULL,
@@ -25,7 +25,7 @@ CREATE TABLE software_items (
     UNIQUE (snapshot_key, list_name, item_order),
     FOREIGN KEY (snapshot_key, list_name)
         REFERENCES software_lists (snapshot_key, list_name) ON DELETE RESTRICT
-);
+) WITHOUT ROWID;
 
 CREATE TABLE software_parts (
     snapshot_key   TEXT NOT NULL,
@@ -40,7 +40,7 @@ CREATE TABLE software_parts (
     UNIQUE (snapshot_key, list_name, item_name, part_order),
     FOREIGN KEY (snapshot_key, list_name, item_name)
         REFERENCES software_items (snapshot_key, list_name, item_name) ON DELETE RESTRICT
-);
+) WITHOUT ROWID;
 
 CREATE TABLE software_item_info (
     snapshot_key   TEXT NOT NULL,
@@ -54,7 +54,7 @@ CREATE TABLE software_item_info (
     PRIMARY KEY (snapshot_key, list_name, item_name, value_order),
     FOREIGN KEY (snapshot_key, list_name, item_name)
         REFERENCES software_items (snapshot_key, list_name, item_name) ON DELETE RESTRICT
-);
+) WITHOUT ROWID;
 
 CREATE TABLE software_item_shared_features (
     snapshot_key   TEXT NOT NULL,
@@ -68,7 +68,7 @@ CREATE TABLE software_item_shared_features (
     PRIMARY KEY (snapshot_key, list_name, item_name, value_order),
     FOREIGN KEY (snapshot_key, list_name, item_name)
         REFERENCES software_items (snapshot_key, list_name, item_name) ON DELETE RESTRICT
-);
+) WITHOUT ROWID;
 
 CREATE TABLE software_part_features (
     snapshot_key   TEXT NOT NULL,
@@ -84,7 +84,7 @@ CREATE TABLE software_part_features (
     FOREIGN KEY (snapshot_key, list_name, item_name, part_name)
         REFERENCES software_parts (snapshot_key, list_name, item_name, part_name)
         ON DELETE RESTRICT
-);
+) WITHOUT ROWID;
 
 CREATE TABLE software_areas (
     snapshot_key   TEXT NOT NULL,
@@ -103,7 +103,7 @@ CREATE TABLE software_areas (
     FOREIGN KEY (snapshot_key, list_name, item_name, part_name)
         REFERENCES software_parts (snapshot_key, list_name, item_name, part_name)
         ON DELETE RESTRICT
-);
+) WITHOUT ROWID;
 
 CREATE TABLE software_components (
     snapshot_key      TEXT NOT NULL,
@@ -138,7 +138,7 @@ CREATE TABLE software_components (
         (component_kind = 'rom' AND writeable IS NULL)
         OR (component_kind = 'disk' AND load_instruction IS NULL AND offset IS NULL AND value IS NULL)
     )
-);
+) WITHOUT ROWID;
 
 CREATE TABLE software_item_dependencies (
     snapshot_key       TEXT NOT NULL,
@@ -152,7 +152,7 @@ CREATE TABLE software_item_dependencies (
     -- Keep unresolved targets when importing partial snapshots.
     FOREIGN KEY (snapshot_key, list_name, item_name)
         REFERENCES software_items (snapshot_key, list_name, item_name) ON DELETE RESTRICT
-);
+) WITHOUT ROWID;
 
 CREATE INDEX software_items_list_index
     ON software_items (snapshot_key, list_name, item_order);

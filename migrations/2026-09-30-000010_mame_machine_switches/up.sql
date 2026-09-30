@@ -11,7 +11,7 @@ CREATE TABLE machine_switches (
     PRIMARY KEY (snapshot_key, set_name, switch_order),
     FOREIGN KEY (snapshot_key, set_name)
         REFERENCES snapshot_sets (snapshot_key, set_name) ON DELETE RESTRICT
-);
+) WITHOUT ROWID;
 
 CREATE TABLE machine_switch_locations (
     snapshot_key TEXT NOT NULL,
@@ -26,7 +26,7 @@ CREATE TABLE machine_switch_locations (
     PRIMARY KEY (snapshot_key, set_name, switch_order, location_order),
     FOREIGN KEY (snapshot_key, set_name, switch_order)
         REFERENCES machine_switches (snapshot_key, set_name, switch_order) ON DELETE RESTRICT
-);
+) WITHOUT ROWID;
 
 CREATE TABLE machine_switch_values (
     snapshot_key TEXT NOT NULL,
@@ -41,7 +41,7 @@ CREATE TABLE machine_switch_values (
     PRIMARY KEY (snapshot_key, set_name, switch_order, value_order),
     FOREIGN KEY (snapshot_key, set_name, switch_order)
         REFERENCES machine_switches (snapshot_key, set_name, switch_order) ON DELETE RESTRICT
-);
+) WITHOUT ROWID;
 
 CREATE INDEX machine_switches_tag_index ON machine_switches (tag, name);
 

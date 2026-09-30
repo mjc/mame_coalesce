@@ -237,3 +237,95 @@ databases. `scripts/parse_flamegraph ... summary` now classifies SQLite's
 internal parser/B-tree symbols (`yy_reduce`, `exprDup`, `getRowTrigger`,
 `getPageNormal`, `balance`, and related frames) with SQLite/Diesel instead of
 leaving them in `Other`.
+
+## Fresh full import after relationship compaction, 2026-09-30
+
+Commit `9c44170` replaced JSON source-assertion payloads and serialized endpoint
+keys with typed endpoint columns, relational evidence nodes, and support rows.
+The profiling-build binary then imported the same source into a separate fresh
+database at `target/profiling/mamec55-postcompact-2026-09-30-5ffqQN/`:
+
+| Measurement | Result |
+| --- | ---: |
+| Source XML | 326,688,140 bytes |
+| SQLite database | 2,040,233,984 bytes |
+| Compressed source sidecar | 15,305,382 bytes |
+| Database + sidecar | 2,055,539,366 bytes (6.29× source) |
+| Wall time | 6:20.92 |
+| Maximum RSS | 343,032 KiB |
+
+The import succeeded. `PRAGMA integrity_check` returned `ok`; the foreign-key
+check returned zero violations. Compared with the pre-compaction CPU-profiled
+database plus sidecar (2,657,106,598 bytes), this saved 601,567,232 bytes
+(22.6%). It is a material reduction but still far above the 326,688,140-byte
+acceptance limit.
+
+The remaining largest `dbstat` entries are live table/index data, not free
+pages. Several primary-key tables duplicate substantial data in their indexes:
+the database contains 1,079,384 relationship assertions, 1,830,737 switch
+values, 845,760 machine specification elements, and 838,479 machine
+dependencies.
+
+| Table/index group | Bytes |
+| --- | ---: |
+| `relationship_assertions` table + source-snapshot index + primary-key index | 412,884,992 |
+| `machine_switch_values` table + unique index | 384,258,048 |
+| `mame_machine_spec_elements` table + type index + primary-key index | 317,296,640 |
+| `mame_machine_dependencies` table + target index + primary-key index | 284,618,752 |
+| `machine_switches` table + primary-key and tag indexes | 165,292,272 |
+| `mame_machine_slot_options` table + primary-key index | 124,309,504 |
+| `asset_requirements` table + primary-key and name indexes | 121,663,488 |
+
+These results make the next storage work concrete: the relationship table still
+stores over one million source assertions, while high-cardinality machine
+children repeat the 36-byte snapshot key and set name in both table rows and
+indexes. Compact parent IDs, narrower/clustered child tables, and only
+query-required indexes are the next candidates; the size target remains open.
+
+## Fresh full import with clustered composite keys, 2026-09-30
+
+The current schema stores 31 composite-primary-key catalog tables as
+`WITHOUT ROWID`. `snapshot_publications` remains rowid-backed because disk audit
+selects the latest publication by `rowid`; `mame_machine_conditions` remains
+rowid-backed because its tagged owner key intentionally contains nullable
+columns. A schema test checks all 31 clustered tables.
+
+The profiling-build importer loaded the same 326,688,140-byte source
+(SHA-256
+`340f4e9362ec1b5f208de43a6330dd3551dfa63b3d67bf198e540380b03fbeeb`)
+into a new database. That database was then deleted and reimported once more
+from the same source, as requested. The final fresh database is
+1,585,537,024 bytes and its retained sidecar is 15,305,382 bytes: 1,600,842,406
+bytes combined, about 4.90× the source. Compared with the prior post-compaction
+fresh import, this saves 454,696,960 bytes (22.1%). The reimport took 9m35.10s
+(6m22.89s user, 2m31.08s system); `PRAGMA quick_check` returned `ok`, with zero
+foreign-key violations.
+
+The associated `perf` capture has 306,343 samples and lost four chunks while
+recording; its flamegraph is
+`target/profiling/mamec55-without-rowid-2026-09-30-b.svg` and the capture is
+`target/profiling/mamec55-without-rowid-2026-09-30-b.data`. The database was
+reimported after capture into the same schema/source; its final size differs
+from the captured run by only 81,920 bytes.
+
+| Table/index group | Before | Clustered | Change |
+| --- | ---: | ---: | ---: |
+| `machine_switch_values` + primary-key index | 384,258,048 | 210,259,968 | -173,998,080 |
+| `mame_machine_spec_elements` + type and primary-key indexes | 317,296,640 | 241,262,592 | -76,034,048 |
+| `mame_machine_dependencies` + target and primary-key indexes | 284,618,752 | 215,293,952 | -69,324,800 |
+| `mame_machine_slot_options` + primary-key index | 124,309,504 | 71,913,472 | -52,396,032 |
+| `machine_switches` + tag and primary-key indexes | 165,292,272 | 163,053,568 | -2,238,704 |
+| `asset_requirements` + name and primary-key indexes | 121,663,488 | 124,354,560 | +2,691,072 |
+
+This confirms `WITHOUT ROWID` removes much of the duplicated primary-key B-tree
+for tables without expensive secondary indexes. It can be neutral or negative
+when secondary indexes must carry the full composite key: `machine_switches`
+and `asset_requirements` show that tradeoff. Even this broad pass leaves the
+database almost five times larger than the source and is not the acceptance
+solution. `sem_context` traced the high-volume writers to
+`insert_snapshot_set`, `insert_machine_switches`, and
+`insert_mame_machine_specification`; these insert the repeated snapshot/set
+strings directly into every child row, and the specification writer rebuilds
+its SQL text per element. The next substantial reduction is normalized integer
+parent identity for snapshot sets and their children, followed by remeasuring
+the required secondary indexes and JSON-free fact representation.

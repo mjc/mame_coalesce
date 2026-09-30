@@ -25,7 +25,7 @@ CREATE TABLE mame_machine_facts (
     PRIMARY KEY (snapshot_key, set_name),
     FOREIGN KEY (snapshot_key, set_name)
         REFERENCES snapshot_sets (snapshot_key, set_name) ON DELETE RESTRICT
-);
+) WITHOUT ROWID;
 
 CREATE INDEX mame_machine_facts_source_file_index ON mame_machine_facts (source_file);
 

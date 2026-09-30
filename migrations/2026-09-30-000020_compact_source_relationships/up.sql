@@ -137,13 +137,13 @@ CREATE TABLE relationship_assertion_evidence (
         OR (value_type = 'real' AND text_value IS NULL AND integer_value IS NULL AND unsigned_integer_value IS NULL AND real_value IS NOT NULL)
         OR (value_type NOT IN ('string', 'integer', 'unsigned_integer', 'real')
             AND text_value IS NULL AND integer_value IS NULL AND unsigned_integer_value IS NULL AND real_value IS NULL))
-);
+) WITHOUT ROWID;
 CREATE TABLE relationship_assertion_support (
     assertion_key TEXT NOT NULL REFERENCES relationship_assertions (assertion_key) ON DELETE RESTRICT,
     position INTEGER NOT NULL CHECK (position >= 0),
     supported_assertion_key TEXT NOT NULL REFERENCES relationship_assertions (assertion_key) ON DELETE RESTRICT,
     PRIMARY KEY (assertion_key, position)
-);
+) WITHOUT ROWID;
 -- Both the claim and its support identities are relational references. The composite
 -- primary key is also the lookup index, so no duplicate support index is needed.
 

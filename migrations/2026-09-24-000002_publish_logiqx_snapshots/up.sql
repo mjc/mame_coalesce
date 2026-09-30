@@ -44,7 +44,7 @@ CREATE TABLE snapshot_sets (
     source_line INTEGER NOT NULL CHECK (source_line > 0),
     source_column INTEGER NOT NULL CHECK (source_column > 0),
     PRIMARY KEY (snapshot_key, set_name)
-);
+) WITHOUT ROWID;
 
 CREATE TABLE asset_requirements (
     snapshot_key TEXT NOT NULL,

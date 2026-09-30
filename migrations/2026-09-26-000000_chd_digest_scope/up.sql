@@ -24,7 +24,7 @@ CREATE TABLE asset_requirements_chd_scope (
     PRIMARY KEY (snapshot_key, set_name, component_order),
     FOREIGN KEY (snapshot_key, set_name)
         REFERENCES snapshot_sets (snapshot_key, set_name) ON DELETE RESTRICT
-);
+) WITHOUT ROWID;
 
 INSERT INTO asset_requirements_chd_scope (
     snapshot_key, set_name, component_order, asset_name, role, size, crc, md5, sha1,

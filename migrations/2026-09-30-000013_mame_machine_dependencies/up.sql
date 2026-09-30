@@ -9,7 +9,7 @@ CREATE TABLE mame_machine_dependencies (
     PRIMARY KEY (snapshot_key, set_name, dependency_order),
     FOREIGN KEY (snapshot_key, set_name)
         REFERENCES mame_machine_facts (snapshot_key, set_name) ON DELETE RESTRICT
-);
+) WITHOUT ROWID;
 
 CREATE INDEX mame_machine_dependencies_target_index
     ON mame_machine_dependencies (snapshot_key, target_name, dependency_kind);

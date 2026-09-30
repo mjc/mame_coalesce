@@ -135,7 +135,7 @@ CREATE TABLE mame_machine_spec_elements (
         softwarelist_tag IS NULL AND softwarelist_name IS NULL AND softwarelist_status IS NULL AND softwarelist_filter IS NULL
     )),
     CHECK (element_type = 'ramoption' OR (ramoption_name IS NULL AND ramoption_default IS NULL AND ramoption_text IS NULL))
-);
+) WITHOUT ROWID;
 
 CREATE INDEX mame_machine_spec_elements_type_index
     ON mame_machine_spec_elements (snapshot_key, element_type, set_name);
@@ -161,7 +161,7 @@ CREATE TABLE mame_machine_input_controls (
     PRIMARY KEY (snapshot_key, set_name, element_order, control_order),
     FOREIGN KEY (snapshot_key, set_name, element_order)
         REFERENCES mame_machine_spec_elements (snapshot_key, set_name, element_order) ON DELETE RESTRICT
-);
+) WITHOUT ROWID;
 
 CREATE TABLE mame_machine_analogs (
     snapshot_key TEXT NOT NULL,
@@ -174,7 +174,7 @@ CREATE TABLE mame_machine_analogs (
     PRIMARY KEY (snapshot_key, set_name, element_order, analog_order),
     FOREIGN KEY (snapshot_key, set_name, element_order)
         REFERENCES mame_machine_spec_elements (snapshot_key, set_name, element_order) ON DELETE RESTRICT
-);
+) WITHOUT ROWID;
 
 CREATE TABLE mame_machine_device_extensions (
     snapshot_key TEXT NOT NULL,
@@ -187,7 +187,7 @@ CREATE TABLE mame_machine_device_extensions (
     PRIMARY KEY (snapshot_key, set_name, element_order, extension_order),
     FOREIGN KEY (snapshot_key, set_name, element_order)
         REFERENCES mame_machine_spec_elements (snapshot_key, set_name, element_order) ON DELETE RESTRICT
-);
+) WITHOUT ROWID;
 
 CREATE TABLE mame_machine_slot_options (
     snapshot_key TEXT NOT NULL,
@@ -202,7 +202,7 @@ CREATE TABLE mame_machine_slot_options (
     PRIMARY KEY (snapshot_key, set_name, element_order, option_order),
     FOREIGN KEY (snapshot_key, set_name, element_order)
         REFERENCES mame_machine_spec_elements (snapshot_key, set_name, element_order) ON DELETE RESTRICT
-);
+) WITHOUT ROWID;
 
 CREATE TABLE mame_machine_conditions (
     snapshot_key TEXT NOT NULL,

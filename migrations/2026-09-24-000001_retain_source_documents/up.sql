@@ -53,7 +53,7 @@ CREATE TABLE acquisition_transport_headers (
     name TEXT NOT NULL,
     value TEXT NOT NULL,
     PRIMARY KEY (acquisition_key, header_order)
-);
+) WITHOUT ROWID;
 
 CREATE TABLE acquisition_attempt_transport_headers (
     attempt_key TEXT NOT NULL REFERENCES acquisition_attempts (attempt_key) ON DELETE RESTRICT,
@@ -61,7 +61,7 @@ CREATE TABLE acquisition_attempt_transport_headers (
     name TEXT NOT NULL,
     value TEXT NOT NULL,
     PRIMARY KEY (attempt_key, header_order)
-);
+) WITHOUT ROWID;
 
 CREATE TRIGGER acquisition_transport_headers_are_immutable_update
 BEFORE UPDATE ON acquisition_transport_headers

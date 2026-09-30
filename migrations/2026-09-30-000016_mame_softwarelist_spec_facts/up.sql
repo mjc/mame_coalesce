@@ -14,7 +14,7 @@ CREATE TABLE software_part_dipswitches (
     PRIMARY KEY (snapshot_key, list_name, item_name, part_name, dipswitch_order),
     FOREIGN KEY (snapshot_key, list_name, item_name, part_name)
         REFERENCES software_parts (snapshot_key, list_name, item_name, part_name) ON DELETE RESTRICT
-);
+) WITHOUT ROWID;
 
 CREATE TABLE software_part_dip_values (
     snapshot_key TEXT NOT NULL,
@@ -36,4 +36,4 @@ CREATE TABLE software_part_dip_values (
     ) REFERENCES software_part_dipswitches (
         snapshot_key, list_name, item_name, part_name, dipswitch_order
     ) ON DELETE RESTRICT
-);
+) WITHOUT ROWID;
