@@ -376,6 +376,25 @@ fn composite_key_catalog_tables_cluster_rows_by_their_primary_keys()
     Ok(())
 }
 
+#[test]
+fn mame_machine_dependencies_store_a_compact_set_identity() -> Result<(), Box<dyn std::error::Error>>
+{
+    let (_directory, _database, mut connection) = setup()?;
+    let columns = sql_query(
+        "SELECT GROUP_CONCAT(name, ',') AS value FROM pragma_table_info('mame_machine_dependencies')",
+    )
+    .get_result::<TextRow>(&mut connection)?;
+
+    assert!(columns.value.split(',').any(|column| column == "set_id"));
+    assert!(
+        !columns
+            .value
+            .split(',')
+            .any(|column| { matches!(column, "snapshot_key" | "set_name") })
+    );
+    Ok(())
+}
+
 fn retained_document(
     directory: &tempfile::TempDir,
     key: &DocumentKey,
@@ -1496,7 +1515,10 @@ fn imports_every_mame_machine_dtd_family_as_typed_query_facts()
     assert_eq!(default_values.value, "0:0:0:0:0:0:0:0:0");
 
     let reference_tag = sql_query(
-        "SELECT reference_tag AS value FROM mame_machine_dependencies WHERE snapshot_key = ? AND set_name = 'complete' AND dependency_kind = 'device_ref'",
+        "SELECT dependency.reference_tag AS value FROM mame_machine_dependencies AS dependency \
+         JOIN snapshot_sets AS sets USING (set_id) \
+         WHERE sets.snapshot_key = ? AND sets.set_name = 'complete' \
+           AND dependency.dependency_kind = 'device_ref'",
     )
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<TextRow>(&mut connection)

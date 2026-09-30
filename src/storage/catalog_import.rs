@@ -84,6 +84,12 @@ struct IdentityOnlySnapshot {
 }
 
 #[derive(QueryableByName)]
+struct SnapshotSetIdRow {
+    #[diesel(sql_type = BigInt)]
+    set_id: i64,
+}
+
+#[derive(QueryableByName)]
 struct ComponentOrderRow {
     #[diesel(sql_type = BigInt)]
     component_order: i64,
@@ -1258,10 +1264,11 @@ fn insert_snapshot_set(
     snapshot_key: &SnapshotKey,
     set: &SnapshotSet,
 ) -> crate::Result<()> {
-    sql_query(
+    let set_id = sql_query(
         "INSERT INTO snapshot_sets \
-         (snapshot_key, set_name, parent_name, metadata_json, source_line, source_column) \
-         VALUES (?, ?, ?, ?, ?, ?)",
+         (snapshot_key, set_name, parent_name, metadata_json, source_line, source_column, set_id) \
+         VALUES (?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(set_id), 0) + 1 FROM snapshot_sets)) \
+         RETURNING set_id",
     )
     .bind::<Text, _>(snapshot_key.as_str())
     .bind::<Text, _>(&set.name)
@@ -1269,11 +1276,12 @@ fn insert_snapshot_set(
     .bind::<Text, _>(serde_json::to_string(&set.metadata)?)
     .bind::<BigInt, _>(set.location.line)
     .bind::<BigInt, _>(set.location.column)
-    .execute(conn)?;
+    .get_result::<SnapshotSetIdRow>(conn)?
+    .set_id;
 
     if let Some(facts) = &set.mame_facts {
         insert_mame_machine_facts(conn, snapshot_key, set, facts)?;
-        insert_mame_machine_dependencies(conn, snapshot_key, set)?;
+        insert_mame_machine_dependencies(conn, set_id, set)?;
         insert_mame_machine_specification(conn, snapshot_key, set)?;
     }
     if let Some(facts) = &set.no_intro_facts {
@@ -1451,17 +1459,16 @@ fn insert_mame_asset_facts(
 
 fn insert_mame_machine_dependencies(
     conn: &mut SqliteConnection,
-    snapshot_key: &SnapshotKey,
+    set_id: i64,
     set: &SnapshotSet,
 ) -> crate::Result<()> {
     for (order, dependency) in set.machine_dependencies.iter().enumerate() {
         sql_query(
             "INSERT INTO mame_machine_dependencies \
-             (snapshot_key, set_name, dependency_order, dependency_kind, target_name, reference_tag, source_line, source_column) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+             (set_id, dependency_order, dependency_kind, target_name, reference_tag, source_line, source_column) \
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
-        .bind::<Text, _>(snapshot_key.as_str())
-        .bind::<Text, _>(&set.name)
+        .bind::<BigInt, _>(set_id)
         .bind::<BigInt, _>(checked_order(order, "MAME machine dependencies")?)
         .bind::<Text, _>(&dependency.source_field)
         .bind::<Text, _>(&dependency.target_name)

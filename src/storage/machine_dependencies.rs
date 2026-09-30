@@ -107,8 +107,10 @@ fn load_mame_dependencies(
         return Ok(BTreeMap::new());
     }
     Ok(sql_query(
-        "SELECT set_name, dependency_kind, target_name FROM mame_machine_dependencies \
-         WHERE snapshot_key = ? ORDER BY set_name, dependency_order",
+        "SELECT sets.set_name, dependency.dependency_kind, dependency.target_name \
+         FROM mame_machine_dependencies AS dependency \
+         JOIN snapshot_sets AS sets USING (set_id) \
+         WHERE sets.snapshot_key = ? ORDER BY sets.set_name, dependency.dependency_order",
     )
     .bind::<Text, _>(snapshot.as_str())
     .load::<MameDependencyRow>(conn)?

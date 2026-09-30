@@ -329,3 +329,50 @@ strings directly into every child row, and the specification writer rebuilds
 its SQL text per element. The next substantial reduction is normalized integer
 parent identity for snapshot sets and their children, followed by remeasuring
 the required secondary indexes and JSON-free fact representation.
+
+## Fresh full import with compact dependency identity, 2026-09-30
+
+The MAME dependency facts now store the parent `set_id` instead of repeating
+`snapshot_key` and `set_name`. Import, dependency resolution, merge lookup, and
+snapshot-history reconstruction join that ID back to `snapshot_sets`; source
+locations and public set names remain unchanged. The same MAME 0.289 input was
+imported into a separate fresh profiling database at
+`target/profiling/mamec55-set-id-2026-09-30-c/`.
+
+| Measurement | Result |
+| --- | ---: |
+| Source XML | 326,688,140 bytes |
+| SQLite database | 1,445,314,560 bytes |
+| Compressed source sidecar | 15,305,382 bytes |
+| Database + sidecar | 1,460,619,942 bytes (4.47× source) |
+| CPU samples | 577,864 |
+
+`PRAGMA quick_check` returned `ok`; the foreign-key check found zero
+violations. Compared with the previous fresh import, the database plus sidecar
+is 140,222,464 bytes (8.8%) smaller. The dependency table and target index
+shrank from 215,293,952 to 69,677,056 bytes, a 145,616,896-byte reduction.
+The new unique `snapshot_sets(set_id)` index costs 5,136,384 bytes; the net
+database saving is therefore slightly smaller than the dependency-table gain.
+
+The new CPU flamegraph is `mame.svg` in the artifact directory. The local
+`parse_flamegraph` summary classifies 76.93% of exclusive cycle samples as
+SQLite/Diesel and 63.86% as `sqlite3_prepare_v3`; statement preparation remains
+the largest CPU target.
+
+| Current table/index group | Bytes |
+| --- | ---: |
+| relationship assertions + source-snapshot and primary-key indexes | 412,827,648 |
+| switch values | 210,259,968 |
+| machine spec elements + type index | 241,262,592 |
+| machine switches + tag index | 163,053,568 |
+| slot options | 71,913,472 |
+| compact machine dependencies + target index | 69,677,056 |
+
+This is a measured reduction, not acceptance: the database is still 4.47 times
+the source size. Continue normalizing high-cardinality set-owned child tables,
+remove remaining JSON persistence/encoded identities, and replace duplicate
+source assertions with queryable typed facts before the next full-file size
+check.
+Continue normalizing high-cardinality set-owned child tables, remove remaining
+JSON persistence/encoded identities, and replace duplicate source assertions
+with queryable typed facts before the next full-file size check.

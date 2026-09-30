@@ -946,9 +946,11 @@ fn load_mame_machine_dependencies(
     key: &SnapshotKey,
 ) -> crate::Result<BTreeMap<String, Vec<serde_json::Value>>> {
     let rows = sql_query(
-        "SELECT set_name, dependency_order, dependency_kind, target_name, reference_tag \
-         FROM mame_machine_dependencies WHERE snapshot_key = ? \
-         ORDER BY set_name, dependency_order",
+        "SELECT sets.set_name, dependency.dependency_order, dependency.dependency_kind, \
+                dependency.target_name, dependency.reference_tag \
+         FROM mame_machine_dependencies AS dependency \
+         JOIN snapshot_sets AS sets USING (set_id) \
+         WHERE sets.snapshot_key = ? ORDER BY sets.set_name, dependency.dependency_order",
     )
     .bind::<Text, _>(key.as_str())
     .load::<MameMachineDependencyRow>(conn)?;

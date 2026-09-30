@@ -125,7 +125,7 @@ pub(super) fn persist_snapshot_merges(
              JOIN snapshot_sets AS s \
                ON s.snapshot_key = a.snapshot_key AND s.set_name = a.set_name \
              LEFT JOIN mame_machine_dependencies AS mf_romof \
-               ON mf_romof.snapshot_key = s.snapshot_key AND mf_romof.set_name = s.set_name \
+               ON mf_romof.set_id = s.set_id \
               AND mf_romof.dependency_kind = 'romof' \
              WHERE a.snapshot_key = ? AND a.merge_name IS NOT NULL \
                AND COALESCE(mf_romof.target_name, json_extract(s.metadata_json, '$.romof'), s.parent_name) IS NOT NULL \
