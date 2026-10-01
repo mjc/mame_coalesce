@@ -44,7 +44,7 @@ pub enum BackupOutcome {
 pub struct IntegrityReport {
     /// Corruption in the SQLite file, retained documents, or durable catalog history.
     pub durable_issues: Vec<String>,
-    /// Problems in rebuildable DAT-cache or scan-inventory rows.
+    /// Problems in rebuildable scanned-file inventory rows.
     pub inventory_issues: Vec<String>,
 }
 
@@ -462,12 +462,22 @@ fn check_connection(
         validate_backup_header(conn)?;
     }
 
-    let check_rows = sql_query("PRAGMA integrity_check(50)")
-        .load::<IntegrityCheckRow>(conn)
+    // Cap the report, not the check: inventory corruption must not hide later durable failures.
+    let check_rows = sql_query("PRAGMA integrity_check(2147483647)")
+        .load_iter::<IntegrityCheckRow, _>(conn)
         .map_err(|error| backup_error(format!("SQLite integrity check failed: {error}")))?;
     for row in check_rows {
+        let row =
+            row.map_err(|error| backup_error(format!("SQLite integrity check failed: {error}")))?;
         if row.integrity_check != "ok" {
-            push_issue(&mut report.durable_issues, row.integrity_check);
+            let table = row
+                .integrity_check
+                .strip_prefix("CHECK constraint failed in ");
+            if table.is_some_and(is_rebuildable_table) {
+                push_issue(&mut report.inventory_issues, row.integrity_check);
+            } else {
+                push_issue(&mut report.durable_issues, row.integrity_check);
+            }
         }
     }
 
@@ -770,10 +780,7 @@ fn sync_parent_directory(path: &Utf8Path) -> Result<bool> {
 }
 
 fn is_rebuildable_table(table: &str) -> bool {
-    matches!(
-        table,
-        "data_files" | "games" | "roms" | "rom_files" | "archive_files"
-    )
+    table == "rom_files"
 }
 
 fn push_issue(issues: &mut Vec<String>, issue: String) {
@@ -835,6 +842,22 @@ mod tests {
     fn load_document(path: &Utf8Path, payload: &[u8]) -> Result<Vec<u8>> {
         let store = crate::storage::documents::DocumentStore::open(path.as_str())?;
         store.load(&crate::domain::DocumentKey::from_bytes(payload))
+    }
+
+    fn insert_corrupt_rom_file(conn: &mut SqliteConnection, id: i64) -> Result<()> {
+        let path = format!("/source/corrupt-{id}.rom");
+        sql_query(
+            "INSERT INTO rom_files \
+             (parent_path, path, name, sha1, xxhash3, in_archive, scan_root, scan_run, \
+              observed_size, source_fingerprint, scan_provenance) \
+             VALUES ('/source', ?, ?, zeroblob(20), zeroblob(8), 0, '/source', ?, 0, \
+                     x'01', 'streamed_sha1_xxh3_v1')",
+        )
+        .bind::<Text, _>(&path)
+        .bind::<Text, _>(format!("corrupt-{id}.rom"))
+        .bind::<Text, _>(format!("run-{id}"))
+        .execute(conn)?;
+        Ok(())
     }
 
     #[test]
@@ -1089,17 +1112,13 @@ mod tests {
     }
 
     #[test]
-    fn integrity_separates_rebuildable_foreign_key_problems() -> Result<()> {
+    fn integrity_separates_rebuildable_cache_corruption() -> Result<()> {
         let directory = tempdir()?;
         let path = utf8(directory.path().join("cache.sqlite"))?;
         let database_guard = database(&path)?;
         let mut conn = connect(&path)?;
-        sql_query("PRAGMA foreign_keys = OFF").execute(&mut conn)?;
-        sql_query(
-            "INSERT INTO roms (name, size, md5, sha1, crc, game_id) \
-             VALUES ('orphan-rom', 0, zeroblob(16), zeroblob(20), zeroblob(4), 999)",
-        )
-        .execute(&mut conn)?;
+        sql_query("PRAGMA ignore_check_constraints = ON").execute(&mut conn)?;
+        insert_corrupt_rom_file(&mut conn, 1)?;
 
         drop(conn);
         drop(database_guard);
@@ -1113,7 +1132,7 @@ mod tests {
             report
                 .inventory_issues
                 .iter()
-                .any(|issue| issue.contains("roms"))
+                .any(|issue| issue.contains("rom_files"))
         );
         assert!(!report.is_clean());
         Ok(())
@@ -1133,20 +1152,64 @@ mod tests {
     }
 
     #[test]
+    fn integrity_checks_durable_native_payload_after_many_inventory_violations() -> Result<()> {
+        let directory = tempdir()?;
+        let path = utf8(directory.path().join("cache.sqlite"))?;
+        let database = database(&path)?;
+
+        let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let request = CatalogImportRequest {
+            document_path: utf8(fixture_root.join("fixtures/catalog/mame/software-list.xml"))?,
+            format: CatalogDocumentFormat::MameSoftwareListXml,
+            source_key: PublishingSourceKey::new("backup-integrity-software-source"),
+            source_display_name: "Backup integrity software source".to_owned(),
+            catalog_key: CatalogKey::new("backup-integrity-software-catalog"),
+            catalog_display_name: "Backup integrity software catalog".to_owned(),
+            scope: CatalogScope::Unknown,
+        };
+        app::import_catalog(&database, &request)?;
+
+        let mut conn = connect(&path)?;
+        sql_query("PRAGMA ignore_check_constraints = ON").execute(&mut conn)?;
+        for id in 1..=60 {
+            insert_corrupt_rom_file(&mut conn, id)?;
+        }
+        let affected = sql_query(
+            "UPDATE software_rom_entries SET dump_status = 'invalid' \
+             WHERE occurrence_id = (SELECT MIN(occurrence_id) FROM software_rom_entries)",
+        )
+        .execute(&mut conn)?;
+        assert_eq!(affected, 1, "fixture has a native software ROM payload");
+        sql_query(
+            "INSERT INTO catalog_contents (content_uuid, expected_size) VALUES (zeroblob(16), -1)",
+        )
+        .execute(&mut conn)?;
+        drop(conn);
+        drop(database);
+
+        let report = check_integrity(&path)?;
+        for table in ["software_rom_entries", "catalog_contents"] {
+            assert!(
+                report
+                    .durable_issues
+                    .contains(&format!("CHECK constraint failed in {table}")),
+                "the durable {table} CHECK failure must survive inventory noise: {report:?}"
+            );
+        }
+        assert_eq!(report.inventory_issues.len(), MAX_REPORTED_ISSUES);
+        Ok(())
+    }
+
+    #[test]
     fn integrity_checks_durable_foreign_keys_after_many_inventory_violations() -> Result<()> {
         let directory = tempdir()?;
         let path = utf8(directory.path().join("cache.sqlite"))?;
         let database = database(&path)?;
         let mut conn = connect(&path)?;
+        sql_query("PRAGMA ignore_check_constraints = ON").execute(&mut conn)?;
         sql_query("PRAGMA foreign_keys = OFF").execute(&mut conn)?;
         for id in 1..=60 {
-            sql_query(
-                "INSERT INTO roms (name, size, md5, sha1, crc, game_id) \
-                 VALUES (?, 0, zeroblob(16), zeroblob(20), zeroblob(4), ?)",
-            )
-            .bind::<Text, _>(format!("orphan-rom-{id}"))
-            .bind::<BigInt, _>(id)
-            .execute(&mut conn)?;
+            insert_corrupt_rom_file(&mut conn, id)?;
         }
         sql_query(
             "INSERT INTO acquisitions (acquisition_key, source_key, document_key, method) \
@@ -1161,7 +1224,8 @@ mod tests {
             report
                 .durable_issues
                 .iter()
-                .any(|issue| issue.contains("acquisitions"))
+                .any(|issue| issue.contains("acquisitions")),
+            "the durable foreign-key violation must survive inventory noise: {report:?}"
         );
         assert_eq!(report.inventory_issues.len(), MAX_REPORTED_ISSUES);
         Ok(())

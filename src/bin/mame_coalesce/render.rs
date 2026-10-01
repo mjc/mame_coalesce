@@ -51,9 +51,9 @@ pub fn scan_report(report: &SourceScanReport) {
         "scanned {} ROM files at {} (reused {} unchanged bare files)",
         report.observation_count, report.source_path, report.reused_bare_files
     );
-    if report.associated_rom_count == 0 && report.observation_count > 0 {
+    if report.catalog_candidate_count == 0 && report.observation_count > 0 {
         warn!(
-            "scanned {} ROM files, but none matched imported DAT ROMs",
+            "scanned {} ROM files, but none has a published whole-file SHA-1 catalog candidate",
             report.observation_count
         );
     }

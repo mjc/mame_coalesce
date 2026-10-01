@@ -58,6 +58,8 @@ pub enum Error {
 
     #[error("no published snapshot exists for catalog {0}")]
     CatalogNotFound(String),
+    #[error("catalog import failed; diagnostics are retained under run {0:?}")]
+    CatalogImportFailed(crate::domain::ImportRunKey),
     #[error("catalog format is not supported for machine dependencies: {0}")]
     UnsupportedMachineDependencyFormat(String),
 

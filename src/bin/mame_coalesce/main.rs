@@ -80,7 +80,11 @@ fn run() -> mame_coalesce::Result<ExitCode> {
                     dat_path: dat.clone(),
                 },
             )?;
-            log::info!("imported DAT as cache data file {}", report.data_file_id);
+            log::info!(
+                "published DAT catalog {} snapshot {}",
+                report.catalog_key,
+                report.snapshot_key.as_str()
+            );
             Ok(ExitCode::SUCCESS)
         }
         Command::Cache {

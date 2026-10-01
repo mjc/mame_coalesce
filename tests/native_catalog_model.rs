@@ -38,6 +38,18 @@ struct CountRow {
 }
 
 #[test]
+fn catalog_has_no_second_mutable_dat_model() {
+    let (_directory, mut conn) = connection();
+    let rows = sql_query(
+        "SELECT count(*) AS count FROM sqlite_schema \
+         WHERE type = 'table' AND name IN ('data_files','games','roms','archive_files')",
+    )
+    .get_result::<CountRow>(&mut conn)
+    .expect("stored catalog owners");
+    assert_eq!(rows.count, 0, "catalog facts have one native owner");
+}
+
+#[test]
 fn published_logiqx_occurrences_reject_late_native_payloads() {
     let (_directory, mut conn) = connection();
     conn.batch_execute(

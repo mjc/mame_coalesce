@@ -94,8 +94,26 @@ parser-internal representations the public contract.
   source order and explicit-versus-default presence. History derives relative
   native-child ranks in memory so vendor-only gaps do not produce false edits;
   the original XML ordinals remain stored. Published Logiqx media owners reject
-  both new occurrences and late native payload inserts. Build-cache projections
-  and full per-format field coverage are not the finished schema design.
+  both new occurrences and late native payload inserts. Full per-format field
+  coverage and the remaining shared identity work are not finished.
+- Ordinary DAT imports publish native snapshots and retain originals externally.
+  Local catalog identity follows the canonical source path, not its header title.
+  `storage::build_catalog` resolves one published snapshot and reads its names,
+  metadata and expected evidence in a single transaction. Exact catalog keys
+  take precedence over unique display/header aliases; ambiguous aliases and
+  duplicate set names are errors rather than arbitrary selections. Software
+  lists are not flattened through the root-set build interface. Cached queries
+  resolve retained source paths even after removal of the input file. One-shot
+  runs load the exact imported snapshot before scanning and use that published
+  value throughout selection/planning/writing; another publication or a
+  byte-for-byte reversion cannot switch the edition being built.
+  Audits likewise resolve one published catalog before validation/refresh and
+  plan against that same edition after scanning.
+- There are no mutable `data_files`, `games`, `roms` or `archive_files`
+  catalog tables. Scanned-file inventory has no foreign key assigning observed
+  bytes to one expected ROM. Whole-file hash candidate counts are derived from
+  published native claims, while planning independently verifies qualified
+  expected evidence against observations.
 - Retained catalog documents are content-addressed and immutable. Re-imports
   record acquisitions/import runs and normalized snapshots; an import's
   snapshot publication is transactional, so a failed parse or persistence

@@ -1,13 +1,8 @@
-use crate::{
-    logiqx,
-    storage::{
-        db::Pool as DbPool, models::NewDataFile, models::NewGame, models::NewRom,
-        models::NewRomFile,
-    },
-};
+use crate::storage::{db::Pool as DbPool, models::NewRomFile};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use diesel::result::Error as DieselError;
+use diesel::sql_types::BigInt;
 use diesel::{QueryResult, QueryableByName, SqliteConnection};
 use diesel::{prelude::*, sql_query};
 
@@ -15,130 +10,6 @@ use diesel::{prelude::*, sql_query};
 struct DatabasePathRow {
     #[diesel(sql_type = diesel::sql_types::Text)]
     file: String,
-}
-
-pub fn traverse_and_insert_data_file(
-    pool: &DbPool,
-    logiqx_data_file: &logiqx::DataFile,
-) -> crate::Result<i32> {
-    let new_data_file = NewDataFile::from_logiqx(logiqx_data_file)?;
-    let mut conn = pool.get()?;
-
-    conn.transaction::<_, crate::Error, _>(|conn| {
-        delete_existing_data_file_children(conn, new_data_file.name())?;
-        let data_file_id = upsert_data_file(conn, &new_data_file)?;
-        insert_games_and_roms(conn, logiqx_data_file, data_file_id)?;
-        update_parent_links(conn, data_file_id)?;
-        associate_rom_files(conn)?;
-        Ok(data_file_id)
-    })
-}
-
-fn delete_existing_data_file_children(conn: &mut SqliteConnection, name: &str) -> QueryResult<()> {
-    use crate::storage::schema::data_files::dsl as data_files_dsl;
-
-    if let Some(existing_data_file_id) = data_files_dsl::data_files
-        .filter(data_files_dsl::name.eq(name))
-        .select(data_files_dsl::id)
-        .first::<i32>(conn)
-        .optional()?
-    {
-        delete_data_file_children(conn, existing_data_file_id)?;
-    }
-
-    Ok(())
-}
-
-fn delete_data_file_children(conn: &mut SqliteConnection, data_file_id: i32) -> QueryResult<()> {
-    use crate::storage::schema::{
-        games::dsl as games_dsl, rom_files::dsl as rom_files_dsl, roms::dsl as roms_dsl,
-    };
-
-    let game_ids = games_dsl::games
-        .filter(games_dsl::data_file_id.eq(data_file_id))
-        .select(games_dsl::id)
-        .load::<i32>(conn)?;
-    let rom_ids = roms_dsl::roms
-        .filter(roms_dsl::game_id.eq_any(&game_ids))
-        .select(roms_dsl::id)
-        .load::<i32>(conn)?;
-
-    if !rom_ids.is_empty() {
-        diesel::update(rom_files_dsl::rom_files.filter(rom_files_dsl::rom_id.eq_any(&rom_ids)))
-            .set(rom_files_dsl::rom_id.eq::<Option<i32>>(None))
-            .execute(conn)?;
-    }
-
-    if !game_ids.is_empty() {
-        diesel::delete(roms_dsl::roms.filter(roms_dsl::game_id.eq_any(game_ids))).execute(conn)?;
-    }
-
-    diesel::delete(games_dsl::games.filter(games_dsl::data_file_id.eq(data_file_id)))
-        .execute(conn)?;
-
-    Ok(())
-}
-
-fn upsert_data_file(
-    conn: &mut SqliteConnection,
-    new_data_file: &NewDataFile<'_>,
-) -> QueryResult<i32> {
-    use crate::storage::schema::data_files::dsl as data_files_dsl;
-    use diesel::replace_into;
-
-    replace_into(data_files_dsl::data_files)
-        .values(new_data_file)
-        .execute(conn)?;
-
-    data_files_dsl::data_files
-        .filter(data_files_dsl::name.eq(new_data_file.name()))
-        .select(data_files_dsl::id)
-        .first(conn)
-}
-
-fn insert_games_and_roms(
-    conn: &mut SqliteConnection,
-    logiqx_data_file: &logiqx::DataFile,
-    data_file_id: i32,
-) -> crate::Result<()> {
-    use crate::storage::schema::{games::dsl as games_dsl, roms::dsl as roms_dsl};
-    use diesel::replace_into;
-
-    logiqx_data_file.games().iter().try_for_each(|game| {
-        let new_game = NewGame::from_logiqx(game, data_file_id);
-        replace_into(games_dsl::games)
-            .values(new_game)
-            .execute(conn)?;
-
-        let game_id = games_dsl::games
-            .filter(games_dsl::data_file_id.eq(data_file_id))
-            .filter(games_dsl::name.eq(game.name()))
-            .select(games_dsl::id)
-            .first(conn)?;
-
-        game.roms().iter().try_for_each(|rom| {
-            let new_rom = NewRom::from_logiqx(rom, game_id)?;
-            replace_into(roms_dsl::roms).values(new_rom).execute(conn)?;
-            Ok::<_, crate::Error>(())
-        })
-    })?;
-    Ok(())
-}
-
-fn update_parent_links(conn: &mut SqliteConnection, data_file_id: i32) -> QueryResult<usize> {
-    sql_query(
-        r"
-        UPDATE games AS cloned
-            SET parent_id = (
-                SELECT parent.id
-                FROM games AS parent
-                WHERE parent.name = cloned.clone_of
-                    AND parent.data_file_id = cloned.data_file_id
-            )
-            WHERE cloned.data_file_id = ?",
-    )
-    .bind::<diesel::sql_types::Integer, _>(data_file_id)
-    .execute(conn)
 }
 
 pub fn replace_rom_files_for_source_root(
@@ -170,21 +41,9 @@ pub fn replace_rom_files_for_source_roots(
                 .map(|new_rom_file| replace_into(rom_files).values(new_rom_file).execute(conn))
                 .collect::<QueryResult<Vec<usize>>>()?;
         }
-        associate_rom_files(conn)?;
         roots_and_files
             .iter()
-            .map(|(source_root, _)| {
-                rom_files
-                    .filter(crate::storage::schema::rom_files::dsl::scan_root.eq(source_root))
-                    .filter(crate::storage::schema::rom_files::dsl::rom_id.is_not_null())
-                    .count()
-                    .get_result::<i64>(conn)
-                    .and_then(|count| {
-                        usize::try_from(count).map_err(|error| {
-                            diesel::result::Error::DeserializationError(Box::new(error))
-                        })
-                    })
-            })
+            .map(|(source_root, _)| matching_rom_file_count(conn, source_root))
             .collect()
     })?)
 }
@@ -212,9 +71,56 @@ pub fn database_file_paths(pool: &DbPool) -> crate::Result<Vec<Utf8PathBuf>> {
         .collect())
 }
 
-fn associate_rom_files(conn: &mut SqliteConnection) -> QueryResult<usize> {
-    sql_query("UPDATE rom_files SET rom_id = roms.id FROM roms WHERE rom_files.sha1 = roms.sha1")
-        .execute(conn)
+#[derive(QueryableByName)]
+struct CountRow {
+    #[diesel(sql_type = BigInt)]
+    count: i64,
+}
+
+/// Counts observations with at least one published native catalog candidate.
+/// A shared whole-file SHA1 is a candidate signal, not proof of a match.
+fn matching_rom_file_count(conn: &mut SqliteConnection, source_root: &str) -> QueryResult<usize> {
+    let row = sql_query(
+        r"
+        SELECT COUNT(*) AS count
+        FROM rom_files AS observed
+        WHERE observed.scan_root = ?
+          AND EXISTS (
+              SELECT 1
+              FROM asset_occurrences AS occurrence
+              JOIN catalog_sets AS catalog_set
+                ON catalog_set.set_id = occurrence.record_id
+              JOIN catalog_set_groups AS catalog_group
+                ON catalog_group.set_group_id = catalog_set.set_group_id
+              JOIN snapshot_publications AS publication
+                ON publication.snapshot_key = catalog_group.snapshot_key
+              JOIN occurrence_digest_assertions AS assertion
+                ON assertion.occurrence_id = occurrence.occurrence_id
+              JOIN digest_values AS digest
+                ON digest.digest_id = assertion.digest_id
+              WHERE digest.algorithm = 'sha1'
+                AND digest.digest = observed.sha1
+                AND assertion.scope = 'whole_asset'
+                AND assertion.provenance = 'source_declared'
+                AND occurrence.claim_kind IN (
+                    'mame_rom', 'logiqx_rom', 'cmp_rom',
+                    'no_intro_pc_file', 'software_rom_entry'
+                )
+                AND publication.rowid = (
+                    SELECT latest.rowid
+                    FROM snapshot_publications AS latest
+                    WHERE latest.catalog_key = publication.catalog_key
+                    ORDER BY latest.rowid DESC
+                    LIMIT 1
+                )
+          )
+        ",
+    )
+    .bind::<diesel::sql_types::Text, _>(source_root)
+    .get_result::<CountRow>(conn)?;
+
+    usize::try_from(row.count)
+        .map_err(|error| diesel::result::Error::DeserializationError(Box::new(error)))
 }
 
 fn delete_rom_files_for_source_root(

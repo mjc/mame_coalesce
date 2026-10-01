@@ -782,7 +782,7 @@ fn software_reconciliation_provenance_uses_only_reported_digest_scope()
     sql_query(
         "INSERT INTO occurrence_digest_assertions \
          (occurrence_id, digest_id, scope, provenance) \
-         SELECT assertion.occurrence_id, assertion.digest_id, assertion.scope, 'legacy_cache' \
+         SELECT assertion.occurrence_id, assertion.digest_id, assertion.scope, 'computed' \
          FROM occurrence_digest_assertions AS assertion \
          JOIN software_components AS component USING (occurrence_id) \
          WHERE component.snapshot_key = ? AND assertion.provenance = 'source_declared'",

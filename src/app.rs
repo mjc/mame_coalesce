@@ -32,7 +32,10 @@ use crate::{
         SetSelection, SnapshotKey, SourceRoot, VerificationBasis, ZipCompression,
     },
     operations,
-    storage::repositories::{BuildRepository, DataFileSelector, SourceRepository},
+    storage::{
+        build_catalog::{BuildCatalogRepository, CatalogSelector, PublishedBuildCatalog},
+        repositories::SourceRepository,
+    },
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -105,9 +108,11 @@ pub struct DatImportRequest {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-/// Identifies the imported DAT record in the cache.
+/// Identifies an immutable published DAT import and its retained source.
 pub struct DatImportReport {
-    pub data_file_id: i32,
+    pub catalog_key: CatalogKey,
+    pub snapshot_key: SnapshotKey,
+    pub run_key: ImportRunKey,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -155,7 +160,8 @@ pub struct SourceScanReport {
     pub source_path: Utf8PathBuf,
     pub scan_run: ScanRunKey,
     pub observation_count: usize,
-    pub associated_rom_count: usize,
+    /// Observations with at least one published whole-file SHA-1 catalog candidate.
+    pub catalog_candidate_count: usize,
     /// Number of bare-file observations reused under the explicit cache policy.
     pub reused_bare_files: usize,
 }
@@ -750,13 +756,34 @@ fn same_declared_disk_identity(left: &DiskRequirementRow, right: &DiskRequiremen
         && left.sha1 == right.sha1
 }
 
-/// Parse a Logiqx DAT file and store its contents in the database cache.
+/// Publish a Logiqx DAT as a native catalog snapshot, retaining its original externally.
 pub fn import_dat(
     database: &Database,
     request: &DatImportRequest,
 ) -> crate::Result<DatImportReport> {
-    operations::parse_and_insert_datfile(&request.dat_path, database.pool())
-        .map(|data_file_id| DatImportReport { data_file_id })
+    let path = request.dat_path.canonicalize_utf8()?;
+    let catalog_key = CatalogKey::for_local_dat(&path);
+    let display_name = path.file_name().unwrap_or(path.as_str()).to_owned();
+    let imported = import_catalog(
+        database,
+        &CatalogImportRequest {
+            document_path: path,
+            format: CatalogDocumentFormat::Logiqx,
+            source_key: PublishingSourceKey::new("local-dat-files"),
+            source_display_name: "Local DAT files".to_owned(),
+            catalog_key: catalog_key.clone(),
+            catalog_display_name: display_name,
+            scope: CatalogScope::Complete,
+        },
+    )?;
+    match (imported.status, imported.snapshot_key) {
+        (CatalogImportStatus::Succeeded, Some(snapshot_key)) => Ok(DatImportReport {
+            catalog_key,
+            snapshot_key,
+            run_key: imported.run_key,
+        }),
+        _ => Err(crate::Error::CatalogImportFailed(imported.run_key)),
+    }
 }
 
 /// Import a supported catalog document and report its snapshot and diagnostics.
@@ -924,12 +951,12 @@ pub fn scan_source_with_policy_and_progress(
             observation.scan_provenance == crate::domain::ScanProvenance::ReusedStatValidatedV1
         })
         .count();
-    let associated_rom_count = repository.replace_completed_scan(&completed_scan)?;
+    let catalog_candidate_count = repository.replace_completed_scan(&completed_scan)?;
     Ok(SourceScanReport {
         source_path,
         scan_run,
         observation_count,
-        associated_rom_count,
+        catalog_candidate_count,
         reused_bare_files,
     })
 }
@@ -965,11 +992,11 @@ pub fn scan_sources_with_progress(
     Ok(completed_scans
         .iter()
         .zip(associated)
-        .map(|(scan, associated_rom_count)| SourceScanReport {
+        .map(|(scan, catalog_candidate_count)| SourceScanReport {
             source_path: Utf8PathBuf::from(scan.source_root().as_str()),
             scan_run: scan.scan_run(),
             observation_count: scan.observations().len(),
-            associated_rom_count,
+            catalog_candidate_count,
             reused_bare_files: 0,
         })
         .collect())
@@ -1036,6 +1063,26 @@ pub fn build_with_roots_and_container_with_policy(
     container: OutputContainer,
     reuse_policy: ArtifactReusePolicy,
 ) -> crate::Result<BuildWorkflowReport> {
+    let catalog = BuildCatalogRepository::new(database.pool())
+        .load(&resolve_dat_selector(&request.dat_path))?;
+    build_catalog_with_roots_and_container_with_policy(
+        database,
+        request,
+        selection,
+        container,
+        reuse_policy,
+        &catalog,
+    )
+}
+
+fn build_catalog_with_roots_and_container_with_policy(
+    database: &Database,
+    request: &BuildWorkflowRequest,
+    selection: &SourceRootSelection,
+    container: OutputContainer,
+    reuse_policy: ArtifactReusePolicy,
+    catalog: &PublishedBuildCatalog,
+) -> crate::Result<BuildWorkflowReport> {
     let roots = canonical_roots(selection)?;
     let canonical_paths = roots
         .iter()
@@ -1045,7 +1092,7 @@ pub fn build_with_roots_and_container_with_policy(
         &canonical_paths,
         &request.destination_path,
     )?;
-    let plan = plan_build_with_roots(
+    let plan = plan_build_for_catalog(
         database,
         &BuildPlanRequest {
             dat_path: request.dat_path.clone(),
@@ -1060,6 +1107,7 @@ pub fn build_with_roots_and_container_with_policy(
             set_selection: request.set_selection.clone(),
         },
         selection,
+        catalog,
     )?;
     let unattempted = || {
         plan.groups
@@ -1151,15 +1199,26 @@ pub fn plan_build_with_roots(
     selection: &SourceRootSelection,
 ) -> crate::Result<crate::domain::BuildPlan> {
     let dat_selector = resolve_dat_selector(&request.dat_path);
+    let catalog = BuildCatalogRepository::new(database.pool()).load(&dat_selector)?;
+    plan_build_for_catalog(database, request, selection, &catalog)
+}
+
+fn plan_build_for_catalog(
+    database: &Database,
+    request: &BuildPlanRequest,
+    selection: &SourceRootSelection,
+    catalog: &PublishedBuildCatalog,
+) -> crate::Result<crate::domain::BuildPlan> {
     let roots = canonical_roots(selection)?;
     let source_roots = roots
         .iter()
         .map(|(_, root)| root.clone())
         .collect::<Vec<_>>();
-    let build_repository = BuildRepository::new(database.pool());
-    let available_set_names =
-        build_repository.load_set_names(dat_selector.repository_selector())?;
-    let dat_roms = build_repository.load_dat_roms(dat_selector.repository_selector())?;
+    log::debug!(
+        "planning catalog {} snapshot {}",
+        catalog.catalog_key(),
+        catalog.snapshot_key().as_str()
+    );
     let repository = SourceRepository::new(database.pool());
     let source_files = if let [source_root] = source_roots.as_slice() {
         repository.load_source_files_for_root(source_root)?
@@ -1167,11 +1226,11 @@ pub fn plan_build_with_roots(
         repository.load_source_files_for_roots(&source_roots)?
     };
     let plan = crate::build::planner::plan_build_with_set_names(
-        &dat_roms,
-        &available_set_names,
+        catalog.requirements(),
+        catalog.set_names(),
         &source_files,
         &BuildRequest {
-            dat_name: dat_selector.value().to_owned(),
+            dat_name: catalog.catalog_key().as_str().to_owned(),
             source_roots,
             mode: request.mode,
             matching_policy: request.matching_policy,
@@ -1213,8 +1272,10 @@ pub fn audit_with_roots_and_progress(
     selection: &SourceRootSelection,
     progress: &(impl Fn(ScanProgressEvent) + Sync),
 ) -> crate::Result<AuditReport> {
+    let catalog = BuildCatalogRepository::new(database.pool())
+        .load(&resolve_dat_selector(&request.dat_path))?;
     let selection_issues =
-        catalog_set_selection_issues(database, &request.dat_path, &request.set_selection)?;
+        crate::build::planner::validate_set_selection(&request.set_selection, catalog.set_names());
     if !selection_issues.is_empty() {
         return Ok(AuditReport::new(
             ObservationBasis::Cached,
@@ -1243,7 +1304,7 @@ pub fn audit_with_roots_and_progress(
             }
         }
     };
-    let plan = plan_build_with_roots(
+    let plan = plan_build_for_catalog(
         database,
         &BuildPlanRequest {
             dat_path: request.dat_path.clone(),
@@ -1254,6 +1315,7 @@ pub fn audit_with_roots_and_progress(
             set_selection: request.set_selection.clone(),
         },
         selection,
+        &catalog,
     )?;
     let selected_verifications = if request.refresh == AuditRefresh::VerifySelected {
         verify_plan_selected_sources(&plan)
@@ -1444,14 +1506,16 @@ pub fn run_with_roots_and_container_and_progress_with_policy(
         &canonical_paths,
         &request.destination_path,
     )?;
-    import_dat(
+    let imported = import_dat(
         database,
         &DatImportRequest {
             dat_path: request.dat_path.clone(),
         },
     )?;
+    let catalog = BuildCatalogRepository::new(database.pool())
+        .load(&CatalogSelector::Snapshot(imported.snapshot_key))?;
     let selection_issues =
-        catalog_set_selection_issues(database, &request.dat_path, &request.set_selection)?;
+        crate::build::planner::validate_set_selection(&request.set_selection, catalog.set_names());
     if !selection_issues.is_empty() {
         return Ok(BuildWorkflowReport {
             written_paths: Vec::new(),
@@ -1468,12 +1532,13 @@ pub fn run_with_roots_and_container_and_progress_with_policy(
             "at least one source root is required",
         ))
     })?;
-    match build_with_roots_and_container_with_policy(
+    match build_catalog_with_roots_and_container_with_policy(
         database,
         &build_workflow_request_from_run(request),
         selection,
         container,
         reuse_policy,
+        &catalog,
     ) {
         Ok(mut report) => {
             report.scan_report = Some(scan_report);
@@ -1496,22 +1561,6 @@ pub fn run_with_roots_and_container_and_progress_with_policy(
     }
 }
 
-fn catalog_set_selection_issues(
-    database: &Database,
-    dat_path: &Utf8PathBuf,
-    selection: &SetSelection,
-) -> crate::Result<Vec<crate::domain::SetSelectionIssue>> {
-    if matches!(selection, SetSelection::All) {
-        return Ok(Vec::new());
-    }
-    let dat_selector = resolve_dat_selector(dat_path);
-    let available =
-        BuildRepository::new(database.pool()).load_set_names(dat_selector.repository_selector())?;
-    Ok(crate::build::planner::validate_set_selection(
-        selection, &available,
-    ))
-}
-
 fn invalid_set_selection_report(issues: Vec<crate::domain::SetSelectionIssue>) -> BuildReport {
     BuildReport {
         outcome: crate::domain::PlanOutcome::Blocked(
@@ -1520,6 +1569,43 @@ fn invalid_set_selection_report(issues: Vec<crate::domain::SetSelectionIssue>) -
         set_selection_issues: issues,
         ..BuildReport::default()
     }
+}
+
+fn resolve_dat_selector(dat_path: &Utf8PathBuf) -> CatalogSelector {
+    CatalogSelector::LatestCatalog(dat_path.to_string())
+}
+
+fn build_workflow_request_from_run(request: &RunWorkflowRequest) -> BuildWorkflowRequest {
+    BuildWorkflowRequest {
+        dat_path: request.dat_path.clone(),
+        source_path: request.source_path.clone(),
+        destination_path: request.destination_path.clone(),
+        mode: request.mode,
+        compression: request.compression,
+        dry_run: request.dry_run,
+        strict: request.strict,
+        set_selection: request.set_selection.clone(),
+    }
+}
+
+fn canonical_roots(
+    selection: &SourceRootSelection,
+) -> crate::Result<Vec<(Utf8PathBuf, SourceRoot)>> {
+    let mut roots = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for path in selection.paths() {
+        let canonical_path = path.canonicalize_utf8()?;
+        let root = SourceRoot::new(canonical_path.to_string());
+        if seen.insert(root.clone()) {
+            roots.push((canonical_path, root));
+        }
+    }
+    if roots.is_empty() {
+        return Err(crate::Error::InvalidPath(
+            "at least one source root is required".to_owned(),
+        ));
+    }
+    Ok(roots)
 }
 
 #[cfg(test)]
@@ -1567,7 +1653,7 @@ mod tests {
             .as_ref()
             .ok_or("completed scan missing from artifact failure report")?;
         assert_eq!(scan.observation_count, 1);
-        assert_eq!(scan.associated_rom_count, 1);
+        assert_eq!(scan.catalog_candidate_count, 1);
         assert_eq!(report.build_report.matched_roms, 1);
         assert_eq!(report.artifact_results.len(), 1);
         assert_eq!(
@@ -1594,7 +1680,7 @@ mod tests {
             .scan_report
             .ok_or("successful run missing its scan report")?;
         assert_eq!(scan.observation_count, 1);
-        assert_eq!(scan.associated_rom_count, 0);
+        assert_eq!(scan.catalog_candidate_count, 0);
         Ok(())
     }
 
@@ -1648,7 +1734,7 @@ mod tests {
                 source,
             } => {
                 assert_eq!(scan_report.observation_count, 1);
-                assert_eq!(scan_report.associated_rom_count, 1);
+                assert_eq!(scan_report.catalog_candidate_count, 1);
                 assert!(matches!(*source, crate::Error::Io(_)));
             }
             error => return Err(format!("unexpected error: {error}").into()),
@@ -1672,12 +1758,23 @@ mod tests {
             r#"<?xml version="1.0"?><datafile><header><name>Fixture</name></header><game name="game"><rom name="game.rom" size="3" crc="352441c2" md5="900150983cd24fb0d6963f7d28e17f72" sha1="a9993e364706816aba3e25717850c26c9cd0d89d"/></game></datafile>"#,
         )?;
         let database = Database::in_memory()?;
-        import_dat(
+        let imported = import_dat(
             &database,
             &DatImportRequest {
                 dat_path: dat_path.clone(),
             },
         )?;
+        assert_eq!(
+            load_snapshot_source(&database, &imported.snapshot_key)?,
+            std::fs::read(&dat_path)?
+        );
+        let repeated = import_dat(
+            &database,
+            &DatImportRequest {
+                dat_path: dat_path.clone(),
+            },
+        )?;
+        assert_eq!(imported.snapshot_key, repeated.snapshot_key);
         let progress_events = std::sync::Mutex::new(Vec::new());
         scan_source_with_progress(
             &database,
@@ -1824,65 +1921,4 @@ mod tests {
         );
         Ok(())
     }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum BuildDatSelector {
-    FileName(String),
-    Name(String),
-}
-
-impl BuildDatSelector {
-    fn repository_selector(&self) -> DataFileSelector<'_> {
-        match self {
-            Self::FileName(value) => DataFileSelector::FileName(value),
-            Self::Name(value) => DataFileSelector::Name(value),
-        }
-    }
-
-    fn value(&self) -> &str {
-        match self {
-            Self::FileName(value) | Self::Name(value) => value,
-        }
-    }
-}
-
-fn resolve_dat_selector(dat_path: &Utf8PathBuf) -> BuildDatSelector {
-    dat_path.canonicalize_utf8().map_or_else(
-        |_| BuildDatSelector::Name(dat_path.to_string()),
-        |path| BuildDatSelector::FileName(path.to_string()),
-    )
-}
-
-fn build_workflow_request_from_run(request: &RunWorkflowRequest) -> BuildWorkflowRequest {
-    BuildWorkflowRequest {
-        dat_path: request.dat_path.clone(),
-        source_path: request.source_path.clone(),
-        destination_path: request.destination_path.clone(),
-        mode: request.mode,
-        compression: request.compression,
-        dry_run: request.dry_run,
-        strict: request.strict,
-        set_selection: request.set_selection.clone(),
-    }
-}
-
-fn canonical_roots(
-    selection: &SourceRootSelection,
-) -> crate::Result<Vec<(Utf8PathBuf, SourceRoot)>> {
-    let mut roots = Vec::new();
-    let mut seen = std::collections::BTreeSet::new();
-    for path in selection.paths() {
-        let canonical_path = path.canonicalize_utf8()?;
-        let root = SourceRoot::new(canonical_path.to_string());
-        if seen.insert(root.clone()) {
-            roots.push((canonical_path, root));
-        }
-    }
-    if roots.is_empty() {
-        return Err(crate::Error::InvalidPath(
-            "at least one source root is required".to_owned(),
-        ));
-    }
-    Ok(roots)
 }

@@ -61,6 +61,20 @@ the existing behavior and plans every set. Year, manufacturer, BIOS, and
 
 Explicit cache maintenance commands are available for advanced workflows:
 
+Ordinary DAT imports and builds use the same immutable native catalog snapshots
+as explicit catalog imports. A local DAT's canonical path identifies its catalog;
+changed bytes publish a new snapshot instead of replacing another list with the
+same header title. Cached builds accept an exact catalog key, source path or
+unique display/header name and select the latest published snapshot. Ambiguous
+names are errors; exact keys take precedence over paths, and retained source
+paths remain queryable after their original files are removed. One-shot builds
+pin the snapshot returned by their import, including when bytes revert to an
+older edition or another import publishes during scanning.
+Scanned files remain independent observations; scan summaries
+count whole-file SHA-1 candidates once, without assigning a file to one list's
+ROM row. The flat build interface does not flatten software-list items or
+silently combine repeated set names.
+
 ```sh
 mame_coalesce --cache /tmp/coalesce.db cache import fixtures/test.dat
 mame_coalesce --cache /tmp/coalesce.db cache scan /path/to/roms --jobs 8
@@ -384,7 +398,15 @@ and catalog regressions cover these behaviors:
 - `database_initialization` checks creation from bundled DDL, acceptance of a
   matching schema, and rejection of schema drift without repair.
 - `native_catalog_model` checks scoped record identity and rejects occurrences
-  whose claim kind or content identity conflicts with their native record.
+  whose claim kind or content identity conflicts with their native record;
+  it also checks that no second mutable DAT model exists.
+- `native_build_catalog` checks native publication through ordinary imports,
+  exact external source recovery, optional hashes and large ROM sizes,
+  path-scoped catalogs, name ambiguity, snapshot replacement without lost
+  history, native build/audit queries and scan rollback.
+- `native_build_selection` checks exact-key priority over an existing path,
+  retained source-path lookup without the input file, reverted-byte imports
+  and immutable build/audit selection across a competing publication.
 - `catalog_shared_model` checks relational scope/set storage, separate owners
   for repeated names, owner-aware relationship explanations, publication
   immutability, and P/C empty fields, ordered languages and archive-ID tokens.

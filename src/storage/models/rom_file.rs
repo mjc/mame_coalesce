@@ -1,4 +1,4 @@
-use diesel::{Associations, Insertable, Queryable};
+use diesel::{Insertable, Queryable};
 
 use crate::{
     domain::{ArchiveMemberSelector, ScanProvenance, SourceLocation, SourceObservation},
@@ -6,9 +6,8 @@ use crate::{
     storage::schema::rom_files,
 };
 
-#[derive(Queryable, Associations, PartialEq, Eq, Debug, Hash)]
+#[derive(Queryable, PartialEq, Eq, Debug, Hash)]
 #[diesel(table_name = rom_files)]
-#[diesel(belongs_to(crate::storage::models::Rom))]
 pub struct RomFile {
     pub id: i32,
     pub parent_path: String,
@@ -29,7 +28,6 @@ pub struct RomFile {
     pub scan_provenance: Option<String>,
     pub bare_file_cache_stamp: Option<Vec<u8>>,
     pub cache_reused: bool,
-    pub rom_id: Option<i32>,
     pub physical_path: Option<String>,
 }
 
@@ -53,7 +51,6 @@ pub struct New {
     pub scan_provenance: Option<String>,
     pub bare_file_cache_stamp: Option<Vec<u8>>,
     pub cache_reused: bool,
-    pub rom_id: Option<i32>,
     pub physical_path: Option<String>,
 }
 
@@ -123,7 +120,6 @@ impl New {
                 .bare_file_cache_stamp
                 .map(|stamp| stamp.as_bytes().to_vec()),
             cache_reused: observation.scan_provenance == ScanProvenance::ReusedStatValidatedV1,
-            rom_id: None,
             physical_path: Some(observation.physical_path.as_str().to_owned()),
         })
     }

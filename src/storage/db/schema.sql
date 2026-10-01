@@ -53,12 +53,6 @@ CREATE TABLE acquisitions (
         CHECK (verification_status IN ('verified', 'unverified', 'failed')),
     UNIQUE (acquisition_key, document_key)
 );
-CREATE TABLE archive_files (
-    id   INTEGER PRIMARY KEY AUTOINCREMENT
-                 NOT NULL,
-    path TEXT    NOT NULL,
-    sha1 BLOB    NOT NULL
-);
 CREATE TABLE asset_occurrences (
     occurrence_id INTEGER PRIMARY KEY NOT NULL,
     record_id INTEGER NOT NULL REFERENCES catalog_sets (set_id) ON DELETE RESTRICT,
@@ -217,22 +211,6 @@ CREATE TABLE cmp_set_facts (
     rebuildto TEXT, rebuildto_order INTEGER, rebuildto_source_field TEXT, rebuildto_quoted INTEGER,
     rebuildto_source_line INTEGER, rebuildto_source_column INTEGER
 ) WITHOUT ROWID;
-CREATE TABLE data_files (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT
-                        NOT NULL,
-    build       TEXT,
-    debug       TEXT,
-    file_name   TEXT,
-    name        TEXT NOT NULL UNIQUE,
-    description TEXT,
-    category    TEXT,
-    version     TEXT,
-    author      TEXT,
-    email       TEXT,
-    homepage    TEXT,
-    url         TEXT,
-    sha1        BLOB
-);
 CREATE TABLE digest_values (
     digest_id INTEGER PRIMARY KEY,
     algorithm TEXT NOT NULL CHECK (algorithm IN ('crc32', 'md5', 'sha1', 'sha256')),
@@ -251,21 +229,6 @@ CREATE TABLE documents (
     byte_length  INTEGER CHECK (byte_length IS NULL OR byte_length >= 0)
 , sha256 BLOB CHECK (sha256 IS NULL OR length(sha256) = 32), format_hint TEXT, retention_status TEXT NOT NULL DEFAULT 'unavailable'
         CHECK (retention_status IN ('unavailable', 'retained')), object_key TEXT);
-CREATE TABLE "games" (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT
-                         NOT NULL,
-    name         TEXT  NOT NULL,
-    is_bios      TEXT,
-    clone_of     TEXT,
-    rom_of       TEXT,
-    sample_of    TEXT,
-    board        TEXT,
-    rebuildto    TEXT,
-    year         TEXT,
-    manufacturer TEXT,
-    data_file_id INTEGER CONSTRAINT data_file_id_constraint REFERENCES data_files (id),
-    parent_id    INTEGER CONSTRAINT parent_clone_constraint REFERENCES "games" (id)
-);
 CREATE TABLE import_diagnostics (
     diagnostic_key TEXT PRIMARY KEY NOT NULL,
     run_key TEXT NOT NULL REFERENCES import_runs (run_key) ON DELETE RESTRICT,
@@ -927,7 +890,7 @@ CREATE TABLE occurrence_digest_assertions (
     occurrence_id INTEGER NOT NULL REFERENCES asset_occurrences(occurrence_id) ON DELETE RESTRICT,
     digest_id INTEGER NOT NULL REFERENCES digest_values(digest_id) ON DELETE RESTRICT,
     scope TEXT NOT NULL CHECK (length(scope) > 0),
-    provenance TEXT NOT NULL CHECK (provenance IN ('source_declared', 'computed', 'legacy_cache', 'unknown')),
+    provenance TEXT NOT NULL CHECK (provenance IN ('source_declared', 'computed', 'unknown')),
     PRIMARY KEY (occurrence_id, digest_id, scope, provenance)
 ) WITHOUT ROWID;
 CREATE TABLE parser_interpretations (
@@ -1110,8 +1073,7 @@ CREATE TABLE rom_files (
     sha1            BLOB    NOT NULL,
     md5             BLOB,
     xxhash3         BLOB    NOT NULL,
-    in_archive      BOOLEAN NOT NULL,
-    rom_id          INTEGER CONSTRAINT file_rom REFERENCES roms (id)
+    in_archive      BOOLEAN NOT NULL
 , archive_backend TEXT
         CHECK (archive_backend IS NULL OR archive_backend IN ('zip', '7z', 'rar')), archive_member_index BIGINT
         CHECK (archive_member_index IS NULL OR archive_member_index >= 0), scan_root TEXT, scan_run TEXT, observed_size BIGINT
@@ -1120,20 +1082,6 @@ CREATE TABLE rom_files (
         CHECK (scan_provenance IS NULL OR scan_provenance = 'streamed_sha1_xxh3_v1'), bare_file_cache_stamp BLOB
         CHECK (bare_file_cache_stamp IS NULL OR length(bare_file_cache_stamp) = 32), cache_reused BOOLEAN NOT NULL DEFAULT FALSE
         CHECK (cache_reused IN (FALSE, TRUE)), physical_path TEXT);
-CREATE TABLE "roms" (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT
-                             NOT NULL,
-    name            TEXT    NOT NULL,
-    size            INTEGER NOT NULL,
-    md5             BLOB    NOT NULL,
-    sha1            BLOB    NOT NULL,
-    crc             BLOB    NOT NULL,
-    date            DATE,
-    updated_at      DATETIME,
-    inserted_at     DATETIME,
-    game_id         INTEGER REFERENCES games (id),
-    archive_file_id INTEGER REFERENCES archive_files (id)
-);
 CREATE TABLE snapshot_publications (
     catalog_key TEXT NOT NULL,
     document_key TEXT NOT NULL,
@@ -1330,7 +1278,6 @@ CREATE INDEX acquisitions_source_key_index ON acquisitions (source_key);
 CREATE INDEX catalog_content_digest_lookup
     ON catalog_content_digest_assertions (digest_id, scope, content_uuid);
 CREATE INDEX catalogs_source_key_index ON catalogs (source_key);
-CREATE INDEX crc_index ON roms (crc);
 CREATE INDEX diagnostics_run_index ON import_diagnostics (run_key);
 CREATE INDEX digest_value_lookup
     ON digest_values (algorithm, digest);
@@ -1338,10 +1285,6 @@ CREATE INDEX documents_byte_length_index ON documents (byte_length);
 CREATE INDEX documents_sha1_index ON documents (sha1);
 CREATE UNIQUE INDEX documents_sha256_unique ON documents (sha256)
     WHERE sha256 IS NOT NULL;
-CREATE INDEX game_name ON games (name);
-CREATE INDEX games_data_file_id_relation_index ON games (data_file_id);
-CREATE UNIQUE INDEX games_data_file_name_unique ON games (data_file_id, name);
-CREATE INDEX games_parent_id_relation_index ON games (parent_id);
 CREATE INDEX import_runs_catalog_key_index ON import_runs (catalog_key);
 CREATE INDEX import_runs_document_key_index ON import_runs (document_key);
 CREATE INDEX import_runs_snapshot_key_index ON import_runs (snapshot_key);
@@ -1352,7 +1295,6 @@ CREATE INDEX mame_machine_devices_tag_index ON mame_machine_devices (tag, set_id
 CREATE INDEX mame_machines_source_file_index ON mame_machines (source_file);
 CREATE INDEX mame_machine_samples_name_index ON mame_machine_samples (name, set_id);
 CREATE INDEX mame_machine_software_lists_name_index ON mame_machine_software_lists (name, set_id);
-CREATE INDEX md5_index ON roms (md5);
 CREATE INDEX occurrence_content_lookup ON asset_occurrences(content_uuid, occurrence_id)
     WHERE content_uuid IS NOT NULL;
 CREATE INDEX occurrence_digest_lookup ON occurrence_digest_assertions(digest_id, occurrence_id);
@@ -1368,13 +1310,9 @@ CREATE INDEX relationship_assertions_target_snapshot_kind_index
     WHERE origin != 'source_assertion';
 CREATE INDEX relationship_reviews_assertion_index
     ON relationship_reviews (assertion_key, review_id);
-CREATE INDEX rom_file_rom_id_relation_index ON rom_files (rom_id);
 CREATE INDEX rom_file_sha1_index ON rom_files (sha1);
 CREATE INDEX rom_file_xxhash3_index ON rom_files (xxhash3);
 CREATE INDEX rom_files_scan_root_index ON rom_files (scan_root);
-CREATE INDEX roms_game_id_relation_index ON roms (game_id);
-CREATE UNIQUE INDEX roms_game_name_unique ON roms (game_id, name);
-CREATE INDEX sha1_index ON roms (sha1);
 CREATE INDEX snapshots_catalog_key_index ON catalog_snapshots (catalog_key);
 CREATE INDEX snapshots_document_key_index ON catalog_snapshots (document_key);
 CREATE INDEX snapshots_interpretation_key_index ON catalog_snapshots (interpretation_key);

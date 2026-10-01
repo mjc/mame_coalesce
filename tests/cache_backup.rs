@@ -60,10 +60,14 @@ fn cache_backup_restore_and_integrity_are_available_from_the_cli()
     let inventory_cache = utf8(directory.path().join("inventory.sqlite"))?;
     Database::open(&inventory_cache)?;
     let mut connection = SqliteConnection::establish(inventory_cache.as_str())?;
-    sql_query("PRAGMA foreign_keys = OFF").execute(&mut connection)?;
+    sql_query("PRAGMA ignore_check_constraints = ON").execute(&mut connection)?;
     sql_query(
-        "INSERT INTO roms (name, size, md5, sha1, crc, game_id) \
-         VALUES ('orphan-rom', 0, zeroblob(16), zeroblob(20), zeroblob(4), 999)",
+        "INSERT INTO rom_files \
+         (parent_path, path, name, sha1, xxhash3, in_archive, source_fingerprint, \
+          scan_root, scan_run, observed_size, scan_provenance) \
+         VALUES ('/source', '/source/corrupt.rom', 'corrupt.rom', \
+                 zeroblob(20), zeroblob(8), 0, x'01', \
+                 '/source', 'fixture-run', 0, 'streamed_sha1_xxh3_v1')",
     )
     .execute(&mut connection)?;
     drop(connection);

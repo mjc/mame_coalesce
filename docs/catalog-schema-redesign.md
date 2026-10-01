@@ -53,8 +53,12 @@ positions as continuity. SQLite has no JSON columns or generic vendor-field
 storage. Logiqx header options, comments, releases, BIOS sets and archive
 references now have native tables; ROM, disk and sample occurrences retain
 source order and default presence. ROM size text is retained once, with a
-virtual numeric projection. Build-cache projections and remaining per-format
-coverage still need cutover; this is not a claim of complete DTD conformance.
+virtual numeric projection. Ordinary imports and builds now use published native
+snapshots; the old mutable DAT/game/ROM/archive-file tables and scanned-file
+association column are removed. Build queries derive expected evidence and
+metadata from native owners in one read transaction. Remaining per-format
+coverage and shared registry/endpoint work still need cutover; this is not a
+claim of complete DTD conformance.
 
 The target hierarchy uses integer IDs for ownership and retains names and
 publisher IDs as source fields:

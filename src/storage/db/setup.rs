@@ -125,12 +125,24 @@ pub fn initialize_database(conn: &mut SqliteConnection) -> crate::Result<()> {
 
 pub fn create_db_pool(database_url: &str) -> crate::Result<Pool> {
     let manager = ConnectionManager::<SqliteConnection>::new(database_url);
-    let mut builder = Pool::builder().connection_customizer(Box::new(EnableForeignKeys));
+    let mut builder =
+        super::Connections::builder().connection_customizer(Box::new(EnableForeignKeys));
     // A bare in-memory SQLite database belongs to one connection, not to the pool.
     if database_url == ":memory:" {
         builder = builder.max_size(1).idle_timeout(None).max_lifetime(None);
     }
-    let pool = builder.build(manager)?;
+    let pool = Pool {
+        connections: builder.build(manager)?,
+        temporary_documents: if database_url == ":memory:" {
+            Some(std::sync::Arc::new(
+                tempfile::Builder::new()
+                    .prefix("mame-coalesce-documents-")
+                    .tempdir()?,
+            ))
+        } else {
+            None
+        },
+    };
     {
         let mut connection = pool.get()?;
         initialize_database(&mut connection)?;
@@ -145,9 +157,9 @@ mod tests {
     #[test]
     fn in_memory_pool_keeps_one_non_expiring_database() -> crate::Result<()> {
         let pool = create_db_pool(":memory:")?;
-        assert_eq!(pool.max_size(), 1);
-        assert_eq!(pool.max_lifetime(), None);
-        assert_eq!(pool.idle_timeout(), None);
+        assert_eq!(pool.connections.max_size(), 1);
+        assert_eq!(pool.connections.max_lifetime(), None);
+        assert_eq!(pool.connections.idle_timeout(), None);
         {
             let mut conn = pool.get()?;
             conn.batch_execute("CREATE TABLE checkout_witness(value TEXT); INSERT INTO checkout_witness VALUES ('kept')")?;

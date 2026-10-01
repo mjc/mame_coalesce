@@ -212,8 +212,8 @@ impl CatalogKey {
     }
 
     #[must_use]
-    pub(crate) fn for_legacy_data_file(name: &str) -> Self {
-        Self(stable_key("legacy-data-file", &[name]))
+    pub(crate) fn for_local_dat(path: &camino::Utf8Path) -> Self {
+        Self(format!("local-dat:{path}"))
     }
 
     #[must_use]
@@ -581,7 +581,6 @@ pub enum EvidenceProvenance {
     SourceDeclared,
     Computed,
     StatValidatedCache,
-    LegacyCache,
     #[default]
     Unknown,
 }

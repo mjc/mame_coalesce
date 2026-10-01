@@ -97,7 +97,6 @@ struct RetainedPublication {
 pub struct DocumentStore {
     pool: Pool,
     object_store: Utf8PathBuf,
-    temporary_object_store: bool,
     _database_guard: Option<crate::database::Database>,
 }
 
@@ -151,11 +150,10 @@ struct PublishingSourceRow {
 
 impl DocumentStore {
     pub(crate) fn from_pool(pool: Pool) -> crate::Result<Self> {
-        let (object_store, temporary_object_store) = object_store_for_pool(&pool)?;
+        let object_store = object_store_for_pool(&pool)?;
         Ok(Self {
             pool,
             object_store,
-            temporary_object_store,
             _database_guard: None,
         })
     }
@@ -166,11 +164,10 @@ impl DocumentStore {
         }
         let database = crate::database::Database::open(&camino::Utf8PathBuf::from(database_url))?;
         let pool = database.pool().clone();
-        let (object_store, temporary_object_store) = object_store_for_pool(&pool)?;
+        let object_store = object_store_for_pool(&pool)?;
         Ok(Self {
             pool,
             object_store,
-            temporary_object_store,
             _database_guard: Some(database),
         })
     }
@@ -679,33 +676,20 @@ fn insert_transport_headers(
     Ok(())
 }
 
-fn object_store_for_pool(pool: &Pool) -> crate::Result<(Utf8PathBuf, bool)> {
+fn object_store_for_pool(pool: &Pool) -> crate::Result<Utf8PathBuf> {
     let file = sql_query("PRAGMA database_list")
         .load::<DatabaseFile>(&mut pool.get()?)?
         .into_iter()
         .find(|database| !database.file.is_empty())
         .map(|database| database.file);
     if let Some(file) = file {
-        return Ok((Utf8PathBuf::from(format!("{file}.documents")), false));
+        return Ok(Utf8PathBuf::from(format!("{file}.documents")));
     }
-    let path = std::env::temp_dir().join(format!(
-        "mame-coalesce-{}-{}.documents",
-        std::process::id(),
-        uuid::Uuid::new_v4()
-    ));
-    Ok((
-        Utf8PathBuf::from_path_buf(path)
-            .map_err(|path| crate::Error::InvalidPath(path.display().to_string()))?,
-        true,
-    ))
-}
-
-impl Drop for DocumentStore {
-    fn drop(&mut self) {
-        if self.temporary_object_store {
-            let _ = fs::remove_dir_all(&self.object_store);
-        }
-    }
+    let path = pool.temporary_documents_path().ok_or_else(|| {
+        crate::Error::InvalidPath("database has no external document store".to_owned())
+    })?;
+    Utf8PathBuf::from_path_buf(path.to_path_buf())
+        .map_err(|path| crate::Error::InvalidPath(path.display().to_string()))
 }
 
 fn ensure_document_retained(
@@ -896,6 +880,25 @@ mod tests {
             DocumentKey::from_bytes(b"catalog"),
             DocumentKey::from_bytes(b"changed")
         );
+    }
+
+    #[test]
+    fn memory_originals_live_until_the_last_pool_owner_drops() -> TestResult {
+        let pool = create_db_pool(":memory:")?;
+        let first = DocumentStore::from_pool(pool.clone())?;
+        first.register_source(&PublishingSource::new("source-a", "Publisher A"))?;
+        let retained = first.retain(&acquisition("source-a"), VALID_DAT)?;
+        let root = first.object_store.clone();
+        drop(first);
+        assert!(root.is_dir());
+        let second = DocumentStore::from_pool(pool.clone())?;
+        assert_eq!(second.object_store, root);
+        assert_eq!(second.load(&retained.document_key)?, VALID_DAT);
+        drop(pool);
+        assert!(root.is_dir());
+        drop(second);
+        assert!(!root.exists());
+        Ok(())
     }
 
     #[test]
