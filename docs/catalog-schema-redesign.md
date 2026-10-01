@@ -149,8 +149,8 @@ The complete devenv gate passed (851 tests, one existing optional skip),
 all-feature nextest passed 854 tests with three existing optional skips, and
 all-feature documentation passed with warnings denied. GPT-6.1 Sol medium
 review/fix/re-review cycles were clear after the final parser/test refactors
-and the diagnostic clipping-contract correction. The excerpt/highlight/FK
-contract below is design-only; its storage implementation remains open.
+and the diagnostic clipping-contract correction. This parser milestone did
+not implement the excerpt/highlight/FK contract below.
 
 ## Evidence and corpus coverage
 
@@ -422,7 +422,12 @@ document bytes, catalog identity, interpretation, and scope.
 
 ## Import diagnostics and exact source excerpts
 
-This is a shared design contract, not implemented behavior. Diagnostics are
+The excerpt/range columns and run/document FKs are now implemented for fatal
+XML character and encoding diagnostics. Checked Rust ranges capture original
+encoded bytes, and clipping rebases the highlight or makes it NULL if only
+part of the problem remains. Recovery-warning persistence, token/field
+highlights and native catalog-owner links are still required; this is not
+complete diagnostic acceptance. Diagnostics are
 warnings or errors about actual malformed or failed input. A report table
 exposes the message and a relevant import-file excerpt. Necessary nearby field
 text may appear in the excerpt, but diagnostics are not a second catalog-field

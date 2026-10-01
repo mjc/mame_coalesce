@@ -88,6 +88,10 @@ pub enum Error {
         record_name: Option<String>,
         line: Option<i64>,
         column: Option<i64>,
+        /// Exact source evidence, when captured by the parser rather than guessed.
+        excerpt: Option<Box<crate::diagnostics::SourceExcerpt>>,
+        /// Coordinate provenance does not depend on an excerpt being available.
+        coordinates: Option<crate::diagnostics::CoordinateConvention>,
     },
 
     #[error("different source bytes produced an existing document digest")]

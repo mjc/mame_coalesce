@@ -1027,6 +1027,8 @@ fn required(node: &Element, field: &str) -> crate::Result<String> {
             record_name: node.attributes.get("name").cloned(),
             line: Some(node.location.line),
             column: Some(node.location.column),
+            excerpt: None,
+            coordinates: Some(crate::diagnostics::CoordinateConvention::XmlUnicodeScalars),
         })
 }
 
@@ -1040,6 +1042,8 @@ fn invalid_value(node: &Element, record: &str, field: &str, value: &str) -> crat
         record_name: Some(record.to_owned()),
         line: Some(node.location.line),
         column: Some(node.location.column),
+        excerpt: None,
+        coordinates: Some(crate::diagnostics::CoordinateConvention::XmlUnicodeScalars),
     }
 }
 

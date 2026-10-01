@@ -169,6 +169,15 @@ file membership across published catalog editions. Results keep each owner and
 its source/list provenance, with digest assertions as separate children.
 Pagination cursors belong to one file UUID and registry generation.
 
+Import errors can retain an exact byte excerpt with a start-inclusive,
+end-exclusive highlight relative to that saved excerpt, not the whole file.
+XML character and encoding failures capture their actual bytes, including
+NUL, invalid UTF-8 and UTF-16. Gzip excerpts name the decoded XML view and do
+not claim compressed-file offsets. Unknown ranges stay absent. The schema
+checks paired integer bounds and links each diagnostic to its run and source
+document; failed catalog facts still roll back. Recovery-warning persistence,
+additional token/field highlights and native catalog-owner links remain open.
+
 Format version 1 is marked in the SQLite header and includes the cache database,
 acquisitions, catalog snapshots, assertions, reviews, diagnostics, and
 rebuildable inventory. Backup creation never replaces an existing backup file.

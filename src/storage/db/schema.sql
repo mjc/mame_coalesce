@@ -195,6 +195,8 @@ CREATE TABLE documents (
 CREATE TABLE import_diagnostics (
     diagnostic_key TEXT PRIMARY KEY NOT NULL,
     run_key TEXT NOT NULL REFERENCES import_runs (run_key) ON DELETE RESTRICT,
+    document_key TEXT NOT NULL REFERENCES documents (document_key) ON DELETE RESTRICT,
+    severity TEXT NOT NULL DEFAULT 'error' CHECK (severity IN ('warning', 'error')),
     code TEXT NOT NULL,
     message TEXT NOT NULL,
     record_kind TEXT,
@@ -202,7 +204,48 @@ CREATE TABLE import_diagnostics (
     field_name TEXT,
     offending_text TEXT,
     source_line INTEGER,
-    source_column INTEGER
+    source_column INTEGER,
+    source_excerpt BLOB,
+    excerpt_view TEXT CHECK (excerpt_view IN ('retained_original_bytes', 'transport_decoded_xml_bytes')),
+    excerpt_start_byte INTEGER,
+    problem_start_byte INTEGER,
+    problem_end_byte INTEGER,
+    source_problem_start_byte INTEGER,
+    source_problem_end_byte INTEGER,
+    original_problem_start_byte INTEGER,
+    original_problem_end_byte INTEGER,
+    coordinate_view TEXT CHECK (coordinate_view IN ('transport_decoded_xml_text', 'decoded_dat_text')),
+    column_convention TEXT CHECK (column_convention = 'unicode_scalar_1based'),
+    UNIQUE (diagnostic_key, run_key),
+    FOREIGN KEY (run_key, document_key) REFERENCES import_runs(run_key, document_key) ON DELETE RESTRICT,
+    CHECK ((source_excerpt IS NULL AND excerpt_view IS NULL AND excerpt_start_byte IS NULL)
+        OR (typeof(source_excerpt) = 'blob' AND excerpt_view IS NOT NULL
+            AND (excerpt_start_byte IS NULL OR (typeof(excerpt_start_byte) = 'integer' AND excerpt_start_byte >= 0)))),
+    CHECK ((problem_start_byte IS NULL AND problem_end_byte IS NULL)
+        OR (typeof(problem_start_byte) = 'integer' AND typeof(problem_end_byte) = 'integer'
+            AND source_excerpt IS NOT NULL AND problem_start_byte >= 0
+            AND problem_end_byte >= problem_start_byte AND problem_end_byte <= length(source_excerpt))),
+    CHECK ((source_problem_start_byte IS NULL AND source_problem_end_byte IS NULL)
+        OR (typeof(source_problem_start_byte) = 'integer' AND typeof(source_problem_end_byte) = 'integer'
+            AND excerpt_view IS NOT NULL AND source_problem_start_byte >= 0
+            AND source_problem_end_byte >= source_problem_start_byte)),
+    CHECK ((original_problem_start_byte IS NULL AND original_problem_end_byte IS NULL)
+        OR (typeof(original_problem_start_byte) = 'integer' AND typeof(original_problem_end_byte) = 'integer'
+            AND original_problem_start_byte >= 0 AND original_problem_end_byte >= original_problem_start_byte
+            AND excerpt_view IS NOT NULL AND excerpt_view = 'retained_original_bytes')),
+    CHECK (original_problem_start_byte IS NULL OR source_problem_start_byte IS NULL
+        OR (original_problem_start_byte = source_problem_start_byte
+            AND original_problem_end_byte = source_problem_end_byte)),
+    CHECK (problem_start_byte IS NULL OR excerpt_start_byte IS NULL OR source_problem_start_byte IS NULL
+        OR (source_problem_start_byte = excerpt_start_byte + problem_start_byte
+            AND source_problem_end_byte = excerpt_start_byte + problem_end_byte)),
+    CHECK (problem_start_byte IS NULL OR excerpt_start_byte IS NULL OR original_problem_start_byte IS NULL
+        OR (original_problem_start_byte = excerpt_start_byte + problem_start_byte
+            AND original_problem_end_byte = excerpt_start_byte + problem_end_byte)),
+    CHECK ((coordinate_view IS NULL AND column_convention IS NULL)
+        OR (coordinate_view IS NOT NULL AND column_convention IS NOT NULL
+            AND typeof(source_line) = 'integer' AND source_line > 0
+            AND typeof(source_column) = 'integer' AND source_column > 0))
 );
 CREATE TABLE import_runs (
     run_key             TEXT PRIMARY KEY NOT NULL,
@@ -215,6 +258,7 @@ CREATE TABLE import_runs (
     started_at          DATETIME,
     finished_at         DATETIME,
     diagnostic          TEXT,
+    UNIQUE (run_key, document_key),
     CHECK (finished_at IS NULL OR started_at IS NULL OR finished_at >= started_at),
     FOREIGN KEY (snapshot_key, catalog_key, document_key, interpretation_key)
         REFERENCES catalog_snapshots

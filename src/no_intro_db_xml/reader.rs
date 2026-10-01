@@ -1472,6 +1472,8 @@ fn parse_error(
         record_name: name,
         line: Some(location.line),
         column: Some(location.column),
+        excerpt: None,
+        coordinates: Some(crate::diagnostics::CoordinateConvention::XmlUnicodeScalars),
     }
 }
 
@@ -1491,6 +1493,8 @@ fn xml_error(message: impl Into<String>) -> Error {
         record_name: None,
         line: None,
         column: None,
+        excerpt: None,
+        coordinates: None,
     }
 }
 

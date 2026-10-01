@@ -11,7 +11,13 @@ use quick_xml::{
     reader::Reader,
 };
 
-use crate::{Result, document_input, error::Error, logiqx::RecordLocation};
+use crate::{
+    Result,
+    diagnostics::{ByteRange, ExcerptView, SourceExcerpt},
+    document_input,
+    error::Error,
+    logiqx::RecordLocation,
+};
 
 pub const MAX_XML_DEPTH: usize = 256;
 pub const MAX_XML_NODES: usize = 200_000;
@@ -305,8 +311,11 @@ pub fn with_reader<T, E: From<Error>>(
     bytes: &[u8],
     parse: impl FnOnce(&mut XmlReader<'_>, &mut PositionMap<'_>) -> std::result::Result<T, E>,
 ) -> std::result::Result<T, E> {
-    let xml = decode(bytes)?;
-    with_decoded_reader(&xml, parse)
+    let source = document_input::decode_xml(bytes)?;
+    let view = input_view(bytes);
+    let xml = decode_text(&source, view)?;
+    validate_xml10_characters(&xml, Some((&source, view)))?;
+    parse_decoded(&xml, parse)
 }
 
 /// Read text decoded once by an adapter with a format-specific recovery policy.
@@ -314,14 +323,23 @@ pub fn with_decoded_reader<T, E: From<Error>>(
     xml: &str,
     parse: impl FnOnce(&mut XmlReader<'_>, &mut PositionMap<'_>) -> std::result::Result<T, E>,
 ) -> std::result::Result<T, E> {
-    validate_xml10_characters(xml)?;
+    validate_xml10_characters(xml, None)?;
+    parse_decoded(xml, parse)
+}
+
+fn parse_decoded<T, E: From<Error>>(
+    xml: &str,
+    parse: impl FnOnce(&mut XmlReader<'_>, &mut PositionMap<'_>) -> std::result::Result<T, E>,
+) -> std::result::Result<T, E> {
     let mut positions = PositionMap::new(xml.as_bytes());
     let mut reader = XmlReader::new(xml.as_bytes());
     parse(&mut reader, &mut positions)
 }
 
-fn validate_xml10_characters(xml: &str) -> Result<()> {
+fn validate_xml10_characters(xml: &str, source: Option<(&[u8], ExcerptView)>) -> Result<()> {
     let mut position = SourcePosition::new();
+    let utf16 = source.and_then(|(bytes, _)| utf16_encoding(bytes));
+    let mut source_offset = utf16.map_or(0, |(_, skip)| skip);
 
     for character in xml.chars() {
         let codepoint = u32::from(character);
@@ -333,25 +351,76 @@ fn validate_xml10_characters(xml: &str) -> Result<()> {
                 record_name: None,
                 line: Some(location.line),
                 column: Some(location.column),
+                excerpt: source.and_then(|(bytes, view)| {
+                    character_excerpt(
+                        bytes,
+                        view,
+                        source_offset,
+                        encoded_width(character, utf16.is_some()),
+                    )
+                }),
+                coordinates: Some(crate::diagnostics::CoordinateConvention::XmlUnicodeScalars),
             });
         }
 
         position.advance(character);
+        source_offset += encoded_width(character, utf16.is_some());
     }
     Ok(())
 }
 
 /// Decode gzip and UTF-16 inputs while borrowing ordinary UTF-8 documents.
 pub fn decode(bytes: &[u8]) -> Result<Cow<'_, str>> {
+    let view = input_view(bytes);
     match document_input::decode_xml(bytes)? {
-        Cow::Borrowed(bytes) => decode_text(bytes),
-        Cow::Owned(bytes) => decode_text(&bytes).map(Cow::into_owned).map(Cow::Owned),
+        Cow::Borrowed(bytes) => decode_text(bytes, view),
+        Cow::Owned(bytes) => decode_text(&bytes, view)
+            .map(Cow::into_owned)
+            .map(Cow::Owned),
     }
 }
 
-fn decode_text(bytes: &[u8]) -> Result<Cow<'_, str>> {
+const fn input_view(bytes: &[u8]) -> ExcerptView {
+    if matches!(bytes, [0x1f, 0x8b, ..]) {
+        ExcerptView::TransportDecodedXmlBytes
+    } else {
+        ExcerptView::RetainedOriginalBytes
+    }
+}
+
+const fn encoded_width(character: char, utf16: bool) -> usize {
+    if utf16 {
+        character.len_utf16() * 2
+    } else {
+        character.len_utf8()
+    }
+}
+
+fn character_excerpt(
+    bytes: &[u8],
+    view: ExcerptView,
+    offset: usize,
+    width: usize,
+) -> Option<Box<SourceExcerpt>> {
+    let problem = ByteRange::new(offset, offset.checked_add(width)?)?;
+    SourceExcerpt::capture(bytes, view, problem, Some(problem)).map(Box::new)
+}
+
+fn encoding_error(message: String, excerpt: Option<Box<SourceExcerpt>>) -> Error {
+    Error::CatalogParse {
+        message,
+        record_kind: Some("document".into()),
+        record_name: None,
+        line: None,
+        column: None,
+        excerpt,
+        coordinates: None,
+    }
+}
+
+fn decode_text(bytes: &[u8], view: ExcerptView) -> Result<Cow<'_, str>> {
     if let Some((little_endian, skip)) = utf16_encoding(bytes) {
-        let text = decode_utf16(bytes, little_endian, skip)?;
+        let text = decode_utf16(bytes, little_endian, skip, view)?;
         validate_declared_encoding(
             &text,
             if little_endian {
@@ -362,8 +431,19 @@ fn decode_text(bytes: &[u8]) -> Result<Cow<'_, str>> {
         )?;
         return Ok(Cow::Owned(text));
     }
-    let text = std::str::from_utf8(bytes)
-        .map_err(|error| Error::XmlValidation(format!("XML is not valid UTF-8: {error}")))?;
+    let text = std::str::from_utf8(bytes).map_err(|error| {
+        encoding_error(
+            format!("XML is not valid UTF-8: {error}"),
+            character_excerpt(
+                bytes,
+                view,
+                error.valid_up_to(),
+                error
+                    .error_len()
+                    .unwrap_or_else(|| bytes.len() - error.valid_up_to()),
+            ),
+        )
+    })?;
     validate_declared_encoding(text, TextEncoding::Utf8)?;
     Ok(Cow::Borrowed(text))
 }
@@ -419,11 +499,21 @@ const fn utf16_encoding(bytes: &[u8]) -> Option<(bool, usize)> {
     }
 }
 
-fn decode_utf16(bytes: &[u8], little_endian: bool, skip: usize) -> Result<String> {
+fn decode_utf16(
+    bytes: &[u8],
+    little_endian: bool,
+    skip: usize,
+    view: ExcerptView,
+) -> Result<String> {
     let remaining = bytes
         .get(skip..)
         .filter(|remaining| remaining.len() % 2 == 0)
-        .ok_or_else(|| Error::XmlValidation("malformed UTF-16 encoding".into()))?;
+        .ok_or_else(|| {
+            encoding_error(
+                "malformed UTF-16 encoding".into(),
+                character_excerpt(bytes, view, bytes.len().saturating_sub(1), 1),
+            )
+        })?;
     let units = remaining.as_chunks::<2>().0.iter().map(|pair| {
         if little_endian {
             u16::from_le_bytes([pair[0], pair[1]])
@@ -432,8 +522,16 @@ fn decode_utf16(bytes: &[u8], little_endian: bool, skip: usize) -> Result<String
         }
     });
     let mut output = String::with_capacity(bytes.len().saturating_sub(skip));
+    let mut source_offset = skip;
     for scalar in char::decode_utf16(units) {
-        output.push(scalar.map_err(|_| Error::XmlValidation("malformed UTF-16 encoding".into()))?);
+        let character = scalar.map_err(|_| {
+            encoding_error(
+                "malformed UTF-16 encoding".into(),
+                character_excerpt(bytes, view, source_offset, 2),
+            )
+        })?;
+        output.push(character);
+        source_offset += character.len_utf16() * 2;
         if output.len() > document_input::MAX_DECOMPRESSED_DOCUMENT_BYTES {
             return Err(Error::DocumentTooLarge {
                 limit: document_input::MAX_DECOMPRESSED_DOCUMENT_BYTES,
@@ -460,6 +558,8 @@ pub fn next<'a>(
                 record_name: None,
                 line: Some(line),
                 column: Some(column),
+                excerpt: None,
+                coordinates: Some(crate::diagnostics::CoordinateConvention::XmlUnicodeScalars),
             });
         }
     };
@@ -840,6 +940,8 @@ pub fn read_element(
                     record_kind: Some(record_kind),
                     line: Some(element.location.line),
                     column: Some(element.location.column),
+                    excerpt: None,
+                    coordinates: Some(crate::diagnostics::CoordinateConvention::XmlUnicodeScalars),
                 });
             }
             _ => {}

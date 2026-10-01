@@ -1072,16 +1072,6 @@ fn record_failed_import(
     let interpretation = interpretation(request);
     let run_key = ImportRunKey::fresh();
     let diagnostic = error.to_string();
-    let (record_kind, record_name, source_line, source_column) = match error {
-        crate::Error::CatalogParse {
-            record_kind,
-            record_name,
-            line,
-            column,
-            ..
-        } => (record_kind.clone(), record_name.clone(), *line, *column),
-        _ => (None, None, None, None),
-    };
     let mut conn = pool.get()?;
     conn.immediate_transaction::<_, crate::Error, _>(|conn| {
         ensure_identities(conn, request, &interpretation)?;
@@ -1096,19 +1086,7 @@ fn record_failed_import(
             "failed",
             Some(&diagnostic),
         )?;
-        sql_query(
-            "INSERT INTO import_diagnostics \
-            (diagnostic_key, run_key, code, message, record_kind, record_name, source_line, source_column) \
-             VALUES (?, ?, 'parse_failed', ?, ?, ?, ?, ?)",
-        )
-        .bind::<Text, _>(uuid::Uuid::new_v4().to_string())
-        .bind::<Text, _>(run_key.to_string())
-        .bind::<Text, _>(&diagnostic)
-        .bind::<Nullable<Text>, _>(record_kind)
-        .bind::<Nullable<Text>, _>(record_name)
-        .bind::<Nullable<BigInt>, _>(source_line)
-        .bind::<Nullable<BigInt>, _>(source_column)
-        .execute(conn)?;
+        super::import_diagnostics::insert_parse_error(conn, &run_key, &document_key, error)?;
         Ok(CatalogImportReport {
             snapshot_key: None,
             run_key,

@@ -451,6 +451,8 @@ fn parse_error(
         record_name: name.map(str::to_owned),
         line: Some(location.line),
         column: Some(location.column),
+        excerpt: None,
+        coordinates: Some(crate::diagnostics::CoordinateConvention::XmlUnicodeScalars),
     }
 }
 

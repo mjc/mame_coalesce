@@ -2,6 +2,7 @@ pub mod app;
 pub mod build;
 mod clrmamepro;
 pub mod database;
+pub mod diagnostics;
 pub mod disk;
 mod document_input;
 pub mod domain;

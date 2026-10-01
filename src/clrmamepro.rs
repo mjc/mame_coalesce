@@ -1112,6 +1112,8 @@ fn parse_error(
         record_name: record_name.map(str::to_owned),
         line: location.map(|location| location.line),
         column: location.map(|location| location.column),
+        excerpt: None,
+        coordinates: location.map(|_| crate::diagnostics::CoordinateConvention::DatUnicodeScalars),
     }
 }
 
@@ -1123,6 +1125,8 @@ fn parse_error_unscoped(message: impl Into<String>) -> crate::Error {
         record_name: None,
         line: None,
         column: None,
+        excerpt: None,
+        coordinates: None,
     }
 }
 
