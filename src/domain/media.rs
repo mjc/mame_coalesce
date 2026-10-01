@@ -236,6 +236,28 @@ pub enum SourceLoadInstruction {
 }
 
 impl SourceLoadInstruction {
+    /// Decode an exact specification spelling without trimming or case folding.
+    #[must_use]
+    pub fn from_source_name(value: &str) -> Option<Self> {
+        Some(match value {
+            "load16_byte" => Self::Load16Byte,
+            "load16_word" => Self::Load16Word,
+            "load16_word_swap" => Self::Load16WordSwap,
+            "load32_byte" => Self::Load32Byte,
+            "load32_word" => Self::Load32Word,
+            "load32_word_swap" => Self::Load32WordSwap,
+            "load32_dword" => Self::Load32Dword,
+            "load64_word" => Self::Load64Word,
+            "load64_word_swap" => Self::Load64WordSwap,
+            "reload" => Self::Reload,
+            "fill" => Self::Fill,
+            "continue" => Self::Continue,
+            "reload_plain" => Self::ReloadPlain,
+            "ignore" => Self::Ignore,
+            _ => return None,
+        })
+    }
+
     #[must_use]
     pub const fn as_str(&self) -> &'static str {
         match self {

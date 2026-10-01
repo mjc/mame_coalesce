@@ -263,6 +263,7 @@ pub enum DumpStatus {
 }
 
 impl DumpStatus {
+    #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::BadDump => "baddump",
@@ -977,24 +978,8 @@ fn parse_load(node: &Element, record: &str) -> crate::Result<Option<LoadInstruct
     node.attributes
         .get("loadflag")
         .map(|value| {
-            let load = match value.as_str() {
-                "load16_byte" => LoadInstruction::Load16Byte,
-                "load16_word" => LoadInstruction::Load16Word,
-                "load16_word_swap" => LoadInstruction::Load16WordSwap,
-                "load32_byte" => LoadInstruction::Load32Byte,
-                "load32_word" => LoadInstruction::Load32Word,
-                "load32_word_swap" => LoadInstruction::Load32WordSwap,
-                "load32_dword" => LoadInstruction::Load32Dword,
-                "load64_word" => LoadInstruction::Load64Word,
-                "load64_word_swap" => LoadInstruction::Load64WordSwap,
-                "reload" => LoadInstruction::Reload,
-                "fill" => LoadInstruction::Fill,
-                "continue" => LoadInstruction::Continue,
-                "reload_plain" => LoadInstruction::ReloadPlain,
-                "ignore" => LoadInstruction::Ignore,
-                other => return Err(invalid_value(node, record, "loadflag", other)),
-            };
-            Ok(load)
+            LoadInstruction::from_source_name(value)
+                .ok_or_else(|| invalid_value(node, record, "loadflag", value))
         })
         .transpose()
 }

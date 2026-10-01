@@ -15,7 +15,14 @@ use crate::{
 
 use super::db::Pool;
 pub use crate::domain::ContentDigestAlgorithm as DigestAlgorithm;
+pub use crate::domain::media::SourceLoadInstruction as SoftwareLoadInstruction;
+pub use crate::mame_softwarelist::DumpStatus as SoftwareDumpStatus;
 pub use crate::storage::catalog_identity::OccurrenceId;
+
+mod software;
+pub use software::{
+    SoftwareDiskPayload, SoftwareFileOperation, SoftwareFilePayload, SoftwareRomPayload,
+};
 
 #[cfg(test)]
 mod tests;
@@ -143,6 +150,8 @@ pub struct CatalogFileOccurrence {
     pub canonical_content_id: Option<CatalogContentId>,
     pub provenance: OccurrenceProvenance,
     pub digests: Vec<OccurrenceDigest>,
+    /// Native ROM or disk data from a MAME software list, when this occurrence has one.
+    pub software_file: Option<SoftwareFilePayload>,
     pub no_intro_dat_rom: Option<NoIntroDatRomPayload>,
     pub no_intro_database_file: Option<NoIntroDatabaseFilePayload>,
 }
@@ -345,6 +354,10 @@ pub enum CatalogFilesError {
     MissingNoIntroDatabaseFilePayload(i64),
     #[error("No-Intro database file occurrence {0} has a mismatched native owner")]
     MismatchedNoIntroDatabaseFileOwner(i64),
+    #[error("software file occurrence {0} has no native payload")]
+    MissingSoftwareFilePayload(i64),
+    #[error("software file occurrence {0} has a mismatched native owner")]
+    MismatchedSoftwareFileOwner(i64),
     #[error("page size cannot be represented by SQLite")]
     PageLimitOverflow,
     #[error("bulk request contains {requested} occurrence IDs; maximum is {maximum}")]
@@ -874,6 +887,7 @@ fn assemble_occurrences(
     }
     attach_no_intro_dat_rom_payloads(connection, &mut occurrences)?;
     attach_no_intro_database_file_payloads(connection, &mut occurrences)?;
+    software::attach_payloads(connection, &mut occurrences)?;
     let digests = sql_query(digest_select()).load::<DigestRow>(connection)?;
     for row in digests {
         let algorithm = parse_algorithm(row.algorithm)?;
@@ -1293,6 +1307,7 @@ fn try_occurrence(row: OccurrenceRow) -> Result<CatalogFileOccurrence, CatalogFi
             software_owner: None,
         },
         digests: Vec::new(),
+        software_file: None,
         no_intro_dat_rom: None,
         no_intro_database_file: None,
     })

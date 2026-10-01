@@ -186,6 +186,14 @@ The Rust `catalog_files` API exposes bulk occurrence lookup and keyset-paginated
 file membership across published catalog editions. Results keep each owner and
 its source/list provenance, with digest assertions as separate children.
 Pagination cursors belong to one file UUID and registry generation.
+Software ROM/load-operation and disk occurrences also expose typed native
+payloads through both bulk lookup and UUID pages. They retain original numeric
+and checksum text, checked segment sizes/offsets, explicit-default presence,
+source order/location and area-local file-declaration links. Empty or invalid
+declarations remain queryable without inventing usable matching evidence.
+Disk payloads keep CHD-header hashes separate from whole-container identity.
+These payloads describe source facts, not validated executable loading recipes;
+complete software-title metadata query interfaces remain unfinished.
 Results distinguish the immutable source-issued UUID from its current canonical
 UUID. Published reviews also version cursors: after another review, restart
 pagination rather than silently skip newly merged members.

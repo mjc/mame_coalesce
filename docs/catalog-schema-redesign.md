@@ -639,6 +639,16 @@ usable declaring-file hash changes are separately reported. Loading operations
 do not become additional required files. Exact per-flag loader/length/hash proof,
 complete typed native query interfaces and full-corpus performance acceptance
 remain open; these source-fidelity changes are not complete format acceptance.
+The public `catalog_files` bulk and UUID-page APIs now expose native software
+ROM/load-operation and disk payloads. These are transient typed query results
+over the authoritative native rows, not another persisted projection. Raw
+numeric/hash spelling and empty/invalid distinctions survive alongside checked
+segment interpretations, explicit default presence, component/source order,
+source locations and the actual file-declaration owner. Requested IDs bound
+both native payload branches; no catalog-wide software union is materialized.
+The existing provenance retains list/title/part/area ownership. Full title,
+info/feature/switch metadata interfaces and executable loading recipes remain
+separate unfinished work.
 The [pinned loader decision table](software-list-loading.md) separates observed
 MAME 0.289 behavior from the proposed checked Rust interpretation. Approval and
 the executable interpretation remain separate gates; retaining source facts
