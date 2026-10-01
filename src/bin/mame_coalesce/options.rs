@@ -135,7 +135,7 @@ pub enum CacheCommand {
         #[arg(value_name = "dat", help = "Logiqx DAT file to import")]
         dat: Utf8PathBuf,
     },
-    /// Import a MAME machine or software-list XML catalog.
+    /// Import a catalog with an explicit document interpretation.
     CatalogImport(CatalogImportArgs),
     /// Refresh cached ROM-file rows for a source root.
     Scan(CacheScanArgs),
@@ -161,9 +161,9 @@ pub enum CacheCommand {
 
 #[derive(Clone, Debug, Args)]
 pub struct CatalogImportArgs {
-    #[arg(value_name = "document", help = "MAME XML document to import")]
+    #[arg(value_name = "document", help = "Catalog document to import")]
     pub document: Utf8PathBuf,
-    #[arg(long, value_enum, help = "MAME XML document format")]
+    #[arg(long, value_enum, help = "Catalog document interpretation")]
     pub format: CatalogDocumentFormatArg,
     #[arg(long, value_name = "key", help = "Stable publishing source key")]
     pub source_key: String,
@@ -183,17 +183,46 @@ pub struct CatalogImportArgs {
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum CatalogDocumentFormatArg {
+    #[value(name = "logiqx")]
+    Logiqx,
+    #[value(name = "clrmamepro-dat")]
+    ClrMamePro,
+    #[value(name = "no-intro-pc-xml")]
+    NoIntroPcXml,
     #[value(name = "mame-listxml")]
     MachineXml,
     #[value(name = "mame-softwarelist-xml")]
     SoftwareListXml,
+    #[value(name = "no-intro-dat-v3-strict")]
+    NoIntroDatV3Strict,
+    #[value(name = "no-intro-dat-v3-compatible")]
+    NoIntroDatV3Compatible,
+    #[value(name = "no-intro-dat-v4-strict")]
+    NoIntroDatV4Strict,
+    #[value(name = "no-intro-dat-v4-compatible")]
+    NoIntroDatV4Compatible,
 }
 
 impl From<CatalogDocumentFormatArg> for mame_coalesce::app::CatalogDocumentFormat {
     fn from(format: CatalogDocumentFormatArg) -> Self {
         match format {
+            CatalogDocumentFormatArg::Logiqx => Self::Logiqx,
+            CatalogDocumentFormatArg::ClrMamePro => Self::ClrMamePro,
+            CatalogDocumentFormatArg::NoIntroPcXml => Self::NoIntroPcXml,
             CatalogDocumentFormatArg::MachineXml => Self::MameListXml,
             CatalogDocumentFormatArg::SoftwareListXml => Self::MameSoftwareListXml,
+            CatalogDocumentFormatArg::NoIntroDatV3Strict => {
+                Self::NoIntroDat(mame_coalesce::NoIntroDatMode::V3Strict)
+            }
+            CatalogDocumentFormatArg::NoIntroDatV3Compatible => {
+                Self::NoIntroDat(mame_coalesce::NoIntroDatMode::V3Compatible)
+            }
+            CatalogDocumentFormatArg::NoIntroDatV4Strict => {
+                Self::NoIntroDat(mame_coalesce::NoIntroDatMode::V4Strict)
+            }
+            CatalogDocumentFormatArg::NoIntroDatV4Compatible => {
+                Self::NoIntroDat(mame_coalesce::NoIntroDatMode::V4Compatible)
+            }
         }
     }
 }
@@ -412,5 +441,51 @@ impl MissingArg {
             Self::Warn => false,
             Self::Fail => true,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CacheCommand, Cli, Command};
+    use clap::Parser;
+    use mame_coalesce::{NoIntroDatMode, app::CatalogDocumentFormat};
+
+    #[test]
+    fn catalog_import_exposes_distinct_no_intro_contracts() -> Result<(), Box<dyn std::error::Error>>
+    {
+        for mode in [
+            NoIntroDatMode::V3Strict,
+            NoIntroDatMode::V3Compatible,
+            NoIntroDatMode::V4Strict,
+            NoIntroDatMode::V4Compatible,
+        ] {
+            let cli = Cli::try_parse_from([
+                "mame_coalesce",
+                "cache",
+                "catalog-import",
+                "catalog.dat",
+                "--format",
+                mode.as_str(),
+                "--source-key",
+                "publisher",
+                "--source-name",
+                "Publisher",
+                "--catalog-key",
+                "catalog",
+                "--catalog-name",
+                "Catalog",
+            ])?;
+            let Command::Cache {
+                command: CacheCommand::CatalogImport(args),
+            } = cli.command()
+            else {
+                return Err("catalog import command was not selected".into());
+            };
+            assert_eq!(
+                CatalogDocumentFormat::from(args.format),
+                CatalogDocumentFormat::NoIntroDat(mode)
+            );
+        }
+        Ok(())
     }
 }

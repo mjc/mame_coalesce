@@ -58,6 +58,7 @@ pub enum CatalogDocumentFormat {
     MameSoftwareListXml,
     ClrMamePro,
     NoIntroPcXml,
+    NoIntroDat(crate::NoIntroDatMode),
 }
 
 impl CatalogDocumentFormat {
@@ -70,6 +71,7 @@ impl CatalogDocumentFormat {
             Self::MameSoftwareListXml => "mame-softwarelist-xml",
             Self::ClrMamePro => "clrmamepro-dat",
             Self::NoIntroPcXml => "no-intro-pc-xml",
+            Self::NoIntroDat(mode) => mode.as_str(),
         }
     }
 }

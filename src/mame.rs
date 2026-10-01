@@ -388,7 +388,7 @@ impl MameCatalog {
 }
 
 fn parse_machine_records<E: From<crate::Error>>(
-    reader: &mut quick_xml::reader::NsReader<&[u8]>,
+    reader: &mut crate::xml_reader::XmlReader<'_>,
     positions: &mut xml_reader::PositionMap<'_>,
     budget: &mut NodeBudget,
     empty: bool,

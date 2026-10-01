@@ -1,11 +1,14 @@
 //! Shared bounded XML decoding and borrowing event-reader setup.
 
-use std::{borrow::Cow, collections::BTreeMap};
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, HashSet},
+};
 
 use quick_xml::{
-    events::{BytesRef, BytesStart, Event},
-    name::ResolveResult,
-    reader::NsReader,
+    events::{BytesDecl, BytesRef, BytesStart, Event, attributes::Attribute},
+    name::{Namespace, NamespaceResolver, QName, ResolveResult},
+    reader::Reader,
 };
 
 use crate::{Result, document_input, error::Error, logiqx::RecordLocation};
@@ -17,6 +20,76 @@ const MAX_NAME_BYTES: usize = 4096;
 const MAX_ATTRIBUTES: usize = 1024;
 const MAX_ATTRIBUTE_BYTES: usize = 1024 * 1024;
 const MAX_TEXT_BYTES: usize = 1024 * 1024;
+
+/// Borrowing event reader with XML-normalized namespace bindings. The upstream
+/// namespace reader validates reserved bindings before decoding references.
+pub struct XmlReader<'a> {
+    reader: Reader<&'a [u8]>,
+    namespaces: NamespaceResolver,
+    pending_pop: bool,
+}
+
+impl<'a> XmlReader<'a> {
+    fn new(input: &'a [u8]) -> Self {
+        let mut reader = Reader::from_reader(input);
+        reader.config_mut().check_comments = true;
+        Self {
+            reader,
+            namespaces: NamespaceResolver::default(),
+            pending_pop: false,
+        }
+    }
+
+    pub const fn buffer_position(&self) -> u64 {
+        self.reader.buffer_position()
+    }
+
+    pub const fn resolver(&self) -> &NamespaceResolver {
+        &self.namespaces
+    }
+
+    fn read_event(&mut self) -> Result<Event<'a>> {
+        if self.pending_pop {
+            self.namespaces.pop();
+            self.pending_pop = false;
+        }
+        let event = self
+            .reader
+            .read_event()
+            .map_err(|error| Error::XmlValidation(error.to_string()))?;
+        match &event {
+            Event::Start(start) | Event::Empty(start) => {
+                self.push_namespaces(start)?;
+                self.pending_pop = matches!(event, Event::Empty(_));
+            }
+            Event::End(_) => self.pending_pop = true,
+            _ => {}
+        }
+        Ok(event)
+    }
+
+    fn push_namespaces(&mut self, start: &BytesStart<'_>) -> Result<()> {
+        // Push only the scope; add declarations after normalization, retaining
+        // the original borrowed tag and lexical attribute positions.
+        self.namespaces
+            .push(&BytesStart::new(""))
+            .map_err(|error| Error::XmlValidation(error.to_string()))?;
+        for (index, attribute) in start.attributes().enumerate() {
+            let attribute = attribute.map_err(|error| Error::XmlValidation(error.to_string()))?;
+            if index >= MAX_ATTRIBUTES || attribute.value.len() > MAX_ATTRIBUTE_BYTES {
+                return Err(Error::XmlValidation("XML attribute limit exceeded".into()));
+            }
+            if let Some(prefix) = attribute.key.as_namespace_binding() {
+                let namespace = normalize_namespace(&attribute.value)?;
+                validate_namespace_binding(attribute.key.as_ref(), &namespace)?;
+                self.namespaces
+                    .add(prefix, Namespace(&namespace))
+                    .map_err(|error| Error::XmlValidation(error.to_string()))?;
+            }
+        }
+        Ok(())
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct Element {
@@ -94,7 +167,7 @@ impl NodeBudget {
         Self { count: 0, limit }
     }
 
-    fn include(&mut self, depth: usize) -> Result<()> {
+    pub(crate) fn include(&mut self, depth: usize) -> Result<()> {
         self.count = self
             .count
             .checked_add(1)
@@ -122,6 +195,15 @@ pub struct PositionMap<'a> {
 }
 
 impl<'a> PositionMap<'a> {
+    /// Locate a borrowed opening tag without allocating an extension tree.
+    pub(crate) fn start_location(&mut self, start: &BytesStart<'_>) -> RecordLocation {
+        let offset = (start.as_ref().as_ptr() as usize)
+            .saturating_sub(self.bytes.as_ptr() as usize)
+            .saturating_sub(1);
+        let (line, column) = self.at(u64::try_from(offset).unwrap_or(u64::MAX));
+        RecordLocation { line, column }
+    }
+
     const fn new(bytes: &'a [u8]) -> Self {
         Self {
             bytes,
@@ -158,13 +240,12 @@ impl<'a> PositionMap<'a> {
 /// from the decoded document. This is the only XML traversal for an import.
 pub fn with_reader<T, E: From<Error>>(
     bytes: &[u8],
-    parse: impl FnOnce(&mut NsReader<&[u8]>, &mut PositionMap<'_>) -> std::result::Result<T, E>,
+    parse: impl FnOnce(&mut XmlReader<'_>, &mut PositionMap<'_>) -> std::result::Result<T, E>,
 ) -> std::result::Result<T, E> {
     let xml = decode(bytes)?;
     validate_xml10_characters(&xml)?;
     let mut positions = PositionMap::new(xml.as_bytes());
-    let mut reader = NsReader::from_reader(xml.as_bytes());
-    reader.config_mut().check_comments = true;
+    let mut reader = XmlReader::new(xml.as_bytes());
     parse(&mut reader, &mut positions)
 }
 
@@ -175,11 +256,7 @@ fn validate_xml10_characters(xml: &str) -> Result<()> {
 
     for character in xml.chars() {
         let codepoint = u32::from(character);
-        let valid = matches!(
-            codepoint,
-            0x09 | 0x0a | 0x0d | 0x20..=0xd7ff | 0xe000..=0xfffd | 0x10000..=0x0010_ffff
-        );
-        if !valid {
+        if !is_xml10_character(character) {
             return Err(Error::CatalogParse {
                 message: format!("XML 1.0 forbids U+{codepoint:04X}"),
                 record_kind: Some("document".into()),
@@ -264,13 +341,14 @@ fn decode_utf16(bytes: &[u8], little_endian: bool, skip: usize) -> Result<String
 
 /// Read an event while enforcing the established no-custom-entities policy.
 pub fn next<'a>(
-    reader: &mut NsReader<&'a [u8]>,
+    reader: &mut XmlReader<'a>,
     positions: &mut PositionMap<'_>,
 ) -> Result<(Option<String>, Event<'a>)> {
-    let (namespace, event) = match reader.read_resolved_event() {
-        Ok(resolved) => resolved,
+    let event_offset = reader.buffer_position();
+    let event = match reader.read_event() {
+        Ok(event) => event,
         Err(error) => {
-            let offset = reader.error_position();
+            let offset = reader.reader.error_position();
             let (line, column) = positions.at(offset);
             return Err(Error::CatalogParse {
                 message: error.to_string(),
@@ -281,14 +359,44 @@ pub fn next<'a>(
             });
         }
     };
+    let namespace = match &event {
+        Event::Start(start) | Event::Empty(start) => {
+            reader.resolver().resolve_element(start.name()).0
+        }
+        Event::End(end) => reader.resolver().resolve_element(end.name()).0,
+        _ => ResolveResult::Unbound,
+    };
+    let namespace = match namespace {
+        ResolveResult::Bound(namespace) => Some(namespace.as_ref().to_owned()),
+        ResolveResult::Unbound => None,
+        ResolveResult::Unknown(prefix) => {
+            return Err(Error::XmlValidation(format!(
+                "unbound XML namespace prefix {prefix:?}"
+            )));
+        }
+    };
     match &event {
+        Event::Decl(declaration) => validate_declaration(declaration, event_offset)?,
         Event::DocType(declaration) if declaration.as_ref().contains("<!ENTITY") => {
             return Err(Error::XmlEntityNotAllowed);
         }
         Event::GeneralRef(reference) if !allowed_reference(reference) => {
             return Err(Error::XmlEntityNotAllowed);
         }
-        Event::Start(start) | Event::Empty(start) => validate_start(start)?,
+        Event::Start(start) | Event::Empty(start) => validate_start(start, reader)?,
+        Event::PI(instruction) => {
+            let target = instruction.target();
+            if target.eq_ignore_ascii_case("xml") || !is_ncname(target) {
+                return Err(Error::XmlValidation(format!(
+                    "invalid XML processing-instruction target {target:?}"
+                )));
+            }
+        }
+        Event::Text(text) if text.as_ref().contains("]]>") => {
+            return Err(Error::XmlValidation(
+                "literal ]]> is forbidden in character data".into(),
+            ));
+        }
         Event::Text(text) if text.as_ref().len() > MAX_TEXT_BYTES => {
             return Err(Error::XmlValidation(format!(
                 "XML text exceeds {MAX_TEXT_BYTES} bytes"
@@ -301,25 +409,23 @@ pub fn next<'a>(
         }
         _ => {}
     }
-    let namespace = match namespace {
-        ResolveResult::Bound(namespace) => Some(namespace.as_ref().to_owned()),
-        ResolveResult::Unbound => None,
-        ResolveResult::Unknown(prefix) => {
-            return Err(Error::XmlValidation(format!(
-                "unbound XML namespace prefix {prefix:?}"
-            )));
-        }
-    };
     Ok((namespace, event))
 }
 
-fn validate_start(start: &BytesStart<'_>) -> Result<()> {
+fn validate_start(start: &BytesStart<'_>, reader: &XmlReader<'_>) -> Result<()> {
+    validate_qname(start.name().as_ref())?;
+    if start.name().as_ref().starts_with("xmlns:") {
+        return Err(Error::XmlValidation(
+            "xmlns cannot be an element prefix".into(),
+        ));
+    }
     if start.name().as_ref().len() > MAX_NAME_BYTES {
         return Err(Error::XmlValidation(format!(
             "XML element name exceeds {MAX_NAME_BYTES} bytes"
         )));
     }
     let mut count = 0;
+    let mut expanded_names = HashSet::new();
     for attribute in start.attributes() {
         let attribute = attribute.map_err(|error| Error::XmlValidation(error.to_string()))?;
         count += 1;
@@ -338,13 +444,187 @@ fn validate_start(start: &BytesStart<'_>) -> Result<()> {
                 "XML attribute value exceeds {MAX_ATTRIBUTE_BYTES} bytes"
             )));
         }
+        validate_qname(attribute.key.as_ref())?;
+        validate_attribute_spacing(start.as_ref(), &attribute)?;
+        if attribute.value.contains('<') {
+            return Err(Error::XmlValidation(
+                "literal < is forbidden in attribute values".into(),
+            ));
+        }
+        // Raw characters were checked before traversal. Numeric references can
+        // nevertheless decode to XML-forbidden characters inside attributes.
+        if attribute.value.contains('&') {
+            let decoded = attribute
+                .normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                .map_err(|error| Error::XmlValidation(error.to_string()))?;
+            if let Some(character) = decoded
+                .chars()
+                .find(|character| !is_xml10_character(*character))
+            {
+                return Err(Error::XmlValidation(format!(
+                    "XML 1.0 forbids referenced U+{:04X}",
+                    u32::from(character)
+                )));
+            }
+        }
+        let key = attribute.key.as_ref();
+        if key != "xmlns" && !key.starts_with("xmlns:") {
+            let (namespace, local) = reader.resolver().resolve_attribute(attribute.key);
+            let namespace = match namespace {
+                ResolveResult::Bound(namespace) => Some(namespace.as_ref().to_owned()),
+                ResolveResult::Unbound => None,
+                ResolveResult::Unknown(prefix) => {
+                    return Err(Error::XmlValidation(format!(
+                        "unbound XML attribute prefix {prefix:?}"
+                    )));
+                }
+            };
+            if !expanded_names.insert((namespace, local.into_inner())) {
+                return Err(Error::XmlValidation(format!(
+                    "duplicate expanded XML attribute {key:?}"
+                )));
+            }
+        }
     }
     Ok(())
 }
 
+fn validate_attribute_spacing(content: &str, attribute: &Attribute<'_>) -> Result<()> {
+    let offset = (attribute.key.as_ref().as_ptr() as usize)
+        .checked_sub(content.as_ptr() as usize)
+        .ok_or_else(|| Error::XmlValidation("invalid attribute source position".into()))?;
+    if !content
+        .get(..offset)
+        .and_then(|prefix| prefix.bytes().last())
+        .is_some_and(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n'))
+    {
+        return Err(Error::XmlValidation(
+            "XML attributes must be separated by whitespace".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Resolve the XML-normalized value of a borrowed namespace declaration.
+pub fn normalize_namespace(namespace: &str) -> Result<Cow<'_, str>> {
+    Attribute {
+        key: QName("xmlns"),
+        value: Cow::Borrowed(namespace),
+    }
+    .normalized_value(quick_xml::XmlVersion::Implicit1_0)
+    .map_err(|error| Error::XmlValidation(error.to_string()))
+}
+
+fn validate_namespace_binding(key: &str, namespace: &str) -> Result<()> {
+    const XML: &str = "http://www.w3.org/XML/1998/namespace";
+    const XMLNS: &str = "http://www.w3.org/2000/xmlns/";
+    let prefix = key.strip_prefix("xmlns:");
+    if namespace == XMLNS
+        || prefix == Some("xmlns")
+        || (prefix == Some("xml") && namespace != XML)
+        || (prefix != Some("xml") && namespace == XML)
+        || (prefix.is_some() && namespace.is_empty())
+    {
+        return Err(Error::XmlValidation(format!(
+            "invalid namespace binding {key:?}={namespace:?}"
+        )));
+    }
+    Ok(())
+}
+
+pub fn validate_qname(name: &str) -> Result<()> {
+    let valid = name.split_once(':').map_or_else(
+        || is_ncname(name),
+        |(prefix, local)| is_ncname(prefix) && is_ncname(local),
+    );
+    if valid {
+        Ok(())
+    } else {
+        Err(Error::XmlValidation(format!("invalid XML QName {name:?}")))
+    }
+}
+
+fn is_ncname(name: &str) -> bool {
+    let mut characters = name.chars();
+    characters
+        .next()
+        .is_some_and(|character| xml_name_start_char(character, false))
+        && characters.all(|character| xml_name_char(character, false))
+}
+
+pub const fn xml_name_start_char(character: char, allow_colon: bool) -> bool {
+    (allow_colon && character == ':')
+        || matches!(character as u32,
+        0x41..=0x5a | 0x5f | 0x61..=0x7a | 0xc0..=0xd6 | 0xd8..=0xf6 | 0xf8..=0x2ff
+        | 0x370..=0x37d | 0x37f..=0x1fff | 0x200c..=0x200d | 0x2070..=0x218f
+        | 0x2c00..=0x2fef | 0x3001..=0xd7ff | 0xf900..=0xfdcf | 0xfdf0..=0xfffd | 0x10000..=0xeffff)
+}
+
+pub const fn xml_name_char(character: char, allow_colon: bool) -> bool {
+    xml_name_start_char(character, allow_colon)
+        || matches!(character as u32, 0x2d..=0x2e | 0x30..=0x39 | 0xb7 | 0x300..=0x36f | 0x203f..=0x2040)
+}
+
+fn validate_declaration(declaration: &BytesDecl<'_>, offset: u64) -> Result<()> {
+    if offset != 0 {
+        return Err(Error::XmlValidation(
+            "XML declaration must be the first document event".into(),
+        ));
+    }
+    let attributes = BytesStart::from_content(declaration.as_ref(), 3);
+    let mut previous_rank = None;
+    for (index, attribute) in attributes.attributes().enumerate() {
+        let attribute = attribute.map_err(|error| Error::XmlValidation(error.to_string()))?;
+        validate_attribute_spacing(declaration.as_ref(), &attribute)?;
+        let name = attribute.key.as_ref();
+        let value = attribute.value.as_ref();
+        if index == 0 && name != "version" {
+            return Err(Error::XmlValidation(
+                "XML declaration requires version first".into(),
+            ));
+        }
+        let (rank, valid) = match name {
+            "version" => (0, value == "1.0"),
+            "encoding" => (
+                1,
+                value
+                    .as_bytes()
+                    .first()
+                    .is_some_and(u8::is_ascii_alphabetic)
+                    && value.bytes().all(|byte| {
+                        byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')
+                    }),
+            ),
+            "standalone" => (2, matches!(value, "yes" | "no")),
+            _ => {
+                return Err(Error::XmlValidation(format!(
+                    "unknown XML declaration field {name:?}"
+                )));
+            }
+        };
+        if !valid || previous_rank.is_some_and(|previous| previous >= rank) {
+            return Err(Error::XmlValidation(format!(
+                "invalid XML declaration field {name:?}"
+            )));
+        }
+        previous_rank = Some(rank);
+    }
+    if previous_rank.is_none() {
+        return Err(Error::XmlValidation(
+            "XML declaration requires a version".into(),
+        ));
+    }
+    Ok(())
+}
+
+const fn is_xml10_character(character: char) -> bool {
+    matches!(character as u32,
+        0x09 | 0x0a | 0x0d | 0x20..=0xd7ff | 0xe000..=0xfffd | 0x10000..=0x0010_ffff)
+}
+
 /// Convert the current start/empty event into the extension tree.
 pub fn element_from_start(
-    reader: &NsReader<&[u8]>,
+    reader: &XmlReader<'_>,
     namespace: Option<String>,
     start: &BytesStart<'_>,
     budget: &mut NodeBudget,
@@ -382,21 +662,18 @@ pub fn element_from_start(
             )));
         }
     }
-    let start_offset = (start.as_ref().as_ptr() as usize)
-        .saturating_sub(positions.bytes.as_ptr() as usize)
-        .saturating_sub(1);
-    let (line, column) = positions.at(u64::try_from(start_offset).unwrap_or(u64::MAX));
+    let location = positions.start_location(start);
     Ok(Element {
         name,
         attributes,
         content: Vec::new(),
-        location: RecordLocation { line, column },
+        location,
     })
 }
 
 /// Consume one record subtree so adapters need not build a whole-document DOM.
 pub fn read_element(
-    reader: &mut NsReader<&[u8]>,
+    reader: &mut XmlReader<'_>,
     namespace: Option<String>,
     start: &BytesStart<'_>,
     budget: &mut NodeBudget,
@@ -478,7 +755,11 @@ fn local_name(name: &str) -> &str {
 }
 
 fn allowed_reference(reference: &BytesRef<'_>) -> bool {
-    reference.resolve_char_ref().ok().flatten().is_some()
+    reference
+        .resolve_char_ref()
+        .ok()
+        .flatten()
+        .is_some_and(is_xml10_character)
         || matches!(reference.as_ref(), "amp" | "lt" | "gt" | "apos" | "quot")
 }
 
@@ -487,6 +768,106 @@ mod tests {
     use quick_xml::events::Event;
 
     use super::*;
+
+    fn validate_events(input: &[u8]) -> Result<()> {
+        with_reader(input, |reader, positions| {
+            while !matches!(next(reader, positions)?.1, Event::Eof) {}
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn encoded_characters_must_belong_to_xml_10_in_text_and_attributes() {
+        for xml in [
+            "<root>&#x1;</root>",
+            "<root name='&#1;'/>",
+            "<root><vendor>&#xB;</vendor></root>",
+            "<root name='&#xFFFE;'/>",
+        ] {
+            assert!(validate_events(xml.as_bytes()).is_err(), "{xml}");
+        }
+        assert!(validate_events(b"<root name='&#9;'>&#xA;&#xD;&#x10000;</root>").is_ok());
+    }
+
+    #[test]
+    fn declarations_are_validated_and_only_allowed_at_the_document_start() {
+        for xml in [
+            "<root/><?xml version='1.0'?>",
+            " <?xml version='1.0'?><root/>",
+            "<root><?xml version='1.0'?></root>",
+            "<?xml?><root/>",
+            "<?xml version='garbage'?><root/>",
+            "<?xml version='1.0' standalone='maybe'?><root/>",
+            "<?xml version='1.0' encoding='9bad'?><root/>",
+            "<?xml version='1.0' standalone='yes' encoding='UTF-8'?><root/>",
+            "<?xml version='1.0' extra='value'?><root/>",
+        ] {
+            assert!(validate_events(xml.as_bytes()).is_err(), "{xml}");
+        }
+        assert!(
+            validate_events(b"<?xml version='1.0' encoding='UTF-8' standalone='yes'?><root/>")
+                .is_ok()
+        );
+        assert!(validate_events(b"\xef\xbb\xbf<?xml version='1.0'?><root/>").is_ok());
+    }
+
+    #[test]
+    fn lexical_xml_rules_apply_to_known_and_skipped_elements() {
+        for xml in [
+            "<root name='a<b'/>",
+            "<root>a]]>b</root>",
+            "<root name='a'size='1'/>",
+            "<root><?XML version='1.0'?></root>",
+            "<?xml version='1.0'encoding='UTF-8'?><root/>",
+            "<root><vendor name='a<b'/></root>",
+            "<root><vendor>a]]>b</vendor></root>",
+            "<root><vendor name='a'size='1'/></root>",
+        ] {
+            assert!(validate_events(xml.as_bytes()).is_err(), "{xml}");
+        }
+        for xml in [
+            "<root name='a&lt;b'>a]]&gt;b</root>",
+            "<?xml-stylesheet href='style.xsl'?><root/>",
+        ] {
+            assert!(validate_events(xml.as_bytes()).is_ok(), "{xml}");
+        }
+    }
+
+    #[test]
+    fn qnames_and_namespace_declarations_are_well_formed() {
+        for xml in [
+            "<1root/>",
+            "<root a:b:c='1'/>",
+            "<root xmlns:p='urn:p'><p:1bad/></root>",
+            "<root><vendor bad!name='1'/></root>",
+            "<root xmlns:xml='urn:wrong'/>",
+            "<root xmlns:p='http://www.w3.org/XML/1998/namespace'/>",
+            "<root xmlns='http://www.w3.org/XML/1998/namespace'/>",
+            "<root xmlns:xmlns='urn:bad'/>",
+            "<root xmlns:p='http://www.w3.org/2000/xmlns/'/>",
+            "<root xmlns:p=''/>",
+            "<root><vendor p:unbound='1'/></root>",
+            "<root xmlns:p='urn:a&amp;b' xmlns:q='urn:a&#38;b' p:x='1' q:x='2'/>",
+        ] {
+            assert!(validate_events(xml.as_bytes()).is_err(), "{xml}");
+        }
+        for xml in [
+            "<root xmlns:xml='http://www.w3.org/XML/1998/namespace' xml:lang='en'/>",
+            "<root xmlns='urn:outer'><child xmlns=''/></root>",
+            "<échantillon xmlns:p='urn:p' p:名='1'/>",
+        ] {
+            assert!(validate_events(xml.as_bytes()).is_ok(), "{xml}");
+        }
+    }
+
+    #[test]
+    fn namespace_bindings_use_xml_attribute_normalization() -> Result<()> {
+        let namespace = with_reader(b"<root xmlns='urn:a&amp;b'/>", |reader, positions| {
+            Ok::<_, Error>(next(reader, positions)?.0)
+        })?;
+        assert_eq!(namespace.as_deref(), Some("urn:a&b"));
+        Ok(())
+    }
 
     #[test]
     fn node_budget_uses_its_format_specific_limit() {

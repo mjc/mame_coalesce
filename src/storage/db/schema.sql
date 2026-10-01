@@ -1423,7 +1423,9 @@ WHEN NOT EXISTS (
     SELECT 1 FROM catalog_snapshots JOIN parser_interpretations USING (interpretation_key)
     WHERE snapshot_key = NEW.snapshot_key AND (
         (NEW.kind = 'software_list' AND format = 'mame-softwarelist-xml') OR
-        (NEW.kind = 'root' AND format IN ('mame-listxml', 'logiqx', 'clrmamepro-dat', 'no-intro-pc-xml'))
+        (NEW.kind = 'root' AND format IN ('mame-listxml', 'logiqx', 'clrmamepro-dat', 'no-intro-pc-xml',
+            'no-intro-dat-v3-strict', 'no-intro-dat-v3-compatible',
+            'no-intro-dat-v4-strict', 'no-intro-dat-v4-compatible'))
     )
 )
 BEGIN SELECT RAISE(ABORT, 'catalog group does not match its parser format'); END;
@@ -1455,12 +1457,13 @@ SELECT set_id AS record_id, set_group_id AS namespace_id, source_element_kind AS
 FROM catalog_sets;
 CREATE VIEW snapshot_sets AS
 SELECT sets.set_id, sets.set_group_id, groups.snapshot_key, sets.set_name,
-       COALESCE(mame.target_name, logiqx.target_name, cmp.target_name) AS parent_name,
+       COALESCE(mame.target_name, logiqx.target_name, cmp.target_name, no_intro.cloneof_text) AS parent_name,
        sets.source_line, sets.source_column
 FROM catalog_sets AS sets JOIN catalog_set_groups AS groups USING (set_group_id)
 LEFT JOIN mame_machine_links AS mame ON mame.set_id = sets.set_id AND mame.link_kind = 'cloneof'
 LEFT JOIN logiqx_set_links AS logiqx ON logiqx.set_id = sets.set_id AND logiqx.link_kind = 'cloneof'
 LEFT JOIN clrmamepro_set_links AS cmp ON cmp.set_id = sets.set_id AND cmp.link_kind = 'cloneof'
+LEFT JOIN no_intro_dat_games AS no_intro ON no_intro.set_id = sets.set_id
 WHERE groups.kind = 'root';
 CREATE VIEW mame_machine_facts AS
 SELECT sets.snapshot_key, sets.set_name, machines.*
@@ -1540,7 +1543,13 @@ SELECT occurrence.record_id AS set_id,occurrence.occurrence_order AS component_o
        payload.name AS asset_name,'rom' AS role,
        payload.size,payload.evidence_scope,payload.evidence_provenance,payload.merge_name,payload.dump_status,payload.source_line,payload.source_column,NULL AS serial,NULL AS date,NULL AS region,NULL AS bios,NULL AS offset,NULL AS optional,NULL AS sound_only,NULL AS dispose,NULL AS load_flag,NULL AS value,NULL AS inverted,NULL AS ovha,NULL AS no_thread,NULL AS disk_index,NULL AS writable,NULL AS writeable,
        occurrence.content_uuid
-FROM no_intro_pc_file_claims AS payload JOIN asset_occurrences AS occurrence USING (occurrence_id);
+FROM no_intro_pc_file_claims AS payload JOIN asset_occurrences AS occurrence USING (occurrence_id)
+UNION ALL
+SELECT occurrence.record_id AS set_id,occurrence.occurrence_order AS component_order,
+       payload.name AS asset_name,'rom' AS role,
+       payload.size,payload.evidence_scope,payload.evidence_provenance,NULL AS merge_name,payload.status_text AS dump_status,payload.source_line,payload.source_column,payload.serial_text AS serial,payload.date_text AS date,NULL AS region,NULL AS bios,NULL AS offset,NULL AS optional,NULL AS sound_only,NULL AS dispose,NULL AS load_flag,NULL AS value,NULL AS inverted,NULL AS ovha,NULL AS no_thread,NULL AS disk_index,NULL AS writable,NULL AS writeable,
+       occurrence.content_uuid
+FROM no_intro_dat_rom_claims AS payload JOIN asset_occurrences AS occurrence USING (occurrence_id);
 CREATE VIEW asset_requirements AS
 SELECT sets.snapshot_key,sets.set_name,rows.component_order,rows.asset_name,rows.role,rows.size,
        (SELECT assertion.digest FROM usable_occurrence_digest_assertions AS assertion
@@ -1954,6 +1963,9 @@ WHEN NOT EXISTS (
         (format = 'logiqx' AND NEW.source_element_kind = 'logiqx_game') OR
         (format = 'clrmamepro-dat' AND NEW.source_element_kind = 'cmp_set') OR
         (format = 'no-intro-pc-xml' AND NEW.source_element_kind = 'no_intro_pc_game') OR
+        (format IN ('no-intro-dat-v3-strict', 'no-intro-dat-v3-compatible',
+                   'no-intro-dat-v4-strict', 'no-intro-dat-v4-compatible')
+            AND NEW.source_element_kind = 'no_intro_dat_game') OR
         (format = 'mame-softwarelist-xml' AND NEW.source_element_kind = 'software_item')
     )
 )

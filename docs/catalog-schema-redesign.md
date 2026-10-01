@@ -89,7 +89,7 @@ assertions; they are not reduced to a shared game name and ROM tuple.
 | MAME software-list XML | List -> item -> part -> data/disk area -> ordered ROM/disk entries. File declarations and load/continue/reload/ignore uses are separate relations; fill has no file claim. | Numeric owners, separate declarations/operations and area-local loading chains exist; complete per-flag loading rules and native field witnesses remain open. |
 | Logiqx XML / TOSEC | Document/header/options -> game -> comments, releases, BIOS sets, ROM/disk/sample claims, archive references and distinct parent declarations. | Partial document/game facts and ROMs exist; native options, releases, BIOS/disk/sample/archive families and specification defaults remain incomplete. |
 | ClrMamePro text | Header/directives -> set -> ROM claims and scalar sample claims; native flags and sample-parent declarations. | Native CMP facts/directives and numeric set/occurrence owners exist; remaining specification fields and complete query witnesses remain open. |
-| No-Intro flat DAT v3/v4 | Document/header/directives -> game -> scoped identifiers, categories, releases and ROM declarations; name-based and ID-based parents stay distinct. | A Logiqx envelope import is not dialect coverage. Native field/cardinality/default storage and SHA-256 parsing remain incomplete; observed compatibility cases require their own interpretation. |
+| No-Intro flat DAT v3/v4 | Document/header/directives -> game -> scoped identifiers, categories, releases and ROM declarations; name-based and ID-based parents stay distinct. | Separate v3/v4 strict and observed-compatible interpretations stream into native typed owners. Raw size text, interned valid hashes, typed invalid hash literals, SHA-256 assertions, options, field positions and repeated children are retained. Full corpus/query/performance acceptance remains open; this is not a Logiqx envelope import or database-export coverage. |
 | No-Intro database XML | Game -> archive, source histories and releases. A source or release owns its own details, serials and files; numeric file IDs may repeat under different owners. | No database-export parser/native schema yet. Source/release ownership, sibling-root framing and documented NUL recovery need end-to-end importer coverage. |
 | Synthetic No-Intro P/C projection | Archive record -> ordered language/native fields and file claims, with parent-marker/reference/merge-token distinctions. | Typed archive, region, alternate name, version, BIOS, ordered languages and distinct clone/merge tokens exist; this is not proof of authentic DAT-o-MATIC P/C conformance. |
 
@@ -100,11 +100,26 @@ The family inventories below specify fields, cardinalities and ordering in
 detail. Completion requires those native tables and importer/query witnesses,
 not just the common identity layer.
 
+The No-Intro flat DAT physical table/field/position dictionary is recorded in
+[MAMEC-DOC-14](https://lific.mjc.lol/MAMEC/pages/97). Its native writer and
+consumers passed repeated GPT-6.1 Sol medium review/fix/re-review cycles,
+the complete devenv gate, 835 all-feature tests (three existing optional skips),
+and warning-denied all-feature documentation. A fresh profiling-build import of
+four authentic SG-1000/Game Boy/NES DAT and parent-clone documents retained
+11,923 games, 11,925 ROMs, 5,529 releases, 37,716 source hash fields/assertions,
+and 65,897 ROM field positions. Two thousand UUIDs have membership in both
+Game Boy lists; the filtered NES catalog's 7,383 ROMs have no whole-file UUID.
+SQLite/foreign-key/application integrity checks found no issues. Originals
+remain outside SQLite; no existing database or profiling artifacts were removed.
+This is a bounded native-format milestone, not the full 664-file import/query
+acceptance matrix or coverage of authentic P/C and database-export XML.
+
 ## Evidence and corpus coverage
 
-The CLI currently exposes five parser families: Logiqx XML, MAME machine XML,
-MAME software-list XML, ClrMamePro text, and the synthetic No-Intro P/C projection.
-Compression is a transport property, not a sixth document schema. Publisher
+The CLI currently exposes six parser families: Logiqx XML, MAME machine XML,
+MAME software-list XML, ClrMamePro text, the synthetic No-Intro P/C projection,
+and No-Intro flat DAT XML with explicit v3/v4 interpretation modes.
+Compression is a transport property, not another document schema. Publisher
 identity (No-Intro, TOSEC, Redump, etc.) is independent of syntax and dialect.
 
 A streaming structural pass over all unpacked XML/DAT files in
@@ -146,13 +161,15 @@ name, unsigned 32-bit size, CRC, MD5, and SHA-1; SHA-256, status, serial, and
 header are optional. The current Logiqx reader can parse the shared envelope,
 but it does not satisfy this dialect's field contract: its generic extension
 capture is not typed storage, and some unknown header children or game child
-families are dropped. Both packs also reference a v4 XSD, but that XSD was not
-available at the referenced URL during this audit; v4 fields need their own
-verified specification witness. Version 3 and 4 counts are from each file's
+families are dropped. The producer's
+[v4 XSD](https://datomatic.no-intro.org/stuff/schema_nointro_datfile_v4.xsd)
+was recovered on 2026-10-01 (HTTP 200, 3,475 bytes). It adds optional header
+`trademarks` and `piracy`, retaining the v3 one-ROM cardinality, required fields
+and unsigned 32-bit size. Version 3 and 4 counts are from each file's
 schemaLocation, not a claim that all documents passed XSD validation. In
 particular, some v3-labelled records have multiple ROMs, missing required
 digests, nested `game_id`, or sizes above the XSD's unsigned 32-bit limit. Keep
-strict v3 validation distinct from an explicitly named observed compatibility
+strict v3/v4 validation distinct from explicitly named observed compatibility
 interpretation; do not silently relax the pinned XSD. Give each schema or
 compatibility revision its own interpretation identity while reusing native
 tables only where the meanings and cardinalities agree.
@@ -655,10 +672,26 @@ rows. The PC pack alone has 52,473 release records. Resolve only a target key
 whose scope is established for that schema revision; keep unresolved parent
 literals queryable.
 
-The source XSD v3 supplies the required/defaulted field contract. The observed
-v4 schema URL was unavailable during this audit, so the named v4 child and
-attribute families are corpus observations until that contract is obtained.
-Do not silently treat the v3 validator as proof of v4 coverage.
+Both producer XSDs now supply their required/defaulted contracts. The v4
+contract adds header `trademarks` and `piracy`; observed `comment`, nested
+`game_id`, ROM `mia`/`date`, multiple ROMs, omitted required fields and larger
+sizes belong to explicit compatibility interpretations, not relaxed strict
+validation. Digests and status are `xs:string`: an empty or malformed digest
+can conform to that datatype without becoming usable matching evidence.
+The refreshed streaming audit counted 371,312 games, 1,976,847 ROMs and 52,473
+releases across all 664 files without XML parse failures.
+
+The native adapter streams one game at a time in one XML traversal. A private
+validated-EOF result gates publication of the pending edition. Native ROM hash
+fields identify CRC/MD5/SHA-1/SHA-256 with closed field codes and own either an
+interned digest reference or an uninterpretable literal, never both. Valid hash
+payloads are stored once in the digest dictionary; query text derives canonical
+lowercase hexadecimal, while exact producer spelling remains in the external
+original. Invalid/empty declarations and missing attributes stay distinct.
+Usable independent assertions survive a malformed companion field, but any
+supplied uninterpretable size/hash prevents a shared file UUID. Global header
+filters and per-ROM header declarations make evidence scope unknown even when
+the field is empty; filenames and extensions do not prove whole-file scope.
 
 ### No-Intro database-export XML
 
@@ -953,8 +986,9 @@ specification fields or a misidentified input dialect.
 - [No-Intro naming convention](https://wiki.no-intro.org/index.php?title=Naming_Convention),
   [file convention](https://wiki.no-intro.org/index.php?title=File_Convention),
   [source convention](https://wiki.no-intro.org/index.php?title=Source_Convention).
-- [No-Intro DAT schema v3](https://datomatic.no-intro.org/stuff/schema_nointro_datfile_v3.xsd);
-  v4 is referenced by the local corpus but was unavailable during this audit.
+- [No-Intro DAT schema v3](https://datomatic.no-intro.org/stuff/schema_nointro_datfile_v3.xsd)
+  and [v4](https://datomatic.no-intro.org/stuff/schema_nointro_datfile_v4.xsd),
+  both retrieved from the producer on 2026-10-01.
 - User-provided No-Intro DAT/PC, TOSEC, and database-export corpus:
   `local/catalog-data/2026-09-30` (git-excluded, never imported in this audit).
 - `fixtures/catalog/manifest.json` and `docs/catalog-format-assessment.md` state

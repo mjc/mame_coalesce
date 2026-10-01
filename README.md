@@ -131,6 +131,24 @@ provenance; size and declared digests remain unknown and it cannot receive a
 file UUID. Samples are not ROM build requirements. The full format witness
 matrix remains unfinished.
 
+No-Intro flat DAT XML has four explicit import interpretations:
+`no-intro-dat-v3-strict`, `no-intro-dat-v3-compatible`,
+`no-intro-dat-v4-strict`, and `no-intro-dat-v4-compatible`.
+Use them with `cache catalog-import --format`; a declared schema location is
+not evidence that the source satisfies that schema. Strict interpretations use
+the pinned producer contracts; compatibility interpretations preserve the
+observed reordered fields, repeated ROMs, nested game IDs, header comments,
+ROM MIA/date fields and sparse declarations without claiming XSD conformance.
+Both keep publisher IDs, categories, releases, directives, raw size text
+and field presence in native relational tables. Valid hashes refer to one
+interned binary value; query text is canonical lowercase hexadecimal, and the
+original spelling remains in the external document. Invalid or empty hash
+literals retain their exact text, not matching evidence. Any uninterpretable
+supplied size/hash prevents UUID linking. Header-filter directives qualify digest scope;
+they cannot silently assign a whole-file UUID. Parsing streams one game at a
+time, and an error anywhere through EOF rolls back the pending catalog edition.
+This flat DAT dialect is distinct from database-export and synthetic P/C XML.
+
 The Rust `catalog_files` API exposes bulk occurrence lookup and keyset-paginated
 file membership across published catalog editions. Results keep each owner and
 its source/list provenance, with digest assertions as separate children.

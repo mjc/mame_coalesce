@@ -67,6 +67,11 @@ fn load_published_catalog(
 ) -> crate::Result<PublishedBuildCatalog> {
     reject_software_lists(conn, &snapshot_key, label)?;
     let snapshot = snapshot_requirements(conn, &snapshot_key)?;
+    log::debug!(
+        "selected catalog {label} as {} snapshot {}",
+        snapshot.catalog.as_str(),
+        snapshot_key.as_str()
+    );
     let (root_sets, set_names) = load_root_sets(conn, &snapshot_key)?;
     let requirements = snapshot
         .root_requirements
@@ -195,8 +200,15 @@ fn resolve_catalog(conn: &mut SqliteConnection, value: &str) -> crate::Result<Ca
          JOIN logiqx_document_facts AS headers USING (snapshot_key) \
          WHERE headers.header_name = ? AND publication.rowid = ( \
              SELECT latest.rowid FROM snapshot_publications AS latest \
+             WHERE latest.catalog_key = publication.catalog_key ORDER BY latest.rowid DESC LIMIT 1) \
+         UNION \
+         SELECT publication.catalog_key FROM snapshot_publications AS publication \
+         JOIN no_intro_dat_headers AS headers USING (snapshot_key) \
+         WHERE headers.name = ? AND publication.rowid = ( \
+             SELECT latest.rowid FROM snapshot_publications AS latest \
              WHERE latest.catalog_key = publication.catalog_key ORDER BY latest.rowid DESC LIMIT 1)",
     )
+    .bind::<Text, _>(value)
     .bind::<Text, _>(value)
     .bind::<Text, _>(value)
     .load::<CatalogKeyRow>(conn)?

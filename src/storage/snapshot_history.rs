@@ -76,6 +76,8 @@ struct RequirementRow {
     md5: Option<Vec<u8>>,
     #[diesel(sql_type = Nullable<Binary>)]
     sha1: Option<Vec<u8>>,
+    #[diesel(sql_type = Nullable<Binary>)]
+    sha256: Option<Vec<u8>>,
     #[diesel(sql_type = Text)]
     evidence_scope: String,
     #[diesel(sql_type = Text)]
@@ -144,6 +146,28 @@ struct RequirementRow {
     cmp_nodump_present: Option<bool>,
     #[diesel(sql_type = Nullable<Bool>)]
     cmp_baddump_present: Option<bool>,
+    #[diesel(sql_type = Nullable<Text>)]
+    no_intro_dat_size_text: Option<String>,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    no_intro_dat_source_order: Option<i64>,
+    #[diesel(sql_type = Nullable<Text>)]
+    no_intro_dat_crc_text: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    no_intro_dat_md5_text: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    no_intro_dat_sha1_text: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    no_intro_dat_sha256_text: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    no_intro_dat_status_text: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    no_intro_dat_serial_text: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    no_intro_dat_header_text: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    no_intro_dat_date_text: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    no_intro_dat_mia_text: Option<String>,
 }
 
 #[derive(QueryableByName)]
@@ -839,6 +863,11 @@ struct CatalogRecords {
     mame_machine_facts: BTreeMap<i64, Vec<serde_json::Value>>,
     mame_machine_specification_facts: BTreeMap<i64, Vec<serde_json::Value>>,
     no_intro_game_facts: BTreeMap<i64, Vec<serde_json::Value>>,
+    no_intro_dat_game_facts: BTreeMap<i64, Vec<serde_json::Value>>,
+    no_intro_dat_categories: BTreeMap<i64, Vec<serde_json::Value>>,
+    no_intro_dat_identifiers: BTreeMap<i64, Vec<serde_json::Value>>,
+    no_intro_dat_releases: BTreeMap<i64, Vec<serde_json::Value>>,
+    no_intro_dat_rom_order: BTreeMap<i64, Vec<serde_json::Value>>,
     logiqx_set_facts: BTreeMap<i64, Vec<serde_json::Value>>,
     logiqx_text_positions: BTreeMap<i64, Vec<serde_json::Value>>,
     logiqx_game_comments: BTreeMap<i64, Vec<serde_json::Value>>,
@@ -1043,6 +1072,36 @@ struct LogiqxDocumentMetadataRow {
     header_category: Option<String>,
 }
 
+#[derive(QueryableByName, PartialEq, Eq)]
+struct NoIntroDatHeaderRow {
+    #[diesel(sql_type = Nullable<Text>)]
+    schema_location: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    id_text: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    name: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    description: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    version_text: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    date: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    author: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    homepage: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    url: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    trademarks: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    piracy: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    subset: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    comment: Option<String>,
+}
+
 #[derive(PartialEq, Eq)]
 struct DocumentMetadata {
     mame: Option<MameDocumentMetadataRow>,
@@ -1054,10 +1113,105 @@ struct DocumentMetadata {
     cmp_document: Option<CmpDocumentMetadataRow>,
     cmp_comments: Vec<String>,
     cmp_layout: Vec<serde_json::Value>,
+    no_intro_dat: Option<serde_json::Value>,
 }
 
 #[derive(QueryableByName, PartialEq, Eq)]
 struct LogiqxTextPositionRow {
+    #[diesel(sql_type = BigInt)]
+    field_kind: i64,
+    #[diesel(sql_type = BigInt)]
+    source_order: i64,
+}
+
+#[derive(QueryableByName)]
+struct NoIntroDatHeaderPositionRow {
+    #[diesel(sql_type = BigInt)]
+    field_kind: i64,
+    #[diesel(sql_type = BigInt)]
+    source_order: i64,
+}
+
+#[derive(QueryableByName)]
+struct NoIntroDatOptionRow {
+    #[diesel(sql_type = BigInt)]
+    source_order: i64,
+    #[diesel(sql_type = Nullable<Text>)]
+    first_text: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    second_text: Option<String>,
+}
+
+#[derive(QueryableByName)]
+struct NoIntroDatGameRow {
+    #[diesel(sql_type = BigInt)]
+    set_id: i64,
+    #[diesel(sql_type = Nullable<Text>)]
+    id_text: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    cloneof_text: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    cloneofid_text: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    description_text: Option<String>,
+}
+
+#[derive(QueryableByName)]
+struct NoIntroDatGamePositionRow {
+    #[diesel(sql_type = BigInt)]
+    set_id: i64,
+    #[diesel(sql_type = BigInt)]
+    field_kind: i64,
+    #[diesel(sql_type = BigInt)]
+    source_order: i64,
+}
+
+#[derive(QueryableByName)]
+struct NoIntroDatCategoryRow {
+    #[diesel(sql_type = BigInt)]
+    set_id: i64,
+    #[diesel(sql_type = BigInt)]
+    category_order: i64,
+    #[diesel(sql_type = Text)]
+    category: String,
+    #[diesel(sql_type = BigInt)]
+    source_order: i64,
+}
+
+#[derive(QueryableByName)]
+struct NoIntroDatIdentifierRow {
+    #[diesel(sql_type = BigInt)]
+    set_id: i64,
+    #[diesel(sql_type = BigInt)]
+    identifier_order: i64,
+    #[diesel(sql_type = Text)]
+    identifier: String,
+    #[diesel(sql_type = BigInt)]
+    source_order: i64,
+}
+
+#[derive(QueryableByName)]
+struct NoIntroDatReleaseRow {
+    #[diesel(sql_type = BigInt)]
+    set_id: i64,
+    #[diesel(sql_type = BigInt)]
+    release_order: i64,
+    #[diesel(sql_type = Text)]
+    name: String,
+    #[diesel(sql_type = Text)]
+    region: String,
+    #[diesel(sql_type = BigInt)]
+    name_source_order: i64,
+    #[diesel(sql_type = BigInt)]
+    region_source_order: i64,
+    #[diesel(sql_type = BigInt)]
+    source_order: i64,
+}
+
+#[derive(QueryableByName)]
+struct NoIntroDatRomPositionRow {
+    #[diesel(sql_type = BigInt)]
+    occurrence_id: i64,
     #[diesel(sql_type = BigInt)]
     field_kind: i64,
     #[diesel(sql_type = BigInt)]
@@ -1121,6 +1275,7 @@ fn document_metadata(
     .map(|comment| comment.comment_text)
     .collect();
     let cmp_layout = load_cmp_document_layout(conn, snapshot)?;
+    let no_intro_dat = load_no_intro_dat_header_metadata(conn, snapshot)?;
     Ok(DocumentMetadata {
         mame,
         logiqx,
@@ -1131,7 +1286,161 @@ fn document_metadata(
         cmp_document,
         cmp_comments,
         cmp_layout,
+        no_intro_dat,
     })
+}
+
+fn load_no_intro_dat_header_metadata(
+    conn: &mut diesel::SqliteConnection,
+    snapshot: &SnapshotKey,
+) -> crate::Result<Option<serde_json::Value>> {
+    let header = sql_query(
+        "SELECT document.schema_location, header.id_text, header.name, \
+                header.description, header.version_text, header.date, header.author, \
+                header.homepage, header.url, header.trademarks, header.piracy, \
+                header.subset, header.comment \
+         FROM no_intro_dat_headers AS header \
+         JOIN no_intro_dat_documents AS document USING (snapshot_key) \
+         WHERE header.snapshot_key = ?",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<NoIntroDatHeaderRow>(conn)
+    .optional()?;
+    let Some(header) = header else {
+        return Ok(None);
+    };
+    let mut header_positions = sql_query(
+        "SELECT field_kind, source_order FROM no_intro_dat_header_field_positions \
+         WHERE snapshot_key = ? ORDER BY source_order, field_kind",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .load::<NoIntroDatHeaderPositionRow>(conn)?;
+    let clrmamepro = sql_query(
+        "SELECT source_order, forcenodump_text AS first_text, header_text AS second_text \
+         FROM no_intro_dat_clrmamepro_options WHERE snapshot_key = ?",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<NoIntroDatOptionRow>(conn)
+    .optional()?;
+    let romcenter = sql_query(
+        "SELECT source_order, plugin_text AS first_text, CAST(NULL AS TEXT) AS second_text \
+         FROM no_intro_dat_romcenter_options WHERE snapshot_key = ?",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<NoIntroDatOptionRow>(conn)
+    .optional()?;
+    let mut clrmamepro_positions = sql_query(
+        "SELECT field_kind, source_order FROM no_intro_dat_clrmamepro_field_positions \
+         WHERE snapshot_key = ? ORDER BY source_order, field_kind",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .load::<NoIntroDatHeaderPositionRow>(conn)?;
+    let mut romcenter_positions = sql_query(
+        "SELECT field_kind, source_order FROM no_intro_dat_romcenter_field_positions \
+         WHERE snapshot_key = ? ORDER BY source_order, field_kind",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .load::<NoIntroDatHeaderPositionRow>(conn)?;
+    let child_ranks = header_positions
+        .iter()
+        .map(|position| position.source_order)
+        .chain(clrmamepro.as_ref().map(|options| options.source_order))
+        .chain(romcenter.as_ref().map(|options| options.source_order))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .zip(0_i64..)
+        .collect::<BTreeMap<_, _>>();
+    let clrmamepro_ranks = local_position_ranks(&clrmamepro_positions);
+    let romcenter_ranks = local_position_ranks(&romcenter_positions);
+    normalize_no_intro_dat_positions(&mut header_positions, &child_ranks);
+    normalize_no_intro_dat_positions(&mut clrmamepro_positions, &clrmamepro_ranks);
+    normalize_no_intro_dat_positions(&mut romcenter_positions, &romcenter_ranks);
+    let clrmamepro = clrmamepro.map(|mut options| {
+        options.source_order = child_ranks
+            .get(&options.source_order)
+            .copied()
+            .unwrap_or_default();
+        serde_json::json!({
+            "source_order": options.source_order,
+            "forcenodump_text": options.first_text,
+            "header_text": options.second_text,
+            "field_positions": no_intro_dat_positions_json(&clrmamepro_positions),
+        })
+    });
+    let romcenter = romcenter.map(|mut options| {
+        options.source_order = child_ranks
+            .get(&options.source_order)
+            .copied()
+            .unwrap_or_default();
+        serde_json::json!({
+            "source_order": options.source_order,
+            "plugin_text": options.first_text,
+            "field_positions": no_intro_dat_positions_json(&romcenter_positions),
+        })
+    });
+    let header_fields = no_intro_dat_header_fields_json(&header, &header_positions);
+    Ok(Some(serde_json::json!({
+        "schema_location": header.schema_location,
+        "header": header_fields,
+        "clrmamepro": clrmamepro,
+        "romcenter": romcenter,
+    })))
+}
+
+fn no_intro_dat_header_fields_json(
+    header: &NoIntroDatHeaderRow,
+    positions: &[NoIntroDatHeaderPositionRow],
+) -> serde_json::Value {
+    serde_json::json!({
+        "id_text": header.id_text,
+        "name": header.name,
+        "description": header.description,
+        "version_text": header.version_text,
+        "date": header.date,
+        "author": header.author,
+        "homepage": header.homepage,
+        "url": header.url,
+        "trademarks": header.trademarks,
+        "piracy": header.piracy,
+        "subset": header.subset,
+        "comment": header.comment,
+        "field_positions": no_intro_dat_positions_json(positions),
+    })
+}
+
+fn normalize_no_intro_dat_positions(
+    positions: &mut [NoIntroDatHeaderPositionRow],
+    ranks: &BTreeMap<i64, i64>,
+) {
+    for position in positions {
+        if let Some(rank) = ranks.get(&position.source_order) {
+            position.source_order = *rank;
+        }
+    }
+}
+
+fn local_position_ranks(positions: &[NoIntroDatHeaderPositionRow]) -> BTreeMap<i64, i64> {
+    positions
+        .iter()
+        .map(|position| position.source_order)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .zip(0_i64..)
+        .collect()
+}
+
+fn no_intro_dat_positions_json(
+    positions: &[NoIntroDatHeaderPositionRow],
+) -> Vec<serde_json::Value> {
+    positions
+        .iter()
+        .map(|position| {
+            serde_json::json!({
+                "field_kind": position.field_kind,
+                "native_order": position.source_order,
+            })
+        })
+        .collect()
 }
 
 fn load_cmp_header_metadata(
@@ -1317,9 +1626,17 @@ fn relationship_evidence_by_set(
 pub fn history(pool: &Pool, catalog: &CatalogKey) -> crate::Result<Vec<CatalogSnapshotEntry>> {
     let mut conn = pool.get()?;
     let rows = sql_query(
-        "SELECT snapshot_key, document_key, declared_version, coverage_id \
-         FROM catalog_snapshots WHERE catalog_key = ? \
-         ORDER BY document_key, interpretation_key, snapshot_key",
+        "SELECT snapshot.snapshot_key, snapshot.document_key, \
+                CASE WHEN interpretation.format IN (\
+                    'no-intro-dat-v3-strict', 'no-intro-dat-v3-compatible', \
+                    'no-intro-dat-v4-strict', 'no-intro-dat-v4-compatible') \
+                     THEN header.version_text ELSE snapshot.declared_version END AS declared_version, \
+                snapshot.coverage_id \
+         FROM catalog_snapshots AS snapshot \
+         JOIN parser_interpretations AS interpretation USING (interpretation_key) \
+         LEFT JOIN no_intro_dat_headers AS header USING (snapshot_key) \
+         WHERE snapshot.catalog_key = ? \
+         ORDER BY snapshot.document_key, snapshot.interpretation_key, snapshot.snapshot_key",
     )
     .bind::<Text, _>(catalog.as_str())
     .load::<HistoryRow>(&mut conn)?;
@@ -1429,6 +1746,20 @@ fn records(
     let mame_machine_specification_facts = load_mame_machine_specification_facts(conn, key)?;
     let mame_machine_dependencies = load_mame_machine_dependencies(conn, key)?;
     let no_intro_game_facts = load_no_intro_game_facts(conn, key)?;
+    let no_intro_dat_child_ranks = load_no_intro_dat_child_ranks(conn, key)?;
+    let no_intro_dat_game_facts =
+        load_no_intro_dat_game_facts(conn, key, &no_intro_dat_child_ranks)?;
+    let no_intro_dat_categories =
+        load_no_intro_dat_categories(conn, key, &no_intro_dat_child_ranks)?;
+    let no_intro_dat_identifiers =
+        load_no_intro_dat_identifiers(conn, key, &no_intro_dat_child_ranks)?;
+    let no_intro_dat_releases = load_no_intro_dat_releases(conn, key, &no_intro_dat_child_ranks)?;
+    let no_intro_dat_rom_positions = load_no_intro_dat_rom_positions(conn, key)?;
+    let no_intro_dat_rom_order = no_intro_dat_rom_order(
+        &requirements,
+        &no_intro_dat_rom_positions,
+        &no_intro_dat_child_ranks,
+    );
     let logiqx_set_facts = load_logiqx_set_facts(conn, key)?;
     let logiqx_text_positions = load_logiqx_text_positions(conn, key)?;
     let logiqx_game_comments = load_logiqx_game_comments(conn, key)?;
@@ -1455,6 +1786,11 @@ fn records(
     result.mame_machine_specification_facts = mame_machine_specification_facts;
     result.mame_machine_dependencies = mame_machine_dependencies;
     result.no_intro_game_facts = no_intro_game_facts;
+    result.no_intro_dat_game_facts = no_intro_dat_game_facts;
+    result.no_intro_dat_categories = no_intro_dat_categories;
+    result.no_intro_dat_identifiers = no_intro_dat_identifiers;
+    result.no_intro_dat_releases = no_intro_dat_releases;
+    result.no_intro_dat_rom_order = no_intro_dat_rom_order;
     result.logiqx_set_facts = logiqx_set_facts;
     result.logiqx_text_positions = logiqx_text_positions;
     result.logiqx_game_comments = logiqx_game_comments;
@@ -1475,7 +1811,12 @@ fn records(
     sort_json_groups(&mut result.logiqx_archive_references);
     sort_json_groups(&mut result.cmp_set_facts);
     let cmp_positions = load_cmp_rom_positions(conn, key, &cmp_native_ranks)?;
-    assemble_requirements(&mut result, requirements, &cmp_positions);
+    assemble_requirements(
+        &mut result,
+        requirements,
+        &cmp_positions,
+        &no_intro_dat_rom_positions,
+    );
     normalize_logiqx_child_order(&mut result);
     Ok(result)
 }
@@ -1570,6 +1911,13 @@ fn load_requirements(
           WHERE assertion.set_id = asset.set_id AND assertion.provenance = 'source_declared' \
             AND assertion.component_order = asset.component_order \
             AND assertion.scope = asset.evidence_scope AND digest.algorithm = 'sha1') AS sha1, \
+         (SELECT digest.digest FROM asset_requirement_usable_digests AS assertion \
+          JOIN digest_values AS digest USING (digest_id) \
+          WHERE assertion.set_id = asset.set_id AND assertion.provenance = 'source_declared' \
+            AND assertion.component_order = asset.component_order \
+            AND assertion.scope = asset.evidence_scope \
+            AND assertion.scope IN ('whole_asset', 'whole_file') \
+            AND digest.algorithm = 'sha256') AS sha256, \
          asset.evidence_scope, asset.evidence_provenance, \
          asset.merge_name, asset.dump_status, asset.serial, asset.date, \
          facts.region AS mame_region, facts.bios AS mame_bios, facts.offset AS mame_offset, \
@@ -1585,13 +1933,43 @@ fn load_requirements(
          COALESCE(rom_claim.source_order, disk_claim.source_order, sample_claim.source_order) AS logiqx_source_order, \
          cmp.size_text AS cmp_size_text, cmp.crc_text AS cmp_crc_text, cmp.crc32_text AS cmp_crc32_text, \
          cmp.md5_text AS cmp_md5_text, cmp.sha1_text AS cmp_sha1_text, cmp.status_text AS cmp_status_text, \
-         cmp.nodump_present AS cmp_nodump_present, cmp.baddump_present AS cmp_baddump_present \
+         cmp.nodump_present AS cmp_nodump_present, cmp.baddump_present AS cmp_baddump_present, \
+         dat_rom.size_text AS no_intro_dat_size_text, \
+         dat_rom.source_order AS no_intro_dat_source_order, \
+         CASE WHEN dat_crc_field.occurrence_id IS NULL THEN NULL \
+              WHEN dat_crc_value.digest_id IS NOT NULL THEN lower(hex(dat_crc_value.digest)) \
+              ELSE dat_crc_field.invalid_text END AS no_intro_dat_crc_text, \
+         CASE WHEN dat_md5_field.occurrence_id IS NULL THEN NULL \
+              WHEN dat_md5_value.digest_id IS NOT NULL THEN lower(hex(dat_md5_value.digest)) \
+              ELSE dat_md5_field.invalid_text END AS no_intro_dat_md5_text, \
+         CASE WHEN dat_sha1_field.occurrence_id IS NULL THEN NULL \
+              WHEN dat_sha1_value.digest_id IS NOT NULL THEN lower(hex(dat_sha1_value.digest)) \
+              ELSE dat_sha1_field.invalid_text END AS no_intro_dat_sha1_text, \
+         CASE WHEN dat_sha256_field.occurrence_id IS NULL THEN NULL \
+              WHEN dat_sha256_value.digest_id IS NOT NULL THEN lower(hex(dat_sha256_value.digest)) \
+              ELSE dat_sha256_field.invalid_text END AS no_intro_dat_sha256_text, \
+         dat_rom.status_text AS no_intro_dat_status_text, \
+         dat_rom.serial_text AS no_intro_dat_serial_text, dat_rom.header_text AS no_intro_dat_header_text, \
+         dat_rom.date_text AS no_intro_dat_date_text, dat_rom.mia_text AS no_intro_dat_mia_text \
          FROM asset_requirement_rows AS asset \
          JOIN snapshot_sets AS sets USING (set_id) \
          JOIN asset_occurrences AS occurrence \
            ON occurrence.record_id = asset.set_id \
          AND occurrence.occurrence_order = asset.component_order \
          LEFT JOIN cmp_rom_claims AS cmp USING (occurrence_id) \
+         LEFT JOIN no_intro_dat_rom_claims AS dat_rom USING (occurrence_id) \
+         LEFT JOIN no_intro_dat_rom_digest_fields AS dat_crc_field \
+           ON dat_crc_field.occurrence_id = occurrence.occurrence_id AND dat_crc_field.field_kind = 2 \
+         LEFT JOIN digest_values AS dat_crc_value ON dat_crc_value.digest_id = dat_crc_field.digest_id \
+         LEFT JOIN no_intro_dat_rom_digest_fields AS dat_md5_field \
+           ON dat_md5_field.occurrence_id = occurrence.occurrence_id AND dat_md5_field.field_kind = 3 \
+         LEFT JOIN digest_values AS dat_md5_value ON dat_md5_value.digest_id = dat_md5_field.digest_id \
+         LEFT JOIN no_intro_dat_rom_digest_fields AS dat_sha1_field \
+           ON dat_sha1_field.occurrence_id = occurrence.occurrence_id AND dat_sha1_field.field_kind = 4 \
+         LEFT JOIN digest_values AS dat_sha1_value ON dat_sha1_value.digest_id = dat_sha1_field.digest_id \
+         LEFT JOIN no_intro_dat_rom_digest_fields AS dat_sha256_field \
+           ON dat_sha256_field.occurrence_id = occurrence.occurrence_id AND dat_sha256_field.field_kind = 5 \
+         LEFT JOIN digest_values AS dat_sha256_value ON dat_sha256_value.digest_id = dat_sha256_field.digest_id \
          LEFT JOIN logiqx_rom_claims AS rom_claim \
            ON rom_claim.occurrence_id = occurrence.occurrence_id AND asset.role = 'rom' \
          LEFT JOIN logiqx_disk_claims AS disk_claim \
@@ -2040,6 +2418,272 @@ fn load_no_intro_game_facts(
         .collect())
 }
 
+fn load_no_intro_dat_game_facts(
+    conn: &mut diesel::SqliteConnection,
+    key: &SnapshotKey,
+    child_ranks: &BTreeMap<i64, BTreeMap<i64, i64>>,
+) -> crate::Result<BTreeMap<i64, Vec<serde_json::Value>>> {
+    let mut raw_positions = BTreeMap::<i64, Vec<(i64, i64)>>::new();
+    for row in sql_query(
+        "SELECT position.set_id, position.field_kind, position.source_order \
+         FROM no_intro_dat_game_field_positions AS position \
+         JOIN snapshot_sets AS sets USING (set_id) \
+         WHERE sets.snapshot_key = ? ORDER BY position.set_id, position.source_order, position.field_kind",
+    )
+    .bind::<Text, _>(key.as_str())
+    .load::<NoIntroDatGamePositionRow>(conn)?
+    {
+        raw_positions
+            .entry(row.set_id)
+            .or_default()
+            .push((row.field_kind, row.source_order));
+    }
+    let positions = raw_positions
+        .into_iter()
+        .map(|(set_id, mut positions)| {
+            // Attribute ordinals and child ordinals belong to separate domains.
+            positions.sort_by_key(|(kind, order)| (*kind == 4, *order, *kind));
+            let mut attribute_order = 0_i64;
+            let positions = positions
+                .into_iter()
+                .map(|(field_kind, source_order)| {
+                    let native_order = if field_kind == 4 {
+                        child_ranks
+                            .get(&set_id)
+                            .and_then(|ranks| ranks.get(&source_order))
+                            .copied()
+                    } else {
+                        let rank = attribute_order;
+                        attribute_order += 1;
+                        Some(rank)
+                    };
+                    serde_json::json!({
+                        "field_kind": field_kind,
+                        "native_order": native_order,
+                    })
+                })
+                .collect();
+            (set_id, positions)
+        })
+        .collect::<BTreeMap<_, Vec<_>>>();
+    let mut facts = BTreeMap::<i64, Vec<serde_json::Value>>::new();
+    for row in sql_query(
+        "SELECT games.set_id, games.id_text, games.cloneof_text, games.cloneofid_text, \
+                games.description_text \
+         FROM no_intro_dat_games AS games JOIN snapshot_sets AS sets USING (set_id) \
+         WHERE sets.snapshot_key = ? ORDER BY sets.set_name, sets.set_id",
+    )
+    .bind::<Text, _>(key.as_str())
+    .load::<NoIntroDatGameRow>(conn)?
+    {
+        facts.insert(
+            row.set_id,
+            vec![serde_json::json!({
+                "id_text": row.id_text,
+                "cloneof_text": row.cloneof_text,
+                "cloneofid_text": row.cloneofid_text,
+                "description_text": row.description_text,
+                "field_positions": positions.get(&row.set_id).cloned().unwrap_or_default(),
+            })],
+        );
+    }
+    Ok(facts)
+}
+
+fn load_no_intro_dat_child_ranks(
+    conn: &mut diesel::SqliteConnection,
+    key: &SnapshotKey,
+) -> crate::Result<BTreeMap<i64, BTreeMap<i64, i64>>> {
+    let rows = sql_query(
+        "SELECT source.set_id, source.source_order FROM (\
+         SELECT games.set_id, position.source_order \
+         FROM no_intro_dat_game_field_positions AS position \
+         JOIN no_intro_dat_games AS games USING (set_id) \
+         WHERE position.field_kind = 4 \
+         UNION ALL SELECT category.set_id, category.source_order \
+         FROM no_intro_dat_categories AS category \
+         UNION ALL SELECT identifier.set_id, identifier.source_order \
+         FROM no_intro_dat_identifiers AS identifier \
+         UNION ALL SELECT release.set_id, release.source_order \
+         FROM no_intro_dat_releases AS release \
+         UNION ALL SELECT occurrence.record_id AS set_id, rom.source_order \
+         FROM no_intro_dat_rom_claims AS rom \
+         JOIN asset_occurrences AS occurrence USING (occurrence_id)\
+         ) AS source JOIN snapshot_sets AS sets USING (set_id) \
+         WHERE sets.snapshot_key = ? ORDER BY source.set_id, source.source_order",
+    )
+    .bind::<Text, _>(key.as_str())
+    .load::<NoIntroDatNativeOrderRow>(conn)?;
+    let mut orders = BTreeMap::<i64, BTreeSet<i64>>::new();
+    for row in rows {
+        orders
+            .entry(row.set_id)
+            .or_default()
+            .insert(row.source_order);
+    }
+    Ok(orders
+        .into_iter()
+        .map(|(set_id, orders)| (set_id, orders.into_iter().zip(0_i64..).collect()))
+        .collect())
+}
+
+#[derive(QueryableByName)]
+struct NoIntroDatNativeOrderRow {
+    #[diesel(sql_type = BigInt)]
+    set_id: i64,
+    #[diesel(sql_type = BigInt)]
+    source_order: i64,
+}
+
+fn load_no_intro_dat_categories(
+    conn: &mut diesel::SqliteConnection,
+    key: &SnapshotKey,
+    child_ranks: &BTreeMap<i64, BTreeMap<i64, i64>>,
+) -> crate::Result<BTreeMap<i64, Vec<serde_json::Value>>> {
+    let mut grouped = BTreeMap::<i64, Vec<serde_json::Value>>::new();
+    for row in sql_query(
+        "SELECT category.set_id, category.category_order, category.category, category.source_order \
+         FROM no_intro_dat_categories AS category JOIN snapshot_sets AS sets USING (set_id) \
+         WHERE sets.snapshot_key = ? ORDER BY category.set_id, category.source_order, category.category_order",
+    )
+    .bind::<Text, _>(key.as_str())
+    .load::<NoIntroDatCategoryRow>(conn)?
+    {
+        grouped.entry(row.set_id).or_default().push(serde_json::json!({
+            "order": row.category_order,
+            "value": row.category,
+            "native_order": child_ranks
+                .get(&row.set_id)
+                .and_then(|ranks| ranks.get(&row.source_order)),
+        }));
+    }
+    Ok(grouped)
+}
+
+fn load_no_intro_dat_identifiers(
+    conn: &mut diesel::SqliteConnection,
+    key: &SnapshotKey,
+    child_ranks: &BTreeMap<i64, BTreeMap<i64, i64>>,
+) -> crate::Result<BTreeMap<i64, Vec<serde_json::Value>>> {
+    let mut grouped = BTreeMap::<i64, Vec<serde_json::Value>>::new();
+    for row in sql_query(
+        "SELECT identifier.set_id, identifier.identifier_order, identifier.identifier, \
+                identifier.source_order \
+         FROM no_intro_dat_identifiers AS identifier JOIN snapshot_sets AS sets USING (set_id) \
+         WHERE sets.snapshot_key = ? ORDER BY identifier.set_id, identifier.source_order, identifier.identifier_order",
+    )
+    .bind::<Text, _>(key.as_str())
+    .load::<NoIntroDatIdentifierRow>(conn)?
+    {
+        grouped.entry(row.set_id).or_default().push(serde_json::json!({
+            "order": row.identifier_order,
+            "value": row.identifier,
+            "native_order": child_ranks
+                .get(&row.set_id)
+                .and_then(|ranks| ranks.get(&row.source_order)),
+        }));
+    }
+    Ok(grouped)
+}
+
+fn load_no_intro_dat_releases(
+    conn: &mut diesel::SqliteConnection,
+    key: &SnapshotKey,
+    child_ranks: &BTreeMap<i64, BTreeMap<i64, i64>>,
+) -> crate::Result<BTreeMap<i64, Vec<serde_json::Value>>> {
+    let mut grouped = BTreeMap::<i64, Vec<serde_json::Value>>::new();
+    for row in sql_query(
+        "SELECT release.set_id, release.release_order, release.name, release.region, \
+                release.source_order, release.name_source_order, release.region_source_order \
+         FROM no_intro_dat_releases AS release JOIN snapshot_sets AS sets USING (set_id) \
+         WHERE sets.snapshot_key = ? ORDER BY release.set_id, release.source_order, release.release_order",
+    )
+    .bind::<Text, _>(key.as_str())
+    .load::<NoIntroDatReleaseRow>(conn)?
+    {
+        let (name_order, region_order) = if row.name_source_order < row.region_source_order {
+            (0_i64, 1_i64)
+        } else {
+            (1_i64, 0_i64)
+        };
+        grouped.entry(row.set_id).or_default().push(serde_json::json!({
+            "order": row.release_order,
+            "name": row.name,
+            "region": row.region,
+            "name_attribute_order": name_order,
+            "region_attribute_order": region_order,
+            "native_order": child_ranks
+                .get(&row.set_id)
+                .and_then(|ranks| ranks.get(&row.source_order)),
+        }));
+    }
+    Ok(grouped)
+}
+
+fn no_intro_dat_rom_order(
+    requirements: &[RequirementRow],
+    positions: &BTreeMap<i64, Vec<serde_json::Value>>,
+    child_ranks: &BTreeMap<i64, BTreeMap<i64, i64>>,
+) -> BTreeMap<i64, Vec<serde_json::Value>> {
+    // Preserve sibling facts in native order without adding ordinals to the
+    // canonical requirement multiset or matching occurrence IDs across snapshots.
+    let mut grouped = BTreeMap::<i64, Vec<(i64, &RequirementRow)>>::new();
+    for row in requirements {
+        if let Some(order) = row.no_intro_dat_source_order {
+            grouped.entry(row.set_id).or_default().push((order, row));
+        }
+    }
+    grouped
+        .into_iter()
+        .map(|(set_id, mut rows)| {
+            rows.sort_by_key(|(order, _)| *order);
+            let facts = rows
+                .into_iter()
+                .map(|(order, row)| {
+                    serde_json::json!({
+                        "name": row.asset_name,
+                        "attributes": no_intro_dat_rom_attributes(row, positions),
+                        "native_order": child_ranks.get(&set_id).and_then(|ranks| ranks.get(&order)),
+                    })
+                })
+                .collect();
+            (set_id, facts)
+        })
+        .collect()
+}
+
+fn load_no_intro_dat_rom_positions(
+    conn: &mut diesel::SqliteConnection,
+    key: &SnapshotKey,
+) -> crate::Result<BTreeMap<i64, Vec<serde_json::Value>>> {
+    let mut grouped = BTreeMap::<i64, Vec<serde_json::Value>>::new();
+    let mut source_ranks = BTreeMap::<i64, BTreeMap<i64, i64>>::new();
+    for row in sql_query(
+        "SELECT position.occurrence_id, position.field_kind, position.source_order \
+         FROM no_intro_dat_rom_field_positions AS position \
+         JOIN asset_occurrences AS occurrence USING (occurrence_id) \
+         JOIN snapshot_sets AS sets ON sets.set_id = occurrence.record_id \
+         WHERE sets.snapshot_key = ? ORDER BY position.occurrence_id, position.source_order, position.field_kind",
+    )
+    .bind::<Text, _>(key.as_str())
+    .load::<NoIntroDatRomPositionRow>(conn)?
+    {
+        let ranks = source_ranks.entry(row.occurrence_id).or_default();
+        let next_rank = i64::try_from(ranks.len()).map_err(|_| {
+            crate::Error::DatabaseSchema(
+                "No-Intro DAT ROM attribute rank exceeds SQLite's integer range".to_owned(),
+            )
+        })?;
+        let native_order = *ranks.entry(row.source_order).or_insert(next_rank);
+        let positions = grouped.entry(row.occurrence_id).or_default();
+        positions.push(serde_json::json!({
+            "field_kind": row.field_kind,
+            "native_order": native_order,
+        }));
+    }
+    Ok(grouped)
+}
+
 fn load_no_intro_archive_links(
     conn: &mut diesel::SqliteConnection,
     key: &SnapshotKey,
@@ -2092,18 +2736,40 @@ fn load_cmp_rom_positions(
     Ok(result)
 }
 
+fn no_intro_dat_rom_attributes(
+    row: &RequirementRow,
+    positions: &BTreeMap<i64, Vec<serde_json::Value>>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "size_text": row.no_intro_dat_size_text,
+        "crc_text": row.no_intro_dat_crc_text,
+        "md5_text": row.no_intro_dat_md5_text,
+        "sha1_text": row.no_intro_dat_sha1_text,
+        "sha256_text": row.no_intro_dat_sha256_text,
+        "status_text": row.no_intro_dat_status_text,
+        "serial_text": row.no_intro_dat_serial_text,
+        "header_text": row.no_intro_dat_header_text,
+        "date_text": row.no_intro_dat_date_text,
+        "mia_text": row.no_intro_dat_mia_text,
+        "field_positions": positions.get(&row.occurrence_id),
+    })
+}
+
 fn assemble_requirements(
     result: &mut CatalogRecords,
     requirements: Vec<RequirementRow>,
     cmp_positions: &BTreeMap<i64, Vec<serde_json::Value>>,
+    no_intro_dat_rom_positions: &BTreeMap<i64, Vec<serde_json::Value>>,
 ) {
     for row in requirements {
+        let no_intro_dat_attributes = no_intro_dat_rom_attributes(&row, no_intro_dat_rom_positions);
         let value = serde_json::json!({
             "role": row.role,
             "size": row.size,
             "crc": row.crc.map(hex::encode),
             "md5": row.md5.map(hex::encode),
             "sha1": row.sha1.map(hex::encode),
+            "sha256": row.sha256.map(hex::encode),
             "evidence_scope": row.evidence_scope,
             "evidence_provenance": row.evidence_provenance,
             "merge_name": row.merge_name,
@@ -2141,6 +2807,7 @@ fn assemble_requirements(
                 "nodump_present": row.cmp_nodump_present, "baddump_present": row.cmp_baddump_present,
                 "field_positions": cmp_positions.get(&row.occurrence_id),
             },
+            "no_intro_dat_attributes": no_intro_dat_attributes,
         });
         result
             .requirements
@@ -2466,7 +3133,7 @@ fn requirement_changes(
             let previous_value = before.map(|values| serde_json::Value::Array(values.clone()));
             let current_value = after.map(|values| serde_json::Value::Array(values.clone()));
             let size_changed = field_changed(before, after, "size");
-            let hash_changed = ["crc", "md5", "sha1"]
+            let hash_changed = ["crc", "md5", "sha1", "sha256"]
                 .into_iter()
                 .any(|field| field_changed(before, after, field));
             let other_evidence_changed = [
@@ -2479,6 +3146,7 @@ fn requirement_changes(
                 "date",
                 "extensions",
                 "cmp_declarations",
+                "no_intro_dat_attributes",
             ]
             .into_iter()
             .any(|field| field_changed(before, after, field))
@@ -2543,6 +3211,11 @@ fn set_metadata(records: &CatalogRecords, set: &SetRow) -> serde_json::Value {
         "mame_machine_specification_facts": records.mame_machine_specification_facts.get(&set.set_id),
         "mame_machine_dependencies": records.mame_machine_dependencies.get(&set.set_id),
         "no_intro_game_facts": records.no_intro_game_facts.get(&set.set_id),
+        "no_intro_dat_game_facts": records.no_intro_dat_game_facts.get(&set.set_id),
+        "no_intro_dat_categories": records.no_intro_dat_categories.get(&set.set_id),
+        "no_intro_dat_identifiers": records.no_intro_dat_identifiers.get(&set.set_id),
+        "no_intro_dat_releases": records.no_intro_dat_releases.get(&set.set_id),
+        "no_intro_dat_rom_order": records.no_intro_dat_rom_order.get(&set.set_id),
         "logiqx_set_facts": records.logiqx_set_facts.get(&set.set_id),
         "logiqx_text_positions": records.logiqx_text_positions.get(&set.set_id),
         "logiqx_game_comments": records.logiqx_game_comments.get(&set.set_id),

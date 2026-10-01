@@ -6,7 +6,11 @@ use diesel::{QueryableByName, sql_types::BigInt};
 pub struct OccurrenceId(i64);
 
 impl OccurrenceId {
-    pub(crate) const fn from_database(value: i64) -> Self {
+    /// Construct a query key from a database occurrence ID.
+    ///
+    /// Occurrence IDs are local to a registry generation and are not durable identifiers.
+    #[must_use]
+    pub const fn from_database(value: i64) -> Self {
         Self(value)
     }
 

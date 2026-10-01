@@ -58,6 +58,18 @@ fn parse_format(value: &str) -> Result<CatalogDocumentFormat, Box<dyn std::error
         "software-list" => Ok(CatalogDocumentFormat::MameSoftwareListXml),
         "clrmamepro" => Ok(CatalogDocumentFormat::ClrMamePro),
         "no-intro-pc-xml" => Ok(CatalogDocumentFormat::NoIntroPcXml),
+        "no-intro-dat-v3-strict" => Ok(CatalogDocumentFormat::NoIntroDat(
+            mame_coalesce::NoIntroDatMode::V3Strict,
+        )),
+        "no-intro-dat-v3-compatible" => Ok(CatalogDocumentFormat::NoIntroDat(
+            mame_coalesce::NoIntroDatMode::V3Compatible,
+        )),
+        "no-intro-dat-v4-strict" => Ok(CatalogDocumentFormat::NoIntroDat(
+            mame_coalesce::NoIntroDatMode::V4Strict,
+        )),
+        "no-intro-dat-v4-compatible" => Ok(CatalogDocumentFormat::NoIntroDat(
+            mame_coalesce::NoIntroDatMode::V4Compatible,
+        )),
         _ => Err(format!("unsupported catalog format: {value}").into()),
     }
 }

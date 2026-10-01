@@ -12,6 +12,7 @@ pub mod machine_dependencies;
 pub(crate) mod mame;
 pub(crate) mod mame_softwarelist;
 pub mod mount;
+mod no_intro_dat_xml;
 mod no_intro_pc_xml;
 mod operations;
 mod private_temp;
@@ -24,6 +25,7 @@ pub(crate) mod xml_reader;
 
 pub use domain::PublishingSource;
 pub use error::Error;
+pub use no_intro_dat_xml::NoIntroDatMode;
 pub use storage::backup::{
     BackupOutcome, IntegrityReport, RestoreOutcome, RestorePolicy, check_integrity, create_backup,
     restore_backup,

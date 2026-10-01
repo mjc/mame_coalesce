@@ -307,6 +307,10 @@ impl ParserInterpretationKey {
         match format {
             "logiqx" => "logiqx-declared-text-compat-v1",
             "clrmamepro-dat" => "clrmamepro-declared-text-compat-v1",
+            "no-intro-dat-v3-strict" | "no-intro-dat-v4-strict" => "no-intro-dat-xsd-v1",
+            "no-intro-dat-v3-compatible" | "no-intro-dat-v4-compatible" => {
+                "no-intro-dat-observed-compat-v1"
+            }
             _ => "normalization-v1",
         }
     }

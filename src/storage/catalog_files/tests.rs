@@ -642,9 +642,14 @@ fn bulk_owner_and_digest_plans_search_requested_ids_before_catalog_rows() -> Tes
     create_request_table(&mut connection)?;
     insert_requested_ids(&mut connection, &BTreeSet::from([1]))?;
     let owners = requested_occurrence_select();
-    for (query, searched_alias, forbidden_scan) in [
-        (owners, "occurrence", "occurrence"),
-        (digest_select(), "assertion", "assertion"),
+    for (query, expected_search, forbidden_scan) in [
+        (owners, "search occurrence", "occurrence"),
+        (digest_select(), "search assertion", "assertion"),
+        (
+            no_intro_dat_rom_select(),
+            "search rom using primary key (occurrence_id=?)",
+            "rom",
+        ),
     ] {
         let details = sql_query(format!("EXPLAIN QUERY PLAN {query}"))
             .load::<ExplainRow>(&mut connection)?
@@ -665,7 +670,8 @@ fn bulk_owner_and_digest_plans_search_requested_ids_before_catalog_rows() -> Tes
         assert!(
             details
                 .iter()
-                .any(|detail| detail.starts_with(&format!("search {searched_alias}")))
+                .any(|detail| detail.starts_with(expected_search)),
+            "missing bounded owner lookup {expected_search}: {details:?}"
         );
     }
     drop_request_table(&mut connection)?;

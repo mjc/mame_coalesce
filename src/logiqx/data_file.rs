@@ -240,7 +240,7 @@ impl DataFile {
 }
 
 fn read_datafile_root(
-    reader: &mut quick_xml::reader::NsReader<&[u8]>,
+    reader: &mut crate::xml_reader::XmlReader<'_>,
     positions: &mut xml_reader::PositionMap<'_>,
     budget: &mut NodeBudget,
 ) -> crate::Result<(Element, bool)> {
@@ -294,7 +294,7 @@ fn set_once<T>(slot: &mut Option<T>, value: T, name: &str) -> crate::Result<()> 
 }
 
 fn finish_document(
-    reader: &mut quick_xml::reader::NsReader<&[u8]>,
+    reader: &mut crate::xml_reader::XmlReader<'_>,
     positions: &mut xml_reader::PositionMap<'_>,
 ) -> crate::Result<()> {
     loop {

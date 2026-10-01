@@ -82,6 +82,34 @@ fn load(fixture: &Fixture, key: &str) -> PublishedBuildCatalog {
 }
 
 #[test]
+fn no_intro_catalog_selector_uses_native_header_name() {
+    let fixture = fixture();
+    let path = fixture.directory.path().join("no-intro.dat");
+    std::fs::write(
+        &path,
+        "<datafile><header><id>1</id><name>Header label</name>\
+         <description>DAT description</description><version>native-v7</version></header>\
+         <game name='root' cloneof='parent'><description>Root</description><rom name='root.bin' size='1'/></game></datafile>",
+    )
+    .expect("write No-Intro DAT");
+    import(
+        &fixture,
+        &path,
+        CatalogDocumentFormat::NoIntroDat(crate::NoIntroDatMode::V4Compatible),
+        "no-intro-selector",
+    );
+
+    let selected = BuildCatalogRepository::new(fixture.database.pool())
+        .load(&CatalogSelector::LatestCatalog("Header label".to_owned()))
+        .expect("load selected No-Intro catalog");
+    assert_eq!(selected.requirements().len(), 1);
+    assert_eq!(
+        selected.requirements()[0].parent_name.as_deref(),
+        Some("parent")
+    );
+}
+
+#[test]
 fn logiqx_root_metadata_sparse_hashes_and_large_size_survive_loading() {
     let fixture = fixture();
     let path = fixture.directory.path().join("root.dat");

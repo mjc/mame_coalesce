@@ -276,7 +276,7 @@ impl SoftwareListCatalog {
 }
 
 fn parse_softwarelists(
-    reader: &mut quick_xml::reader::NsReader<&[u8]>,
+    reader: &mut crate::xml_reader::XmlReader<'_>,
     positions: &mut xml_reader::PositionMap<'_>,
     root: &Element,
     empty: bool,
@@ -378,7 +378,7 @@ fn parse_empty_list(
 }
 
 fn parse_list_events(
-    reader: &mut quick_xml::reader::NsReader<&[u8]>,
+    reader: &mut crate::xml_reader::XmlReader<'_>,
     positions: &mut xml_reader::PositionMap<'_>,
     namespace: Option<String>,
     start: &quick_xml::events::BytesStart<'_>,
@@ -481,7 +481,7 @@ fn parse_list_events(
 }
 
 fn finish_softwarelist_document(
-    reader: &mut quick_xml::reader::NsReader<&[u8]>,
+    reader: &mut crate::xml_reader::XmlReader<'_>,
     positions: &mut xml_reader::PositionMap<'_>,
 ) -> crate::Result<()> {
     loop {

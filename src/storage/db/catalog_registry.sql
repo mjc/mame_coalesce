@@ -42,7 +42,10 @@ SELECT occurrence_id, 'cmp_rom_size', size
 FROM cmp_rom_claims WHERE size IS NOT NULL AND evidence_scope IN ('whole_asset', 'whole_file')
 UNION ALL
 SELECT occurrence_id, 'no_intro_pc_file_size', size
-FROM no_intro_pc_file_claims WHERE size IS NOT NULL AND evidence_scope IN ('whole_asset', 'whole_file');
+FROM no_intro_pc_file_claims WHERE size IS NOT NULL AND evidence_scope IN ('whole_asset', 'whole_file')
+UNION ALL
+SELECT occurrence_id, 'no_intro_dat_rom_size', size
+FROM no_intro_dat_rom_claims WHERE size IS NOT NULL AND evidence_scope = 'whole_file';
 
 CREATE TABLE occurrence_content_conflict_hashes (
     occurrence_id INTEGER NOT NULL,
@@ -63,7 +66,7 @@ CREATE TABLE occurrence_content_conflict_sizes (
     occurrence_id INTEGER NOT NULL,
     candidate_content_uuid BLOB NOT NULL,
     evidence_occurrence_id INTEGER NOT NULL REFERENCES asset_occurrences(occurrence_id) ON DELETE RESTRICT,
-    size_field TEXT NOT NULL CHECK (size_field IN ('mame_rom_size', 'logiqx_rom_size', 'cmp_rom_size', 'no_intro_pc_file_size')),
+    size_field TEXT NOT NULL CHECK (size_field IN ('mame_rom_size', 'logiqx_rom_size', 'cmp_rom_size', 'no_intro_pc_file_size', 'no_intro_dat_rom_size')),
     role TEXT NOT NULL CHECK (role IN ('incoming', 'candidate')),
     PRIMARY KEY (occurrence_id, candidate_content_uuid, evidence_occurrence_id, size_field, role),
     FOREIGN KEY (occurrence_id, candidate_content_uuid)

@@ -49,6 +49,8 @@ enum FormatHint {
     ClrMameProTextGzip,
     NoIntroPcXml,
     NoIntroPcXmlGzip,
+    NoIntroDatXml,
+    NoIntroDatXmlGzip,
 }
 
 impl FormatHint {
@@ -64,6 +66,8 @@ impl FormatHint {
             Self::ClrMameProTextGzip => "clrmamepro-text+gzip",
             Self::NoIntroPcXml => "no-intro-pc-xml",
             Self::NoIntroPcXmlGzip => "no-intro-pc-xml+gzip",
+            Self::NoIntroDatXml => "no-intro-dat-xml",
+            Self::NoIntroDatXmlGzip => "no-intro-dat-xml+gzip",
         }
     }
 
@@ -260,6 +264,14 @@ impl DocumentStore {
         path: &Utf8Path,
     ) -> crate::Result<RetainedDocument> {
         self.retain_path_with_options(source_key, path, false, Some(FormatHint::NoIntroPcXml))
+    }
+
+    pub(crate) fn retain_path_no_intro_dat_xml(
+        &self,
+        source_key: PublishingSourceKey,
+        path: &Utf8Path,
+    ) -> crate::Result<RetainedDocument> {
+        self.retain_path_with_options(source_key, path, false, Some(FormatHint::NoIntroDatXml))
     }
 
     fn retain_path_with_options(
@@ -641,6 +653,12 @@ fn format_hint(raw: &[u8], requested: Option<FormatHint>) -> FormatHint {
         }
         (Some(FormatHint::NoIntroPcXml | FormatHint::NoIntroPcXmlGzip), true) => {
             FormatHint::NoIntroPcXmlGzip
+        }
+        (Some(FormatHint::NoIntroDatXml | FormatHint::NoIntroDatXmlGzip), false) => {
+            FormatHint::NoIntroDatXml
+        }
+        (Some(FormatHint::NoIntroDatXml | FormatHint::NoIntroDatXmlGzip), true) => {
+            FormatHint::NoIntroDatXmlGzip
         }
         (Some(FormatHint::LogiqxXml | FormatHint::LogiqxXmlGzip) | None, _) => {
             FormatHint::for_bytes(raw)

@@ -139,6 +139,29 @@ pub struct CatalogFileOccurrence {
     pub content_id: Option<CatalogContentId>,
     pub provenance: OccurrenceProvenance,
     pub digests: Vec<OccurrenceDigest>,
+    pub no_intro_dat_rom: Option<NoIntroDatRomPayload>,
+}
+
+/// No-Intro flat DAT declarations attached to one ROM occurrence.
+///
+/// Non-hash strings preserve source lexemes. Hash strings are lowercase for valid byte values and
+/// preserve the exact invalid source lexeme; `None` means absent and `Some("")` means explicitly
+/// empty.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NoIntroDatRomPayload {
+    pub name: String,
+    pub size_text: Option<String>,
+    pub crc_text: Option<String>,
+    pub md5_text: Option<String>,
+    pub sha1_text: Option<String>,
+    pub sha256_text: Option<String>,
+    pub status_text: Option<String>,
+    pub serial_text: Option<String>,
+    pub header_text: Option<String>,
+    pub date_text: Option<String>,
+    pub mia_text: Option<String>,
+    pub source_order: i64,
+    pub location: SourceLocation,
 }
 
 /// A validated bound for content-to-occurrence pages.
@@ -192,6 +215,10 @@ pub enum CatalogFilesError {
     InvalidContentIdLength(usize),
     #[error("digest assertion refers to occurrence {0}, which was not selected")]
     MissingOccurrenceOwner(i64),
+    #[error("No-Intro DAT ROM occurrence {0} has no native payload")]
+    MissingNoIntroDatRomPayload(i64),
+    #[error("No-Intro DAT ROM occurrence {0} is not owned by a No-Intro DAT game")]
+    MismatchedNoIntroDatRomOwner(i64),
     #[error("page size cannot be represented by SQLite")]
     PageLimitOverflow,
     #[error("bulk request contains {requested} occurrence IDs; maximum is {maximum}")]
@@ -291,6 +318,40 @@ struct DigestRow {
     scope: String,
     #[diesel(sql_type = Text)]
     provenance: String,
+}
+
+#[derive(QueryableByName)]
+struct NoIntroDatRomRow {
+    #[diesel(sql_type = BigInt)]
+    occurrence_id: i64,
+    #[diesel(sql_type = Text)]
+    name: String,
+    #[diesel(sql_type = Nullable<Text>)]
+    size_text: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    crc_text: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    md5_text: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    sha1_text: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    sha256_text: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    status_text: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    serial_text: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    header_text: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    date_text: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    mia_text: Option<String>,
+    #[diesel(sql_type = BigInt)]
+    source_order: i64,
+    #[diesel(sql_type = BigInt)]
+    source_line: i64,
+    #[diesel(sql_type = BigInt)]
+    source_column: i64,
 }
 
 /// Resolve a batch of source occurrence identities in one database transaction.
@@ -586,6 +647,7 @@ fn assemble_occurrences(
             }),
         };
     }
+    attach_no_intro_dat_rom_payloads(connection, &mut occurrences)?;
     let digests = sql_query(digest_select()).load::<DigestRow>(connection)?;
     for row in digests {
         let algorithm = parse_algorithm(row.algorithm)?;
@@ -615,6 +677,100 @@ fn assemble_occurrences(
     }
     clear_request_table(connection)?;
     Ok(occurrences)
+}
+
+fn attach_no_intro_dat_rom_payloads(
+    connection: &mut SqliteConnection,
+    occurrences: &mut [CatalogFileOccurrence],
+) -> Result<(), CatalogFilesError> {
+    let mut native_dat_roms = sql_query(no_intro_dat_rom_select())
+        .load::<NoIntroDatRomRow>(connection)?
+        .into_iter()
+        .map(|row| {
+            let occurrence_id = row.occurrence_id;
+            let payload = NoIntroDatRomPayload {
+                name: row.name,
+                size_text: row.size_text,
+                crc_text: row.crc_text,
+                md5_text: row.md5_text,
+                sha1_text: row.sha1_text,
+                sha256_text: row.sha256_text,
+                status_text: row.status_text,
+                serial_text: row.serial_text,
+                header_text: row.header_text,
+                date_text: row.date_text,
+                mia_text: row.mia_text,
+                source_order: row.source_order,
+                location: SourceLocation {
+                    line: row.source_line,
+                    column: row.source_column,
+                },
+            };
+            (occurrence_id, payload)
+        })
+        .collect::<BTreeMap<_, _>>();
+    for occurrence in occurrences {
+        let occurrence_id = occurrence.occurrence_id.database_value();
+        if occurrence.provenance.occurrence_kind == OccurrenceKind::NoIntroDatRom {
+            if occurrence.provenance.source_element_kind != SourceElementKind::NoIntroDatGame {
+                return Err(CatalogFilesError::MismatchedNoIntroDatRomOwner(
+                    occurrence_id,
+                ));
+            }
+            let payload = native_dat_roms.remove(&occurrence_id).ok_or(
+                CatalogFilesError::MissingNoIntroDatRomPayload(occurrence_id),
+            )?;
+            occurrence.provenance.asset_name = Some(payload.name.clone());
+            occurrence.provenance.native_occurrence_location = Some(payload.location);
+            occurrence.no_intro_dat_rom = Some(payload);
+        } else if native_dat_roms.contains_key(&occurrence_id) {
+            return Err(CatalogFilesError::MismatchedNoIntroDatRomOwner(
+                occurrence_id,
+            ));
+        }
+    }
+    if let Some((occurrence_id, _)) = native_dat_roms.first_key_value() {
+        return Err(CatalogFilesError::MissingOccurrenceOwner(*occurrence_id));
+    }
+    Ok(())
+}
+
+fn no_intro_dat_rom_select() -> String {
+    // Keep the bounded request as the outer loop, not a catalog-wide ROM scan.
+    format!(
+        "SELECT rom.occurrence_id, rom.name, rom.size_text, \
+                CASE WHEN crc_field.occurrence_id IS NULL THEN NULL \
+                     WHEN crc_value.digest_id IS NOT NULL THEN lower(hex(crc_value.digest)) \
+                     ELSE crc_field.invalid_text END AS crc_text, \
+                CASE WHEN md5_field.occurrence_id IS NULL THEN NULL \
+                     WHEN md5_value.digest_id IS NOT NULL THEN lower(hex(md5_value.digest)) \
+                     ELSE md5_field.invalid_text END AS md5_text, \
+                CASE WHEN sha1_field.occurrence_id IS NULL THEN NULL \
+                     WHEN sha1_value.digest_id IS NOT NULL THEN lower(hex(sha1_value.digest)) \
+                     ELSE sha1_field.invalid_text END AS sha1_text, \
+                CASE WHEN sha256_field.occurrence_id IS NULL THEN NULL \
+                     WHEN sha256_value.digest_id IS NOT NULL THEN lower(hex(sha256_value.digest)) \
+                     ELSE sha256_field.invalid_text END AS sha256_text, \
+                rom.status_text, rom.serial_text, \
+                rom.header_text, rom.date_text, rom.mia_text, rom.source_order, \
+                rom.source_line, rom.source_column \
+         FROM {REQUEST_TABLE} AS requested \
+         CROSS JOIN no_intro_dat_rom_claims AS rom \
+         LEFT JOIN no_intro_dat_rom_digest_fields AS crc_field \
+           ON crc_field.occurrence_id = rom.occurrence_id AND crc_field.field_kind = 2 \
+         LEFT JOIN digest_values AS crc_value ON crc_value.digest_id = crc_field.digest_id \
+         LEFT JOIN no_intro_dat_rom_digest_fields AS md5_field \
+           ON md5_field.occurrence_id = rom.occurrence_id AND md5_field.field_kind = 3 \
+         LEFT JOIN digest_values AS md5_value ON md5_value.digest_id = md5_field.digest_id \
+         LEFT JOIN no_intro_dat_rom_digest_fields AS sha1_field \
+           ON sha1_field.occurrence_id = rom.occurrence_id AND sha1_field.field_kind = 4 \
+         LEFT JOIN digest_values AS sha1_value ON sha1_value.digest_id = sha1_field.digest_id \
+         LEFT JOIN no_intro_dat_rom_digest_fields AS sha256_field \
+           ON sha256_field.occurrence_id = rom.occurrence_id AND sha256_field.field_kind = 5 \
+         LEFT JOIN digest_values AS sha256_value ON sha256_value.digest_id = sha256_field.digest_id \
+         WHERE rom.occurrence_id = requested.occurrence_id \
+         ORDER BY rom.occurrence_id"
+    )
 }
 
 fn digest_select() -> String {
@@ -680,6 +836,7 @@ fn try_occurrence(row: OccurrenceRow) -> Result<CatalogFileOccurrence, CatalogFi
             software_owner: None,
         },
         digests: Vec::new(),
+        no_intro_dat_rom: None,
     })
 }
 

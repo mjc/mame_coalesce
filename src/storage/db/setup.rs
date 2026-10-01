@@ -20,7 +20,11 @@ const SCHEMA: &str = concat!(
     "\n",
     include_str!("cmp.sql"),
     "\n",
-    include_str!("catalog_registry.sql")
+    include_str!("catalog_registry.sql"),
+    "\n",
+    include_str!("no_intro_dat.sql"),
+    "\n",
+    include_str!("no_intro_dat_guards.sql")
 );
 
 #[derive(Debug)]
