@@ -1,4 +1,4 @@
-use super::{SnapshotAsset, sqlite_mame_boolean, sqlite_mame_offset};
+use super::{NativeAssetFacts, SnapshotAsset, sqlite_mame_boolean, sqlite_mame_offset};
 use crate::{
     domain::CatalogSetId,
     storage::catalog_identity::{AllocatedOccurrence, OccurrenceId},
@@ -22,6 +22,7 @@ enum RootClaimKind {
     LogiqxDisk,
     LogiqxSample,
     CmpRom,
+    CmpSample,
     NoIntroPcFile,
 }
 
@@ -34,6 +35,7 @@ impl RootClaimKind {
             ("logiqx_game", "disk") => Ok(Self::LogiqxDisk),
             ("logiqx_game", "other") => Ok(Self::LogiqxSample),
             ("cmp_set", "rom") => Ok(Self::CmpRom),
+            ("cmp_set", "other") => Ok(Self::CmpSample),
             ("no_intro_pc_game", "rom") => Ok(Self::NoIntroPcFile),
             _ => Err(crate::Error::InvalidPath(format!(
                 "invalid native claim {kind}/{role}"
@@ -49,6 +51,7 @@ impl RootClaimKind {
             Self::LogiqxDisk => "logiqx_disk",
             Self::LogiqxSample => "logiqx_sample",
             Self::CmpRom => "cmp_rom",
+            Self::CmpSample => "cmp_sample",
             Self::NoIntroPcFile => "no_intro_pc_file",
         }
     }
@@ -61,6 +64,7 @@ impl RootClaimKind {
             Self::LogiqxDisk => "logiqx_disk_claims",
             Self::LogiqxSample => "logiqx_sample_claims",
             Self::CmpRom => "cmp_rom_claims",
+            Self::CmpSample => "cmp_samples",
             Self::NoIntroPcFile => "no_intro_pc_file_claims",
         }
     }
@@ -101,6 +105,14 @@ pub(super) fn insert(
         RootClaimKind::CmpRom => {
             super::cmp_native::insert_rom_claim(conn, id.database_value(), asset)?;
         }
+        RootClaimKind::CmpSample => {
+            let NativeAssetFacts::CmpSample(sample) = &asset.native else {
+                return Err(crate::Error::InvalidPath(
+                    "CMP sample has no scalar declaration".into(),
+                ));
+            };
+            super::cmp_native::insert_sample(conn, id, sample)?;
+        }
         RootClaimKind::NoIntroPcFile => {
             sql_query(format!(
                 "INSERT INTO {} (occurrence_id,name,size,evidence_scope,evidence_provenance, \
@@ -128,9 +140,11 @@ fn insert_logiqx(
     kind: RootClaimKind,
     asset: &SnapshotAsset,
 ) -> crate::Result<()> {
-    let facts = asset.logiqx_attributes.as_ref().ok_or_else(|| {
-        crate::Error::InvalidPath("Logiqx media entry has no native attributes".into())
-    })?;
+    let NativeAssetFacts::Logiqx(facts) = &asset.native else {
+        return Err(crate::Error::InvalidPath(
+            "Logiqx media entry has no native attributes".into(),
+        ));
+    };
     if matches!(kind, RootClaimKind::LogiqxSample) {
         sql_query("INSERT INTO logiqx_sample_claims(occurrence_id,name,source_order,source_line,source_column) VALUES (?,?,?,?,?)")
             .bind::<BigInt, _>(id.database_value()).bind::<Text, _>(&asset.name)
@@ -188,8 +202,12 @@ fn insert_mame(
     asset: &SnapshotAsset,
     size: Option<i64>,
 ) -> crate::Result<()> {
-    let attributes = asset.mame_attributes.as_ref();
-    let offset = sqlite_mame_offset(attributes)?;
+    let NativeAssetFacts::Mame(attributes) = &asset.native else {
+        return Err(crate::Error::InvalidPath(
+            "MAME media entry has no native attributes".into(),
+        ));
+    };
+    let offset = sqlite_mame_offset(Some(attributes))?;
     sql_query(format!(
         "INSERT INTO {} (occurrence_id,name,size,evidence_scope,evidence_provenance,merge_name, \
          dump_status,source_line,source_column,region,bios,offset,optional,sound_only,dispose, \
@@ -205,20 +223,20 @@ fn insert_mame(
     .bind::<Nullable<Text>, _>(asset.dump_status.as_deref())
     .bind::<BigInt, _>(asset.location.line)
     .bind::<BigInt, _>(asset.location.column)
-    .bind::<Nullable<Text>, _>(attributes.and_then(|value| value.region.as_deref()))
-    .bind::<Nullable<Text>, _>(attributes.and_then(|value| value.bios.as_deref()))
+    .bind::<Nullable<Text>, _>(attributes.region.as_deref())
+    .bind::<Nullable<Text>, _>(attributes.bios.as_deref())
     .bind::<Nullable<BigInt>, _>(offset)
-    .bind::<Nullable<BigInt>, _>(attributes.map(|value| i64::from(value.optional.as_bool())))
-    .bind::<Nullable<BigInt>, _>(attributes.and_then(|value| value.sound_only).map(sqlite_mame_boolean))
-    .bind::<Nullable<BigInt>, _>(attributes.and_then(|value| value.dispose).map(sqlite_mame_boolean))
-    .bind::<Nullable<Text>, _>(attributes.and_then(|value| value.load_flag.as_deref()))
-    .bind::<Nullable<Text>, _>(attributes.and_then(|value| value.value.as_deref()))
-    .bind::<Nullable<BigInt>, _>(attributes.and_then(|value| value.inverted).map(sqlite_mame_boolean))
-    .bind::<Nullable<Text>, _>(attributes.and_then(|value| value.ovha.as_deref()))
-    .bind::<Nullable<BigInt>, _>(attributes.and_then(|value| value.no_thread).map(sqlite_mame_boolean))
-    .bind::<Nullable<Text>, _>(attributes.and_then(|value| value.disk_index.as_deref()))
-    .bind::<Nullable<BigInt>, _>(attributes.and_then(|value| value.writable).map(sqlite_mame_boolean))
-    .bind::<Nullable<BigInt>, _>(attributes.and_then(|value| value.writeable).map(sqlite_mame_boolean))
+    .bind::<BigInt, _>(i64::from(attributes.optional.as_bool()))
+    .bind::<Nullable<BigInt>, _>(attributes.sound_only.map(sqlite_mame_boolean))
+    .bind::<Nullable<BigInt>, _>(attributes.dispose.map(sqlite_mame_boolean))
+    .bind::<Nullable<Text>, _>(attributes.load_flag.as_deref())
+    .bind::<Nullable<Text>, _>(attributes.value.as_deref())
+    .bind::<Nullable<BigInt>, _>(attributes.inverted.map(sqlite_mame_boolean))
+    .bind::<Nullable<Text>, _>(attributes.ovha.as_deref())
+    .bind::<Nullable<BigInt>, _>(attributes.no_thread.map(sqlite_mame_boolean))
+    .bind::<Nullable<Text>, _>(attributes.disk_index.as_deref())
+    .bind::<Nullable<BigInt>, _>(attributes.writable.map(sqlite_mame_boolean))
+    .bind::<Nullable<BigInt>, _>(attributes.writeable.map(sqlite_mame_boolean))
     .execute(conn)?;
     Ok(())
 }

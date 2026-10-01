@@ -544,7 +544,7 @@ Use these native tables with a pinned, explicit supported text grammar:
 | `cmp_header_directives` | header-definition filename, forcemerging, forcezipping, forcenodump; exact source spelling and explicitness |
 | `cmp_set_facts`, `clrmamepro_set_links` | numeric set owner; catalog-owned name, cloneof literal, description/year/manufacturer/rebuildto; witnessed region/release-date-component/set-serial text; original game/set spelling and document ordinal |
 | `cmp_roms` | claim ID; name, size?, CRC/CRC32 alias, MD5?, SHA-1?, declared nodump/baddump flags; explicitly supported merge/status dialect fields |
-| `cmp_samples`, `cmp_sample_parent_links` | scalar sample filename claims with unknown size/digests; sampleof source declaration |
+| `cmp_samples`, `cmp_sample_parent_links` | one occurrence-keyed scalar sample declaration with unknown size/digests; separate set-owned sampleof literal |
 
 `forcezipping` in documented text and Logiqx's `forcepacking` are distinct source
 fields. BIOS/disk/resource engine aliases are documented transformation
@@ -599,8 +599,17 @@ remains an independent named compatibility value, never an alias for forcezippin
 History compares structural document layout separately from owner fact multisets:
 header crossings remain visible even with repeated names, but indistinguishable
 repeated owners do not gain invented cross-snapshot ordinal identity. Native
-scalar samples still use set/sample-order keys, not shared media-entry owners;
-that API cutover and complete format query witnesses remain unfinished.
+scalar samples now use occurrence IDs rather than set/sample-order keys.
+`cmp_samples` owns name, keyword spelling, quotation, source order and location;
+set ownership and mixed-media order come only from `asset_occurrences`. Repeated
+and empty sample names remain distinct entries. Their bulk API results include
+native name/location and source/list/set provenance without assigning a UUID,
+size or source-declared digest. Sample-only order for history is derived, not
+stored again. Publication requires every sample payload and mixed ROM/sample
+order matching the native source layout; draft media PK and set/order conflicts
+abort before REPLACE handling. Samples remain outside ROM requirements. The
+importer's native payload is one enum, replacing independently optional format
+payloads. Complete format query witnesses remain unfinished.
 
 A fresh import of the ignored authentic Atari-2600 corpus on 2026-10-01 retained
 905 sets and 905 ROM occurrences, all 4,526 present ROM field positions and

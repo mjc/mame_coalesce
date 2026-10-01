@@ -44,7 +44,7 @@ struct SetFactsRow {
 #[derive(QueryableByName)]
 struct SampleRow {
     #[diesel(sql_type = BigInt)]
-    sample_order: i64,
+    occurrence_order: i64,
     #[diesel(sql_type = Text)]
     sample_name: String,
 }
@@ -71,6 +71,30 @@ struct RomFactsRow {
 struct NullableTextRow {
     #[diesel(sql_type = Nullable<Text>)]
     value: Option<String>,
+}
+
+fn assert_sample_occurrences(
+    connection: &mut SqliteConnection,
+    snapshot_key: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let samples = sql_query(
+        "SELECT occurrence.occurrence_order, samples.sample_name FROM cmp_samples AS samples \
+         JOIN asset_occurrences AS occurrence USING (occurrence_id) \
+         JOIN records ON records.record_id = occurrence.record_id \
+         JOIN record_namespaces USING (namespace_id) \
+         WHERE snapshot_key = ? AND records.source_name = 'native-set' \
+         ORDER BY occurrence.occurrence_order",
+    )
+    .bind::<Text, _>(snapshot_key)
+    .load::<SampleRow>(connection)?;
+    assert_eq!(
+        samples
+            .iter()
+            .map(|sample| (sample.occurrence_order, sample.sample_name.as_str()))
+            .collect::<Vec<_>>(),
+        [(0, "intro"), (1, "click")]
+    );
+    Ok(())
 }
 
 #[test]
@@ -139,20 +163,7 @@ fn public_import_persists_native_header_set_sample_and_rom_facts()
     .bind::<Text, _>(snapshot_key.as_str())
     .get_result::<NullableTextRow>(&mut connection)?;
     assert_eq!(sample_parent.value.as_deref(), Some("sample-parent"));
-    let samples = sql_query(
-        "SELECT sample_order, sample_name FROM cmp_samples \
-         JOIN records USING (record_id) JOIN record_namespaces USING (namespace_id) \
-         WHERE snapshot_key = ? AND records.source_name = 'native-set' ORDER BY sample_order",
-    )
-    .bind::<Text, _>(snapshot_key.as_str())
-    .load::<SampleRow>(&mut connection)?;
-    assert_eq!(
-        samples
-            .iter()
-            .map(|sample| (sample.sample_order, sample.sample_name.as_str()))
-            .collect::<Vec<_>>(),
-        [(0, "intro"), (1, "click")]
-    );
+    assert_sample_occurrences(&mut connection, snapshot_key.as_str())?;
 
     let rom = sql_query(
         "SELECT date, serial, position.source_order AS status_explicit_order, \

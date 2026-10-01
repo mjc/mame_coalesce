@@ -1906,10 +1906,13 @@ fn load_cmp_samples(
     native_ranks: &BTreeMap<i64, BTreeMap<i64, i64>>,
 ) -> crate::Result<BTreeMap<i64, Vec<serde_json::Value>>> {
     let samples = sql_query(
-        "SELECT samples.record_id, samples.sample_order, samples.sample_name, samples.source_field, \
+        "SELECT occurrence.record_id, \
+                ROW_NUMBER() OVER (PARTITION BY occurrence.record_id ORDER BY occurrence.occurrence_order)-1 AS sample_order, \
+                samples.sample_name, samples.source_field, \
                 samples.source_order, samples.is_quoted \
-         FROM cmp_samples AS samples JOIN snapshot_sets AS sets ON sets.set_id = samples.record_id \
-         WHERE sets.snapshot_key = ? ORDER BY samples.record_id, samples.sample_order",
+         FROM cmp_samples AS samples JOIN asset_occurrences AS occurrence USING(occurrence_id) \
+         JOIN snapshot_sets AS sets ON sets.set_id = occurrence.record_id \
+         WHERE sets.snapshot_key = ? ORDER BY occurrence.record_id, occurrence.occurrence_order",
     )
     .bind::<Text, _>(key.as_str())
     .load::<CmpSamplePositionRow>(conn)?;
@@ -1941,8 +1944,9 @@ fn cmp_set_native_ranks(
         "SELECT positions.record_id AS set_id, positions.source_order \
          FROM cmp_set_field_positions AS positions JOIN snapshot_sets AS sets ON sets.set_id = positions.record_id \
          WHERE sets.snapshot_key = ? \
-         UNION ALL SELECT samples.record_id AS set_id, samples.source_order \
-         FROM cmp_samples AS samples JOIN snapshot_sets AS sets ON sets.set_id = samples.record_id \
+         UNION ALL SELECT occurrence.record_id AS set_id, samples.source_order \
+         FROM cmp_samples AS samples JOIN asset_occurrences AS occurrence USING(occurrence_id) \
+         JOIN snapshot_sets AS sets ON sets.set_id = occurrence.record_id \
          WHERE sets.snapshot_key = ? \
          UNION ALL SELECT occurrences.record_id AS set_id, positions.source_order \
          FROM cmp_set_rom_positions AS positions JOIN asset_occurrences AS occurrences USING (occurrence_id) \

@@ -104,8 +104,9 @@ UNION ALL SELECT record_id,11 FROM cmp_set_facts WHERE serial IS NOT NULL;
 
 CREATE VIEW cmp_set_native_layout AS
 SELECT record_id,source_order,'field' AS kind,field_kind AS child_order FROM cmp_set_field_positions
-UNION ALL SELECT record_id,source_order,'sample',sample_order FROM cmp_samples
-UNION ALL SELECT record_id,position.source_order,'rom',occurrence_order
+UNION ALL SELECT record_id,source_order,'sample',sample.occurrence_id
+FROM cmp_samples AS sample JOIN asset_occurrences USING(occurrence_id)
+UNION ALL SELECT record_id,position.source_order,'rom',position.occurrence_id
 FROM cmp_set_rom_positions AS position JOIN asset_occurrences USING(occurrence_id);
 
 -- REPLACE may bypass delete triggers when recursive_triggers is disabled.
@@ -132,7 +133,7 @@ CREATE TRIGGER cmp_sample_parent_links_immutable_insert BEFORE INSERT ON cmp_sam
 WHEN EXISTS (SELECT 1 FROM cmp_sample_parent_links WHERE record_id=NEW.record_id)
 BEGIN SELECT RAISE(ABORT, 'CMP conflicting native inserts are immutable'); END;
 CREATE TRIGGER cmp_samples_immutable_insert BEFORE INSERT ON cmp_samples
-WHEN EXISTS (SELECT 1 FROM cmp_samples WHERE record_id=NEW.record_id AND sample_order=NEW.sample_order)
+WHEN EXISTS (SELECT 1 FROM cmp_samples WHERE occurrence_id=NEW.occurrence_id)
 BEGIN SELECT RAISE(ABORT, 'CMP conflicting native inserts are immutable'); END;
 CREATE TRIGGER cmp_header_field_positions_immutable_insert BEFORE INSERT ON cmp_header_field_positions
 WHEN EXISTS (SELECT 1 FROM cmp_header_field_positions WHERE snapshot_key=NEW.snapshot_key AND (field_kind=NEW.field_kind OR source_order=NEW.source_order))
@@ -184,10 +185,12 @@ CREATE TRIGGER cmp_comments_immutable_delete BEFORE DELETE ON cmp_comments
 BEGIN SELECT RAISE(ABORT, 'CMP document facts are immutable'); END;
 
 CREATE TRIGGER cmp_samples_native_insert BEFORE INSERT ON cmp_samples
-WHEN NOT EXISTS (SELECT 1 FROM catalog_sets JOIN catalog_set_groups USING(set_group_id)
-    WHERE set_id = NEW.record_id AND source_element_kind = 'cmp_set') OR EXISTS (SELECT 1 FROM catalog_sets JOIN catalog_set_groups USING(set_group_id)
-    JOIN snapshot_publications USING(snapshot_key) WHERE set_id = NEW.record_id)
-BEGIN SELECT RAISE(ABORT, 'CMP child facts require an unpublished matching set'); END;
+WHEN NOT EXISTS (SELECT 1 FROM asset_occurrences JOIN catalog_sets ON set_id=record_id
+    WHERE occurrence_id=NEW.occurrence_id AND claim_kind='cmp_sample' AND source_element_kind='cmp_set')
+ OR EXISTS (SELECT 1 FROM asset_occurrences JOIN catalog_sets ON set_id=record_id
+    JOIN catalog_set_groups USING(set_group_id) JOIN snapshot_publications USING(snapshot_key)
+    WHERE occurrence_id=NEW.occurrence_id)
+BEGIN SELECT RAISE(ABORT, 'CMP samples require an unpublished matching media entry'); END;
 CREATE TRIGGER cmp_samples_immutable_update BEFORE UPDATE ON cmp_samples
 BEGIN SELECT RAISE(ABORT, 'CMP child facts are immutable'); END;
 CREATE TRIGGER cmp_samples_immutable_delete BEFORE DELETE ON cmp_samples
@@ -274,6 +277,46 @@ WHEN EXISTS (
     WHERE snapshot_key=NEW.snapshot_key AND position.occurrence_id IS NULL
 )
 BEGIN SELECT RAISE(ABORT, 'CMP set facts require complete native ownership'); END;
+
+CREATE TRIGGER cmp_samples_require_complete_publication
+BEFORE INSERT ON snapshot_publications
+WHEN EXISTS (
+    SELECT 1 FROM asset_occurrences JOIN catalog_sets ON set_id=record_id
+    JOIN catalog_set_groups USING(set_group_id) LEFT JOIN cmp_samples USING(occurrence_id)
+    WHERE snapshot_key=NEW.snapshot_key AND asset_occurrences.claim_kind='cmp_sample'
+      AND cmp_samples.occurrence_id IS NULL
+)
+BEGIN SELECT RAISE(ABORT, 'CMP samples require complete native ownership'); END;
+
+-- Media order is derived once from the native ROM/sample layout, not from
+-- the position of a sample within a separate sample-only list.
+CREATE TRIGGER cmp_media_order_matches_source_publication
+BEFORE INSERT ON snapshot_publications
+WHEN EXISTS (
+    SELECT 1 FROM (
+      SELECT occurrence.occurrence_order,
+             ROW_NUMBER() OVER (PARTITION BY layout.record_id ORDER BY layout.source_order)-1 AS expected_order
+      FROM cmp_set_native_layout AS layout
+      JOIN asset_occurrences AS occurrence ON occurrence.occurrence_id=layout.child_order
+      JOIN catalog_sets ON set_id=layout.record_id JOIN catalog_set_groups USING(set_group_id)
+      WHERE snapshot_key=NEW.snapshot_key AND layout.kind IN ('sample','rom')
+    ) WHERE occurrence_order<>expected_order
+)
+BEGIN SELECT RAISE(ABORT, 'CMP media order must match native source order'); END;
+
+CREATE TRIGGER cmp_media_occurrences_immutable_insert BEFORE INSERT ON asset_occurrences
+WHEN EXISTS (
+    SELECT 1 FROM asset_occurrences AS occurrence JOIN catalog_sets ON set_id=record_id
+    WHERE source_element_kind='cmp_set' AND (occurrence_id=NEW.occurrence_id
+      OR (record_id=NEW.record_id AND occurrence_order=NEW.occurrence_order))
+)
+BEGIN SELECT RAISE(ABORT, 'CMP conflicting media inserts are immutable'); END;
+
+CREATE TRIGGER cmp_samples_have_no_declared_digests BEFORE INSERT ON occurrence_digest_assertions
+WHEN NEW.provenance='source_declared' AND EXISTS (
+    SELECT 1 FROM asset_occurrences WHERE occurrence_id=NEW.occurrence_id AND claim_kind='cmp_sample'
+)
+BEGIN SELECT RAISE(ABORT, 'CMP scalar samples cannot declare digests'); END;
 
 CREATE TRIGGER cmp_native_layout_requires_unique_publication
 BEFORE INSERT ON snapshot_publications

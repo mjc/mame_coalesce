@@ -56,7 +56,7 @@ CREATE TABLE acquisitions (
 CREATE TABLE asset_occurrences (
     occurrence_id INTEGER PRIMARY KEY NOT NULL,
     record_id INTEGER NOT NULL REFERENCES catalog_sets (set_id) ON DELETE RESTRICT,
-    occurrence_order INTEGER NOT NULL CHECK (occurrence_order >= 0),
+    occurrence_order INTEGER NOT NULL CHECK (typeof(occurrence_order) = 'integer' AND occurrence_order >= 0),
     claim_kind TEXT NOT NULL CHECK (claim_kind IN (
         'mame_rom', 'mame_disk', 'mame_sample', 'logiqx_rom', 'logiqx_disk',
         'logiqx_sample', 'cmp_rom', 'cmp_sample', 'no_intro_pc_file',
@@ -157,15 +157,15 @@ CREATE TABLE cmp_sample_parent_links (
     target_name TEXT NOT NULL
 ) WITHOUT ROWID;
 CREATE TABLE cmp_samples (
-    record_id INTEGER NOT NULL REFERENCES catalog_sets (set_id) ON DELETE RESTRICT,
-    sample_order INTEGER NOT NULL CHECK (typeof(sample_order) = 'integer' AND sample_order >= 0),
+    occurrence_id INTEGER PRIMARY KEY NOT NULL,
+    claim_kind TEXT NOT NULL DEFAULT 'cmp_sample' CHECK (claim_kind = 'cmp_sample'),
     sample_name TEXT NOT NULL,
     source_field TEXT NOT NULL CHECK (lower(source_field) = 'sample'),
     source_order INTEGER NOT NULL CHECK (typeof(source_order) = 'integer' AND source_order >= 0),
     is_quoted INTEGER NOT NULL CHECK (typeof(is_quoted) = 'integer' AND is_quoted IN (0, 1)),
     source_line INTEGER NOT NULL CHECK (typeof(source_line) = 'integer' AND source_line > 0),
     source_column INTEGER NOT NULL CHECK (typeof(source_column) = 'integer' AND source_column > 0),
-    PRIMARY KEY (record_id, sample_order)
+    FOREIGN KEY (occurrence_id, claim_kind) REFERENCES asset_occurrences(occurrence_id, claim_kind) ON DELETE RESTRICT
 ) WITHOUT ROWID;
 CREATE TABLE cmp_set_facts (
     record_id INTEGER PRIMARY KEY NOT NULL REFERENCES catalog_sets(set_id) ON DELETE RESTRICT,

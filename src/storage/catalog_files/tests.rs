@@ -122,6 +122,96 @@ fn logiqx_document() -> &'static str {
 </datafile>"#
 }
 
+#[test]
+fn cmp_samples_have_distinct_bulk_owners_in_native_media_order() -> TestResult {
+    let pool = pool()?;
+    let directory = tempfile::tempdir()?;
+    import_document(
+        &pool,
+        &directory,
+        "samples.dat",
+        crate::app::CatalogDocumentFormat::ClrMamePro,
+        r#"GAME (
+  NAME repeated
+  SAMPLE "click.wav"
+  ROM ( NAME file.bin SIZE 4 SHA1 a9993e364706816aba3e25717850c26c9cd0d89d )
+  sample click.wav
+  SaMpLe ""
+)
+set ( name repeated sample click.wav )"#,
+    )?;
+    let ids = occurrence_ids(&pool)?;
+    assert_eq!(ids.len(), 5, "every scalar sample needs a media owner");
+    let entries = occurrences_for_ids_in_pool(&pool, &ids)?;
+    assert_eq!(entries.len(), 5);
+    assert_eq!(
+        entries
+            .iter()
+            .map(|entry| entry.provenance.occurrence_kind)
+            .collect::<Vec<_>>(),
+        [
+            OccurrenceKind::ClrMameProSample,
+            OccurrenceKind::ClrMameProRom,
+            OccurrenceKind::ClrMameProSample,
+            OccurrenceKind::ClrMameProSample,
+            OccurrenceKind::ClrMameProSample
+        ]
+    );
+    assert_eq!(
+        entries
+            .iter()
+            .map(|entry| entry.provenance.asset_name.as_deref())
+            .collect::<Vec<_>>(),
+        [
+            Some("click.wav"),
+            Some("file.bin"),
+            Some("click.wav"),
+            Some(""),
+            Some("click.wav")
+        ]
+    );
+    assert_eq!(
+        entries
+            .iter()
+            .map(|entry| entry.provenance.occurrence_order)
+            .collect::<Vec<_>>(),
+        [0, 1, 2, 3, 0]
+    );
+    assert_eq!(
+        entries
+            .iter()
+            .map(|entry| entry.provenance.native_occurrence_location)
+            .collect::<Vec<_>>(),
+        [(3, 10), (4, 3), (5, 10), (6, 10), (8, 28)]
+            .map(|(line, column)| Some(SourceLocation { line, column }))
+    );
+    for entry in &entries {
+        assert_eq!(entry.provenance.set_name, "repeated");
+        assert_eq!(
+            entry.provenance.source_element_kind,
+            SourceElementKind::ClrMameProSet
+        );
+        assert!(entry.provenance.native_occurrence_location.is_some());
+        if entry.provenance.occurrence_kind == OccurrenceKind::ClrMameProSample {
+            assert!(entry.content_id.is_none());
+            assert!(entry.digests.is_empty());
+        }
+    }
+    assert_ne!(entries[0].provenance.set_id, entries[4].provenance.set_id);
+    let content = entries[1]
+        .content_id
+        .expect("ROM has eligible whole-file evidence");
+    let page =
+        occurrences_for_content_in_pool(&pool, content, ContentOccurrenceLimit::new(10)?, None)?;
+    assert_eq!(
+        page.occurrences.len(),
+        1,
+        "filename-only samples never join UUID membership"
+    );
+    assert_eq!(page.occurrences[0].occurrence_id, ids[1]);
+    Ok(())
+}
+
 fn add_computed_digest_children(pool: &Pool, ids: &[OccurrenceId]) -> TestResult {
     let mut connection = pool.get()?;
     sql_query("INSERT OR IGNORE INTO digest_values (algorithm, digest) VALUES ('sha256', ?)")

@@ -213,10 +213,17 @@ struct SnapshotAsset {
     dump_status: Option<String>,
     serial: Option<String>,
     date: Option<String>,
-    mame_attributes: Option<mame::MameAssetAttributes>,
-    logiqx_attributes: Option<LogiqxAssetAttributes>,
-    cmp_facts: Option<crate::clrmamepro::AssetFacts>,
+    native: NativeAssetFacts,
     location: crate::logiqx::RecordLocation,
+}
+
+/// A media entry has exactly one format-specific source owner.
+enum NativeAssetFacts {
+    Mame(mame::MameAssetAttributes),
+    Logiqx(LogiqxAssetAttributes),
+    CmpRom(Box<crate::clrmamepro::AssetFacts>),
+    CmpSample(crate::clrmamepro::FieldValue),
+    NoIntroPc,
 }
 
 struct LogiqxAssetAttributes {
@@ -236,6 +243,35 @@ enum SourceIdentityEligibility {
 }
 
 impl SnapshotAsset {
+    const fn filename_only(
+        name: String,
+        location: crate::logiqx::RecordLocation,
+        native: NativeAssetFacts,
+    ) -> Self {
+        Self {
+            name,
+            role: "other",
+            size: None,
+            crc: None,
+            md5: None,
+            sha1: None,
+            evidence_scope: "unknown",
+            merge: None,
+            dump_status: None,
+            serial: None,
+            date: None,
+            location,
+            native,
+        }
+    }
+
+    const fn cmp_rom_facts(&self) -> Option<&crate::clrmamepro::AssetFacts> {
+        match &self.native {
+            NativeAssetFacts::CmpRom(facts) => Some(facts),
+            _ => None,
+        }
+    }
+
     fn from_logiqx(
         rom: &crate::logiqx::Rom,
         location: crate::logiqx::RecordLocation,
@@ -254,8 +290,7 @@ impl SnapshotAsset {
             dump_status: expected.dump_status,
             serial: expected.serial,
             date: expected.date,
-            mame_attributes: None,
-            logiqx_attributes: Some(LogiqxAssetAttributes {
+            native: NativeAssetFacts::Logiqx(LogiqxAssetAttributes {
                 size_text: rom.size_text().map(str::to_owned),
                 crc_text: rom.crc_text().map(str::to_owned),
                 md5_text: rom.md5_text().map(str::to_owned),
@@ -268,7 +303,6 @@ impl SnapshotAsset {
                 status_was_present: rom.status_was_explicit(),
                 source_order,
             }),
-            cmp_facts: None,
             location,
         })
     }
@@ -380,51 +414,69 @@ impl SnapshotData {
     }
 
     fn from_clrmamepro(catalog: ClrMameProCatalog) -> Self {
-        let sets = catalog
-            .sets
-            .into_iter()
-            .map(|set| {
-                let parent_field = set.parent.as_ref().map(|_| "cloneof".to_owned());
-                let assets = set
-                    .assets
-                    .into_iter()
-                    .map(|asset| SnapshotAsset {
-                        name: asset.name,
-                        role: "rom",
-                        size: asset.size,
-                        crc: asset.crc,
-                        md5: asset.md5,
-                        sha1: asset.sha1,
-                        evidence_scope: "whole_asset",
-                        merge: asset.merge,
-                        dump_status: asset.status,
-                        serial: None,
-                        date: None,
-                        mame_attributes: None,
-                        logiqx_attributes: None,
-                        cmp_facts: Some(asset.native),
-                        location: asset.location,
-                    })
-                    .collect();
-                SnapshotSet {
-                    name: set.name,
-                    parent: set.parent,
-                    parent_field,
-                    runtime_dependencies: Vec::new(),
-                    location: set.location,
-                    assets,
-                    switches: Vec::new(),
-                    bios_sets: Vec::new(),
-                    specification: Vec::new(),
-                    mame_facts: None,
-                    no_intro_facts: None,
-                    logiqx_facts: None,
-                    logiqx_details: None,
-                    cmp_facts: Some(set.native),
-                    machine_dependencies: Vec::new(),
-                }
-            })
-            .collect();
+        let sets =
+            catalog
+                .sets
+                .into_iter()
+                .map(|mut set| {
+                    let parent_field = set.parent.as_ref().map(|_| "cloneof".to_owned());
+                    let mut media =
+                        set.assets
+                            .into_iter()
+                            .map(|asset| {
+                                (
+                                    asset.native.set_order,
+                                    SnapshotAsset {
+                                        name: asset.name,
+                                        role: "rom",
+                                        size: asset.size,
+                                        crc: asset.crc,
+                                        md5: asset.md5,
+                                        sha1: asset.sha1,
+                                        evidence_scope: "whole_asset",
+                                        merge: asset.merge,
+                                        dump_status: asset.status,
+                                        serial: None,
+                                        date: None,
+                                        native: NativeAssetFacts::CmpRom(Box::new(asset.native)),
+                                        location: asset.location,
+                                    },
+                                )
+                            })
+                            .chain(std::mem::take(&mut set.native.samples).into_iter().map(
+                                |sample| {
+                                    (
+                                        sample.order,
+                                        SnapshotAsset::filename_only(
+                                            sample.value.clone(),
+                                            sample.location,
+                                            NativeAssetFacts::CmpSample(sample),
+                                        ),
+                                    )
+                                },
+                            ))
+                            .collect::<Vec<_>>();
+                    media.sort_by_key(|(order, _)| *order);
+                    let assets = media.into_iter().map(|(_, asset)| asset).collect();
+                    SnapshotSet {
+                        name: set.name,
+                        parent: set.parent,
+                        parent_field,
+                        runtime_dependencies: Vec::new(),
+                        location: set.location,
+                        assets,
+                        switches: Vec::new(),
+                        bios_sets: Vec::new(),
+                        specification: Vec::new(),
+                        mame_facts: None,
+                        no_intro_facts: None,
+                        logiqx_facts: None,
+                        logiqx_details: None,
+                        cmp_facts: Some(set.native),
+                        machine_dependencies: Vec::new(),
+                    }
+                })
+                .collect();
         Self {
             version: catalog.version,
             sets,
@@ -458,9 +510,7 @@ impl SnapshotData {
                         dump_status: None,
                         serial: None,
                         date: None,
-                        mame_attributes: None,
-                        logiqx_attributes: None,
-                        cmp_facts: None,
+                        native: NativeAssetFacts::NoIntroPc,
                         location: asset.location,
                     })
                     .collect();
@@ -523,8 +573,7 @@ fn logiqx_assets(
             dump_status: Some(disk.effective_status().to_owned()),
             serial: None,
             date: None,
-            mame_attributes: None,
-            logiqx_attributes: Some(LogiqxAssetAttributes {
+            native: NativeAssetFacts::Logiqx(LogiqxAssetAttributes {
                 size_text: None,
                 crc_text: None,
                 md5_text: disk.md5_text().map(str::to_owned),
@@ -533,25 +582,14 @@ fn logiqx_assets(
                 status_was_present: disk.status_was_explicit(),
                 source_order: logiqx_child_order(game, disk.location())?,
             }),
-            cmp_facts: None,
             location: disk.location(),
         });
     }
     for sample in game.samples() {
-        assets.push(SnapshotAsset {
-            name: sample.name().to_owned(),
-            role: "other",
-            size: None,
-            crc: None,
-            md5: None,
-            sha1: None,
-            evidence_scope: "unknown",
-            merge: None,
-            dump_status: None,
-            serial: None,
-            date: None,
-            mame_attributes: None,
-            logiqx_attributes: Some(LogiqxAssetAttributes {
+        assets.push(SnapshotAsset::filename_only(
+            sample.name().to_owned(),
+            sample.location(),
+            NativeAssetFacts::Logiqx(LogiqxAssetAttributes {
                 size_text: None,
                 crc_text: None,
                 md5_text: None,
@@ -560,9 +598,7 @@ fn logiqx_assets(
                 status_was_present: false,
                 source_order: logiqx_child_order(game, sample.location())?,
             }),
-            cmp_facts: None,
-            location: sample.location(),
-        });
+        ));
     }
     assets.sort_by_key(|asset| (asset.location.line, asset.location.column));
     Ok(assets)
@@ -673,9 +709,7 @@ fn machine_assets(assets: Vec<crate::mame::MachineAsset>) -> Vec<SnapshotAsset> 
                 dump_status: Some(asset.dump_status.as_str().to_owned()),
                 serial: None,
                 date: None,
-                mame_attributes: Some(asset.attributes),
-                logiqx_attributes: None,
-                cmp_facts: None,
+                native: NativeAssetFacts::Mame(asset.attributes),
                 location: asset.location,
             }
         })
@@ -1275,15 +1309,15 @@ fn insert_asset_requirement(
     // unlike software-list ROM entries, whose size is one load segment.
     let resolution = if asset.role == "other"
         || asset
-            .cmp_facts
-            .as_ref()
+            .cmp_rom_facts()
             .is_some_and(crate::clrmamepro::AssetFacts::has_conflicting_declarations)
-        || asset.logiqx_attributes.as_ref().is_some_and(|fields| {
-            matches!(
-                fields.identity_eligibility,
-                SourceIdentityEligibility::UninterpretedDeclaration
-            )
-        }) {
+        || matches!(
+            &asset.native,
+            NativeAssetFacts::Logiqx(LogiqxAssetAttributes {
+                identity_eligibility: SourceIdentityEligibility::UninterpretedDeclaration,
+                ..
+            })
+        ) {
         ContentIdentityResolution::NoEligibleEvidence
     } else {
         resolve_content_identity(conn, size, digests)?
@@ -1299,11 +1333,11 @@ fn insert_asset_requirement(
         size,
         content_uuid,
     )?;
-    if let Some(facts) = &asset.cmp_facts {
+    if let Some(facts) = asset.cmp_rom_facts() {
         cmp_native::insert_rom_positions(conn, occurrence.database_value(), facts)?;
     }
     record_occurrence_digest_assertions(conn, occurrence, digests, "source_declared")?;
-    if let Some(facts) = &asset.cmp_facts {
+    if let Some(facts) = asset.cmp_rom_facts() {
         for field in [&facts.crc, &facts.crc32].into_iter().flatten() {
             let digest = hex::decode(&field.value).map_err(|error| {
                 crate::Error::InvalidHash(format!("invalid ClrMamePro CRC declaration: {error}"))

@@ -124,9 +124,12 @@ explicit unknown directive values remain stored but have no effective mode.
 History tracks native document and scalar/sample/ROM order without treating
 repeated-name source positions as identity. The
 `clrmamepro-declared-text-compat-v1` interpretation is an explicit compatibility
-grammar, not proof of every CMP dialect. Scalar sample rows are native query
-data; shared media-entry API coverage and the full format witness matrix remain
-unfinished.
+grammar, not proof of every CMP dialect. Each scalar sample now owns a distinct
+media entry in mixed ROM/sample source order, including repeated and empty
+names. Bulk catalog queries expose its native name, location and list/set
+provenance; size and declared digests remain unknown and it cannot receive a
+file UUID. Samples are not ROM build requirements. The full format witness
+matrix remains unfinished.
 
 The Rust `catalog_files` API exposes bulk occurrence lookup and keyset-paginated
 file membership across published catalog editions. Results keep each owner and

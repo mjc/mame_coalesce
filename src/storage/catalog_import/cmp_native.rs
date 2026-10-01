@@ -214,23 +214,26 @@ pub(super) fn insert_set_facts(
         }
     }
 
-    for (sample_order, sample) in facts.samples.iter().enumerate() {
+    Ok(())
+}
+
+pub(super) fn insert_sample(
+    conn: &mut SqliteConnection,
+    occurrence: crate::storage::catalog_identity::OccurrenceId,
+    sample: &FieldValue,
+) -> crate::Result<()> {
+    bind_position!(
         sql_query(
             "INSERT INTO cmp_samples (
-               record_id, sample_order, sample_name, source_field, source_order,
+               occurrence_id, sample_name, source_field, source_order,
                is_quoted, source_line, source_column
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+             ) VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
-        .bind::<BigInt, _>(record_id)
-        .bind::<BigInt, _>(checked_order(sample_order)?)
-        .bind::<Text, _>(&sample.value)
-        .bind::<Text, _>(&sample.source_name)
-        .bind::<BigInt, _>(checked_order(sample.order)?)
-        .bind::<Bool, _>(sample.quoted)
-        .bind::<BigInt, _>(sample.location.line)
-        .bind::<BigInt, _>(sample.location.column)
-        .execute(conn)?;
-    }
+        .bind::<BigInt, _>(occurrence.database_value())
+        .bind::<Text, _>(&sample.value),
+        source_position(sample)
+    )
+    .execute(conn)?;
     Ok(())
 }
 
@@ -277,8 +280,7 @@ pub(super) fn insert_rom_claim(
     asset: &super::SnapshotAsset,
 ) -> crate::Result<()> {
     let facts = asset
-        .cmp_facts
-        .as_ref()
+        .cmp_rom_facts()
         .ok_or_else(|| crate::Error::InvalidPath("CMP ROM has no native declarations".into()))?;
     sql_query(
         "INSERT INTO cmp_rom_claims (

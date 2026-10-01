@@ -121,8 +121,16 @@ parser-internal representations the public contract.
   native ordinals. Conflicting primary-key and field-order inserts reject
   REPLACE writes independently of recursive-trigger settings, including drafts.
   History compares structural document layout independently
-  of repeated-name owner fact multisets. Native scalar sample rows remain
-  separate from the shared media-entry API; that cutover is not complete.
+  of repeated-name owner fact multisets. Each scalar sample now owns one common
+  media entry, with a single native payload keyed by occurrence ID. Samples and
+  ROMs share source-relative media order, while scalar field positions retain
+  the complete set layout. Bulk queries preserve repeated and empty sample
+  names, native locations and distinct repeated-name set owners. Samples have
+  no declared size/digests or file UUID and stay out of ROM build requirements.
+  Publication requires every sample payload and correct mixed-media order;
+  draft media replacement is rejected with recursive triggers disabled.
+  The importer uses one native-payload enum rather than several independently
+  optional format payloads.
   Full per-format field coverage and the remaining shared identity work are
   not finished.
 - Ordinary DAT imports publish native snapshots and retain originals externally.

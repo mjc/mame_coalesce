@@ -153,6 +153,18 @@ struct SetRomPositionRow {
 }
 
 #[derive(QueryableByName)]
+struct CmpNativeLayoutRow {
+    #[diesel(sql_type = Text)]
+    kind: String,
+    #[diesel(sql_type = BigInt)]
+    source_order: i64,
+    #[diesel(sql_type = BigInt)]
+    child_order: i64,
+    #[diesel(sql_type = BigInt)]
+    payload_count: i64,
+}
+
+#[derive(QueryableByName)]
 struct NullableTextRow {
     #[diesel(sql_type = Nullable<Text>)]
     value: Option<String>,
@@ -569,8 +581,12 @@ fn cmp_set_rom_positions_order_rom_forms_with_scalars_and_samples() -> TestResul
     let facts = set_metadata(&mut connection)?;
     assert_eq!(facts.description.as_deref(), Some("first"));
     assert_eq!(facts.year.as_deref(), Some("1982"));
-    let samples = sql_query("SELECT sample_name AS value FROM cmp_samples ORDER BY sample_order")
-        .load::<NullableTextRow>(&mut connection)?;
+    let samples = sql_query(
+        "SELECT samples.sample_name AS value FROM cmp_samples AS samples \
+         JOIN asset_occurrences AS occurrence USING (occurrence_id) \
+         ORDER BY occurrence.occurrence_order",
+    )
+    .load::<NullableTextRow>(&mut connection)?;
     assert_eq!(
         samples
             .iter()
@@ -578,6 +594,31 @@ fn cmp_set_rom_positions_order_rom_forms_with_scalars_and_samples() -> TestResul
             .collect::<Vec<_>>(),
         [Some("intro"), Some("click")]
     );
+    let media_layout = sql_query(
+        "SELECT layout.kind, layout.source_order, layout.child_order, \
+                CASE WHEN layout.kind='sample' \
+                     THEN (SELECT COUNT(*) FROM cmp_samples WHERE occurrence_id=layout.child_order) \
+                     ELSE (SELECT COUNT(*) FROM cmp_rom_claims WHERE occurrence_id=layout.child_order) \
+                END AS payload_count \
+         FROM cmp_set_native_layout AS layout \
+         WHERE layout.record_id=(SELECT record_id FROM cmp_set_facts LIMIT 1) \
+           AND layout.kind IN ('rom','sample') \
+         ORDER BY layout.source_order",
+    )
+    .load::<CmpNativeLayoutRow>(&mut connection)?;
+    assert_eq!(
+        media_layout
+            .iter()
+            .map(|entry| (entry.kind.as_str(), entry.source_order, entry.payload_count))
+            .collect::<Vec<_>>(),
+        [
+            ("rom", 2, 1),
+            ("sample", 3, 1),
+            ("rom", 5, 1),
+            ("sample", 6, 1)
+        ]
+    );
+    assert!(media_layout.iter().all(|entry| entry.child_order > 0));
     Ok(())
 }
 

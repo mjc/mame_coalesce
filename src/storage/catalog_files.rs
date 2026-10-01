@@ -504,10 +504,7 @@ const fn native_payload_select() -> &'static str {
      LEFT JOIN logiqx_disk_claims AS logiqx_disk ON logiqx_disk.occurrence_id = occurrence.occurrence_id \
      LEFT JOIN logiqx_sample_claims AS logiqx_sample ON logiqx_sample.occurrence_id = occurrence.occurrence_id \
      LEFT JOIN cmp_rom_claims AS cmp_rom ON cmp_rom.occurrence_id = occurrence.occurrence_id \
-     LEFT JOIN cmp_samples AS cmp_sample \
-       ON cmp_sample.record_id = catalog_set.set_id \
-      AND cmp_sample.sample_order = occurrence.occurrence_order \
-      AND occurrence.claim_kind = 'cmp_sample' \
+     LEFT JOIN cmp_samples AS cmp_sample ON cmp_sample.occurrence_id = occurrence.occurrence_id \
      LEFT JOIN no_intro_pc_file_claims AS no_intro_file ON no_intro_file.occurrence_id = occurrence.occurrence_id \
      LEFT JOIN mame_machine_samples AS mame_sample \
        ON mame_sample.set_id = catalog_set.set_id \

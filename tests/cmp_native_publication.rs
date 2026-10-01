@@ -105,6 +105,21 @@ fn connect(directory: &tempfile::TempDir) -> TestResult<SqliteConnection> {
     )?)
 }
 
+fn insert_cmp_sample_occurrence(
+    connection: &mut SqliteConnection,
+    set_id: i64,
+    occurrence_order: i64,
+) -> TestResult<i64> {
+    Ok(sql_query(
+        "INSERT INTO asset_occurrences(record_id,occurrence_order,claim_kind,content_uuid) \
+         VALUES(?,?,'cmp_sample',NULL) RETURNING occurrence_id AS value",
+    )
+    .bind::<BigInt, _>(set_id)
+    .bind::<BigInt, _>(occurrence_order)
+    .get_result::<IdValue>(connection)?
+    .value)
+}
+
 fn insert_pending_owner(
     connection: &mut SqliteConnection,
     source: &SnapshotKey,
@@ -240,41 +255,42 @@ fn copy_set_owner(
         .execute(connection)?;
     }
 
-    sql_query(
-        "INSERT INTO cmp_samples(record_id,sample_order,sample_name,source_field,source_order,is_quoted,source_line,source_column) \
-         SELECT ?,sample_order,sample_name,source_field,CASE WHEN ?='duplicate' THEN (SELECT source_order FROM cmp_set_field_positions WHERE record_id=? AND field_kind=0) ELSE source_order END,is_quoted,source_line,source_column \
-         FROM cmp_samples WHERE record_id=(SELECT set_id FROM catalog_sets JOIN catalog_set_groups USING(set_group_id) WHERE snapshot_key=? LIMIT 1)",
-    )
-    .bind::<BigInt, _>(set_id)
-    .bind::<Text, _>(match duplicate {
-        DuplicateLayout::ScalarSampleRom => "duplicate",
-        _ => "none",
-    })
-    .bind::<BigInt, _>(set_id)
-    .bind::<Text, _>(source.as_str())
-    .execute(connection)?;
-
     let source_set = sql_query(
         "SELECT set_id AS value FROM catalog_sets JOIN catalog_set_groups USING(set_group_id) WHERE snapshot_key=? LIMIT 1",
     )
     .bind::<Text, _>(source.as_str())
     .get_result::<IdValue>(connection)?
     .value;
+    let source_sample_occurrence = sql_query(
+        "SELECT samples.occurrence_id AS value FROM cmp_samples AS samples \
+         JOIN asset_occurrences AS occurrence USING (occurrence_id) \
+         WHERE occurrence.record_id=?",
+    )
+    .bind::<BigInt, _>(source_set)
+    .get_result::<IdValue>(connection)?
+    .value;
+    let sample_occurrence = copy_occurrence(connection, set_id, source_sample_occurrence)?;
+    sql_query(
+        "INSERT INTO cmp_samples(occurrence_id,sample_name,source_field,source_order,is_quoted,source_line,source_column) \
+         SELECT ?,sample_name,source_field,CASE WHEN ?='duplicate' THEN (SELECT source_order FROM cmp_set_field_positions WHERE record_id=? AND field_kind=0) ELSE source_order END,is_quoted,source_line,source_column \
+         FROM cmp_samples WHERE occurrence_id=?",
+    )
+    .bind::<BigInt, _>(sample_occurrence)
+    .bind::<Text, _>(match duplicate {
+        DuplicateLayout::ScalarSampleRom => "duplicate",
+        _ => "none",
+    })
+    .bind::<BigInt, _>(set_id)
+    .bind::<BigInt, _>(source_sample_occurrence)
+    .execute(connection)?;
+
     let source_occurrence = sql_query(
         "SELECT occurrence_id AS value FROM asset_occurrences WHERE record_id=? AND claim_kind='cmp_rom' LIMIT 1",
     )
     .bind::<BigInt, _>(source_set)
     .get_result::<IdValue>(connection)?
     .value;
-    let occurrence_id = sql_query(
-        "INSERT INTO asset_occurrences(record_id,occurrence_order,claim_kind,content_uuid) \
-         SELECT ?,occurrence_order,claim_kind,content_uuid FROM asset_occurrences WHERE occurrence_id=? \
-         RETURNING occurrence_id AS value",
-    )
-    .bind::<BigInt, _>(set_id)
-    .bind::<BigInt, _>(source_occurrence)
-    .get_result::<IdValue>(connection)?
-    .value;
+    let occurrence_id = copy_occurrence(connection, set_id, source_occurrence)?;
     sql_query(
         "INSERT INTO cmp_rom_claims(occurrence_id,name,size_text,crc_text,crc32_text,md5_text,sha1_text,evidence_scope,evidence_provenance,merge_name,date,serial,status_text,nodump_present,baddump_present,source_line,source_column) \
          SELECT ?,name,size_text,crc_text,crc32_text,md5_text,sha1_text,evidence_scope,evidence_provenance,merge_name,date,serial,status_text,nodump_present,baddump_present,source_line,source_column FROM cmp_rom_claims WHERE occurrence_id=?",
@@ -282,15 +298,24 @@ fn copy_set_owner(
     .bind::<BigInt, _>(occurrence_id)
     .bind::<BigInt, _>(source_occurrence)
     .execute(connection)?;
-    copy_rom_owner(
-        connection,
-        source_occurrence,
-        occurrence_id,
-        set_id,
-        omission,
-        duplicate,
-    )?;
+    copy_rom_owner(connection, source_occurrence, occurrence_id, omission)?;
     Ok(set_id)
+}
+
+fn copy_occurrence(
+    connection: &mut SqliteConnection,
+    set_id: i64,
+    source_occurrence: i64,
+) -> TestResult<i64> {
+    Ok(sql_query(
+        "INSERT INTO asset_occurrences(record_id,occurrence_order,claim_kind,content_uuid) \
+         SELECT ?,occurrence_order,claim_kind,content_uuid FROM asset_occurrences WHERE occurrence_id=? \
+         RETURNING occurrence_id AS value",
+    )
+    .bind::<BigInt, _>(set_id)
+    .bind::<BigInt, _>(source_occurrence)
+    .get_result::<IdValue>(connection)?
+    .value)
 }
 
 fn copy_parent_links(
@@ -314,9 +339,7 @@ fn copy_rom_owner(
     connection: &mut SqliteConnection,
     source_occurrence: i64,
     occurrence_id: i64,
-    set_id: i64,
     omission: Omission,
-    duplicate: DuplicateLayout,
 ) -> TestResult {
     sql_query(
         "INSERT INTO cmp_rom_field_positions(occurrence_id,field_kind,source_field,source_order,is_quoted,source_line,source_column) \
@@ -329,15 +352,10 @@ fn copy_rom_owner(
     if !matches!(omission, Omission::RomPosition) {
         sql_query(
             "INSERT INTO cmp_set_rom_positions(occurrence_id,source_order) \
-             SELECT ?,CASE WHEN ?='duplicate' THEN (SELECT source_order FROM cmp_set_field_positions WHERE record_id=? AND field_kind=0) ELSE source_order END \
+             SELECT ?,source_order \
              FROM cmp_set_rom_positions WHERE occurrence_id=?",
         )
         .bind::<BigInt, _>(occurrence_id)
-        .bind::<Text, _>(match duplicate {
-            DuplicateLayout::ScalarSampleRom => "duplicate",
-            _ => "none",
-        })
-        .bind::<BigInt, _>(set_id)
         .bind::<BigInt, _>(source_occurrence)
         .execute(connection)?;
     }
@@ -642,7 +660,7 @@ fn cmp_native_document_and_set_facts_reject_wrong_format_owners() -> TestResult 
 
 #[test]
 fn cmp_samples_require_integer_ordinals() -> TestResult {
-    for (sample_order, source_order) in [(9.5, 9.0), (9.0, 9.5)] {
+    for (fractional_occurrence_order, fractional_source_order) in [(true, false), (false, true)] {
         let (directory, _database, source) = setup(CatalogDocumentFormat::ClrMamePro, CMP_SOURCE)?;
         let mut connection = connect(&directory)?;
         let set_id = insert_pending_owner(
@@ -651,24 +669,260 @@ fn cmp_samples_require_integer_ordinals() -> TestResult {
             Omission::None,
             DuplicateLayout::None,
         )?;
-        let result = sql_query(
-            "INSERT INTO cmp_samples(record_id,sample_order,sample_name,source_field,source_order,is_quoted,source_line,source_column) \
-             VALUES(?,?,'fractional.wav','SAMPLE',?,0,1,1)",
+        let occurrence_result = sql_query(
+            "INSERT INTO asset_occurrences(record_id,occurrence_order,claim_kind,content_uuid) \
+             VALUES(?,?,'cmp_sample',NULL)",
         )
         .bind::<BigInt, _>(set_id)
-        .bind::<Double, _>(sample_order)
-        .bind::<Double, _>(source_order)
+        .bind::<Double, _>(if fractional_occurrence_order {
+            2.5
+        } else {
+            2.0
+        })
         .execute(&mut connection);
-        let error = result
-            .expect_err("cmp_samples accepted a fractional ordinal")
-            .to_string();
-        assert!(error.contains("CHECK constraint failed"), "{error}");
+        if fractional_occurrence_order {
+            let error = occurrence_result
+                .expect_err("asset_occurrences accepted a fractional CMP sample order")
+                .to_string();
+            assert!(error.contains("CHECK constraint failed"), "{error}");
+            sql_query(
+                "INSERT INTO asset_occurrences(record_id,occurrence_order,claim_kind,content_uuid) \
+                 VALUES(?,2,'cmp_sample',NULL)",
+            )
+            .bind::<BigInt, _>(set_id)
+            .execute(&mut connection)?;
+        } else {
+            assert_eq!(occurrence_result?, 1);
+        }
+        let occurrence_id = sql_query("SELECT last_insert_rowid() AS value")
+            .get_result::<IdValue>(&mut connection)?
+            .value;
+        if fractional_source_order {
+            let payload_result = sql_query(
+                "INSERT INTO cmp_samples(occurrence_id,sample_name,source_field,source_order,is_quoted,source_line,source_column) \
+                 VALUES(?,'fractional.wav','SAMPLE',?,0,1,1)",
+            )
+            .bind::<BigInt, _>(occurrence_id)
+            .bind::<Double, _>(14.5)
+            .execute(&mut connection);
+            let error = payload_result
+                .expect_err("cmp_samples accepted a fractional source_order")
+                .to_string();
+            assert!(error.contains("CHECK constraint failed"), "{error}");
+        }
         assert_eq!(sql_query(
-            "INSERT INTO cmp_samples(record_id,sample_order,sample_name,source_field,source_order,is_quoted,source_line,source_column) \
-             VALUES(?,9,'control.wav','SAMPLE',99,0,1,1)",
-        ).bind::<BigInt, _>(set_id).execute(&mut connection)?, 1);
+            "INSERT INTO cmp_samples(occurrence_id,sample_name,source_field,source_order,is_quoted,source_line,source_column) \
+             VALUES(?,'control.wav','SAMPLE',14,0,1,1)",
+        ).bind::<BigInt, _>(occurrence_id).execute(&mut connection)?, 1);
         assert_eq!(publish(&mut connection)?, 1);
     }
+    Ok(())
+}
+
+#[test]
+fn cmp_samples_require_matching_sample_occurrences() -> TestResult {
+    let (directory, _database, source) = setup(CatalogDocumentFormat::ClrMamePro, CMP_SOURCE)?;
+    let mut connection = connect(&directory)?;
+    let set_id = insert_pending_owner(
+        &mut connection,
+        &source,
+        Omission::None,
+        DuplicateLayout::None,
+    )?;
+    let rom_occurrence = sql_query(
+        "SELECT occurrence_id AS value FROM asset_occurrences \
+         WHERE record_id=? AND claim_kind='cmp_rom'",
+    )
+    .bind::<BigInt, _>(set_id)
+    .get_result::<IdValue>(&mut connection)?
+    .value;
+    assert_guard(
+        sql_query(
+            "INSERT INTO cmp_samples(occurrence_id,sample_name,source_field,source_order,is_quoted,source_line,source_column) \
+             VALUES(?,'wrong-owner.wav','SAMPLE',14,0,1,1)",
+        )
+        .bind::<BigInt, _>(rom_occurrence)
+        .execute(&mut connection),
+        "CMP samples require an unpublished matching media entry",
+    );
+    assert_eq!(publish(&mut connection)?, 1);
+    Ok(())
+}
+
+#[test]
+fn cmp_sample_occurrences_require_native_payloads() -> TestResult {
+    let (directory, _database, source) = setup(CatalogDocumentFormat::ClrMamePro, CMP_SOURCE)?;
+    let mut connection = connect(&directory)?;
+    let set_id = insert_pending_owner(
+        &mut connection,
+        &source,
+        Omission::None,
+        DuplicateLayout::None,
+    )?;
+    let sample_occurrence = insert_cmp_sample_occurrence(&mut connection, set_id, 2)?;
+    assert_guard(
+        publish(&mut connection),
+        "CMP samples require complete native ownership",
+    );
+    sql_query(
+        "INSERT INTO cmp_samples(occurrence_id,sample_name,source_field,source_order,is_quoted,source_line,source_column) \
+         VALUES(?,'control.wav','SAMPLE',14,0,1,1)",
+    )
+    .bind::<BigInt, _>(sample_occurrence)
+    .execute(&mut connection)?;
+    assert_eq!(publish(&mut connection)?, 1);
+    Ok(())
+}
+
+#[test]
+fn cmp_media_order_requires_contiguous_source_order_with_valid_controls() -> TestResult {
+    let sample_payload = |connection: &mut SqliteConnection, occurrence: i64, source_order: i64| {
+        sql_query(
+            "INSERT INTO cmp_samples(occurrence_id,sample_name,source_field,source_order,is_quoted,source_line,source_column) \
+             VALUES(?,'order.wav','SAMPLE',?,0,1,1)",
+        )
+        .bind::<BigInt, _>(occurrence)
+        .bind::<BigInt, _>(source_order)
+        .execute(connection)
+    };
+    // A gap in media order, then a reversed sample/ROM pair. The vendor field
+    // creates a free native ordinal, so neither case duplicates native layout.
+    for (contents, occurrence_order, source_order) in [
+        (CMP_SOURCE.to_owned(), 3, 14),
+        (
+            CMP_SOURCE.replace(
+                "SAMPLE sample.wav ROM",
+                "SAMPLE sample.wav vendor value ROM",
+            ),
+            2,
+            13,
+        ),
+    ] {
+        let (directory, _database, source) = setup(CatalogDocumentFormat::ClrMamePro, &contents)?;
+        let mut connection = connect(&directory)?;
+        let set_id = insert_pending_owner(
+            &mut connection,
+            &source,
+            Omission::None,
+            DuplicateLayout::None,
+        )?;
+        sql_query("SAVEPOINT invalid_order").execute(&mut connection)?;
+        let occurrence = insert_cmp_sample_occurrence(&mut connection, set_id, occurrence_order)?;
+        sample_payload(&mut connection, occurrence, source_order)?;
+        assert_guard(
+            publish(&mut connection),
+            "CMP media order must match native source order",
+        );
+        sql_query("ROLLBACK TO invalid_order").execute(&mut connection)?;
+        sql_query("RELEASE invalid_order").execute(&mut connection)?;
+        // Restoration uses rollback, never an exception to native immutability.
+        let control = insert_cmp_sample_occurrence(&mut connection, set_id, 2)?;
+        sample_payload(&mut connection, control, 15)?;
+        assert_eq!(publish(&mut connection)?, 1);
+    }
+    Ok(())
+}
+
+#[test]
+fn cmp_media_occurrence_replace_is_rejected_with_recursive_triggers_disabled() -> TestResult {
+    for primary_key_conflict in [true, false] {
+        let (directory, _database, source) = setup(CatalogDocumentFormat::ClrMamePro, CMP_SOURCE)?;
+        let mut connection = connect(&directory)?;
+        let set_id = insert_pending_owner(
+            &mut connection,
+            &source,
+            Omission::None,
+            DuplicateLayout::None,
+        )?;
+        let sample_occurrence = sql_query(
+            "SELECT samples.occurrence_id AS value FROM cmp_samples AS samples \
+             JOIN asset_occurrences AS occurrence USING (occurrence_id) \
+             WHERE occurrence.record_id=?",
+        )
+        .bind::<BigInt, _>(set_id)
+        .get_result::<IdValue>(&mut connection)?
+        .value;
+        sql_query("PRAGMA recursive_triggers=OFF").execute(&mut connection)?;
+        if primary_key_conflict {
+            assert_guard(
+                sql_query(
+                    "INSERT OR REPLACE INTO asset_occurrences(occurrence_id,record_id,occurrence_order,claim_kind,content_uuid) \
+                     VALUES(?,?,2,'cmp_sample',NULL)",
+                )
+                .bind::<BigInt, _>(sample_occurrence)
+                .bind::<BigInt, _>(set_id)
+                .execute(&mut connection),
+                "CMP conflicting media inserts are immutable",
+            );
+        } else {
+            assert_guard(
+                sql_query(
+                    "INSERT OR REPLACE INTO asset_occurrences(record_id,occurrence_order,claim_kind,content_uuid) \
+                     VALUES(?,0,'cmp_sample',NULL)",
+                )
+                .bind::<BigInt, _>(set_id)
+                .execute(&mut connection),
+                "CMP conflicting media inserts are immutable",
+            );
+        }
+
+        let control_occurrence = insert_cmp_sample_occurrence(&mut connection, set_id, 2)?;
+        sql_query(
+            "INSERT INTO cmp_samples(occurrence_id,sample_name,source_field,source_order,is_quoted,source_line,source_column) \
+             VALUES(?,'control.wav','SAMPLE',14,0,1,1)",
+        )
+        .bind::<BigInt, _>(control_occurrence)
+        .execute(&mut connection)?;
+        assert_eq!(publish(&mut connection)?, 1);
+    }
+    Ok(())
+}
+
+#[test]
+fn cmp_sample_source_declared_digests_are_rejected_but_computed_are_allowed() -> TestResult {
+    let (directory, _database, source) = setup(CatalogDocumentFormat::ClrMamePro, CMP_SOURCE)?;
+    let mut connection = connect(&directory)?;
+    let set_id = insert_pending_owner(
+        &mut connection,
+        &source,
+        Omission::None,
+        DuplicateLayout::None,
+    )?;
+    let sample_occurrence = sql_query(
+        "SELECT samples.occurrence_id AS value FROM cmp_samples AS samples \
+         JOIN asset_occurrences AS occurrence USING (occurrence_id) \
+         WHERE occurrence.record_id=?",
+    )
+    .bind::<BigInt, _>(set_id)
+    .get_result::<IdValue>(&mut connection)?
+    .value;
+    let digest_id = sql_query(
+        "INSERT INTO digest_values(algorithm,digest) VALUES('sha1',zeroblob(20)) \
+         RETURNING digest_id AS value",
+    )
+    .get_result::<IdValue>(&mut connection)?
+    .value;
+    assert_guard(
+        sql_query(
+            "INSERT INTO occurrence_digest_assertions(occurrence_id,digest_id,scope,provenance) \
+             VALUES(?,?,'whole_asset','source_declared')",
+        )
+        .bind::<BigInt, _>(sample_occurrence)
+        .bind::<BigInt, _>(digest_id)
+        .execute(&mut connection),
+        "CMP scalar samples cannot declare digests",
+    );
+    assert_eq!(
+        sql_query(
+            "INSERT INTO occurrence_digest_assertions(occurrence_id,digest_id,scope,provenance) \
+         VALUES(?,?,'whole_asset','computed')",
+        )
+        .bind::<BigInt, _>(sample_occurrence)
+        .bind::<BigInt, _>(digest_id)
+        .execute(&mut connection)?,
+        1
+    );
+    assert_eq!(publish(&mut connection)?, 1);
     Ok(())
 }
 
@@ -682,19 +936,28 @@ fn cmp_samples_require_sample_keyword() -> TestResult {
         Omission::None,
         DuplicateLayout::None,
     )?;
-    let error = sql_query(
-        "INSERT INTO cmp_samples(record_id,sample_order,sample_name,source_field,source_order,is_quoted,source_line,source_column) \
-         VALUES(?,9,'invalid-keyword.wav','NOTSAMPLE',9,0,1,1)",
+    sql_query(
+        "INSERT INTO asset_occurrences(record_id,occurrence_order,claim_kind,content_uuid) \
+         VALUES(?,2,'cmp_sample',NULL)",
     )
     .bind::<BigInt, _>(set_id)
+    .execute(&mut connection)?;
+    let occurrence_id = sql_query("SELECT last_insert_rowid() AS value")
+        .get_result::<IdValue>(&mut connection)?
+        .value;
+    let error = sql_query(
+        "INSERT INTO cmp_samples(occurrence_id,sample_name,source_field,source_order,is_quoted,source_line,source_column) \
+         VALUES(?,'invalid-keyword.wav','NOTSAMPLE',14,0,1,1)",
+    )
+    .bind::<BigInt, _>(occurrence_id)
     .execute(&mut connection)
     .expect_err("cmp_samples accepted a non-SAMPLE source keyword")
     .to_string();
     assert!(error.contains("CHECK constraint failed"), "{error}");
     assert_eq!(sql_query(
-        "INSERT INTO cmp_samples(record_id,sample_order,sample_name,source_field,source_order,is_quoted,source_line,source_column) \
-         VALUES(?,9,'control.wav','sAmPlE',99,0,1,1)",
-    ).bind::<BigInt, _>(set_id).execute(&mut connection)?, 1);
+        "INSERT INTO cmp_samples(occurrence_id,sample_name,source_field,source_order,is_quoted,source_line,source_column) \
+         VALUES(?,'control.wav','sAmPlE',14,0,1,1)",
+    ).bind::<BigInt, _>(occurrence_id).execute(&mut connection)?, 1);
     assert_eq!(publish(&mut connection)?, 1);
     Ok(())
 }
@@ -752,10 +1015,17 @@ fn draft_cmp_facts_reject_replace_with_recursive_triggers_disabled() -> TestResu
     )?;
     sql_query("PRAGMA recursive_triggers=OFF").execute(&mut connection)?;
     let occurrence_id =
-        sql_query("SELECT occurrence_id AS value FROM asset_occurrences WHERE record_id=?")
+        sql_query("SELECT occurrence_id AS value FROM asset_occurrences WHERE record_id=? AND claim_kind='cmp_rom'")
             .bind::<BigInt, _>(set_id)
             .get_result::<IdValue>(&mut connection)?
             .value;
+    let sample_occurrence_id = sql_query(
+        "SELECT occurrence_id AS value FROM cmp_samples \
+         WHERE occurrence_id IN (SELECT occurrence_id FROM asset_occurrences WHERE record_id=?)",
+    )
+    .bind::<BigInt, _>(set_id)
+    .get_result::<IdValue>(&mut connection)?
+    .value;
     let cases = [
         ("cmp_documents", "snapshot_key='pending'".to_owned()),
         ("cmp_header_facts", "snapshot_key='pending'".to_owned()),
@@ -769,7 +1039,7 @@ fn draft_cmp_facts_reject_replace_with_recursive_triggers_disabled() -> TestResu
         ("cmp_sample_parent_links", format!("record_id={set_id}")),
         (
             "cmp_samples",
-            format!("record_id={set_id} AND sample_order=0"),
+            format!("occurrence_id={sample_occurrence_id}"),
         ),
         (
             "cmp_header_field_positions",
@@ -843,7 +1113,7 @@ fn draft_cmp_positions_reject_replacing_another_fields_source_ordinal() -> TestR
         (
             "cmp_rom_field_positions",
             Omission::RomNamePosition,
-            "(SELECT occurrence_id FROM asset_occurrences JOIN catalog_sets ON set_id=record_id JOIN catalog_set_groups USING(set_group_id) WHERE snapshot_key='pending')",
+            "(SELECT occurrence_id FROM asset_occurrences JOIN catalog_sets ON set_id=record_id JOIN catalog_set_groups USING(set_group_id) WHERE snapshot_key='pending' AND claim_kind='cmp_rom')",
         ),
     ] {
         let (directory, _database, source) = setup(CatalogDocumentFormat::ClrMamePro, CMP_SOURCE)?;
