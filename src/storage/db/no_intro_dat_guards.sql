@@ -64,6 +64,22 @@ JOIN (
 ) AS provenance ON provenance.occurrence_id = size.occurrence_id
 WHERE provenance.evidence_provenance = 'source_declared';
 
+-- Check disputes when a linked claim first supplies its source hash. A later
+-- claim can dispute an earlier association in the same streaming import; that
+-- does not erase the earlier source or make the document unpublishable. The
+-- immutable conflict evidence quarantines the alias for subsequent resolution.
+CREATE TRIGGER no_intro_dat_disputed_source_link_insert
+BEFORE INSERT ON occurrence_digest_assertions
+WHEN NEW.provenance = 'source_declared' AND NEW.scope IN ('whole_asset', 'whole_file')
+  AND EXISTS (
+      SELECT 1 FROM asset_occurrences
+      WHERE occurrence_id = NEW.occurrence_id AND claim_kind = 'no_intro_dat_rom'
+        AND content_uuid IS NOT NULL
+  ) AND EXISTS (
+      SELECT 1 FROM disputed_file_hashes WHERE digest_id = NEW.digest_id
+  )
+BEGIN SELECT RAISE(ABORT, 'No-Intro DAT cannot link an already disputed source hash'); END;
+
 CREATE TRIGGER no_intro_dat_linked_identity_publication
 BEFORE INSERT ON snapshot_publications
 WHEN EXISTS (
@@ -89,21 +105,10 @@ WHEN EXISTS (
               AND claim.evidence_scope = 'whole_file' AND claim.size IS NOT NULL
               AND claim.evidence_provenance = 'source_declared'
               AND known_size.size <> claim.size
-        ) OR EXISTS (
-            SELECT 1 FROM occurrence_digest_assertions AS incoming
-            JOIN digest_values AS digest ON digest.digest_id = incoming.digest_id
-            JOIN occurrence_content_conflict_hashes AS disputed ON disputed.digest_id = incoming.digest_id
-            JOIN occurrence_content_conflicts AS conflict
-              ON conflict.occurrence_id = disputed.occurrence_id
-              AND conflict.candidate_content_uuid = disputed.candidate_content_uuid
-            WHERE incoming.occurrence_id = occurrence.occurrence_id
-              AND incoming.provenance = 'source_declared' AND incoming.scope IN ('whole_asset', 'whole_file')
-              AND digest.algorithm IN ('sha1', 'sha256')
-              AND disputed.provenance = 'source_declared' AND disputed.scope IN ('whole_asset', 'whole_file')
         )
       )
 )
-BEGIN SELECT RAISE(ABORT, 'No-Intro DAT linked identity has contradictory or disputed source evidence'); END;
+BEGIN SELECT RAISE(ABORT, 'No-Intro DAT linked identity has contradictory source evidence'); END;
 
 -- These views project XML sibling positions from their sole native owners.
 CREATE VIEW no_intro_dat_root_child_source_positions AS

@@ -450,3 +450,46 @@ fn valid_hash_payloads_are_interned_once_and_invalid_literals_have_native_owners
     );
     Ok(())
 }
+
+#[test]
+fn a_later_conflicting_claim_does_not_discard_the_entire_document() -> TestResult {
+    let sha1 = "0123456789012345678901234567890123456789";
+    let body = format!(
+        "<datafile>{HEADER}<game name='Game'><description>Game</description>\
+         <rom name='first.bin' size='4' sha1='{sha1}' md5='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'/>\
+         <rom name='conflicting.bin' size='4' sha1='{sha1}' md5='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'/>\
+         <rom name='later.bin' size='4' sha1='{sha1}'/></game></datafile>"
+    );
+    let mut catalog = Catalog::new(&body, NoIntroDatMode::V4Compatible)?;
+    let report = app::import_catalog(&catalog.database, &catalog.request)?;
+    assert_eq!(report.status, CatalogImportStatus::Succeeded);
+    assert_eq!(
+        catalog.count("SELECT COUNT(*) AS count FROM no_intro_dat_rom_claims")?,
+        3
+    );
+    assert_eq!(
+        catalog.count("SELECT COUNT(*) AS count FROM snapshot_publications")?,
+        1
+    );
+    assert_eq!(catalog.count("SELECT COUNT(*) AS count FROM occurrence_content_conflicts WHERE reason='contradictory_assertions'")?, 1);
+    assert_eq!(catalog.count("SELECT COUNT(*) AS count FROM occurrence_content_conflicts WHERE reason='disputed_alias'")?, 1);
+    assert_eq!(
+        catalog.count(
+            "SELECT COUNT(*) AS count FROM asset_occurrences WHERE content_uuid IS NOT NULL"
+        )?,
+        1
+    );
+    assert_eq!(catalog.count("SELECT COUNT(*) AS count FROM asset_occurrences JOIN no_intro_dat_rom_claims USING(occurrence_id) WHERE name IN ('conflicting.bin','later.bin') AND content_uuid IS NULL")?, 2);
+    assert_eq!(
+        catalog.count("SELECT COUNT(*) AS count FROM occurrence_digest_assertions")?,
+        5
+    );
+    let snapshot = report
+        .snapshot_key
+        .ok_or("successful import has no snapshot")?;
+    assert_eq!(
+        app::load_snapshot_source(&catalog.database, &snapshot)?,
+        body.as_bytes()
+    );
+    Ok(())
+}

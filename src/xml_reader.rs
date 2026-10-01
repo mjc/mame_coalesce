@@ -19,7 +19,28 @@ pub const MAX_MAME_XML_NODES: usize = 6_000_000;
 const MAX_NAME_BYTES: usize = 4096;
 const MAX_ATTRIBUTES: usize = 1024;
 const MAX_ATTRIBUTE_BYTES: usize = 1024 * 1024;
-const MAX_TEXT_BYTES: usize = 1024 * 1024;
+pub const MAX_TEXT_BYTES: usize = 1024 * 1024;
+
+/// A present scalar, including explicit empty text and its source position.
+///
+/// Child fields use the zero-based ordinal among all direct child elements of
+/// their owner (including vendor elements, excluding comments/text). Attribute
+/// fields use the zero-based lexical attribute ordinal of the opening tag,
+/// including vendor attributes and namespace declarations. These are separate
+/// domains; their position tables must not share an ordinal uniqueness key.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeclaredText {
+    pub value: String,
+    pub source_order: usize,
+    pub location: RecordLocation,
+}
+
+impl DeclaredText {
+    #[must_use]
+    pub const fn as_str(&self) -> &str {
+        self.value.as_str()
+    }
+}
 
 /// Borrowing event reader with XML-normalized namespace bindings. The upstream
 /// namespace reader validates reserved bindings before decoding references.
@@ -190,8 +211,53 @@ impl NodeBudget {
 pub struct PositionMap<'a> {
     bytes: &'a [u8],
     cursor: usize,
-    line: i64,
-    column: i64,
+    position: SourcePosition,
+}
+
+/// Original decoded-document coordinates, following XML's line-ending rules.
+pub struct SourcePosition {
+    location: RecordLocation,
+    previous_was_carriage_return: bool,
+}
+
+impl Default for SourcePosition {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SourcePosition {
+    pub const fn new() -> Self {
+        Self {
+            location: RecordLocation { line: 1, column: 1 },
+            previous_was_carriage_return: false,
+        }
+    }
+
+    pub const fn location(&self) -> RecordLocation {
+        self.location
+    }
+
+    pub const fn advance(&mut self, character: char) {
+        match character {
+            '\r' => {
+                self.location.line = self.location.line.saturating_add(1);
+                self.location.column = 1;
+                self.previous_was_carriage_return = true;
+            }
+            '\n' => {
+                if !self.previous_was_carriage_return {
+                    self.location.line = self.location.line.saturating_add(1);
+                }
+                self.location.column = 1;
+                self.previous_was_carriage_return = false;
+            }
+            _ => {
+                self.location.column = self.location.column.saturating_add(1);
+                self.previous_was_carriage_return = false;
+            }
+        }
+    }
 }
 
 impl<'a> PositionMap<'a> {
@@ -208,8 +274,7 @@ impl<'a> PositionMap<'a> {
         Self {
             bytes,
             cursor: 0,
-            line: 1,
-            column: 1,
+            position: SourcePosition::new(),
         }
     }
 
@@ -218,21 +283,19 @@ impl<'a> PositionMap<'a> {
             .unwrap_or(usize::MAX)
             .min(self.bytes.len());
         if end < self.cursor {
-            return (self.line, self.column);
+            let location = self.position.location();
+            return (location.line, location.column);
         }
         let Ok(text) = std::str::from_utf8(&self.bytes[self.cursor..end]) else {
-            return (self.line, self.column);
+            let location = self.position.location();
+            return (location.line, location.column);
         };
         for character in text.chars() {
-            if character == '\n' {
-                self.line = self.line.saturating_add(1);
-                self.column = 1;
-            } else {
-                self.column = self.column.saturating_add(1);
-            }
+            self.position.advance(character);
         }
         self.cursor = end;
-        (self.line, self.column)
+        let location = self.position.location();
+        (location.line, location.column)
     }
 }
 
@@ -243,47 +306,37 @@ pub fn with_reader<T, E: From<Error>>(
     parse: impl FnOnce(&mut XmlReader<'_>, &mut PositionMap<'_>) -> std::result::Result<T, E>,
 ) -> std::result::Result<T, E> {
     let xml = decode(bytes)?;
-    validate_xml10_characters(&xml)?;
+    with_decoded_reader(&xml, parse)
+}
+
+/// Read text decoded once by an adapter with a format-specific recovery policy.
+pub fn with_decoded_reader<T, E: From<Error>>(
+    xml: &str,
+    parse: impl FnOnce(&mut XmlReader<'_>, &mut PositionMap<'_>) -> std::result::Result<T, E>,
+) -> std::result::Result<T, E> {
+    validate_xml10_characters(xml)?;
     let mut positions = PositionMap::new(xml.as_bytes());
     let mut reader = XmlReader::new(xml.as_bytes());
     parse(&mut reader, &mut positions)
 }
 
 fn validate_xml10_characters(xml: &str) -> Result<()> {
-    let mut line = 1_i64;
-    let mut column = 1_i64;
-    let mut previous_was_carriage_return = false;
+    let mut position = SourcePosition::new();
 
     for character in xml.chars() {
         let codepoint = u32::from(character);
         if !is_xml10_character(character) {
+            let location = position.location();
             return Err(Error::CatalogParse {
                 message: format!("XML 1.0 forbids U+{codepoint:04X}"),
                 record_kind: Some("document".into()),
                 record_name: None,
-                line: Some(line),
-                column: Some(column),
+                line: Some(location.line),
+                column: Some(location.column),
             });
         }
 
-        match character {
-            '\r' => {
-                line = line.saturating_add(1);
-                column = 1;
-                previous_was_carriage_return = true;
-            }
-            '\n' => {
-                if !previous_was_carriage_return {
-                    line = line.saturating_add(1);
-                }
-                column = 1;
-                previous_was_carriage_return = false;
-            }
-            _ => {
-                column = column.saturating_add(1);
-                previous_was_carriage_return = false;
-            }
-        }
+        position.advance(character);
     }
     Ok(())
 }
@@ -298,11 +351,62 @@ pub fn decode(bytes: &[u8]) -> Result<Cow<'_, str>> {
 
 fn decode_text(bytes: &[u8]) -> Result<Cow<'_, str>> {
     if let Some((little_endian, skip)) = utf16_encoding(bytes) {
-        return decode_utf16(bytes, little_endian, skip).map(Cow::Owned);
+        let text = decode_utf16(bytes, little_endian, skip)?;
+        validate_declared_encoding(
+            &text,
+            if little_endian {
+                TextEncoding::Utf16LittleEndian
+            } else {
+                TextEncoding::Utf16BigEndian
+            },
+        )?;
+        return Ok(Cow::Owned(text));
     }
-    std::str::from_utf8(bytes)
-        .map(Cow::Borrowed)
-        .map_err(|error| Error::XmlValidation(format!("XML is not valid UTF-8: {error}")))
+    let text = std::str::from_utf8(bytes)
+        .map_err(|error| Error::XmlValidation(format!("XML is not valid UTF-8: {error}")))?;
+    validate_declared_encoding(text, TextEncoding::Utf8)?;
+    Ok(Cow::Borrowed(text))
+}
+
+#[derive(Clone, Copy)]
+enum TextEncoding {
+    Utf8,
+    Utf16LittleEndian,
+    Utf16BigEndian,
+}
+
+fn validate_declared_encoding(text: &str, actual: TextEncoding) -> Result<()> {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let Some(declaration) = text.strip_prefix("<?xml") else {
+        return Ok(());
+    };
+    // A different PI name (such as xml-stylesheet) is not a declaration.
+    if !declaration.starts_with([' ', '\t', '\r', '\n']) {
+        return Ok(());
+    }
+    let Some(end) = text.find("?>") else {
+        return Ok(());
+    };
+    let declaration = BytesDecl::from_start(BytesStart::from_content(&text[2..end], 3));
+    let Some(encoding) = declaration.encoding() else {
+        return Ok(());
+    };
+    let encoding = encoding.map_err(|error| Error::XmlValidation(error.to_string()))?;
+    let valid = match actual {
+        TextEncoding::Utf8 => encoding.eq_ignore_ascii_case("UTF-8"),
+        TextEncoding::Utf16LittleEndian => {
+            encoding.eq_ignore_ascii_case("UTF-16") || encoding.eq_ignore_ascii_case("UTF-16LE")
+        }
+        TextEncoding::Utf16BigEndian => {
+            encoding.eq_ignore_ascii_case("UTF-16") || encoding.eq_ignore_ascii_case("UTF-16BE")
+        }
+    };
+    if !valid {
+        return Err(Error::XmlValidation(format!(
+            "unsupported or mismatched XML encoding {encoding:?}"
+        )));
+    }
+    Ok(())
 }
 
 const fn utf16_encoding(bytes: &[u8]) -> Option<(bool, usize)> {
@@ -998,5 +1102,80 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn source_positions_use_xml_line_end_rules_in_utf8_and_utf16() -> Result<()> {
+        for ending in ["\r", "\n", "\r\n"] {
+            let xml = format!("<root>{ending} <child/>{ending}</root>");
+            let mut utf16 = vec![0xff, 0xfe];
+            utf16.extend(xml.encode_utf16().flat_map(u16::to_le_bytes));
+            for input in [xml.as_bytes(), utf16.as_slice()] {
+                with_reader(input, |reader, positions| {
+                    loop {
+                        match next(reader, positions)?.1 {
+                            Event::Empty(start) => {
+                                let location = positions.start_location(&start);
+                                assert_eq!((location.line, location.column), (2, 2), "{ending:?}");
+                            }
+                            Event::Eof => break,
+                            _ => {}
+                        }
+                    }
+                    Ok::<_, Error>(())
+                })?;
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn source_positions_keep_crlf_state_between_offsets_and_count_unicode_scalars() {
+        let mut positions = PositionMap::new("\r\né💿\rZ".as_bytes());
+        assert_eq!(positions.at(1), (2, 1));
+        assert_eq!(positions.at(2), (2, 1));
+        assert_eq!(positions.at(4), (2, 2));
+        assert_eq!(positions.at(8), (2, 3));
+        assert_eq!(positions.at(9), (3, 1));
+        assert_eq!(positions.at(10), (3, 2));
+    }
+
+    #[test]
+    fn declared_encoding_must_be_supported_and_match_the_original_bytes() {
+        for encoding in ["MadeUp", "UTF-16", "UTF-16LE", "UTF-16BE"] {
+            let xml = format!("<?xml version='1.0' encoding='{encoding}'?><root/>");
+            assert!(
+                with_reader(xml.as_bytes(), |reader, positions| {
+                    while next(reader, positions)?.1 != Event::Eof {}
+                    Ok::<_, Error>(())
+                })
+                .is_err(),
+                "UTF-8 bytes declared {encoding}"
+            );
+        }
+        for (little_endian, encoding) in [(true, "UTF-8"), (true, "UTF-16BE"), (false, "UTF-16LE")]
+        {
+            let xml = format!("<?xml version='1.0' encoding='{encoding}'?><root/>");
+            let mut bytes = if little_endian {
+                vec![0xff, 0xfe]
+            } else {
+                vec![0xfe, 0xff]
+            };
+            for unit in xml.encode_utf16() {
+                bytes.extend(if little_endian {
+                    unit.to_le_bytes()
+                } else {
+                    unit.to_be_bytes()
+                });
+            }
+            assert!(
+                with_reader(&bytes, |reader, positions| {
+                    while next(reader, positions)?.1 != Event::Eof {}
+                    Ok::<_, Error>(())
+                })
+                .is_err(),
+                "wrong UTF-16 byte order/declaration {encoding}"
+            );
+        }
     }
 }

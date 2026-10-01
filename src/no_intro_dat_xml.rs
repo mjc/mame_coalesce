@@ -1,6 +1,6 @@
 //! No-Intro flat DAT declarations. Source text is retained independently of matching evidence.
 
-use crate::logiqx::RecordLocation;
+use crate::{logiqx::RecordLocation, xml_reader::DeclaredText};
 
 mod reader;
 pub use reader::{ValidatedNoIntroDat, read_with};
@@ -34,27 +34,6 @@ impl NoIntroDatMode {
             Self::V3Strict | Self::V3Compatible => 3,
             Self::V4Strict | Self::V4Compatible => 4,
         }
-    }
-}
-
-/// A present scalar, including explicit empty text and its source position.
-///
-/// Child fields use the zero-based ordinal among all direct child elements of
-/// their owner (including vendor elements, excluding comments/text). Attribute
-/// fields use the zero-based lexical attribute ordinal of the opening tag,
-/// including vendor attributes and namespace declarations. These are separate
-/// domains; their position tables must not share an ordinal uniqueness key.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DeclaredText {
-    pub value: String,
-    pub source_order: usize,
-    pub location: RecordLocation,
-}
-
-impl DeclaredText {
-    #[must_use]
-    pub const fn as_str(&self) -> &str {
-        self.value.as_str()
     }
 }
 

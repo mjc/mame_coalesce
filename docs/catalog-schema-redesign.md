@@ -90,7 +90,7 @@ assertions; they are not reduced to a shared game name and ROM tuple.
 | Logiqx XML / TOSEC | Document/header/options -> game -> comments, releases, BIOS sets, ROM/disk/sample claims, archive references and distinct parent declarations. | Partial document/game facts and ROMs exist; native options, releases, BIOS/disk/sample/archive families and specification defaults remain incomplete. |
 | ClrMamePro text | Header/directives -> set -> ROM claims and scalar sample claims; native flags and sample-parent declarations. | Native CMP facts/directives and numeric set/occurrence owners exist; remaining specification fields and complete query witnesses remain open. |
 | No-Intro flat DAT v3/v4 | Document/header/directives -> game -> scoped identifiers, categories, releases and ROM declarations; name-based and ID-based parents stay distinct. | Separate v3/v4 strict and observed-compatible interpretations stream into native typed owners. Raw size text, interned valid hashes, typed invalid hash literals, SHA-256 assertions, options, field positions and repeated children are retained. Full corpus/query/performance acceptance remains open; this is not a Logiqx envelope import or database-export coverage. |
-| No-Intro database XML | Game -> archive, source histories and releases. A source or release owns its own details, serials and files; numeric file IDs may repeat under different owners. | No database-export parser/native schema yet. Source/release ownership, sibling-root framing and documented NUL recovery need end-to-end importer coverage. |
+| No-Intro database XML | Game -> archive, source histories and releases. A source or release owns its own details, serials and files; numeric file IDs may repeat under different owners. | A separate typed one-pass reader covers the observed field ledger, both envelope forms and narrowly decoded NUL recovery. All 275 acquired exports pass reader verification. Native tables/writer and query/backup acceptance remain unfinished. |
 | Synthetic No-Intro P/C projection | Archive record -> ordered language/native fields and file claims, with parent-marker/reference/merge-token distinctions. | Typed archive, region, alternate name, version, BIOS, ordered languages and distinct clone/merge tokens exist; this is not proof of authentic DAT-o-MATIC P/C conformance. |
 
 TOSEC ISO/PIX assets retain their source `rom` declaration even when the file
@@ -113,6 +113,44 @@ SQLite/foreign-key/application integrity checks found no issues. Originals
 remain outside SQLite; no existing database or profiling artifacts were removed.
 This is a bounded native-format milestone, not the full 664-file import/query
 acceptance matrix or coverage of authentic P/C and database-export XML.
+
+The separate database-export reader has now parsed all 274 pack files plus the
+FDS specimen: 131,533 games/archives, 172,997 dump sources, 29,462 releases,
+562,938 source-owned files and 101,831 release-owned files. The 170 single-root
+and 105 sibling-header documents all reached valid EOF. Exactly six NULs were
+recovered in the Xbox 360 document; their original one-based coordinates match
+an independent scan. After removing repeated nested-header cloning, the rebuilt
+profiling executable took 5.04 seconds and 55,936 KiB peak RSS including startup.
+This proves parser coverage, not native SQL persistence or complete importer
+acceptance. Recovery warnings iterate borrowed decoded originals rather than
+owning another catalog-sized collection. The approved database-export table
+dictionary still needs its writer, query, diagnostic and paired-backup proof.
+
+A native DAT corpus run exposed a publication bug: a later conflicting claim
+could invalidate an earlier association and reject the whole document. The
+dispute guard now rejects linking an already disputed hash when source evidence
+is inserted; immutable earlier associations and conflict evidence remain
+queryable, while subsequent resolution quarantines the alias. A shared
+allocated-owner guard also prevents assertion-first insertion with deferred
+foreign keys. The three formerly failing 3DS, N64 byte-swapped and encrypted DS
+lists now import 10,991 ordered ROM occurrences into a fresh database, retaining
+nine contradictory-evidence records with clear SQLite/FK checks. The complete
+664-file native baseline run remains ongoing, not accepted as complete; it
+started with the previous guard revision and needs final audit.
+
+Additional schema-backed witnesses cover every strict DAT v3/v4 field with
+distinct values and exact owner/field/ordinal/coordinates, including empty and
+absent values, defaults, integer boundaries, hash interning and paired backup
+recovery. Database-export witnesses check every observed ledger field with
+distinct values, owner order/coordinates and current/origin/NFO digest roles.
+Shared tests cover CR/LF/CRLF coordinates, UTF-16 and original-byte encoding
+declarations; split text/reference/CDATA cannot bypass the scalar budget.
+The complete devenv gate passed (851 tests, one existing optional skip),
+all-feature nextest passed 854 tests with three existing optional skips, and
+all-feature documentation passed with warnings denied. GPT-6.1 Sol medium
+review/fix/re-review cycles were clear after the final parser/test refactors
+and the diagnostic clipping-contract correction. The excerpt/highlight/FK
+contract below is design-only; its storage implementation remains open.
 
 ## Evidence and corpus coverage
 
@@ -381,6 +419,91 @@ Public references include snapshot identity and native namespace/record/
 occurrence identity. Internal IDs can change on rebuild without silently
 retargeting an external review or manifest. Idempotence still binds identical
 document bytes, catalog identity, interpretation, and scope.
+
+## Import diagnostics and exact source excerpts
+
+This is a shared design contract, not implemented behavior. Diagnostics are
+warnings or errors about actual malformed or failed input. A report table
+exposes the message and a relevant import-file excerpt. Necessary nearby field
+text may appear in the excerpt, but diagnostics are not a second catalog-field
+store: do not emit messages to duplicate ordinary fields, whole parsed subtrees,
+whole serialized records/documents, or EAV data. Unsupported input remains
+recoverable from the retained source document and is reparsed on demand.
+
+Each diagnostic may retain `source_excerpt BLOB` as an exact byte window from
+one of two explicitly typed deterministic views: `retained_original_bytes` or
+`transport_decoded_xml_bytes`. Record the excerpt's start byte in that view
+when known. For gzip XML, the decoded view is the decompressed XML byte stream
+reproducible from the retained compressed original; its offsets are never
+described as offsets into the gzip file. A UTF-16 excerpt remains the original
+encoded XML bytes (or those same encoded bytes in the decoded view after gzip
+transport decoding). Do not persist normalized or sanitized parser bytes as
+an excerpt. BLOB storage preserves NUL bytes and invalid text encoding.
+
+The offending slice is always a half-open byte range inside the actual saved
+excerpt BLOB: `problem_start_byte` is inclusive and `problem_end_byte` is
+exclusive, with
+`0 <= problem_start_byte <= problem_end_byte <= length(source_excerpt)`.
+Equal bounds are valid, including `[length(source_excerpt), length(source_excerpt))`
+for a missing-token/EOF anchor. Bounds are either both NULL when exact bytes
+cannot be identified, or both integer values satisfying the range constraint;
+when present, an excerpt must be present. Never substitute a whole field or
+guessed span. Verify the excerpt against its named source view at the recorded
+view anchor. Original-file offending byte start/end are separate nullable
+coordinates and are populated only when an exact mapping to retained original
+bytes is known. A transport-decoded range is not an original-file range. A
+clipped excerpt must update its view anchor and rebase the highlight against
+the final saved bytes. Dropping eight prefix bytes changes `[10,12)` to `[2,4)`
+and advances the view anchor by eight. Retain the complete offending span
+inside the excerpt or leave both excerpt-relative bounds NULL; do not highlight
+only the retained fragment. The known full offending range in the source view
+remains independent of clipping.
+
+Source line and column are independent of both byte ranges and carry their
+coordinate view plus the parser's declared column convention. UTF-8/UTF-16
+decoding, gzip transport decoding, XML entities, normalization, and display
+escaping require exact mappings before parser coordinates can be attributed
+to either stored view or original-file bytes. In particular, UTF-8 parser
+coordinates for UTF-16 input do not establish original encoded-byte offsets;
+leave an unproven mapping NULL. Normalization is a mapping concern, never a
+third excerpt view. None implies that display characters, Unicode columns,
+source bytes, and excerpt bytes share coordinates. Capture ranges from
+token/field/character parser evidence while parsing, never by searching later
+for repeated text. Excerpt size budgets limit diagnostic context only: they
+do not cap imports, warning/error counts, or retained diagnostic evidence.
+Choose no fixed byte budget until it has been reviewed.
+
+Every diagnostic links to its import/run and retained source document through
+real foreign keys. Owner links use a distinct typed relation for each persisted
+owner table, not a generic unchecked `kind/id` pair. For example,
+`catalog_import_message_sets(import_id, list_order, edition_id, set_id)`
+has a composite FK to the message, a composite FK `(import_id, edition_id)` to
+the import's declared candidate key, and `(set_id, edition_id)` to the set's
+declared same-edition candidate key; an entry-owner relation follows the same pattern for
+`catalog_media_entries`. Format-specific relationship/evidence owners receive
+their own typed relations and FKs to their actual owner rows. Each link row
+names the diagnostic and concrete owner, and may carry the edition key needed
+for composite provenance enforcement. A diagnostic may have multiple owner
+rows when one warning concerns conflicting evidence. Cross-catalog evidence
+uses its own typed link relation with a closed evidence role and a real FK to
+the candidate/conflicting evidence row; it does not weaken same-run owner
+checks. If EOF failure rolls back catalog facts, record the failed run and
+diagnostic in a separate failure transaction linked to the run and source
+document; do not FK to a rolled-back row or preserve a partial catalog row
+solely to attach the diagnostic. Catalog-owner links exist only for
+independently persisted owners.
+
+Future tests must prove exact highlights and owner behavior for Unicode,
+embedded NUL and invalid encoding bytes, gzip XML (decoded-view excerpt
+reproduction without gzip-offset claims), UTF-16 excerpts preserving encoded
+XML bytes with parser-coordinate mapping or NULL, XML entities, and unknown
+original-file mappings. Check both-NULL or both-integer bounds, reject
+non-integer/out-of-range bounds and bounds beyond excerpt length, and accept a
+zero-length EOF/missing-token range. Also test prefix clipping that rebases
+`[10,12)` to `[2,4)` after removing eight bytes, clipping that cannot retain the
+whole problem span (NULL highlight), multiple owners for conflicting evidence,
+and EOF failure with catalog-fact rollback
+while the diagnostic and source links survive.
 
 ## MAME machine native relations
 

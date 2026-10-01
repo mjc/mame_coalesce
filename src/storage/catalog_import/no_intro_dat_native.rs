@@ -5,7 +5,7 @@ use diesel::{
 
 use crate::{
     domain::SnapshotKey,
-    no_intro_dat_xml::{DeclaredText, Document, Game, Release, Rom},
+    no_intro_dat_xml::{Document, Game, Release, Rom},
     storage::{
         catalog_content::{
             ContentDigestAssertions, ContentIdentityResolution, record_content_identity_conflict,
@@ -13,6 +13,7 @@ use crate::{
         },
         catalog_identity::OccurrenceId,
     },
+    xml_reader::DeclaredText,
 };
 
 const MODES: [&str; 4] = [

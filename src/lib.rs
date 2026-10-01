@@ -13,6 +13,7 @@ pub(crate) mod mame;
 pub(crate) mod mame_softwarelist;
 pub mod mount;
 mod no_intro_dat_xml;
+pub mod no_intro_db_xml;
 mod no_intro_pc_xml;
 mod operations;
 mod private_temp;

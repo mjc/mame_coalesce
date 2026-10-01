@@ -149,6 +149,21 @@ they cannot silently assign a whole-file UUID. Parsing streams one game at a
 time, and an error anywhere through EOF rolls back the pending catalog edition.
 This flat DAT dialect is distinct from database-export and synthetic P/C XML.
 
+The separate `no_intro_db_xml::read_with` Rust API streams No-Intro database
+exports into typed games, archive descriptions, dump sources and releases.
+Each dump source or release owns its own details, serials and files. Explicit
+observed-compatible and NUL-recovery modes accept both single-root and sibling
+header/datafile framing. Recovery changes only decoded U+0000 in the parse view;
+warnings are generated lazily with original coordinates after validated EOF.
+Clean input remains borrowed, and the header is moved to the caller once.
+This reader is not yet a `cache catalog-import` format: native database-export
+tables, writer and query/backup acceptance remain unfinished.
+
+`examples/no_intro_database_profile.rs` exercises that reader with the
+`no-intro-database-xml-compatible` or `no-intro-database-xml-nul-compatible`
+interpretation and XML paths. It reports complete record counts and recovery
+locations without retaining a catalog tree or writing a database.
+
 The Rust `catalog_files` API exposes bulk occurrence lookup and keyset-paginated
 file membership across published catalog editions. Results keep each owner and
 its source/list provenance, with digest assertions as separate children.

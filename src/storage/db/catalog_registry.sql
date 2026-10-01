@@ -115,6 +115,9 @@ WHEN NEW.provenance = 'source_declared' AND EXISTS (
     WHERE occurrence.occurrence_id = NEW.occurrence_id
 )
 BEGIN SELECT RAISE(ABORT, 'published source digest assertions are immutable'); END;
+CREATE TRIGGER occurrence_digest_owner_insert BEFORE INSERT ON occurrence_digest_assertions
+WHEN NOT EXISTS (SELECT 1 FROM asset_occurrences WHERE occurrence_id = NEW.occurrence_id)
+BEGIN SELECT RAISE(ABORT, 'digest assertion requires an allocated occurrence owner'); END;
 CREATE TRIGGER occurrence_digest_immutable_update BEFORE UPDATE ON occurrence_digest_assertions
 BEGIN SELECT RAISE(ABORT, 'occurrence digest assertions are immutable'); END;
 CREATE TRIGGER occurrence_digest_immutable_delete BEFORE DELETE ON occurrence_digest_assertions

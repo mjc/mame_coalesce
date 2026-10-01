@@ -9,10 +9,9 @@ use crate::{
     Error, Result,
     logiqx::RecordLocation,
     no_intro_dat_xml::{
-        ClrMameProOptions, DeclaredText, Document, Game, Header, NoIntroDatMode, Release, Rom,
-        RomCenterOptions,
+        ClrMameProOptions, Document, Game, Header, NoIntroDatMode, Release, Rom, RomCenterOptions,
     },
-    xml_reader::{self, NodeBudget, PositionMap, XmlReader},
+    xml_reader::{self, DeclaredText, NodeBudget, PositionMap, XmlReader},
 };
 
 const XML_SCHEMA: &str = "http://www.w3.org/2001/XMLSchema";

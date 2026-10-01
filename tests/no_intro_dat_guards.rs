@@ -1,3 +1,5 @@
+#![allow(clippy::expect_used)]
+
 use diesel::{
     Connection, QueryableByName, RunQueryDsl, SqliteConnection,
     connection::SimpleConnection,
@@ -474,7 +476,7 @@ fn linked_rom_publication_rejects_contradictory_hashes_and_whole_file_sizes() ->
 }
 
 #[test]
-fn linked_rom_publication_rejects_an_applicable_unresolved_hash_dispute() -> TestResult {
+fn linked_rom_source_assertion_rejects_an_already_unresolved_hash_dispute() -> TestResult {
     let mut fixture = Fixture::new()?;
     let mut known = fixture.owner("known", 2)?;
     fixture.rom(&mut known, 4, Some(4), Some(CONTENT_UUID), &[Hash::Sha1(1)])?;
@@ -491,15 +493,32 @@ fn linked_rom_publication_rejects_an_applicable_unresolved_hash_dispute() -> Tes
     fixture.seal(&disputed)?;
     fixture.publish(&disputed)?;
     let mut incoming = fixture.owner("incoming", 2)?;
-    fixture.rom(
-        &mut incoming,
-        4,
-        Some(4),
-        Some(CONTENT_UUID),
-        &[Hash::Sha1(1)],
-    )?;
-    fixture.seal(&incoming)?;
-    assert!(fixture.publish(&incoming).is_err());
+    let error = fixture
+        .rom(
+            &mut incoming,
+            4,
+            Some(4),
+            Some(CONTENT_UUID),
+            &[Hash::Sha1(1)],
+        )
+        .expect_err("a linked claim cannot supply an already disputed source hash");
+    assert!(error.to_string().contains("already disputed source hash"));
+    Ok(())
+}
+
+#[test]
+fn digest_assertions_cannot_precede_their_owner_even_when_foreign_keys_are_deferred() -> TestResult
+{
+    let mut fixture = Fixture::new()?;
+    fixture
+        .connection
+        .batch_execute("BEGIN; PRAGMA defer_foreign_keys=ON;")?;
+    let digest = fixture.digest("sha1", &[1; 20])?;
+    let error = fixture
+        .assertion(99, digest, "whole_file", "source_declared")
+        .expect_err("deferred foreign keys cannot bypass assertion owner checks");
+    assert!(error.to_string().contains("allocated occurrence owner"));
+    fixture.connection.batch_execute("ROLLBACK;")?;
     Ok(())
 }
 

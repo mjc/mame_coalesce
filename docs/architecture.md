@@ -57,9 +57,9 @@ snapshot-aware MAME policies. See
 [the MAME 0.289 target profile decision](target-profile-mame-0.289.md).
 
 The crate root deliberately exposes `app`, `build`, `database`, `disk`,
-`domain`, `error`, `hashes`, `logiqx`, and `resolution`, plus the retained
-document store types. Parsing adapters, scan operations, source backends, and
-storage implementation details remain crate-private. This keeps reusable
+`domain`, `error`, `hashes`, `logiqx`, `no_intro_db_xml`, and `resolution`, plus
+the retained document store types. Other parsing adapters, scan operations,
+source backends, and storage implementation details remain crate-private. This keeps reusable
 requests and typed plans observable without making persistence tables or
 parser-internal representations the public contract.
 
@@ -154,6 +154,18 @@ parser-internal representations the public contract.
   unresolved disputes block later sparse claims. Explicit reviewed settlement
   and UUID redirects are still unfinished. Paired backup/restore retains the
   generation; rebuilding without the registry declares a new generation.
+- No-Intro DAT source assertions require an already allocated occurrence owner,
+  even with deferred foreign keys. Already disputed hashes cannot be inserted
+  as linked source evidence. A later conflict in a streaming import retains the
+  earlier association and all conflict evidence rather than discarding the
+  document; subsequent resolution cannot reuse the disputed alias.
+- The public database-export XML reader has a separate typed source/release
+  ownership model. It delivers one game at a time, moves its header once and
+  returns a privately constructed EOF proof. NUL recovery modifies only the
+  decoded parse view; the proof exposes original-coordinate warnings lazily.
+  Original-byte encoding declarations, XML line endings and accumulated scalar
+  limits are checked by the shared XML boundary. Database-export SQL tables,
+  writer, query and backup integration are still unfinished.
 - `catalog_files` queries published occurrences in one transaction, preserving
   one row per source owner and separate digest children. Bulk lookups include
   unlinked entries; reverse UUID membership uses keyset pagination and checks
