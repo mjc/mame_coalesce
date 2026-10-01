@@ -896,39 +896,105 @@ fn conflicting_catalog_digest_claims_remain_unlinked() -> Result<(), Box<dyn std
     Ok(())
 }
 
-fn assert_ambiguous_digest_alias(
-    directory: &tempfile::TempDir,
-    database: &Database,
+fn seed_ambiguous_digest_witnesses(
     connection: &mut SqliteConnection,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let colliding_identity = [0x5a; 16];
-    sql_query("INSERT INTO catalog_contents (content_uuid, expected_size) VALUES (?, 16)")
-        .bind::<Binary, _>(colliding_identity.as_slice())
-        .execute(connection)?;
+    let alias_sha1 = [0xee; 20];
     sql_query("INSERT OR IGNORE INTO digest_values (algorithm, digest) VALUES ('sha1', ?)")
-        .bind::<Binary, _>([0xaa; 20].as_slice())
+        .bind::<Binary, _>(alias_sha1.as_slice())
         .execute(connection)?;
     let digest_id = sql_query(
         "SELECT digest_id AS value FROM digest_values \
          WHERE algorithm = 'sha1' AND digest = ?",
     )
-    .bind::<Binary, _>([0xaa; 20].as_slice())
+    .bind::<Binary, _>(alias_sha1.as_slice())
     .get_result::<IntegerRow>(connection)?
     .value;
-    sql_query(
-        "INSERT INTO catalog_content_digest_assertions (content_uuid, digest_id, scope) \
-         VALUES (?, ?, 'whole_asset')",
-    )
-    .bind::<Binary, _>(colliding_identity.as_slice())
-    .bind::<BigInt, _>(digest_id)
-    .execute(connection)?;
 
+    for (witness_order, content_uuid) in [[0x5a; 16], [0x6b; 16]].into_iter().enumerate() {
+        let snapshot_key = format!("ambiguous-digest-witness-{witness_order}");
+        let inserted = sql_query("INSERT INTO catalog_contents (content_uuid) VALUES (?)")
+            .bind::<Binary, _>(content_uuid.as_slice())
+            .execute(connection)?;
+        assert_eq!(inserted, 1);
+
+        let inserted = sql_query(
+            "INSERT INTO catalog_snapshots \
+             (snapshot_key, catalog_key, document_key, interpretation_key, coverage_id) \
+             SELECT ?, snapshot.catalog_key, snapshot.document_key, \
+                    snapshot.interpretation_key, snapshot.coverage_id \
+             FROM catalog_snapshots AS snapshot \
+             JOIN catalogs USING (catalog_key) \
+             JOIN publishing_sources USING (source_key) \
+             JOIN parser_interpretations USING (interpretation_key) \
+             WHERE snapshot.catalog_key = 'catalog-a' \
+               AND publishing_sources.source_key = 'publisher-a' \
+               AND parser_interpretations.format = 'logiqx' \
+             ORDER BY snapshot.snapshot_key LIMIT 1",
+        )
+        .bind::<Text, _>(&snapshot_key)
+        .execute(connection)?;
+        assert_eq!(inserted, 1, "baseline Logiqx source snapshot exists");
+
+        sql_query(
+            "INSERT INTO catalog_set_groups (snapshot_key, kind, list_order) \
+             VALUES (?, 'root', 0)",
+        )
+        .bind::<Text, _>(&snapshot_key)
+        .execute(connection)?;
+        let set_id = sql_query(
+            "INSERT INTO catalog_sets \
+             (set_group_id, source_element_kind, list_order, set_name, source_line, source_column) \
+             SELECT set_group_id, 'logiqx_game', 0, ?, 1, 1 \
+             FROM catalog_set_groups WHERE snapshot_key = ? AND kind = 'root' \
+             RETURNING set_id AS value",
+        )
+        .bind::<Text, _>(format!("ambiguous-digest-witness-{witness_order}"))
+        .bind::<Text, _>(&snapshot_key)
+        .get_result::<IntegerRow>(connection)?
+        .value;
+        let occurrence_id = sql_query(
+            "INSERT INTO asset_occurrences \
+             (record_id, occurrence_order, claim_kind, content_uuid) \
+             VALUES (?, 0, 'logiqx_rom', ?) RETURNING occurrence_id AS value",
+        )
+        .bind::<BigInt, _>(set_id)
+        .bind::<Binary, _>(content_uuid.as_slice())
+        .get_result::<IntegerRow>(connection)?
+        .value;
+        sql_query(
+            "INSERT INTO logiqx_rom_claims \
+             (occurrence_id, name, size_text, evidence_scope, evidence_provenance, \
+              source_line, source_column) \
+             VALUES (?, 'ambiguous-witness.bin', '16', 'whole_asset', 'source_declared', 1, 1)",
+        )
+        .bind::<BigInt, _>(occurrence_id)
+        .execute(connection)?;
+        sql_query(
+            "INSERT INTO occurrence_digest_assertions \
+             (occurrence_id, digest_id, scope, provenance) \
+             VALUES (?, ?, 'whole_asset', 'source_declared')",
+        )
+        .bind::<BigInt, _>(occurrence_id)
+        .bind::<BigInt, _>(digest_id)
+        .execute(connection)?;
+    }
+
+    Ok(())
+}
+
+fn assert_ambiguous_digest_alias(
+    directory: &tempfile::TempDir,
+    database: &Database,
+    connection: &mut SqliteConnection,
+) -> Result<(), Box<dyn std::error::Error>> {
+    seed_ambiguous_digest_witnesses(connection)?;
     let ambiguous_path = directory.path().join("ambiguous-alias.dat");
     std::fs::write(
         &ambiguous_path,
         format!(
             "<datafile><header><name>Ambiguous</name></header><game name=\"ambiguous\"><rom name=\"ambiguous.bin\" size=\"16\" crc=\"12345678\" sha1=\"{}\"/></game></datafile>",
-            "a".repeat(40)
+            "e".repeat(40)
         ),
     )?;
     app::import_catalog(

@@ -1180,10 +1180,8 @@ mod tests {
         )
         .execute(&mut conn)?;
         assert_eq!(affected, 1, "fixture has a native software ROM payload");
-        sql_query(
-            "INSERT INTO catalog_contents (content_uuid, expected_size) VALUES (zeroblob(16), -1)",
-        )
-        .execute(&mut conn)?;
+        sql_query("INSERT INTO catalog_contents (content_uuid) VALUES (x'00')")
+            .execute(&mut conn)?;
         drop(conn);
         drop(database);
 

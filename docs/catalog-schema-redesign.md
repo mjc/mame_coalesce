@@ -56,9 +56,12 @@ source order and default presence. ROM size text is retained once, with a
 virtual numeric projection. Ordinary imports and builds now use published native
 snapshots; the old mutable DAT/game/ROM/archive-file tables and scanned-file
 association column are removed. Build queries derive expected evidence and
-metadata from native owners in one read transaction. Remaining per-format
-coverage and shared registry/endpoint work still need cutover; this is not a
-claim of complete DTD conformance.
+metadata from native owners in one read transaction. Shared file UUIDs now use
+an immutable registry generation, source-backed hash/size views and native
+conflict evidence; published cross-list membership has bounded bulk and keyset
+queries. Remaining per-format coverage, reviewed conflict settlement/redirects
+and observed-byte endpoints are unfinished; this is not a claim of complete
+DTD conformance.
 
 The target hierarchy uses integer IDs for ownership and retains names and
 publisher IDs as source fields:
@@ -246,14 +249,16 @@ game/content identities.
 | `asset_occurrences` | One source occurrence in a record: either a file/media claim or a digest-bearing source/load operation. It preserves owner and order; file/media claims may reference a shared content UUID. List-specific name, role, status and native semantics remain occurrence/native facts. |
 | `catalog_contents` | One deduplicated catalog-level whole-file content identity with a persistent 128-bit UUID stored as its 16 canonical bytes in one SQLite BLOB; any number of asset occurrences can reference it. It contains no ROM bytes and no list-specific naming/role metadata. |
 | `digest_values` / `occurrence_digest_assertions` | Interned algorithm and bytes, plus a source-attributed occurrence link carrying scope and provenance. This is the authoritative owner of common digest assertions; native subtype rows do not duplicate those values. |
-| `content_identity_digest_aliases` | Eligible whole-file digest aliases for a UUID, carrying the asserted scope. Lookup is non-unique: contradictory source data may make one digest value point at multiple identities, which remains a conflict rather than an automatic merge. |
+| `catalog_content_digest_assertions` (view) | Qualified whole-file source assertions joined to their linked occurrences and catalog editions. No separately stored alias or digest copy. Candidate lookup deduplicates UUIDs, not source evidence rows. |
+| `file_id_registries` | One immutable database-wide generation UUID; retained by backup/restore. Fresh destructive rebuilds without the registry start a new generation. |
 | `assertions` | Compact identity and source/derived/user origin. Source-native declaration tables own source fields; derived/user subtype tables own explicit endpoints and rules. |
 
-The current SQLite slice implements the shared identity and normalized digest
-storage in migrations 28–29. `catalog_contents.content_uuid` is a persistent
-16-byte BLOB; `digest_values` interns only `(algorithm, digest bytes)`;
-`catalog_content_digest_assertions` records eligible identity aliases with
-scope. `asset_requirement_digest_assertions` and
+The direct-create SQLite schema implements shared identities and normalized
+digest storage; there is no migration chain. `catalog_contents.content_uuid`
+is a persistent 16-byte BLOB with a registry-generation FK and no copied size.
+`digest_values` interns only `(algorithm, digest bytes)`;
+`catalog_content_digest_assertions` derives eligible identity aliases from
+qualified source occurrences. `asset_requirement_digest_assertions` and
 `software_component_digest_assertions` retain each occurrence's native key,
 digest, scope, and provenance. The physical occurrence rows no longer store
 CRC/MD5/SHA-1 bytes. `asset_requirements` and `software_components` currently
@@ -262,8 +267,12 @@ query consumers still need to move to long-form assertion queries as the
 remaining schema migration proceeds. MAME software-list and machine imports
 share eligible SHA-1 identities without collapsing their occurrence rows;
 operation-only and scoped disk assertions remain unlinked. SHA-256 parser
-coverage, explicit digest-bridge review/redirects, and interchange conversion
-remain outstanding.
+coverage and explicit digest-bridge review/redirects remain outstanding.
+UUID interchange is checked undashed 32-hex text, not stored text.
+Conflict hash/size children point to their actual native owners; unresolved
+disputes also block later sparse declarations. Published cross-list occurrence
+queries keep source/catalog/edition provenance and separate digest children;
+reverse membership pages bind their cursor to the UUID and registry generation.
 
 Foreign keys must keep a record, its namespace, and its snapshot consistent.
 Source name/order uniqueness is decided per pinned dialect, not imposed on every

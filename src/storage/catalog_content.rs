@@ -4,11 +4,33 @@ use diesel::{
     SqliteConnection,
     prelude::*,
     sql_query,
-    sql_types::{BigInt, Binary, Nullable, Text},
+    sql_types::{BigInt, Binary, Text},
 };
 
 use super::catalog_identity::OccurrenceId;
-use crate::domain::CatalogContentId;
+use crate::domain::{CatalogContentId, CatalogRegistryId, ContentDigestAlgorithm};
+
+#[derive(diesel::QueryableByName)]
+struct RegistryRow {
+    #[diesel(sql_type = Binary)]
+    registry_uuid: Vec<u8>,
+}
+
+/// Identity-registry generation preserved by paired database backups.
+pub fn registry_id(connection: &mut SqliteConnection) -> crate::Result<CatalogRegistryId> {
+    let row = sql_query("SELECT registry_uuid FROM file_id_registries WHERE registry_id = 1")
+        .get_result::<RegistryRow>(connection)
+        .map_err(|error| {
+            crate::Error::DatabaseSchema(format!("missing identity registry generation: {error}"))
+        })?;
+    let bytes = row.registry_uuid.try_into().map_err(|bytes: Vec<u8>| {
+        crate::Error::DatabaseSchema(format!(
+            "registry UUID contains {} bytes; expected 16",
+            bytes.len()
+        ))
+    })?;
+    Ok(CatalogRegistryId::from_bytes(bytes))
+}
 
 #[derive(Clone, Copy)]
 pub struct ContentDigestAssertions<'a> {
@@ -40,22 +62,22 @@ impl<'a> ContentDigestAssertions<'a> {
     fn iter(self) -> impl Iterator<Item = DigestAssertion<'a>> {
         [
             self.crc32.map(|value| DigestAssertion {
-                algorithm: "crc32",
+                algorithm: ContentDigestAlgorithm::Crc32,
                 scope: self.scope,
                 value,
             }),
             self.md5.map(|value| DigestAssertion {
-                algorithm: "md5",
+                algorithm: ContentDigestAlgorithm::Md5,
                 scope: self.scope,
                 value,
             }),
             self.sha1.map(|value| DigestAssertion {
-                algorithm: "sha1",
+                algorithm: ContentDigestAlgorithm::Sha1,
                 scope: self.scope,
                 value,
             }),
             self.sha256.map(|value| DigestAssertion {
-                algorithm: "sha256",
+                algorithm: ContentDigestAlgorithm::Sha256,
                 scope: self.scope,
                 value,
             }),
@@ -69,6 +91,7 @@ impl<'a> ContentDigestAssertions<'a> {
 pub enum ContentIdentityConflict {
     AmbiguousAlias,
     ContradictoryAssertions,
+    DisputedAlias,
 }
 
 impl ContentIdentityConflict {
@@ -76,6 +99,7 @@ impl ContentIdentityConflict {
         match self {
             Self::AmbiguousAlias => "ambiguous_alias",
             Self::ContradictoryAssertions => "contradictory_assertions",
+            Self::DisputedAlias => "disputed_alias",
         }
     }
 }
@@ -98,12 +122,12 @@ pub fn record_occurrence_digest_assertions(
 ) -> crate::Result<()> {
     for assertion in assertions.iter() {
         sql_query("INSERT OR IGNORE INTO digest_values (algorithm, digest) VALUES (?, ?)")
-            .bind::<Text, _>(assertion.algorithm)
+            .bind::<Text, _>(assertion.algorithm.as_str())
             .bind::<Binary, _>(assertion.value)
             .execute(connection)?;
         let digest_id =
             sql_query("SELECT digest_id FROM digest_values WHERE algorithm = ? AND digest = ?")
-                .bind::<Text, _>(assertion.algorithm)
+                .bind::<Text, _>(assertion.algorithm.as_str())
                 .bind::<Binary, _>(assertion.value)
                 .get_result::<DigestIdRow>(connection)?
                 .digest_id;
@@ -132,7 +156,7 @@ impl ContentIdentityResolution {
 
 #[derive(Clone, Copy)]
 struct DigestAssertion<'a> {
-    algorithm: &'static str,
+    algorithm: ContentDigestAlgorithm,
     scope: &'a str,
     value: &'a [u8],
 }
@@ -145,8 +169,8 @@ struct ContentUuidRow {
 
 #[derive(diesel::QueryableByName)]
 struct ContentFactsRow {
-    #[diesel(sql_type = Nullable<BigInt>)]
-    expected_size: Option<i64>,
+    #[diesel(sql_type = BigInt)]
+    size: i64,
 }
 
 #[derive(diesel::QueryableByName)]
@@ -159,101 +183,104 @@ struct DigestIdRow {
 struct DigestFactRow {
     #[diesel(sql_type = Text)]
     algorithm: String,
-    #[diesel(sql_type = Text)]
-    scope: String,
     #[diesel(sql_type = Binary)]
     digest: Vec<u8>,
 }
 
+/// Resolve source assertions without storing another copy of their hashes or size.
+/// The caller persists the linked native occurrence and its assertions in the
+/// same import transaction before resolving the next occurrence.
 pub fn resolve_content_identity(
     connection: &mut SqliteConnection,
     size: Option<i64>,
     assertions: ContentDigestAssertions<'_>,
 ) -> crate::Result<ContentIdentityResolution> {
+    if size.is_some_and(|size| size < 0) {
+        return Err(crate::Error::InvalidPath(
+            "whole-file size cannot be negative".to_owned(),
+        ));
+    }
+    for assertion in assertions.iter() {
+        let expected = assertion.algorithm.byte_length();
+        if assertion.value.len() != expected {
+            return Err(crate::Error::InvalidHash(format!(
+                "{} assertion contains {} bytes; expected {expected}",
+                assertion.algorithm.as_str(),
+                assertion.value.len()
+            )));
+        }
+    }
+    let eligible = assertions
+        .iter()
+        .any(DigestAssertion::identifies_whole_file);
+    if !eligible {
+        return Ok(ContentIdentityResolution::NoEligibleEvidence);
+    }
+
     let mut candidates = BTreeSet::new();
+    let mut disputed = false;
     for assertion in assertions
         .iter()
         .filter(|assertion| assertion.identifies_whole_file())
     {
         let rows = sql_query(
-            "SELECT assertion.content_uuid FROM catalog_content_digest_assertions AS assertion \
+            "SELECT DISTINCT assertion.content_uuid FROM catalog_content_digest_assertions AS assertion \
              JOIN digest_values AS digest USING (digest_id) \
-             WHERE digest.algorithm = ? AND assertion.scope = ? AND digest.digest = ?",
+             WHERE digest.algorithm = ? AND digest.digest = ?",
         )
-        .bind::<Text, _>(assertion.algorithm)
-        .bind::<Text, _>(assertion.scope)
+        .bind::<Text, _>(assertion.algorithm.as_str())
         .bind::<Binary, _>(assertion.value)
         .load::<ContentUuidRow>(connection)?;
-
         for row in rows {
             candidates.insert(content_id(row.content_uuid)?);
         }
+        let conflicting_aliases = sql_query(
+            "SELECT DISTINCT dispute.candidate_content_uuid AS content_uuid \
+             FROM disputed_file_hashes AS dispute JOIN digest_values AS digest USING (digest_id) \
+             WHERE digest.algorithm = ? AND digest.digest = ?",
+        )
+        .bind::<Text, _>(assertion.algorithm.as_str())
+        .bind::<Binary, _>(assertion.value)
+        .load::<ContentUuidRow>(connection)?;
+        disputed |= !conflicting_aliases.is_empty();
+        for row in conflicting_aliases {
+            candidates.insert(content_id(row.content_uuid)?);
+        }
     }
-
-    let eligible = assertions
-        .iter()
-        .any(DigestAssertion::identifies_whole_file);
-    let (content_id, created) = match candidates.iter().next().copied() {
-        None if eligible => {
-            let id = CatalogContentId::generate();
-            sql_query("INSERT INTO catalog_contents (content_uuid, expected_size) VALUES (?, ?)")
-                .bind::<Binary, _>(id.as_bytes().as_slice())
-                .bind::<Nullable<BigInt>, _>(size)
-                .execute(connection)?;
-            (id, true)
-        }
-        None => return Ok(ContentIdentityResolution::NoEligibleEvidence),
-        Some(id) if candidates.len() == 1 => (id, false),
-        Some(_) => {
-            return Ok(ContentIdentityResolution::Conflict {
-                reason: ContentIdentityConflict::AmbiguousAlias,
-                candidates: candidates.into_iter().collect(),
-            });
-        }
-    };
-
-    if !compatible_identity(connection, content_id, size, assertions)? {
-        if created {
-            sql_query("DELETE FROM catalog_contents WHERE content_uuid = ?")
-                .bind::<Binary, _>(content_id.as_bytes().as_slice())
-                .execute(connection)?;
-        }
+    if disputed {
         return Ok(ContentIdentityResolution::Conflict {
-            reason: ContentIdentityConflict::ContradictoryAssertions,
-            candidates: vec![content_id],
+            reason: ContentIdentityConflict::DisputedAlias,
+            candidates: candidates.into_iter().collect(),
         });
     }
-
-    sql_query(
-        "UPDATE catalog_contents SET expected_size = COALESCE(expected_size, ?) \
-         WHERE content_uuid = ?",
-    )
-    .bind::<Nullable<BigInt>, _>(size)
-    .bind::<Binary, _>(content_id.as_bytes().as_slice())
-    .execute(connection)?;
-
-    for assertion in assertions.iter() {
-        sql_query("INSERT OR IGNORE INTO digest_values (algorithm, digest) VALUES (?, ?)")
-            .bind::<Text, _>(assertion.algorithm)
-            .bind::<Binary, _>(assertion.value)
-            .execute(connection)?;
-        let digest_id =
-            sql_query("SELECT digest_id FROM digest_values WHERE algorithm = ? AND digest = ?")
-                .bind::<Text, _>(assertion.algorithm)
-                .bind::<Binary, _>(assertion.value)
-                .get_result::<DigestIdRow>(connection)?
-                .digest_id;
-        sql_query(
-            "INSERT OR IGNORE INTO catalog_content_digest_assertions \
-             (content_uuid, digest_id, scope) VALUES (?, ?, ?)",
-        )
-        .bind::<Binary, _>(content_id.as_bytes().as_slice())
-        .bind::<BigInt, _>(digest_id)
-        .bind::<Text, _>(assertion.scope)
-        .execute(connection)?;
+    match candidates.len() {
+        0 => {
+            let id = CatalogContentId::generate();
+            sql_query("INSERT INTO catalog_contents (content_uuid) VALUES (?)")
+                .bind::<Binary, _>(id.as_bytes().as_slice())
+                .execute(connection)?;
+            Ok(ContentIdentityResolution::Linked(id))
+        }
+        1 => {
+            let Some(id) = candidates.into_iter().next() else {
+                return Err(crate::Error::InvalidPath(
+                    "missing unique content candidate".to_owned(),
+                ));
+            };
+            if compatible_identity(connection, id, size, assertions)? {
+                Ok(ContentIdentityResolution::Linked(id))
+            } else {
+                Ok(ContentIdentityResolution::Conflict {
+                    reason: ContentIdentityConflict::ContradictoryAssertions,
+                    candidates: vec![id],
+                })
+            }
+        }
+        _ => Ok(ContentIdentityResolution::Conflict {
+            reason: ContentIdentityConflict::AmbiguousAlias,
+            candidates: candidates.into_iter().collect(),
+        }),
     }
-
-    Ok(ContentIdentityResolution::Linked(content_id))
 }
 
 pub fn record_content_identity_conflict(
@@ -273,14 +300,58 @@ pub fn record_content_identity_conflict(
         .bind::<Binary, _>(candidate.as_bytes().as_slice())
         .bind::<Text, _>(reason.as_str())
         .execute(connection)?;
+        sql_query(
+            "INSERT INTO occurrence_content_conflict_hashes \
+             (occurrence_id, candidate_content_uuid, evidence_occurrence_id, digest_id, scope, provenance, role) \
+             SELECT ?, ?, occurrence_id, digest_id, scope, provenance, 'incoming' \
+             FROM occurrence_digest_assertions WHERE occurrence_id = ? \
+             AND scope IN ('whole_asset', 'whole_file') AND provenance = 'source_declared'",
+        )
+        .bind::<BigInt, _>(occurrence.database_value())
+        .bind::<Binary, _>(candidate.as_bytes().as_slice())
+        .bind::<BigInt, _>(occurrence.database_value())
+        .execute(connection)?;
+        sql_query(
+            "INSERT INTO occurrence_content_conflict_hashes \
+             (occurrence_id, candidate_content_uuid, evidence_occurrence_id, digest_id, scope, provenance, role) \
+             SELECT ?, ?, occurrence_id, digest_id, scope, provenance, 'candidate' \
+             FROM catalog_content_digest_assertions WHERE content_uuid = ?",
+        )
+        .bind::<BigInt, _>(occurrence.database_value())
+        .bind::<Binary, _>(candidate.as_bytes().as_slice())
+        .bind::<Binary, _>(candidate.as_bytes().as_slice())
+        .execute(connection)?;
+        sql_query(
+            "INSERT INTO occurrence_content_conflict_sizes \
+             (occurrence_id, candidate_content_uuid, evidence_occurrence_id, size_field, role) \
+             SELECT ?, ?, occurrence_id, size_field, 'incoming' \
+             FROM catalog_file_size_assertions WHERE occurrence_id = ?",
+        )
+        .bind::<BigInt, _>(occurrence.database_value())
+        .bind::<Binary, _>(candidate.as_bytes().as_slice())
+        .bind::<BigInt, _>(occurrence.database_value())
+        .execute(connection)?;
+        sql_query(
+            "INSERT INTO occurrence_content_conflict_sizes \
+             (occurrence_id, candidate_content_uuid, evidence_occurrence_id, size_field, role) \
+             SELECT ?, ?, sizes.occurrence_id, sizes.size_field, 'candidate' \
+             FROM catalog_file_size_assertions AS sizes \
+             JOIN asset_occurrences AS entry USING (occurrence_id) WHERE entry.content_uuid = ?",
+        )
+        .bind::<BigInt, _>(occurrence.database_value())
+        .bind::<Binary, _>(candidate.as_bytes().as_slice())
+        .bind::<Binary, _>(candidate.as_bytes().as_slice())
+        .execute(connection)?;
     }
     Ok(())
 }
 
 impl DigestAssertion<'_> {
     fn identifies_whole_file(self) -> bool {
-        matches!(self.algorithm, "sha1" | "sha256")
-            && matches!(self.scope, "whole_asset" | "whole_file")
+        matches!(
+            self.algorithm,
+            ContentDigestAlgorithm::Sha1 | ContentDigestAlgorithm::Sha256
+        ) && matches!(self.scope, "whole_asset" | "whole_file")
     }
 }
 
@@ -290,16 +361,23 @@ fn compatible_identity(
     size: Option<i64>,
     assertions: ContentDigestAssertions<'_>,
 ) -> crate::Result<bool> {
-    let facts = sql_query("SELECT expected_size FROM catalog_contents WHERE content_uuid = ?")
+    if let Some(incoming) = size {
+        let facts = sql_query(
+            "SELECT sizes.size FROM catalog_file_size_assertions AS sizes \
+             JOIN asset_occurrences AS entry USING (occurrence_id) \
+             WHERE entry.content_uuid = ? AND sizes.size <> ? LIMIT 1",
+        )
         .bind::<Binary, _>(content_id.as_bytes().as_slice())
-        .get_result::<ContentFactsRow>(connection)?;
-    if matches!((facts.expected_size, size), (Some(existing), Some(incoming)) if existing != incoming)
-    {
-        return Ok(false);
+        .bind::<BigInt, _>(incoming)
+        .get_result::<ContentFactsRow>(connection)
+        .optional()?;
+        if facts.is_some_and(|fact| fact.size != incoming) {
+            return Ok(false);
+        }
     }
 
     let stored = sql_query(
-        "SELECT digest.algorithm, assertion.scope, digest.digest \
+        "SELECT DISTINCT digest.algorithm, digest.digest \
          FROM catalog_content_digest_assertions AS assertion \
          JOIN digest_values AS digest USING (digest_id) \
          WHERE assertion.content_uuid = ?",
@@ -308,18 +386,21 @@ fn compatible_identity(
     .load::<DigestFactRow>(connection)?;
     let mut known = BTreeMap::new();
     for fact in stored {
-        let key = (fact.algorithm, fact.scope);
-        if known
-            .insert(key.clone(), fact.digest.clone())
-            .is_some_and(|previous| previous != fact.digest)
-        {
-            return Ok(false);
+        match known.entry(fact.algorithm) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(fact.digest);
+            }
+            std::collections::btree_map::Entry::Occupied(entry) => {
+                if entry.get() != &fact.digest {
+                    return Ok(false);
+                }
+            }
         }
     }
 
     Ok(assertions.iter().all(|assertion| {
         known
-            .get(&(assertion.algorithm.to_owned(), assertion.scope.to_owned()))
+            .get(assertion.algorithm.as_str())
             .is_none_or(|value| value.as_slice() == assertion.value)
     }))
 }
@@ -341,6 +422,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn equivalent_whole_file_scopes_share_identity() -> crate::Result<()> {
+        let mut connection = registry_connection()?;
+        let sha1 = [0x44; 20];
+        let first = resolve_content_identity(
+            &mut connection,
+            Some(16),
+            ContentDigestAssertions::new("whole_file", None, None, Some(&sha1), None),
+        )?;
+        support_identity(
+            &mut connection,
+            &first,
+            Some(16),
+            ContentDigestAssertions::new("whole_file", None, None, Some(&sha1), None),
+        )?;
+        let second = resolve_content_identity(
+            &mut connection,
+            Some(16),
+            ContentDigestAssertions::new("whole_asset", None, None, Some(&sha1), None),
+        )?;
+        assert_eq!(first.content_id(), second.content_id());
+        Ok(())
+    }
+
+    #[test]
     fn sha1_sha256_bridge_stays_ambiguous_in_either_order() -> crate::Result<()> {
         for sha256_first in [false, true] {
             let mut connection = registry_connection()?;
@@ -357,14 +462,10 @@ mod tests {
                 ContentDigestAssertions::new("whole_file", None, None, None, Some(&sha256))
             };
 
-            assert!(matches!(
-                resolve_content_identity(&mut connection, None, first)?,
-                ContentIdentityResolution::Linked(_)
-            ));
-            assert!(matches!(
-                resolve_content_identity(&mut connection, None, second)?,
-                ContentIdentityResolution::Linked(_)
-            ));
+            let first_id = resolve_content_identity(&mut connection, None, first)?;
+            support_identity(&mut connection, &first_id, None, first)?;
+            let second_id = resolve_content_identity(&mut connection, None, second)?;
+            support_identity(&mut connection, &second_id, None, second)?;
             let bridge = resolve_content_identity(
                 &mut connection,
                 None,
@@ -393,13 +494,45 @@ mod tests {
         count: i64,
     }
 
+    fn support_identity(
+        connection: &mut SqliteConnection,
+        resolution: &ContentIdentityResolution,
+        size: Option<i64>,
+        assertions: ContentDigestAssertions<'_>,
+    ) -> crate::Result<()> {
+        #[derive(diesel::QueryableByName)]
+        struct Owner {
+            #[diesel(sql_type = BigInt)]
+            occurrence_id: i64,
+        }
+        let id = resolution
+            .content_id()
+            .ok_or_else(|| crate::Error::InvalidPath("test identity missing".to_owned()))?;
+        let owner = sql_query(
+            "INSERT INTO asset_occurrences(content_uuid) VALUES (?) RETURNING occurrence_id",
+        )
+        .bind::<Binary, _>(id.as_bytes().as_slice())
+        .get_result::<Owner>(connection)?;
+        if let Some(size) = size {
+            sql_query("INSERT INTO native_file_sizes (occurrence_id,size) VALUES (?,?)")
+                .bind::<BigInt, _>(owner.occurrence_id)
+                .bind::<BigInt, _>(size)
+                .execute(connection)?;
+        }
+        record_occurrence_digest_assertions(
+            connection,
+            OccurrenceId::from_database(owner.occurrence_id),
+            assertions,
+            "source_declared",
+        )
+    }
+
     fn registry_connection() -> crate::Result<SqliteConnection> {
         let mut connection = SqliteConnection::establish(":memory:")
             .map_err(|error| crate::Error::InvalidPath(error.to_string()))?;
         connection.batch_execute(
             "CREATE TABLE catalog_contents (
-                 content_uuid BLOB PRIMARY KEY NOT NULL CHECK (length(content_uuid) = 16),
-                 expected_size INTEGER
+                 content_uuid BLOB PRIMARY KEY NOT NULL CHECK (length(content_uuid) = 16)
              );
              CREATE TABLE digest_values (
                  digest_id INTEGER PRIMARY KEY,
@@ -407,14 +540,18 @@ mod tests {
                  digest BLOB NOT NULL,
                  UNIQUE (algorithm, digest)
              );
-             CREATE TABLE catalog_content_digest_assertions (
-                 content_uuid BLOB NOT NULL,
-                 digest_id INTEGER NOT NULL,
-                 scope TEXT NOT NULL,
-                 PRIMARY KEY (content_uuid, digest_id, scope),
-                 FOREIGN KEY (content_uuid) REFERENCES catalog_contents (content_uuid),
-                 FOREIGN KEY (digest_id) REFERENCES digest_values (digest_id)
-             ) WITHOUT ROWID;",
+             CREATE TABLE asset_occurrences (occurrence_id INTEGER PRIMARY KEY,content_uuid BLOB);
+             CREATE TABLE occurrence_digest_assertions (
+                 occurrence_id INTEGER,digest_id INTEGER,scope TEXT,provenance TEXT,
+                 PRIMARY KEY (occurrence_id,digest_id,scope,provenance)
+             );
+             CREATE TABLE native_file_sizes (occurrence_id INTEGER PRIMARY KEY,size INTEGER);
+             CREATE VIEW catalog_file_size_assertions AS SELECT * FROM native_file_sizes;
+             CREATE VIEW catalog_content_digest_assertions AS
+             SELECT occurrence.content_uuid,assertion.* FROM occurrence_digest_assertions AS assertion
+             JOIN asset_occurrences AS occurrence USING(occurrence_id)
+             WHERE scope IN ('whole_asset','whole_file') AND provenance='source_declared';
+             CREATE TABLE disputed_file_hashes(digest_id INTEGER,candidate_content_uuid BLOB);",
         )?;
         Ok(connection)
     }

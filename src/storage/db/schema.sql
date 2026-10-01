@@ -71,18 +71,6 @@ CREATE TABLE asset_occurrences (
     UNIQUE (occurrence_id, record_id),
     UNIQUE (occurrence_id, claim_kind)
 );
-CREATE TABLE catalog_content_digest_assertions (
-    content_uuid BLOB NOT NULL CHECK (length(content_uuid) = 16),
-    digest_id INTEGER NOT NULL,
-    scope TEXT NOT NULL CHECK (length(scope) > 0),
-    PRIMARY KEY (content_uuid, digest_id, scope),
-    FOREIGN KEY (content_uuid) REFERENCES catalog_contents (content_uuid) ON DELETE RESTRICT,
-    FOREIGN KEY (digest_id) REFERENCES digest_values (digest_id) ON DELETE RESTRICT
-) WITHOUT ROWID;
-CREATE TABLE catalog_contents (
-    content_uuid BLOB PRIMARY KEY NOT NULL CHECK (length(content_uuid) = 16),
-    expected_size INTEGER CHECK (expected_size IS NULL OR expected_size >= 0)
-) WITHOUT ROWID;
 CREATE TABLE catalog_snapshots (
     snapshot_key        TEXT PRIMARY KEY NOT NULL,
     catalog_key         TEXT NOT NULL REFERENCES catalogs (catalog_key) ON DELETE RESTRICT,
@@ -883,7 +871,7 @@ CREATE TABLE no_intro_pc_file_claims (
 CREATE TABLE occurrence_content_conflicts (
     occurrence_id INTEGER NOT NULL REFERENCES asset_occurrences(occurrence_id) ON DELETE RESTRICT,
     candidate_content_uuid BLOB NOT NULL REFERENCES catalog_contents(content_uuid) ON DELETE RESTRICT,
-    reason TEXT NOT NULL CHECK (reason IN ('ambiguous_alias', 'contradictory_assertions')),
+    reason TEXT NOT NULL CHECK (reason IN ('ambiguous_alias', 'contradictory_assertions', 'disputed_alias')),
     PRIMARY KEY (occurrence_id, candidate_content_uuid)
 ) WITHOUT ROWID;
 CREATE TABLE occurrence_digest_assertions (
@@ -1275,8 +1263,6 @@ CREATE INDEX acquisitions_document_key_index ON acquisitions (document_key);
 CREATE UNIQUE INDEX acquisitions_key_document_source_unique
     ON acquisitions (acquisition_key, document_key, source_key);
 CREATE INDEX acquisitions_source_key_index ON acquisitions (source_key);
-CREATE INDEX catalog_content_digest_lookup
-    ON catalog_content_digest_assertions (digest_id, scope, content_uuid);
 CREATE INDEX catalogs_source_key_index ON catalogs (source_key);
 CREATE INDEX diagnostics_run_index ON import_diagnostics (run_key);
 CREATE INDEX digest_value_lookup

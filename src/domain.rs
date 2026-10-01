@@ -6,7 +6,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub mod media;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
 pub struct CatalogContentId([u8; 16]);
 
 impl CatalogContentId {
@@ -15,6 +16,58 @@ impl CatalogContentId {
         Self(*uuid::Uuid::new_v4().as_bytes())
     }
 
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; 16]) -> Self {
+        Self(bytes)
+    }
+
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 16] {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for CatalogContentId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", uuid::Uuid::from_bytes(self.0).simple())
+    }
+}
+
+impl std::str::FromStr for CatalogContentId {
+    type Err = crate::Error;
+
+    fn from_str(value: &str) -> crate::Result<Self> {
+        if value.len() != 32 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(crate::Error::InvalidHash(
+                "catalog UUID must contain exactly 32 undashed hexadecimal characters".to_owned(),
+            ));
+        }
+        uuid::Uuid::parse_str(value)
+            .map(|uuid| Self(*uuid.as_bytes()))
+            .map_err(|error| crate::Error::InvalidHash(error.to_string()))
+    }
+}
+
+impl TryFrom<String> for CatalogContentId {
+    type Error = crate::Error;
+
+    fn try_from(value: String) -> crate::Result<Self> {
+        value.parse()
+    }
+}
+
+impl From<CatalogContentId> for String {
+    fn from(value: CatalogContentId) -> Self {
+        value.to_string()
+    }
+}
+
+/// Generation of the database-wide expected-content UUID registry.
+/// A full rebuild without the registry creates a different generation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CatalogRegistryId([u8; 16]);
+
+impl CatalogRegistryId {
     #[must_use]
     pub const fn from_bytes(bytes: [u8; 16]) -> Self {
         Self(bytes)
@@ -790,11 +843,16 @@ impl ContentDigestAlgorithm {
     }
 
     const fn hex_length(self) -> usize {
+        self.byte_length() * 2
+    }
+
+    #[must_use]
+    pub const fn byte_length(self) -> usize {
         match self {
-            Self::Crc32 => 8,
-            Self::Md5 => 32,
-            Self::Sha1 => 40,
-            Self::Sha256 => 64,
+            Self::Crc32 => 4,
+            Self::Md5 => 16,
+            Self::Sha1 => 20,
+            Self::Sha256 => 32,
         }
     }
 }
@@ -1780,6 +1838,25 @@ mod tests {
         let id = CatalogContentId::from_bytes(bytes);
 
         assert_eq!(id.as_bytes(), &bytes);
+    }
+
+    #[test]
+    fn catalog_uuid_interchange_is_undashed_hex_and_round_trips() -> crate::Result<()> {
+        let text = "00112233445546778899aabbccddeeff";
+        let id: CatalogContentId = text.parse()?;
+        assert_eq!(id.to_string(), text);
+        let encoded = serde_json::to_string(&id)?;
+        assert_eq!(encoded, format!("\"{text}\""));
+        assert_eq!(serde_json::from_str::<CatalogContentId>(&encoded)?, id);
+        for invalid in [
+            "",
+            "00",
+            "00112233-4455-4677-8899-aabbccddeeff",
+            "z0112233445546778899aabbccddeeff",
+        ] {
+            assert!(invalid.parse::<CatalogContentId>().is_err(), "{invalid}");
+        }
+        Ok(())
     }
 
     #[test]

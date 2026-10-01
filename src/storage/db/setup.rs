@@ -16,7 +16,9 @@ const SCHEMA: &str = concat!(
     "\n",
     include_str!("schema.sql"),
     "\n",
-    include_str!("logiqx.sql")
+    include_str!("logiqx.sql"),
+    "\n",
+    include_str!("catalog_registry.sql")
 );
 
 #[derive(Debug)]
@@ -96,6 +98,7 @@ pub fn validate_database_schema(conn: &mut SqliteConnection) -> crate::Result<()
                 .to_owned(),
         ));
     }
+    super::super::catalog_content::registry_id(conn)?;
     let mut reference = SqliteConnection::establish(":memory:")
         .map_err(|error| crate::Error::DatabaseSchema(error.to_string()))?;
     reference.batch_execute(SCHEMA)?;

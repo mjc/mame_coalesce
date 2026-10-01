@@ -2,6 +2,7 @@ pub mod backup;
 pub mod build_catalog;
 pub mod catalog_content;
 pub mod catalog_coverage;
+pub mod catalog_files;
 pub mod catalog_identity;
 pub mod catalog_import;
 pub mod catalog_reconciliation;

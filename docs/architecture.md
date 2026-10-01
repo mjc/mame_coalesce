@@ -109,6 +109,18 @@ parser-internal representations the public contract.
   byte-for-byte reversion cannot switch the edition being built.
   Audits likewise resolve one published catalog before validation/refresh and
   plan against that same edition after scanning.
+- The expected-file registry stores only issued UUIDs and one immutable
+  database-wide generation. Its hash aliases and comparable sizes are views of
+  qualified native source declarations, not independently stored copies.
+  Whole-file scopes compare as one byte representation. Conflict children point
+  to the actual incoming/candidate hash assertions and native size owners;
+  unresolved disputes block later sparse claims. Explicit reviewed settlement
+  and UUID redirects are still unfinished. Paired backup/restore retains the
+  generation; rebuilding without the registry declares a new generation.
+- `catalog_files` queries published occurrences in one transaction, preserving
+  one row per source owner and separate digest children. Bulk lookups include
+  unlinked entries; reverse UUID membership uses keyset pagination and checks
+  both file identity and registry generation before resuming a cursor.
 - There are no mutable `data_files`, `games`, `roms` or `archive_files`
   catalog tables. Scanned-file inventory has no foreign key assigning observed
   bytes to one expected ROM. Whole-file hash candidate counts are derived from

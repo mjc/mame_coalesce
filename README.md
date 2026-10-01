@@ -93,6 +93,20 @@ mame_coalesce --cache /tmp/coalesce.db cache restore /path/to/coalesce.backup.sq
 Backups consist of a SQLite snapshot made with `VACUUM INTO` and an adjacent
 `<backup-path>.documents` directory containing retained source objects. Keep
 both together when moving a backup; source bytes are never stored in SQLite.
+Eligible whole-file SHA-1/SHA-256 source declarations share a persistent
+16-byte file UUID without combining their catalog entries. Hash lookup joins
+the original declarations; shared identities store no copied hashes or size.
+Contradictions and ambiguous bridges remain unlinked, with references to the
+specific source hash and size evidence. A disputed hash also blocks later sparse
+claims until reviewed settlement is implemented. Backup/restore preserves the
+database-wide registry generation; a fresh rebuild starts a new generation.
+UUID interchange uses 32 hexadecimal characters without dashes.
+
+The Rust `catalog_files` API exposes bulk occurrence lookup and keyset-paginated
+file membership across published catalog editions. Results keep each owner and
+its source/list provenance, with digest assertions as separate children.
+Pagination cursors belong to one file UUID and registry generation.
+
 Format version 1 is marked in the SQLite header and includes the cache database,
 acquisitions, catalog snapshots, assertions, reviews, diagnostics, and
 rebuildable inventory. Backup creation never replaces an existing backup file.
@@ -397,6 +411,14 @@ and catalog regressions cover these behaviors:
 
 - `database_initialization` checks creation from bundled DDL, acceptance of a
   matching schema, and rejection of schema drift without repair.
+- `catalog_content_disputes` checks conflicting source evidence, later sparse
+  claims against disputed hashes, immutable published assertions, guarded
+  replacement writes, cross-format file membership and registry-preserving
+  backup/restore versus a fresh generation.
+- `catalog_files` unit tests check published-only bulk and paginated membership,
+  repeated owners, native filenames and locations, software part/area ownership,
+  scoped digest children, corruption errors, temporary-table cleanup and indexed
+  owner, digest and payload lookup without scanning the entire catalog.
 - `native_catalog_model` checks scoped record identity and rejects occurrences
   whose claim kind or content identity conflicts with their native record;
   it also checks that no second mutable DAT model exists.
