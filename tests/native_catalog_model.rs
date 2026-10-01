@@ -25,7 +25,9 @@ fn connection() -> (tempfile::TempDir, SqliteConnection) {
          INSERT INTO catalog_snapshots(
              snapshot_key,catalog_key,document_key,interpretation_key,coverage_id
          ) VALUES ('mame-snapshot','catalog','document','parser-mame',1),
-                  ('software-snapshot','catalog','document','parser-software',1);",
+                  ('software-snapshot','catalog','document','parser-software',1);
+         INSERT INTO software_documents VALUES ('software-snapshot','plural_lists');
+         INSERT INTO software_wrapper_headers VALUES ('software-snapshot',NULL);",
     )
     .expect("snapshot parents");
     (directory, conn)
@@ -86,8 +88,8 @@ fn native_sets_have_scoped_integer_identity_and_typed_detail_owners() {
          VALUES (1,'mame-snapshot','root',0),
                 (2,'software-snapshot','software_list',0),
                 (3,'software-snapshot','software_list',1);
-         INSERT INTO software_lists(namespace_id,name,source_line,source_column)
-         VALUES (2,'first',1,1),(3,'second',1,1);
+         INSERT INTO software_lists(namespace_id,source_order,name,source_line,source_column)
+         VALUES (2,0,'first',1,1),(3,1,'second',1,1);
          INSERT INTO catalog_sets(set_id,set_group_id,source_element_kind,list_order,set_name,source_line,source_column)
          VALUES (1,1,'mame_machine',0,'machine',2,1),
                 (2,2,'software_item',0,'same',3,1),
@@ -97,10 +99,13 @@ fn native_sets_have_scoped_integer_identity_and_typed_detail_owners() {
              set_id,description,description_line,description_column,
              is_device,runnable,is_bios,is_mechanical,is_consumable,attributes_line,attributes_column
          ) VALUES (1,'Machine',2,1,0,1,0,0,0,2,1);
-         INSERT INTO software_items(record_id,description,year,publisher)
-         VALUES (2,'First game','1980','Publisher'),
-                (3,'Second game','1980','Publisher'),
-                (4,'Same-list duplicate','1981','Publisher');",
+         INSERT INTO software_items(record_id,source_order,supported,supported_specified,description,year,publisher)
+         VALUES (2,0,'yes',0,'First game','1980','Publisher'),
+                (3,0,'yes',0,'Second game','1980','Publisher'),
+                (4,1,'yes',0,'Same-list duplicate','1981','Publisher');
+         INSERT INTO software_item_text_positions(record_id,field_kind,source_order,source_line,source_column)
+         SELECT record_id,field_kind,field_kind,1,1 FROM software_items CROSS JOIN
+         (SELECT 0 AS field_kind UNION ALL SELECT 1 UNION ALL SELECT 2);",
     )
     .expect("scoped set identities and native detail owners");
 
@@ -167,11 +172,11 @@ fn native_groups_and_list_details_require_the_matching_parser_format() {
         "INSERT INTO catalog_set_groups(set_group_id,snapshot_key,kind,list_order)
          VALUES (1,'mame-snapshot','root',0),(2,'logiqx-snapshot','root',0),
                 (3,'software-snapshot','software_list',0);
-         INSERT INTO software_lists(namespace_id,name,source_line,source_column) VALUES (3,'valid',1,1);",
+         INSERT INTO software_lists(namespace_id,source_order,name,source_line,source_column) VALUES (3,0,'valid',1,1);",
     )
     .expect("format-matching groups and list details");
     assert!(conn.batch_execute(
-        "INSERT INTO software_lists(namespace_id,name,source_line,source_column) VALUES (2,'wrong format',1,1)"
+        "INSERT INTO software_lists(namespace_id,source_order,name,source_line,source_column) VALUES (2,0,'wrong format',1,1)"
     ).is_err());
 }
 
@@ -181,20 +186,21 @@ fn native_occurrences_and_details_cannot_cross_set_or_format_ownership() {
     conn.batch_execute(
         "INSERT INTO catalog_set_groups(set_group_id,snapshot_key,kind,list_order)
          VALUES (1,'mame-snapshot','root',0),(2,'software-snapshot','software_list',0);
-         INSERT INTO software_lists(namespace_id,name,source_line,source_column)
-         VALUES (2,'list',1,1);
+         INSERT INTO software_lists(namespace_id,source_order,name,source_line,source_column)
+         VALUES (2,0,'list',1,1);
          INSERT INTO catalog_sets(set_id,set_group_id,source_element_kind,list_order,set_name,source_line,source_column)
          VALUES (1,1,'mame_machine',0,'machine',2,1),(2,2,'software_item',0,'game',3,1);
          INSERT INTO mame_machines(
              set_id,description,description_line,description_column,
              is_device,runnable,is_bios,is_mechanical,is_consumable,attributes_line,attributes_column
          ) VALUES (1,'Machine',2,1,0,1,0,0,0,2,1);
-         INSERT INTO software_items(record_id,description,year,publisher)
-         VALUES (2,'Game','1980','Publisher');
-         INSERT INTO software_parts(part_id,record_id,part_name,part_order,interface,source_line,source_column)
-         VALUES (1,2,'cart',0,'cart',4,1);
-         INSERT INTO software_areas(area_id,part_id,record_id,area_name,area_kind,area_order,source_line,source_column)
-         VALUES (1,1,2,'rom','data',0,5,1);
+         INSERT INTO software_items(record_id,source_order,supported,supported_specified,description,year,publisher)
+         VALUES (2,0,'yes',0,'Game','1980','Publisher');
+         INSERT INTO software_parts(part_id,record_id,part_name,part_order,source_order,interface,source_line,source_column)
+         VALUES (1,2,'cart',0,3,'cart',4,1);
+         INSERT INTO software_areas(area_id,part_id,record_id,area_name,area_kind,area_order,source_order,
+             declared_size_text,width,width_specified,endianness,endianness_specified,source_line,source_column)
+         VALUES (1,1,2,'rom','data',0,0,'8',8,0,'little',0,5,1);
          INSERT INTO catalog_contents(content_uuid) VALUES (zeroblob(16));
          INSERT INTO asset_occurrences(occurrence_id,record_id,occurrence_order,claim_kind)
          VALUES (1,1,0,'mame_rom'),(2,2,0,'software_rom_entry'),(3,2,1,'software_rom_operation');
@@ -202,8 +208,10 @@ fn native_occurrences_and_details_cannot_cross_set_or_format_ownership() {
              occurrence_id,name,evidence_scope,evidence_provenance,source_line,source_column
          ) VALUES (1,'machine.rom','whole_asset','source_declared',6,1);
          INSERT INTO software_rom_entries(
-             occurrence_id,record_id,area_id,component_order,name,evidence_scope,source_line,source_column
-         ) VALUES (2,2,1,0,'game.rom','whole_asset',7,1);
+             occurrence_id,record_id,area_id,component_order,source_order,name,evidence_scope,
+             dump_status,status_specified,source_line,source_column
+         ) VALUES (2,2,1,0,0,'game.rom','whole_asset','good',0,7,1),
+                  (3,2,1,1,1,NULL,'whole_asset','good',0,8,1);
          INSERT INTO software_file_uses(occurrence_id,record_id,operation)
          VALUES (3,2,'continue');",
     )
@@ -231,13 +239,15 @@ fn native_occurrences_and_details_cannot_cross_set_or_format_ownership() {
         )
         .is_err()
     );
-    assert!(conn
-        .batch_execute(
+    assert!(
+        conn.batch_execute(
             "INSERT INTO software_rom_entries(
-                 occurrence_id,record_id,area_id,component_order,name,evidence_scope,source_line,source_column
-             ) VALUES (1,1,1,1,'wrong-area.rom','whole_asset',9,1)",
+                 occurrence_id,record_id,area_id,component_order,source_order,name,evidence_scope,
+                 dump_status,status_specified,source_line,source_column
+             ) VALUES (1,1,1,2,2,'wrong-area.rom','whole_asset','good',0,9,1)",
         )
-        .is_err());
+        .is_err()
+    );
     assert!(
         conn.batch_execute(
             "INSERT INTO occurrence_digest_assertions(occurrence_id,digest_id,scope,provenance)

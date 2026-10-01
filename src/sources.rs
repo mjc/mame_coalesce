@@ -27,6 +27,17 @@ pub const MAX_SERVING_ARCHIVE_ENTRIES: usize = 100_000;
 
 static ARCHIVE_DECODER_SLOTS: DecoderSlots = DecoderSlots::new(MAX_ACTIVE_ARCHIVE_DECODERS);
 
+#[cfg(test)]
+static ARCHIVE_DECODER_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+fn archive_decoder_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    // These tests share the process-wide decoder budget; keep them from competing.
+    ARCHIVE_DECODER_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ArchiveMemberSelector {
     pub index: usize,
@@ -127,26 +138,43 @@ impl DecoderSlots {
                 active.checked_add(1).filter(|next| *next <= self.maximum)
             })
             .ok()
-            .map(|_| DecoderPermit { slots: self })
+            .map(|_| DecoderPermit {
+                slots: self,
+                #[cfg(test)]
+                test_guard: None,
+            })
     }
 }
 
 struct DecoderPermit<'a> {
     slots: &'a DecoderSlots,
+    #[cfg(test)]
+    test_guard: Option<std::sync::MutexGuard<'static, ()>>,
 }
 
 impl Drop for DecoderPermit<'_> {
     fn drop(&mut self) {
         self.slots.active.fetch_sub(1, Ordering::Release);
+        #[cfg(test)]
+        drop(self.test_guard.take());
     }
 }
 
 fn reserve_serving_decoder() -> Result<DecoderPermit<'static>> {
-    ARCHIVE_DECODER_SLOTS
+    #[cfg(test)]
+    let test_guard = archive_decoder_test_guard();
+    let permit = ARCHIVE_DECODER_SLOTS
         .try_acquire()
         .ok_or(Error::ArchiveDecoderLimitExceeded {
             maximum: MAX_ACTIVE_ARCHIVE_DECODERS,
-        })
+        })?;
+    #[cfg(test)]
+    let permit = {
+        let mut permit = permit;
+        permit.test_guard = Some(test_guard);
+        permit
+    };
+    Ok(permit)
 }
 
 pub fn detect(path: &Utf8Path) -> Result<SourceKind> {
@@ -1181,16 +1209,8 @@ mod tests {
                 .add_file("game.rom", b"content")
                 .build()?,
         )?;
-        let mut capacity_retries = 0;
-        let error = loop {
-            match enumerate_with_limit(&seven_zip, ArchiveBackend::SevenZip, Some(0)) {
-                Err(Error::ArchiveDecoderLimitExceeded { .. }) if capacity_retries < 100 => {
-                    capacity_retries += 1;
-                    std::thread::sleep(std::time::Duration::from_millis(1));
-                }
-                Err(error) => break error,
-                Ok(_) => return Err("the 7z serving entry limit was not checked".into()),
-            }
+        let Err(error) = enumerate_with_limit(&seven_zip, ArchiveBackend::SevenZip, Some(0)) else {
+            return Err("the 7z serving entry limit was not checked".into());
         };
         assert!(error.to_string().contains("entry serving limit"));
         Ok(())

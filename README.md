@@ -419,8 +419,18 @@ MAME 0.289 DTD, including displays, input controls, switch conditions, drivers,
 features, devices, slots, software-list references, and RAM options. DTD defaults
 and required device-reference tags are stored as typed facts, with ordered nested
 rows and snapshot-diff coverage. The separate software-list adapter imports list-scoped items, parts,
-data/disk areas, component evidence, and load instructions as source data; it
-does not execute those instructions or expand dependencies. Both adapters
+data/disk areas, component evidence, and load instructions as source data. It
+retains omitted versus explicit defaults, empty values, original size/offset/hash
+text, native child order and scalar locations. Checked numeric values are virtual
+SQL projections, not additional stored copies. Single-list roots and plural
+wrappers have distinct native document owners; wrapper build text is stored once.
+Native snapshot history compares list-qualified titles and their complete child
+hierarchy, without treating generated IDs or changed physical coordinates as edits.
+Repeated-name list contexts are shared within the comparison instead of copied
+into every title's facts.
+File uses refer to their declaring entry instead of copying its name, offset or
+value. Exact per-flag loader/hash/whole-file length proof remains open; the adapter
+does not execute loading instructions or expand dependencies. Both adapters
 retain unrecognized XML in the external original document, not a generic
 SQLite field table. Imports accept retained documents and
 gzip-expanded XML up to 384 MiB. XML tree adapters are limited to 200,000

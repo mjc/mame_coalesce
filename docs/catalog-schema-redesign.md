@@ -615,24 +615,56 @@ foreign keys cannot point a switch condition at an unrelated display.
 
 ## MAME software-list native relations
 
+The source-fidelity cutover adds native `software_documents` and plural-only
+`software_wrapper_headers`; wrapper build has no copied snapshot-version value.
+`catalog_snapshot_versions` derives it from the native owner. Software defaults
+retain explicit-presence flags for supported, width, endianness, ROM/disk status,
+disk writeable and DIP-value default. Numeric CDATA remains source text once,
+with checked decimal/octal/hex virtual interpretations; unknown values are NULL,
+not saturation or invented zero. Raw checksum text distinguishes missing, empty,
+invalid and usable declarations independently of the normalized assertion rows.
+Numeric source owners preserve repeated names and every occurrence.
+
+Position-only scalar children and cross-family source ordinals preserve native
+order and locations without another value store. Software snapshot history uses
+the existing relationship-key representation `[list_name,item_name]`; missing
+title classification uses qualified software coverage, not root-set membership.
+History reads native owners, normalizes known-child ranks across families, and
+compares complete same-name owner multisets rather than matching generated IDs
+or physical positions. Repeated-name list contexts are cached once per parent;
+exact structural content defines comparison-local classes, not persisted IDs.
+Title comparisons do not copy or serialize the whole parent subtree per title.
+A source spelling/default-presence edit is a metadata edit;
+usable declaring-file hash changes are separately reported. Loading operations
+do not become additional required files. Exact per-flag loader/length/hash proof,
+complete typed native query interfaces and full-corpus performance acceptance
+remain open; these source-fidelity changes are not complete format acceptance.
+The [pinned loader decision table](software-list-loading.md) separates observed
+MAME 0.289 behavior from the proposed checked Rust interpretation. Approval and
+the executable interpretation remain separate gates; retaining source facts
+never depends on whether their loading recipe can be executed.
+
 Pin the upstream 0.289 `hash/softwarelist.dtd`, independently from machine XML.
 The accepted plural `<softwarelists>` wrapper is an application compatibility
 dialect, not the canonical DTD root.
 
-| Native relation | Fields and nesting |
+The following table describes the current physical relations, not the proposed
+separate data-area/disk-area detail tables in MAMEC-DOC-12. That document remains
+the design and acceptance checklist; current implementation is not full approval.
+
+| Current native relation | Fields and nesting |
 |---|---|
 | `software_lists` | name, description?, notes?; provides a record namespace |
 | `software_items` | native record FK, cloneof?, supported, description, year, publisher, notes? |
-| `software_item_info`, `software_shared_features` | item FK, occurrence order, declared name, optional value |
+| `software_item_info`, `software_item_shared_features` | item FK, occurrence order, declared name, optional value |
 | `software_parts` | item FK, order, name, interface |
 | `software_part_features` | part FK, order, declared name, optional value |
-| `software_data_areas` | part FK, order, name, declared size, width, endianness |
-| `software_disk_areas` | part FK, order, name |
+| `software_areas` | part/item FKs, kind=data/disk, order and name; data areas have source size text and width/endianness; disk areas have no fabricated data-area fields |
 | `software_rom_entries` | area FK, operation order, optional name/size/CRC/SHA-1/offset/value/loadflag, status |
 | `software_file_declarations` | claim FK, unique declaring-entry FK; identifies the native entry that declares a file without copying its name/hashes |
-| `software_rom_file_uses` | entry FK, file-declaration FK, load/continue/reload/ignore use kind; several ordered entries may refer to one file |
+| `software_file_uses` | entry FK, file-declaration FK, load/continue/reload/ignore/fill/disk use kind; several ordered entries may refer to one file |
 | `software_disk_entries` | area FK, order, claim FK, name, SHA-1?, status, writeable |
-| `software_part_switches`, `software_part_switch_values` | part FK; switch name/tag/mask; ordered value name/value/default |
+| `software_part_dipswitches`, `software_part_dip_values` | part FK; switch name/tag/mask; ordered value name/value/default |
 
 `info`, `sharedfeat`, and `feature` are intentionally named-value records in this
 specification. Their own typed, owner-constrained tables preserve repeated names,

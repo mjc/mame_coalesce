@@ -412,7 +412,7 @@ fn composite_key_catalog_tables_cluster_rows_by_their_primary_keys()
              'acquisition_transport_headers', 'acquisition_attempt_transport_headers', \
              'software_item_info', \
              'software_item_shared_features', 'software_part_features', \
-             'software_item_dependencies', 'machine_switches', \
+             'machine_switches', \
              'machine_switch_locations', 'machine_switch_values', 'mame_bios_sets', \
              'mame_machines', 'mame_machine_dependencies', \
              'software_part_dipswitches', 'software_part_dip_values', 'no_intro_pc_games', \
@@ -423,7 +423,7 @@ fn composite_key_catalog_tables_cluster_rows_by_their_primary_keys()
     )
     .get_result::<CountRow>(&mut connection)?;
 
-    assert_eq!(clustered.count, 22);
+    assert_eq!(clustered.count, 21);
 
     let specification_tables = sql_query(
         "SELECT COUNT(*) AS count FROM pragma_table_list \
@@ -3186,11 +3186,20 @@ fn imports_mame_softwarelists_with_nested_order_dependencies_and_load_claims()
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<NullableTextRow>(&mut connection)?;
     assert_eq!(format_hint.value.as_deref(), Some("mame-softwarelist-xml"));
-    let version =
+    let version = sql_query(
+        "SELECT declared_version AS value FROM catalog_snapshot_versions WHERE snapshot_key = ?",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<NullableTextRow>(&mut connection)?;
+    assert_eq!(version.value.as_deref(), Some("0.289-synthetic"));
+    let copied_version =
         sql_query("SELECT declared_version AS value FROM catalog_snapshots WHERE snapshot_key = ?")
             .bind::<Text, _>(snapshot.as_str())
             .get_result::<NullableTextRow>(&mut connection)?;
-    assert_eq!(version.value.as_deref(), Some("0.289-synthetic"));
+    assert_eq!(
+        copied_version.value, None,
+        "wrapper build has only its native owner"
+    );
 
     assert_eq!(count(&mut connection, "software_lists")?, 2);
     assert_eq!(count(&mut connection, "software_items")?, 3);
@@ -3943,21 +3952,6 @@ fn assert_malformed_software_list_fails(
             .get_result::<IntegerRow>(connection)?;
     assert!(failure_location.value > 0);
 
-    let oversized_path = temp_dir.join("oversized-softwarelist-value.xml");
-    std::fs::write(
-        &oversized_path,
-        b"<softwarelist name=\"range\"><software name=\"game\"><description>Game</description><year>2000</year><publisher>Pub</publisher><part name=\"cart\" interface=\"cart\"><dataarea name=\"rom\" size=\"9223372036854775808\"><rom name=\"game.bin\"/></dataarea></part></software></softwarelist>",
-    )?;
-    let mut oversized_request = request.clone();
-    oversized_request.document_path = Utf8PathBuf::from_path_buf(oversized_path)
-        .map_err(|_| "non-UTF8 oversized fixture path")?;
-    oversized_request.catalog_key = CatalogKey::new("oversized-softwarelist");
-    oversized_request.catalog_display_name = "Oversized software-list value".into();
-    let failed = app::import_catalog(database, &oversized_request)?;
-    assert_eq!(failed.status, app::CatalogImportStatus::Failed);
-    assert!(failed.snapshot_key.is_none());
-    assert_eq!(count(connection, "catalog_snapshots")?, 1);
-
     let fixture = include_str!("../fixtures/catalog/mame/software-list.xml");
     for (field, original, replacement, record_kind) in [
         (
@@ -3973,8 +3967,6 @@ fn assert_malformed_software_list_fails(
             "endianness=\"unknown\"",
             "dataarea",
         ),
-        ("size", "size=\"0x20\"", "size=\"unknown\"", "dataarea"),
-        ("crc", "crc=\"12345678\"", "crc=\"unknown\"", "rom"),
     ] {
         let invalid_path = temp_dir.join(format!("invalid-softwarelist-{field}.xml"));
         assert!(fixture.contains(original));
@@ -4001,6 +3993,67 @@ fn assert_malformed_software_list_fails(
         );
         assert!(location.source_line.is_some_and(|line| line > 0));
         assert!(location.source_column.is_some_and(|column| column > 0));
+    }
+    Ok(())
+}
+
+#[test]
+fn software_cdata_keeps_uninterpretable_source_values_queryable()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, mut connection) = setup()?;
+    let fixture = include_str!("../fixtures/catalog/mame/software-list.xml");
+    for (suffix, original, replacement, query) in [
+        (
+            "unknown-size",
+            "size=\"0x20\"",
+            "size=\"unknown\"",
+            "SELECT COUNT(*) AS count FROM software_areas AS area \
+          JOIN catalog_sets AS sets ON sets.set_id = area.record_id \
+          JOIN catalog_set_groups AS groups USING(set_group_id) WHERE groups.snapshot_key = ? \
+          AND area.declared_size_text = 'unknown' AND area.declared_size IS NULL",
+        ),
+        (
+            "overflow-size",
+            "size=\"0x20\"",
+            "size=\"9223372036854775808\"",
+            "SELECT COUNT(*) AS count FROM software_areas AS area \
+          JOIN catalog_sets AS sets ON sets.set_id = area.record_id \
+          JOIN catalog_set_groups AS groups USING(set_group_id) WHERE groups.snapshot_key = ? \
+          AND area.declared_size_text = '9223372036854775808' AND area.declared_size IS NULL",
+        ),
+        (
+            "unknown-crc",
+            "crc=\"12345678\"",
+            "crc=\"unknown\"",
+            "SELECT COUNT(*) AS count FROM software_rom_entries AS rom \
+          JOIN asset_occurrences AS occurrence USING(occurrence_id) \
+          JOIN catalog_sets AS sets ON sets.set_id = rom.record_id \
+          JOIN catalog_set_groups AS groups USING(set_group_id) WHERE groups.snapshot_key = ? \
+          AND rom.crc_text = 'unknown' AND occurrence.content_uuid IS NULL \
+          AND NOT EXISTS(SELECT 1 FROM occurrence_digest_assertions AS assertion \
+            JOIN digest_values AS digest USING(digest_id) \
+            WHERE assertion.occurrence_id = rom.occurrence_id AND digest.algorithm = 'crc32')",
+        ),
+    ] {
+        assert!(fixture.contains(original));
+        let path = directory.path().join(format!("{suffix}.xml"));
+        std::fs::write(&path, fixture.replacen(original, replacement, 1))?;
+        let mut import_request = mame_softwarelist_request()?;
+        import_request.document_path =
+            Utf8PathBuf::from_path_buf(path).map_err(|_| "non-UTF8 fixture path")?;
+        import_request.catalog_key = CatalogKey::new(suffix);
+        let report = app::import_catalog(&database, &import_request)?;
+        assert_eq!(report.status, app::CatalogImportStatus::Succeeded);
+        let snapshot = report
+            .snapshot_key
+            .ok_or("retained source has no snapshot")?;
+        let retained = sql_query(query)
+            .bind::<Text, _>(snapshot.as_str())
+            .get_result::<CountRow>(&mut connection)?;
+        assert_eq!(
+            retained.count, 1,
+            "source spelling without an invented usable projection: {suffix}"
+        );
     }
     Ok(())
 }
@@ -4407,7 +4460,7 @@ fn snapshot_diff_separates_hash_changes_from_metadata_and_regrouping()
 }
 
 #[test]
-fn snapshot_diff_rejects_software_list_catalogs_instead_of_reporting_empty_changes()
+fn snapshot_diff_compares_native_software_list_facts_and_gzip_transport()
 -> Result<(), Box<dyn std::error::Error>> {
     let (directory, database, _) = setup()?;
     let fixture_path =
@@ -4439,14 +4492,16 @@ fn snapshot_diff_rejects_software_list_catalogs_instead_of_reporting_empty_chang
         .snapshot_key
         .ok_or("current snapshot missing")?;
 
-    let Err(error) = app::diff_catalog_snapshots(&database, &previous, &current) else {
-        return Err("software-list diff unexpectedly succeeded".into());
-    };
-    assert!(
-        error
-            .to_string()
-            .contains("does not yet support MAME software-list")
-    );
+    let diff = app::diff_catalog_snapshots(&database, &previous, &current)?;
+    assert_eq!(diff.records.len(), 3);
+    assert!(diff.document_metadata_changed);
+    assert!(diff.records.iter().any(|record| {
+        record.status == SnapshotRecordStatus::Changed
+            && record
+                .requirement_changes
+                .iter()
+                .any(|change| change.hash_changed)
+    }));
 
     let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     std::io::Write::write_all(&mut encoder, changed.as_bytes())?;
@@ -4458,15 +4513,98 @@ fn snapshot_diff_rejects_software_list_catalogs_instead_of_reporting_empty_chang
     let gzip_snapshot = app::import_catalog(&database, &gzip_request)?
         .snapshot_key
         .ok_or("gzip snapshot missing")?;
-    let Err(error) = app::diff_catalog_snapshots(&database, &previous, &gzip_snapshot) else {
-        return Err("compressed software-list diff unexpectedly succeeded".into());
-    };
+    let compressed_diff = app::diff_catalog_snapshots(&database, &previous, &gzip_snapshot)?;
+    assert_same_software_history(&compressed_diff, &diff)?;
+    let original_documents = software_history_documents(&diff, &current);
+    let compressed_documents = software_history_documents(&compressed_diff, &gzip_snapshot);
+    assert_eq!(original_documents.len(), 1);
+    assert_eq!(compressed_documents.len(), 1);
+    assert_ne!(original_documents, compressed_documents);
+    let same_facts = app::diff_catalog_snapshots(&database, &current, &gzip_snapshot)?;
+    assert!(!same_facts.document_metadata_changed);
     assert!(
-        error
-            .to_string()
-            .contains("does not yet support MAME software-list")
+        same_facts
+            .records
+            .iter()
+            .all(|record| record.status == SnapshotRecordStatus::Unchanged)
     );
     Ok(())
+}
+
+fn assert_same_software_history(
+    compressed_diff: &mame_coalesce::domain::CatalogSnapshotDiff,
+    diff: &mame_coalesce::domain::CatalogSnapshotDiff,
+) -> Result<(), &'static str> {
+    assert_eq!(compressed_diff.records.len(), diff.records.len());
+    for (compressed, plain) in compressed_diff.records.iter().zip(&diff.records) {
+        assert_eq!(
+            (
+                &compressed.set_name,
+                compressed.status,
+                compressed.correspondence,
+                compressed.metadata_changed,
+                compressed.regrouped,
+                &compressed.requirement_changes,
+            ),
+            (
+                &plain.set_name,
+                plain.status,
+                plain.correspondence,
+                plain.metadata_changed,
+                plain.regrouped,
+                &plain.requirement_changes,
+            )
+        );
+        assert_eq!(
+            software_relationship_facts(compressed)?,
+            software_relationship_facts(plain)?
+        );
+    }
+    assert_eq!(
+        compressed_diff.document_metadata_changed,
+        diff.document_metadata_changed
+    );
+    Ok(())
+}
+
+fn software_history_documents(
+    diff: &mame_coalesce::domain::CatalogSnapshotDiff,
+    snapshot: &SnapshotKey,
+) -> std::collections::BTreeSet<String> {
+    diff.records.iter().flat_map(|record| &record.relationship_evidence)
+        .filter(|explanation| matches!(&explanation.claim.origin,
+            mame_coalesce::domain::RelationshipOrigin::SourceAssertion { snapshot: source, .. } if source == snapshot))
+        .filter_map(|explanation| explanation.source.as_ref().map(|source| source.document_key.clone()))
+        .collect()
+}
+
+fn software_relationship_facts(
+    record: &mame_coalesce::domain::SnapshotRecordDiff,
+) -> Result<Vec<serde_json::Value>, &'static str> {
+    let mut facts = Vec::with_capacity(record.relationship_evidence.len());
+    for explanation in &record.relationship_evidence {
+        let endpoints = [&explanation.claim.subject, &explanation.claim.target]
+            .map(|endpoint| match endpoint {
+                mame_coalesce::domain::RelationshipEndpoint::CatalogRecord(record) => {
+                    Ok(serde_json::json!({"kind": record.kind, "key": record.key}))
+                }
+                _ => Err("software clone must connect catalog records"),
+            })
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?;
+        facts.push(serde_json::json!({
+            "relation": explanation.claim.relation_type,
+            "endpoints": endpoints,
+            "evidence": explanation.claim.evidence,
+            "field": explanation.source_field,
+            "location": explanation.source_location,
+            "version": explanation.source.as_ref().and_then(|source| source.declared_version.as_ref()),
+        }));
+    }
+    // Transport bytes, snapshot/owner IDs and assertion IDs are different;
+    // list-qualified relationship facts and source versions must still agree.
+    facts.sort_by_key(serde_json::Value::to_string);
+    Ok(facts)
 }
 
 #[test]

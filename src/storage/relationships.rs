@@ -835,14 +835,17 @@ impl ExplanationScope {
                 "WITH scoped_source_assertions AS NOT MATERIALIZED ( \
                    SELECT a.* FROM relationship_assertion_explanations a \
                    WHERE a.origin = 'source_assertion' AND a.source_snapshot_key IN (?, ?) \
-                     AND (a.subject_kind = 'catalog_set' OR a.target_kind = 'catalog_set') \
+                     AND (a.subject_kind IN ('catalog_set', 'software_item') \
+                          OR a.target_kind IN ('catalog_set', 'software_item')) \
                  ), scoped_generic_assertions AS NOT MATERIALIZED ( \
                    SELECT a.* FROM stored_relationship_assertion_explanations a \
-                   WHERE a.origin != 'source_assertion' AND a.subject_kind = 'catalog_set' \
+                   WHERE a.origin != 'source_assertion' \
+                     AND a.subject_kind IN ('catalog_set', 'software_item') \
                      AND a.generic_subject_snapshot_key IN (?, ?) \
                    UNION \
                    SELECT a.* FROM stored_relationship_assertion_explanations a \
-                   WHERE a.origin != 'source_assertion' AND a.target_kind = 'catalog_set' \
+                   WHERE a.origin != 'source_assertion' \
+                     AND a.target_kind IN ('catalog_set', 'software_item') \
                      AND a.generic_target_snapshot_key IN (?, ?) \
                  ), scoped_assertions AS MATERIALIZED ( \
                    SELECT * FROM scoped_source_assertions \

@@ -763,7 +763,7 @@ const fn native_payload_select() -> &'static str {
             CASE \
               WHEN occurrence.claim_kind = 'software_rom_operation' THEN NULL \
               WHEN group_row.kind = 'software_list' \
-                THEN COALESCE(software_rom.name, software_disk.name, software_declaration.name) \
+                THEN COALESCE(software_rom.name, software_disk.name) \
               ELSE COALESCE(mame_rom.name, mame_disk.name, logiqx_rom.name, logiqx_disk.name, \
                             logiqx_sample.name, cmp_rom.name, cmp_sample.sample_name, \
                             no_intro_file.name, mame_sample.name) \
@@ -808,9 +808,6 @@ const fn native_payload_select() -> &'static str {
      LEFT JOIN software_file_uses AS software_use \
        ON software_use.occurrence_id = occurrence.occurrence_id \
       AND software_use.record_id = catalog_set.set_id \
-     LEFT JOIN software_file_declarations AS software_declaration \
-       ON software_declaration.occurrence_id = software_use.declaration_occurrence_id \
-      AND software_declaration.record_id = software_use.record_id \
      LEFT JOIN software_areas AS software_area \
        ON software_area.area_id = COALESCE(software_rom.area_id, software_disk.area_id) \
       AND software_area.record_id = catalog_set.set_id \

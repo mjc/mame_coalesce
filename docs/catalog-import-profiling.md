@@ -469,3 +469,71 @@ validation sequence are in
 [Catalog schema redesign from all input formats](catalog-schema-redesign.md).
 Future comparisons must measure native field completeness and query correctness
 across the corpus as well as SQLite size and profiling results.
+
+## Native software-list import baseline, 2026-10-01
+
+A fresh database imported the retained NES, SNES, Atari 2600 and 3DO software
+lists with the current greenfield software source-fidelity schema. The importer
+was built with `cargo build --locked --profile profiling --example
+catalog_import_profile`; the executable retains debug symbols. This is a timed
+release-profile import, **not a CPU flamegraph or heaptrack capture**.
+
+| Measurement | Result |
+| --- | ---: |
+| Successful imports / failures | 4 / 0 |
+| Software titles / parts | 9,868 / 9,868 |
+| Source ROM entries / disk entries | 14,916 / 5 |
+| File declarations / file uses | 13,896 / 14,921 |
+| Shared file UUIDs | 13,183 |
+| SQLite database | 21,549,056 bytes |
+| External document directory, including metadata | 1,098,201 bytes |
+| Elapsed time | 58.09 seconds |
+| Peak resident memory | 46,664 KiB |
+
+`quick_check` returned `ok`; `foreign_key_check` returned no violations. Every
+registry UUID is a 16-byte BLOB. All five disk entries retain CHD-header SHA-1
+scope and have no whole-file UUID. The source entries include 734 fill and 286
+reload operations; these are uses, not additional file declarations. Wrapper
+version text has no copied `catalog_snapshots.declared_version` value.
+
+The complete artifacts are retained at
+`/tmp/mame-coalesce-software-native-final.ls9nCc/`: `catalog.sqlite`, its external
+document directory, `import.log` and `import.time`. This four-list baseline does
+not prove complete format coverage, exact per-flag loader interpretation, or
+full-corpus query/CPU/heap acceptance. Those requirements remain open.
+
+### CPU and heap cross-check of the same four lists
+
+Separate fresh CPU and heap databases completed the same four imports with
+`succeeded=4 failed=0`; both passed SQLite integrity and foreign-key checks.
+Artifacts are retained in `/tmp/mame-coalesce-software-cpu-heap.2ociw0/`, including
+the frozen optimized executable `importer` (SHA-256
+`8bf9af5a74fc08c071ccd1baa58255d0c4823347b6263d363fa3970b51f89670`),
+`software.data`, `software.svg`, `software.heaptrack.zst`, `heap-report.txt`,
+allocation stacks and `allocations.svg`.
+
+The user-space CPU capture used 997 Hz cycle sampling and 32 KiB DWARF stacks.
+It collected 93,395 samples, with **11 lost chunks** reported by perf; this is a
+usable diagnostic capture, not a lossless measurement. `[unknown]` has 0.02%
+inclusive coverage. `sqlite3_prepare_v3` has 83.36% inclusive coverage and
+generated-column compilation has 46.25%; these nested coverages must not be
+added. Deepest-frame SQLite/Diesel coverage is 70.74%. The `Other` category also
+contains named SQLite internals, not unresolved symbols.
+
+Heaptrack reports 324,458,691 allocation calls, 38.00 MB peak live heap and
+89.65 MB peak RSS including profiler overhead. Its first allocation-count stack
+has 6,533,208 calls through SQLite string/opcode construction and statement
+preparation into `software_native::insert_rom_entry`, with zero bytes from that
+stack live at the global heap peak. This corroborates **statement-compilation
+churn**, not hundreds of millions of retained catalog objects. The raw report
+lists the top 100 individual stacks for calls, peak bytes and temporary
+allocations, with backtrace merging disabled to avoid misleading merged peaks.
+
+Heaptrack finished the capture before its optional automatic GUI launch crashed;
+`heaptrack_print` successfully read and analyzed the saved trace. The local
+flamegraph parser currently accepts the `samples` title unit, not `allocations`;
+its allocation-graph analysis failed explicitly. Use the saved heap report and
+allocation SVG rather than treating that failed analysis as measurement proof.
+Prepared-statement reuse is the measured next optimization, but no speedup or
+allocation reduction is claimed here. Exact loader interpretation, complete
+field/query witnesses and full-corpus acceptance remain open.

@@ -1667,35 +1667,7 @@ mod tests {
         )?;
 
         let entries = [&first_entry, &second_entry];
-        let mut capacity_retries = 0;
-        let verified = loop {
-            let verified = match verify_archive_entries_with_fingerprint(&entries, file_fingerprint)
-            {
-                Err(ServingError::Source(crate::Error::ArchiveDecoderLimitExceeded { .. }))
-                    if capacity_retries < 500 =>
-                {
-                    capacity_retries += 1;
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                    continue;
-                }
-                Err(error) => return Err(error.into()),
-                Ok(verified) => verified,
-            };
-            let decoder_is_busy = verified.iter().all(|result| {
-                matches!(
-                    result,
-                    Err(ServingError::Source(
-                        crate::Error::ArchiveDecoderLimitExceeded { .. }
-                    ))
-                )
-            });
-            if decoder_is_busy && capacity_retries < 500 {
-                capacity_retries += 1;
-                std::thread::sleep(std::time::Duration::from_millis(10));
-                continue;
-            }
-            break verified;
-        };
+        let verified = verify_archive_entries_with_fingerprint(&entries, file_fingerprint)?;
         assert!(
             verified.iter().all(Result::is_ok),
             "selected 7z members failed verification: {verified:?}"

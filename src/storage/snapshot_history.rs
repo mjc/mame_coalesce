@@ -16,6 +16,7 @@ use super::catalog_coverage::CoverageId;
 use super::db::Pool;
 
 mod no_intro_database;
+mod software;
 
 struct SnapshotRow {
     catalog_key: String,
@@ -878,6 +879,10 @@ struct CatalogRecords {
     logiqx_bios_sets: BTreeMap<i64, Vec<serde_json::Value>>,
     logiqx_archive_references: BTreeMap<i64, Vec<serde_json::Value>>,
     cmp_set_facts: BTreeMap<i64, Vec<serde_json::Value>>,
+    software_items: BTreeMap<i64, Vec<serde_json::Value>>,
+    software_item_lists: BTreeMap<i64, i64>,
+    software_list_contexts: BTreeMap<i64, String>,
+    software_context_classes: BTreeMap<i64, usize>,
 }
 
 pub fn diff(
@@ -894,18 +899,20 @@ pub fn diff(
                 "snapshot history can only compare snapshots from the same catalog".to_owned(),
             ));
         }
-        if is_software_list_snapshot(&previous_header) || is_software_list_snapshot(&current_header)
+        if is_software_list_snapshot(&previous_header) != is_software_list_snapshot(&current_header)
         {
             return Err(crate::Error::InvalidPath(
-                "snapshot history diff does not yet support MAME software-list catalogs".to_owned(),
+                "snapshot history cannot compare root catalogs with software-list catalogs"
+                    .to_owned(),
             ));
         }
 
         let same_scope = comparable_scope(&previous_header, &current_header);
         let document_metadata_changed =
             document_metadata(conn, previous)? != document_metadata(conn, current)?;
-        let previous_records = records(conn, previous)?;
-        let current_records = records(conn, current)?;
+        let mut previous_records = records(conn, previous)?;
+        let mut current_records = records(conn, current)?;
+        software::classify_parent_contexts(&mut previous_records, &mut current_records);
         let explanations =
             super::relationships::explain_catalog_sets_for_snapshots(conn, previous, current)?;
         let mut evidence_by_set = relationship_evidence_by_set(explanations, previous, current);
@@ -1118,6 +1125,7 @@ struct DocumentMetadata {
     cmp_layout: Vec<serde_json::Value>,
     no_intro_dat: Option<serde_json::Value>,
     no_intro_database: Option<serde_json::Value>,
+    software: Option<serde_json::Value>,
 }
 
 #[derive(QueryableByName, PartialEq, Eq)]
@@ -1281,6 +1289,7 @@ fn document_metadata(
     let cmp_layout = load_cmp_document_layout(conn, snapshot)?;
     let no_intro_dat = load_no_intro_dat_header_metadata(conn, snapshot)?;
     let no_intro_database = no_intro_database::load_document(conn, snapshot)?;
+    let software = software::load_document(conn, snapshot)?;
     Ok(DocumentMetadata {
         mame,
         logiqx,
@@ -1293,6 +1302,7 @@ fn document_metadata(
         cmp_layout,
         no_intro_dat,
         no_intro_database,
+        software,
     })
 }
 
@@ -1614,7 +1624,11 @@ fn relationship_evidence_by_set(
         for endpoint in [&explanation.claim.subject, &explanation.claim.target] {
             if let RelationshipEndpoint::CatalogRecord(record) = endpoint
                 && (&record.snapshot == previous || &record.snapshot == current)
-                && record.kind == crate::domain::CatalogRecordKind::Set
+                && matches!(
+                    record.kind,
+                    crate::domain::CatalogRecordKind::Set
+                        | crate::domain::CatalogRecordKind::SoftwareItem
+                )
             {
                 names.insert(record.key.as_str().to_owned());
             }
@@ -1699,7 +1713,9 @@ fn absence_status(
     current: &SnapshotRow,
     name: &str,
 ) -> SnapshotRecordStatus {
-    let member = QualifiedCatalogSet::RootSet(SetName::new(name));
+    let Some(member) = qualified_history_member(previous, name) else {
+        return SnapshotRecordStatus::Unknown;
+    };
     let explicitly_excluded = [previous, current].into_iter().any(|snapshot| {
         snapshot.published
             && matches!(&snapshot.scope, CatalogScope::Filtered(members) if !members.contains(&member))
@@ -1719,12 +1735,26 @@ fn snapshot_covers_set(snapshot: &SnapshotRow, name: &str) -> bool {
     if !snapshot.published {
         return false;
     }
-    let member = QualifiedCatalogSet::RootSet(SetName::new(name));
+    let Some(member) = qualified_history_member(snapshot, name) else {
+        return false;
+    };
     match &snapshot.scope {
         CatalogScope::Complete => true,
         CatalogScope::Filtered(members) => members.contains(&member),
         CatalogScope::Partial(members) => members.get(&member) == Some(&SetCoverage::Covered),
         CatalogScope::Unknown => false,
+    }
+}
+
+fn qualified_history_member(snapshot: &SnapshotRow, name: &str) -> Option<QualifiedCatalogSet> {
+    if is_software_list_snapshot(snapshot) {
+        let (list_name, item_name): (String, String) = serde_json::from_str(name).ok()?;
+        Some(QualifiedCatalogSet::SoftwareItem {
+            list_name,
+            name: SetName::new(item_name),
+        })
+    } else {
+        Some(QualifiedCatalogSet::RootSet(SetName::new(name)))
     }
 }
 
@@ -1822,6 +1852,7 @@ fn records(
         &no_intro_dat_rom_positions,
     );
     normalize_logiqx_child_order(&mut result);
+    software::load_records(conn, key, &mut result)?;
     Ok(result)
 }
 
@@ -3228,6 +3259,8 @@ fn set_metadata(records: &CatalogRecords, set: &SetRow) -> serde_json::Value {
         "logiqx_bios_sets": records.logiqx_bios_sets.get(&set.set_id),
         "logiqx_archive_references": records.logiqx_archive_references.get(&set.set_id),
         "cmp_set_facts": records.cmp_set_facts.get(&set.set_id),
+        "software_items": records.software_items.get(&set.set_id),
+        "software_parent_context": records.software_context_classes.get(&set.set_id),
         "machine_switches": records.machine_switches.get(&set.set_id),
         "machine_bios_sets": records.machine_bios_sets.get(&set.set_id),
     })

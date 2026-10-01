@@ -18,5 +18,7 @@ pub const SCHEMA: &str = concat!(
     "\n",
     include_str!("no_intro_database.sql"),
     "\n",
-    include_str!("no_intro_database_guards.sql")
+    include_str!("no_intro_database_guards.sql"),
+    "\n",
+    include_str!("software_guards.sql")
 );

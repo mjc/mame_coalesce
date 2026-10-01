@@ -10,7 +10,7 @@ use crate::{
     },
     mame_softwarelist::{
         LoadInstruction, SoftwareArea, SoftwareComponent, SoftwareDisk, SoftwareItem, SoftwareList,
-        SoftwareListCatalog, SoftwarePart, SoftwareRom,
+        SoftwareListCatalog, SoftwarePart, SoftwareRom, SoftwareTextPosition,
     },
     storage::{
         catalog_content::{
@@ -52,6 +52,16 @@ pub(super) fn insert(
     snapshot_key: &SnapshotKey,
     catalog: &SoftwareListCatalog,
 ) -> crate::Result<()> {
+    sql_query("INSERT INTO software_documents(snapshot_key, envelope_kind) VALUES (?, ?)")
+        .bind::<Text, _>(snapshot_key.as_str())
+        .bind::<Text, _>(catalog.root_kind.as_str())
+        .execute(conn)?;
+    if catalog.root_kind.as_str() == "plural_lists" {
+        sql_query("INSERT INTO software_wrapper_headers(snapshot_key, build) VALUES (?, ?)")
+            .bind::<Text, _>(snapshot_key.as_str())
+            .bind::<Nullable<Text>, _>(catalog.build.as_deref())
+            .execute(conn)?;
+    }
     for (list_order, list) in catalog.lists.iter().enumerate() {
         insert_list(conn, snapshot_key, list, list_order)?;
     }
@@ -74,16 +84,34 @@ fn insert_list(
     .namespace_id;
 
     sql_query(
-        "INSERT INTO software_lists (namespace_id, name, description, notes, source_line, source_column) \
-         VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO software_lists \
+         (namespace_id, source_order, name, description, notes, source_line, source_column) \
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
     .bind::<BigInt, _>(namespace)
+    .bind::<BigInt, _>(checked_order(list.source_order, "software lists")?)
     .bind::<Text, _>(list.name.as_str())
     .bind::<Nullable<Text>, _>(list.description.as_deref())
     .bind::<Nullable<Text>, _>(list.notes.as_deref())
     .bind::<BigInt, _>(list.location.line)
     .bind::<BigInt, _>(list.location.column)
     .execute(conn)?;
+    for position in &list.text_positions {
+        sql_query(
+            "INSERT INTO software_list_text_positions \
+                   (namespace_id, field_kind, source_order, source_line, source_column) \
+                   VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind::<BigInt, _>(namespace)
+        .bind::<BigInt, _>(i64::from(position.field.as_code()))
+        .bind::<BigInt, _>(checked_order(
+            position.source_order,
+            "software list text positions",
+        )?)
+        .bind::<BigInt, _>(position.location.line)
+        .bind::<BigInt, _>(position.location.column)
+        .execute(conn)?;
+    }
 
     for (item_order, item) in list.items.iter().enumerate() {
         insert_item(conn, snapshot_key, namespace, list, item, item_order)?;
@@ -113,33 +141,30 @@ fn insert_item(
     let record = CatalogSetId::from_database(record);
 
     sql_query(
-        "INSERT INTO software_items (record_id, clone_of, supported, description, year, publisher, notes) \
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO software_items \
+         (record_id, source_order, clone_of, supported, supported_specified, description, year, publisher, notes) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind::<BigInt, _>(record.as_i64())
+    .bind::<BigInt, _>(checked_order(item.source_order, "software items")?)
     .bind::<Nullable<Text>, _>(
         item.clone_of
             .as_ref()
             .map(crate::mame_softwarelist::SoftwareItemName::as_str),
     )
     .bind::<Nullable<Text>, _>(
-        item.supported
-            .map(crate::mame_softwarelist::SupportedStatus::as_str),
+        Some(item.supported.unwrap_or_default().as_str()),
     )
+    .bind::<BigInt, _>(i64::from(item.supported_specified))
     .bind::<Text, _>(&item.description)
     .bind::<Text, _>(&item.year)
     .bind::<Text, _>(&item.publisher)
     .bind::<Nullable<Text>, _>(item.notes.as_deref())
     .execute(conn)?;
 
+    insert_item_text_positions(conn, record, &item.text_positions)?;
+
     if let Some(parent) = &item.clone_of {
-        sql_query(
-            "INSERT INTO software_item_dependencies (record_id, dependency_kind, target_name) \
-             VALUES (?, 'clone_of', ?)",
-        )
-        .bind::<BigInt, _>(record.as_i64())
-        .bind::<Text, _>(parent.as_str())
-        .execute(conn)?;
         insert_source_assertion(
             conn,
             SourceRelationshipDraft {
@@ -196,6 +221,24 @@ fn insert_item(
     Ok(())
 }
 
+fn insert_item_text_positions(
+    conn: &mut SqliteConnection,
+    record: CatalogSetId,
+    positions: &[SoftwareTextPosition],
+) -> crate::Result<()> {
+    for position in positions {
+        sql_query("INSERT INTO software_item_text_positions \
+            (record_id, field_kind, source_order, source_line, source_column) VALUES (?, ?, ?, ?, ?)")
+            .bind::<BigInt, _>(record.as_i64())
+            .bind::<BigInt, _>(i64::from(position.field.as_code()))
+            .bind::<BigInt, _>(checked_order(position.source_order, "software item text positions")?)
+            .bind::<BigInt, _>(position.location.line)
+            .bind::<BigInt, _>(position.location.column)
+            .execute(conn)?;
+    }
+    Ok(())
+}
+
 fn insert_named_values(
     conn: &mut SqliteConnection,
     table: &str,
@@ -205,11 +248,12 @@ fn insert_named_values(
 ) -> crate::Result<()> {
     for (order, value) in values.iter().enumerate() {
         sql_query(format!(
-            "INSERT INTO {table} (record_id, value_order, name, value, source_line, source_column) \
-             VALUES (?, ?, ?, ?, ?, ?)"
+            "INSERT INTO {table} (record_id, value_order, source_order, name, value, source_line, source_column) \
+             VALUES (?, ?, ?, ?, ?, ?, ?)"
         ))
         .bind::<BigInt, _>(record.as_i64())
         .bind::<BigInt, _>(checked_order(order, kind)?)
+        .bind::<BigInt, _>(checked_order(value.source_order, kind)?)
         .bind::<Text, _>(&value.name)
         .bind::<Nullable<Text>, _>(value.value.as_deref())
         .bind::<BigInt, _>(value.location.line)
@@ -227,12 +271,14 @@ fn insert_part(
     occurrence_order: &mut i64,
 ) -> crate::Result<()> {
     let part_id = sql_query(
-        "INSERT INTO software_parts (record_id, part_name, part_order, interface, source_line, source_column) \
-         VALUES (?, ?, ?, ?, ?, ?) RETURNING part_id",
+        "INSERT INTO software_parts \
+         (record_id, part_name, part_order, source_order, interface, source_line, source_column) \
+         VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING part_id",
     )
     .bind::<BigInt, _>(record.as_i64())
     .bind::<Text, _>(part.name.as_str())
     .bind::<BigInt, _>(checked_order(part_order, "software parts")?)
+    .bind::<BigInt, _>(checked_order(part.source_order, "software parts")?)
     .bind::<Text, _>(&part.interface)
     .bind::<BigInt, _>(part.location.line)
     .bind::<BigInt, _>(part.location.column)
@@ -241,11 +287,13 @@ fn insert_part(
 
     for (value_order, value) in part.features.iter().enumerate() {
         sql_query(
-            "INSERT INTO software_part_features (part_id, value_order, name, value, source_line, source_column) \
-             VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO software_part_features \
+             (part_id, value_order, source_order, name, value, source_line, source_column) \
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
         .bind::<BigInt, _>(part_id)
         .bind::<BigInt, _>(checked_order(value_order, "software part features")?)
+        .bind::<BigInt, _>(checked_order(value.source_order, "software part features")?)
         .bind::<Text, _>(&value.name)
         .bind::<Nullable<Text>, _>(value.value.as_deref())
         .bind::<BigInt, _>(value.location.line)
@@ -256,11 +304,12 @@ fn insert_part(
         let switch_order = checked_order(switch_order, "software part DIP switches")?;
         sql_query(
             "INSERT INTO software_part_dipswitches \
-             (part_id, dipswitch_order, name, tag, mask, source_line, source_column) \
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+             (part_id, dipswitch_order, source_order, name, tag, mask, source_line, source_column) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind::<BigInt, _>(part_id)
         .bind::<BigInt, _>(switch_order)
+        .bind::<BigInt, _>(checked_order(switch.source_order, "software DIP switches")?)
         .bind::<Text, _>(switch.name.as_str())
         .bind::<Text, _>(&switch.tag)
         .bind::<Text, _>(&switch.mask)
@@ -270,15 +319,17 @@ fn insert_part(
         for (value_order, value) in switch.values.iter().enumerate() {
             sql_query(
                 "INSERT INTO software_part_dip_values \
-                 (part_id, dipswitch_order, value_order, name, value, is_default, source_line, source_column) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                 (part_id, dipswitch_order, value_order, source_order, name, value, is_default, default_specified, source_line, source_column) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind::<BigInt, _>(part_id)
             .bind::<BigInt, _>(switch_order)
             .bind::<BigInt, _>(checked_order(value_order, "software DIP values")?)
+            .bind::<BigInt, _>(checked_order(value.source_order, "software DIP values")?)
             .bind::<Text, _>(&value.name)
             .bind::<Text, _>(&value.value)
             .bind::<BigInt, _>(i64::from(value.is_default))
+            .bind::<BigInt, _>(i64::from(value.default_specified))
             .bind::<BigInt, _>(value.location.line)
             .bind::<BigInt, _>(value.location.column)
             .execute(conn)?;
@@ -299,23 +350,26 @@ fn insert_area(
     area_order: usize,
     occurrence_order: &mut i64,
 ) -> crate::Result<()> {
-    let declared_size = checked_u64(area.declared_size, "software area size")?;
     let area_id = sql_query(
         "INSERT INTO software_areas \
-         (part_id, record_id, area_name, area_kind, area_order, declared_size, width, endianness, source_line, source_column) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING area_id",
+         (part_id, record_id, area_name, area_kind, area_order, source_order, declared_size_text, \
+          width, width_specified, endianness, endianness_specified, source_line, source_column) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING area_id",
     )
     .bind::<BigInt, _>(part_id)
     .bind::<BigInt, _>(record.as_i64())
     .bind::<Text, _>(area.name.as_str())
     .bind::<Text, _>(area.kind.as_str())
     .bind::<BigInt, _>(checked_order(area_order, "software areas")?)
-    .bind::<Nullable<BigInt>, _>(declared_size)
+    .bind::<BigInt, _>(checked_order(area.source_order, "software areas")?)
+    .bind::<Nullable<Text>, _>(area.declared_size_text.as_deref())
     .bind::<Nullable<BigInt>, _>(area.width.map(i64::from))
+    .bind::<BigInt, _>(i64::from(area.width_specified))
     .bind::<Nullable<Text>, _>(
         area.endianness
             .map(crate::mame_softwarelist::Endianness::as_str),
     )
+    .bind::<BigInt, _>(i64::from(area.endianness_specified))
     .bind::<BigInt, _>(area.location.line)
     .bind::<BigInt, _>(area.location.column)
     .get_result::<AreaIdRow>(conn)?
@@ -402,9 +456,10 @@ fn allocate_occurrence(
     record: CatalogSetId,
     occurrence_order: i64,
     claim: SoftwareClaim,
+    source_hashes_usable: bool,
     digests: ContentDigestAssertions<'_>,
 ) -> crate::Result<(OccurrenceId, ContentIdentityResolution)> {
-    let resolution = if claim.identity_eligible() {
+    let resolution = if claim.identity_eligible() && source_hashes_usable {
         resolve_content_identity(conn, None, digests)?
     } else {
         ContentIdentityResolution::NoEligibleEvidence
@@ -457,21 +512,19 @@ fn insert_rom_component(
         rom.sha1.as_ref().map(<[u8; 20]>::as_slice),
         None,
     );
-    let (occurrence, resolution) =
-        allocate_occurrence(conn, record, occurrence_order, claim, digests)?;
-    let file_name = rom
-        .name
-        .as_ref()
-        .map(crate::mame_softwarelist::ComponentName::as_str);
-    let offset = insert_rom_entry(conn, record, area_id, component_order, occurrence, rom)?;
-    update_rom_declaration(
+    let source_hashes_usable = rom.name.is_some()
+        && rom.crc_text.as_ref().is_none_or(|_| rom.crc.is_some())
+        && rom.sha1_text.as_ref().is_none_or(|_| rom.sha1.is_some());
+    let (occurrence, resolution) = allocate_occurrence(
         conn,
         record,
-        occurrence,
-        is_declaration,
-        file_name,
-        declaration,
+        occurrence_order,
+        claim,
+        source_hashes_usable,
+        digests,
     )?;
+    insert_rom_entry(conn, record, area_id, component_order, occurrence, rom)?;
+    update_rom_declaration(conn, record, occurrence, is_declaration, declaration)?;
 
     let use_declaration = if matches!(
         rom.load,
@@ -479,11 +532,11 @@ fn insert_rom_component(
     ) {
         None
     } else if is_declaration {
-        file_name.map(|_| occurrence)
+        Some(occurrence)
     } else {
         *declaration
     };
-    insert_rom_use(conn, record, occurrence, rom, offset, use_declaration)?;
+    insert_rom_use(conn, record, occurrence, rom, use_declaration)?;
 
     record_occurrence_identity_evidence(conn, occurrence, digests, &resolution)?;
     Ok(())
@@ -506,32 +559,36 @@ fn insert_rom_entry(
     component_order: i64,
     occurrence: OccurrenceId,
     rom: &SoftwareRom,
-) -> crate::Result<Option<i64>> {
-    let size = checked_u64(rom.size, "software ROM size")?;
-    let offset = checked_u64(rom.offset, "software ROM offset")?;
+) -> crate::Result<()> {
     sql_query(
         "INSERT INTO software_rom_entries \
-         (occurrence_id, record_id, area_id, component_order, name, evidence_scope, size, offset, value, dump_status, load_instruction, source_line, source_column) \
-         VALUES (?, ?, ?, ?, ?, 'whole_asset', ?, ?, ?, ?, ?, ?, ?)",
+         (occurrence_id, record_id, area_id, component_order, source_order, name, evidence_scope, \
+          size_text, offset_text, value, crc_text, sha1_text, dump_status, status_specified, \
+          load_instruction, source_line, source_column) \
+         VALUES (?, ?, ?, ?, ?, ?, 'whole_asset', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind::<BigInt, _>(occurrence.database_value())
     .bind::<BigInt, _>(record.as_i64())
     .bind::<BigInt, _>(area_id)
     .bind::<BigInt, _>(component_order)
+    .bind::<BigInt, _>(checked_order(rom.source_order, "software ROM entries")?)
     .bind::<Nullable<Text>, _>(
         rom.name
             .as_ref()
             .map(crate::mame_softwarelist::ComponentName::as_str),
     )
-    .bind::<Nullable<BigInt>, _>(size)
-    .bind::<Nullable<BigInt>, _>(offset)
+    .bind::<Nullable<Text>, _>(rom.size_text.as_deref())
+    .bind::<Nullable<Text>, _>(rom.offset_text.as_deref())
     .bind::<Nullable<Text>, _>(rom.value.as_deref())
-    .bind::<Nullable<Text>, _>(rom.status.map(crate::mame_softwarelist::DumpStatus::as_str))
+    .bind::<Nullable<Text>, _>(rom.crc_text.as_deref())
+    .bind::<Nullable<Text>, _>(rom.sha1_text.as_deref())
+    .bind::<Nullable<Text>, _>(Some(rom.status.unwrap_or_default().as_str()))
+    .bind::<BigInt, _>(i64::from(rom.status_specified))
     .bind::<Nullable<Text>, _>(rom.load.as_ref().map(LoadInstruction::as_str))
     .bind::<BigInt, _>(rom.location.line)
     .bind::<BigInt, _>(rom.location.column)
     .execute(conn)?;
-    Ok(offset)
+    Ok(())
 }
 
 fn update_rom_declaration(
@@ -539,28 +596,19 @@ fn update_rom_declaration(
     record: CatalogSetId,
     occurrence: OccurrenceId,
     is_declaration: bool,
-    file_name: Option<&str>,
     declaration: &mut Option<OccurrenceId>,
 ) -> crate::Result<()> {
     if !is_declaration {
         return Ok(());
     }
-    if let Some(name) = file_name {
-        sql_query(
-            "INSERT INTO software_file_declarations (occurrence_id, record_id, name, declared_size) \
-             VALUES (?, ?, ?, ?)",
-        )
-        .bind::<BigInt, _>(occurrence.database_value())
-        .bind::<BigInt, _>(record.as_i64())
-        .bind::<Text, _>(name)
-        .bind::<Nullable<BigInt>, _>(None::<i64>)
-        .execute(conn)?;
-        *declaration = Some(occurrence);
-    } else {
-        // The native ROM row retains unnamed declarations; the declaration
-        // table cannot represent one because its name column is NOT NULL.
-        *declaration = None;
-    }
+    sql_query(
+        "INSERT INTO software_file_declarations (occurrence_id, record_id, declared_size) \
+         VALUES (?, ?, NULL)",
+    )
+    .bind::<BigInt, _>(occurrence.database_value())
+    .bind::<BigInt, _>(record.as_i64())
+    .execute(conn)?;
+    *declaration = Some(occurrence);
     Ok(())
 }
 
@@ -569,20 +617,17 @@ fn insert_rom_use(
     record: CatalogSetId,
     occurrence: OccurrenceId,
     rom: &SoftwareRom,
-    offset: Option<i64>,
     declaration: Option<OccurrenceId>,
 ) -> crate::Result<()> {
     sql_query(
         "INSERT INTO software_file_uses \
-         (occurrence_id, record_id, declaration_occurrence_id, operation, offset, value) \
-         VALUES (?, ?, ?, ?, ?, ?)",
+         (occurrence_id, record_id, declaration_occurrence_id, operation) \
+         VALUES (?, ?, ?, ?)",
     )
     .bind::<BigInt, _>(occurrence.database_value())
     .bind::<BigInt, _>(record.as_i64())
     .bind::<Nullable<BigInt>, _>(declaration.map(OccurrenceId::database_value))
     .bind::<Text, _>(rom_operation(rom.load))
-    .bind::<Nullable<BigInt>, _>(offset)
-    .bind::<Nullable<Text>, _>(rom.value.as_deref())
     .execute(conn)?;
     Ok(())
 }
@@ -606,34 +651,41 @@ fn insert_disk_component(
         sha1.as_ref().map(<[u8; 20]>::as_slice),
         None,
     );
+    let source_hashes_usable = disk.sha1_text.as_ref().is_none_or(|_| sha1.is_some());
     let (occurrence, resolution) = allocate_occurrence(
         conn,
         record,
         occurrence_order,
         SoftwareClaim::DiskEntry,
+        source_hashes_usable,
         digests,
     )?;
 
     sql_query(
         "INSERT INTO software_disk_entries \
-         (occurrence_id, record_id, area_id, component_order, name, evidence_scope, dump_status, writeable, source_line, source_column) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         (occurrence_id, record_id, area_id, component_order, source_order, name, evidence_scope, \
+          sha1_text, dump_status, status_specified, writeable, writeable_specified, source_line, source_column) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind::<BigInt, _>(occurrence.database_value())
     .bind::<BigInt, _>(record.as_i64())
     .bind::<BigInt, _>(area_id)
     .bind::<BigInt, _>(component_order)
+    .bind::<BigInt, _>(checked_order(disk.source_order, "software disk entries")?)
     .bind::<Text, _>(disk.requirement.name().as_str())
     .bind::<Text, _>(disk.requirement.digest_scope().as_str())
-    .bind::<Nullable<Text>, _>(disk.status.map(crate::mame_softwarelist::DumpStatus::as_str))
-    .bind::<Nullable<BigInt>, _>(disk.writeable.map(i64::from))
+    .bind::<Nullable<Text>, _>(disk.sha1_text.as_deref())
+    .bind::<Nullable<Text>, _>(Some(disk.status.unwrap_or_default().as_str()))
+    .bind::<BigInt, _>(i64::from(disk.status_specified))
+    .bind::<Nullable<BigInt>, _>(Some(i64::from(disk.writeable.unwrap_or(false))))
+    .bind::<BigInt, _>(i64::from(disk.writeable_specified))
     .bind::<BigInt, _>(disk.location.line)
     .bind::<BigInt, _>(disk.location.column)
     .execute(conn)?;
     sql_query(
         "INSERT INTO software_file_uses \
-         (occurrence_id, record_id, declaration_occurrence_id, operation, offset, value) \
-         VALUES (?, ?, NULL, 'disk', NULL, NULL)",
+         (occurrence_id, record_id, declaration_occurrence_id, operation) \
+         VALUES (?, ?, NULL, 'disk')",
     )
     .bind::<BigInt, _>(occurrence.database_value())
     .bind::<BigInt, _>(record.as_i64())
@@ -666,15 +718,6 @@ const fn rom_operation(
         )
         | None => "load",
     }
-}
-
-fn checked_u64(value: Option<u64>, field: &str) -> crate::Result<Option<i64>> {
-    value
-        .map(|value| {
-            i64::try_from(value)
-                .map_err(|_| crate::Error::InvalidPath(format!("{field} exceeds SQLite INTEGER")))
-        })
-        .transpose()
 }
 
 fn checked_order(order: usize, kind: &str) -> crate::Result<i64> {

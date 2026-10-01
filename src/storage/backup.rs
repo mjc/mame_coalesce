@@ -1174,11 +1174,18 @@ mod tests {
         for id in 1..=60 {
             insert_corrupt_rom_file(&mut conn, id)?;
         }
+        // Deliberately simulate damaged storage, not an authorized catalog edit.
+        // Restore the exact guard before checking integrity so schema damage
+        // cannot stand in for the native payload CHECK failure under test.
+        let guard = sql_query("SELECT sql FROM sqlite_schema WHERE type = 'trigger' AND name = 'software_rom_entries_immutable_update'")
+            .get_result::<TriggerDefinition>(&mut conn)?;
+        sql_query("DROP TRIGGER software_rom_entries_immutable_update").execute(&mut conn)?;
         let affected = sql_query(
             "UPDATE software_rom_entries SET dump_status = 'invalid' \
              WHERE occurrence_id = (SELECT MIN(occurrence_id) FROM software_rom_entries)",
         )
         .execute(&mut conn)?;
+        sql_query(&guard.sql).execute(&mut conn)?;
         assert_eq!(affected, 1, "fixture has a native software ROM payload");
         sql_query("INSERT INTO catalog_contents (content_uuid) VALUES (x'00')")
             .execute(&mut conn)?;
@@ -1382,5 +1389,11 @@ mod tests {
     struct CountRow {
         #[diesel(sql_type = BigInt)]
         count: i64,
+    }
+
+    #[derive(QueryableByName)]
+    struct TriggerDefinition {
+        #[diesel(sql_type = Text)]
+        sql: String,
     }
 }

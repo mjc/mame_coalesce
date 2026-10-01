@@ -402,10 +402,10 @@ impl SnapshotData {
         })
     }
 
-    fn from_mame_softwarelist(catalog: SoftwareListCatalog) -> Self {
-        let version = catalog.build.clone();
+    const fn from_mame_softwarelist(catalog: SoftwareListCatalog) -> Self {
         Self {
-            version,
+            // Wrapper build text has one native owner, not a second snapshot copy.
+            version: None,
             sets: Vec::new(),
             software_lists: Some(catalog),
             logiqx_document_facts: None,
