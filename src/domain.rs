@@ -529,6 +529,9 @@ pub struct CatalogSnapshotDiff {
 pub struct CatalogSnapshotEntry {
     pub snapshot: SnapshotKey,
     pub document_key: String,
+    /// Descriptive source version, not an identity or ordering key. A native
+    /// No-Intro export supplies this only when its header declares exactly one
+    /// version; absent or repeated declarations remain `None`.
     pub declared_version: Option<String>,
     pub scope: CatalogScope,
 }
@@ -1098,6 +1101,8 @@ pub struct RelationshipSourceProvenance {
     pub source_key: String,
     pub source_name: String,
     pub document_key: String,
+    /// The same source-owned version projection as
+    /// [`CatalogSnapshotEntry::declared_version`].
     pub declared_version: Option<String>,
     pub parser_name: Option<String>,
     pub parser_version: Option<String>,

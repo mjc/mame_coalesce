@@ -820,10 +820,66 @@ pub fn review_claim(
     })
 }
 
-pub fn explain_all(pool: &Pool) -> crate::Result<Vec<RelationshipExplanation>> {
-    let mut conn = pool.get()?;
-    let rows = sql_query(
-        "SELECT a.assertion_key, a.relation_type, a.origin, \
+#[derive(Clone, Copy)]
+enum ExplanationScope {
+    All,
+    CatalogSets,
+    Snapshots,
+}
+
+impl ExplanationScope {
+    const fn scoped_assertions_cte(self) -> Option<&'static str> {
+        match self {
+            Self::All => None,
+            Self::CatalogSets => Some(
+                "WITH scoped_source_assertions AS NOT MATERIALIZED ( \
+                   SELECT a.* FROM relationship_assertion_explanations a \
+                   WHERE a.origin = 'source_assertion' AND a.source_snapshot_key IN (?, ?) \
+                     AND (a.subject_kind = 'catalog_set' OR a.target_kind = 'catalog_set') \
+                 ), scoped_generic_assertions AS NOT MATERIALIZED ( \
+                   SELECT a.* FROM stored_relationship_assertion_explanations a \
+                   WHERE a.origin != 'source_assertion' AND a.subject_kind = 'catalog_set' \
+                     AND a.generic_subject_snapshot_key IN (?, ?) \
+                   UNION \
+                   SELECT a.* FROM stored_relationship_assertion_explanations a \
+                   WHERE a.origin != 'source_assertion' AND a.target_kind = 'catalog_set' \
+                     AND a.generic_target_snapshot_key IN (?, ?) \
+                 ), scoped_assertions AS MATERIALIZED ( \
+                   SELECT * FROM scoped_source_assertions \
+                   UNION ALL \
+                   SELECT * FROM scoped_generic_assertions \
+                 )",
+            ),
+            Self::Snapshots => Some(
+                "WITH scoped_source_assertions AS NOT MATERIALIZED ( \
+                   SELECT a.* FROM relationship_assertion_explanations a \
+                   WHERE a.origin = 'source_assertion' AND a.source_snapshot_key IN (?, ?) \
+                 ), scoped_generic_assertions AS NOT MATERIALIZED ( \
+                   SELECT a.* FROM stored_relationship_assertion_explanations a \
+                   WHERE a.origin != 'source_assertion' \
+                     AND a.generic_subject_snapshot_key IN (?, ?) \
+                   UNION \
+                   SELECT a.* FROM stored_relationship_assertion_explanations a \
+                   WHERE a.origin != 'source_assertion' \
+                     AND a.generic_target_snapshot_key IN (?, ?) \
+                 ), scoped_assertions AS MATERIALIZED ( \
+                   SELECT * FROM scoped_source_assertions \
+                   UNION ALL \
+                   SELECT * FROM scoped_generic_assertions \
+                 )",
+            ),
+        }
+    }
+
+    fn query(self) -> String {
+        let cte = self.scoped_assertions_cte().unwrap_or("");
+        let from = if self.scoped_assertions_cte().is_some() {
+            "scoped_assertions a"
+        } else {
+            "relationship_assertion_explanations a"
+        };
+        format!(
+            "{cte} SELECT a.assertion_key, a.relation_type, a.origin, \
                 a.subject_snapshot_key, a.subject_kind, a.subject_set_id, \
                 a.generic_subject_a, a.generic_subject_b, \
                 a.generic_subject_c, a.source_subject_a, a.source_subject_b, a.source_subject_c, \
@@ -846,8 +902,11 @@ pub fn explain_all(pool: &Pool) -> crate::Result<Vec<RelationshipExplanation>> {
                    AND digest.algorithm = 'crc32') AS source_asset_crc, \
                 source_asset.size AS source_asset_size, a.rule_version, \
                 ps.source_key, ps.display_name AS source_name, \
-                s.document_key, s.declared_version, pi.parser_name, pi.parser_version, pi.rules_version \
-         FROM relationship_assertion_explanations a \
+                s.document_key, \
+                (SELECT source_version.declared_version FROM catalog_snapshot_versions source_version \
+                 WHERE source_version.snapshot_key = a.source_snapshot_key) AS declared_version, \
+                pi.parser_name, pi.parser_version, pi.rules_version \
+         FROM {from} \
          LEFT JOIN snapshot_sets source_asset_set \
            ON a.origin = 'source_assertion' AND a.subject_kind = 'asset_requirement' \
           AND source_asset_set.snapshot_key = a.source_snapshot_key \
@@ -864,14 +923,34 @@ pub fn explain_all(pool: &Pool) -> crate::Result<Vec<RelationshipExplanation>> {
                   a.source_subject_a, a.source_subject_b, a.source_subject_c, \
                   a.generic_subject_a, a.generic_subject_b, a.generic_subject_c, \
                   a.target_kind, a.source_target_a, a.source_target_b, a.source_target_c, \
-                  a.generic_target_a, a.generic_target_b, a.generic_target_c, a.assertion_key",
-    )
-    .load::<ExplanationRow>(&mut conn)?;
-    let reviews = sql_query(
-        "SELECT assertion_key, decision, note, superseded_by_assertion_key, created_at \
-         FROM relationship_reviews ORDER BY review_id",
-    )
-    .load::<ReviewRow>(&mut conn)?;
+                  a.generic_target_a, a.generic_target_b, a.generic_target_c, a.assertion_key"
+        )
+    }
+
+    fn review_query(self) -> String {
+        self.scoped_assertions_cte().map_or_else(
+            || {
+                "SELECT assertion_key, decision, note, superseded_by_assertion_key, created_at \
+                 FROM relationship_reviews ORDER BY review_id"
+                    .to_owned()
+            },
+            |cte| {
+                format!(
+                    "{cte} SELECT r.assertion_key, r.decision, r.note, \
+                        r.superseded_by_assertion_key, r.created_at \
+                 FROM scoped_assertions scoped \
+                 JOIN relationship_reviews r USING (assertion_key) \
+                 ORDER BY r.review_id"
+                )
+            },
+        )
+    }
+}
+
+pub fn explain_all(pool: &Pool) -> crate::Result<Vec<RelationshipExplanation>> {
+    let mut conn = pool.get()?;
+    let rows = sql_query(ExplanationScope::All.query()).load::<ExplanationRow>(&mut conn)?;
+    let reviews = sql_query(ExplanationScope::All.review_query()).load::<ReviewRow>(&mut conn)?;
     build_explanations(&mut conn, rows, reviews)
 }
 
@@ -880,80 +959,22 @@ pub fn explain_catalog_sets_for_snapshots(
     previous: &SnapshotKey,
     current: &SnapshotKey,
 ) -> crate::Result<Vec<RelationshipExplanation>> {
-    let rows = sql_query(
-        "SELECT a.assertion_key, a.relation_type, a.origin, \
-                a.subject_snapshot_key, a.subject_kind, a.subject_set_id, \
-                a.generic_subject_a, a.generic_subject_b, \
-                a.generic_subject_c, a.source_subject_a, a.source_subject_b, a.source_subject_c, \
-                a.target_snapshot_key, a.target_kind, a.target_set_id, \
-                a.generic_target_a, a.generic_target_b, \
-                a.generic_target_c, a.source_target_a, a.source_target_b, a.source_target_c, \
-                a.source_snapshot_key, a.source_field, a.source_line, a.source_column, \
-                source_asset.merge_name AS source_asset_merge_name, \
-                (SELECT digest.digest FROM asset_requirement_usable_digests AS assertion \
-                 JOIN digest_values AS digest USING (digest_id) \
-                 WHERE assertion.set_id = source_asset.set_id AND assertion.provenance = 'source_declared' \
-                   AND assertion.component_order = source_asset.component_order \
-                   AND assertion.scope = source_asset.evidence_scope \
-                   AND digest.algorithm = 'sha1') AS source_asset_sha1, \
-                (SELECT digest.digest FROM asset_requirement_usable_digests AS assertion \
-                 JOIN digest_values AS digest USING (digest_id) \
-                 WHERE assertion.set_id = source_asset.set_id AND assertion.provenance = 'source_declared' \
-                   AND assertion.component_order = source_asset.component_order \
-                   AND assertion.scope = source_asset.evidence_scope \
-                   AND digest.algorithm = 'crc32') AS source_asset_crc, \
-                source_asset.size AS source_asset_size, a.rule_version, \
-                ps.source_key, ps.display_name AS source_name, \
-                s.document_key, s.declared_version, pi.parser_name, pi.parser_version, pi.rules_version \
-         FROM relationship_assertion_explanations a \
-         LEFT JOIN snapshot_sets source_asset_set \
-           ON a.origin = 'source_assertion' AND a.subject_kind = 'asset_requirement' \
-          AND source_asset_set.snapshot_key = a.source_snapshot_key \
-          AND source_asset_set.set_name = a.source_subject_a \
-          AND (a.subject_set_id IS NULL OR source_asset_set.set_id = a.subject_set_id) \
-         LEFT JOIN asset_requirement_rows source_asset \
-           ON source_asset.set_id = source_asset_set.set_id \
-          AND source_asset.component_order = a.source_subject_c \
-         LEFT JOIN catalog_snapshots s ON s.snapshot_key = a.source_snapshot_key \
-         LEFT JOIN catalogs c ON c.catalog_key = s.catalog_key \
-         LEFT JOIN publishing_sources ps ON ps.source_key = c.source_key \
-         LEFT JOIN parser_interpretations pi ON pi.interpretation_key = s.interpretation_key \
-         WHERE (a.origin = 'source_assertion' AND a.source_snapshot_key IN (?, ?) \
-                AND (a.subject_kind = 'catalog_set' OR a.target_kind = 'catalog_set')) \
-            OR (a.origin != 'source_assertion' AND ( \
-                (a.subject_kind = 'catalog_set' AND a.generic_subject_snapshot_key IN (?, ?)) \
-                OR (a.target_kind = 'catalog_set' AND a.generic_target_snapshot_key IN (?, ?)))) \
-         ORDER BY a.relation_type, a.source_snapshot_key, a.subject_kind, \
-                  a.source_subject_a, a.source_subject_b, a.source_subject_c, \
-                  a.generic_subject_a, a.generic_subject_b, a.generic_subject_c, \
-                  a.target_kind, a.source_target_a, a.source_target_b, a.source_target_c, \
-                  a.generic_target_a, a.generic_target_b, a.generic_target_c, a.assertion_key",
-    )
-    .bind::<Text, _>(previous.as_str())
-    .bind::<Text, _>(current.as_str())
-    .bind::<Text, _>(previous.as_str())
-    .bind::<Text, _>(current.as_str())
-    .bind::<Text, _>(previous.as_str())
-    .bind::<Text, _>(current.as_str())
-    .load::<ExplanationRow>(conn)?;
-    let reviews = sql_query(
-        "SELECT r.assertion_key, r.decision, r.note, r.superseded_by_assertion_key, r.created_at \
-         FROM relationship_reviews r \
-         JOIN relationship_assertion_explanations a ON a.assertion_key = r.assertion_key \
-         WHERE (a.origin = 'source_assertion' AND a.source_snapshot_key IN (?, ?) \
-                AND (a.subject_kind = 'catalog_set' OR a.target_kind = 'catalog_set')) \
-            OR (a.origin != 'source_assertion' AND ( \
-                (a.subject_kind = 'catalog_set' AND a.generic_subject_snapshot_key IN (?, ?)) \
-                OR (a.target_kind = 'catalog_set' AND a.generic_target_snapshot_key IN (?, ?)))) \
-         ORDER BY r.review_id",
-    )
-    .bind::<Text, _>(previous.as_str())
-    .bind::<Text, _>(current.as_str())
-    .bind::<Text, _>(previous.as_str())
-    .bind::<Text, _>(current.as_str())
-    .bind::<Text, _>(previous.as_str())
-    .bind::<Text, _>(current.as_str())
-    .load::<ReviewRow>(conn)?;
+    let rows = sql_query(ExplanationScope::CatalogSets.query())
+        .bind::<Text, _>(previous.as_str())
+        .bind::<Text, _>(current.as_str())
+        .bind::<Text, _>(previous.as_str())
+        .bind::<Text, _>(current.as_str())
+        .bind::<Text, _>(previous.as_str())
+        .bind::<Text, _>(current.as_str())
+        .load::<ExplanationRow>(conn)?;
+    let reviews = sql_query(ExplanationScope::CatalogSets.review_query())
+        .bind::<Text, _>(previous.as_str())
+        .bind::<Text, _>(current.as_str())
+        .bind::<Text, _>(previous.as_str())
+        .bind::<Text, _>(current.as_str())
+        .bind::<Text, _>(previous.as_str())
+        .bind::<Text, _>(current.as_str())
+        .load::<ReviewRow>(conn)?;
     build_explanations(conn, rows, reviews)
 }
 
@@ -962,76 +983,22 @@ pub fn explain_for_snapshots(
     left: &SnapshotKey,
     right: &SnapshotKey,
 ) -> crate::Result<Vec<RelationshipExplanation>> {
-    let rows = sql_query(
-        "SELECT a.assertion_key, a.relation_type, a.origin, \
-                a.subject_snapshot_key, a.subject_kind, a.subject_set_id, \
-                a.generic_subject_a, a.generic_subject_b, \
-                a.generic_subject_c, a.source_subject_a, a.source_subject_b, a.source_subject_c, \
-                a.target_snapshot_key, a.target_kind, a.target_set_id, \
-                a.generic_target_a, a.generic_target_b, \
-                a.generic_target_c, a.source_target_a, a.source_target_b, a.source_target_c, \
-                a.source_snapshot_key, a.source_field, a.source_line, a.source_column, \
-                source_asset.merge_name AS source_asset_merge_name, \
-                (SELECT digest.digest FROM asset_requirement_usable_digests AS assertion \
-                 JOIN digest_values AS digest USING (digest_id) \
-                 WHERE assertion.set_id = source_asset.set_id AND assertion.provenance = 'source_declared' \
-                   AND assertion.component_order = source_asset.component_order \
-                   AND assertion.scope = source_asset.evidence_scope \
-                   AND digest.algorithm = 'sha1') AS source_asset_sha1, \
-                (SELECT digest.digest FROM asset_requirement_usable_digests AS assertion \
-                 JOIN digest_values AS digest USING (digest_id) \
-                 WHERE assertion.set_id = source_asset.set_id AND assertion.provenance = 'source_declared' \
-                   AND assertion.component_order = source_asset.component_order \
-                   AND assertion.scope = source_asset.evidence_scope \
-                   AND digest.algorithm = 'crc32') AS source_asset_crc, \
-                source_asset.size AS source_asset_size, a.rule_version, \
-                ps.source_key, ps.display_name AS source_name, \
-                s.document_key, s.declared_version, pi.parser_name, pi.parser_version, pi.rules_version \
-         FROM relationship_assertion_explanations a \
-         LEFT JOIN snapshot_sets source_asset_set \
-           ON a.origin = 'source_assertion' AND a.subject_kind = 'asset_requirement' \
-          AND source_asset_set.snapshot_key = a.source_snapshot_key \
-          AND source_asset_set.set_name = a.source_subject_a \
-          AND (a.subject_set_id IS NULL OR source_asset_set.set_id = a.subject_set_id) \
-         LEFT JOIN asset_requirement_rows source_asset \
-           ON source_asset.set_id = source_asset_set.set_id \
-          AND source_asset.component_order = a.source_subject_c \
-         LEFT JOIN catalog_snapshots s ON s.snapshot_key = a.source_snapshot_key \
-         LEFT JOIN catalogs c ON c.catalog_key = s.catalog_key \
-         LEFT JOIN publishing_sources ps ON ps.source_key = c.source_key \
-         LEFT JOIN parser_interpretations pi ON pi.interpretation_key = s.interpretation_key \
-         WHERE (a.origin = 'source_assertion' AND a.source_snapshot_key IN (?, ?)) \
-            OR (a.origin != 'source_assertion' AND ( \
-                a.generic_subject_snapshot_key IN (?, ?) OR a.generic_target_snapshot_key IN (?, ?))) \
-         ORDER BY a.relation_type, a.source_snapshot_key, a.subject_kind, \
-                  a.source_subject_a, a.source_subject_b, a.source_subject_c, \
-                  a.generic_subject_a, a.generic_subject_b, a.generic_subject_c, \
-                  a.target_kind, a.source_target_a, a.source_target_b, a.source_target_c, \
-                  a.generic_target_a, a.generic_target_b, a.generic_target_c, a.assertion_key",
-    )
-    .bind::<Text, _>(left.as_str())
-    .bind::<Text, _>(right.as_str())
-    .bind::<Text, _>(left.as_str())
-    .bind::<Text, _>(right.as_str())
-    .bind::<Text, _>(left.as_str())
-    .bind::<Text, _>(right.as_str())
-    .load::<ExplanationRow>(conn)?;
-    let reviews = sql_query(
-        "SELECT r.assertion_key, r.decision, r.note, r.superseded_by_assertion_key, r.created_at \
-         FROM relationship_reviews r \
-         JOIN relationship_assertion_explanations a ON a.assertion_key = r.assertion_key \
-         WHERE (a.origin = 'source_assertion' AND a.source_snapshot_key IN (?, ?)) \
-            OR (a.origin != 'source_assertion' AND ( \
-                a.generic_subject_snapshot_key IN (?, ?) OR a.generic_target_snapshot_key IN (?, ?))) \
-         ORDER BY r.review_id",
-    )
-    .bind::<Text, _>(left.as_str())
-    .bind::<Text, _>(right.as_str())
-    .bind::<Text, _>(left.as_str())
-    .bind::<Text, _>(right.as_str())
-    .bind::<Text, _>(left.as_str())
-    .bind::<Text, _>(right.as_str())
-    .load::<ReviewRow>(conn)?;
+    let rows = sql_query(ExplanationScope::Snapshots.query())
+        .bind::<Text, _>(left.as_str())
+        .bind::<Text, _>(right.as_str())
+        .bind::<Text, _>(left.as_str())
+        .bind::<Text, _>(right.as_str())
+        .bind::<Text, _>(left.as_str())
+        .bind::<Text, _>(right.as_str())
+        .load::<ExplanationRow>(conn)?;
+    let reviews = sql_query(ExplanationScope::Snapshots.review_query())
+        .bind::<Text, _>(left.as_str())
+        .bind::<Text, _>(right.as_str())
+        .bind::<Text, _>(left.as_str())
+        .bind::<Text, _>(right.as_str())
+        .bind::<Text, _>(left.as_str())
+        .bind::<Text, _>(right.as_str())
+        .load::<ReviewRow>(conn)?;
     build_explanations(conn, rows, reviews)
 }
 
@@ -1528,5 +1495,76 @@ fn parse_review_decision(value: &str) -> crate::Result<RelationshipReviewDecisio
         other => Err(crate::Error::InvalidPath(format!(
             "unknown relationship review decision {other}"
         ))),
+    }
+}
+
+#[cfg(test)]
+mod query_plan_tests {
+    use super::*;
+
+    #[derive(QueryableByName)]
+    struct PlanRow {
+        #[diesel(sql_type = Text)]
+        detail: String,
+    }
+
+    #[test]
+    fn scoped_explanations_do_not_scan_unrelated_snapshot_versions() -> crate::Result<()> {
+        let database = crate::database::Database::in_memory()?;
+        let mut conn = database.pool().get()?;
+        let mut scoped_plans = Vec::new();
+        for scope in [ExplanationScope::CatalogSets, ExplanationScope::Snapshots] {
+            let plan = sql_query(format!("EXPLAIN QUERY PLAN {}", scope.query()))
+                .bind::<Text, _>("previous")
+                .bind::<Text, _>("current")
+                .bind::<Text, _>("previous")
+                .bind::<Text, _>("current")
+                .bind::<Text, _>("previous")
+                .bind::<Text, _>("current")
+                .load::<PlanRow>(&mut conn)?;
+            let details = plan.into_iter().map(|row| row.detail).collect::<Vec<_>>();
+            let name = match scope {
+                ExplanationScope::CatalogSets => "catalog sets",
+                ExplanationScope::Snapshots => "snapshots",
+                ExplanationScope::All => unreachable!(),
+            };
+            scoped_plans.push((name, details));
+        }
+        let scoped_indexes = [
+            "relationship_assertions_source_snapshot_index",
+            "relationship_assertions_subject_snapshot_kind_index",
+            "relationship_assertions_target_snapshot_kind_index",
+        ];
+        let violations = scoped_plans
+            .into_iter()
+            .filter(|(_, details)| {
+                details.iter().any(|detail| {
+                    detail == "SCAN snapshot"
+                        || detail.contains("MATERIALIZE catalog_snapshot_versions")
+                        || detail == "MATERIALIZE scoped_source_assertions"
+                        || detail == "MATERIALIZE scoped_generic_assertions"
+                        || detail.starts_with("SCAN relationship_assertions")
+                        || detail.starts_with("SCAN position")
+                }) || scoped_indexes.iter().any(|index| {
+                    !details.iter().any(|detail| {
+                        detail.starts_with("SEARCH relationship_assertions USING INDEX ")
+                            && detail.contains(index)
+                    })
+                }) || !details
+                    .iter()
+                    .any(|detail| detail.starts_with("SEARCH position USING PRIMARY KEY"))
+                    || details
+                        .iter()
+                        .filter(|detail| *detail == "MATERIALIZE scoped_assertions")
+                        .count()
+                        != 1
+            })
+            .map(|(name, details)| format!("{name}: {details:?}"))
+            .collect::<Vec<_>>();
+        assert!(
+            violations.is_empty(),
+            "scoped queries must seek source, generic, and native assertions: {violations:?}"
+        );
+        Ok(())
     }
 }

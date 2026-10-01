@@ -15,6 +15,8 @@ use crate::domain::{
 use super::catalog_coverage::CoverageId;
 use super::db::Pool;
 
+mod no_intro_database;
+
 struct SnapshotRow {
     catalog_key: String,
     scope: CatalogScope,
@@ -868,6 +870,7 @@ struct CatalogRecords {
     no_intro_dat_identifiers: BTreeMap<i64, Vec<serde_json::Value>>,
     no_intro_dat_releases: BTreeMap<i64, Vec<serde_json::Value>>,
     no_intro_dat_rom_order: BTreeMap<i64, Vec<serde_json::Value>>,
+    no_intro_database_games: BTreeMap<i64, Vec<serde_json::Value>>,
     logiqx_set_facts: BTreeMap<i64, Vec<serde_json::Value>>,
     logiqx_text_positions: BTreeMap<i64, Vec<serde_json::Value>>,
     logiqx_game_comments: BTreeMap<i64, Vec<serde_json::Value>>,
@@ -1114,6 +1117,7 @@ struct DocumentMetadata {
     cmp_comments: Vec<String>,
     cmp_layout: Vec<serde_json::Value>,
     no_intro_dat: Option<serde_json::Value>,
+    no_intro_database: Option<serde_json::Value>,
 }
 
 #[derive(QueryableByName, PartialEq, Eq)]
@@ -1276,6 +1280,7 @@ fn document_metadata(
     .collect();
     let cmp_layout = load_cmp_document_layout(conn, snapshot)?;
     let no_intro_dat = load_no_intro_dat_header_metadata(conn, snapshot)?;
+    let no_intro_database = no_intro_database::load_document(conn, snapshot)?;
     Ok(DocumentMetadata {
         mame,
         logiqx,
@@ -1287,6 +1292,7 @@ fn document_metadata(
         cmp_comments,
         cmp_layout,
         no_intro_dat,
+        no_intro_database,
     })
 }
 
@@ -1627,14 +1633,10 @@ pub fn history(pool: &Pool, catalog: &CatalogKey) -> crate::Result<Vec<CatalogSn
     let mut conn = pool.get()?;
     let rows = sql_query(
         "SELECT snapshot.snapshot_key, snapshot.document_key, \
-                CASE WHEN interpretation.format IN (\
-                    'no-intro-dat-v3-strict', 'no-intro-dat-v3-compatible', \
-                    'no-intro-dat-v4-strict', 'no-intro-dat-v4-compatible') \
-                     THEN header.version_text ELSE snapshot.declared_version END AS declared_version, \
+                versions.declared_version, \
                 snapshot.coverage_id \
          FROM catalog_snapshots AS snapshot \
-         JOIN parser_interpretations AS interpretation USING (interpretation_key) \
-         LEFT JOIN no_intro_dat_headers AS header USING (snapshot_key) \
+         JOIN catalog_snapshot_versions AS versions USING (snapshot_key) \
          WHERE snapshot.catalog_key = ? \
          ORDER BY snapshot.document_key, snapshot.interpretation_key, snapshot.snapshot_key",
     )
@@ -1760,6 +1762,7 @@ fn records(
         &no_intro_dat_rom_positions,
         &no_intro_dat_child_ranks,
     );
+    let no_intro_database_games = no_intro_database::load_games(conn, key)?;
     let logiqx_set_facts = load_logiqx_set_facts(conn, key)?;
     let logiqx_text_positions = load_logiqx_text_positions(conn, key)?;
     let logiqx_game_comments = load_logiqx_game_comments(conn, key)?;
@@ -1791,6 +1794,7 @@ fn records(
     result.no_intro_dat_identifiers = no_intro_dat_identifiers;
     result.no_intro_dat_releases = no_intro_dat_releases;
     result.no_intro_dat_rom_order = no_intro_dat_rom_order;
+    result.no_intro_database_games = no_intro_database_games;
     result.logiqx_set_facts = logiqx_set_facts;
     result.logiqx_text_positions = logiqx_text_positions;
     result.logiqx_game_comments = logiqx_game_comments;
@@ -3216,6 +3220,7 @@ fn set_metadata(records: &CatalogRecords, set: &SetRow) -> serde_json::Value {
         "no_intro_dat_identifiers": records.no_intro_dat_identifiers.get(&set.set_id),
         "no_intro_dat_releases": records.no_intro_dat_releases.get(&set.set_id),
         "no_intro_dat_rom_order": records.no_intro_dat_rom_order.get(&set.set_id),
+        "no_intro_database_games": records.no_intro_database_games.get(&set.set_id),
         "logiqx_set_facts": records.logiqx_set_facts.get(&set.set_id),
         "logiqx_text_positions": records.logiqx_text_positions.get(&set.set_id),
         "logiqx_game_comments": records.logiqx_game_comments.get(&set.set_id),

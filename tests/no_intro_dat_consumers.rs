@@ -1,14 +1,18 @@
 use camino::Utf8PathBuf;
 use diesel::{
     Connection, QueryableByName, RunQueryDsl, SqliteConnection, sql_query,
-    sql_types::{BigInt, Text},
+    sql_types::{BigInt, Nullable, Text},
 };
 use mame_coalesce::{
     NoIntroDatMode,
     app::{self, CatalogDocumentFormat, CatalogImportRequest},
     catalog_files::{self, OccurrenceId},
     database::Database,
-    domain::{CatalogKey, CatalogScope, CatalogSnapshotDiff, PublishingSourceKey, SnapshotKey},
+    domain::{
+        CatalogKey, CatalogScope, CatalogSnapshotDiff, ExternalRecordRef, PublishingSourceKey,
+        RelationshipAssertionKey, RelationshipClaim, RelationshipEndpoint, RelationshipOrigin,
+        RelationshipType, SnapshotKey,
+    },
 };
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -81,6 +85,151 @@ struct ImportDiagnostic {
 struct OccurrenceRow {
     #[diesel(sql_type = BigInt)]
     occurrence_id: i64,
+}
+
+#[derive(QueryableByName)]
+struct SetIdRow {
+    #[diesel(sql_type = BigInt)]
+    set_id: i64,
+}
+
+#[derive(QueryableByName)]
+struct CountRow {
+    #[diesel(sql_type = BigInt)]
+    count: i64,
+}
+
+struct NativeCloneofGuardFixture {
+    _directory: tempfile::TempDir,
+    database: Database,
+    database_path: Utf8PathBuf,
+    native_key: String,
+    cloneofid_only_key: String,
+}
+
+impl NativeCloneofGuardFixture {
+    fn new() -> TestResult<Self> {
+        let directory = tempfile::tempdir()?;
+        let database_path = Utf8PathBuf::from_path_buf(directory.path().join("catalog.sqlite"))
+            .map_err(|_| "non-UTF-8 database path")?;
+        let database = Database::open(&database_path)?;
+        let snapshot = import(
+            &database,
+            &directory,
+            "relationship-guards.dat",
+            &document(
+                "<game name='native-child' cloneof='parent'><description>Child</description><rom name='child.bin'/></game>\
+                 <game name='id-only' cloneofid='7'><description>ID only</description><rom name='id.bin'/></game>",
+            ),
+        )?;
+        let mut connection = SqliteConnection::establish(database_path.as_str())?;
+        let native = sql_query(
+            "SELECT game.set_id AS set_id \
+             FROM no_intro_dat_games AS game \
+             JOIN catalog_sets AS sets USING (set_id) \
+             JOIN catalog_set_groups AS groups USING (set_group_id) \
+             JOIN no_intro_dat_game_field_positions AS position \
+               ON position.set_id = game.set_id AND position.field_kind = 2 \
+             WHERE groups.snapshot_key = ? AND sets.set_name = 'native-child' \
+               AND game.cloneof_text IS NOT NULL",
+        )
+        .bind::<Text, _>(snapshot.as_str())
+        .get_result::<SetIdRow>(&mut connection)?;
+        let id_only = sql_query(
+            "SELECT game.set_id AS set_id \
+             FROM no_intro_dat_games AS game \
+             JOIN catalog_sets AS sets USING (set_id) \
+             JOIN catalog_set_groups AS groups USING (set_group_id) \
+             WHERE groups.snapshot_key = ? AND sets.set_name = 'id-only' \
+               AND game.cloneof_text IS NULL",
+        )
+        .bind::<Text, _>(snapshot.as_str())
+        .get_result::<SetIdRow>(&mut connection)?;
+        let native_key = format!("no-intro-dat-cloneof:{}", native.set_id);
+        let cloneofid_only_key = format!("no-intro-dat-cloneof:{}", id_only.set_id);
+        let aliases = sql_query(
+            "SELECT COUNT(*) AS count FROM no_intro_dat_game_field_positions \
+             WHERE set_id = ? AND field_kind = 2",
+        )
+        .bind::<BigInt, _>(id_only.set_id)
+        .get_result::<CountRow>(&mut connection)?;
+        assert_eq!(aliases.count, 0);
+        Ok(Self {
+            _directory: directory,
+            database,
+            database_path,
+            native_key,
+            cloneofid_only_key,
+        })
+    }
+
+    fn connection(&self) -> TestResult<SqliteConnection> {
+        Ok(SqliteConnection::establish(self.database_path.as_str())?)
+    }
+}
+
+fn insert_stored_assertion(
+    connection: &mut SqliteConnection,
+    assertion_key: &str,
+    origin: &str,
+) -> diesel::QueryResult<usize> {
+    sql_query(
+        "INSERT INTO relationship_assertions \
+         (assertion_key, relation_type, origin, subject_kind, generic_subject_a, \
+          generic_subject_b, target_kind, generic_target_a, generic_target_b, rule_version) \
+         VALUES (?, 'catalog_correction', ?, 'external_record', 'guard-test', ?, \
+                 'external_record', 'guard-test', ?, ?)",
+    )
+    .bind::<Text, _>(assertion_key)
+    .bind::<Text, _>(origin)
+    .bind::<Text, _>(format!("{assertion_key}:subject"))
+    .bind::<Text, _>(format!("{assertion_key}:target"))
+    .bind::<Nullable<Text>, _>((origin == "derived_candidate").then_some("guard-v1"))
+    .execute(connection)
+}
+
+fn insert_review(
+    connection: &mut SqliteConnection,
+    review_key: &str,
+    assertion_key: &str,
+    decision: &str,
+    superseded_by: Option<&str>,
+) -> diesel::QueryResult<usize> {
+    sql_query(
+        "INSERT INTO relationship_reviews \
+         (review_key, assertion_key, decision, note, superseded_by_assertion_key) \
+         VALUES (?, ?, ?, 'native cloneof guard test', ?)",
+    )
+    .bind::<Text, _>(review_key)
+    .bind::<Text, _>(assertion_key)
+    .bind::<Text, _>(decision)
+    .bind::<Nullable<Text>, _>(superseded_by)
+    .execute(connection)
+}
+
+fn insert_support(
+    connection: &mut SqliteConnection,
+    assertion_key: &str,
+    position: i64,
+    supported_assertion_key: &str,
+) -> diesel::QueryResult<usize> {
+    sql_query(
+        "INSERT INTO relationship_assertion_support \
+         (assertion_key, position, supported_assertion_key) VALUES (?, ?, ?)",
+    )
+    .bind::<Text, _>(assertion_key)
+    .bind::<BigInt, _>(position)
+    .bind::<Text, _>(supported_assertion_key)
+    .execute(connection)
+}
+
+#[allow(clippy::expect_used)]
+fn assert_guard_rejects(result: diesel::QueryResult<usize>, expected_message: &str) {
+    let error = result.expect_err("invalid relationship key must be rejected by its guard");
+    assert!(
+        error.to_string().contains(expected_message),
+        "expected {expected_message:?}, got {error}"
+    );
 }
 
 fn occurrence_ids(
@@ -476,6 +625,245 @@ fn history_derives_declared_version_from_native_header() -> TestResult {
         history.iter().any(|entry| entry.snapshot == second
             && entry.declared_version.as_deref() == Some("native-v2"))
     );
+    Ok(())
+}
+
+#[test]
+fn relationship_provenance_derives_version_from_the_native_dat_header() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let database_path = Utf8PathBuf::from_path_buf(directory.path().join("catalog.sqlite"))
+        .map_err(|_| "non-UTF-8 database path")?;
+    let database = Database::open(&database_path)?;
+    import(
+        &database,
+        &directory,
+        "relationships.dat",
+        &document("<game name='child' cloneof='parent'><description>Child</description><rom name='child.bin'/></game>").replace(
+            "<version>1</version>",
+            "<version>native-relations</version>",
+        ),
+    )?;
+    let relationships = app::explain_relationships(&database)?;
+    assert_eq!(relationships.len(), 1);
+    assert_eq!(
+        relationships[0]
+            .source
+            .as_ref()
+            .and_then(|source| source.declared_version.as_deref()),
+        Some("native-relations")
+    );
+    Ok(())
+}
+
+#[test]
+fn native_cloneof_names_are_not_archive_ids_or_cloneofid_references() -> TestResult {
+    use mame_coalesce::domain::RelationshipEndpoint;
+
+    let directory = tempfile::tempdir()?;
+    let database_path = Utf8PathBuf::try_from(directory.path().join("catalog.sqlite"))?;
+    let database = Database::open(&database_path)?;
+    let snapshot = import(
+        &database,
+        &directory,
+        "literal-parents.dat",
+        &document(
+            "<game name='numeric' cloneof='0007'><description>Numeric</description><rom name='numeric.bin'/></game>\
+             <game name='empty' cloneof=''><description>Empty</description><rom name='empty.bin'/></game>\
+             <game name='id-only' cloneofid='0007'><description>ID only</description><rom name='id.bin'/></game>",
+        ),
+    )?;
+    let relationships = app::explain_relationships(&database)?;
+    assert_eq!(relationships.len(), 2);
+    let mut names = Vec::new();
+    for relationship in relationships {
+        let RelationshipEndpoint::CatalogRecord(subject) = relationship.claim.subject else {
+            return Err("DAT clone subject must be its actual catalog set".into());
+        };
+        let RelationshipEndpoint::CatalogRecord(target) = relationship.claim.target else {
+            return Err("DAT cloneof names must remain name-based selectors".into());
+        };
+        assert_eq!(subject.snapshot, snapshot);
+        assert!(subject.owner_set_id.is_some());
+        assert_eq!(target.snapshot, snapshot);
+        assert!(target.owner_set_id.is_none());
+        assert_eq!(relationship.source_field.as_deref(), Some("cloneof"));
+        names.push(target.key.as_str().to_owned());
+    }
+    names.sort();
+    assert_eq!(names, ["", "0007"]);
+    Ok(())
+}
+
+#[test]
+fn native_cloneof_assertion_review_guard_checks_owned_positioned_rows() -> TestResult {
+    let fixture = NativeCloneofGuardFixture::new()?;
+    let mut connection = fixture.connection()?;
+    insert_review(
+        &mut connection,
+        "review-native-cloneof-primary",
+        &fixture.native_key,
+        "accepted",
+        None,
+    )?;
+
+    let suffix = fixture
+        .native_key
+        .strip_prefix("no-intro-dat-cloneof:")
+        .ok_or("native cloneof key prefix is missing")?;
+    for (index, key) in [
+        "no-intro-dat-cloneof:999999".to_owned(),
+        fixture.cloneofid_only_key.clone(),
+        format!("no-intro-dat-cloneof:0{suffix}"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert_guard_rejects(
+            insert_review(
+                &mut connection,
+                &format!("review-native-cloneof-invalid-{index}"),
+                &key,
+                "accepted",
+                None,
+            ),
+            "relationship review assertion does not exist",
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn native_cloneof_assertion_supersession_guard_checks_owned_positioned_rows() -> TestResult {
+    let fixture = NativeCloneofGuardFixture::new()?;
+    let mut connection = fixture.connection()?;
+    insert_stored_assertion(&mut connection, "guard-test:review-base", "user_conclusion")?;
+    insert_review(
+        &mut connection,
+        "review-native-cloneof-superseding",
+        "guard-test:review-base",
+        "superseded",
+        Some(&fixture.native_key),
+    )?;
+
+    let suffix = fixture
+        .native_key
+        .strip_prefix("no-intro-dat-cloneof:")
+        .ok_or("native cloneof key prefix is missing")?;
+    for (index, key) in [
+        "no-intro-dat-cloneof:999999".to_owned(),
+        fixture.cloneofid_only_key.clone(),
+        format!("no-intro-dat-cloneof:0{suffix}"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert_guard_rejects(
+            insert_review(
+                &mut connection,
+                &format!("review-native-cloneof-invalid-successor-{index}"),
+                "guard-test:review-base",
+                "superseded",
+                Some(&key),
+            ),
+            "superseding relationship assertion does not exist",
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn native_cloneof_assertion_support_guard_checks_owned_positioned_rows() -> TestResult {
+    let fixture = NativeCloneofGuardFixture::new()?;
+    let mut connection = fixture.connection()?;
+    insert_stored_assertion(
+        &mut connection,
+        "guard-test:derived-candidate",
+        "derived_candidate",
+    )?;
+    insert_support(
+        &mut connection,
+        "guard-test:derived-candidate",
+        0,
+        &fixture.native_key,
+    )?;
+
+    let suffix = fixture
+        .native_key
+        .strip_prefix("no-intro-dat-cloneof:")
+        .ok_or("native cloneof key prefix is missing")?;
+    for (index, key) in [
+        "no-intro-dat-cloneof:999999".to_owned(),
+        fixture.cloneofid_only_key.clone(),
+        format!("no-intro-dat-cloneof:0{suffix}"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert_guard_rejects(
+            insert_support(
+                &mut connection,
+                "guard-test:derived-candidate",
+                i64::try_from(index + 1)?,
+                &key,
+            ),
+            "supported relationship assertion does not exist",
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn public_relationship_api_accepts_native_cloneof_as_support() -> TestResult {
+    let fixture = NativeCloneofGuardFixture::new()?;
+    let supporting = RelationshipAssertionKey::new(fixture.native_key.clone());
+    let claim = RelationshipClaim {
+        relation_type: RelationshipType::CatalogCorrection,
+        subject: RelationshipEndpoint::ExternalRecord(ExternalRecordRef::new(
+            "guard-test",
+            "subject",
+        )),
+        target: RelationshipEndpoint::ExternalRecord(ExternalRecordRef::new(
+            "guard-test",
+            "target",
+        )),
+        origin: RelationshipOrigin::DerivedCandidate {
+            rule_version: "native-cloneof-support-test-v1".to_owned(),
+            supporting_assertions: vec![supporting.clone()],
+        },
+        evidence: serde_json::json!({"reason": "native cloneof source evidence"}),
+    };
+    let candidate = app::record_relationship(&fixture.database, &claim)?;
+    let mut connection = fixture.connection()?;
+    let found = sql_query(
+        "SELECT COUNT(*) AS count FROM relationship_assertion_support \
+         WHERE assertion_key = ? AND supported_assertion_key = ?",
+    )
+    .bind::<Text, _>(candidate.as_str())
+    .bind::<Text, _>(supporting.as_str())
+    .get_result::<CountRow>(&mut connection)?;
+    assert_eq!(found.count, 1);
+    Ok(())
+}
+
+#[test]
+fn native_cloneof_key_namespace_cannot_be_shadowed_by_stored_assertions() -> TestResult {
+    let fixture = NativeCloneofGuardFixture::new()?;
+    let mut connection = fixture.connection()?;
+    insert_stored_assertion(
+        &mut connection,
+        "guard-test:stored-control",
+        "user_conclusion",
+    )?;
+    assert_guard_rejects(
+        insert_stored_assertion(&mut connection, &fixture.native_key, "user_conclusion"),
+        "relationship assertions are immutable",
+    );
+
+    let stored =
+        sql_query("SELECT COUNT(*) AS count FROM relationship_assertions WHERE assertion_key = ?")
+            .bind::<Text, _>(&fixture.native_key)
+            .get_result::<CountRow>(&mut connection)?;
+    assert_eq!(stored.count, 0);
     Ok(())
 }
 

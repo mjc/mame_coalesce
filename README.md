@@ -162,7 +162,14 @@ serials, file fields and their order/locations. Valid hashes share interned
 binary values; origin and NFO hashes are separate scoped evidence. Export
 file hashes have unknown scope until a whole-file contract is established,
 so they do not assign shared file UUIDs. Bulk file queries and paired backups
-include these native owners. Full corpus/history acceptance remains open.
+include these native owners. History compares every observed native field,
+presence and ordered owner/child structure without treating generated IDs or
+physical source positions as continuity. Unknown-scope file, origin and NFO
+digests remain metadata, not invented ROM build requirements. History and
+relationship provenance derive header versions from native owners: an export
+has a singular reported version only when exactly one version child exists.
+Repeated header declarations remain ordered native facts. Full corpus and
+producer-grammar acceptance remain open.
 
 `examples/no_intro_database_profile.rs` exercises that reader with the
 `no-intro-database-xml-compatible` or `no-intro-database-xml-nul-compatible`
@@ -176,6 +183,9 @@ Pagination cursors belong to one file UUID and registry generation.
 
 Import errors can retain an exact byte excerpt with a start-inclusive,
 end-exclusive highlight relative to that saved excerpt, not the whole file.
+`problem_start_byte` and `problem_end_byte` index the stored `source_excerpt`:
+for `name='bad'`, `[6,9)` identifies `bad`. These are byte offsets, not display
+columns; rendering or decoding the excerpt must map them to displayed text.
 XML character and encoding failures capture their actual bytes, including
 NUL, invalid UTF-8 and UTF-16. Gzip excerpts name the decoded XML view and do
 not claim compressed-file offsets. Unknown ranges stay absent. The schema

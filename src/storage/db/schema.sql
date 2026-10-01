@@ -1698,7 +1698,7 @@ LEFT JOIN mame_machine_device_instances AS instance USING (set_id, element_order
 LEFT JOIN mame_machine_slots AS slot USING (set_id, element_order)
 LEFT JOIN mame_machine_software_lists AS software_list USING (set_id, element_order)
 LEFT JOIN mame_machine_ram_options AS ram USING (set_id, element_order);
-CREATE VIEW relationship_assertion_explanations AS
+CREATE VIEW stored_relationship_assertion_explanations AS
 SELECT assertion_key, relation_type, origin, source_snapshot_key, source_field,
        source_line, source_column, generic_subject_snapshot_key, subject_kind, subject_set_id,
        generic_subject_a, generic_subject_b, generic_subject_c, source_subject_a,
@@ -1709,7 +1709,9 @@ SELECT assertion_key, relation_type, origin, source_snapshot_key, source_field,
                              WHEN 'archive_mergeof' THEN (SELECT declared_mergeof FROM no_intro_archive_merge_links WHERE relationship_id = assertion_key) END
            ELSE source_target_a END AS source_target_a, source_target_b, source_target_c,
        target_snapshot_key, rule_version
-FROM relationship_assertions
+FROM relationship_assertions;
+CREATE VIEW relationship_assertion_explanations AS
+SELECT * FROM stored_relationship_assertion_explanations
 UNION ALL
 SELECT 'mame-dependency:' || dependency.set_id || ':' || dependency.dependency_order,
        'runtime_dependency', 'source_assertion', set_row.snapshot_key,
@@ -1719,7 +1721,38 @@ SELECT 'mame-dependency:' || dependency.set_id || ':' || dependency.dependency_o
        NULL, 'catalog_set', NULL, NULL, NULL, NULL,
        dependency.target_name, NULL, NULL, set_row.snapshot_key, NULL
 FROM mame_machine_dependencies AS dependency
-JOIN snapshot_sets AS set_row ON set_row.set_id = dependency.set_id;
+JOIN snapshot_sets AS set_row ON set_row.set_id = dependency.set_id
+UNION ALL
+SELECT assertion_key, relation_type, origin, source_snapshot_key, source_field,
+       source_line, source_column, generic_subject_snapshot_key, subject_kind, subject_set_id,
+       generic_subject_a, generic_subject_b, generic_subject_c, source_subject_a,
+       source_subject_b, source_subject_c, subject_snapshot_key,
+       generic_target_snapshot_key, target_kind, target_set_id, generic_target_a,
+       generic_target_b, generic_target_c, source_target_a, source_target_b,
+       source_target_c, target_snapshot_key, rule_version
+FROM no_intro_dat_cloneof_assertions;
+CREATE VIEW no_intro_dat_cloneof_assertions AS
+SELECT 'no-intro-dat-cloneof:' || game.set_id AS assertion_key,
+       'source_parent_clone' AS relation_type, 'source_assertion' AS origin,
+       groups.snapshot_key AS source_snapshot_key, 'cloneof' AS source_field,
+       position.source_line AS source_line, position.source_column AS source_column,
+       NULL AS generic_subject_snapshot_key, 'catalog_set' AS subject_kind,
+       game.set_id AS subject_set_id, NULL AS generic_subject_a, NULL AS generic_subject_b,
+       NULL AS generic_subject_c, sets.set_name AS source_subject_a,
+       NULL AS source_subject_b, NULL AS source_subject_c,
+       groups.snapshot_key AS subject_snapshot_key,
+       NULL AS generic_target_snapshot_key, 'catalog_set' AS target_kind,
+       NULL AS target_set_id, NULL AS generic_target_a, NULL AS generic_target_b,
+       NULL AS generic_target_c, game.cloneof_text AS source_target_a,
+       NULL AS source_target_b, NULL AS source_target_c,
+       groups.snapshot_key AS target_snapshot_key, NULL AS rule_version,
+       game.set_id AS native_set_id, position.field_kind AS native_position_field_kind
+FROM no_intro_dat_games AS game
+JOIN catalog_sets AS sets USING (set_id)
+JOIN catalog_set_groups AS groups USING (set_group_id)
+JOIN no_intro_dat_game_field_positions AS position
+  ON position.set_id = game.set_id AND position.field_kind = 2
+WHERE game.cloneof_text IS NOT NULL;
 CREATE VIEW software_components AS
 SELECT occurrences.occurrence_id, namespaces.snapshot_key, namespaces.source_name AS list_name,
        records.source_name AS item_name, parts.part_name, areas.area_order,
@@ -2080,6 +2113,16 @@ WHEN NOT EXISTS (
     SELECT 1 FROM mame_machine_dependencies AS dependency
     WHERE NEW.supported_assertion_key =
           'mame-dependency:' || dependency.set_id || ':' || dependency.dependency_order
+ ) AND NOT EXISTS (
+    SELECT 1 FROM no_intro_dat_cloneof_assertions AS native
+    WHERE native.native_set_id = CAST(substr(
+              NEW.supported_assertion_key,
+              length('no-intro-dat-cloneof:') + 1
+          ) AS INTEGER)
+      AND native.assertion_key = NEW.supported_assertion_key
+      AND native.native_position_field_kind = 2
+      AND native.subject_set_id = native.native_set_id
+      AND native.source_snapshot_key = native.subject_snapshot_key
 )
 BEGIN
     SELECT RAISE(ABORT, 'supported relationship assertion does not exist');
@@ -2128,6 +2171,7 @@ BEFORE INSERT ON relationship_assertions
 WHEN EXISTS (
     SELECT 1 FROM relationship_assertions WHERE assertion_key = NEW.assertion_key
 ) OR NEW.assertion_key GLOB 'mame-dependency:*'
+  OR NEW.assertion_key GLOB 'no-intro-dat-cloneof:*'
 BEGIN
     SELECT RAISE(ABORT, 'relationship assertions are immutable');
 END;
@@ -2163,6 +2207,16 @@ WHEN NOT EXISTS (
     SELECT 1 FROM mame_machine_dependencies AS dependency
     WHERE NEW.assertion_key =
           'mame-dependency:' || dependency.set_id || ':' || dependency.dependency_order
+) AND NOT EXISTS (
+    SELECT 1 FROM no_intro_dat_cloneof_assertions AS native
+    WHERE native.native_set_id = CAST(substr(
+              NEW.assertion_key,
+              length('no-intro-dat-cloneof:') + 1
+          ) AS INTEGER)
+      AND native.assertion_key = NEW.assertion_key
+      AND native.native_position_field_kind = 2
+      AND native.subject_set_id = native.native_set_id
+      AND native.source_snapshot_key = native.subject_snapshot_key
 )
 BEGIN
     SELECT RAISE(ABORT, 'relationship review assertion does not exist');
@@ -2177,6 +2231,16 @@ WHEN NEW.superseded_by_assertion_key IS NOT NULL
     SELECT 1 FROM mame_machine_dependencies AS dependency
     WHERE NEW.superseded_by_assertion_key =
           'mame-dependency:' || dependency.set_id || ':' || dependency.dependency_order
+ ) AND NOT EXISTS (
+    SELECT 1 FROM no_intro_dat_cloneof_assertions AS native
+    WHERE native.native_set_id = CAST(substr(
+              NEW.superseded_by_assertion_key,
+              length('no-intro-dat-cloneof:') + 1
+          ) AS INTEGER)
+      AND native.assertion_key = NEW.superseded_by_assertion_key
+      AND native.native_position_field_kind = 2
+      AND native.subject_set_id = native.native_set_id
+      AND native.source_snapshot_key = native.subject_snapshot_key
  )
 BEGIN
     SELECT RAISE(ABORT, 'superseding relationship assertion does not exist');

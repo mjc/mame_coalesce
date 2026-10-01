@@ -383,3 +383,29 @@ CREATE TABLE no_intro_release_details_diagnostics (
     PRIMARY KEY(diagnostic_key),
     FOREIGN KEY(diagnostic_key,run_key) REFERENCES import_diagnostics(diagnostic_key,run_key) ON DELETE RESTRICT
 ) WITHOUT ROWID;
+
+-- The source version is owned by each format's native header. Keep this as a
+-- derived compatibility view rather than persisting a second projection.
+CREATE VIEW catalog_snapshot_versions AS
+SELECT snapshot.snapshot_key,
+       CASE
+         WHEN parser.format IN (
+             'no-intro-dat-v3-strict', 'no-intro-dat-v3-compatible',
+             'no-intro-dat-v4-strict', 'no-intro-dat-v4-compatible'
+         ) THEN dat_header.version_text
+         WHEN parser.format IN (
+             'no-intro-database-xml-compatible',
+             'no-intro-database-xml-nul-compatible'
+         ) THEN (
+             SELECT CASE WHEN COUNT(*) = 1 THEN MIN(header_field.value) END
+             FROM no_intro_header_fields AS header_field
+             WHERE header_field.snapshot_key = snapshot.snapshot_key
+               AND header_field.field_kind = 4
+         )
+         ELSE snapshot.declared_version
+       END AS declared_version
+FROM catalog_snapshots AS snapshot
+LEFT JOIN parser_interpretations AS parser
+  ON parser.interpretation_key = snapshot.interpretation_key
+LEFT JOIN no_intro_dat_headers AS dat_header
+  ON dat_header.snapshot_key = snapshot.snapshot_key;

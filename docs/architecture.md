@@ -172,7 +172,8 @@ parser-internal representations the public contract.
   and paired backups include native source/release owners. Recovery warnings
   persist only after valid EOF, with exact encoded byte highlights and proven
   details-opening owner FKs; linked diagnostic/run evidence is immutable.
-  Full corpus/history and all native diagnostic-owner acceptance remains open.
+  Full corpus, producer grammar and all native diagnostic-owner acceptance
+  remain open.
 - `catalog_files` queries published occurrences in one transaction, preserving
   one row per source owner and separate digest children. Bulk lookups include
   unlinked entries; reverse UUID membership uses keyset pagination and checks
@@ -201,6 +202,17 @@ parser-internal representations the public contract.
   inferring a snapshot from declared version text. Disk audit is a deliberate
   exception: its catalog-key interface selects the most recently published
   snapshot.
+- No-Intro history and relationship provenance share a derived native-header
+  version view rather than storing another copy. Database exports with repeated
+  version children have no singular version projection. Their history compares
+  all native archive, dump-source, release, details, serial and file fields with
+  actual owner/child order and empty/absent presence. Generated owner keys and
+  physical source coordinates are not cross-edition identities. Unknown-scope
+  export-file hashes, source-origin hashes and NFO hashes remain separately
+  qualified metadata, not invented whole-file ROM requirements. Import-run
+  diagnostics are not immutable catalog comparison facts.
+  File-history payload, position and digest queries start with indexed selected
+  snapshot owners, not global scans of unrelated files.
 - Snapshot history and cross-catalog comparison are separate operations.
   History diffs compare snapshots of the same `CatalogKey` and use catalog
   scope to distinguish removals from unknown absence. Requirement
