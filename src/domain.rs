@@ -296,11 +296,18 @@ impl ParserInterpretationKey {
             &[
                 format,
                 env!("CARGO_PKG_VERSION"),
-                "normalization-v1",
+                Self::rules_version(format),
                 scope_kind,
                 &scope_identity,
             ],
         ))
+    }
+
+    pub(crate) fn rules_version(format: &str) -> &'static str {
+        match format {
+            "logiqx" => "logiqx-declared-text-compat-v1",
+            _ => "normalization-v1",
+        }
     }
 
     #[must_use]

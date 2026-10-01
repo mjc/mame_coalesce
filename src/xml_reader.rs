@@ -47,7 +47,7 @@ impl Element {
             .collect()
     }
 
-    pub(crate) fn child_text(&self, name: &str) -> Result<Option<String>> {
+    pub(crate) fn child_text_preserved(&self, name: &str) -> Result<Option<String>> {
         let mut matches = self.children().filter(|child| child.name == name);
         let Some(child) = matches.next() else {
             return Ok(None);
@@ -58,7 +58,7 @@ impl Element {
                 self.name
             )));
         }
-        Ok(Some(child.direct_text().trim().to_owned()))
+        Ok(Some(child.direct_text()))
     }
 
     pub(crate) fn required_attribute(&self, name: &str) -> Result<String> {

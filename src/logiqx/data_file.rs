@@ -770,16 +770,22 @@ mod tests {
     }
 
     #[test]
-    fn malformed_supplied_hashes_are_rejected() {
-        for (attribute, value) in [("crc", "xyz"), ("md5", "xyz"), ("sha1", "xyz")] {
-            let dat = format!(
-                "<datafile><header><name>Bad</name></header><game name=\"g\"><rom name=\"r\" size=\"1\" {attribute}=\"{value}\"/></game></datafile>"
-            );
-            assert!(
-                DataFile::from_reader(dat.as_bytes()).is_err(),
-                "{attribute}"
-            );
-        }
+    fn malformed_supplied_attributes_are_retained_without_usable_evidence()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dat = r#"<datafile><header><name>Uninterpreted</name></header>
+<game name="g"><rom name="r" size="not-a-size" crc="xyz" md5="" sha1="not-hex"/></game></datafile>"#;
+        let df = DataFile::from_reader(dat.as_bytes())?;
+        let rom = &df.games()[0].roms()[0];
+
+        assert_eq!(rom.size_text(), Some("not-a-size"));
+        assert_eq!(rom.size(), None);
+        assert_eq!(rom.crc_text(), Some("xyz"));
+        assert_eq!(rom.crc(), None);
+        assert_eq!(rom.md5_text(), Some(""));
+        assert_eq!(rom.md5(), None);
+        assert_eq!(rom.sha1_text(), Some("not-hex"));
+        assert_eq!(rom.sha1(), None);
+        Ok(())
     }
 
     #[test]
@@ -809,18 +815,31 @@ mod tests {
     }
 
     #[test]
-    fn invalid_hex_in_dat_xml_fails_parsing() {
+    fn invalid_hex_in_dat_xml_is_retained_without_usable_sha1()
+    -> Result<(), Box<dyn std::error::Error>> {
         let invalid = r#"<?xml version="1.0"?>
 <datafile>
   <header>
-    <name>Invalid</name>
+    <name>Uninterpreted SHA1</name>
   </header>
   <game name="bad">
-    <rom name="bad.rom" size="1" sha1="not-hex" md5="900150983cd24fb0d6963f7d28e17f72" crc="12345678"/>
+    <rom name="bad.rom" size="1" sha1="zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz" md5="900150983cd24fb0d6963f7d28e17f72" crc="12345678"/>
   </game>
 </datafile>"#;
 
-        assert!(DataFile::from_reader(invalid.as_bytes()).is_err());
+        let data_file = DataFile::from_reader(invalid.as_bytes())?;
+        let rom = &data_file.games()[0].roms()[0];
+        assert_eq!(
+            rom.sha1_text(),
+            Some("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz")
+        );
+        assert_eq!(rom.sha1(), None);
+        assert_eq!(
+            rom.md5(),
+            Some(&hex::decode("900150983cd24fb0d6963f7d28e17f72")?[..])
+        );
+        assert_eq!(rom.crc(), Some(&[0x12, 0x34, 0x56, 0x78][..]));
+        Ok(())
     }
 
     #[test]

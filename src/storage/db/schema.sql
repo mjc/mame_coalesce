@@ -253,6 +253,8 @@ CREATE TABLE logiqx_disk_claims (
     occurrence_id INTEGER PRIMARY KEY NOT NULL,
     claim_kind TEXT NOT NULL DEFAULT 'logiqx_disk' CHECK (claim_kind = 'logiqx_disk'),
     name TEXT NOT NULL,
+    md5_text TEXT,
+    sha1_text TEXT,
     evidence_scope TEXT NOT NULL,
     evidence_provenance TEXT NOT NULL,
     merge_name TEXT,
@@ -290,7 +292,17 @@ CREATE TABLE logiqx_rom_claims (
     claim_kind TEXT NOT NULL DEFAULT 'logiqx_rom' CHECK (claim_kind = 'logiqx_rom'),
     name TEXT NOT NULL,
     size_text TEXT,
-    size INTEGER GENERATED ALWAYS AS (CAST(size_text AS INTEGER)) VIRTUAL,
+    size INTEGER GENERATED ALWAYS AS (
+        CASE WHEN length(size_text) > 0 AND instr(size_text, char(0)) = 0
+            AND size_text NOT GLOB '*[^0-9]*'
+            AND (length(ltrim(size_text,'0')) < 19
+                OR (length(ltrim(size_text,'0')) = 19
+                    AND ltrim(size_text,'0') <= '9223372036854775807'))
+        THEN CAST(size_text AS INTEGER) END
+    ) VIRTUAL,
+    crc_text TEXT,
+    md5_text TEXT,
+    sha1_text TEXT,
     evidence_scope TEXT NOT NULL,
     evidence_provenance TEXT NOT NULL,
     merge_name TEXT,
@@ -302,9 +314,6 @@ CREATE TABLE logiqx_rom_claims (
     serial TEXT,
     date TEXT,
     CHECK (status_was_present = 1 OR dump_status = 'good'),
-    CHECK (size_text IS NULL OR (length(size_text) > 0 AND size_text NOT GLOB '*[^0-9]*'
-        AND (length(ltrim(size_text,'0')) < 19 OR (length(ltrim(size_text,'0')) = 19
-        AND ltrim(size_text,'0') <= '9223372036854775807')))),
     FOREIGN KEY (occurrence_id,claim_kind) REFERENCES asset_occurrences(occurrence_id,claim_kind) ON DELETE RESTRICT
 );
 CREATE TABLE logiqx_sample_claims (

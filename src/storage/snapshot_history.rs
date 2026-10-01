@@ -116,6 +116,12 @@ struct RequirementRow {
     mame_writeable: Option<i64>,
     #[diesel(sql_type = Nullable<Text>)]
     logiqx_size_text: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    logiqx_crc_text: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    logiqx_md5_text: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    logiqx_sha1_text: Option<String>,
     #[diesel(sql_type = Nullable<Bool>)]
     logiqx_status_was_present: Option<bool>,
     #[diesel(sql_type = Nullable<BigInt>)]
@@ -658,6 +664,7 @@ struct CatalogRecords {
     mame_machine_specification_facts: BTreeMap<i64, Vec<serde_json::Value>>,
     no_intro_game_facts: BTreeMap<i64, Vec<serde_json::Value>>,
     logiqx_set_facts: BTreeMap<i64, Vec<serde_json::Value>>,
+    logiqx_text_positions: BTreeMap<i64, Vec<serde_json::Value>>,
     logiqx_game_comments: BTreeMap<i64, Vec<serde_json::Value>>,
     logiqx_releases: BTreeMap<i64, Vec<serde_json::Value>>,
     logiqx_bios_sets: BTreeMap<i64, Vec<serde_json::Value>>,
@@ -866,6 +873,15 @@ struct DocumentMetadata {
     logiqx: Option<LogiqxDocumentMetadataRow>,
     clrmamepro: Option<LogiqxClrMameProOptionsRow>,
     romcenter: Option<LogiqxRomCenterOptionsRow>,
+    text_positions: Vec<LogiqxTextPositionRow>,
+}
+
+#[derive(QueryableByName, PartialEq, Eq)]
+struct LogiqxTextPositionRow {
+    #[diesel(sql_type = BigInt)]
+    field_kind: i64,
+    #[diesel(sql_type = BigInt)]
+    source_order: i64,
 }
 
 fn document_metadata(
@@ -902,28 +918,49 @@ fn document_metadata(
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<LogiqxRomCenterOptionsRow>(conn)
     .optional()?;
-    let clrmamepro_order = match (&clrmamepro, &romcenter) {
-        (Some(clrmamepro), Some(romcenter)) => {
-            i64::from(clrmamepro.source_order > romcenter.source_order)
-        }
-        _ => 0,
-    };
-    if let Some(options) = &mut clrmamepro {
-        options.source_order = clrmamepro_order;
-    }
-    if let Some(options) = &mut romcenter {
-        options.source_order = if clrmamepro.is_some() {
-            1 - clrmamepro_order
-        } else {
-            0
-        };
-    }
+    let mut text_positions = sql_query(
+        "SELECT field_kind, source_order FROM logiqx_header_text_positions \
+         WHERE snapshot_key = ? ORDER BY field_kind",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .load::<LogiqxTextPositionRow>(conn)?;
+    normalize_header_order(&mut text_positions, clrmamepro.as_mut(), romcenter.as_mut());
     Ok(DocumentMetadata {
         mame,
         logiqx,
         clrmamepro,
         romcenter,
+        text_positions,
     })
+}
+
+fn normalize_header_order(
+    positions: &mut [LogiqxTextPositionRow],
+    clrmamepro: Option<&mut LogiqxClrMameProOptionsRow>,
+    romcenter: Option<&mut LogiqxRomCenterOptionsRow>,
+) {
+    let orders = positions
+        .iter()
+        .map(|position| position.source_order)
+        .chain(clrmamepro.as_ref().map(|options| options.source_order))
+        .chain(romcenter.as_ref().map(|options| options.source_order))
+        .collect::<BTreeSet<_>>();
+    let ranks = orders.into_iter().zip(0_i64..).collect::<BTreeMap<_, _>>();
+    for position in positions {
+        if let Some(rank) = ranks.get(&position.source_order) {
+            position.source_order = *rank;
+        }
+    }
+    if let Some(options) = clrmamepro
+        && let Some(rank) = ranks.get(&options.source_order)
+    {
+        options.source_order = *rank;
+    }
+    if let Some(options) = romcenter
+        && let Some(rank) = ranks.get(&options.source_order)
+    {
+        options.source_order = *rank;
+    }
 }
 
 fn is_software_list_snapshot(snapshot: &SnapshotRow) -> bool {
@@ -1075,6 +1112,7 @@ fn records(
     let mame_machine_dependencies = load_mame_machine_dependencies(conn, key)?;
     let no_intro_game_facts = load_no_intro_game_facts(conn, key)?;
     let logiqx_set_facts = load_logiqx_set_facts(conn, key)?;
+    let logiqx_text_positions = load_logiqx_text_positions(conn, key)?;
     let logiqx_game_comments = load_logiqx_game_comments(conn, key)?;
     let logiqx_releases = load_logiqx_releases(conn, key)?;
     let logiqx_bios_sets = load_logiqx_bios_sets(conn, key)?;
@@ -1099,6 +1137,7 @@ fn records(
     result.mame_machine_dependencies = mame_machine_dependencies;
     result.no_intro_game_facts = no_intro_game_facts;
     result.logiqx_set_facts = logiqx_set_facts;
+    result.logiqx_text_positions = logiqx_text_positions;
     result.logiqx_game_comments = logiqx_game_comments;
     result.logiqx_releases = logiqx_releases;
     result.logiqx_bios_sets = logiqx_bios_sets;
@@ -1127,6 +1166,7 @@ fn normalize_logiqx_child_order(records: &mut CatalogRecords) {
     let mut orders = BTreeMap::<i64, BTreeSet<i64>>::new();
     for family in [
         &records.logiqx_game_comments,
+        &records.logiqx_text_positions,
         &records.logiqx_releases,
         &records.logiqx_bios_sets,
         &records.logiqx_archive_references,
@@ -1152,6 +1192,7 @@ fn normalize_logiqx_child_order(records: &mut CatalogRecords) {
         .collect();
     for family in [
         &mut records.logiqx_game_comments,
+        &mut records.logiqx_text_positions,
         &mut records.logiqx_releases,
         &mut records.logiqx_bios_sets,
         &mut records.logiqx_archive_references,
@@ -1217,6 +1258,9 @@ fn load_requirements(
          facts.inverted AS mame_inverted, facts.ovha AS mame_ovha, facts.no_thread AS mame_no_thread, \
          facts.disk_index AS mame_disk_index, facts.writable AS mame_writable, \
          facts.writeable AS mame_writeable, rom_claim.size_text AS logiqx_size_text, \
+         rom_claim.crc_text AS logiqx_crc_text, \
+         COALESCE(rom_claim.md5_text, disk_claim.md5_text) AS logiqx_md5_text, \
+         COALESCE(rom_claim.sha1_text, disk_claim.sha1_text) AS logiqx_sha1_text, \
          COALESCE(rom_claim.status_was_present, disk_claim.status_was_present) AS logiqx_status_was_present, \
          COALESCE(rom_claim.source_order, disk_claim.source_order, sample_claim.source_order) AS logiqx_source_order \
          FROM asset_requirement_rows AS asset \
@@ -1266,6 +1310,41 @@ fn load_mame_machine_dependencies(
             }));
     }
     Ok(facts)
+}
+
+#[derive(QueryableByName)]
+struct LogiqxSetTextPositionRow {
+    #[diesel(sql_type = BigInt)]
+    set_id: i64,
+    #[diesel(sql_type = BigInt)]
+    field_kind: i64,
+    #[diesel(sql_type = BigInt)]
+    source_order: i64,
+}
+
+fn load_logiqx_text_positions(
+    conn: &mut diesel::SqliteConnection,
+    key: &SnapshotKey,
+) -> crate::Result<BTreeMap<i64, Vec<serde_json::Value>>> {
+    let rows = sql_query(
+        "SELECT position.set_id, position.field_kind, position.source_order \
+         FROM catalog_set_groups JOIN catalog_sets USING (set_group_id) \
+         JOIN logiqx_game_text_positions AS position USING (set_id) \
+         WHERE snapshot_key = ? ORDER BY position.set_id, position.field_kind",
+    )
+    .bind::<Text, _>(key.as_str())
+    .load::<LogiqxSetTextPositionRow>(conn)?;
+    let mut result = BTreeMap::<i64, Vec<serde_json::Value>>::new();
+    for row in rows {
+        result
+            .entry(row.set_id)
+            .or_default()
+            .push(serde_json::json!({
+                "field_kind": row.field_kind,
+                "source_order": row.source_order,
+            }));
+    }
+    Ok(result)
 }
 
 fn load_logiqx_set_facts(
@@ -1558,6 +1637,9 @@ fn assemble_requirements(result: &mut CatalogRecords, requirements: Vec<Requirem
             },
             "logiqx_attributes": {
                 "size_text": row.logiqx_size_text,
+                "crc_text": row.logiqx_crc_text,
+                "md5_text": row.logiqx_md5_text,
+                "sha1_text": row.logiqx_sha1_text,
                 "status_was_present": row.logiqx_status_was_present,
                 "source_order": row.logiqx_source_order,
             },
@@ -1963,6 +2045,7 @@ fn set_metadata(records: &CatalogRecords, set: &SetRow) -> serde_json::Value {
         "mame_machine_dependencies": records.mame_machine_dependencies.get(&set.set_id),
         "no_intro_game_facts": records.no_intro_game_facts.get(&set.set_id),
         "logiqx_set_facts": records.logiqx_set_facts.get(&set.set_id),
+        "logiqx_text_positions": records.logiqx_text_positions.get(&set.set_id),
         "logiqx_game_comments": records.logiqx_game_comments.get(&set.set_id),
         "logiqx_releases": records.logiqx_releases.get(&set.set_id),
         "logiqx_bios_sets": records.logiqx_bios_sets.get(&set.set_id),

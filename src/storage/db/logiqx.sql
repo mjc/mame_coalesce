@@ -224,3 +224,177 @@ BEGIN SELECT RAISE(ABORT, 'native game details are immutable'); END;
 CREATE TRIGGER logiqx_archive_references_native_immutable_delete
 BEFORE DELETE ON logiqx_archive_references
 BEGIN SELECT RAISE(ABORT, 'native game details are immutable'); END;
+
+-- Positions identify a closed native scalar field; values remain in fixed columns.
+CREATE TABLE logiqx_header_text_positions (
+    snapshot_key TEXT NOT NULL REFERENCES logiqx_document_facts(snapshot_key) ON DELETE RESTRICT,
+    field_kind INTEGER NOT NULL CHECK (field_kind BETWEEN 0 AND 9),
+    source_order INTEGER NOT NULL CHECK (source_order >= 0),
+    source_line INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    PRIMARY KEY (snapshot_key, field_kind),
+    UNIQUE (snapshot_key, source_order)
+) WITHOUT ROWID;
+CREATE TABLE logiqx_game_text_positions (
+    set_id INTEGER NOT NULL REFERENCES logiqx_games(set_id) ON DELETE RESTRICT,
+    field_kind INTEGER NOT NULL CHECK (field_kind BETWEEN 0 AND 2),
+    source_order INTEGER NOT NULL CHECK (source_order >= 0),
+    source_line INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    PRIMARY KEY (set_id, field_kind),
+    UNIQUE (set_id, source_order)
+) WITHOUT ROWID;
+CREATE TRIGGER logiqx_header_text_positions_native_owner_insert
+BEFORE INSERT ON logiqx_header_text_positions
+WHEN NOT EXISTS (
+    SELECT 1 FROM logiqx_document_facts AS details
+    JOIN catalog_snapshots USING (snapshot_key)
+    JOIN parser_interpretations USING (interpretation_key)
+    WHERE details.snapshot_key = NEW.snapshot_key AND format = 'logiqx'
+      AND CASE NEW.field_kind
+        WHEN 0 THEN details.header_name
+        WHEN 1 THEN details.header_description
+        WHEN 2 THEN details.header_category
+        WHEN 3 THEN details.header_version
+        WHEN 4 THEN details.header_date
+        WHEN 5 THEN details.header_author
+        WHEN 6 THEN details.header_email
+        WHEN 7 THEN details.header_homepage
+        WHEN 8 THEN details.header_url
+        WHEN 9 THEN details.header_comment
+      END IS NOT NULL
+) OR EXISTS (SELECT 1 FROM snapshot_publications WHERE snapshot_key = NEW.snapshot_key)
+BEGIN SELECT RAISE(ABORT, 'text positions require a present unpublished native header field'); END;
+CREATE TRIGGER logiqx_game_text_positions_native_owner_insert
+BEFORE INSERT ON logiqx_game_text_positions
+WHEN NOT EXISTS (
+    SELECT 1 FROM logiqx_games AS details JOIN catalog_sets USING (set_id)
+    JOIN catalog_set_groups USING (set_group_id)
+    JOIN catalog_snapshots USING (snapshot_key)
+    JOIN parser_interpretations USING (interpretation_key)
+    WHERE details.set_id = NEW.set_id AND source_element_kind = 'logiqx_game' AND format = 'logiqx'
+      AND CASE NEW.field_kind
+        WHEN 0 THEN details.description
+        WHEN 1 THEN details.year
+        WHEN 2 THEN details.manufacturer
+      END IS NOT NULL
+) OR EXISTS (
+    SELECT 1 FROM catalog_sets JOIN catalog_set_groups USING (set_group_id)
+    JOIN snapshot_publications USING (snapshot_key) WHERE set_id = NEW.set_id
+)
+BEGIN SELECT RAISE(ABORT, 'text positions require a present unpublished native game field'); END;
+CREATE TRIGGER logiqx_header_text_positions_immutable_update BEFORE UPDATE ON logiqx_header_text_positions
+BEGIN SELECT RAISE(ABORT, 'native scalar positions are immutable'); END;
+CREATE TRIGGER logiqx_header_text_positions_immutable_delete BEFORE DELETE ON logiqx_header_text_positions
+BEGIN SELECT RAISE(ABORT, 'native scalar positions are immutable'); END;
+CREATE TRIGGER logiqx_game_text_positions_immutable_update BEFORE UPDATE ON logiqx_game_text_positions
+BEGIN SELECT RAISE(ABORT, 'native scalar positions are immutable'); END;
+CREATE TRIGGER logiqx_game_text_positions_immutable_delete BEFORE DELETE ON logiqx_game_text_positions
+BEGIN SELECT RAISE(ABORT, 'native scalar positions are immutable'); END;
+CREATE TRIGGER logiqx_scalar_positions_require_complete_publication
+BEFORE INSERT ON snapshot_publications
+WHEN EXISTS (
+    SELECT 1 FROM logiqx_document_facts AS details
+    LEFT JOIN logiqx_header_text_positions AS position0
+      ON position0.snapshot_key = details.snapshot_key AND position0.field_kind = 0
+    LEFT JOIN logiqx_header_text_positions AS position1
+      ON position1.snapshot_key = details.snapshot_key AND position1.field_kind = 1
+    LEFT JOIN logiqx_header_text_positions AS position2
+      ON position2.snapshot_key = details.snapshot_key AND position2.field_kind = 2
+    LEFT JOIN logiqx_header_text_positions AS position3
+      ON position3.snapshot_key = details.snapshot_key AND position3.field_kind = 3
+    LEFT JOIN logiqx_header_text_positions AS position4
+      ON position4.snapshot_key = details.snapshot_key AND position4.field_kind = 4
+    LEFT JOIN logiqx_header_text_positions AS position5
+      ON position5.snapshot_key = details.snapshot_key AND position5.field_kind = 5
+    LEFT JOIN logiqx_header_text_positions AS position6
+      ON position6.snapshot_key = details.snapshot_key AND position6.field_kind = 6
+    LEFT JOIN logiqx_header_text_positions AS position7
+      ON position7.snapshot_key = details.snapshot_key AND position7.field_kind = 7
+    LEFT JOIN logiqx_header_text_positions AS position8
+      ON position8.snapshot_key = details.snapshot_key AND position8.field_kind = 8
+    LEFT JOIN logiqx_header_text_positions AS position9
+      ON position9.snapshot_key = details.snapshot_key AND position9.field_kind = 9
+    WHERE details.snapshot_key = NEW.snapshot_key AND (
+        (details.header_name IS NOT NULL) <> (position0.field_kind IS NOT NULL) OR
+        (details.header_description IS NOT NULL) <> (position1.field_kind IS NOT NULL) OR
+        (details.header_category IS NOT NULL) <> (position2.field_kind IS NOT NULL) OR
+        (details.header_version IS NOT NULL) <> (position3.field_kind IS NOT NULL) OR
+        (details.header_date IS NOT NULL) <> (position4.field_kind IS NOT NULL) OR
+        (details.header_author IS NOT NULL) <> (position5.field_kind IS NOT NULL) OR
+        (details.header_email IS NOT NULL) <> (position6.field_kind IS NOT NULL) OR
+        (details.header_homepage IS NOT NULL) <> (position7.field_kind IS NOT NULL) OR
+        (details.header_url IS NOT NULL) <> (position8.field_kind IS NOT NULL) OR
+        (details.header_comment IS NOT NULL) <> (position9.field_kind IS NOT NULL)
+    )
+) OR EXISTS (
+    SELECT 1 FROM catalog_set_groups JOIN catalog_sets USING (set_group_id)
+    JOIN logiqx_games AS details USING (set_id)
+    LEFT JOIN logiqx_game_text_positions AS position0
+      ON position0.set_id = details.set_id AND position0.field_kind = 0
+    LEFT JOIN logiqx_game_text_positions AS position1
+      ON position1.set_id = details.set_id AND position1.field_kind = 1
+    LEFT JOIN logiqx_game_text_positions AS position2
+      ON position2.set_id = details.set_id AND position2.field_kind = 2
+    WHERE snapshot_key = NEW.snapshot_key AND (
+        (details.description IS NOT NULL) <> (position0.field_kind IS NOT NULL) OR
+        (details.year IS NOT NULL) <> (position1.field_kind IS NOT NULL) OR
+        (details.manufacturer IS NOT NULL) <> (position2.field_kind IS NOT NULL)
+    )
+)
+BEGIN SELECT RAISE(ABORT, 'native scalar values require complete position ownership'); END;
+
+-- Interpretation is derived, never another stored source-field projection.
+CREATE VIEW logiqx_rom_declared_field_states AS
+SELECT occurrence_id,
+    CASE WHEN size_text IS NULL THEN 'missing' WHEN size IS NULL THEN 'uninterpreted' ELSE 'usable' END AS size_state,
+    CASE WHEN crc_text IS NULL THEN 'missing'
+    WHEN length(crc_text) = 8 AND instr(crc_text, char(0)) = 0
+      AND crc_text NOT GLOB '*[^0-9a-fA-F]*' THEN 'usable'
+    ELSE 'uninterpreted' END AS crc_state,
+    CASE WHEN md5_text IS NULL THEN 'missing'
+    WHEN length(md5_text) = 32 AND instr(md5_text, char(0)) = 0
+      AND md5_text NOT GLOB '*[^0-9a-fA-F]*' THEN 'usable'
+    ELSE 'uninterpreted' END AS md5_state,
+    CASE WHEN sha1_text IS NULL THEN 'missing'
+    WHEN length(sha1_text) = 40 AND instr(sha1_text, char(0)) = 0
+      AND sha1_text NOT GLOB '*[^0-9a-fA-F]*' THEN 'usable'
+    ELSE 'uninterpreted' END AS sha1_state
+FROM logiqx_rom_claims;
+CREATE VIEW logiqx_disk_declared_field_states AS
+SELECT occurrence_id,
+    CASE WHEN md5_text IS NULL THEN 'missing'
+    WHEN length(md5_text) = 32 AND instr(md5_text, char(0)) = 0
+      AND md5_text NOT GLOB '*[^0-9a-fA-F]*' THEN 'usable'
+    ELSE 'uninterpreted' END AS md5_state,
+    CASE WHEN sha1_text IS NULL THEN 'missing'
+    WHEN length(sha1_text) = 40 AND instr(sha1_text, char(0)) = 0
+      AND sha1_text NOT GLOB '*[^0-9a-fA-F]*' THEN 'usable'
+    ELSE 'uninterpreted' END AS sha1_state
+FROM logiqx_disk_claims;
+CREATE TRIGGER logiqx_uuid_requires_interpretable_source_fields
+BEFORE INSERT ON snapshot_publications
+WHEN EXISTS (
+    SELECT 1 FROM catalog_set_groups JOIN catalog_sets USING (set_group_id)
+    JOIN asset_occurrences ON record_id = set_id
+    JOIN logiqx_rom_claims AS rom USING (occurrence_id)
+    JOIN logiqx_rom_declared_field_states AS states USING (occurrence_id)
+    WHERE snapshot_key = NEW.snapshot_key AND content_uuid IS NOT NULL
+      AND (states.size_state = 'uninterpreted' OR states.crc_state = 'uninterpreted'
+        OR states.md5_state = 'uninterpreted' OR states.sha1_state <> 'usable'
+        OR NOT EXISTS (
+            SELECT 1 FROM occurrence_digest_assertions AS assertion
+            JOIN digest_values AS digest USING (digest_id)
+            WHERE assertion.occurrence_id = rom.occurrence_id
+              AND assertion.provenance = 'source_declared'
+              AND assertion.scope IN ('whole_asset', 'whole_file')
+              AND digest.algorithm = 'sha1'
+              AND hex(digest.digest) = upper(rom.sha1_text)
+        ))
+) OR EXISTS (
+    SELECT 1 FROM catalog_set_groups JOIN catalog_sets USING (set_group_id)
+    JOIN asset_occurrences ON record_id = set_id
+    JOIN logiqx_disk_claims USING (occurrence_id)
+    WHERE snapshot_key = NEW.snapshot_key AND content_uuid IS NOT NULL
+)
+BEGIN SELECT RAISE(ABORT, 'shared file UUID requires interpretable whole-file source evidence'); END;

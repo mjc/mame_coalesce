@@ -6,6 +6,10 @@ mod rom;
 pub use data_file::DataFile;
 pub use data_file::RecordLocation;
 pub(crate) use data_file::XmlSourceMap;
-pub use game::{Archive, BiosSet, Game, NativeComment, Release, Sample};
-pub use header::{ClrMameProOptions, Header, RomCenterOptions};
+pub use game::{
+    Archive, BiosSet, Game, GameTextField, GameTextPosition, NativeComment, Release, Sample,
+};
+pub use header::{
+    ClrMameProOptions, Header, HeaderTextField, HeaderTextPosition, RomCenterOptions,
+};
 pub use rom::{Disk, Rom};

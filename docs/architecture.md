@@ -93,8 +93,14 @@ parser-internal representations the public contract.
   Logiqx options and repeated child families have native tables, including
   source order and explicit-versus-default presence. History derives relative
   native-child ranks in memory so vendor-only gaps do not produce false edits;
-  the original XML ordinals remain stored. Published Logiqx media owners reject
-  both new occurrences and late native payload inserts. Full per-format field
+  the original XML ordinals remain stored. Header/game scalar positions share
+  that relative order without duplicating their native fixed-column values.
+  Logiqx CDATA retains absent, empty and uninterpretable declarations; usable
+  size/digest interpretations never replace the declared text. PCDATA boundary
+  spaces remain intact. Uninterpretable ROM declarations and disk-data hashes
+  cannot assign shared-file UUIDs. Publication requires complete scalar position
+  ownership and valid source evidence for UUID links. Published Logiqx media
+  owners reject both new occurrences and late native payload inserts. Full per-format field
   coverage and the remaining shared identity work are not finished.
 - Ordinary DAT imports publish native snapshots and retain originals externally.
   Local catalog identity follows the canonical source path, not its header title.

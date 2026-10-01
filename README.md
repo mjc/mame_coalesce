@@ -102,6 +102,13 @@ claims until reviewed settlement is implemented. Backup/restore preserves the
 database-wide registry generation; a fresh rebuild starts a new generation.
 UUID interchange uses 32 hexadecimal characters without dashes.
 
+Logiqx imports retain the original size/checksum spelling, empty declarations,
+and text boundary spaces in native catalog fields. Uninterpretable declarations
+remain queryable but are not usable matching evidence and cannot assign a shared
+file UUID. Logical disk hashes never identify whole-container files. The default
+`logiqx-declared-text-compat-v1` interpretation accepts sparse compatibility
+documents; it is not strict DTD validation.
+
 The Rust `catalog_files` API exposes bulk occurrence lookup and keyset-paginated
 file membership across published catalog editions. Results keep each owner and
 its source/list provenance, with digest assertions as separate children.

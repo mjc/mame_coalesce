@@ -5,7 +5,7 @@ use diesel::{
 
 use crate::{
     domain::{CatalogSetId, SnapshotKey},
-    logiqx::{DataFile, Game},
+    logiqx::{DataFile, Game, GameTextPosition, HeaderTextPosition},
 };
 
 #[derive(Clone)]
@@ -60,6 +60,7 @@ struct RomCenterOptions {
 }
 
 pub(super) struct DocumentDetails {
+    header_text_positions: Vec<HeaderTextPosition>,
     clrmamepro: Option<ClrMameProOptions>,
     romcenter: Option<RomCenterOptions>,
 }
@@ -67,6 +68,8 @@ pub(super) struct DocumentDetails {
 impl DocumentDetails {
     pub(super) fn from_data_file(data_file: &DataFile) -> crate::Result<Self> {
         let header = data_file.header_opt();
+        let header_text_positions =
+            header.map_or_else(Vec::new, |header| header.text_positions().to_vec());
         let clrmamepro = data_file.clrmamepro_options_opt().map(|options| {
             let location = options.location();
             ClrMameProOptions {
@@ -122,6 +125,7 @@ impl DocumentDetails {
             }
         });
         let details = Self {
+            header_text_positions,
             clrmamepro,
             romcenter,
         };
@@ -203,6 +207,23 @@ impl DocumentDetails {
             .bind::<Bool, _>(options.locksamplemode.was_present())
             .execute(conn)?;
         }
+
+        for position in &self.header_text_positions {
+            sql_query(
+                "INSERT INTO logiqx_header_text_positions \
+                 (snapshot_key, field_kind, source_order, source_line, source_column) \
+                 VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind::<Text, _>(snapshot_key.as_str())
+            .bind::<BigInt, _>(position.field.database_value())
+            .bind::<BigInt, _>(checked_source_order(
+                Some(position.source_order),
+                "header text field",
+            )?)
+            .bind::<BigInt, _>(position.location.line)
+            .bind::<BigInt, _>(position.location.column)
+            .execute(conn)?;
+        }
         Ok(())
     }
 }
@@ -246,6 +267,7 @@ struct ArchiveReferenceDetails {
 }
 
 pub(super) struct GameDetails {
+    text_positions: Vec<GameTextPosition>,
     comments: Vec<CommentDetails>,
     releases: Vec<ReleaseDetails>,
     bios_sets: Vec<BiosSetDetails>,
@@ -254,6 +276,7 @@ pub(super) struct GameDetails {
 
 impl GameDetails {
     pub(super) fn from_game(game: &Game) -> crate::Result<Self> {
+        let text_positions = game.text_positions().to_vec();
         let comments = game
             .comments()
             .iter()
@@ -339,6 +362,7 @@ impl GameDetails {
             })
             .collect::<crate::Result<Vec<_>>>()?;
         Ok(Self {
+            text_positions,
             comments,
             releases,
             bios_sets,
@@ -418,6 +442,23 @@ impl GameDetails {
             .bind::<Text, _>(&archive.archive_name)
             .bind::<BigInt, _>(archive.line)
             .bind::<BigInt, _>(archive.column)
+            .execute(conn)?;
+        }
+
+        for position in &self.text_positions {
+            sql_query(
+                "INSERT INTO logiqx_game_text_positions \
+                 (set_id, field_kind, source_order, source_line, source_column) \
+                 VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind::<BigInt, _>(set_id.as_i64())
+            .bind::<BigInt, _>(position.field.database_value())
+            .bind::<BigInt, _>(checked_source_order(
+                Some(position.source_order),
+                "game text field",
+            )?)
+            .bind::<BigInt, _>(position.location.line)
+            .bind::<BigInt, _>(position.location.column)
             .execute(conn)?;
         }
         Ok(())

@@ -24,6 +24,38 @@ pub struct Game {
     archives: Vec<Archive>,
     device_refs: Vec<String>,
     child_locations: Vec<RecordLocation>,
+    text_positions: Vec<GameTextPosition>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(i64)]
+pub enum GameTextField {
+    Description,
+    Year,
+    Manufacturer,
+}
+
+impl GameTextField {
+    fn from_element_name(name: &str) -> Option<Self> {
+        match name {
+            "description" => Some(Self::Description),
+            "year" => Some(Self::Year),
+            "manufacturer" => Some(Self::Manufacturer),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub(crate) const fn database_value(self) -> i64 {
+        self as i64
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GameTextPosition {
+    pub field: GameTextField,
+    pub source_order: usize,
+    pub location: RecordLocation,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -93,6 +125,12 @@ impl Game {
             .ok()
     }
 
+    /// Recognized scalar text elements in source order, including empty values.
+    #[must_use]
+    pub fn text_positions(&self) -> &[GameTextPosition] {
+        &self.text_positions
+    }
+
     pub(crate) fn from_xml(element: &Element) -> crate::Result<Self> {
         let mut device_refs = Vec::new();
         let mut comments = Vec::new();
@@ -126,6 +164,17 @@ impl Game {
         }
         Ok(Self {
             child_locations: element.children().map(|child| child.location).collect(),
+            text_positions: element
+                .children()
+                .enumerate()
+                .filter_map(|(source_order, child)| {
+                    GameTextField::from_element_name(&child.name).map(|field| GameTextPosition {
+                        field,
+                        source_order,
+                        location: child.location,
+                    })
+                })
+                .collect(),
             name: element.required_attribute("name")?,
             sourcefile: element.attributes.get("sourcefile").cloned(),
             isbios: enum_attribute(element, "isbios", "no", &["yes", "no"])?,
@@ -135,9 +184,9 @@ impl Game {
             sampleof: element.attributes.get("sampleof").cloned(),
             board: element.attributes.get("board").cloned(),
             rebuildto: element.attributes.get("rebuildto").cloned(),
-            description: element.child_text("description")?,
-            year: element.child_text("year")?,
-            manufacturer: element.child_text("manufacturer")?,
+            description: element.child_text_preserved("description")?,
+            year: element.child_text_preserved("year")?,
+            manufacturer: element.child_text_preserved("manufacturer")?,
             comments,
             releases,
             bios_sets,

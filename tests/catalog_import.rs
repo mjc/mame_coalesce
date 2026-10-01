@@ -5481,7 +5481,7 @@ fn malformed_record_creates_failed_run_without_hiding_prior_snapshot()
     let malformed_path = directory.path().join("malformed-record.dat");
     std::fs::write(
         &malformed_path,
-        br#"<datafile><header><name>Catalog A</name></header><game name="broken"><rom name="bad.bin" size="8" sha1="not-hex"/></game></datafile>"#,
+        br#"<datafile><header><name>Catalog A</name></header><game name="broken"><rom name="bad.bin" size="8" sha1="not-hex"/><rom size="1"/></game></datafile>"#,
     )?;
     let failed = app::import_catalog(
         &database,
@@ -5502,7 +5502,11 @@ fn malformed_record_creates_failed_run_without_hiding_prior_snapshot()
     let diagnostic =
         sql_query("SELECT diagnostic AS value FROM import_runs WHERE status = 'failed'")
             .get_result::<NullableTextRow>(&mut connection)?;
-    assert!(diagnostic.value.is_some());
+    assert!(
+        diagnostic.value.is_some_and(|value| {
+            value.contains("missing required \"name\" attribute on <rom>")
+        })
+    );
     let failed_run_key =
         sql_query("SELECT run_key AS value FROM import_runs WHERE status = 'failed'")
             .get_result::<TextRow>(&mut connection)?

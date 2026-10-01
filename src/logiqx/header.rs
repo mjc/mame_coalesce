@@ -20,6 +20,53 @@ pub struct Header {
     romcenter: Option<RomCenterOptions>,
     #[serde(skip)]
     child_locations: Vec<RecordLocation>,
+    #[serde(skip)]
+    text_positions: Vec<HeaderTextPosition>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(i64)]
+pub enum HeaderTextField {
+    Name,
+    Description,
+    Category,
+    Version,
+    Date,
+    Author,
+    Email,
+    Homepage,
+    Url,
+    Comment,
+}
+
+impl HeaderTextField {
+    fn from_element_name(name: &str) -> Option<Self> {
+        match name {
+            "name" => Some(Self::Name),
+            "description" => Some(Self::Description),
+            "category" => Some(Self::Category),
+            "version" => Some(Self::Version),
+            "date" => Some(Self::Date),
+            "author" => Some(Self::Author),
+            "email" => Some(Self::Email),
+            "homepage" => Some(Self::Homepage),
+            "url" => Some(Self::Url),
+            "comment" => Some(Self::Comment),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub(crate) const fn database_value(self) -> i64 {
+        self as i64
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HeaderTextPosition {
+    pub field: HeaderTextField,
+    pub source_order: usize,
+    pub location: RecordLocation,
 }
 
 #[derive(Clone, Debug)]
@@ -179,8 +226,7 @@ impl RomCenterOptions {
 impl Header {
     pub(crate) fn from_xml(element: &Element) -> crate::Result<Self> {
         let name = element
-            .child_text("name")?
-            .filter(|name| !name.is_empty())
+            .child_text_preserved("name")?
             .ok_or_else(|| crate::Error::XmlValidation("missing required <header><name>".into()))?;
         let mut clrmamepro = None;
         let mut romcenter = None;
@@ -209,18 +255,31 @@ impl Header {
         }
         Ok(Self {
             name,
-            description: element.child_text("description")?,
-            version: element.child_text("version")?,
-            date: element.child_text("date")?,
-            author: element.child_text("author")?,
-            email: element.child_text("email")?,
-            homepage: element.child_text("homepage")?,
-            url: element.child_text("url")?,
-            comment: element.child_text("comment")?,
-            category: element.child_text("category")?,
+            description: element.child_text_preserved("description")?,
+            version: element.child_text_preserved("version")?,
+            date: element.child_text_preserved("date")?,
+            author: element.child_text_preserved("author")?,
+            email: element.child_text_preserved("email")?,
+            homepage: element.child_text_preserved("homepage")?,
+            url: element.child_text_preserved("url")?,
+            comment: element.child_text_preserved("comment")?,
+            category: element.child_text_preserved("category")?,
             clrmamepro,
             romcenter,
             child_locations: element.children().map(|child| child.location).collect(),
+            text_positions: element
+                .children()
+                .enumerate()
+                .filter_map(|(source_order, child)| {
+                    HeaderTextField::from_element_name(&child.name).map(|field| {
+                        HeaderTextPosition {
+                            field,
+                            source_order,
+                            location: child.location,
+                        }
+                    })
+                })
+                .collect(),
         })
     }
 
@@ -232,6 +291,12 @@ impl Header {
                 (child.line, child.column)
             })
             .ok()
+    }
+
+    /// Recognized scalar text elements in source order, including empty values.
+    #[must_use]
+    pub fn text_positions(&self) -> &[HeaderTextPosition] {
+        &self.text_positions
     }
 
     /// Get a reference to the header's name.

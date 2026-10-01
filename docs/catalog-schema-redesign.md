@@ -488,7 +488,8 @@ producer's repository at commit
 `ab86446ee415761077dcec602c0a54cf0088d84d`). It allows an optional header followed
 by one or more games. When present, the header requires name, description,
 version and author in its declared sequence; each game requires description.
-This differs from the current parser's mandatory header and optional values.
+The default compatibility parser permits headerless catalogs and sparse native
+values; it is not a strict validator of the DTD sequence and requiredness.
 
 | Native Logiqx relation | Declared fields/cardinality |
 |---|---|
@@ -510,10 +511,28 @@ release/BIOS/ROM/disk/sample/archive families in the declared order. Fixed optio
 enums are checked against the DTD; no app policy silently rewrites the source
 settings. Current accepted file-name/SHA-1 metadata, ROM serial fields and
 device references are outside this pinned DTD and belong to an explicitly named
-compatible dialect if retained as supported input. The current baseline adapter
-also lacks typed releases, BIOS sets, disk/sample/archive and option blocks and
-does not materialize all Logiqx defaults; those are coverage tasks, not merely
-schema-size optimizations.
+compatible dialect if retained as supported input. The implementation now has
+native releases, BIOS sets, disk/sample/archive and option blocks, with
+explicit-versus-default presence. Complete strict grammar and field-witness
+coverage remain open; these tables alone do not establish DTD conformance.
+
+The default interpretation is named `logiqx-declared-text-compat-v1`. ROM size,
+CRC, MD5 and SHA-1, and disk MD5/SHA-1 retain their declared text on the native
+claim. Missing, empty and uninterpretable values remain distinct. Numeric size
+is a virtual projection only for ASCII decimal values within SQLite's signed
+integer range; usable digests require exact-width ASCII hex. Derived state
+views classify declarations without storing another copy. Any uninterpretable
+ROM size/digest prevents shared-file UUID assignment before registry mutation;
+independently usable assertions remain queryable. Disk-data evidence cannot
+assign a whole-container UUID, including through direct publication writes.
+
+`logiqx_header_text_positions` and `logiqx_game_text_positions` hold closed field
+codes, source order and location only; scalar values stay in their native fixed
+columns. Publication requires exactly one position for every present scalar,
+including empty text. History ranks these fields with native option/media
+children, ignoring vendor-only gaps but detecting cross-family order changes.
+PCDATA boundary whitespace is preserved rather than trimmed. Originals remain
+external; none of these relations store XML documents or catch-all values.
 
 ClrMamePro's own documentation defines listinfo tags and examples, not a complete
 DTD-equivalent grammar. Its documented tag order/case rules differ from XML.

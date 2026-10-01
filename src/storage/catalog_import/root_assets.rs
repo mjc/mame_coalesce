@@ -138,16 +138,17 @@ fn insert_logiqx(
     }
     let statement = format!(
         "INSERT INTO {} (occurrence_id,name,evidence_scope,evidence_provenance,merge_name, \
+         md5_text,sha1_text, \
          dump_status,status_was_present,source_order,source_line,source_column{}) \
-         VALUES (?,?,?,'source_declared',?,?,?,?,?,?{})",
+         VALUES (?,?,?,'source_declared',?,?,?,?,?,?,?,?{})",
         kind.table(),
         if matches!(kind, RootClaimKind::LogiqxRom) {
-            ",size_text,serial,date"
+            ",size_text,crc_text,serial,date"
         } else {
             ""
         },
         if matches!(kind, RootClaimKind::LogiqxRom) {
-            ",?,?,?"
+            ",?,?,?,?"
         } else {
             ""
         },
@@ -157,6 +158,8 @@ fn insert_logiqx(
         .bind::<Text, _>(&asset.name)
         .bind::<Text, _>(asset.evidence_scope)
         .bind::<Nullable<Text>, _>(asset.merge.as_deref())
+        .bind::<Nullable<Text>, _>(facts.md5_text.as_deref())
+        .bind::<Nullable<Text>, _>(facts.sha1_text.as_deref())
         .bind::<Text, _>(asset.dump_status.as_deref().unwrap_or("good"))
         .bind::<diesel::sql_types::Bool, _>(facts.status_was_present)
         .bind::<BigInt, _>(facts.source_order)
@@ -165,6 +168,7 @@ fn insert_logiqx(
     if matches!(kind, RootClaimKind::LogiqxRom) {
         query
             .bind::<Nullable<Text>, _>(facts.size_text.as_deref())
+            .bind::<Nullable<Text>, _>(facts.crc_text.as_deref())
             .bind::<Nullable<Text>, _>(asset.serial.as_deref())
             .bind::<Nullable<Text>, _>(asset.date.as_deref())
             .execute(conn)?;

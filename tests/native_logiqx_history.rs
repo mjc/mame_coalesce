@@ -370,7 +370,7 @@ fn native_cross_family_swaps_change_metadata_and_media_order() -> TestResult {
         let change = &record.requirement_changes[0];
         assert_eq!(change.asset_name, name);
         assert_evidence_change(change);
-        for (evidence, order) in [(&change.previous, 1), (&change.current, 0)] {
+        for (evidence, order) in [(&change.previous, 2), (&change.current, 1)] {
             assert_eq!(
                 evidence
                     .as_ref()
@@ -402,7 +402,7 @@ fn rom_source_order_changes_evidence_without_changing_game_metadata() -> TestRes
     assert!(!record.metadata_changed);
     assert!(!record.regrouped);
     assert_eq!(record.requirement_changes.len(), 2);
-    for (name, previous_order, current_order) in [("first.bin", 0, 1), ("second.bin", 1, 0)] {
+    for (name, previous_order, current_order) in [("first.bin", 1, 2), ("second.bin", 2, 1)] {
         let change = record
             .requirement_changes
             .iter()

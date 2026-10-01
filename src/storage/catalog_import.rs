@@ -220,8 +220,18 @@ struct SnapshotAsset {
 
 struct LogiqxAssetAttributes {
     size_text: Option<String>,
+    crc_text: Option<String>,
+    md5_text: Option<String>,
+    sha1_text: Option<String>,
+    identity_eligibility: SourceIdentityEligibility,
     status_was_present: bool,
     source_order: i64,
+}
+
+#[derive(Clone, Copy)]
+enum SourceIdentityEligibility {
+    Usable,
+    UninterpretedDeclaration,
 }
 
 impl SnapshotAsset {
@@ -246,6 +256,14 @@ impl SnapshotAsset {
             mame_attributes: None,
             logiqx_attributes: Some(LogiqxAssetAttributes {
                 size_text: rom.size_text().map(str::to_owned),
+                crc_text: rom.crc_text().map(str::to_owned),
+                md5_text: rom.md5_text().map(str::to_owned),
+                sha1_text: rom.sha1_text().map(str::to_owned),
+                identity_eligibility: if rom.has_uninterpreted_fields() {
+                    SourceIdentityEligibility::UninterpretedDeclaration
+                } else {
+                    SourceIdentityEligibility::Usable
+                },
                 status_was_present: rom.status_was_explicit(),
                 source_order,
             }),
@@ -503,6 +521,10 @@ fn logiqx_assets(
             mame_attributes: None,
             logiqx_attributes: Some(LogiqxAssetAttributes {
                 size_text: None,
+                crc_text: None,
+                md5_text: disk.md5_text().map(str::to_owned),
+                sha1_text: disk.sha1_text().map(str::to_owned),
+                identity_eligibility: SourceIdentityEligibility::Usable,
                 status_was_present: disk.status_was_explicit(),
                 source_order: logiqx_child_order(game, disk.location())?,
             }),
@@ -526,6 +548,10 @@ fn logiqx_assets(
             mame_attributes: None,
             logiqx_attributes: Some(LogiqxAssetAttributes {
                 size_text: None,
+                crc_text: None,
+                md5_text: None,
+                sha1_text: None,
+                identity_eligibility: SourceIdentityEligibility::Usable,
                 status_was_present: false,
                 source_order: logiqx_child_order(game, sample.location())?,
             }),
@@ -1109,12 +1135,15 @@ fn ensure_identities(
     sql_query(
         "INSERT INTO parser_interpretations \
          (interpretation_key, format, parser_name, parser_version, rules_version) \
-         VALUES (?, ?, 'mame_coalesce', ?, 'normalization-v1') \
+         VALUES (?, ?, 'mame_coalesce', ?, ?) \
          ON CONFLICT(interpretation_key) DO NOTHING",
     )
     .bind::<Text, _>(interpretation.as_str())
     .bind::<Text, _>(request.format.as_str())
     .bind::<Nullable<Text>, _>(Some(env!("CARGO_PKG_VERSION").to_owned()))
+    .bind::<Text, _>(ParserInterpretationKey::rules_version(
+        request.format.as_str(),
+    ))
     .execute(conn)?;
     Ok(())
 }
@@ -1231,7 +1260,13 @@ fn insert_asset_requirement(
     );
     // MAME listxml emits complete file size (output_rom/rom_file_size),
     // unlike software-list ROM entries, whose size is one load segment.
-    let resolution = if asset.role == "other" {
+    let resolution = if asset.role == "other"
+        || asset.logiqx_attributes.as_ref().is_some_and(|fields| {
+            matches!(
+                fields.identity_eligibility,
+                SourceIdentityEligibility::UninterpretedDeclaration
+            )
+        }) {
         ContentIdentityResolution::NoEligibleEvidence
     } else {
         resolve_content_identity(conn, size, digests)?
