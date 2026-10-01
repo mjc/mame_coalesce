@@ -416,9 +416,9 @@ fn manifest_logiqx_expectations_match_parsed_catalog_facts()
             .expected
             .ok_or_else(|| format!("missing expected facts for {}", fixture.id))?;
 
-        assert_eq!(parsed.header().name(), expected.name, "{}", fixture.id);
+        assert_eq!(parsed.header()?.name(), expected.name, "{}", fixture.id);
         assert_eq!(
-            parsed.header().version().map(String::as_str),
+            parsed.header()?.version().map(String::as_str),
             Some(expected.version.as_str()),
             "{}",
             fixture.id

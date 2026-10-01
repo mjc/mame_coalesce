@@ -1,8 +1,0 @@
-DROP TRIGGER relationship_reviews_are_immutable_insert;
-DROP TRIGGER relationship_reviews_are_immutable_delete;
-DROP TRIGGER relationship_reviews_are_immutable_update;
-DROP TRIGGER relationship_assertions_are_immutable_insert;
-DROP TRIGGER relationship_assertions_are_immutable_delete;
-DROP TRIGGER relationship_assertions_are_immutable_update;
-DROP TABLE relationship_reviews;
-DROP TABLE relationship_assertions;

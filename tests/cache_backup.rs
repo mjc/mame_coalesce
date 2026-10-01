@@ -1,10 +1,18 @@
 use assert_cmd::Command;
 use camino::Utf8PathBuf;
-use diesel::{Connection, RunQueryDsl, SqliteConnection, sql_query};
+use diesel::{
+    Connection, QueryableByName, RunQueryDsl, SqliteConnection, sql_query, sql_types::BigInt,
+};
 use mame_coalesce::database::Database;
 use predicates::str::contains;
 use std::path::PathBuf;
 use tempfile::tempdir;
+
+#[derive(QueryableByName)]
+struct CountRow {
+    #[diesel(sql_type = BigInt)]
+    count: i64,
+}
 
 fn utf8(path: PathBuf) -> Result<Utf8PathBuf, std::io::Error> {
     Utf8PathBuf::from_path_buf(path)
@@ -80,6 +88,41 @@ fn cache_backup_restore_and_integrity_are_available_from_the_cli()
         .assert()
         .failure();
     assert!(!invalid_cache.exists());
+
+    Ok(())
+}
+
+#[test]
+fn integrity_uses_authoritative_ddl_without_diesel_migration_metadata()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let cache = utf8(directory.path().join("cache.sqlite"))?;
+    Database::open(&cache)?;
+
+    let mut connection = SqliteConnection::establish(cache.as_str())?;
+    let migration_tables = sql_query(
+        "SELECT COUNT(*) AS count FROM sqlite_schema \
+         WHERE type = 'table' AND name = '__diesel_schema_migrations'",
+    )
+    .get_result::<CountRow>(&mut connection)?
+    .count;
+    let authoritative_tables = sql_query(
+        "SELECT COUNT(*) AS count FROM sqlite_schema \
+         WHERE type = 'table' AND name = 'snapshot_publications'",
+    )
+    .get_result::<CountRow>(&mut connection)?
+    .count;
+    assert_eq!(migration_tables, 0);
+    assert_eq!(authoritative_tables, 1);
+
+    sql_query("DROP TABLE snapshot_publications").execute(&mut connection)?;
+    drop(connection);
+
+    Command::cargo_bin("mame_coalesce")?
+        .args(["--cache", cache.as_str(), "cache", "integrity"])
+        .assert()
+        .failure()
+        .stdout(contains("schema"));
 
     Ok(())
 }

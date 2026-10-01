@@ -1,5 +1,0 @@
-DROP TRIGGER legacy_document_payloads_are_immutable_delete;
-DROP TRIGGER legacy_document_payloads_are_immutable_update;
-DROP TRIGGER legacy_document_payloads_reject_existing_key;
-DROP TRIGGER legacy_document_payloads_require_legacy_document;
-DROP TABLE legacy_document_payloads;

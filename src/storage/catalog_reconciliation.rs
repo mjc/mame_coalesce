@@ -201,45 +201,30 @@ fn software_requirements(
     snapshot: &SnapshotKey,
 ) -> crate::Result<Vec<ExpectedAssetRequirement>> {
     let rows = sql_query(
-        "SELECT occurrence.list_name, occurrence.item_name, occurrence.part_name, \
-         occurrence.area_kind, occurrence.area_name, occurrence.area_order, \
-         occurrence.component_order, occurrence.component_kind, occurrence.component_name, \
-         occurrence.size, \
-         (SELECT digest.digest FROM software_component_digest_assertions AS assertion \
+        "SELECT component.list_name, component.item_name, component.part_name, \
+         component.area_kind, component.area_name, component.area_order, \
+         component.component_order, component.component_kind, component.component_name, \
+         component.size, \
+         (SELECT digest.digest FROM occurrence_digest_assertions AS assertion \
           JOIN digest_values AS digest USING (digest_id) \
-          WHERE assertion.snapshot_key = occurrence.snapshot_key \
-            AND assertion.list_name = occurrence.list_name \
-            AND assertion.item_name = occurrence.item_name \
-            AND assertion.part_name = occurrence.part_name \
-            AND assertion.area_order = occurrence.area_order \
-            AND assertion.component_order = occurrence.component_order \
-            AND assertion.scope = occurrence.evidence_scope AND digest.algorithm = 'crc32') AS crc, \
-         (SELECT digest.digest FROM software_component_digest_assertions AS assertion \
+          WHERE assertion.occurrence_id = component.occurrence_id \
+            AND assertion.scope = component.evidence_scope AND digest.algorithm = 'crc32') AS crc, \
+         (SELECT digest.digest FROM occurrence_digest_assertions AS assertion \
           JOIN digest_values AS digest USING (digest_id) \
-          WHERE assertion.snapshot_key = occurrence.snapshot_key \
-            AND assertion.list_name = occurrence.list_name \
-            AND assertion.item_name = occurrence.item_name \
-            AND assertion.part_name = occurrence.part_name \
-            AND assertion.area_order = occurrence.area_order \
-            AND assertion.component_order = occurrence.component_order \
-            AND assertion.scope = occurrence.evidence_scope AND digest.algorithm = 'sha1') AS sha1, \
-         occurrence.evidence_scope, \
+          WHERE assertion.occurrence_id = component.occurrence_id \
+            AND assertion.scope = component.evidence_scope AND digest.algorithm = 'sha1') AS sha1, \
+         component.evidence_scope, \
          (SELECT CASE COUNT(DISTINCT assertion.provenance) \
                      WHEN 0 THEN 'source_declared' \
                      WHEN 1 THEN MIN(assertion.provenance) \
                      ELSE 'unknown' END \
-                   FROM software_component_digest_assertions AS assertion \
+                   FROM occurrence_digest_assertions AS assertion \
                    JOIN digest_values AS digest USING (digest_id) \
-                   WHERE assertion.snapshot_key = occurrence.snapshot_key \
-                     AND assertion.list_name = occurrence.list_name \
-                     AND assertion.item_name = occurrence.item_name \
-                     AND assertion.part_name = occurrence.part_name \
-                     AND assertion.area_order = occurrence.area_order \
-                     AND assertion.component_order = occurrence.component_order \
-                     AND assertion.scope = occurrence.evidence_scope \
+                   WHERE assertion.occurrence_id = component.occurrence_id \
+                     AND assertion.scope = component.evidence_scope \
                      AND digest.algorithm IN ('crc32', 'sha1')) AS evidence_provenance, \
-         occurrence.dump_status \
-         FROM software_component_occurrences AS occurrence WHERE occurrence.snapshot_key = ?",
+         component.dump_status \
+         FROM software_components AS component WHERE component.snapshot_key = ?",
     )
     .bind::<Text, _>(snapshot.as_str())
     .load::<SoftwareRequirementRow>(conn)?;

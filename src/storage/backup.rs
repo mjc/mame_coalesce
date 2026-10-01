@@ -1,5 +1,4 @@
 use std::{
-    collections::BTreeSet,
     fs::{self, File},
     io::{Read, copy},
     path::{Path, PathBuf},
@@ -9,16 +8,14 @@ use atomic_write_file::AtomicWriteFile;
 use camino::{Utf8Path, Utf8PathBuf};
 use diesel::{
     Connection, SqliteConnection,
-    migration::MigrationSource,
     prelude::*,
     sql_query,
     sql_types::{BigInt, Binary, Integer, Nullable, Text},
 };
-use diesel_migrations::MigrationHarness;
 use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
 
-use crate::{Error, Result, storage::db::MIGRATIONS};
+use crate::{Error, Result, storage::db::validate_database_schema};
 
 const BACKUP_APPLICATION_ID: i32 = 0x4d43_4231;
 const BACKUP_FORMAT_VERSION: i32 = 1;
@@ -104,18 +101,6 @@ struct RetainedObjectRow {
     byte_length: Option<i64>,
     #[diesel(sql_type = Nullable<Text>)]
     object_key: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, QueryableByName)]
-struct SchemaObject {
-    #[diesel(sql_type = Text)]
-    object_type: String,
-    #[diesel(sql_type = Text)]
-    name: String,
-    #[diesel(sql_type = Text)]
-    table_name: String,
-    #[diesel(sql_type = Nullable<Text>)]
-    sql: Option<String>,
 }
 
 #[derive(QueryableByName)]
@@ -503,7 +488,7 @@ fn check_connection(
         }
     }
 
-    if !check_migrations(conn, &mut report)? {
+    if !check_schema(conn, &mut report) {
         return Ok(report);
     }
     check_retained_documents(conn, &mut report)?;
@@ -511,80 +496,15 @@ fn check_connection(
     Ok(report)
 }
 
-fn check_migrations(conn: &mut SqliteConnection, report: &mut IntegrityReport) -> Result<bool> {
-    let expected = <_ as MigrationSource<diesel::sqlite::Sqlite>>::migrations(&MIGRATIONS)
-        .map_err(|error| backup_error(format!("embedded migration list failed: {error}")))?
-        .into_iter()
-        .map(|migration| migration.name().version().to_string())
-        .collect::<std::collections::BTreeSet<_>>();
-    let Some(_migration_table) = sql_query(
-        "SELECT name AS value FROM sqlite_schema \
-         WHERE type = 'table' AND name = '__diesel_schema_migrations'",
-    )
-    .get_result::<TextValue>(conn)
-    .optional()
-    .map_err(|error| backup_error(format!("could not inspect migration schema: {error}")))?
-    else {
+fn check_schema(conn: &mut SqliteConnection, report: &mut IntegrityReport) -> bool {
+    if let Err(error) = validate_database_schema(conn) {
         push_issue(
             &mut report.durable_issues,
-            "database is missing its schema migration history".to_owned(),
+            format!("database schema validation failed: {error}"),
         );
-        return Ok(false);
-    };
-    let applied =
-        sql_query("SELECT version AS value FROM __diesel_schema_migrations ORDER BY version")
-            .load::<TextValue>(conn)
-            .map_err(|error| backup_error(format!("could not read applied migrations: {error}")))?
-            .into_iter()
-            .map(|row| row.value)
-            .collect::<std::collections::BTreeSet<_>>();
-    if expected != applied {
-        push_issue(
-            &mut report.durable_issues,
-            "applied database migrations do not match this program's schema".to_owned(),
-        );
-        return Ok(false);
+        return false;
     }
-    let expected_schema = migrated_schema()?;
-    let actual_schema = schema_objects(conn)?;
-    if expected_schema != actual_schema {
-        let missing = expected_schema
-            .difference(&actual_schema)
-            .take(5)
-            .map(|object| format!("{}:{}", object.object_type, object.name))
-            .collect::<Vec<_>>();
-        let unexpected = actual_schema
-            .difference(&expected_schema)
-            .take(5)
-            .map(|object| format!("{}:{}", object.object_type, object.name))
-            .collect::<Vec<_>>();
-        push_issue(
-            &mut report.durable_issues,
-            format!(
-                "database schema does not match its applied migration history (missing: {missing:?}, unexpected: {unexpected:?})"
-            ),
-        );
-        return Ok(false);
-    }
-    Ok(true)
-}
-
-fn migrated_schema() -> Result<BTreeSet<SchemaObject>> {
-    let mut conn = SqliteConnection::establish(":memory:")
-        .map_err(|error| backup_error(format!("could not create schema reference: {error}")))?;
-    conn.run_pending_migrations(MIGRATIONS)
-        .map_err(|error| backup_error(format!("could not build schema reference: {error}")))?;
-    schema_objects(&mut conn)
-}
-
-fn schema_objects(conn: &mut SqliteConnection) -> Result<BTreeSet<SchemaObject>> {
-    let objects = sql_query(
-        "SELECT type AS object_type, name, tbl_name AS table_name, sql \
-         FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name, tbl_name",
-    )
-    .load::<SchemaObject>(conn)
-    .map_err(|error| backup_error(format!("could not inspect database schema: {error}")))?;
-    Ok(objects.into_iter().collect())
+    true
 }
 
 fn check_retained_documents(
@@ -1277,7 +1197,7 @@ mod tests {
     }
 
     #[test]
-    fn integrity_does_not_create_migration_metadata_in_an_unrecognized_database() -> Result<()> {
+    fn integrity_rejects_an_unrecognized_schema_without_writing_to_it() -> Result<()> {
         let directory = tempdir()?;
         let path = utf8(directory.path().join("unrecognized.sqlite"))?;
         let mut conn = connect_path(path.as_std_path())?;
@@ -1289,16 +1209,13 @@ mod tests {
             report
                 .durable_issues
                 .iter()
-                .any(|issue| issue.contains("migration"))
+                .any(|issue| issue.contains("schema"))
         );
         let mut conn = connect(&path)?;
-        let migration_tables = sql_query(
-            "SELECT COUNT(*) AS count FROM sqlite_schema \
-             WHERE type = 'table' AND name = '__diesel_schema_migrations'",
-        )
-        .get_result::<CountRow>(&mut conn)?
-        .count;
-        assert_eq!(migration_tables, 0);
+        let tables = sql_query("SELECT COUNT(*) AS count FROM sqlite_schema WHERE type = 'table'")
+            .get_result::<CountRow>(&mut conn)?
+            .count;
+        assert_eq!(tables, 1);
         Ok(())
     }
 
@@ -1314,7 +1231,7 @@ mod tests {
     }
 
     #[test]
-    fn integrity_rejects_a_schema_that_disagrees_with_migration_history() -> Result<()> {
+    fn integrity_rejects_a_schema_that_disagrees_with_authoritative_ddl() -> Result<()> {
         let directory = tempdir()?;
         let source = utf8(directory.path().join("source.sqlite"))?;
         let backup = utf8(directory.path().join("backup.sqlite"))?;

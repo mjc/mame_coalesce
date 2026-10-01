@@ -42,20 +42,20 @@ pub struct New<'a> {
 }
 
 impl New<'_> {
-    #[must_use]
-    pub fn from_logiqx(l_data_file: &logiqx::DataFile) -> New<'_> {
-        New {
+    pub fn from_logiqx(l_data_file: &logiqx::DataFile) -> crate::Result<New<'_>> {
+        let header = l_data_file.header()?;
+        Ok(New {
             build: l_data_file.build().map(str::to_owned),
             debug: l_data_file.debug().map(str::to_owned),
             file_name: l_data_file.file_name().map(str::to_owned),
-            name: l_data_file.header().name().to_owned(),
-            description: l_data_file.header().description().cloned(),
-            version: l_data_file.header().version().cloned(),
-            author: l_data_file.header().author().cloned(),
-            homepage: l_data_file.header().homepage().cloned(),
-            url: l_data_file.header().url().cloned(),
+            name: header.name().to_owned(),
+            description: header.description().cloned(),
+            version: header.version().cloned(),
+            author: header.author().cloned(),
+            homepage: header.homepage().cloned(),
+            url: header.url().cloned(),
             sha1: l_data_file.sha1(),
-        }
+        })
     }
 
     #[must_use]

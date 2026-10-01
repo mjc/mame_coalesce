@@ -489,22 +489,14 @@ fn load_published_disk_requirements(
         sql_query(
             "SELECT component.item_name AS set_name, component.component_name AS asset_name, \
                 (SELECT digest.digest \
-                 FROM software_component_digest_assertions AS assertion \
+                 FROM occurrence_digest_assertions AS assertion \
                  JOIN digest_values AS digest USING (digest_id) \
-                 WHERE assertion.snapshot_key = component.snapshot_key \
-                   AND assertion.list_name = component.list_name \
-                   AND assertion.item_name = component.item_name \
-                   AND assertion.part_name = component.part_name \
-                   AND assertion.area_order = component.area_order \
-                   AND assertion.component_order = component.component_order \
+                 WHERE assertion.occurrence_id = component.occurrence_id \
                    AND assertion.scope = component.evidence_scope \
                    AND digest.algorithm = 'sha1') AS sha1, \
                 component.evidence_scope, NULL AS merge_name, \
                 component.list_name, component.item_name, component.part_name \
-         FROM software_component_occurrences AS component \
-         JOIN software_items AS item \
-           ON item.snapshot_key = component.snapshot_key \
-          AND item.list_name = component.list_name AND item.item_name = component.item_name \
+         FROM software_components AS component \
          WHERE component.snapshot_key = ? AND component.component_kind = 'disk' \
          ORDER BY component.list_name, component.item_name, component.part_name, \
                   component.area_order, component.component_order",
@@ -520,10 +512,12 @@ fn load_published_disk_requirements(
     .load::<DiskParentRow>(&mut conn)?;
     parent_rows.extend(
         sql_query(
-            "SELECT dependency.list_name AS list, dependency.item_name AS child, \
-             dependency.target_item_name AS parent \
+            "SELECT namespace.source_name AS list, record.source_name AS child, \
+             dependency.target_name AS parent \
              FROM software_item_dependencies AS dependency \
-             WHERE dependency.snapshot_key = ? AND dependency.dependency_kind = 'clone_of'",
+             JOIN records AS record USING (record_id) \
+             JOIN record_namespaces AS namespace USING (namespace_id) \
+             WHERE namespace.snapshot_key = ? AND dependency.dependency_kind = 'clone_of'",
         )
         .bind::<Text, _>(&snapshot.snapshot_key)
         .load::<DiskParentRow>(&mut conn)?,

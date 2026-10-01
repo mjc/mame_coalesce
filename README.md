@@ -76,18 +76,21 @@ mame_coalesce --cache /tmp/coalesce.db cache restore /path/to/coalesce.backup.sq
 mame_coalesce --cache /tmp/coalesce.db cache restore /path/to/coalesce.backup.sqlite --replace-existing
 ```
 
-Backups are standalone SQLite snapshots made with SQLite `VACUUM INTO`. Format
-version 1 is marked in the SQLite header and includes the complete cache file,
-including retained source bytes, acquisitions, catalog snapshots, assertions,
-reviews, diagnostics, and rebuildable inventory. Backup creation never replaces
-an existing backup file. Restore validates a same-directory staging copy before
-publishing it; an existing cache requires `--replace-existing`, and restore is
-refused while the cache is open by this application or SQLite sidecar files
-exist. Cache files with multiple hard links are refused because they bypass
-application locking. The backup must have exactly the
-migration history embedded in the running program; no migrations are run during
-validation or restore. A future schema requires a compatible program version or
-a new explicit format policy. `cache integrity` never modifies the inspected
+Backups consist of a SQLite snapshot made with `VACUUM INTO` and an adjacent
+`<backup-path>.documents` directory containing retained source objects. Keep
+both together when moving a backup; source bytes are never stored in SQLite.
+Format version 1 is marked in the SQLite header and includes the cache database,
+acquisitions, catalog snapshots, assertions, reviews, diagnostics, and
+rebuildable inventory. Backup creation never replaces an existing backup file.
+Restore validates a same-directory staging copy against the running program's
+bundled DDL before publishing it; an existing cache requires
+`--replace-existing`, and restore is refused while the cache is open by this
+application or SQLite sidecar files exist. Cache files with multiple hard links
+are refused because they bypass application locking. New databases are created
+from the bundled DDL, and existing databases are accepted only when their
+stored schema digest and SQLite schema objects match it. The application does
+not upgrade or repair a different schema; create a new cache and reimport its
+catalogs when the schema changes. `cache integrity` never modifies the inspected
 SQLite database; backup, restore, and integrity operations may create adjacent
 `.lock` files on both the cache and backup paths. It reports durable
 catalog/document failures separately from rebuildable inventory problems.
@@ -138,8 +141,8 @@ offer the same choice.
 
 `audit` has no output destination and never invokes an output writer. It uses
 an already-imported DAT and cached source observations by default and labels
-them as cached rather than freshly checked bytes. Opening the cache may apply
-database migrations; that does not refresh source observations. `--refresh`
+them as cached rather than freshly checked bytes. Opening the cache validates
+its schema against the bundled DDL; that does not refresh source observations. `--refresh`
 explicitly rescans and persists the selected source root before resolving;
 `--verify-selected` instead reads and verifies only the resolved source members,
 reports stale or unavailable selections, and leaves the inventory unchanged;
@@ -247,7 +250,7 @@ Use `--max-roms 0` to include every collected ROM entry.
 
 ## Maintenance
 
-For module boundaries, compatibility and cache-migration behavior, change
+For module boundaries, compatibility and cache behavior, change
 recipes, and refactor test/measurement evidence, see
 [`docs/architecture.md`](docs/architecture.md).
 
@@ -372,28 +375,38 @@ manually:
 devenv --profile profiling shell -- sh -c 'perf script 2>/dev/null | bash scripts/parse_perfdata'
 ```
 
-## Verification
+## Test coverage
 
-Required local gate: `devenv test`. The integration suite generates and reads
-synthetic 7z archives through `r7z`, pinned at revision
-`bfef3198696add8045ad34581dd977d671ae9daa`; it does not require an external
-`7z` executable. This verifies the pinned library's writer/reader and the
-application read path, not compatibility with every external encoder or codec.
-Independent cross-implementation checks are outside the default gate. To run the
-ignored interoperability test with a compatible executable installed, set
-`MAME_COALESCE_7Z` if its name is not `7z`:
+Run the complete repository gate with `devenv test`. The database
+and catalog regressions cover these behaviors:
+
+- `database_initialization` checks creation from bundled DDL, acceptance of a
+  matching schema, and rejection of schema drift without repair.
+- `native_catalog_model` checks scoped record identity and rejects occurrences
+  whose claim kind or content identity conflicts with their native record.
+- `logiqx_native_model` checks parser defaults and repeated ROM, disk, sample,
+  release and BIOS-set fields, plus headerless native imports and snapshot diffs.
+- `native_mame_specification` checks ordered machine specification facts and
+  their stored field values.
+- `clrmamepro_native_model` checks native CMP header directives, set/sample
+  facts, and ROM date, serial, and status provenance.
+- `software_native_model` checks shared file UUIDs without confusing load
+  segments with file lengths, area-local file owners, and scope-correct digests.
+- `catalog_import` exercises public imports, including format-specific facts,
+  idempotent publication, relationships, diagnostics, and equivalence between
+  native and shared catalog fields.
+- `cache_backup` checks backup and restore behavior against the current schema.
+
+The integration suite also generates and reads synthetic 7z archives through
+`r7z`, pinned at revision `bfef3198696add8045ad34581dd977d671ae9daa`; it does not
+require an external `7z` executable. This checks the pinned library's
+writer/reader and the application read path, not compatibility with every
+external encoder or codec. Independent cross-implementation checks are outside
+the default gate. To run the ignored interoperability test with a compatible
+executable installed, set `MAME_COALESCE_7Z` if its name is not `7z`:
 
 ```sh
 devenv shell -- env MAME_COALESCE_7Z=7z cargo test --locked --test integration external_7z_extracts_r7z_builder_archive -- --ignored
-```
-
-The component commands are:
-
-```sh
-devenv shell -- shellcheck scripts/fetch_public_domain_test_data.sh scripts/profile_flamegraph.sh scripts/benchmark_run.sh scripts/generate_synthetic_benchmark_corpus.sh scripts/parse_flamegraph scripts/parse_perfdata
-devenv shell -- cargo fmt --check
-devenv shell -- cargo test --locked
-devenv shell -- cargo clippy --locked --all-targets --all-features -- -D warnings
 ```
 
 `cargo package` is intentionally not part of the normal local or CI gate while

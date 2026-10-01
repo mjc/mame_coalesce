@@ -96,7 +96,6 @@ camino = { version = "1.2", features = ["serde1"] }
 walkdir = "2.5"
 
 diesel = { version = "2.3", features = ["sqlite", "r2d2", "chrono"] }
-diesel_migrations = "2.3"
 chrono = "0.4.44"
 
 infer = "0.19"

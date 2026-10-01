@@ -760,10 +760,12 @@ fn software_reconciliation_provenance_uses_only_reported_digest_scope()
         .ok_or("right snapshot missing")?;
     let mut conn = SqliteConnection::establish(database_path.as_str())?;
     sql_query(
-        "INSERT INTO software_component_digest_assertions \
-         SELECT snapshot_key, list_name, item_name, part_name, area_order, component_order, \
-                digest_id, 'track', 'computed' \
-         FROM software_component_digest_assertions WHERE snapshot_key = ?",
+        "INSERT INTO occurrence_digest_assertions \
+         (occurrence_id, digest_id, scope, provenance) \
+         SELECT assertion.occurrence_id, assertion.digest_id, 'track', 'computed' \
+         FROM occurrence_digest_assertions AS assertion \
+         JOIN software_components AS component USING (occurrence_id) \
+         WHERE component.snapshot_key = ?",
     )
     .bind::<Text, _>(left.as_str())
     .execute(&mut conn)?;
@@ -778,11 +780,12 @@ fn software_reconciliation_provenance_uses_only_reported_digest_scope()
     );
 
     sql_query(
-        "INSERT INTO software_component_digest_assertions \
-         SELECT snapshot_key, list_name, item_name, part_name, area_order, component_order, \
-                digest_id, scope, 'legacy_cache' \
-         FROM software_component_digest_assertions \
-         WHERE snapshot_key = ? AND provenance = 'source_declared'",
+        "INSERT INTO occurrence_digest_assertions \
+         (occurrence_id, digest_id, scope, provenance) \
+         SELECT assertion.occurrence_id, assertion.digest_id, assertion.scope, 'legacy_cache' \
+         FROM occurrence_digest_assertions AS assertion \
+         JOIN software_components AS component USING (occurrence_id) \
+         WHERE component.snapshot_key = ? AND assertion.provenance = 'source_declared'",
     )
     .bind::<Text, _>(left.as_str())
     .execute(&mut conn)?;

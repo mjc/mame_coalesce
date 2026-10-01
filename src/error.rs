@@ -118,8 +118,8 @@ pub enum Error {
     #[error("ROM size cannot be stored in SQLite: {0}")]
     InvalidRomSize(u64),
 
-    #[error("Migration error: {0}")]
-    Migration(String),
+    #[error("Database schema error: {0}")]
+    DatabaseSchema(String),
 
     #[error("cache backup error: {0}")]
     CacheBackup(String),

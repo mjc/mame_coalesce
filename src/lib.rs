@@ -37,7 +37,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub mod test_helpers {
     use crate::storage::db::{Pool, create_db_pool};
 
-    /// Create an in-memory `SQLite` pool with migrations applied, suitable for unit tests.
+    /// Create an in-memory `SQLite` pool from the current schema for unit tests.
     pub fn in_memory_pool() -> crate::Result<Pool> {
         create_db_pool(":memory:")
     }

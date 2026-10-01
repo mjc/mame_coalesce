@@ -5,7 +5,7 @@ use fmmap::MmapFileExt;
 use quick_xml::events::Event;
 
 use super::game::Game;
-use super::header::Header;
+use super::header::{ClrMameProOptions, Header, RomCenterOptions};
 
 use crate::{
     document_input, hashes,
@@ -17,7 +17,7 @@ pub struct DataFile {
     file_name: Option<String>,
     build: Option<String>,
     debug: Option<String>, // bool
-    header: Header,
+    header: Option<Header>,
     sha1: Option<Vec<u8>>,
     games: Vec<Game>,
 }
@@ -85,6 +85,15 @@ impl DataFile {
             collect_unsupported_attributes(&root, None, &mut source_map);
             let build = root.attributes.get("build").cloned();
             let debug = root.attributes.get("debug").cloned();
+            if root
+                .attributes
+                .get("debug")
+                .is_some_and(|value| !["yes", "no"].contains(&value.as_str()))
+            {
+                return Err(crate::Error::XmlValidation(
+                    "invalid debug value on <datafile>".into(),
+                ));
+            }
             let mut header = None;
             let mut file_name = None;
             let mut sha1 = None;
@@ -120,7 +129,8 @@ impl DataFile {
                     let Some(node) = node else { continue };
                     match local_name(&node.name) {
                         "header" => {
-                            if header.replace(Header::from_xml(&node)?).is_some() {
+                            let parsed_header = Header::from_xml(&node)?;
+                            if header.replace(parsed_header).is_some() {
                                 return Err(crate::Error::XmlValidation(
                                     "duplicate <header> in <datafile>".into(),
                                 ));
@@ -137,28 +147,13 @@ impl DataFile {
                         }
                         "file_name" => set_once(&mut file_name, node.direct_text(), "file_name")?,
                         "sha1" => {
-                            let value = node.direct_text();
-                            let value = value.trim();
-                            let digest = hex::decode(value).map_err(|error| {
-                                crate::Error::XmlValidation(format!(
-                                    "invalid datafile SHA1: {error}"
-                                ))
-                            })?;
-                            if digest.len() != 20 {
-                                return Err(crate::Error::XmlValidation(
-                                    "datafile SHA1 must be 20 bytes".into(),
-                                ));
-                            }
-                            set_once(&mut sha1, digest, "sha1")?;
+                            set_once(&mut sha1, parse_datafile_sha1(&node.direct_text())?, "sha1")?;
                         }
                         _ => {}
                     }
                 }
             }
             finish_document(reader, positions)?;
-            let header = header.ok_or_else(|| {
-                crate::Error::XmlValidation("missing required <datafile><header>".into())
-            })?;
             Ok((
                 Self {
                     file_name,
@@ -173,10 +168,44 @@ impl DataFile {
         })
     }
 
-    /// Get a reference to the data file's header.
+    /// Get a reference to the optional data file header.
     #[must_use]
-    pub const fn header(&self) -> &Header {
-        &self.header
+    pub const fn header_opt(&self) -> Option<&Header> {
+        self.header.as_ref()
+    }
+
+    /// Get a reference to the data file's header.
+    pub fn header(&self) -> crate::Result<&Header> {
+        self.header.as_ref().ok_or_else(|| {
+            crate::Error::XmlValidation("Logiqx data file is missing its header".to_owned())
+        })
+    }
+
+    #[must_use]
+    pub const fn clrmamepro_options_opt(&self) -> Option<&ClrMameProOptions> {
+        match &self.header {
+            Some(header) => header.clrmamepro_options(),
+            None => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn romcenter_options_opt(&self) -> Option<&RomCenterOptions> {
+        match &self.header {
+            Some(header) => header.romcenter_options(),
+            None => None,
+        }
+    }
+
+    /// Return the DTD-effective debug value.
+    #[must_use]
+    pub fn debug_effective(&self) -> &str {
+        self.debug.as_deref().unwrap_or("no")
+    }
+
+    #[must_use]
+    pub const fn debug_was_explicit(&self) -> bool {
+        self.debug.is_some()
     }
 
     /// Get a reference to the data file's games.
@@ -242,6 +271,17 @@ fn read_datafile_root(
         )));
     }
     Ok((root, empty))
+}
+
+fn parse_datafile_sha1(value: &str) -> crate::Result<Vec<u8>> {
+    let digest = hex::decode(value.trim())
+        .map_err(|error| crate::Error::XmlValidation(format!("invalid datafile SHA1: {error}")))?;
+    if digest.len() != 20 {
+        return Err(crate::Error::XmlValidation(
+            "datafile SHA1 must be 20 bytes".into(),
+        ));
+    }
+    Ok(digest)
 }
 
 fn set_once<T>(slot: &mut Option<T>, value: T, name: &str) -> crate::Result<()> {
@@ -401,20 +441,32 @@ mod tests {
     #[test]
     fn parse_simple_dat() -> Result<(), Box<dyn std::error::Error>> {
         let df = DataFile::from_reader(SIMPLE_DAT.as_bytes())?;
-        assert_eq!(df.header().name(), "Test Set");
+        assert_eq!(df.header()?.name(), "Test Set");
         assert_eq!(
-            df.header().description().map(std::string::String::as_str),
+            df.header()?.description().map(std::string::String::as_str),
             Some("Test Description")
         );
         assert_eq!(
-            df.header().version().map(std::string::String::as_str),
+            df.header()?.version().map(std::string::String::as_str),
             Some("1.0")
         );
         assert_eq!(
-            df.header().author().map(std::string::String::as_str),
+            df.header()?.author().map(std::string::String::as_str),
             Some("Tester")
         );
         assert_eq!(df.games().len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn missing_header_is_a_contextual_validation_error() -> Result<(), Box<dyn std::error::Error>> {
+        let data_file = DataFile::from_reader(b"<datafile/>".as_slice())?;
+
+        assert!(data_file.header_opt().is_none());
+        assert!(matches!(
+            data_file.header(),
+            Err(crate::Error::XmlValidation(message)) if message.contains("header")
+        ));
         Ok(())
     }
 
@@ -428,7 +480,7 @@ mod tests {
 
         let standard = br#"<!DOCTYPE datafile PUBLIC "-//Logiqx//DTD ROM Management Datafile//EN" "http://www.logiqx.com/Dats/datafile.dtd"><datafile><header><name>Standard</name></header></datafile>"#;
         assert_eq!(
-            DataFile::from_reader(standard.as_slice())?.header().name(),
+            DataFile::from_reader(standard.as_slice())?.header()?.name(),
             "Standard"
         );
         Ok(())
@@ -440,7 +492,7 @@ mod tests {
         let dat = br#"<?note <!DOCTYPE datafile [<!ENTITY fake "value">]?>
 <datafile><!-- <!ENTITY comment "ignored"> --><header><name>Test <![CDATA[& stuff <!ENTITY literal>]]></name></header></datafile>"#;
         let parsed = DataFile::from_reader(dat.as_slice())?;
-        assert_eq!(parsed.header().name(), "Test & stuff <!ENTITY literal>");
+        assert_eq!(parsed.header()?.name(), "Test & stuff <!ENTITY literal>");
         Ok(())
     }
 
@@ -540,7 +592,7 @@ mod tests {
                 },
             );
             let parsed = DataFile::from_reader(document_bytes.as_slice())?;
-            assert_eq!(parsed.header().name(), "Test Set");
+            assert_eq!(parsed.header()?.name(), "Test Set");
         }
         Ok(())
     }
@@ -660,12 +712,12 @@ mod tests {
   </header>
 </datafile>"#;
         let df = DataFile::from_reader(minimal.as_bytes())?;
-        assert_eq!(df.header().name(), "Minimal");
-        assert!(df.header().description().is_none());
-        assert!(df.header().version().is_none());
-        assert!(df.header().author().is_none());
-        assert!(df.header().homepage().is_none());
-        assert!(df.header().url().is_none());
+        assert_eq!(df.header()?.name(), "Minimal");
+        assert!(df.header()?.description().is_none());
+        assert!(df.header()?.version().is_none());
+        assert!(df.header()?.author().is_none());
+        assert!(df.header()?.homepage().is_none());
+        assert!(df.header()?.url().is_none());
         assert_eq!(df.games().len(), 0);
         Ok(())
     }
@@ -779,7 +831,7 @@ mod tests {
         if path.exists() {
             let df = DataFile::from_path(path)?;
             assert_eq!(
-                df.header().name(),
+                df.header()?.name(),
                 "Sega - Master System - Mark III Parent-Clone"
             );
             assert!(!df.games().is_empty());
@@ -808,7 +860,7 @@ mod tests {
 
         let path = Utf8Path::from_path(&path).ok_or("temporary path is not UTF-8")?;
         let data_file = DataFile::from_path(path)?;
-        assert_eq!(data_file.header().name(), "Large");
+        assert_eq!(data_file.header()?.name(), "Large");
         assert!(data_file.sha1().is_some());
         Ok(())
     }

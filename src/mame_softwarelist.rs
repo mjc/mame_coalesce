@@ -163,38 +163,6 @@ pub enum SoftwareComponent {
     Disk(SoftwareDisk),
 }
 
-impl SoftwareComponent {
-    pub const fn kind(&self) -> &'static str {
-        match self {
-            Self::Rom(_) => "rom",
-            Self::Disk(_) => "disk",
-        }
-    }
-
-    pub const fn is_file_declaration(&self) -> bool {
-        match self {
-            Self::Rom(rom) => !matches!(
-                rom.load,
-                Some(
-                    LoadInstruction::Reload
-                        | LoadInstruction::Fill
-                        | LoadInstruction::Continue
-                        | LoadInstruction::ReloadPlain
-                        | LoadInstruction::Ignore
-                )
-            ),
-            Self::Disk(_) => true,
-        }
-    }
-
-    pub const fn location(&self) -> RecordLocation {
-        match self {
-            Self::Rom(rom) => rom.location,
-            Self::Disk(disk) => disk.location,
-        }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SoftwareRom {
     pub name: Option<ComponentName>,

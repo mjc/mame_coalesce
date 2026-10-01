@@ -1,0 +1,1968 @@
+-- Direct-create schema. Never replay or upgrade historical databases.
+-- This initial baseline is being replaced with the reviewed format-specific model.
+CREATE TABLE database_schema (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    schema_digest BLOB NOT NULL CHECK (typeof(schema_digest) = 'blob' AND length(schema_digest) = 32)
+);
+
+CREATE TABLE acquisition_attempt_transport_headers (
+    attempt_key TEXT NOT NULL REFERENCES acquisition_attempts (attempt_key) ON DELETE RESTRICT,
+    header_order INTEGER NOT NULL CHECK (header_order >= 0),
+    name TEXT NOT NULL,
+    value TEXT NOT NULL,
+    PRIMARY KEY (attempt_key, header_order)
+) WITHOUT ROWID;
+CREATE TABLE acquisition_attempts (
+    attempt_key             TEXT PRIMARY KEY NOT NULL,
+    source_key              TEXT NOT NULL REFERENCES publishing_sources (source_key) ON DELETE RESTRICT,
+    source_uri              TEXT,
+    method                  TEXT,
+    attempted_at            DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    expected_sha256         BLOB CHECK (expected_sha256 IS NULL OR length(expected_sha256) = 32),
+    outcome                 TEXT NOT NULL CHECK (outcome IN ('retained', 'failed')),
+    verification_status     TEXT NOT NULL
+                                CHECK (verification_status IN ('verified', 'unverified', 'rejected')),
+    document_key            TEXT REFERENCES documents (document_key) ON DELETE RESTRICT,
+    acquisition_key         TEXT,
+    diagnostic              TEXT,
+    FOREIGN KEY (acquisition_key, document_key, source_key)
+        REFERENCES acquisitions (acquisition_key, document_key, source_key) ON DELETE RESTRICT,
+    CHECK (
+        (outcome = 'retained' AND verification_status IN ('verified', 'unverified')
+            AND document_key IS NOT NULL AND acquisition_key IS NOT NULL AND diagnostic IS NULL)
+        OR
+        (outcome = 'failed' AND verification_status = 'rejected'
+            AND document_key IS NULL AND acquisition_key IS NULL AND diagnostic IS NOT NULL)
+    )
+);
+CREATE TABLE acquisition_transport_headers (
+    acquisition_key TEXT NOT NULL REFERENCES acquisitions (acquisition_key) ON DELETE RESTRICT,
+    header_order INTEGER NOT NULL CHECK (header_order >= 0),
+    name TEXT NOT NULL,
+    value TEXT NOT NULL,
+    PRIMARY KEY (acquisition_key, header_order)
+) WITHOUT ROWID;
+CREATE TABLE acquisitions (
+    acquisition_key TEXT PRIMARY KEY NOT NULL,
+    source_key      TEXT NOT NULL REFERENCES publishing_sources (source_key) ON DELETE RESTRICT,
+    document_key    TEXT NOT NULL REFERENCES documents (document_key) ON DELETE RESTRICT,
+    source_uri      TEXT,
+    method          TEXT,
+    acquired_at     DATETIME, expected_sha256 BLOB
+    CHECK (expected_sha256 IS NULL OR length(expected_sha256) = 32), verification_status TEXT NOT NULL DEFAULT 'unverified'
+        CHECK (verification_status IN ('verified', 'unverified', 'failed')),
+    UNIQUE (acquisition_key, document_key)
+);
+CREATE TABLE archive_files (
+    id   INTEGER PRIMARY KEY AUTOINCREMENT
+                 NOT NULL,
+    path TEXT    NOT NULL,
+    sha1 BLOB    NOT NULL
+);
+CREATE TABLE asset_occurrences (
+    occurrence_id INTEGER PRIMARY KEY NOT NULL,
+    record_id INTEGER NOT NULL REFERENCES records(record_id) ON DELETE RESTRICT,
+    occurrence_order INTEGER NOT NULL CHECK (occurrence_order >= 0),
+    claim_kind TEXT NOT NULL CHECK (claim_kind IN (
+        'mame_rom', 'mame_disk', 'mame_sample', 'logiqx_rom', 'logiqx_disk',
+        'logiqx_sample', 'cmp_rom', 'cmp_sample', 'no_intro_pc_file',
+        'no_intro_dat_rom', 'no_intro_database_file', 'software_rom_entry',
+        'software_rom_operation', 'software_disk_entry'
+    )),
+    content_uuid BLOB REFERENCES catalog_contents(content_uuid) ON DELETE RESTRICT,
+    CHECK (content_uuid IS NULL OR length(content_uuid) = 16),
+    CHECK (claim_kind NOT IN ('software_rom_operation', 'mame_sample', 'logiqx_sample', 'cmp_sample')
+        OR content_uuid IS NULL),
+    UNIQUE (record_id, occurrence_order),
+    UNIQUE (occurrence_id, record_id),
+    UNIQUE (occurrence_id, claim_kind)
+);
+CREATE TABLE catalog_content_digest_assertions (
+    content_uuid BLOB NOT NULL CHECK (length(content_uuid) = 16),
+    digest_id INTEGER NOT NULL,
+    scope TEXT NOT NULL CHECK (length(scope) > 0),
+    PRIMARY KEY (content_uuid, digest_id, scope),
+    FOREIGN KEY (content_uuid) REFERENCES catalog_contents (content_uuid) ON DELETE RESTRICT,
+    FOREIGN KEY (digest_id) REFERENCES digest_values (digest_id) ON DELETE RESTRICT
+) WITHOUT ROWID;
+CREATE TABLE catalog_contents (
+    content_uuid BLOB PRIMARY KEY NOT NULL CHECK (length(content_uuid) = 16),
+    expected_size INTEGER CHECK (expected_size IS NULL OR expected_size >= 0)
+) WITHOUT ROWID;
+CREATE TABLE catalog_snapshots (
+    snapshot_key        TEXT PRIMARY KEY NOT NULL,
+    catalog_key         TEXT NOT NULL REFERENCES catalogs (catalog_key) ON DELETE RESTRICT,
+    document_key        TEXT NOT NULL REFERENCES documents (document_key) ON DELETE RESTRICT,
+    interpretation_key  TEXT NOT NULL REFERENCES parser_interpretations (interpretation_key) ON DELETE RESTRICT,
+    acquisition_key     TEXT REFERENCES acquisitions (acquisition_key) ON DELETE RESTRICT,
+    declared_version    TEXT,
+    scope_kind          TEXT NOT NULL DEFAULT 'unknown'
+                                CHECK (scope_kind IN ('unknown', 'complete', 'filtered', 'partial')),
+    scope_json          TEXT,
+    parent_snapshot_key TEXT,
+    CHECK (scope_kind NOT IN ('filtered', 'partial') OR scope_json IS NOT NULL),
+    CHECK (parent_snapshot_key IS NULL OR parent_snapshot_key <> snapshot_key),
+    UNIQUE (snapshot_key, catalog_key),
+    UNIQUE (snapshot_key, catalog_key, document_key, interpretation_key),
+    FOREIGN KEY (parent_snapshot_key, catalog_key)
+        REFERENCES catalog_snapshots (snapshot_key, catalog_key)
+        ON DELETE RESTRICT,
+    FOREIGN KEY (acquisition_key, document_key)
+        REFERENCES acquisitions (acquisition_key, document_key)
+        ON DELETE RESTRICT
+);
+CREATE TABLE catalogs (
+    catalog_key TEXT PRIMARY KEY NOT NULL,
+    source_key  TEXT NOT NULL REFERENCES publishing_sources (source_key) ON DELETE RESTRICT,
+    display_name TEXT NOT NULL
+);
+CREATE TABLE cmp_header_directives (
+    snapshot_key TEXT PRIMARY KEY NOT NULL
+        REFERENCES cmp_header_facts (snapshot_key) ON DELETE RESTRICT,
+    header_definition TEXT, header_definition_order INTEGER,
+    header_definition_source_field TEXT, header_definition_quoted INTEGER,
+    header_definition_source_line INTEGER, header_definition_source_column INTEGER,
+    forcemerging TEXT, forcemerging_order INTEGER,
+    forcemerging_source_field TEXT, forcemerging_quoted INTEGER,
+    forcemerging_source_line INTEGER, forcemerging_source_column INTEGER,
+    forcezipping TEXT, forcezipping_order INTEGER,
+    forcezipping_source_field TEXT, forcezipping_quoted INTEGER,
+    forcezipping_source_line INTEGER, forcezipping_source_column INTEGER,
+    forcepacking TEXT, forcepacking_order INTEGER,
+    forcepacking_source_field TEXT, forcepacking_quoted INTEGER,
+    forcepacking_source_line INTEGER, forcepacking_source_column INTEGER,
+    forcenodump TEXT, forcenodump_order INTEGER,
+    forcenodump_source_field TEXT, forcenodump_quoted INTEGER,
+    forcenodump_source_line INTEGER, forcenodump_source_column INTEGER
+) WITHOUT ROWID;
+CREATE TABLE cmp_header_facts (
+    snapshot_key TEXT PRIMARY KEY NOT NULL
+        REFERENCES catalog_snapshots (snapshot_key) ON DELETE RESTRICT,
+    source_line INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    name TEXT, name_order INTEGER, name_source_field TEXT, name_quoted INTEGER, name_source_line INTEGER, name_source_column INTEGER,
+    description TEXT, description_order INTEGER, description_source_field TEXT, description_quoted INTEGER, description_source_line INTEGER, description_source_column INTEGER,
+    version TEXT, version_order INTEGER, version_source_field TEXT, version_quoted INTEGER, version_source_line INTEGER, version_source_column INTEGER,
+    date TEXT, date_order INTEGER, date_source_field TEXT, date_quoted INTEGER, date_source_line INTEGER, date_source_column INTEGER,
+    author TEXT, author_order INTEGER, author_source_field TEXT, author_quoted INTEGER, author_source_line INTEGER, author_source_column INTEGER,
+    email TEXT, email_order INTEGER, email_source_field TEXT, email_quoted INTEGER, email_source_line INTEGER, email_source_column INTEGER,
+    homepage TEXT, homepage_order INTEGER, homepage_source_field TEXT, homepage_quoted INTEGER, homepage_source_line INTEGER, homepage_source_column INTEGER,
+    url TEXT, url_order INTEGER, url_source_field TEXT, url_quoted INTEGER, url_source_line INTEGER, url_source_column INTEGER,
+    comment TEXT, comment_order INTEGER, comment_source_field TEXT, comment_quoted INTEGER, comment_source_line INTEGER, comment_source_column INTEGER,
+    category TEXT, category_order INTEGER, category_source_field TEXT, category_quoted INTEGER, category_source_line INTEGER, category_source_column INTEGER
+) WITHOUT ROWID;
+CREATE TABLE cmp_rom_claims (
+    occurrence_id INTEGER PRIMARY KEY NOT NULL,
+    claim_kind TEXT NOT NULL DEFAULT 'cmp_rom' CHECK (claim_kind = 'cmp_rom'),
+    name TEXT NOT NULL,
+    size INTEGER CHECK (size IS NULL OR size >= 0),
+    evidence_scope TEXT NOT NULL,
+    evidence_provenance TEXT NOT NULL,
+    merge_name TEXT,
+    dump_status TEXT,
+    source_line INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    FOREIGN KEY (occurrence_id,claim_kind) REFERENCES asset_occurrences(occurrence_id,claim_kind) ON DELETE RESTRICT
+);
+CREATE TABLE cmp_rom_facts (
+    occurrence_id INTEGER PRIMARY KEY NOT NULL
+        REFERENCES asset_occurrences (occurrence_id) ON DELETE RESTRICT,
+    date TEXT,
+    date_source_field TEXT,
+    date_source_order INTEGER CHECK (date_source_order >= 0),
+    date_quoted INTEGER CHECK (date_quoted IN (0, 1)),
+    date_source_line INTEGER CHECK (date_source_line > 0),
+    date_source_column INTEGER CHECK (date_source_column > 0),
+    serial TEXT,
+    serial_source_field TEXT,
+    serial_source_order INTEGER CHECK (serial_source_order >= 0),
+    serial_quoted INTEGER CHECK (serial_quoted IN (0, 1)),
+    serial_source_line INTEGER CHECK (serial_source_line > 0),
+    serial_source_column INTEGER CHECK (serial_source_column > 0),
+    nodump_order INTEGER CHECK (nodump_order >= 0),
+    baddump_order INTEGER CHECK (baddump_order >= 0),
+    status_explicit_order INTEGER CHECK (status_explicit_order >= 0),
+    status_source_field TEXT,
+    status_quoted INTEGER CHECK (status_quoted IN (0, 1)),
+    status_source_line INTEGER CHECK (status_source_line > 0),
+    status_source_column INTEGER CHECK (status_source_column > 0)
+) WITHOUT ROWID;
+CREATE TABLE cmp_sample_parent_links (
+    record_id INTEGER PRIMARY KEY NOT NULL
+        REFERENCES records (record_id) ON DELETE RESTRICT,
+    target_name TEXT NOT NULL,
+    source_field TEXT NOT NULL,
+    source_order INTEGER NOT NULL CHECK (source_order >= 0),
+    is_quoted INTEGER NOT NULL CHECK (is_quoted IN (0, 1)),
+    source_line INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0)
+) WITHOUT ROWID;
+CREATE TABLE cmp_samples (
+    record_id INTEGER NOT NULL REFERENCES records (record_id) ON DELETE RESTRICT,
+    sample_order INTEGER NOT NULL CHECK (sample_order >= 0),
+    sample_name TEXT NOT NULL,
+    source_field TEXT NOT NULL,
+    source_order INTEGER NOT NULL CHECK (source_order >= 0),
+    is_quoted INTEGER NOT NULL CHECK (is_quoted IN (0, 1)),
+    source_line INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    PRIMARY KEY (record_id, sample_order)
+) WITHOUT ROWID;
+CREATE TABLE cmp_set_facts (
+    record_id INTEGER PRIMARY KEY NOT NULL
+        REFERENCES records (record_id) ON DELETE RESTRICT,
+    description TEXT, description_order INTEGER, description_source_field TEXT, description_quoted INTEGER,
+    description_source_line INTEGER, description_source_column INTEGER,
+    year TEXT, year_order INTEGER, year_source_field TEXT, year_quoted INTEGER,
+    year_source_line INTEGER, year_source_column INTEGER,
+    manufacturer TEXT, manufacturer_order INTEGER, manufacturer_source_field TEXT, manufacturer_quoted INTEGER,
+    manufacturer_source_line INTEGER, manufacturer_source_column INTEGER,
+    rebuildto TEXT, rebuildto_order INTEGER, rebuildto_source_field TEXT, rebuildto_quoted INTEGER,
+    rebuildto_source_line INTEGER, rebuildto_source_column INTEGER
+) WITHOUT ROWID;
+CREATE TABLE data_files (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT
+                        NOT NULL,
+    build       TEXT,
+    debug       TEXT,
+    file_name   TEXT,
+    name        TEXT NOT NULL UNIQUE,
+    description TEXT,
+    category    TEXT,
+    version     TEXT,
+    author      TEXT,
+    email       TEXT,
+    homepage    TEXT,
+    url         TEXT,
+    sha1        BLOB
+);
+CREATE TABLE digest_values (
+    digest_id INTEGER PRIMARY KEY,
+    algorithm TEXT NOT NULL CHECK (algorithm IN ('crc32', 'md5', 'sha1', 'sha256')),
+    digest BLOB NOT NULL,
+    UNIQUE (algorithm, digest),
+    CHECK (
+        (algorithm = 'crc32' AND length(digest) = 4) OR
+        (algorithm = 'md5' AND length(digest) = 16) OR
+        (algorithm = 'sha1' AND length(digest) = 20) OR
+        (algorithm = 'sha256' AND length(digest) = 32)
+    )
+);
+CREATE TABLE documents (
+    document_key TEXT PRIMARY KEY NOT NULL,
+    sha1         BLOB CHECK (sha1 IS NULL OR length(sha1) = 20),
+    byte_length  INTEGER CHECK (byte_length IS NULL OR byte_length >= 0)
+, sha256 BLOB CHECK (sha256 IS NULL OR length(sha256) = 32), format_hint TEXT, retention_status TEXT NOT NULL DEFAULT 'unavailable'
+        CHECK (retention_status IN ('unavailable', 'retained')), object_key TEXT);
+CREATE TABLE "games" (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT
+                         NOT NULL,
+    name         TEXT  NOT NULL,
+    is_bios      TEXT,
+    clone_of     TEXT,
+    rom_of       TEXT,
+    sample_of    TEXT,
+    board        TEXT,
+    rebuildto    TEXT,
+    year         TEXT,
+    manufacturer TEXT,
+    data_file_id INTEGER CONSTRAINT data_file_id_constraint REFERENCES data_files (id),
+    parent_id    INTEGER CONSTRAINT parent_clone_constraint REFERENCES "games" (id)
+);
+CREATE TABLE import_diagnostics (
+    diagnostic_key TEXT PRIMARY KEY NOT NULL,
+    run_key TEXT NOT NULL REFERENCES import_runs (run_key) ON DELETE RESTRICT,
+    code TEXT NOT NULL,
+    message TEXT NOT NULL,
+    record_kind TEXT,
+    record_name TEXT,
+    field_name TEXT,
+    raw_value_json TEXT,
+    source_line INTEGER,
+    source_column INTEGER
+);
+CREATE TABLE import_runs (
+    run_key             TEXT PRIMARY KEY NOT NULL,
+    catalog_key         TEXT NOT NULL REFERENCES catalogs (catalog_key) ON DELETE RESTRICT,
+    document_key        TEXT NOT NULL REFERENCES documents (document_key) ON DELETE RESTRICT,
+    interpretation_key  TEXT NOT NULL REFERENCES parser_interpretations (interpretation_key) ON DELETE RESTRICT,
+    acquisition_key     TEXT REFERENCES acquisitions (acquisition_key) ON DELETE RESTRICT,
+    snapshot_key        TEXT REFERENCES catalog_snapshots (snapshot_key) ON DELETE RESTRICT,
+    status              TEXT NOT NULL CHECK (status IN ('pending', 'running', 'succeeded', 'failed')),
+    started_at          DATETIME,
+    finished_at         DATETIME,
+    diagnostic          TEXT,
+    CHECK (finished_at IS NULL OR started_at IS NULL OR finished_at >= started_at),
+    FOREIGN KEY (snapshot_key, catalog_key, document_key, interpretation_key)
+        REFERENCES catalog_snapshots
+            (snapshot_key, catalog_key, document_key, interpretation_key)
+        ON DELETE RESTRICT,
+    FOREIGN KEY (acquisition_key, document_key)
+        REFERENCES acquisitions (acquisition_key, document_key)
+        ON DELETE RESTRICT
+);
+CREATE TABLE logiqx_disk_claims (
+    occurrence_id INTEGER PRIMARY KEY NOT NULL,
+    claim_kind TEXT NOT NULL DEFAULT 'logiqx_disk' CHECK (claim_kind = 'logiqx_disk'),
+    name TEXT NOT NULL,
+    size INTEGER CHECK (size IS NULL OR size >= 0),
+    evidence_scope TEXT NOT NULL,
+    evidence_provenance TEXT NOT NULL,
+    merge_name TEXT,
+    dump_status TEXT,
+    source_line INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    serial TEXT,
+    date TEXT,
+    FOREIGN KEY (occurrence_id,claim_kind) REFERENCES asset_occurrences(occurrence_id,claim_kind) ON DELETE RESTRICT
+);
+CREATE TABLE logiqx_document_facts (
+    snapshot_key TEXT PRIMARY KEY NOT NULL,
+    build TEXT,
+    debug TEXT,
+    file_name TEXT,
+    sha1 BLOB,
+    header_name TEXT,
+    header_description TEXT,
+    header_version TEXT,
+    header_date TEXT,
+    header_author TEXT,
+    header_email TEXT,
+    header_homepage TEXT,
+    header_url TEXT,
+    header_comment TEXT,
+    header_category TEXT,
+    FOREIGN KEY (snapshot_key) REFERENCES catalog_snapshots (snapshot_key) ON DELETE RESTRICT,
+    CHECK (sha1 IS NULL OR length(sha1) = 20)
+);
+CREATE TABLE logiqx_rom_claims (
+    occurrence_id INTEGER PRIMARY KEY NOT NULL,
+    claim_kind TEXT NOT NULL DEFAULT 'logiqx_rom' CHECK (claim_kind = 'logiqx_rom'),
+    name TEXT NOT NULL,
+    size INTEGER CHECK (size IS NULL OR size >= 0),
+    evidence_scope TEXT NOT NULL,
+    evidence_provenance TEXT NOT NULL,
+    merge_name TEXT,
+    dump_status TEXT,
+    source_line INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    serial TEXT,
+    date TEXT,
+    FOREIGN KEY (occurrence_id,claim_kind) REFERENCES asset_occurrences(occurrence_id,claim_kind) ON DELETE RESTRICT
+);
+CREATE TABLE logiqx_set_facts (
+    snapshot_key TEXT NOT NULL,
+    set_name TEXT NOT NULL,
+    source_file TEXT,
+    is_bios TEXT,
+    board TEXT,
+    rebuild_to TEXT,
+    description TEXT,
+    year TEXT,
+    manufacturer TEXT,
+    PRIMARY KEY (snapshot_key, set_name),
+    FOREIGN KEY (snapshot_key, set_name)
+        REFERENCES snapshot_sets (snapshot_key, set_name) ON DELETE RESTRICT
+) WITHOUT ROWID;
+CREATE TABLE machine_bios_sets (
+    snapshot_key TEXT NOT NULL,
+    set_name TEXT NOT NULL,
+    bios_order INTEGER NOT NULL CHECK (bios_order >= 0),
+    name TEXT NOT NULL,
+    description TEXT,
+    is_default INTEGER NOT NULL CHECK (is_default IN (0, 1)),
+    source_line INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    PRIMARY KEY (snapshot_key, set_name, bios_order),
+    FOREIGN KEY (snapshot_key, set_name)
+        REFERENCES snapshot_sets (snapshot_key, set_name) ON DELETE RESTRICT
+) WITHOUT ROWID;
+CREATE TABLE machine_switch_conditions (
+    set_id INTEGER NOT NULL,
+    switch_order INTEGER NOT NULL CHECK (switch_order >= 0),
+    condition_order INTEGER NOT NULL CHECK (condition_order >= 0),
+    tag TEXT NOT NULL,
+    mask TEXT NOT NULL,
+    relation TEXT NOT NULL CHECK (relation IN ('eq', 'ne', 'gt', 'le', 'lt', 'ge')),
+    value TEXT NOT NULL,
+    source_line INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    PRIMARY KEY (set_id, switch_order, condition_order),
+    FOREIGN KEY (set_id, switch_order)
+        REFERENCES machine_switches (set_id, switch_order) ON DELETE RESTRICT
+) WITHOUT ROWID;
+CREATE TABLE "machine_switch_locations" (
+    set_id INTEGER NOT NULL,
+    switch_order INTEGER NOT NULL CHECK (switch_order >= 0),
+    location_order INTEGER NOT NULL CHECK (location_order >= 0),
+    name TEXT NOT NULL,
+    number TEXT NOT NULL,
+    inverted INTEGER NOT NULL CHECK (inverted IN (0, 1)),
+    source_line INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    PRIMARY KEY (set_id, switch_order, location_order),
+    FOREIGN KEY (set_id, switch_order)
+        REFERENCES "machine_switches" (set_id, switch_order) ON DELETE RESTRICT
+) WITHOUT ROWID;
+CREATE TABLE machine_switch_value_conditions (
+    set_id INTEGER NOT NULL,
+    switch_order INTEGER NOT NULL CHECK (switch_order >= 0),
+    value_order INTEGER NOT NULL CHECK (value_order >= 0),
+    condition_order INTEGER NOT NULL CHECK (condition_order >= 0),
+    tag TEXT NOT NULL,
+    mask TEXT NOT NULL,
+    relation TEXT NOT NULL CHECK (relation IN ('eq', 'ne', 'gt', 'le', 'lt', 'ge')),
+    value TEXT NOT NULL,
+    source_line INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    PRIMARY KEY (set_id, switch_order, value_order, condition_order),
+    FOREIGN KEY (set_id, switch_order, value_order)
+        REFERENCES machine_switch_values (set_id, switch_order, value_order) ON DELETE RESTRICT
+) WITHOUT ROWID;
+CREATE TABLE "machine_switch_values" (
+    set_id INTEGER NOT NULL,
+    switch_order INTEGER NOT NULL CHECK (switch_order >= 0),
+    value_order INTEGER NOT NULL CHECK (value_order >= 0),
+    name TEXT NOT NULL,
+    value INTEGER NOT NULL CHECK (value >= 0),
+    is_default INTEGER NOT NULL CHECK (is_default IN (0, 1)),
+    source_line INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    PRIMARY KEY (set_id, switch_order, value_order),
+    FOREIGN KEY (set_id, switch_order)
+        REFERENCES "machine_switches" (set_id, switch_order) ON DELETE RESTRICT
+) WITHOUT ROWID;
+CREATE TABLE "machine_switches" (
+    set_id INTEGER NOT NULL,
+    switch_order INTEGER NOT NULL CHECK (switch_order >= 0),
+    kind TEXT NOT NULL CHECK (kind IN ('dipswitch', 'configuration')),
+    name TEXT NOT NULL,
+    tag TEXT NOT NULL,
+    mask INTEGER NOT NULL CHECK (mask >= 0),
+    source_line INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    PRIMARY KEY (set_id, switch_order),
+    FOREIGN KEY (set_id) REFERENCES snapshot_sets (set_id) ON DELETE RESTRICT
+) WITHOUT ROWID;
+CREATE TABLE mame_disk_claims (
+    occurrence_id INTEGER PRIMARY KEY NOT NULL,
+    claim_kind TEXT NOT NULL DEFAULT 'mame_disk' CHECK (claim_kind = 'mame_disk'),
+    name TEXT NOT NULL,
+    size INTEGER CHECK (size IS NULL OR size >= 0),
+    evidence_scope TEXT NOT NULL,
+    evidence_provenance TEXT NOT NULL,
+    merge_name TEXT,
+    dump_status TEXT,
+    source_line INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    region TEXT,
+    bios TEXT,
+    offset INTEGER CHECK (offset IS NULL OR offset >= 0),
+    optional INTEGER CHECK (optional IS NULL OR optional IN (0,1)),
+    sound_only INTEGER CHECK (sound_only IS NULL OR sound_only IN (0,1)),
+    dispose INTEGER CHECK (dispose IS NULL OR dispose IN (0,1)),
+    load_flag TEXT,
+    value TEXT,
+    inverted INTEGER CHECK (inverted IS NULL OR inverted IN (0,1)),
+    ovha TEXT,
+    no_thread INTEGER CHECK (no_thread IS NULL OR no_thread IN (0,1)),
+    disk_index TEXT,
+    writable INTEGER CHECK (writable IS NULL OR writable IN (0,1)),
+    writeable INTEGER CHECK (writeable IS NULL OR writeable IN (0,1)),
+    FOREIGN KEY (occurrence_id,claim_kind) REFERENCES asset_occurrences(occurrence_id,claim_kind) ON DELETE RESTRICT
+);
+CREATE TABLE mame_document_facts (
+    snapshot_key TEXT NOT NULL PRIMARY KEY,
+    debug INTEGER NOT NULL CHECK (debug IN (0, 1)),
+    config_version TEXT,
+    source_line INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    FOREIGN KEY (snapshot_key)
+        REFERENCES catalog_snapshots (snapshot_key) ON DELETE RESTRICT
+);
+CREATE TABLE mame_machine_adjuster_conditions (
+    set_id INTEGER NOT NULL,
+    element_order INTEGER NOT NULL CHECK (element_order >= 0),
+    condition_order INTEGER NOT NULL CHECK (condition_order >= 0),
+    tag TEXT NOT NULL,
+    mask TEXT NOT NULL,
+    relation TEXT NOT NULL CHECK (relation IN ('eq', 'ne', 'gt', 'le', 'lt', 'ge')),
+    value TEXT NOT NULL,
+    source_line INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    PRIMARY KEY (set_id, element_order, condition_order),
+    FOREIGN KEY (set_id, element_order)
+        REFERENCES mame_machine_adjusters (set_id, element_order) ON DELETE RESTRICT
+) WITHOUT ROWID;
+CREATE TABLE mame_machine_adjusters (
+    set_id INTEGER NOT NULL,
+    element_order INTEGER NOT NULL CHECK (element_order >= 0),
+    name TEXT NOT NULL,
+    default_value TEXT NOT NULL,
+    source_line INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    PRIMARY KEY (set_id, element_order),
+    FOREIGN KEY (set_id) REFERENCES records (record_id) ON DELETE RESTRICT
+) WITHOUT ROWID;
+CREATE TABLE mame_machine_analogs (
+    set_id INTEGER NOT NULL,
+    element_order INTEGER NOT NULL CHECK (element_order >= 0),
+    analog_order INTEGER NOT NULL CHECK (analog_order >= 0),
+    mask TEXT NOT NULL,
+    source_line INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    PRIMARY KEY (set_id, element_order, analog_order),
+    FOREIGN KEY (set_id, element_order)
+        REFERENCES mame_machine_ports (set_id, element_order) ON DELETE RESTRICT
+) WITHOUT ROWID;
+CREATE TABLE mame_machine_chips (
+    set_id INTEGER NOT NULL,
+    element_order INTEGER NOT NULL CHECK (element_order >= 0),
+    name TEXT NOT NULL,
+    tag TEXT,
+    kind TEXT NOT NULL CHECK (kind IN ('cpu', 'audio')),
+    clock TEXT,
+    source_line INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    PRIMARY KEY (set_id, element_order),
+    FOREIGN KEY (set_id) REFERENCES records (record_id) ON DELETE RESTRICT
+) WITHOUT ROWID;
+CREATE TABLE "mame_machine_dependencies" (
+    set_id INTEGER NOT NULL,
+    dependency_order INTEGER NOT NULL CHECK (dependency_order >= 0),
+    dependency_kind TEXT NOT NULL CHECK (dependency_kind IN ('device_ref', 'romof', 'sampleof')),
+    target_name TEXT NOT NULL CHECK (length(target_name) > 0),
+    reference_tag TEXT,
+    source_line INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    PRIMARY KEY (set_id, dependency_order),
+    FOREIGN KEY (set_id) REFERENCES snapshot_sets (set_id) ON DELETE RESTRICT
+) WITHOUT ROWID;
+CREATE TABLE mame_machine_device_extensions (
+    set_id INTEGER NOT NULL,
+    element_order INTEGER NOT NULL CHECK (element_order >= 0),
+    extension_order INTEGER NOT NULL CHECK (extension_order >= 0),
+    name TEXT NOT NULL,
+    source_line INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    PRIMARY KEY (set_id, element_order, extension_order),
+    FOREIGN KEY (set_id, element_order)
+        REFERENCES mame_machine_devices (set_id, element_order) ON DELETE RESTRICT
+) WITHOUT ROWID;
+CREATE TABLE mame_machine_device_instances (
+    set_id INTEGER NOT NULL,
+    element_order INTEGER NOT NULL CHECK (element_order >= 0),
+    name TEXT NOT NULL,
+    brief_name TEXT NOT NULL,
+    source_line INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    PRIMARY KEY (set_id, element_order),
+    FOREIGN KEY (set_id, element_order)
+        REFERENCES mame_machine_devices (set_id, element_order) ON DELETE RESTRICT
+) WITHOUT ROWID;
+CREATE TABLE mame_machine_devices (
+    set_id INTEGER NOT NULL,
+    element_order INTEGER NOT NULL CHECK (element_order >= 0),
+    kind TEXT NOT NULL,
+    tag TEXT,
+    fixed_image TEXT,
+    mandatory TEXT,
+    interface TEXT,
+    source_line INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    PRIMARY KEY (set_id, element_order),
+    FOREIGN KEY (set_id) REFERENCES records (record_id) ON DELETE RESTRICT
+) WITHOUT ROWID;
+CREATE TABLE mame_machine_displays (
+    set_id INTEGER NOT NULL,
+    element_order INTEGER NOT NULL CHECK (element_order >= 0),
+    tag TEXT,
+    kind TEXT NOT NULL CHECK (kind IN ('raster', 'vector', 'lcd', 'svg', 'unknown')),
+    rotation TEXT CHECK (rotation IS NULL OR rotation IN ('0', '90', '180', '270')),
+    flip_x INTEGER NOT NULL CHECK (flip_x IN (0, 1)),
+    width TEXT,
+    height TEXT,
+    refresh TEXT NOT NULL,
+    pixel_clock TEXT,
+    horizontal_total TEXT,
+    horizontal_blank_end TEXT,
+    horizontal_blank_start TEXT,
+    vertical_total TEXT,
+    vertical_blank_end TEXT,
+    vertical_blank_start TEXT,
+    source_line INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    PRIMARY KEY (set_id, element_order),
+    FOREIGN KEY (set_id) REFERENCES records (record_id) ON DELETE RESTRICT
+) WITHOUT ROWID;
+CREATE TABLE mame_machine_drivers (
+    set_id INTEGER NOT NULL,
+    element_order INTEGER NOT NULL CHECK (element_order >= 0),
+    status TEXT NOT NULL CHECK (status IN ('good', 'imperfect', 'preliminary')),
+    emulation TEXT NOT NULL CHECK (emulation IN ('good', 'imperfect', 'preliminary')),
+    cocktail TEXT CHECK (cocktail IS NULL OR cocktail IN ('good', 'imperfect', 'preliminary')),
+    savestate TEXT NOT NULL CHECK (savestate IN ('supported', 'unsupported')),
+    requires_artwork INTEGER NOT NULL CHECK (requires_artwork IN (0, 1)),
+    unofficial INTEGER NOT NULL CHECK (unofficial IN (0, 1)),
+    no_sound_hardware INTEGER NOT NULL CHECK (no_sound_hardware IN (0, 1)),
+    incomplete INTEGER NOT NULL CHECK (incomplete IN (0, 1)),
+    source_line INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    PRIMARY KEY (set_id, element_order),
+    FOREIGN KEY (set_id) REFERENCES records (record_id) ON DELETE RESTRICT
+) WITHOUT ROWID;
+CREATE TABLE mame_machine_facts (
+    snapshot_key TEXT NOT NULL,
+    set_name TEXT NOT NULL,
+    source_file TEXT,
+    description TEXT NOT NULL,
+    description_line INTEGER NOT NULL CHECK (description_line > 0),
+    description_column INTEGER NOT NULL CHECK (description_column > 0),
+    year TEXT,
+    year_line INTEGER,
+    year_column INTEGER,
+    manufacturer TEXT,
+    manufacturer_line INTEGER,
+    manufacturer_column INTEGER,
+    is_device INTEGER NOT NULL CHECK (is_device IN (0, 1)),
+    runnable INTEGER NOT NULL CHECK (runnable IN (0, 1)),
+    is_bios INTEGER NOT NULL CHECK (is_bios IN (0, 1)),
+    is_mechanical INTEGER NOT NULL CHECK (is_mechanical IN (0, 1)),
+    is_consumable INTEGER NOT NULL CHECK (is_consumable IN (0, 1)),
+    attributes_line INTEGER NOT NULL CHECK (attributes_line > 0),
+    attributes_column INTEGER NOT NULL CHECK (attributes_column > 0),
+    CHECK ((year_line IS NULL) = (year_column IS NULL)),
+    CHECK ((year IS NULL) = (year_line IS NULL)),
+    CHECK ((manufacturer_line IS NULL) = (manufacturer_column IS NULL)),
+    CHECK ((manufacturer IS NULL) = (manufacturer_line IS NULL)),
+    PRIMARY KEY (snapshot_key, set_name),
+    FOREIGN KEY (snapshot_key, set_name)
+        REFERENCES snapshot_sets (snapshot_key, set_name) ON DELETE RESTRICT
+) WITHOUT ROWID;
+CREATE TABLE mame_machine_features (
+    set_id INTEGER NOT NULL,
+    element_order INTEGER NOT NULL CHECK (element_order >= 0),
+    kind TEXT NOT NULL CHECK (kind IN (
+        'protection', 'timing', 'graphics', 'palette', 'sound', 'capture',
+        'camera', 'microphone', 'controls', 'keyboard', 'mouse', 'media',
+        'disk', 'printer', 'tape', 'punch', 'drum', 'rom', 'comms', 'lan', 'wan'
+    )),
+    status TEXT CHECK (status IS NULL OR status IN ('unemulated', 'imperfect')),
+    overall TEXT CHECK (overall IS NULL OR overall IN ('unemulated', 'imperfect')),
+    source_line INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    PRIMARY KEY (set_id, element_order),
+    FOREIGN KEY (set_id) REFERENCES records (record_id) ON DELETE RESTRICT
+) WITHOUT ROWID;
+CREATE TABLE mame_machine_input_controls (
+    set_id INTEGER NOT NULL,
+    element_order INTEGER NOT NULL CHECK (element_order >= 0),
+    control_order INTEGER NOT NULL CHECK (control_order >= 0),
+    control_type TEXT NOT NULL,
+    player TEXT,
+    buttons TEXT,
+    minimum TEXT,
+    maximum TEXT,
+    sensitivity TEXT,
+    keydelta TEXT,
+    reverse INTEGER NOT NULL CHECK (reverse IN (0, 1)),
+    ways TEXT,
+    ways2 TEXT,
+    ways3 TEXT,
+    source_line INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    PRIMARY KEY (set_id, element_order, control_order),
+    FOREIGN KEY (set_id, element_order)
+        REFERENCES mame_machine_inputs (set_id, element_order) ON DELETE RESTRICT
+) WITHOUT ROWID;
+CREATE TABLE mame_machine_inputs (
+    set_id INTEGER NOT NULL,
+    element_order INTEGER NOT NULL CHECK (element_order >= 0),
+    service INTEGER NOT NULL CHECK (service IN (0, 1)),
+    tilt INTEGER NOT NULL CHECK (tilt IN (0, 1)),
+    players TEXT NOT NULL,
+    coins TEXT,
+    source_line INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    PRIMARY KEY (set_id, element_order),
+    FOREIGN KEY (set_id) REFERENCES records (record_id) ON DELETE RESTRICT
+) WITHOUT ROWID;
+CREATE TABLE mame_machine_ports (
+    set_id INTEGER NOT NULL,
+    element_order INTEGER NOT NULL CHECK (element_order >= 0),
+    tag TEXT NOT NULL,
+    source_line INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    PRIMARY KEY (set_id, element_order),
+    FOREIGN KEY (set_id) REFERENCES records (record_id) ON DELETE RESTRICT
+) WITHOUT ROWID;
+CREATE TABLE mame_machine_ram_options (
+    set_id INTEGER NOT NULL,
+    element_order INTEGER NOT NULL CHECK (element_order >= 0),
+    name TEXT NOT NULL,
+    default_value TEXT,
+    text TEXT NOT NULL,
+    source_line INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    PRIMARY KEY (set_id, element_order),
+    FOREIGN KEY (set_id) REFERENCES records (record_id) ON DELETE RESTRICT
+) WITHOUT ROWID;
+CREATE TABLE mame_machine_samples (
+    set_id INTEGER NOT NULL,
+    element_order INTEGER NOT NULL CHECK (element_order >= 0),
+    name TEXT NOT NULL,
+    source_line INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    PRIMARY KEY (set_id, element_order),
+    FOREIGN KEY (set_id) REFERENCES records (record_id) ON DELETE RESTRICT
+) WITHOUT ROWID;
+CREATE TABLE mame_machine_slot_options (
+    set_id INTEGER NOT NULL,
+    element_order INTEGER NOT NULL CHECK (element_order >= 0),
+    option_order INTEGER NOT NULL CHECK (option_order >= 0),
+    name TEXT NOT NULL,
+    devname TEXT NOT NULL,
+    is_default INTEGER NOT NULL CHECK (is_default IN (0, 1)),
+    source_line INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    PRIMARY KEY (set_id, element_order, option_order),
+    FOREIGN KEY (set_id, element_order)
+        REFERENCES mame_machine_slots (set_id, element_order) ON DELETE RESTRICT
+) WITHOUT ROWID;
+CREATE TABLE mame_machine_slots (
+    set_id INTEGER NOT NULL,
+    element_order INTEGER NOT NULL CHECK (element_order >= 0),
+    name TEXT NOT NULL,
+    source_line INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    PRIMARY KEY (set_id, element_order),
+    FOREIGN KEY (set_id) REFERENCES records (record_id) ON DELETE RESTRICT
+) WITHOUT ROWID;
+CREATE TABLE mame_machine_software_lists (
+    set_id INTEGER NOT NULL,
+    element_order INTEGER NOT NULL CHECK (element_order >= 0),
+    tag TEXT NOT NULL,
+    name TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('original', 'compatible')),
+    filter TEXT,
+    source_line INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    PRIMARY KEY (set_id, element_order),
+    FOREIGN KEY (set_id) REFERENCES records (record_id) ON DELETE RESTRICT
+) WITHOUT ROWID;
+CREATE TABLE mame_machine_sounds (
+    set_id INTEGER NOT NULL,
+    element_order INTEGER NOT NULL CHECK (element_order >= 0),
+    channels TEXT NOT NULL,
+    source_line INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    PRIMARY KEY (set_id, element_order),
+    FOREIGN KEY (set_id) REFERENCES records (record_id) ON DELETE RESTRICT
+) WITHOUT ROWID;
+CREATE TABLE mame_rom_claims (
+    occurrence_id INTEGER PRIMARY KEY NOT NULL,
+    claim_kind TEXT NOT NULL DEFAULT 'mame_rom' CHECK (claim_kind = 'mame_rom'),
+    name TEXT NOT NULL,
+    size INTEGER CHECK (size IS NULL OR size >= 0),
+    evidence_scope TEXT NOT NULL,
+    evidence_provenance TEXT NOT NULL,
+    merge_name TEXT,
+    dump_status TEXT,
+    source_line INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    region TEXT,
+    bios TEXT,
+    offset INTEGER CHECK (offset IS NULL OR offset >= 0),
+    optional INTEGER CHECK (optional IS NULL OR optional IN (0,1)),
+    sound_only INTEGER CHECK (sound_only IS NULL OR sound_only IN (0,1)),
+    dispose INTEGER CHECK (dispose IS NULL OR dispose IN (0,1)),
+    load_flag TEXT,
+    value TEXT,
+    inverted INTEGER CHECK (inverted IS NULL OR inverted IN (0,1)),
+    ovha TEXT,
+    no_thread INTEGER CHECK (no_thread IS NULL OR no_thread IN (0,1)),
+    disk_index TEXT,
+    writable INTEGER CHECK (writable IS NULL OR writable IN (0,1)),
+    writeable INTEGER CHECK (writeable IS NULL OR writeable IN (0,1)),
+    FOREIGN KEY (occurrence_id,claim_kind) REFERENCES asset_occurrences(occurrence_id,claim_kind) ON DELETE RESTRICT
+);
+CREATE TABLE no_intro_game_facts (
+    snapshot_key TEXT NOT NULL,
+    set_name TEXT NOT NULL,
+    archive_id TEXT,
+    description TEXT,
+    description_line INTEGER,
+    description_column INTEGER,
+    PRIMARY KEY (snapshot_key, set_name),
+    FOREIGN KEY (snapshot_key, set_name)
+        REFERENCES snapshot_sets (snapshot_key, set_name) ON DELETE RESTRICT,
+    CHECK ((description_line IS NULL) = (description_column IS NULL)),
+    CHECK (description_line IS NULL OR description_line > 0),
+    CHECK (description_column IS NULL OR description_column > 0)
+) WITHOUT ROWID;
+CREATE TABLE no_intro_pc_file_claims (
+    occurrence_id INTEGER PRIMARY KEY NOT NULL,
+    claim_kind TEXT NOT NULL DEFAULT 'no_intro_pc_file' CHECK (claim_kind = 'no_intro_pc_file'),
+    name TEXT NOT NULL,
+    size INTEGER CHECK (size IS NULL OR size >= 0),
+    evidence_scope TEXT NOT NULL,
+    evidence_provenance TEXT NOT NULL,
+    merge_name TEXT,
+    dump_status TEXT,
+    source_line INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    FOREIGN KEY (occurrence_id,claim_kind) REFERENCES asset_occurrences(occurrence_id,claim_kind) ON DELETE RESTRICT
+);
+CREATE TABLE occurrence_content_conflicts (
+    occurrence_id INTEGER NOT NULL REFERENCES asset_occurrences(occurrence_id) ON DELETE RESTRICT,
+    candidate_content_uuid BLOB NOT NULL REFERENCES catalog_contents(content_uuid) ON DELETE RESTRICT,
+    reason TEXT NOT NULL CHECK (reason IN ('ambiguous_alias', 'contradictory_assertions')),
+    PRIMARY KEY (occurrence_id, candidate_content_uuid)
+) WITHOUT ROWID;
+CREATE TABLE occurrence_digest_assertions (
+    occurrence_id INTEGER NOT NULL REFERENCES asset_occurrences(occurrence_id) ON DELETE RESTRICT,
+    digest_id INTEGER NOT NULL REFERENCES digest_values(digest_id) ON DELETE RESTRICT,
+    scope TEXT NOT NULL CHECK (length(scope) > 0),
+    provenance TEXT NOT NULL CHECK (provenance IN ('source_declared', 'computed', 'legacy_cache', 'unknown')),
+    PRIMARY KEY (occurrence_id, digest_id, scope, provenance)
+) WITHOUT ROWID;
+CREATE TABLE parser_interpretations (
+    interpretation_key TEXT PRIMARY KEY NOT NULL,
+    format              TEXT NOT NULL,
+    parser_name         TEXT,
+    parser_version      TEXT,
+    rules_version       TEXT,
+    options_json        TEXT
+);
+CREATE TABLE publishing_sources (
+    source_key  TEXT PRIMARY KEY NOT NULL,
+    display_name TEXT NOT NULL,
+    locator     TEXT
+);
+CREATE TABLE record_namespaces (
+    namespace_id INTEGER PRIMARY KEY NOT NULL,
+    snapshot_key TEXT NOT NULL REFERENCES catalog_snapshots(snapshot_key) ON DELETE RESTRICT,
+    kind TEXT NOT NULL CHECK (kind IN ('root', 'software_list')),
+    source_order INTEGER NOT NULL CHECK (source_order >= 0),
+    source_name TEXT,
+    CHECK ((kind = 'root' AND source_order = 0 AND source_name IS NULL)
+        OR (kind = 'software_list' AND source_name IS NOT NULL)),
+    UNIQUE (snapshot_key, kind, source_order)
+);
+CREATE TABLE records (
+    record_id INTEGER PRIMARY KEY NOT NULL,
+    namespace_id INTEGER NOT NULL REFERENCES record_namespaces(namespace_id) ON DELETE RESTRICT,
+    kind TEXT NOT NULL CHECK (kind IN (
+        'mame_machine', 'software_item', 'logiqx_game', 'cmp_set',
+        'no_intro_pc_game', 'no_intro_dat_game', 'no_intro_database_game'
+    )),
+    source_order INTEGER NOT NULL CHECK (source_order >= 0),
+    source_name TEXT NOT NULL,
+    source_line INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    UNIQUE (namespace_id, source_order),
+    UNIQUE (record_id, kind)
+);
+CREATE TABLE relationship_assertion_evidence (
+    assertion_key TEXT NOT NULL REFERENCES relationship_assertions (assertion_key) ON DELETE RESTRICT,
+    node_id INTEGER NOT NULL,
+    parent_node_id INTEGER,
+    object_key TEXT,
+    array_index INTEGER,
+    value_type TEXT NOT NULL CHECK (value_type IN (
+        'object', 'array', 'string', 'integer', 'unsigned_integer', 'real', 'true', 'false', 'null'
+    )),
+    text_value TEXT,
+    integer_value BIGINT,
+    unsigned_integer_value TEXT,
+    real_value REAL,
+    PRIMARY KEY (assertion_key, node_id),
+    FOREIGN KEY (assertion_key, parent_node_id)
+        REFERENCES relationship_assertion_evidence (assertion_key, node_id) ON DELETE CASCADE,
+    CHECK ((parent_node_id IS NULL AND object_key IS NULL AND array_index IS NULL)
+        OR (parent_node_id IS NOT NULL AND ((object_key IS NOT NULL) != (array_index IS NOT NULL)))),
+    CHECK ((value_type = 'string' AND text_value IS NOT NULL AND integer_value IS NULL AND unsigned_integer_value IS NULL AND real_value IS NULL)
+        OR (value_type = 'integer' AND text_value IS NULL AND integer_value IS NOT NULL AND unsigned_integer_value IS NULL AND real_value IS NULL)
+        OR (value_type = 'unsigned_integer' AND text_value IS NULL AND integer_value IS NULL AND unsigned_integer_value IS NOT NULL AND real_value IS NULL)
+        OR (value_type = 'real' AND text_value IS NULL AND integer_value IS NULL AND unsigned_integer_value IS NULL AND real_value IS NOT NULL)
+        OR (value_type NOT IN ('string', 'integer', 'unsigned_integer', 'real')
+            AND text_value IS NULL AND integer_value IS NULL AND unsigned_integer_value IS NULL AND real_value IS NULL))
+) WITHOUT ROWID;
+CREATE TABLE "relationship_assertion_support" (
+    assertion_key TEXT NOT NULL,
+    position INTEGER NOT NULL CHECK (position >= 0),
+    supported_assertion_key TEXT NOT NULL,
+    PRIMARY KEY (assertion_key, position)
+) WITHOUT ROWID;
+CREATE TABLE relationship_assertions (
+    assertion_key TEXT PRIMARY KEY NOT NULL,
+    relation_type TEXT NOT NULL CHECK (relation_type IN (
+        'exact_content_identity', 'revision_of', 'dump_of_intended_release',
+        'alternate_representation_of', 'source_parent_clone', 'runtime_dependency',
+        'catalog_correction', 'catalog_continuity'
+    )),
+    origin TEXT NOT NULL CHECK (origin IN (
+        'source_assertion', 'derived_candidate', 'user_conclusion'
+    )),
+    source_snapshot_key TEXT REFERENCES catalog_snapshots (snapshot_key) ON DELETE RESTRICT,
+    source_field TEXT,
+    source_line BIGINT CHECK (source_line IS NULL OR source_line > 0),
+    source_column BIGINT CHECK (source_column IS NULL OR source_column > 0),
+
+    generic_subject_snapshot_key TEXT REFERENCES catalog_snapshots (snapshot_key) ON DELETE RESTRICT,
+    subject_kind TEXT NOT NULL,
+    generic_subject_a TEXT,
+    generic_subject_b TEXT,
+    generic_subject_c BIGINT,
+    source_subject_a TEXT,
+    source_subject_b TEXT,
+    source_subject_c BIGINT,
+    subject_snapshot_key TEXT GENERATED ALWAYS AS (
+        CASE WHEN origin = 'source_assertion' THEN source_snapshot_key
+             ELSE generic_subject_snapshot_key END
+    ) VIRTUAL,
+    generic_target_snapshot_key TEXT REFERENCES catalog_snapshots (snapshot_key) ON DELETE RESTRICT,
+    target_kind TEXT NOT NULL,
+    generic_target_a TEXT,
+    generic_target_b TEXT,
+    generic_target_c BIGINT,
+    source_target_a TEXT,
+    source_target_b TEXT,
+    source_target_c BIGINT,
+    target_snapshot_key TEXT GENERATED ALWAYS AS (
+        CASE WHEN origin = 'source_assertion' THEN source_snapshot_key
+             ELSE generic_target_snapshot_key END
+    ) VIRTUAL,
+    rule_version TEXT,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CHECK (
+        (origin = 'source_assertion' AND source_snapshot_key IS NOT NULL
+            AND source_field IS NOT NULL AND generic_subject_snapshot_key IS NULL
+            AND generic_target_snapshot_key IS NULL AND source_subject_a IS NOT NULL
+            AND source_target_a IS NOT NULL AND generic_subject_a IS NULL
+            AND generic_subject_b IS NULL AND generic_subject_c IS NULL
+            AND generic_target_a IS NULL AND generic_target_b IS NULL
+            AND generic_target_c IS NULL)
+        OR (origin != 'source_assertion' AND source_snapshot_key IS NULL
+            AND source_field IS NULL AND generic_subject_a IS NOT NULL
+            AND generic_target_a IS NOT NULL AND source_subject_a IS NULL
+            AND source_subject_b IS NULL AND source_subject_c IS NULL
+            AND source_target_a IS NULL AND source_target_b IS NULL
+            AND source_target_c IS NULL)
+    ),
+    CHECK (origin = 'source_assertion' OR
+        ((subject_kind = 'catalog_set' AND generic_subject_b IS NULL AND generic_subject_c IS NULL)
+         OR (subject_kind IN ('software_item', 'asset_requirement', 'content_object', 'external_record')
+             AND generic_subject_b IS NOT NULL
+             AND ((subject_kind = 'asset_requirement') = (generic_subject_c IS NOT NULL))))),
+    CHECK (origin = 'source_assertion' OR
+        ((target_kind = 'catalog_set' AND generic_target_b IS NULL AND generic_target_c IS NULL)
+         OR (target_kind IN ('software_item', 'asset_requirement', 'content_object', 'external_record')
+             AND generic_target_b IS NOT NULL
+             AND ((target_kind = 'asset_requirement') = (generic_target_c IS NOT NULL))))),
+    CHECK ((origin = 'derived_candidate') = (rule_version IS NOT NULL)),
+    CHECK (origin != 'source_assertion' OR
+        (subject_kind IN ('catalog_set', 'software_item', 'asset_requirement')
+         AND target_kind IN ('catalog_set', 'software_item', 'asset_requirement'))),
+    CHECK (origin != 'source_assertion' OR source_field != 'merge' OR
+        (subject_kind = 'asset_requirement' AND target_kind = 'asset_requirement')),
+    CHECK (origin != 'source_assertion' OR
+        source_field NOT IN ('romof', 'sampleof', 'device_ref', 'parent_name') OR
+        (subject_kind = 'catalog_set' AND target_kind = 'catalog_set')),
+    CHECK (origin != 'source_assertion' OR source_field != 'cloneof' OR
+        ((subject_kind = 'software_item' AND target_kind = 'software_item') OR
+         (subject_kind = 'catalog_set' AND target_kind = 'catalog_set'))),
+    CHECK (origin != 'source_assertion' OR (
+        (subject_kind != 'catalog_set' OR
+            (source_subject_b IS NULL AND source_subject_c IS NULL)) AND
+        (target_kind != 'catalog_set' OR
+            (source_target_b IS NULL AND source_target_c IS NULL)) AND
+        (subject_kind != 'software_item' OR
+            (source_subject_b IS NOT NULL AND source_subject_c IS NULL)) AND
+        (target_kind != 'software_item' OR
+            (source_target_b IS NOT NULL AND source_target_c IS NULL)) AND
+        (subject_kind != 'asset_requirement' OR
+            (source_subject_b IS NOT NULL AND source_subject_c IS NOT NULL)) AND
+        (target_kind != 'asset_requirement' OR
+            (source_target_b IS NOT NULL AND source_target_c IS NOT NULL))
+    ))
+);
+CREATE TABLE "relationship_reviews" (
+    review_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    review_key TEXT NOT NULL UNIQUE,
+    assertion_key TEXT NOT NULL,
+    decision TEXT NOT NULL CHECK (decision IN ('accepted', 'rejected', 'withdrawn', 'superseded')),
+    note TEXT NOT NULL,
+    superseded_by_assertion_key TEXT,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CHECK ((decision = 'superseded') = (superseded_by_assertion_key IS NOT NULL))
+);
+CREATE TABLE rom_files (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+    parent_path     TEXT    NOT NULL,
+    parent_game_name TEXT,
+    path            TEXT    NOT NULL,
+    name            TEXT    CONSTRAINT file_name NOT NULL,
+    crc             BLOB,
+    sha1            BLOB    NOT NULL,
+    md5             BLOB,
+    xxhash3         BLOB    NOT NULL,
+    in_archive      BOOLEAN NOT NULL,
+    rom_id          INTEGER CONSTRAINT file_rom REFERENCES roms (id)
+, archive_backend TEXT
+        CHECK (archive_backend IS NULL OR archive_backend IN ('zip', '7z', 'rar')), archive_member_index BIGINT
+        CHECK (archive_member_index IS NULL OR archive_member_index >= 0), scan_root TEXT, scan_run TEXT, observed_size BIGINT
+        CHECK (observed_size IS NULL OR observed_size >= 0), source_fingerprint BLOB
+        CHECK (source_fingerprint IS NULL OR length(source_fingerprint) = 20), scan_provenance TEXT
+        CHECK (scan_provenance IS NULL OR scan_provenance = 'streamed_sha1_xxh3_v1'), bare_file_cache_stamp BLOB
+        CHECK (bare_file_cache_stamp IS NULL OR length(bare_file_cache_stamp) = 32), cache_reused BOOLEAN NOT NULL DEFAULT FALSE
+        CHECK (cache_reused IN (FALSE, TRUE)), physical_path TEXT);
+CREATE TABLE "roms" (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT
+                             NOT NULL,
+    name            TEXT    NOT NULL,
+    size            INTEGER NOT NULL,
+    md5             BLOB    NOT NULL,
+    sha1            BLOB    NOT NULL,
+    crc             BLOB    NOT NULL,
+    date            DATE,
+    updated_at      DATETIME,
+    inserted_at     DATETIME,
+    game_id         INTEGER REFERENCES games (id),
+    archive_file_id INTEGER REFERENCES archive_files (id)
+);
+CREATE TABLE snapshot_extensions (
+    extension_id INTEGER PRIMARY KEY NOT NULL,
+    snapshot_key TEXT NOT NULL REFERENCES catalog_snapshots (snapshot_key) ON DELETE RESTRICT,
+    record_kind TEXT NOT NULL,
+    record_name TEXT,
+    field_name TEXT NOT NULL,
+    namespace_uri TEXT,
+    raw_value_json TEXT NOT NULL,
+    source_line INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0)
+, owner_set_name TEXT, owner_component_order TEXT);
+CREATE TABLE snapshot_publications (
+    catalog_key TEXT NOT NULL,
+    document_key TEXT NOT NULL,
+    interpretation_key TEXT NOT NULL,
+    snapshot_key TEXT NOT NULL UNIQUE,
+    published_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (catalog_key, document_key, interpretation_key),
+    FOREIGN KEY (snapshot_key, catalog_key, document_key, interpretation_key)
+        REFERENCES catalog_snapshots
+            (snapshot_key, catalog_key, document_key, interpretation_key)
+        ON DELETE RESTRICT
+);
+CREATE TABLE snapshot_sets (
+    snapshot_key TEXT NOT NULL REFERENCES catalog_snapshots (snapshot_key) ON DELETE RESTRICT,
+    set_name TEXT NOT NULL,
+    parent_name TEXT,
+    metadata_json TEXT NOT NULL,
+    source_line INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0), set_id INTEGER,
+    PRIMARY KEY (snapshot_key, set_name)
+) WITHOUT ROWID;
+CREATE TABLE software_areas (
+    area_id       INTEGER PRIMARY KEY,
+    part_id       INTEGER NOT NULL,
+    record_id     INTEGER NOT NULL,
+    area_name     TEXT NOT NULL,
+    area_kind     TEXT NOT NULL CHECK (area_kind IN ('data', 'disk')),
+    area_order    INTEGER NOT NULL CHECK (area_order >= 0),
+    declared_size INTEGER CHECK (declared_size IS NULL OR declared_size >= 0),
+    width         INTEGER CHECK (width IS NULL OR width IN (8, 16, 32, 64)),
+    endianness    TEXT CHECK (endianness IS NULL OR endianness IN ('little', 'big')),
+    source_line   INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    UNIQUE (area_id, record_id),
+    UNIQUE (part_id, area_order),
+    FOREIGN KEY (part_id, record_id)
+        REFERENCES software_parts (part_id, record_id) ON DELETE RESTRICT
+);
+CREATE TABLE software_disk_entries (
+    occurrence_id INTEGER PRIMARY KEY NOT NULL,
+    record_id     INTEGER NOT NULL,
+    area_id       INTEGER NOT NULL,
+    component_order INTEGER NOT NULL CHECK (component_order >= 0),
+    name          TEXT NOT NULL,
+    evidence_scope TEXT NOT NULL,
+    dump_status   TEXT CHECK (dump_status IS NULL OR dump_status IN ('good', 'baddump', 'nodump')),
+    writeable     INTEGER CHECK (writeable IS NULL OR writeable IN (0, 1)),
+    source_line   INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    UNIQUE (area_id, component_order),
+    UNIQUE (occurrence_id, record_id),
+    FOREIGN KEY (occurrence_id, record_id)
+        REFERENCES asset_occurrences (occurrence_id, record_id) ON DELETE RESTRICT,
+    FOREIGN KEY (area_id, record_id)
+        REFERENCES software_areas (area_id, record_id) ON DELETE RESTRICT
+);
+CREATE TABLE software_file_declarations (
+    occurrence_id INTEGER PRIMARY KEY NOT NULL,
+    record_id     INTEGER NOT NULL,
+    name          TEXT NOT NULL,
+    declared_size INTEGER CHECK (declared_size IS NULL OR declared_size >= 0),
+    UNIQUE (occurrence_id, record_id),
+    FOREIGN KEY (occurrence_id, record_id)
+        REFERENCES asset_occurrences (occurrence_id, record_id) ON DELETE RESTRICT
+);
+CREATE TABLE software_file_uses (
+    occurrence_id           INTEGER PRIMARY KEY NOT NULL,
+    record_id               INTEGER NOT NULL,
+    declaration_occurrence_id INTEGER,
+    operation               TEXT NOT NULL CHECK (operation IN (
+        'load', 'continue', 'reload', 'reload_plain', 'ignore', 'fill', 'disk'
+    )),
+    offset                  INTEGER CHECK (offset IS NULL OR offset >= 0),
+    value                   TEXT,
+    UNIQUE (occurrence_id, record_id),
+    FOREIGN KEY (occurrence_id, record_id)
+        REFERENCES asset_occurrences (occurrence_id, record_id) ON DELETE RESTRICT,
+    FOREIGN KEY (declaration_occurrence_id, record_id)
+        REFERENCES software_file_declarations (occurrence_id, record_id) ON DELETE RESTRICT
+);
+CREATE TABLE software_item_dependencies (
+    record_id       INTEGER NOT NULL,
+    dependency_kind TEXT NOT NULL CHECK (dependency_kind = 'clone_of'),
+    target_name     TEXT NOT NULL,
+    PRIMARY KEY (record_id, dependency_kind),
+    FOREIGN KEY (record_id) REFERENCES software_items (record_id) ON DELETE RESTRICT
+) WITHOUT ROWID;
+CREATE TABLE software_item_info (
+    record_id     INTEGER NOT NULL,
+    value_order   INTEGER NOT NULL CHECK (value_order >= 0),
+    name          TEXT NOT NULL,
+    value         TEXT,
+    source_line   INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    PRIMARY KEY (record_id, value_order),
+    FOREIGN KEY (record_id) REFERENCES software_items (record_id) ON DELETE RESTRICT
+) WITHOUT ROWID;
+CREATE TABLE software_item_shared_features (
+    record_id     INTEGER NOT NULL,
+    value_order   INTEGER NOT NULL CHECK (value_order >= 0),
+    name          TEXT NOT NULL,
+    value         TEXT,
+    source_line   INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    PRIMARY KEY (record_id, value_order),
+    FOREIGN KEY (record_id) REFERENCES software_items (record_id) ON DELETE RESTRICT
+) WITHOUT ROWID;
+CREATE TABLE software_items (
+    record_id   INTEGER PRIMARY KEY NOT NULL,
+    clone_of    TEXT,
+    supported   TEXT CHECK (supported IS NULL OR supported IN ('yes', 'partial', 'no')),
+    description TEXT NOT NULL,
+    year        TEXT NOT NULL,
+    publisher   TEXT NOT NULL,
+    notes       TEXT,
+    FOREIGN KEY (record_id) REFERENCES records (record_id) ON DELETE RESTRICT
+);
+CREATE TABLE software_lists (
+    namespace_id  INTEGER PRIMARY KEY NOT NULL,
+    description   TEXT,
+    notes         TEXT,
+    source_line   INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    FOREIGN KEY (namespace_id) REFERENCES record_namespaces (namespace_id)
+        ON DELETE RESTRICT
+);
+CREATE TABLE software_part_dip_values (
+    part_id         INTEGER NOT NULL,
+    dipswitch_order INTEGER NOT NULL CHECK (dipswitch_order >= 0),
+    value_order     INTEGER NOT NULL CHECK (value_order >= 0),
+    name            TEXT NOT NULL,
+    value           TEXT NOT NULL,
+    is_default      INTEGER NOT NULL CHECK (is_default IN (0, 1)),
+    source_line     INTEGER NOT NULL CHECK (source_line > 0),
+    source_column   INTEGER NOT NULL CHECK (source_column > 0),
+    PRIMARY KEY (part_id, dipswitch_order, value_order),
+    FOREIGN KEY (part_id, dipswitch_order)
+        REFERENCES software_part_dipswitches (part_id, dipswitch_order) ON DELETE RESTRICT
+) WITHOUT ROWID;
+CREATE TABLE software_part_dipswitches (
+    part_id        INTEGER NOT NULL,
+    dipswitch_order INTEGER NOT NULL CHECK (dipswitch_order >= 0),
+    name           TEXT NOT NULL,
+    tag            TEXT NOT NULL,
+    mask           TEXT NOT NULL,
+    source_line    INTEGER NOT NULL CHECK (source_line > 0),
+    source_column  INTEGER NOT NULL CHECK (source_column > 0),
+    PRIMARY KEY (part_id, dipswitch_order),
+    FOREIGN KEY (part_id) REFERENCES software_parts (part_id) ON DELETE RESTRICT
+) WITHOUT ROWID;
+CREATE TABLE software_part_features (
+    part_id       INTEGER NOT NULL,
+    value_order   INTEGER NOT NULL CHECK (value_order >= 0),
+    name          TEXT NOT NULL,
+    value         TEXT,
+    source_line   INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    PRIMARY KEY (part_id, value_order),
+    FOREIGN KEY (part_id) REFERENCES software_parts (part_id) ON DELETE RESTRICT
+) WITHOUT ROWID;
+CREATE TABLE software_parts (
+    part_id       INTEGER PRIMARY KEY,
+    record_id     INTEGER NOT NULL,
+    part_name     TEXT NOT NULL,
+    part_order    INTEGER NOT NULL CHECK (part_order >= 0),
+    interface     TEXT NOT NULL,
+    source_line   INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    UNIQUE (part_id, record_id),
+    UNIQUE (record_id, part_name),
+    UNIQUE (record_id, part_order),
+    FOREIGN KEY (record_id) REFERENCES software_items (record_id) ON DELETE RESTRICT
+);
+CREATE TABLE software_rom_entries (
+    occurrence_id INTEGER PRIMARY KEY NOT NULL,
+    record_id     INTEGER NOT NULL,
+    area_id       INTEGER NOT NULL,
+    component_order INTEGER NOT NULL CHECK (component_order >= 0),
+    name          TEXT,
+    evidence_scope TEXT NOT NULL,
+    size          INTEGER CHECK (size IS NULL OR size >= 0),
+    offset        INTEGER CHECK (offset IS NULL OR offset >= 0),
+    value         TEXT,
+    dump_status   TEXT CHECK (dump_status IS NULL OR dump_status IN ('good', 'baddump', 'nodump')),
+    load_instruction TEXT,
+    source_line   INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    UNIQUE (area_id, component_order),
+    UNIQUE (occurrence_id, record_id),
+    FOREIGN KEY (occurrence_id, record_id)
+        REFERENCES asset_occurrences (occurrence_id, record_id) ON DELETE RESTRICT,
+    FOREIGN KEY (area_id, record_id)
+        REFERENCES software_areas (area_id, record_id) ON DELETE RESTRICT
+);
+CREATE INDEX acquisition_attempts_acquisition_key_index ON acquisition_attempts (acquisition_key);
+CREATE INDEX acquisition_attempts_document_key_index ON acquisition_attempts (document_key);
+CREATE INDEX acquisition_attempts_source_key_index ON acquisition_attempts (source_key);
+CREATE INDEX acquisitions_document_key_index ON acquisitions (document_key);
+CREATE UNIQUE INDEX acquisitions_key_document_source_unique
+    ON acquisitions (acquisition_key, document_key, source_key);
+CREATE INDEX acquisitions_source_key_index ON acquisitions (source_key);
+CREATE INDEX catalog_content_digest_lookup
+    ON catalog_content_digest_assertions (digest_id, scope, content_uuid);
+CREATE INDEX catalogs_source_key_index ON catalogs (source_key);
+CREATE INDEX crc_index ON roms (crc);
+CREATE INDEX diagnostics_run_index ON import_diagnostics (run_key);
+CREATE INDEX digest_value_lookup
+    ON digest_values (algorithm, digest);
+CREATE INDEX documents_byte_length_index ON documents (byte_length);
+CREATE INDEX documents_sha1_index ON documents (sha1);
+CREATE UNIQUE INDEX documents_sha256_unique ON documents (sha256)
+    WHERE sha256 IS NOT NULL;
+CREATE INDEX extensions_snapshot_index ON snapshot_extensions (snapshot_key);
+CREATE INDEX game_name ON games (name);
+CREATE INDEX games_data_file_id_relation_index ON games (data_file_id);
+CREATE UNIQUE INDEX games_data_file_name_unique ON games (data_file_id, name);
+CREATE INDEX games_parent_id_relation_index ON games (parent_id);
+CREATE INDEX import_runs_catalog_key_index ON import_runs (catalog_key);
+CREATE INDEX import_runs_document_key_index ON import_runs (document_key);
+CREATE INDEX import_runs_snapshot_key_index ON import_runs (snapshot_key);
+CREATE INDEX machine_bios_sets_name_index ON machine_bios_sets (name);
+CREATE INDEX machine_switches_tag_index ON machine_switches (tag, name, set_id);
+CREATE INDEX mame_machine_chips_name_index ON mame_machine_chips (name, set_id);
+CREATE INDEX mame_machine_devices_tag_index ON mame_machine_devices (tag, set_id);
+CREATE INDEX mame_machine_facts_source_file_index ON mame_machine_facts (source_file);
+CREATE INDEX mame_machine_samples_name_index ON mame_machine_samples (name, set_id);
+CREATE INDEX mame_machine_software_lists_name_index ON mame_machine_software_lists (name, set_id);
+CREATE INDEX md5_index ON roms (md5);
+CREATE INDEX occurrence_content_lookup ON asset_occurrences(content_uuid, occurrence_id)
+    WHERE content_uuid IS NOT NULL;
+CREATE INDEX occurrence_digest_lookup ON occurrence_digest_assertions(digest_id, occurrence_id);
+CREATE INDEX record_name_lookup ON records(namespace_id, source_name);
+CREATE INDEX relationship_assertions_source_snapshot_index
+    ON relationship_assertions (source_snapshot_key)
+    WHERE origin = 'source_assertion';
+CREATE INDEX relationship_assertions_subject_snapshot_kind_index
+    ON relationship_assertions (generic_subject_snapshot_key, subject_kind)
+    WHERE origin != 'source_assertion';
+CREATE INDEX relationship_assertions_target_snapshot_kind_index
+    ON relationship_assertions (generic_target_snapshot_key, target_kind)
+    WHERE origin != 'source_assertion';
+CREATE INDEX relationship_reviews_assertion_index
+    ON relationship_reviews (assertion_key, review_id);
+CREATE INDEX rom_file_rom_id_relation_index ON rom_files (rom_id);
+CREATE INDEX rom_file_sha1_index ON rom_files (sha1);
+CREATE INDEX rom_file_xxhash3_index ON rom_files (xxhash3);
+CREATE INDEX rom_files_scan_root_index ON rom_files (scan_root);
+CREATE INDEX roms_game_id_relation_index ON roms (game_id);
+CREATE UNIQUE INDEX roms_game_name_unique ON roms (game_id, name);
+CREATE INDEX sha1_index ON roms (sha1);
+CREATE INDEX snapshot_extensions_asset_owner_index
+    ON snapshot_extensions (snapshot_key, owner_set_name, owner_component_order);
+CREATE UNIQUE INDEX snapshot_sets_set_id_index ON snapshot_sets (set_id);
+CREATE INDEX snapshot_sets_snapshot_index ON snapshot_sets (snapshot_key);
+CREATE INDEX snapshots_catalog_key_index ON catalog_snapshots (catalog_key);
+CREATE INDEX snapshots_document_key_index ON catalog_snapshots (document_key);
+CREATE INDEX snapshots_interpretation_key_index ON catalog_snapshots (interpretation_key);
+CREATE INDEX snapshots_parent_key_index ON catalog_snapshots (parent_snapshot_key);
+CREATE INDEX software_areas_part_order ON software_areas (part_id, area_order);
+CREATE INDEX software_disk_entries_area_order ON software_disk_entries (area_id, component_order);
+CREATE INDEX software_file_uses_declaration ON software_file_uses (declaration_occurrence_id);
+CREATE INDEX software_parts_item_order ON software_parts (record_id, part_order);
+CREATE INDEX software_rom_entries_area_order ON software_rom_entries (area_id, component_order);
+CREATE VIEW asset_requirement_content_conflicts AS
+SELECT occurrence.record_id AS set_id,occurrence.occurrence_order AS component_order,conflict.candidate_content_uuid,conflict.reason
+FROM occurrence_content_conflicts AS conflict JOIN asset_occurrences AS occurrence USING (occurrence_id)
+JOIN records ON records.record_id = occurrence.record_id WHERE records.kind <> 'software_item';
+CREATE VIEW asset_requirement_digest_assertions AS
+SELECT occurrence.record_id AS set_id,occurrence.occurrence_order AS component_order,assertion.digest_id,assertion.scope,assertion.provenance
+FROM occurrence_digest_assertions AS assertion JOIN asset_occurrences AS occurrence USING (occurrence_id)
+JOIN records ON records.record_id = occurrence.record_id WHERE records.kind <> 'software_item';
+CREATE VIEW asset_requirement_rows AS
+SELECT occurrence.record_id AS set_id,occurrence.occurrence_order AS component_order,
+       payload.name AS asset_name,'rom' AS role,
+       payload.size,payload.evidence_scope,payload.evidence_provenance,payload.merge_name,payload.dump_status,payload.source_line,payload.source_column,NULL AS serial,NULL AS date,payload.region,payload.bios,payload.offset,payload.optional,payload.sound_only,payload.dispose,payload.load_flag,payload.value,payload.inverted,payload.ovha,payload.no_thread,payload.disk_index,payload.writable,payload.writeable,
+       '{}' AS metadata_json,occurrence.content_uuid
+FROM mame_rom_claims AS payload JOIN asset_occurrences AS occurrence USING (occurrence_id)
+UNION ALL
+SELECT occurrence.record_id AS set_id,occurrence.occurrence_order AS component_order,
+       payload.name AS asset_name,'disk' AS role,
+       payload.size,payload.evidence_scope,payload.evidence_provenance,payload.merge_name,payload.dump_status,payload.source_line,payload.source_column,NULL AS serial,NULL AS date,payload.region,payload.bios,payload.offset,payload.optional,payload.sound_only,payload.dispose,payload.load_flag,payload.value,payload.inverted,payload.ovha,payload.no_thread,payload.disk_index,payload.writable,payload.writeable,
+       '{}' AS metadata_json,occurrence.content_uuid
+FROM mame_disk_claims AS payload JOIN asset_occurrences AS occurrence USING (occurrence_id)
+UNION ALL
+SELECT occurrence.record_id AS set_id,occurrence.occurrence_order AS component_order,
+       payload.name AS asset_name,'rom' AS role,
+       payload.size,payload.evidence_scope,payload.evidence_provenance,payload.merge_name,payload.dump_status,payload.source_line,payload.source_column,payload.serial,payload.date,NULL AS region,NULL AS bios,NULL AS offset,NULL AS optional,NULL AS sound_only,NULL AS dispose,NULL AS load_flag,NULL AS value,NULL AS inverted,NULL AS ovha,NULL AS no_thread,NULL AS disk_index,NULL AS writable,NULL AS writeable,
+       '{}' AS metadata_json,occurrence.content_uuid
+FROM logiqx_rom_claims AS payload JOIN asset_occurrences AS occurrence USING (occurrence_id)
+UNION ALL
+SELECT occurrence.record_id AS set_id,occurrence.occurrence_order AS component_order,
+       payload.name AS asset_name,'disk' AS role,
+       payload.size,payload.evidence_scope,payload.evidence_provenance,payload.merge_name,payload.dump_status,payload.source_line,payload.source_column,payload.serial,payload.date,NULL AS region,NULL AS bios,NULL AS offset,NULL AS optional,NULL AS sound_only,NULL AS dispose,NULL AS load_flag,NULL AS value,NULL AS inverted,NULL AS ovha,NULL AS no_thread,NULL AS disk_index,NULL AS writable,NULL AS writeable,
+       '{}' AS metadata_json,occurrence.content_uuid
+FROM logiqx_disk_claims AS payload JOIN asset_occurrences AS occurrence USING (occurrence_id)
+UNION ALL
+SELECT occurrence.record_id AS set_id,occurrence.occurrence_order AS component_order,
+       payload.name AS asset_name,'rom' AS role,
+       payload.size,payload.evidence_scope,payload.evidence_provenance,payload.merge_name,payload.dump_status,payload.source_line,payload.source_column,NULL AS serial,facts.date AS date,NULL AS region,NULL AS bios,NULL AS offset,NULL AS optional,NULL AS sound_only,NULL AS dispose,NULL AS load_flag,NULL AS value,NULL AS inverted,NULL AS ovha,NULL AS no_thread,NULL AS disk_index,NULL AS writable,NULL AS writeable,
+       '{}' AS metadata_json,occurrence.content_uuid
+FROM cmp_rom_claims AS payload JOIN asset_occurrences AS occurrence USING (occurrence_id) LEFT JOIN cmp_rom_facts AS facts USING (occurrence_id)
+UNION ALL
+SELECT occurrence.record_id AS set_id,occurrence.occurrence_order AS component_order,
+       payload.name AS asset_name,'rom' AS role,
+       payload.size,payload.evidence_scope,payload.evidence_provenance,payload.merge_name,payload.dump_status,payload.source_line,payload.source_column,NULL AS serial,NULL AS date,NULL AS region,NULL AS bios,NULL AS offset,NULL AS optional,NULL AS sound_only,NULL AS dispose,NULL AS load_flag,NULL AS value,NULL AS inverted,NULL AS ovha,NULL AS no_thread,NULL AS disk_index,NULL AS writable,NULL AS writeable,
+       '{}' AS metadata_json,occurrence.content_uuid
+FROM no_intro_pc_file_claims AS payload JOIN asset_occurrences AS occurrence USING (occurrence_id);
+CREATE VIEW asset_requirements AS
+SELECT sets.snapshot_key,sets.set_name,rows.component_order,rows.asset_name,rows.role,rows.size,
+       (SELECT digest.digest FROM occurrence_digest_assertions AS assertion JOIN digest_values AS digest USING (digest_id)
+        WHERE assertion.occurrence_id = occurrence.occurrence_id AND digest.algorithm = 'crc32' AND assertion.scope = rows.evidence_scope) AS crc,
+       (SELECT digest.digest FROM occurrence_digest_assertions AS assertion JOIN digest_values AS digest USING (digest_id)
+        WHERE assertion.occurrence_id = occurrence.occurrence_id AND digest.algorithm = 'md5' AND assertion.scope = rows.evidence_scope) AS md5,
+       (SELECT digest.digest FROM occurrence_digest_assertions AS assertion JOIN digest_values AS digest USING (digest_id)
+        WHERE assertion.occurrence_id = occurrence.occurrence_id AND digest.algorithm = 'sha1' AND assertion.scope = rows.evidence_scope) AS sha1,
+       rows.evidence_scope,rows.evidence_provenance,rows.merge_name,rows.dump_status,rows.serial,rows.date,rows.metadata_json,rows.source_line,rows.source_column,rows.content_uuid
+FROM asset_requirement_rows AS rows JOIN snapshot_sets AS sets USING (set_id)
+JOIN asset_occurrences AS occurrence ON occurrence.record_id = rows.set_id AND occurrence.occurrence_order = rows.component_order;
+CREATE VIEW mame_asset_facts AS
+SELECT sets.snapshot_key,sets.set_name,rows.component_order,rows.region,rows.bios,rows.offset,rows.optional,rows.sound_only,rows.dispose,rows.load_flag,rows.value,rows.inverted,rows.ovha,rows.no_thread,rows.disk_index,rows.writable,rows.writeable
+FROM asset_requirement_rows AS rows JOIN snapshot_sets AS sets USING (set_id) JOIN records ON records.record_id = rows.set_id
+WHERE records.kind = 'mame_machine';
+CREATE VIEW mame_machine_conditions AS
+SELECT set_id, 'element' AS owner_kind, element_order AS owner_element_order,
+       NULL AS owner_switch_order, NULL AS owner_child_order, condition_order,
+       tag, mask, relation, value, source_line, source_column
+FROM mame_machine_adjuster_conditions
+UNION ALL
+SELECT set_id, 'switch', NULL, switch_order, NULL, condition_order,
+       tag, mask, relation, value, source_line, source_column
+FROM machine_switch_conditions
+UNION ALL
+SELECT set_id, 'switch_value', NULL, switch_order, value_order, condition_order,
+       tag, mask, relation, value, source_line, source_column
+FROM machine_switch_value_conditions;
+CREATE VIEW mame_machine_spec_elements AS
+WITH element_keys AS (
+    SELECT set_id, element_order, 'sample' AS element_type, source_line, source_column FROM mame_machine_samples
+    UNION ALL SELECT set_id, element_order, 'chip', source_line, source_column FROM mame_machine_chips
+    UNION ALL SELECT set_id, element_order, 'display', source_line, source_column FROM mame_machine_displays
+    UNION ALL SELECT set_id, element_order, 'sound', source_line, source_column FROM mame_machine_sounds
+    UNION ALL SELECT set_id, element_order, 'input', source_line, source_column FROM mame_machine_inputs
+    UNION ALL SELECT set_id, element_order, 'port', source_line, source_column FROM mame_machine_ports
+    UNION ALL SELECT set_id, element_order, 'adjuster', source_line, source_column FROM mame_machine_adjusters
+    UNION ALL SELECT set_id, element_order, 'driver', source_line, source_column FROM mame_machine_drivers
+    UNION ALL SELECT set_id, element_order, 'feature', source_line, source_column FROM mame_machine_features
+    UNION ALL SELECT set_id, element_order, 'device', source_line, source_column FROM mame_machine_devices
+    UNION ALL SELECT set_id, element_order, 'slot', source_line, source_column FROM mame_machine_slots
+    UNION ALL SELECT set_id, element_order, 'softwarelist', source_line, source_column FROM mame_machine_software_lists
+    UNION ALL SELECT set_id, element_order, 'ramoption', source_line, source_column FROM mame_machine_ram_options
+)
+SELECT e.set_id, e.element_order, e.element_type,
+       sample.name AS sample_name,
+       chip.name AS chip_name, chip.tag AS chip_tag, chip.kind AS chip_type, chip.clock AS chip_clock,
+       display.tag AS display_tag, display.kind AS display_type, display.rotation AS display_rotate,
+       display.flip_x AS flipx, display.width AS display_width, display.height AS display_height,
+       display.refresh AS display_refresh, display.pixel_clock AS display_pixclock,
+       display.horizontal_total AS display_htotal, display.horizontal_blank_end AS display_hbend,
+       display.horizontal_blank_start AS display_hbstart, display.vertical_total AS display_vtotal,
+       display.vertical_blank_end AS display_vbend, display.vertical_blank_start AS display_vbstart,
+       sound.channels AS sound_channels,
+       input.service AS input_service, input.tilt AS input_tilt, input.players AS input_players,
+       input.coins AS input_coins, port.tag AS port_tag,
+       adjuster.name AS adjuster_name, adjuster.default_value AS adjuster_default,
+       driver.status AS driver_status, driver.emulation AS driver_emulation,
+       driver.cocktail AS driver_cocktail, driver.savestate AS driver_savestate,
+       driver.requires_artwork AS driver_requiresartwork, driver.unofficial AS driver_unofficial,
+       driver.no_sound_hardware AS driver_nosoundhardware, driver.incomplete AS driver_incomplete,
+       feature.kind AS feature_type, feature.status AS feature_status, feature.overall AS feature_overall,
+       device.kind AS device_type, device.tag AS device_tag, device.fixed_image AS device_fixed_image,
+       device.mandatory AS device_mandatory, device.interface AS device_interface,
+       instance.name AS device_instance_name, instance.brief_name AS device_instance_briefname,
+       instance.source_line AS device_instance_line, instance.source_column AS device_instance_column,
+       slot.name AS slot_name, software_list.tag AS softwarelist_tag,
+       software_list.name AS softwarelist_name, software_list.status AS softwarelist_status,
+       software_list.filter AS softwarelist_filter, ram.name AS ramoption_name,
+       ram.default_value AS ramoption_default, ram.text AS ramoption_text,
+       e.source_line, e.source_column
+FROM element_keys AS e
+LEFT JOIN mame_machine_samples AS sample USING (set_id, element_order)
+LEFT JOIN mame_machine_chips AS chip USING (set_id, element_order)
+LEFT JOIN mame_machine_displays AS display USING (set_id, element_order)
+LEFT JOIN mame_machine_sounds AS sound USING (set_id, element_order)
+LEFT JOIN mame_machine_inputs AS input USING (set_id, element_order)
+LEFT JOIN mame_machine_ports AS port USING (set_id, element_order)
+LEFT JOIN mame_machine_adjusters AS adjuster USING (set_id, element_order)
+LEFT JOIN mame_machine_drivers AS driver USING (set_id, element_order)
+LEFT JOIN mame_machine_features AS feature USING (set_id, element_order)
+LEFT JOIN mame_machine_devices AS device USING (set_id, element_order)
+LEFT JOIN mame_machine_device_instances AS instance USING (set_id, element_order)
+LEFT JOIN mame_machine_slots AS slot USING (set_id, element_order)
+LEFT JOIN mame_machine_software_lists AS software_list USING (set_id, element_order)
+LEFT JOIN mame_machine_ram_options AS ram USING (set_id, element_order);
+CREATE VIEW relationship_assertion_explanations AS
+SELECT assertion_key, relation_type, origin, source_snapshot_key, source_field,
+       source_line, source_column, generic_subject_snapshot_key, subject_kind,
+       generic_subject_a, generic_subject_b, generic_subject_c, source_subject_a,
+       source_subject_b, source_subject_c, subject_snapshot_key,
+       generic_target_snapshot_key, target_kind, generic_target_a, generic_target_b,
+       generic_target_c, source_target_a, source_target_b, source_target_c,
+       target_snapshot_key, rule_version
+FROM relationship_assertions
+UNION ALL
+SELECT 'mame-dependency:' || dependency.set_id || ':' || dependency.dependency_order,
+       'runtime_dependency', 'source_assertion', set_row.snapshot_key,
+       dependency.dependency_kind, dependency.source_line, dependency.source_column,
+       NULL, 'catalog_set', NULL, NULL, NULL,
+       set_row.set_name, NULL, NULL, set_row.snapshot_key,
+       NULL, 'catalog_set', NULL, NULL, NULL,
+       dependency.target_name, NULL, NULL, set_row.snapshot_key, NULL
+FROM mame_machine_dependencies AS dependency
+JOIN snapshot_sets AS set_row ON set_row.set_id = dependency.set_id;
+CREATE VIEW software_components AS
+SELECT occurrences.occurrence_id, namespaces.snapshot_key, namespaces.source_name AS list_name,
+       records.source_name AS item_name, parts.part_name, areas.area_order,
+       areas.area_kind, areas.area_name, COALESCE(rom.component_order, disk.component_order) AS component_order,
+       CASE WHEN occurrences.claim_kind = 'software_disk_entry' THEN 'disk' ELSE 'rom' END AS component_kind,
+       COALESCE(rom.name, disk.name) AS component_name,
+       rom.size,
+       (SELECT digest.digest FROM occurrence_digest_assertions AS assertions
+        JOIN digest_values AS digest USING (digest_id)
+        WHERE assertions.occurrence_id = occurrences.occurrence_id
+          AND digest.algorithm = 'crc32'
+          AND assertions.scope = COALESCE(rom.evidence_scope, disk.evidence_scope) LIMIT 1) AS crc,
+       (SELECT digest.digest FROM occurrence_digest_assertions AS assertions
+        JOIN digest_values AS digest USING (digest_id)
+        WHERE assertions.occurrence_id = occurrences.occurrence_id
+          AND digest.algorithm = 'sha1'
+          AND assertions.scope = COALESCE(rom.evidence_scope, disk.evidence_scope) LIMIT 1) AS sha1,
+       rom.offset,
+       rom.value,
+       COALESCE(rom.dump_status, disk.dump_status) AS dump_status,
+       disk.writeable,
+       rom.load_instruction,
+       COALESCE(rom.source_line, disk.source_line) AS source_line,
+       COALESCE(rom.source_column, disk.source_column) AS source_column,
+       COALESCE(rom.evidence_scope, disk.evidence_scope) AS evidence_scope,
+       occurrences.content_uuid
+FROM asset_occurrences AS occurrences
+JOIN records ON records.record_id = occurrences.record_id
+JOIN record_namespaces AS namespaces USING (namespace_id)
+LEFT JOIN software_rom_entries AS rom USING (occurrence_id, record_id)
+LEFT JOIN software_disk_entries AS disk USING (occurrence_id, record_id)
+LEFT JOIN software_areas AS areas ON areas.area_id = COALESCE(rom.area_id, disk.area_id)
+LEFT JOIN software_parts AS parts USING (part_id)
+WHERE occurrences.claim_kind IN ('software_rom_entry', 'software_rom_operation', 'software_disk_entry');
+CREATE TRIGGER acquisition_attempt_transport_headers_are_immutable_delete
+BEFORE DELETE ON acquisition_attempt_transport_headers
+BEGIN
+    SELECT RAISE(ABORT, 'acquisition attempt transport headers are immutable');
+END;
+CREATE TRIGGER acquisition_attempt_transport_headers_are_immutable_update
+BEFORE UPDATE ON acquisition_attempt_transport_headers
+BEGIN
+    SELECT RAISE(ABORT, 'acquisition attempt transport headers are immutable');
+END;
+CREATE TRIGGER acquisition_attempts_are_immutable_delete
+BEFORE DELETE ON acquisition_attempts
+BEGIN
+    SELECT RAISE(ABORT, 'acquisition attempts are immutable');
+END;
+CREATE TRIGGER acquisition_attempts_are_immutable_insert
+BEFORE INSERT ON acquisition_attempts
+WHEN EXISTS (SELECT 1 FROM acquisition_attempts WHERE attempt_key = NEW.attempt_key)
+BEGIN
+    SELECT RAISE(ABORT, 'acquisition attempts are immutable');
+END;
+CREATE TRIGGER acquisition_attempts_are_immutable_update
+BEFORE UPDATE ON acquisition_attempts
+BEGIN
+    SELECT RAISE(ABORT, 'acquisition attempts are immutable');
+END;
+CREATE TRIGGER acquisition_transport_headers_are_immutable_delete
+BEFORE DELETE ON acquisition_transport_headers
+BEGIN
+    SELECT RAISE(ABORT, 'acquisition transport headers are immutable');
+END;
+CREATE TRIGGER acquisition_transport_headers_are_immutable_update
+BEFORE UPDATE ON acquisition_transport_headers
+BEGIN
+    SELECT RAISE(ABORT, 'acquisition transport headers are immutable');
+END;
+CREATE TRIGGER acquisitions_are_immutable_delete
+BEFORE DELETE ON acquisitions
+BEGIN
+    SELECT RAISE(ABORT, 'acquisition provenance is immutable');
+END;
+CREATE TRIGGER acquisitions_are_immutable_insert
+BEFORE INSERT ON acquisitions
+WHEN EXISTS (SELECT 1 FROM acquisitions WHERE acquisition_key = NEW.acquisition_key)
+BEGIN
+    SELECT RAISE(ABORT, 'acquisition provenance is immutable');
+END;
+CREATE TRIGGER acquisitions_are_immutable_update
+BEFORE UPDATE ON acquisitions
+BEGIN
+    SELECT RAISE(ABORT, 'acquisition provenance is immutable');
+END;
+CREATE TRIGGER asset_occurrences_are_immutable_delete BEFORE DELETE ON asset_occurrences
+BEGIN SELECT RAISE(ABORT, 'asset occurrences are immutable'); END;
+CREATE TRIGGER asset_occurrences_are_immutable_update BEFORE UPDATE ON asset_occurrences
+BEGIN SELECT RAISE(ABORT, 'asset occurrences are immutable'); END;
+CREATE TRIGGER asset_requirement_digest_assertions_insert INSTEAD OF INSERT ON asset_requirement_digest_assertions
+BEGIN
+    INSERT INTO occurrence_digest_assertions(occurrence_id,digest_id,scope,provenance)
+    SELECT occurrence_id,NEW.digest_id,NEW.scope,NEW.provenance FROM asset_occurrences
+    WHERE record_id = NEW.set_id AND occurrence_order = NEW.component_order;
+    SELECT CASE WHEN changes() = 0 THEN RAISE(ABORT,'digest assertion requires native occurrence') END;
+END;
+CREATE TRIGGER catalog_snapshots_are_immutable_delete
+BEFORE DELETE ON catalog_snapshots
+BEGIN
+    SELECT RAISE(ABORT, 'catalog snapshots are immutable');
+END;
+CREATE TRIGGER catalog_snapshots_are_immutable_insert
+BEFORE INSERT ON catalog_snapshots
+WHEN EXISTS (SELECT 1 FROM catalog_snapshots WHERE snapshot_key = NEW.snapshot_key)
+BEGIN
+    SELECT RAISE(ABORT, 'catalog snapshots are immutable');
+END;
+CREATE TRIGGER catalog_snapshots_are_immutable_update
+BEFORE UPDATE ON catalog_snapshots
+BEGIN
+    SELECT RAISE(ABORT, 'catalog snapshots are immutable');
+END;
+CREATE TRIGGER cmp_rom_claims_immutable_delete BEFORE DELETE ON cmp_rom_claims
+BEGIN SELECT RAISE(ABORT,'native asset claims are immutable'); END;
+CREATE TRIGGER cmp_rom_claims_immutable_update BEFORE UPDATE ON cmp_rom_claims
+BEGIN SELECT RAISE(ABORT,'native asset claims are immutable'); END;
+CREATE TRIGGER documents_are_immutable_delete
+BEFORE DELETE ON documents
+BEGIN
+    SELECT RAISE(ABORT, 'source documents are immutable');
+END;
+CREATE TRIGGER documents_are_immutable_insert
+BEFORE INSERT ON documents
+WHEN EXISTS (
+    SELECT 1 FROM documents
+    WHERE document_key = NEW.document_key
+       OR (NEW.sha256 IS NOT NULL AND sha256 = NEW.sha256)
+)
+BEGIN
+    SELECT RAISE(ABORT, 'source documents are immutable');
+END;
+CREATE TRIGGER documents_are_immutable_update
+BEFORE UPDATE ON documents
+WHEN OLD.retention_status = 'retained'
+BEGIN
+    SELECT RAISE(ABORT, 'retained source documents are immutable');
+END;
+CREATE TRIGGER logiqx_disk_claims_immutable_delete BEFORE DELETE ON logiqx_disk_claims
+BEGIN SELECT RAISE(ABORT,'native asset claims are immutable'); END;
+CREATE TRIGGER logiqx_disk_claims_immutable_update BEFORE UPDATE ON logiqx_disk_claims
+BEGIN SELECT RAISE(ABORT,'native asset claims are immutable'); END;
+CREATE TRIGGER logiqx_rom_claims_immutable_delete BEFORE DELETE ON logiqx_rom_claims
+BEGIN SELECT RAISE(ABORT,'native asset claims are immutable'); END;
+CREATE TRIGGER logiqx_rom_claims_immutable_update BEFORE UPDATE ON logiqx_rom_claims
+BEGIN SELECT RAISE(ABORT,'native asset claims are immutable'); END;
+CREATE TRIGGER machine_bios_sets_are_immutable_delete
+BEFORE DELETE ON machine_bios_sets
+BEGIN
+    SELECT RAISE(ABORT, 'machine BIOS sets are immutable');
+END;
+CREATE TRIGGER machine_bios_sets_are_immutable_update
+BEFORE UPDATE ON machine_bios_sets
+BEGIN
+    SELECT RAISE(ABORT, 'machine BIOS sets are immutable');
+END;
+CREATE TRIGGER machine_switch_locations_are_immutable_delete
+BEFORE DELETE ON machine_switch_locations
+BEGIN
+    SELECT RAISE(ABORT, 'machine switch locations are immutable');
+END;
+CREATE TRIGGER machine_switch_locations_are_immutable_update
+BEFORE UPDATE ON machine_switch_locations
+BEGIN
+    SELECT RAISE(ABORT, 'machine switch locations are immutable');
+END;
+CREATE TRIGGER machine_switch_values_are_immutable_delete
+BEFORE DELETE ON machine_switch_values
+BEGIN
+    SELECT RAISE(ABORT, 'machine switch values are immutable');
+END;
+CREATE TRIGGER machine_switch_values_are_immutable_update
+BEFORE UPDATE ON machine_switch_values
+BEGIN
+    SELECT RAISE(ABORT, 'machine switch values are immutable');
+END;
+CREATE TRIGGER machine_switches_are_immutable_delete
+BEFORE DELETE ON machine_switches
+BEGIN
+    SELECT RAISE(ABORT, 'machine switches are immutable');
+END;
+CREATE TRIGGER machine_switches_are_immutable_update
+BEFORE UPDATE ON machine_switches
+BEGIN
+    SELECT RAISE(ABORT, 'machine switches are immutable');
+END;
+CREATE TRIGGER mame_disk_claims_immutable_delete BEFORE DELETE ON mame_disk_claims
+BEGIN SELECT RAISE(ABORT,'native asset claims are immutable'); END;
+CREATE TRIGGER mame_disk_claims_immutable_update BEFORE UPDATE ON mame_disk_claims
+BEGIN SELECT RAISE(ABORT,'native asset claims are immutable'); END;
+CREATE TRIGGER mame_document_facts_are_immutable_delete
+BEFORE DELETE ON mame_document_facts
+BEGIN
+    SELECT RAISE(ABORT, 'MAME document facts are immutable');
+END;
+CREATE TRIGGER mame_document_facts_are_immutable_update
+BEFORE UPDATE ON mame_document_facts
+BEGIN
+    SELECT RAISE(ABORT, 'MAME document facts are immutable');
+END;
+CREATE TRIGGER mame_machine_dependencies_are_immutable_delete
+BEFORE DELETE ON mame_machine_dependencies
+BEGIN
+    SELECT RAISE(ABORT, 'MAME machine dependencies are immutable');
+END;
+CREATE TRIGGER mame_machine_dependencies_are_immutable_update
+BEFORE UPDATE ON mame_machine_dependencies
+BEGIN
+    SELECT RAISE(ABORT, 'MAME machine dependencies are immutable');
+END;
+CREATE TRIGGER mame_machine_dependencies_require_set_identity
+BEFORE INSERT ON mame_machine_dependencies
+WHEN NOT EXISTS (SELECT 1 FROM snapshot_sets WHERE set_id = NEW.set_id)
+BEGIN
+    SELECT RAISE(ABORT, 'MAME machine dependency requires a catalog set');
+END;
+CREATE TRIGGER mame_machine_facts_are_immutable_delete
+BEFORE DELETE ON mame_machine_facts
+BEGIN
+    SELECT RAISE(ABORT, 'MAME machine facts are immutable');
+END;
+CREATE TRIGGER mame_machine_facts_are_immutable_update
+BEFORE UPDATE ON mame_machine_facts
+BEGIN
+    SELECT RAISE(ABORT, 'MAME machine facts are immutable');
+END;
+CREATE TRIGGER mame_rom_claims_immutable_delete BEFORE DELETE ON mame_rom_claims
+BEGIN SELECT RAISE(ABORT,'native asset claims are immutable'); END;
+CREATE TRIGGER mame_rom_claims_immutable_update BEFORE UPDATE ON mame_rom_claims
+BEGIN SELECT RAISE(ABORT,'native asset claims are immutable'); END;
+CREATE TRIGGER no_intro_pc_file_claims_immutable_delete BEFORE DELETE ON no_intro_pc_file_claims
+BEGIN SELECT RAISE(ABORT,'native asset claims are immutable'); END;
+CREATE TRIGGER no_intro_pc_file_claims_immutable_update BEFORE UPDATE ON no_intro_pc_file_claims
+BEGIN SELECT RAISE(ABORT,'native asset claims are immutable'); END;
+CREATE TRIGGER occurrences_require_native_record
+BEFORE INSERT ON asset_occurrences
+WHEN NOT EXISTS (
+    SELECT 1 FROM records WHERE record_id = NEW.record_id AND (
+        (kind = 'mame_machine' AND NEW.claim_kind IN ('mame_rom', 'mame_disk', 'mame_sample'))
+        OR (kind = 'software_item' AND NEW.claim_kind IN ('software_rom_entry', 'software_rom_operation', 'software_disk_entry'))
+        OR (kind = 'logiqx_game' AND NEW.claim_kind IN ('logiqx_rom', 'logiqx_disk', 'logiqx_sample'))
+        OR (kind = 'cmp_set' AND NEW.claim_kind IN ('cmp_rom', 'cmp_sample'))
+        OR (kind = 'no_intro_pc_game' AND NEW.claim_kind = 'no_intro_pc_file')
+        OR (kind = 'no_intro_dat_game' AND NEW.claim_kind = 'no_intro_dat_rom')
+        OR (kind = 'no_intro_database_game' AND NEW.claim_kind = 'no_intro_database_file')
+    )
+)
+BEGIN
+    SELECT RAISE(ABORT, 'occurrence kind does not match its native record');
+END;
+CREATE TRIGGER parser_interpretations_are_immutable_update
+BEFORE UPDATE ON parser_interpretations
+WHEN (
+    OLD.interpretation_key IS NOT NEW.interpretation_key
+    OR OLD.format IS NOT NEW.format
+    OR OLD.parser_name IS NOT NEW.parser_name
+    OR OLD.parser_version IS NOT NEW.parser_version
+    OR OLD.rules_version IS NOT NEW.rules_version
+    OR OLD.options_json IS NOT NEW.options_json
+) AND (
+    EXISTS (
+        SELECT 1 FROM catalog_snapshots
+        WHERE interpretation_key = OLD.interpretation_key
+    )
+    OR EXISTS (
+        SELECT 1 FROM import_runs
+        WHERE interpretation_key = OLD.interpretation_key
+    )
+)
+BEGIN
+    SELECT RAISE(ABORT, 'referenced parser interpretations are immutable');
+END;
+CREATE TRIGGER record_namespaces_are_immutable_delete BEFORE DELETE ON record_namespaces
+BEGIN SELECT RAISE(ABORT, 'record namespaces are immutable'); END;
+CREATE TRIGGER record_namespaces_are_immutable_update BEFORE UPDATE ON record_namespaces
+BEGIN SELECT RAISE(ABORT, 'record namespaces are immutable'); END;
+CREATE TRIGGER records_are_immutable_delete BEFORE DELETE ON records
+BEGIN SELECT RAISE(ABORT, 'native records are immutable'); END;
+CREATE TRIGGER records_are_immutable_update BEFORE UPDATE ON records
+BEGIN SELECT RAISE(ABORT, 'native records are immutable'); END;
+CREATE TRIGGER records_require_native_namespace
+BEFORE INSERT ON records
+WHEN (NEW.kind = 'software_item') IS NOT
+     (SELECT kind = 'software_list' FROM record_namespaces WHERE namespace_id = NEW.namespace_id)
+BEGIN
+    SELECT RAISE(ABORT, 'record kind does not match its native namespace');
+END;
+CREATE TRIGGER relationship_assertion_evidence_immutable_delete
+BEFORE DELETE ON relationship_assertion_evidence
+BEGIN
+    SELECT RAISE(ABORT, 'relationship assertion evidence is immutable');
+END;
+CREATE TRIGGER relationship_assertion_evidence_immutable_update
+BEFORE UPDATE ON relationship_assertion_evidence
+BEGIN
+    SELECT RAISE(ABORT, 'relationship assertion evidence is immutable');
+END;
+CREATE TRIGGER relationship_assertion_evidence_source_insert
+BEFORE INSERT ON relationship_assertion_evidence
+WHEN (SELECT origin FROM relationship_assertions WHERE assertion_key = NEW.assertion_key) = 'source_assertion'
+BEGIN
+    SELECT RAISE(ABORT, 'source assertion evidence is derived from typed catalog facts');
+END;
+CREATE TRIGGER relationship_assertion_support_immutable_delete
+BEFORE DELETE ON relationship_assertion_support
+BEGIN
+    SELECT RAISE(ABORT, 'relationship assertion support is immutable');
+END;
+CREATE TRIGGER relationship_assertion_support_immutable_update
+BEFORE UPDATE ON relationship_assertion_support
+BEGIN
+    SELECT RAISE(ABORT, 'relationship assertion support is immutable');
+END;
+CREATE TRIGGER relationship_assertion_support_origin_insert
+BEFORE INSERT ON relationship_assertion_support
+WHEN NOT EXISTS (
+    SELECT 1 FROM relationship_assertions
+    WHERE assertion_key = NEW.assertion_key AND origin = 'derived_candidate'
+)
+BEGIN
+    SELECT RAISE(ABORT, 'only derived candidates may have supporting assertions');
+END;
+CREATE TRIGGER relationship_assertion_support_target_exists_insert
+BEFORE INSERT ON relationship_assertion_support
+WHEN NOT EXISTS (
+    SELECT 1 FROM relationship_assertions WHERE assertion_key = NEW.supported_assertion_key
+) AND NOT EXISTS (
+    SELECT 1 FROM mame_machine_dependencies AS dependency
+    WHERE NEW.supported_assertion_key =
+          'mame-dependency:' || dependency.set_id || ':' || dependency.dependency_order
+)
+BEGIN
+    SELECT RAISE(ABORT, 'supported relationship assertion does not exist');
+END;
+CREATE TRIGGER relationship_assertions_are_immutable_delete
+BEFORE DELETE ON relationship_assertions
+BEGIN
+    SELECT RAISE(ABORT, 'relationship assertions are immutable');
+END;
+CREATE TRIGGER relationship_assertions_are_immutable_insert
+BEFORE INSERT ON relationship_assertions
+WHEN EXISTS (
+    SELECT 1 FROM relationship_assertions WHERE assertion_key = NEW.assertion_key
+) OR NEW.assertion_key GLOB 'mame-dependency:*'
+BEGIN
+    SELECT RAISE(ABORT, 'relationship assertions are immutable');
+END;
+CREATE TRIGGER relationship_assertions_are_immutable_update
+BEFORE UPDATE ON relationship_assertions
+BEGIN
+    SELECT RAISE(ABORT, 'relationship assertions are immutable');
+END;
+CREATE TRIGGER relationship_reviews_are_immutable_delete
+BEFORE DELETE ON relationship_reviews
+BEGIN
+    SELECT RAISE(ABORT, 'relationship reviews are append-only');
+END;
+CREATE TRIGGER relationship_reviews_are_immutable_insert
+BEFORE INSERT ON relationship_reviews
+WHEN EXISTS (
+    SELECT 1 FROM relationship_reviews
+    WHERE review_key = NEW.review_key OR review_id = NEW.review_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'relationship reviews are append-only');
+END;
+CREATE TRIGGER relationship_reviews_are_immutable_update
+BEFORE UPDATE ON relationship_reviews
+BEGIN
+    SELECT RAISE(ABORT, 'relationship reviews are append-only');
+END;
+CREATE TRIGGER relationship_reviews_assertion_exists_insert
+BEFORE INSERT ON relationship_reviews
+WHEN NOT EXISTS (
+    SELECT 1 FROM relationship_assertions WHERE assertion_key = NEW.assertion_key
+) AND NOT EXISTS (
+    SELECT 1 FROM mame_machine_dependencies AS dependency
+    WHERE NEW.assertion_key =
+          'mame-dependency:' || dependency.set_id || ':' || dependency.dependency_order
+)
+BEGIN
+    SELECT RAISE(ABORT, 'relationship review assertion does not exist');
+END;
+CREATE TRIGGER relationship_reviews_superseding_assertion_exists_insert
+BEFORE INSERT ON relationship_reviews
+WHEN NEW.superseded_by_assertion_key IS NOT NULL
+ AND NOT EXISTS (
+    SELECT 1 FROM relationship_assertions
+    WHERE assertion_key = NEW.superseded_by_assertion_key
+ ) AND NOT EXISTS (
+    SELECT 1 FROM mame_machine_dependencies AS dependency
+    WHERE NEW.superseded_by_assertion_key =
+          'mame-dependency:' || dependency.set_id || ':' || dependency.dependency_order
+ )
+BEGIN
+    SELECT RAISE(ABORT, 'superseding relationship assertion does not exist');
+END;
+CREATE TRIGGER retained_documents_require_object_insert
+BEFORE INSERT ON documents
+WHEN NEW.retention_status = 'retained'
+    AND (NEW.object_key IS NULL OR NEW.sha256 IS NULL OR NEW.byte_length IS NULL)
+BEGIN
+    SELECT RAISE(ABORT, 'retained document object metadata is incomplete');
+END;
+CREATE TRIGGER retained_documents_require_object_update
+BEFORE UPDATE ON documents
+WHEN NEW.retention_status = 'retained'
+    AND (NEW.object_key IS NULL OR NEW.sha256 IS NULL OR NEW.byte_length IS NULL)
+BEGIN
+    SELECT RAISE(ABORT, 'retained document object metadata is incomplete');
+END;
+CREATE TRIGGER rom_files_archive_identity_insert
+BEFORE INSERT ON rom_files
+WHEN (NEW.archive_backend IS NULL) != (NEW.archive_member_index IS NULL)
+BEGIN
+    SELECT RAISE(ABORT, 'archive backend and member index must be stored together');
+END;
+CREATE TRIGGER rom_files_archive_identity_update
+BEFORE UPDATE OF archive_backend, archive_member_index ON rom_files
+WHEN (NEW.archive_backend IS NULL) != (NEW.archive_member_index IS NULL)
+BEGIN
+    SELECT RAISE(ABORT, 'archive backend and member index must be stored together');
+END;
+CREATE TRIGGER rom_files_scan_provenance_insert
+BEFORE INSERT ON rom_files
+WHEN NOT (
+    (NEW.scan_root IS NULL AND NEW.scan_run IS NULL
+        AND NEW.source_fingerprint IS NULL AND NEW.scan_provenance IS NULL
+        AND NEW.observed_size IS NULL)
+    OR
+    (NEW.scan_root IS NOT NULL AND NEW.scan_run IS NOT NULL
+        AND NEW.source_fingerprint IS NOT NULL AND NEW.scan_provenance IS NOT NULL
+        AND NEW.observed_size IS NOT NULL)
+)
+BEGIN
+    SELECT RAISE(ABORT, 'scan metadata must be stored together');
+END;
+CREATE TRIGGER rom_files_scan_provenance_update
+BEFORE UPDATE OF scan_root, scan_run, observed_size, source_fingerprint, scan_provenance ON rom_files
+WHEN NOT (
+    (NEW.scan_root IS NULL AND NEW.scan_run IS NULL
+        AND NEW.source_fingerprint IS NULL AND NEW.scan_provenance IS NULL
+        AND NEW.observed_size IS NULL)
+    OR
+    (NEW.scan_root IS NOT NULL AND NEW.scan_run IS NOT NULL
+        AND NEW.source_fingerprint IS NOT NULL AND NEW.scan_provenance IS NOT NULL
+        AND NEW.observed_size IS NOT NULL)
+)
+BEGIN
+    SELECT RAISE(ABORT, 'scan metadata must be stored together');
+END;
+CREATE TRIGGER snapshot_extensions_are_immutable_delete
+BEFORE DELETE ON snapshot_extensions
+BEGIN
+    SELECT RAISE(ABORT, 'snapshot extensions are immutable');
+END;
+CREATE TRIGGER snapshot_extensions_are_immutable_update
+BEFORE UPDATE ON snapshot_extensions
+BEGIN
+    SELECT RAISE(ABORT, 'snapshot extensions are immutable');
+END;
+CREATE TRIGGER snapshot_publications_are_immutable_delete
+BEFORE DELETE ON snapshot_publications
+BEGIN
+    SELECT RAISE(ABORT, 'snapshot publications are immutable');
+END;
+CREATE TRIGGER snapshot_publications_are_immutable_insert
+BEFORE INSERT ON snapshot_publications
+WHEN EXISTS (
+    SELECT 1 FROM snapshot_publications
+    WHERE (catalog_key = NEW.catalog_key
+       AND document_key = NEW.document_key
+       AND interpretation_key = NEW.interpretation_key)
+       OR snapshot_key = NEW.snapshot_key
+)
+BEGIN
+    SELECT RAISE(ABORT, 'snapshot publications are immutable');
+END;
+CREATE TRIGGER snapshot_publications_are_immutable_update
+BEFORE UPDATE ON snapshot_publications
+BEGIN
+    SELECT RAISE(ABORT, 'snapshot publications are immutable');
+END;
+CREATE TRIGGER snapshot_sets_are_immutable_delete
+BEFORE DELETE ON snapshot_sets
+BEGIN
+    SELECT RAISE(ABORT, 'snapshot sets are immutable');
+END;
+CREATE TRIGGER snapshot_sets_are_immutable_update
+BEFORE UPDATE ON snapshot_sets
+BEGIN
+    SELECT RAISE(ABORT, 'snapshot sets are immutable');
+END;
+CREATE TRIGGER snapshot_sets_register_native_record
+AFTER INSERT ON snapshot_sets
+BEGIN
+    INSERT OR IGNORE INTO record_namespaces(snapshot_key,kind,source_order)
+    VALUES (NEW.snapshot_key,'root',0);
+    INSERT INTO records(record_id,namespace_id,kind,source_order,source_name,source_line,source_column)
+    SELECT NEW.set_id,namespace.namespace_id,
+           CASE interpretation.format
+               WHEN 'mame-listxml' THEN 'mame_machine'
+               WHEN 'clrmamepro-dat' THEN 'cmp_set'
+               WHEN 'no-intro-pc-xml' THEN 'no_intro_pc_game'
+               ELSE 'logiqx_game' END,
+           (SELECT count(*) FROM records WHERE namespace_id = namespace.namespace_id),
+           NEW.set_name,NEW.source_line,NEW.source_column
+    FROM record_namespaces AS namespace
+    JOIN catalog_snapshots AS snapshot ON snapshot.snapshot_key = namespace.snapshot_key
+    JOIN parser_interpretations AS interpretation USING (interpretation_key)
+    WHERE namespace.snapshot_key = NEW.snapshot_key AND namespace.kind = 'root';
+END;

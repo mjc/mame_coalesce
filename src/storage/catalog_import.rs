@@ -18,9 +18,8 @@ use crate::{
     no_intro_pc_xml::Catalog as NoIntroCatalog,
     storage::{
         catalog_content::{
-            CatalogContentOccurrence, ContentDigestAssertions, ContentIdentityResolution,
-            record_content_identity_conflict, record_occurrence_digest_assertions,
-            resolve_content_identity,
+            ContentDigestAssertions, ContentIdentityResolution, record_content_identity_conflict,
+            record_occurrence_digest_assertions, resolve_content_identity,
         },
         db::Pool,
         documents::DocumentStore,
@@ -28,7 +27,11 @@ use crate::{
     },
 };
 
+mod cmp_native;
+mod mame_specification;
 mod merges;
+mod root_assets;
+mod software_native;
 
 enum SnapshotPublication {
     Published(SnapshotKey),
@@ -114,6 +117,7 @@ struct SnapshotData {
     software_lists: Option<SoftwareListCatalog>,
     extensions: Vec<StoredExtension>,
     logiqx_document_facts: Option<LogiqxDocumentFacts>,
+    cmp_header_facts: Option<crate::clrmamepro::Header>,
 }
 
 #[derive(Clone)]
@@ -122,7 +126,7 @@ struct LogiqxDocumentFacts {
     debug: Option<String>,
     file_name: Option<String>,
     sha1: Option<Vec<u8>>,
-    header_name: String,
+    header_name: Option<String>,
     header_description: Option<String>,
     header_version: Option<String>,
     header_date: Option<String>,
@@ -136,22 +140,22 @@ struct LogiqxDocumentFacts {
 
 impl LogiqxDocumentFacts {
     fn from_data_file(data_file: &DataFile) -> Self {
-        let header = data_file.header();
+        let header = data_file.header_opt();
         Self {
             build: data_file.build().map(str::to_owned),
             debug: data_file.debug().map(str::to_owned),
             file_name: data_file.file_name().map(str::to_owned),
             sha1: data_file.sha1().map(<[u8]>::to_vec),
-            header_name: header.name().to_owned(),
-            header_description: header.description().cloned(),
-            header_version: header.version().cloned(),
-            header_date: header.date().cloned(),
-            header_author: header.author().cloned(),
-            header_email: header.email().cloned(),
-            header_homepage: header.homepage().cloned(),
-            header_url: header.url().cloned(),
-            header_comment: header.comment().cloned(),
-            header_category: header.category().cloned(),
+            header_name: header.map(|header| header.name().to_owned()),
+            header_description: header.and_then(|header| header.description().cloned()),
+            header_version: header.and_then(|header| header.version().cloned()),
+            header_date: header.and_then(|header| header.date().cloned()),
+            header_author: header.and_then(|header| header.author().cloned()),
+            header_email: header.and_then(|header| header.email().cloned()),
+            header_homepage: header.and_then(|header| header.homepage().cloned()),
+            header_url: header.and_then(|header| header.url().cloned()),
+            header_comment: header.and_then(|header| header.comment().cloned()),
+            header_category: header.and_then(|header| header.category().cloned()),
         }
     }
 }
@@ -195,6 +199,7 @@ struct SnapshotSet {
     mame_facts: Option<crate::mame::MachineFacts>,
     no_intro_facts: Option<crate::no_intro_pc_xml::GameFacts>,
     logiqx_facts: Option<LogiqxSetFacts>,
+    cmp_facts: Option<crate::clrmamepro::SetFacts>,
     machine_dependencies: Vec<SnapshotDependency>,
 }
 
@@ -203,13 +208,6 @@ struct SnapshotDependency {
     target_name: String,
     reference_tag: Option<String>,
     location: crate::logiqx::RecordLocation,
-}
-
-#[derive(Clone, Copy)]
-enum MameConditionOwner {
-    Element { order: i64 },
-    Switch { order: i64 },
-    SwitchValue { switch_order: i64, value_order: i64 },
 }
 
 struct SnapshotAsset {
@@ -224,9 +222,34 @@ struct SnapshotAsset {
     dump_status: Option<String>,
     serial: Option<String>,
     date: Option<String>,
-    metadata: serde_json::Value,
     mame_attributes: Option<mame::MameAssetAttributes>,
+    cmp_facts: Option<crate::clrmamepro::AssetFacts>,
     location: crate::logiqx::RecordLocation,
+}
+
+impl SnapshotAsset {
+    fn from_logiqx(
+        rom: &crate::logiqx::Rom,
+        location: crate::logiqx::RecordLocation,
+    ) -> crate::Result<Self> {
+        let expected = crate::domain::ExpectedEvidence::from_logiqx(rom)?;
+        Ok(Self {
+            name: rom.name().to_owned(),
+            role: "rom",
+            size: expected.size,
+            crc: expected.crc.map(|value| value.0.to_vec()),
+            md5: expected.md5.map(|value| value.0.to_vec()),
+            sha1: expected.sha1.map(|value| value.to_vec()),
+            evidence_scope: "whole_asset",
+            merge: expected.merge,
+            dump_status: expected.dump_status,
+            serial: expected.serial,
+            date: expected.date,
+            mame_attributes: None,
+            cmp_facts: None,
+            location,
+        })
+    }
 }
 
 struct StoredExtension {
@@ -275,25 +298,10 @@ impl SnapshotData {
             }
             let mut assets = Vec::with_capacity(game.roms().len());
             for (index, rom) in game.roms().iter().enumerate() {
-                let expected = crate::domain::ExpectedEvidence::from_logiqx(rom)?;
-                assets.push(SnapshotAsset {
-                    name: rom.name().to_owned(),
-                    role: "rom",
-                    size: expected.size,
-                    crc: expected.crc.map(|value| value.0.to_vec()),
-                    md5: expected.md5.map(|value| value.0.to_vec()),
-                    sha1: expected.sha1.map(|value| value.to_vec()),
-                    evidence_scope: "whole_asset",
-                    merge: expected.merge,
-                    dump_status: expected.dump_status,
-                    serial: expected.serial,
-                    date: expected.date,
-                    metadata: serde_json::Value::Null,
-                    mame_attributes: None,
-                    location: *rom_locations.get(index).ok_or_else(|| {
-                        crate::Error::InvalidPath("Logiqx asset source location is missing".into())
-                    })?,
-                });
+                let location = *rom_locations.get(index).ok_or_else(|| {
+                    crate::Error::InvalidPath("Logiqx asset source location is missing".into())
+                })?;
+                assets.push(SnapshotAsset::from_logiqx(rom, location)?);
             }
             sets.push(SnapshotSet {
                 name: game.name().into(),
@@ -334,15 +342,19 @@ impl SnapshotData {
                 mame_facts: None,
                 no_intro_facts: None,
                 logiqx_facts: Some(LogiqxSetFacts::from_game(game)),
+                cmp_facts: None,
                 machine_dependencies: Vec::new(),
             });
         }
         Ok(Self {
-            version: data_file.header().version().cloned(),
+            version: data_file
+                .header_opt()
+                .and_then(|header| header.version().cloned()),
             sets,
             software_lists: None,
             extensions: stored_logiqx_extensions(data_file, source_map),
             logiqx_document_facts: Some(LogiqxDocumentFacts::from_data_file(data_file)),
+            cmp_header_facts: None,
         })
     }
 
@@ -360,6 +372,7 @@ impl SnapshotData {
             software_lists: Some(catalog),
             extensions,
             logiqx_document_facts: None,
+            cmp_header_facts: None,
         }
     }
 
@@ -397,8 +410,8 @@ impl SnapshotData {
                             dump_status: asset.status,
                             serial: None,
                             date: None,
-                            metadata: asset.metadata,
                             mame_attributes: None,
+                            cmp_facts: Some(asset.native),
                             location: asset.location,
                         }
                     })
@@ -417,6 +430,7 @@ impl SnapshotData {
                     mame_facts: None,
                     no_intro_facts: None,
                     logiqx_facts: None,
+                    cmp_facts: Some(set.native),
                     machine_dependencies: Vec::new(),
                 }
             })
@@ -427,6 +441,7 @@ impl SnapshotData {
             software_lists: None,
             extensions,
             logiqx_document_facts: None,
+            cmp_header_facts: catalog.header,
         }
     }
 
@@ -470,8 +485,8 @@ impl SnapshotData {
                             dump_status: None,
                             serial: None,
                             date: None,
-                            metadata: serde_json::Value::Null,
                             mame_attributes: None,
+                            cmp_facts: None,
                             location: asset.location,
                         }
                     })
@@ -490,6 +505,7 @@ impl SnapshotData {
                     mame_facts: None,
                     no_intro_facts: Some(no_intro_facts),
                     logiqx_facts: None,
+                    cmp_facts: None,
                     machine_dependencies: Vec::new(),
                 }
             })
@@ -500,6 +516,7 @@ impl SnapshotData {
             software_lists: None,
             extensions,
             logiqx_document_facts: None,
+            cmp_header_facts: None,
         }
     }
 }
@@ -564,6 +581,7 @@ fn machine_contents(machine: crate::mame::Machine) -> (SnapshotSet, Vec<StoredEx
         mame_facts: Some(mame_facts),
         no_intro_facts: None,
         logiqx_facts: None,
+        cmp_facts: None,
     };
     (set, extensions)
 }
@@ -616,8 +634,8 @@ fn machine_assets(
                 dump_status: Some(asset.dump_status.as_str().to_owned()),
                 serial: None,
                 date: None,
-                metadata: serde_json::Value::Null,
                 mame_attributes: Some(asset.attributes),
+                cmp_facts: None,
                 location: asset.location,
             }
         })
@@ -1251,11 +1269,13 @@ fn insert_snapshot_contents(
     }
 
     if let Some(catalog) = &snapshot_data.software_lists {
-        insert_software_list_contents(conn, snapshot_key, catalog)?;
+        software_native::insert(conn, snapshot_key, catalog)?;
     }
-
     if let Some(facts) = &snapshot_data.logiqx_document_facts {
         insert_logiqx_document_facts(conn, snapshot_key, facts)?;
+    }
+    if let Some(header) = &snapshot_data.cmp_header_facts {
+        cmp_native::insert_header_facts(conn, snapshot_key, header)?;
     }
 
     for extension in &snapshot_data.extensions {
@@ -1272,7 +1292,7 @@ fn insert_snapshot_set(
     let set_id = sql_query(
         "INSERT INTO snapshot_sets \
          (snapshot_key, set_name, parent_name, metadata_json, source_line, source_column, set_id) \
-         VALUES (?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(set_id), 0) + 1 FROM snapshot_sets)) \
+         VALUES (?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(record_id), 0) + 1 FROM records)) \
          RETURNING set_id",
     )
     .bind::<Text, _>(snapshot_key.as_str())
@@ -1287,13 +1307,16 @@ fn insert_snapshot_set(
     if let Some(facts) = &set.mame_facts {
         insert_mame_machine_facts(conn, snapshot_key, set, facts)?;
         insert_mame_machine_dependencies(conn, set_id, set)?;
-        insert_mame_machine_specification(conn, set_id, set)?;
+        mame_specification::insert(conn, set_id, set)?;
     }
     if let Some(facts) = &set.no_intro_facts {
         insert_no_intro_game_facts(conn, snapshot_key, set, facts)?;
     }
     if let Some(facts) = &set.logiqx_facts {
         insert_logiqx_set_facts(conn, snapshot_key, set, facts)?;
+    }
+    if let Some(facts) = &set.cmp_facts {
+        cmp_native::insert_set_facts(conn, set_id, facts)?;
     }
 
     persist_set_relationships(conn, snapshot_key, set)?;
@@ -1324,6 +1347,8 @@ fn insert_asset_requirement(
         asset.sha1.as_deref(),
         None,
     );
+    // MAME listxml emits complete file size (output_rom/rom_file_size),
+    // unlike software-list ROM entries, whose size is one load segment.
     let resolution = if asset.role == "other" {
         ContentIdentityResolution::NoEligibleEvidence
     } else {
@@ -1332,105 +1357,19 @@ fn insert_asset_requirement(
     let content_uuid = resolution
         .content_id()
         .map(|content_id| content_id.as_bytes().to_vec());
-    insert_asset_requirement_row(conn, set_id, component_order, asset, size, content_uuid)?;
-    record_occurrence_digest_assertions(
+    let occurrence = root_assets::insert(
         conn,
-        CatalogContentOccurrence::MachineAsset {
-            set_id,
-            component_order,
-        },
-        digests,
-        "source_declared",
+        crate::storage::catalog_identity::RecordId::from_database(set_id),
+        component_order,
+        asset,
+        size,
+        content_uuid,
     )?;
-    record_content_identity_conflict(
-        conn,
-        CatalogContentOccurrence::MachineAsset {
-            set_id,
-            component_order,
-        },
-        &resolution,
-    )?;
-    Ok(())
-}
-
-fn insert_asset_requirement_row(
-    conn: &mut SqliteConnection,
-    set_id: i64,
-    component_order: i64,
-    asset: &SnapshotAsset,
-    size: Option<i64>,
-    content_uuid: Option<Vec<u8>>,
-) -> crate::Result<()> {
-    let mame_attributes = asset.mame_attributes.as_ref();
-    let mame_offset = sqlite_mame_offset(mame_attributes)?;
-    sql_query(
-        "INSERT INTO asset_requirement_rows \
-         (set_id, component_order, asset_name, role, size, evidence_scope, \
-         evidence_provenance, merge_name, dump_status, serial, date, metadata_json, source_line, \
-         source_column, region, bios, offset, optional, sound_only, dispose, load_flag, value, \
-         inverted, ovha, no_thread, disk_index, writable, writeable, content_uuid) \
-         VALUES (?, ?, ?, ?, ?, ?, 'source_declared', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, \
-         ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind::<BigInt, _>(set_id)
-    .bind::<BigInt, _>(component_order)
-    .bind::<Text, _>(&asset.name)
-    .bind::<Text, _>(asset.role)
-    .bind::<Nullable<BigInt>, _>(size)
-    .bind::<Text, _>(asset.evidence_scope)
-    .bind::<Nullable<Text>, _>(asset.merge.as_deref())
-    .bind::<Nullable<Text>, _>(asset.dump_status.as_deref())
-    .bind::<Nullable<Text>, _>(asset.serial.as_deref())
-    .bind::<Nullable<Text>, _>(asset.date.as_deref())
-    .bind::<Text, _>(serde_json::to_string(&asset.metadata)?)
-    .bind::<BigInt, _>(asset.location.line)
-    .bind::<BigInt, _>(asset.location.column)
-    .bind::<Nullable<Text>, _>(mame_attributes.and_then(|attributes| attributes.region.as_deref()))
-    .bind::<Nullable<Text>, _>(mame_attributes.and_then(|attributes| attributes.bios.as_deref()))
-    .bind::<Nullable<BigInt>, _>(mame_offset)
-    .bind::<Nullable<BigInt>, _>(
-        mame_attributes.map(|attributes| i64::from(attributes.optional.as_bool())),
-    )
-    .bind::<Nullable<BigInt>, _>(
-        mame_attributes
-            .and_then(|attributes| attributes.sound_only)
-            .map(sqlite_mame_boolean),
-    )
-    .bind::<Nullable<BigInt>, _>(
-        mame_attributes
-            .and_then(|attributes| attributes.dispose)
-            .map(sqlite_mame_boolean),
-    )
-    .bind::<Nullable<Text>, _>(
-        mame_attributes.and_then(|attributes| attributes.load_flag.as_deref()),
-    )
-    .bind::<Nullable<Text>, _>(mame_attributes.and_then(|attributes| attributes.value.as_deref()))
-    .bind::<Nullable<BigInt>, _>(
-        mame_attributes
-            .and_then(|attributes| attributes.inverted)
-            .map(sqlite_mame_boolean),
-    )
-    .bind::<Nullable<Text>, _>(mame_attributes.and_then(|attributes| attributes.ovha.as_deref()))
-    .bind::<Nullable<BigInt>, _>(
-        mame_attributes
-            .and_then(|attributes| attributes.no_thread)
-            .map(sqlite_mame_boolean),
-    )
-    .bind::<Nullable<Text>, _>(
-        mame_attributes.and_then(|attributes| attributes.disk_index.as_deref()),
-    )
-    .bind::<Nullable<BigInt>, _>(
-        mame_attributes
-            .and_then(|attributes| attributes.writable)
-            .map(sqlite_mame_boolean),
-    )
-    .bind::<Nullable<BigInt>, _>(
-        mame_attributes
-            .and_then(|attributes| attributes.writeable)
-            .map(sqlite_mame_boolean),
-    )
-    .bind::<Nullable<Binary>, _>(content_uuid)
-    .execute(conn)?;
+    if let Some(facts) = &asset.cmp_facts {
+        cmp_native::insert_rom_facts(conn, occurrence.database_value(), facts)?;
+    }
+    record_occurrence_digest_assertions(conn, occurrence, digests, "source_declared")?;
+    record_content_identity_conflict(conn, occurrence, &resolution)?;
     Ok(())
 }
 
@@ -1465,7 +1404,7 @@ fn insert_logiqx_document_facts(
     .bind::<Nullable<Text>, _>(facts.debug.as_deref())
     .bind::<Nullable<Text>, _>(facts.file_name.as_deref())
     .bind::<Nullable<Binary>, _>(facts.sha1.as_deref())
-    .bind::<Text, _>(&facts.header_name)
+    .bind::<Nullable<Text>, _>(facts.header_name.as_deref())
     .bind::<Nullable<Text>, _>(facts.header_description.as_deref())
     .bind::<Nullable<Text>, _>(facts.header_version.as_deref())
     .bind::<Nullable<Text>, _>(facts.header_date.as_deref())
@@ -1549,233 +1488,6 @@ fn insert_mame_machine_dependencies(
         .bind::<BigInt, _>(dependency.location.column)
         .execute(conn)?;
     }
-    Ok(())
-}
-
-// This exhaustive variant-to-column mapping stays together so schema and Rust
-// enum coverage can be reviewed side by side; nested rows remain typed inserts.
-#[allow(clippy::too_many_lines)]
-fn insert_mame_machine_specification(
-    conn: &mut SqliteConnection,
-    set_id: i64,
-    set: &SnapshotSet,
-) -> crate::Result<()> {
-    macro_rules! insert_element {
-        ($order:expr, $kind:literal, $location:expr; $( $column:literal : $sql_type:ty = $value:expr ),* $(,)?) => {{
-            let columns = [$( $column ),*].join(", ");
-            let placeholders = vec!["?"; [$( stringify!($column) ),*].len()].join(", ");
-            let statement = format!(
-                "INSERT INTO mame_machine_spec_elements \
-                 (set_id, element_order, element_type, source_line, source_column, {columns}) \
-                 VALUES (?, ?, ?, ?, ?, {placeholders})"
-            );
-            sql_query(statement)
-                .bind::<BigInt, _>(set_id)
-                .bind::<BigInt, _>($order)
-                .bind::<Text, _>($kind)
-                .bind::<BigInt, _>($location.line)
-                .bind::<BigInt, _>($location.column)
-                $(.bind::<$sql_type, _>($value))*
-                .execute(conn)?;
-        }};
-    }
-
-    for element in &set.specification {
-        use crate::mame::MachineSpecification as Spec;
-        let order = element.element_order;
-        match &element.value {
-            Spec::Sample(value) => insert_element!(order, "sample", value.location;
-                "sample_name": Text = &value.name),
-            Spec::Chip(value) => insert_element!(order, "chip", value.location;
-                "chip_name": Text = &value.name,
-                "chip_tag": Nullable<Text> = value.tag.as_deref(),
-                "chip_type": Text = value.kind.as_str(),
-                "chip_clock": Nullable<Text> = value.clock.as_deref()),
-            Spec::Display(value) => insert_element!(order, "display", value.location;
-                "display_tag": Nullable<Text> = value.tag.as_deref(),
-                "display_type": Text = value.kind.as_str(),
-                "display_rotate": Nullable<Text> = value.rotation.map(crate::mame::DisplayRotation::as_str),
-                "flipx": diesel::sql_types::Bool = value.flip_x.as_bool(),
-                "display_width": Nullable<Text> = value.width.as_deref(),
-                "display_height": Nullable<Text> = value.height.as_deref(),
-                "display_refresh": Text = &value.refresh,
-                "display_pixclock": Nullable<Text> = value.pixel_clock.as_deref(),
-                "display_htotal": Nullable<Text> = value.horizontal_total.as_deref(),
-                "display_hbend": Nullable<Text> = value.horizontal_blank_end.as_deref(),
-                "display_hbstart": Nullable<Text> = value.horizontal_blank_start.as_deref(),
-                "display_vtotal": Nullable<Text> = value.vertical_total.as_deref(),
-                "display_vbend": Nullable<Text> = value.vertical_blank_end.as_deref(),
-                "display_vbstart": Nullable<Text> = value.vertical_blank_start.as_deref()),
-            Spec::Sound(value) => insert_element!(order, "sound", value.location;
-                "sound_channels": Text = &value.channels),
-            Spec::Input(value) => {
-                insert_element!(order, "input", value.location;
-                    "input_service": diesel::sql_types::Bool = value.service.as_bool(),
-                    "input_tilt": diesel::sql_types::Bool = value.tilt.as_bool(),
-                    "input_players": Text = &value.players,
-                    "input_coins": Nullable<Text> = value.coins.as_deref());
-                for (control_order, control) in value.controls.iter().enumerate() {
-                    sql_query(
-                        "INSERT INTO mame_machine_input_controls \
-                         (set_id, element_order, control_order, control_type, player, buttons, \
-                          minimum, maximum, sensitivity, keydelta, reverse, ways, ways2, ways3, source_line, source_column) \
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    )
-                    .bind::<BigInt, _>(set_id)
-                    .bind::<BigInt, _>(order)
-                    .bind::<BigInt, _>(checked_order(control_order, "MAME controls")?)
-                    .bind::<Text, _>(&control.kind)
-                    .bind::<Nullable<Text>, _>(control.player.as_deref())
-                    .bind::<Nullable<Text>, _>(control.buttons.as_deref())
-                    .bind::<Nullable<Text>, _>(control.minimum.as_deref())
-                    .bind::<Nullable<Text>, _>(control.maximum.as_deref())
-                    .bind::<Nullable<Text>, _>(control.sensitivity.as_deref())
-                    .bind::<Nullable<Text>, _>(control.key_delta.as_deref())
-                    .bind::<diesel::sql_types::Bool, _>(control.reverse.as_bool())
-                    .bind::<Nullable<Text>, _>(control.ways.as_deref())
-                    .bind::<Nullable<Text>, _>(control.ways2.as_deref())
-                    .bind::<Nullable<Text>, _>(control.ways3.as_deref())
-                    .bind::<BigInt, _>(control.location.line)
-                    .bind::<BigInt, _>(control.location.column)
-                    .execute(conn)?;
-                }
-            }
-            Spec::Port(value) => {
-                insert_element!(order, "port", value.location;
-                    "port_tag": Text = &value.tag);
-                for (analog_order, analog) in value.analogs.iter().enumerate() {
-                    sql_query(
-                        "INSERT INTO mame_machine_analogs \
-                         (set_id, element_order, analog_order, mask, source_line, source_column) \
-                         VALUES (?, ?, ?, ?, ?, ?)",
-                    )
-                    .bind::<BigInt, _>(set_id)
-                    .bind::<BigInt, _>(order)
-                    .bind::<BigInt, _>(checked_order(analog_order, "MAME analogs")?)
-                    .bind::<Text, _>(&analog.mask)
-                    .bind::<BigInt, _>(analog.location.line)
-                    .bind::<BigInt, _>(analog.location.column)
-                    .execute(conn)?;
-                }
-            }
-            Spec::Adjuster(value) => {
-                insert_element!(order, "adjuster", value.location;
-                    "adjuster_name": Text = &value.name,
-                    "adjuster_default": Text = &value.default);
-                if let Some(condition) = &value.condition {
-                    insert_mame_condition(
-                        conn,
-                        set_id,
-                        MameConditionOwner::Element { order },
-                        condition,
-                    )?;
-                }
-            }
-            Spec::Driver(value) => insert_element!(order, "driver", value.location;
-                "driver_status": Text = value.status.as_str(),
-                "driver_emulation": Text = value.emulation.as_str(),
-                "driver_cocktail": Nullable<Text> = value.cocktail.map(crate::mame::DriverQuality::as_str),
-                "driver_savestate": Text = value.savestate.as_str(),
-                "driver_requiresartwork": diesel::sql_types::Bool = value.requires_artwork.as_bool(),
-                "driver_unofficial": diesel::sql_types::Bool = value.unofficial.as_bool(),
-                "driver_nosoundhardware": diesel::sql_types::Bool = value.no_sound_hardware.as_bool(),
-                "driver_incomplete": diesel::sql_types::Bool = value.incomplete.as_bool()),
-            Spec::Feature(value) => insert_element!(order, "feature", value.location;
-                "feature_type": Text = value.kind.as_str(),
-                "feature_status": Nullable<Text> = value.status.map(crate::mame::FeatureStatus::as_str),
-                "feature_overall": Nullable<Text> = value.overall.map(crate::mame::FeatureStatus::as_str)),
-            Spec::Device(value) => {
-                insert_element!(order, "device", value.location;
-                    "device_type": Text = &value.kind,
-                    "device_tag": Nullable<Text> = value.tag.as_deref(),
-                    "device_fixed_image": Nullable<Text> = value.fixed_image.as_deref(),
-                    "device_mandatory": Nullable<Text> = value.mandatory.as_deref(),
-                    "device_interface": Nullable<Text> = value.interface.as_deref(),
-                    "device_instance_name": Nullable<Text> = value.instance.as_ref().map(|instance| instance.name.as_str()),
-                    "device_instance_briefname": Nullable<Text> = value.instance.as_ref().map(|instance| instance.brief_name.as_str()),
-                    "device_instance_line": Nullable<BigInt> = value.instance.as_ref().map(|instance| instance.location.line),
-                    "device_instance_column": Nullable<BigInt> = value.instance.as_ref().map(|instance| instance.location.column));
-                for (extension_order, extension) in value.extensions.iter().enumerate() {
-                    sql_query(
-                        "INSERT INTO mame_machine_device_extensions \
-                         (set_id, element_order, extension_order, name, source_line, source_column) \
-                         VALUES (?, ?, ?, ?, ?, ?)",
-                    )
-                    .bind::<BigInt, _>(set_id)
-                    .bind::<BigInt, _>(order)
-                    .bind::<BigInt, _>(checked_order(extension_order, "MAME device extensions")?)
-                    .bind::<Text, _>(&extension.name)
-                    .bind::<BigInt, _>(extension.location.line)
-                    .bind::<BigInt, _>(extension.location.column)
-                    .execute(conn)?;
-                }
-            }
-            Spec::Slot(value) => {
-                insert_element!(order, "slot", value.location;
-                    "slot_name": Text = &value.name);
-                for (option_order, option) in value.options.iter().enumerate() {
-                    sql_query(
-                        "INSERT INTO mame_machine_slot_options \
-                         (set_id, element_order, option_order, name, devname, is_default, source_line, source_column) \
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    )
-                    .bind::<BigInt, _>(set_id)
-                    .bind::<BigInt, _>(order)
-                    .bind::<BigInt, _>(checked_order(option_order, "MAME slot options")?)
-                    .bind::<Text, _>(&option.name)
-                    .bind::<Text, _>(&option.device_name)
-                    .bind::<diesel::sql_types::Bool, _>(option.is_default.as_bool())
-                    .bind::<BigInt, _>(option.location.line)
-                    .bind::<BigInt, _>(option.location.column)
-                    .execute(conn)?;
-                }
-            }
-            Spec::SoftwareList(value) => insert_element!(order, "softwarelist", value.location;
-                "softwarelist_tag": Text = &value.tag,
-                "softwarelist_name": Text = &value.name,
-                "softwarelist_status": Text = value.status.as_str(),
-                "softwarelist_filter": Nullable<Text> = value.filter.as_deref()),
-            Spec::RamOption(value) => insert_element!(order, "ramoption", value.location;
-                "ramoption_name": Text = &value.name,
-                "ramoption_default": Nullable<Text> = value.default.as_deref(),
-                "ramoption_text": Text = &value.text),
-        }
-    }
-    Ok(())
-}
-
-fn insert_mame_condition(
-    conn: &mut SqliteConnection,
-    set_id: i64,
-    owner: MameConditionOwner,
-    condition: &crate::mame::MachineCondition,
-) -> crate::Result<()> {
-    let (owner_kind, element_order, switch_order, child_order) = match owner {
-        MameConditionOwner::Element { order } => ("element", Some(order), None, None),
-        MameConditionOwner::Switch { order } => ("switch", None, Some(order), None),
-        MameConditionOwner::SwitchValue {
-            switch_order,
-            value_order,
-        } => ("switch_value", None, Some(switch_order), Some(value_order)),
-    };
-    sql_query(
-        "INSERT INTO mame_machine_conditions \
-         (set_id, owner_kind, owner_element_order, owner_switch_order, owner_child_order, \
-          condition_order, tag, mask, relation, value, source_line, source_column) \
-         VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind::<BigInt, _>(set_id)
-    .bind::<Text, _>(owner_kind)
-    .bind::<Nullable<BigInt>, _>(element_order)
-    .bind::<Nullable<BigInt>, _>(switch_order)
-    .bind::<Nullable<BigInt>, _>(child_order)
-    .bind::<Text, _>(&condition.tag)
-    .bind::<Text, _>(&condition.mask)
-    .bind::<Text, _>(condition.relation.as_str())
-    .bind::<Text, _>(&condition.value)
-    .bind::<BigInt, _>(condition.location.line)
-    .bind::<BigInt, _>(condition.location.column)
-    .execute(conn)?;
     Ok(())
 }
 
@@ -1889,14 +1601,7 @@ fn insert_machine_switches(
         .bind::<BigInt, _>(switch.location.column)
         .execute(conn)?;
         if let Some(condition) = &switch.condition {
-            insert_mame_condition(
-                conn,
-                set_id,
-                MameConditionOwner::Switch {
-                    order: switch_order,
-                },
-                condition,
-            )?;
+            mame_specification::insert_switch_condition(conn, set_id, switch_order, condition)?;
         }
 
         for (location_order, location) in switch.locations.iter().enumerate() {
@@ -1935,13 +1640,11 @@ fn insert_machine_switches(
             .bind::<BigInt, _>(switch_value.location.column)
             .execute(conn)?;
             if let Some(condition) = &switch_value.condition {
-                insert_mame_condition(
+                mame_specification::insert_switch_value_condition(
                     conn,
                     set_id,
-                    MameConditionOwner::SwitchValue {
-                        switch_order,
-                        value_order: checked_order(value_order, "MAME switch values")?,
-                    },
+                    switch_order,
+                    checked_order(value_order, "MAME switch values")?,
                     condition,
                 )?;
             }
@@ -2058,415 +1761,6 @@ fn persist_asset_merge_relationship(
             location: asset.location,
         },
     )?;
-    Ok(())
-}
-
-fn insert_software_list_contents(
-    conn: &mut SqliteConnection,
-    snapshot_key: &SnapshotKey,
-    catalog: &SoftwareListCatalog,
-) -> crate::Result<()> {
-    for (list_order, list) in catalog.lists.iter().enumerate() {
-        insert_software_list(conn, snapshot_key, list, list_order)?;
-    }
-    Ok(())
-}
-
-fn insert_software_list(
-    conn: &mut SqliteConnection,
-    snapshot_key: &SnapshotKey,
-    list: &crate::mame_softwarelist::SoftwareList,
-    list_order: usize,
-) -> crate::Result<()> {
-    sql_query(
-        "INSERT INTO software_lists \
-         (snapshot_key, list_name, list_order, description, notes, source_line, source_column) \
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind::<Text, _>(snapshot_key.as_str())
-    .bind::<Text, _>(list.name.as_str())
-    .bind::<BigInt, _>(checked_order(list_order, "software lists")?)
-    .bind::<Nullable<Text>, _>(list.description.as_deref())
-    .bind::<Nullable<Text>, _>(list.notes.as_deref())
-    .bind::<BigInt, _>(list.location.line)
-    .bind::<BigInt, _>(list.location.column)
-    .execute(conn)?;
-
-    for (item_order, item) in list.items.iter().enumerate() {
-        insert_software_item(conn, snapshot_key, list.name.as_str(), item, item_order)?;
-    }
-    Ok(())
-}
-
-fn insert_software_item(
-    conn: &mut SqliteConnection,
-    snapshot_key: &SnapshotKey,
-    list_name: &str,
-    item: &crate::mame_softwarelist::SoftwareItem,
-    item_order: usize,
-) -> crate::Result<()> {
-    sql_query(
-        "INSERT INTO software_items \
-         (snapshot_key, list_name, item_name, item_order, supported, description, year, \
-          publisher, notes, source_line, source_column) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind::<Text, _>(snapshot_key.as_str())
-    .bind::<Text, _>(list_name)
-    .bind::<Text, _>(item.name.as_str())
-    .bind::<BigInt, _>(checked_order(item_order, "software items")?)
-    .bind::<Nullable<Text>, _>(
-        item.supported
-            .map(crate::mame_softwarelist::SupportedStatus::as_str),
-    )
-    .bind::<Text, _>(&item.description)
-    .bind::<Text, _>(&item.year)
-    .bind::<Text, _>(&item.publisher)
-    .bind::<Nullable<Text>, _>(item.notes.as_deref())
-    .bind::<BigInt, _>(item.location.line)
-    .bind::<BigInt, _>(item.location.column)
-    .execute(conn)?;
-
-    insert_software_item_named_values(
-        conn,
-        "software_item_info",
-        snapshot_key,
-        list_name,
-        item.name.as_str(),
-        &item.info,
-    )?;
-    insert_software_item_named_values(
-        conn,
-        "software_item_shared_features",
-        snapshot_key,
-        list_name,
-        item.name.as_str(),
-        &item.shared_features,
-    )?;
-
-    if let Some(parent) = &item.clone_of {
-        sql_query(
-            "INSERT INTO software_item_dependencies \
-             (snapshot_key, list_name, item_name, dependency_kind, target_item_name, \
-              source_line, source_column) VALUES (?, ?, ?, 'clone_of', ?, ?, ?)",
-        )
-        .bind::<Text, _>(snapshot_key.as_str())
-        .bind::<Text, _>(list_name)
-        .bind::<Text, _>(item.name.as_str())
-        .bind::<Text, _>(parent.as_str())
-        .bind::<BigInt, _>(item.location.line)
-        .bind::<BigInt, _>(item.location.column)
-        .execute(conn)?;
-        insert_source_assertion(
-            conn,
-            SourceRelationshipDraft {
-                relation_type: RelationshipType::SourceParentClone,
-                subject: CatalogRecordRef::new(
-                    snapshot_key.clone(),
-                    CatalogRecordKind::SoftwareItem,
-                    super::catalog_reconciliation::record_key(&(list_name, item.name.as_str()))?,
-                ),
-                target: CatalogRecordRef::new(
-                    snapshot_key.clone(),
-                    CatalogRecordKind::SoftwareItem,
-                    super::catalog_reconciliation::record_key(&(list_name, parent.as_str()))?,
-                ),
-                source_field: "cloneof".to_owned(),
-                source_location: Some(DocumentLocation {
-                    line: item.location.line,
-                    column: item.location.column,
-                }),
-                evidence: serde_json::json!({
-                    "list_name": list_name,
-                    "target_item_name": parent.as_str()
-                }),
-            },
-        )?;
-    }
-
-    let scope = SoftwareItemScope {
-        snapshot_key,
-        list_name,
-        item_name: item.name.as_str(),
-    };
-    for (part_order, part) in item.parts.iter().enumerate() {
-        insert_software_part(conn, scope, part, part_order)?;
-    }
-    Ok(())
-}
-
-#[derive(Clone, Copy)]
-struct SoftwareItemScope<'a> {
-    snapshot_key: &'a SnapshotKey,
-    list_name: &'a str,
-    item_name: &'a str,
-}
-
-#[derive(Clone, Copy)]
-struct SoftwarePartScope<'a> {
-    item: SoftwareItemScope<'a>,
-    part_name: &'a str,
-}
-
-fn insert_software_part(
-    conn: &mut SqliteConnection,
-    item: SoftwareItemScope<'_>,
-    part: &crate::mame_softwarelist::SoftwarePart,
-    part_order: usize,
-) -> crate::Result<()> {
-    sql_query(
-        "INSERT INTO software_parts \
-         (snapshot_key, list_name, item_name, part_name, part_order, interface, \
-          source_line, source_column) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind::<Text, _>(item.snapshot_key.as_str())
-    .bind::<Text, _>(item.list_name)
-    .bind::<Text, _>(item.item_name)
-    .bind::<Text, _>(part.name.as_str())
-    .bind::<BigInt, _>(checked_order(part_order, "software parts")?)
-    .bind::<Text, _>(&part.interface)
-    .bind::<BigInt, _>(part.location.line)
-    .bind::<BigInt, _>(part.location.column)
-    .execute(conn)?;
-
-    for (value_order, value) in part.features.iter().enumerate() {
-        sql_query(
-            "INSERT INTO software_part_features \
-             (snapshot_key, list_name, item_name, part_name, value_order, name, value, \
-              source_line, source_column) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind::<Text, _>(item.snapshot_key.as_str())
-        .bind::<Text, _>(item.list_name)
-        .bind::<Text, _>(item.item_name)
-        .bind::<Text, _>(part.name.as_str())
-        .bind::<BigInt, _>(checked_order(value_order, "software part features")?)
-        .bind::<Text, _>(&value.name)
-        .bind::<Nullable<Text>, _>(value.value.as_deref())
-        .bind::<BigInt, _>(value.location.line)
-        .bind::<BigInt, _>(value.location.column)
-        .execute(conn)?;
-    }
-
-    for (switch_order, switch) in part.dipswitches.iter().enumerate() {
-        let switch_order = checked_order(switch_order, "software part DIP switches")?;
-        sql_query(
-            "INSERT INTO software_part_dipswitches \
-             (snapshot_key, list_name, item_name, part_name, dipswitch_order, name, tag, mask, \
-              source_line, source_column) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind::<Text, _>(item.snapshot_key.as_str())
-        .bind::<Text, _>(item.list_name)
-        .bind::<Text, _>(item.item_name)
-        .bind::<Text, _>(part.name.as_str())
-        .bind::<BigInt, _>(switch_order)
-        .bind::<Text, _>(switch.name.as_str())
-        .bind::<Text, _>(&switch.tag)
-        .bind::<Text, _>(&switch.mask)
-        .bind::<BigInt, _>(switch.location.line)
-        .bind::<BigInt, _>(switch.location.column)
-        .execute(conn)?;
-        for (value_order, value) in switch.values.iter().enumerate() {
-            sql_query(
-                "INSERT INTO software_part_dip_values \
-                 (snapshot_key, list_name, item_name, part_name, dipswitch_order, value_order, \
-                  name, value, is_default, source_line, source_column) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            )
-            .bind::<Text, _>(item.snapshot_key.as_str())
-            .bind::<Text, _>(item.list_name)
-            .bind::<Text, _>(item.item_name)
-            .bind::<Text, _>(part.name.as_str())
-            .bind::<BigInt, _>(switch_order)
-            .bind::<BigInt, _>(checked_order(value_order, "software DIP values")?)
-            .bind::<Text, _>(&value.name)
-            .bind::<Text, _>(&value.value)
-            .bind::<BigInt, _>(i64::from(value.is_default))
-            .bind::<BigInt, _>(value.location.line)
-            .bind::<BigInt, _>(value.location.column)
-            .execute(conn)?;
-        }
-    }
-
-    let scope = SoftwarePartScope {
-        item,
-        part_name: part.name.as_str(),
-    };
-    for (area_order, area) in part.areas.iter().enumerate() {
-        insert_software_area(conn, scope, area, area_order)?;
-    }
-    Ok(())
-}
-
-fn insert_software_area(
-    conn: &mut SqliteConnection,
-    part: SoftwarePartScope<'_>,
-    area: &crate::mame_softwarelist::SoftwareArea,
-    area_order: usize,
-) -> crate::Result<()> {
-    let declared_size = area
-        .declared_size
-        .map(i64::try_from)
-        .transpose()
-        .map_err(|_| crate::Error::InvalidRomSize(area.declared_size.unwrap_or_default()))?;
-    sql_query(
-        "INSERT INTO software_areas \
-         (snapshot_key, list_name, item_name, part_name, area_name, area_kind, area_order, \
-          declared_size, width, endianness, source_line, source_column) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind::<Text, _>(part.item.snapshot_key.as_str())
-    .bind::<Text, _>(part.item.list_name)
-    .bind::<Text, _>(part.item.item_name)
-    .bind::<Text, _>(part.part_name)
-    .bind::<Text, _>(area.name.as_str())
-    .bind::<Text, _>(area.kind.as_str())
-    .bind::<BigInt, _>(checked_order(area_order, "software areas")?)
-    .bind::<Nullable<BigInt>, _>(declared_size)
-    .bind::<Nullable<BigInt>, _>(area.width.map(i64::from))
-    .bind::<Nullable<Text>, _>(
-        area.endianness
-            .map(crate::mame_softwarelist::Endianness::as_str),
-    )
-    .bind::<BigInt, _>(area.location.line)
-    .bind::<BigInt, _>(area.location.column)
-    .execute(conn)?;
-
-    for (component_order, component) in area.components.iter().enumerate() {
-        insert_software_component(conn, part, area, area_order, component_order, component)?;
-    }
-    Ok(())
-}
-
-fn insert_software_component(
-    conn: &mut SqliteConnection,
-    part: SoftwarePartScope<'_>,
-    area: &crate::mame_softwarelist::SoftwareArea,
-    area_order: usize,
-    component_order: usize,
-    component: &crate::mame_softwarelist::SoftwareComponent,
-) -> crate::Result<()> {
-    let (name, size, crc, sha1, evidence_scope, offset, value, status, writeable, load) =
-        match component {
-            crate::mame_softwarelist::SoftwareComponent::Rom(rom) => (
-                rom.name
-                    .as_ref()
-                    .map(crate::mame_softwarelist::ComponentName::as_str),
-                rom.size,
-                rom.crc.map(|digest| digest.to_vec()),
-                rom.sha1.map(|digest| digest.to_vec()),
-                "whole_asset",
-                rom.offset,
-                rom.value.as_deref(),
-                rom.status.as_ref().map(|status| status.as_str()),
-                None,
-                rom.load
-                    .as_ref()
-                    .map(crate::mame_softwarelist::LoadInstruction::as_str),
-            ),
-            crate::mame_softwarelist::SoftwareComponent::Disk(disk) => (
-                Some(disk.requirement.name().as_str()),
-                None,
-                None,
-                disk.requirement
-                    .expected_sha1()
-                    .map(|digest| digest.as_bytes().to_vec()),
-                disk.requirement.digest_scope().as_str(),
-                None,
-                None,
-                disk.status.as_ref().map(|status| status.as_str()),
-                disk.writeable.map(i64::from),
-                None,
-            ),
-        };
-    let size = size
-        .map(i64::try_from)
-        .transpose()
-        .map_err(|_| crate::Error::InvalidRomSize(size.unwrap_or_default()))?;
-    let offset = offset
-        .map(i64::try_from)
-        .transpose()
-        .map_err(|_| crate::Error::InvalidRomSize(offset.unwrap_or_default()))?;
-    let area_order = checked_order(area_order, "software areas")?;
-    let component_order = checked_order(component_order, "software components")?;
-    let digests =
-        ContentDigestAssertions::new(evidence_scope, crc.as_deref(), None, sha1.as_deref(), None);
-    let content_resolution = if component.is_file_declaration() {
-        resolve_content_identity(conn, size, digests)?
-    } else {
-        ContentIdentityResolution::NoEligibleEvidence
-    };
-    let content_uuid = content_resolution
-        .content_id()
-        .map(|content_id| content_id.as_bytes().to_vec());
-    sql_query(
-        "INSERT INTO software_components \
-         (snapshot_key, list_name, item_name, part_name, area_order, area_kind, area_name, component_order, \
-          component_kind, component_name, size, crc, sha1, evidence_scope, offset, value, dump_status, writeable, \
-          load_instruction, source_line, source_column, content_uuid) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind::<Text, _>(part.item.snapshot_key.as_str())
-    .bind::<Text, _>(part.item.list_name)
-    .bind::<Text, _>(part.item.item_name)
-    .bind::<Text, _>(part.part_name)
-    .bind::<BigInt, _>(area_order)
-    .bind::<Text, _>(area.kind.as_str())
-    .bind::<Text, _>(area.name.as_str())
-    .bind::<BigInt, _>(component_order)
-    .bind::<Text, _>(component.kind())
-    .bind::<Nullable<Text>, _>(name)
-    .bind::<Nullable<BigInt>, _>(size)
-    .bind::<Nullable<Binary>, _>(crc)
-    .bind::<Nullable<Binary>, _>(sha1)
-    .bind::<Text, _>(evidence_scope)
-    .bind::<Nullable<BigInt>, _>(offset)
-    .bind::<Nullable<Text>, _>(value)
-    .bind::<Nullable<Text>, _>(status)
-    .bind::<Nullable<BigInt>, _>(writeable)
-    .bind::<Nullable<Text>, _>(load)
-    .bind::<BigInt, _>(component.location().line)
-    .bind::<BigInt, _>(component.location().column)
-    .bind::<Nullable<Binary>, _>(content_uuid)
-    .execute(conn)?;
-    record_content_identity_conflict(
-        conn,
-        CatalogContentOccurrence::SoftwareComponent {
-            snapshot_key: part.item.snapshot_key.as_str(),
-            list_name: part.item.list_name,
-            item_name: part.item.item_name,
-            part_name: part.part_name,
-            area_order,
-            component_order,
-        },
-        &content_resolution,
-    )?;
-    Ok(())
-}
-
-fn insert_software_item_named_values(
-    conn: &mut SqliteConnection,
-    table: &str,
-    snapshot_key: &SnapshotKey,
-    list_name: &str,
-    item_name: &str,
-    values: &[crate::mame_softwarelist::NamedValue],
-) -> crate::Result<()> {
-    for (value_order, value) in values.iter().enumerate() {
-        sql_query(format!(
-            "INSERT INTO {table} \
-             (snapshot_key, list_name, item_name, value_order, name, value, source_line, \
-              source_column) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-        ))
-        .bind::<Text, _>(snapshot_key.as_str())
-        .bind::<Text, _>(list_name)
-        .bind::<Text, _>(item_name)
-        .bind::<BigInt, _>(checked_order(value_order, "software item values")?)
-        .bind::<Text, _>(&value.name)
-        .bind::<Nullable<Text>, _>(value.value.as_deref())
-        .bind::<BigInt, _>(value.location.line)
-        .bind::<BigInt, _>(value.location.column)
-        .execute(conn)?;
-    }
     Ok(())
 }
 

@@ -74,11 +74,15 @@ parser-internal representations the public contract.
 - The library's snapshot-aware non-merged MAME policy is an explicit planning
   operation and does not change the meanings or CLI availability of
   `parent-bundles` and `per-game`.
-- The database runs embedded forward migrations when it is opened. The tested
-  additive migrations preserve populated legacy DAT/game/ROM/source rows.
-  Legacy source rows whose bytes or archive-member identity were never retained
-  remain present but unavailable for operations that require that evidence;
-  migration does not invent missing identity or rescan source directories.
+- The database is greenfield: opening an empty cache atomically creates the
+  bundled schema. Reopening validates its digest and SQLite object definitions;
+  a different schema is rejected without conversion, repair, or deletion.
+  There is no migration runner or historical migration chain. After a schema
+  change, use a new cache and reimport catalogs and scan inventory.
+- The native-model cutover is ongoing. MAME hardware families and software-list
+  owners use format-specific tables with numeric record/occurrence identities;
+  shared file UUIDs are stored as sixteen-byte BLOBs. Remaining shared JSON
+  metadata and duplicated projections are not the finished schema design.
 - Retained catalog documents are content-addressed and immutable. Re-imports
   record acquisitions/import runs and normalized snapshots; an import's
   snapshot publication is transactional, so a failed parse or persistence
@@ -172,10 +176,14 @@ read as the size of any single proof slice.
 The branch-added tests are organized around behavioral contracts rather than
 module line coverage:
 
-- Migration tests populate pre-migration caches and check legacy row identity,
-  retained-document unavailability when bytes are absent, preservation of ROM
-  requirements, idempotent forward migrations, and reversal of the newer
-  snapshot/document extensions.
+- Database initialization tests check direct creation, reopening, and rejection
+  of schema drift without repair. Backup tests use the same authoritative DDL
+  and round-trip source documents stored outside SQLite.
+- Native-model tests check source-scoped record/occurrence ownership, typed
+  machine families, CMP directives and field provenance, headerless Logiqx
+  imports/diffs, and software-list area boundaries. Software ROM load sizes
+  remain segment lengths, not invented whole-file sizes; digest projections
+  stay in their native evidence scope.
 - Scan tests establish that incomplete inventories do not replace prior
   observations; multi-root tests establish canonical alias deduplication,
   precedence for overlapping roots, root-scoped cache isolation, and all-roots

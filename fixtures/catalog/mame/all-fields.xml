@@ -1,0 +1,16 @@
+<mame build="0.289"><machine name="complete"><description>Complete spec</description>
+          <device_ref tag=":cpu" name="cpu_device"/>
+          <sample name="sample-set"/><chip name="CPU" tag=":maincpu" type="cpu" clock="4000000"/>
+          <chip name="Speaker" type="audio"/><display tag=":screen" type="svg" rotate="90" width="320" height="240" refresh="60.0" pixclock="12000000" htotal="400" hbend="10" hbstart="330" vtotal="260" vbend="5" vbstart="245" flipx="yes"/>
+          <sound channels="2"/><input players="2" coins="1" service="yes" tilt="yes"><control type="joy" player="1" buttons="2" minimum="0" maximum="255" sensitivity="50" keydelta="10" reverse="yes" ways="8" ways2="4" ways3="2"/></input>
+          <dipswitch name="Mode" tag=":DSW" mask="3"><condition tag=":CFG" mask="1" relation="eq" value="1"/><diplocation name="SW1" number="1"/><dipvalue name="On" value="1"><condition tag=":CFG" mask="1" relation="ne" value="0"/></dipvalue></dipswitch>
+          <configuration name="Video" tag=":CFG" mask="4"><condition tag=":CFG" mask="2" relation="gt" value="0"/><conflocation name="JP1" number="2"/><confsetting name="" value="4"><condition tag=":CFG" mask="2" relation="le" value="1"/></confsetting></configuration>
+          <port tag=":IN0"><analog mask="255"/></port><adjuster name="Volume" default="80"><condition tag=":CFG" mask="1" relation="lt" value="2"/></adjuster>
+          <driver status="imperfect" emulation="good" cocktail="preliminary" savestate="supported" requiresartwork="yes" unofficial="yes" nosoundhardware="yes" incomplete="yes"/>
+          <feature type="graphics" status="imperfect" overall="unemulated"/><device type="floppy" tag=":fd" fixed_image="disk" mandatory="yes" interface="floppy"><instance name="floppy1" briefname="FDD"/><extension name="dsk"/><extension name=""/></device>
+          <slot name=":cartslot"><slotoption name="game" devname="cart" default="yes"/></slot><softwarelist tag=":software" name="softlist" status="compatible" filter="original"/>
+          <ramoption name="ram" default="2M">2M</ramoption>
+        </machine><machine name="defaults"><description>Defaults</description>
+          <display type="unknown" refresh="0"/><input players="1"><control type="button"/></input>
+          <driver status="good" emulation="good" savestate="supported"/><slot name="empty"><slotoption name="default-option" devname="device"/></slot>
+        </machine></mame>

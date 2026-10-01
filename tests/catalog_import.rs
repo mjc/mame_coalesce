@@ -6,25 +6,20 @@ use std::{
 use camino::Utf8PathBuf;
 use diesel::{
     QueryableByName, SqliteConnection,
-    migration::MigrationSource,
     prelude::*,
     sql_query,
     sql_types::{BigInt, Binary, Nullable, Text},
 };
-use diesel_migrations::MigrationHarness;
 use mame_coalesce::{
     app::{self, CatalogDocumentFormat, CatalogImportRequest},
     database::Database,
     domain::{
         CatalogKey, CatalogRecordKind, CatalogRecordRef, CatalogScope, DocumentKey,
-        ExternalRecordRef, ParserInterpretationKey, PublishingSourceKey, RelationshipAssertionKey,
-        RelationshipClaim, RelationshipEndpoint, RelationshipOrigin, RelationshipType, SnapshotKey,
+        ExternalRecordRef, ParserInterpretationKey, PublishingSourceKey, RelationshipClaim,
+        RelationshipEndpoint, RelationshipOrigin, RelationshipType, SnapshotKey,
         SnapshotRecordStatus,
     },
 };
-
-const TEST_MIGRATIONS: diesel_migrations::EmbeddedMigrations =
-    diesel_migrations::embed_migrations!("migrations");
 
 #[derive(QueryableByName)]
 struct CountRow {
@@ -383,21 +378,70 @@ fn composite_key_catalog_tables_cluster_rows_by_their_primary_keys()
         "SELECT COUNT(*) AS count FROM pragma_table_list \
          WHERE schema = 'main' AND type = 'table' AND wr = 1 AND name IN ( \
              'acquisition_transport_headers', 'acquisition_attempt_transport_headers', \
-             'snapshot_sets', 'asset_requirement_rows', \
-             'software_lists', 'software_items', 'software_parts', 'software_item_info', \
-             'software_item_shared_features', 'software_part_features', 'software_areas', \
-             'software_component_occurrences', 'software_item_dependencies', 'machine_switches', \
+             'snapshot_sets', 'software_item_info', \
+             'software_item_shared_features', 'software_part_features', \
+             'software_item_dependencies', 'machine_switches', \
              'machine_switch_locations', 'machine_switch_values', 'machine_bios_sets', \
              'mame_machine_facts', 'mame_machine_dependencies', \
              'software_part_dipswitches', 'software_part_dip_values', 'no_intro_game_facts', \
-             'logiqx_set_facts', 'mame_machine_spec_elements', 'mame_machine_input_controls', \
+             'logiqx_set_facts', 'mame_machine_input_controls', \
              'mame_machine_analogs', 'mame_machine_device_extensions', 'mame_machine_slot_options', \
              'relationship_assertion_evidence', 'relationship_assertion_support' \
          )",
     )
     .get_result::<CountRow>(&mut connection)?;
 
-    assert_eq!(clustered.count, 30);
+    assert_eq!(clustered.count, 23);
+
+    let specification_tables = sql_query(
+        "SELECT COUNT(*) AS count FROM pragma_table_list \
+         WHERE schema = 'main' AND type = 'table' AND wr = 1 AND name IN ( \
+             'mame_machine_chips', 'mame_machine_displays', 'mame_machine_inputs', \
+             'mame_machine_ports', 'mame_machine_sounds', 'mame_machine_adjusters', \
+             'mame_machine_drivers', 'mame_machine_features', 'mame_machine_devices', \
+             'mame_machine_device_instances', 'mame_machine_slots', \
+             'mame_machine_software_lists', 'mame_machine_ram_options', 'mame_machine_samples' \
+         )",
+    )
+    .get_result::<CountRow>(&mut connection)?;
+    assert_eq!(specification_tables.count, 14);
+
+    for (table, identity_column) in [
+        ("record_namespaces", "namespace_id"),
+        ("records", "record_id"),
+        ("asset_occurrences", "occurrence_id"),
+        ("mame_rom_claims", "occurrence_id"),
+        ("mame_disk_claims", "occurrence_id"),
+        ("logiqx_rom_claims", "occurrence_id"),
+        ("logiqx_disk_claims", "occurrence_id"),
+        ("cmp_rom_claims", "occurrence_id"),
+        ("no_intro_pc_file_claims", "occurrence_id"),
+        ("software_lists", "namespace_id"),
+        ("software_items", "record_id"),
+        ("software_parts", "part_id"),
+        ("software_areas", "area_id"),
+        ("software_rom_entries", "occurrence_id"),
+        ("software_disk_entries", "occurrence_id"),
+        ("software_file_declarations", "occurrence_id"),
+        ("software_file_uses", "occurrence_id"),
+    ] {
+        let integer_identity = sql_query(
+            "SELECT COUNT(*) AS count FROM pragma_table_list AS layout \
+             JOIN pragma_table_info(layout.name) AS column_info \
+             WHERE layout.schema = 'main' AND layout.type = 'table' AND layout.wr = 0 \
+             AND layout.name = ? AND column_info.name = ? \
+             AND column_info.type = 'INTEGER' AND column_info.pk = 1 \
+             AND (SELECT COUNT(*) FROM pragma_table_info(layout.name) WHERE pk > 0) = 1 \
+             AND NOT EXISTS (SELECT 1 FROM pragma_index_list(layout.name) WHERE origin = 'pk')",
+        )
+        .bind::<Text, _>(table)
+        .bind::<Text, _>(identity_column)
+        .get_result::<CountRow>(&mut connection)?;
+        assert_eq!(
+            integer_identity.count, 1,
+            "{table}.{identity_column} must be the integer rowid primary key"
+        );
+    }
     Ok(())
 }
 
@@ -2391,7 +2435,7 @@ fn mame_asset_storage_error_rolls_back_staged_import_and_keeps_document()
 
     let (directory, database, mut connection) = setup()?;
     connection.batch_execute(
-        "CREATE TRIGGER reject_asset_insert BEFORE INSERT ON asset_requirement_rows \
+        "CREATE TRIGGER reject_asset_insert BEFORE INSERT ON mame_rom_claims \
          BEGIN SELECT RAISE(ABORT, 'injected asset insert failure'); END;",
     )?;
     let path = directory.path().join("asset-insert-storage-error.xml");
@@ -2426,6 +2470,10 @@ fn mame_asset_storage_error_rolls_back_staged_import_and_keeps_document()
         "snapshot_publications",
         "snapshot_sets",
         "asset_requirements",
+        "record_namespaces",
+        "records",
+        "asset_occurrences",
+        "mame_rom_claims",
         "snapshot_extensions",
         "relationship_assertions",
         "import_runs",
@@ -2442,6 +2490,9 @@ fn mame_asset_storage_error_rolls_back_staged_import_and_keeps_document()
         .get_result::<TextRow>(&mut connection)?
         .value
         .parse::<DocumentKey>()?;
+    // The injected trigger is not part of the authoritative schema. Remove it
+    // before reopening the store to verify the independently retained source.
+    connection.batch_execute("DROP TRIGGER reject_asset_insert;")?;
     assert_eq!(retained_document(&directory, &document_key)?, document);
     Ok(())
 }
@@ -2544,10 +2595,9 @@ fn mame_relationships_resolve_component_keys_and_keep_device_locations()
     let snapshot = report.snapshot_key.ok_or("MAME snapshot missing")?;
 
     assert_mame_merge_relationships(&database, &mut connection, &snapshot)?;
-    let device_assertion_key = review_mame_device_relationship(&database)?;
+    review_mame_device_relationship(&database)?;
     assert_mame_dependency_projections(&mut connection, &snapshot)?;
-    assert_dependency_migration_round_trip(&mut connection, &device_assertion_key)?;
-    assert_mame_relationship_migration_invariants(&mut connection, &snapshot)?;
+    assert_mame_relationship_invariants(&mut connection, &snapshot)?;
     Ok(())
 }
 
@@ -2598,9 +2648,7 @@ fn assert_mame_merge_relationships(
     Ok(())
 }
 
-fn review_mame_device_relationship(
-    database: &Database,
-) -> Result<RelationshipAssertionKey, Box<dyn std::error::Error>> {
+fn review_mame_device_relationship(database: &Database) -> Result<(), Box<dyn std::error::Error>> {
     let device_explanation = app::explain_relationships(database)?
         .into_iter()
         .find(|explanation| explanation.source_field.as_deref() == Some("device_ref"))
@@ -2630,7 +2678,7 @@ fn review_mame_device_relationship(
         .find(|explanation| explanation.assertion_key == device_assertion_key)
         .ok_or("reviewed typed dependency was not explainable")?;
     assert!(reviewed_device.latest_review.is_some());
-    Ok(device_assertion_key)
+    Ok(())
 }
 
 fn assert_mame_dependency_projections(
@@ -2665,107 +2713,7 @@ fn assert_mame_dependency_projections(
     Ok(())
 }
 
-fn assert_dependency_migration_round_trip(
-    connection: &mut SqliteConnection,
-    device_assertion_key: &RelationshipAssertionKey,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let migrations = <_ as MigrationSource<diesel::sqlite::Sqlite>>::migrations(&TEST_MIGRATIONS)
-        .map_err(io::Error::other)?;
-    let typed_dependency_migration = migrations
-        .iter()
-        .find(|migration| {
-            migration.name().to_string() == "2026-09-30-000024_typed_mame_dependency_assertions"
-        })
-        .ok_or("typed MAME dependency migration was not embedded")?;
-    let unused_indexes_migration = migrations
-        .iter()
-        .find(|migration| {
-            migration.name().to_string() == "2026-09-30-000025_remove_unused_catalog_indexes"
-        })
-        .ok_or("unused catalog indexes migration was not embedded")?;
-    let compact_asset_migration = migrations
-        .iter()
-        .find(|migration| {
-            migration.name().to_string() == "2026-09-30-000026_compact_asset_requirement_identity"
-        })
-        .ok_or("compact asset requirement migration was not embedded")?;
-    let derived_dependency_key_migration = migrations
-        .iter()
-        .find(|migration| {
-            migration.name().to_string()
-                == "2026-09-30-000027_derive_mame_dependency_assertion_keys"
-        })
-        .ok_or("derived MAME dependency key migration was not embedded")?;
-    let identity_migration = migrations
-        .iter()
-        .find(|migration| {
-            migration.name().to_string() == "2026-09-30-000028_shared_catalog_content_identity"
-        })
-        .ok_or("shared catalog content identity migration was not embedded")?;
-    let normalized_digests_migration = migrations
-        .iter()
-        .find(|migration| {
-            migration.name().to_string() == "2026-09-30-000029_normalized_catalog_digest_assertions"
-        })
-        .ok_or("normalized catalog digest migration was not embedded")?;
-    connection
-        .revert_migration(normalized_digests_migration.as_ref())
-        .map_err(io::Error::other)?;
-    connection
-        .revert_migration(identity_migration.as_ref())
-        .map_err(io::Error::other)?;
-    connection
-        .revert_migration(derived_dependency_key_migration.as_ref())
-        .map_err(io::Error::other)?;
-    connection
-        .revert_migration(compact_asset_migration.as_ref())
-        .map_err(io::Error::other)?;
-    connection
-        .revert_migration(unused_indexes_migration.as_ref())
-        .map_err(io::Error::other)?;
-    connection
-        .revert_migration(typed_dependency_migration.as_ref())
-        .map_err(io::Error::other)?;
-    let restored_assertion =
-        sql_query("SELECT COUNT(*) AS count FROM relationship_assertions WHERE assertion_key = ?")
-            .bind::<Text, _>(device_assertion_key.as_str())
-            .get_result::<CountRow>(connection)?;
-    assert_eq!(restored_assertion.count, 1);
-
-    connection
-        .run_migration(typed_dependency_migration.as_ref())
-        .map_err(io::Error::other)?;
-    connection
-        .run_migration(unused_indexes_migration.as_ref())
-        .map_err(io::Error::other)?;
-    connection
-        .run_migration(compact_asset_migration.as_ref())
-        .map_err(io::Error::other)?;
-    connection
-        .run_migration(derived_dependency_key_migration.as_ref())
-        .map_err(io::Error::other)?;
-    connection
-        .run_migration(identity_migration.as_ref())
-        .map_err(io::Error::other)?;
-    connection
-        .run_migration(normalized_digests_migration.as_ref())
-        .map_err(io::Error::other)?;
-    let restored_projection = sql_query(
-        "SELECT COUNT(*) AS count FROM relationship_assertion_explanations \
-         WHERE assertion_key = ?",
-    )
-    .bind::<Text, _>(device_assertion_key.as_str())
-    .get_result::<CountRow>(connection)?;
-    assert_eq!(restored_projection.count, 1);
-    let restored_review =
-        sql_query("SELECT COUNT(*) AS count FROM relationship_reviews WHERE assertion_key = ?")
-            .bind::<Text, _>(device_assertion_key.as_str())
-            .get_result::<CountRow>(connection)?;
-    assert_eq!(restored_review.count, 1);
-    Ok(())
-}
-
-fn assert_mame_relationship_migration_invariants(
+fn assert_mame_relationship_invariants(
     connection: &mut SqliteConnection,
     snapshot: &SnapshotKey,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -2776,13 +2724,6 @@ fn assert_mame_relationship_migration_invariants(
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<CountRow>(connection)?;
     assert_eq!(duplicate_runtime_assertions.count, 0);
-    let unused_catalog_indexes = sql_query(
-        "SELECT COUNT(*) AS count FROM sqlite_schema \
-         WHERE type = 'index' AND name IN ( \
-             'requirements_asset_name_index', 'mame_machine_dependencies_target_index')",
-    )
-    .get_result::<CountRow>(connection)?;
-    assert_eq!(unused_catalog_indexes.count, 0);
     Ok(())
 }
 
@@ -3120,8 +3061,9 @@ fn operation_only_software_rom_digest_is_not_promoted_to_file_identity()
     assert_eq!(count(&mut connection, "catalog_contents")?, 1);
     assert_eq!(
         sql_query(
-            "SELECT COUNT(*) AS count FROM software_component_digest_assertions \
-             WHERE scope = 'whole_asset' AND provenance = 'source_declared'",
+            "SELECT COUNT(*) AS count FROM occurrence_digest_assertions AS assertion \
+             JOIN software_components USING (occurrence_id) \
+             WHERE assertion.scope = 'whole_asset' AND assertion.provenance = 'source_declared'",
         )
         .get_result::<CountRow>(&mut connection)?
         .count,
@@ -3159,9 +3101,10 @@ fn interned_digest_bytes_keep_occurrence_scope_and_provenance()
         "identical algorithm/bytes are stored once regardless of scope"
     );
     let scopes = sql_query(
-        "SELECT scope AS value FROM software_component_digest_assertions AS assertion \
+        "SELECT assertion.scope AS value FROM occurrence_digest_assertions AS assertion \
+         JOIN software_components USING (occurrence_id) \
          JOIN digest_values AS digest USING (digest_id) \
-         WHERE digest.algorithm = 'sha1' AND digest.digest = ? ORDER BY scope",
+         WHERE digest.algorithm = 'sha1' AND digest.digest = ? ORDER BY assertion.scope",
     )
     .bind::<Binary, _>(digest_bytes.as_slice())
     .load::<TextRow>(&mut connection)?;
@@ -3173,7 +3116,8 @@ fn interned_digest_bytes_keep_occurrence_scope_and_provenance()
         ["chd_header_sha1", "whole_asset"]
     );
     let digest_owners = sql_query(
-        "SELECT DISTINCT provenance AS value FROM software_component_digest_assertions AS assertion \
+        "SELECT DISTINCT assertion.provenance AS value FROM occurrence_digest_assertions AS assertion \
+         JOIN software_components USING (occurrence_id) \
          JOIN digest_values AS digest USING (digest_id) \
          WHERE digest.algorithm = 'sha1' AND digest.digest = ?",
     )
@@ -3211,15 +3155,21 @@ fn persists_softwarelist_dtd_notes_dipswitches_and_defaults_relationally()
         .ok_or("software-list snapshot missing")?;
 
     let notes = sql_query(
-        "SELECT notes AS value FROM software_lists WHERE snapshot_key = ? AND list_name = 'list'",
+        "SELECT software_lists.notes AS value FROM software_lists \
+         JOIN record_namespaces USING (namespace_id) \
+         WHERE record_namespaces.snapshot_key = ? AND record_namespaces.source_name = 'list'",
     )
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<TextRow>(&mut connection)?;
     assert_eq!(notes.value, "list notes");
     let defaults = sql_query(
         "SELECT software_items.supported || ':' || software_areas.width || ':' || software_areas.endianness AS value \
-         FROM software_items JOIN software_areas USING (snapshot_key, list_name, item_name) \
-         WHERE snapshot_key = ? AND list_name = 'list' AND item_name = 'game' AND area_order = 0",
+         FROM software_items \
+         JOIN records USING (record_id) \
+         JOIN record_namespaces USING (namespace_id) \
+         JOIN software_areas USING (record_id) \
+         WHERE record_namespaces.snapshot_key = ? AND record_namespaces.source_name = 'list' \
+         AND records.source_name = 'game' AND software_areas.area_order = 0",
     )
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<TextRow>(&mut connection)?;
@@ -3236,9 +3186,13 @@ fn persists_softwarelist_dtd_notes_dipswitches_and_defaults_relationally()
         "SELECT dipswitch.name || ':' || dipswitch.tag || ':' || dipswitch.mask || ':' || \
          GROUP_CONCAT(value.name || '=' || value.value || ':' || value.is_default, ',') AS value \
          FROM software_part_dipswitches AS dipswitch JOIN software_part_dip_values AS value \
-         USING (snapshot_key, list_name, item_name, part_name, dipswitch_order) \
-         WHERE dipswitch.snapshot_key = ? AND dipswitch.list_name = 'list' AND dipswitch.item_name = 'game' \
-         GROUP BY dipswitch.snapshot_key, dipswitch.list_name, dipswitch.item_name, dipswitch.part_name, dipswitch.dipswitch_order",
+         USING (part_id, dipswitch_order) \
+         JOIN software_parts USING (part_id) \
+         JOIN records USING (record_id) \
+         JOIN record_namespaces USING (namespace_id) \
+         WHERE record_namespaces.snapshot_key = ? AND record_namespaces.source_name = 'list' \
+         AND records.source_name = 'game' \
+         GROUP BY dipswitch.part_id, dipswitch.dipswitch_order",
     )
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<TextRow>(&mut connection)?;
@@ -3265,8 +3219,20 @@ fn imports_metadata_only_software_without_parts() -> Result<(), Box<dyn std::err
     assert_eq!(count(&mut connection, "software_lists")?, 1);
     assert_eq!(count(&mut connection, "software_items")?, 1);
     assert_eq!(count(&mut connection, "software_parts")?, 0);
-    let supported = sql_query("SELECT supported AS value FROM software_items")
-        .get_result::<NullableTextRow>(&mut connection)?;
+    let supported = sql_query(
+        "SELECT software_items.supported AS value FROM software_items \
+         JOIN records USING (record_id) JOIN record_namespaces USING (namespace_id) \
+         WHERE record_namespaces.snapshot_key = ? AND record_namespaces.source_name = 'one' \
+         AND records.source_name = 'game'",
+    )
+    .bind::<Text, _>(
+        report
+            .snapshot_key
+            .as_ref()
+            .ok_or("software-list snapshot missing")?
+            .as_str(),
+    )
+    .get_result::<NullableTextRow>(&mut connection)?;
     assert_eq!(supported.value.as_deref(), Some("yes"));
     Ok(())
 }
@@ -3325,8 +3291,20 @@ fn imports_mame_numeric_bases_and_empty_nodump_hashes() -> Result<(), Box<dyn st
     request.catalog_display_name = "Octal software sizes".into();
     let report = app::import_catalog(&database, &request)?;
     assert_eq!(report.status, app::CatalogImportStatus::Succeeded);
-    let area_size = sql_query("SELECT declared_size AS value FROM software_areas")
-        .get_result::<NullableIntegerRow>(&mut connection)?;
+    let area_size = sql_query(
+        "SELECT software_areas.declared_size AS value FROM software_areas \
+         JOIN records USING (record_id) JOIN record_namespaces USING (namespace_id) \
+         WHERE record_namespaces.snapshot_key = ? AND record_namespaces.source_name = 'one' \
+         AND records.source_name = 'game' AND software_areas.area_kind = 'data'",
+    )
+    .bind::<Text, _>(
+        report
+            .snapshot_key
+            .as_ref()
+            .ok_or("software-list snapshot missing")?
+            .as_str(),
+    )
+    .get_result::<NullableIntegerRow>(&mut connection)?;
     let rom_size = sql_query("SELECT size AS value FROM software_components")
         .get_result::<NullableIntegerRow>(&mut connection)?;
     let offset = sql_query("SELECT offset AS value FROM software_components")
@@ -3369,7 +3347,9 @@ fn assert_software_list_identity_and_dependencies(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let list_order = sql_query(
         "SELECT GROUP_CONCAT(list_name, ',') AS value \
-         FROM (SELECT list_name FROM software_lists WHERE snapshot_key = ? ORDER BY list_order)",
+         FROM (SELECT namespaces.source_name AS list_name FROM software_lists \
+               JOIN record_namespaces AS namespaces USING (namespace_id) \
+               WHERE namespaces.snapshot_key = ? ORDER BY namespaces.source_order)",
     )
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<TextRow>(connection)?;
@@ -3377,8 +3357,11 @@ fn assert_software_list_identity_and_dependencies(
 
     let item_order = sql_query(
         "SELECT GROUP_CONCAT(item_name, ',') AS value FROM ( \
-         SELECT item_name FROM software_items WHERE snapshot_key = ? \
-         AND list_name = 'demo_cart' ORDER BY item_order)",
+         SELECT records.source_name AS item_name FROM software_items \
+         JOIN records USING (record_id) \
+         JOIN record_namespaces AS namespaces USING (namespace_id) \
+         WHERE namespaces.snapshot_key = ? AND namespaces.source_name = 'demo_cart' \
+         ORDER BY records.source_order)",
     )
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<TextRow>(connection)?;
@@ -3386,16 +3369,21 @@ fn assert_software_list_identity_and_dependencies(
 
     let scoped_duplicates = sql_query(
         "SELECT COUNT(*) AS count FROM software_items \
-         WHERE snapshot_key = ? AND item_name = 'demo_game'",
+         JOIN records USING (record_id) \
+         JOIN record_namespaces AS namespaces USING (namespace_id) \
+         WHERE namespaces.snapshot_key = ? AND records.source_name = 'demo_game'",
     )
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<CountRow>(connection)?;
     assert_eq!(scoped_duplicates.count, 2);
 
     let dependency = sql_query(
-        "SELECT target_item_name AS value FROM software_item_dependencies \
-         WHERE snapshot_key = ? AND list_name = 'demo_cart' AND item_name = 'demo_game' \
-         AND dependency_kind = 'clone_of'",
+        "SELECT dependency.target_name AS value FROM software_item_dependencies AS dependency \
+         JOIN records USING (record_id) \
+         JOIN record_namespaces AS namespaces USING (namespace_id) \
+         WHERE namespaces.snapshot_key = ? AND namespaces.source_name = 'demo_cart' \
+         AND records.source_name = 'demo_game' \
+         AND dependency.dependency_kind = 'clone_of'",
     )
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<TextRow>(connection)?;
@@ -3416,17 +3404,21 @@ fn assert_software_list_fields(
     snapshot: &mame_coalesce::domain::SnapshotKey,
 ) -> Result<i64, Box<dyn std::error::Error>> {
     let item = sql_query(
-        "SELECT supported, source_line \
-         FROM software_items WHERE snapshot_key = ? AND list_name = 'demo_cart' \
-         AND item_name = 'demo_game'",
+        "SELECT software_items.supported, records.source_line \
+         FROM software_items JOIN records USING (record_id) \
+         JOIN record_namespaces AS namespaces USING (namespace_id) \
+         WHERE namespaces.snapshot_key = ? AND namespaces.source_name = 'demo_cart' \
+         AND records.source_name = 'demo_game'",
     )
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<SoftwareItemRow>(connection)?;
     assert_eq!(item.supported, "partial");
     let info = sql_query(
-        "SELECT value_order, name, value, source_line, source_column \
-         FROM software_item_info WHERE snapshot_key = ? AND list_name = 'demo_cart' \
-         AND item_name = 'demo_game' ORDER BY value_order",
+        "SELECT info.value_order, info.name, info.value, info.source_line, info.source_column \
+         FROM software_item_info AS info JOIN records USING (record_id) \
+         JOIN record_namespaces AS namespaces USING (namespace_id) \
+         WHERE namespaces.snapshot_key = ? AND namespaces.source_name = 'demo_cart' \
+         AND records.source_name = 'demo_game' ORDER BY info.value_order",
     )
     .bind::<Text, _>(snapshot.as_str())
     .load::<SoftwareNamedValueRow>(connection)?;
@@ -3444,9 +3436,11 @@ fn assert_software_list_fields(
     assert_eq!((info[2].source_line, info[2].source_column), (11, 7));
 
     let shared_feature = sql_query(
-        "SELECT value_order, name, value, source_line, source_column \
-         FROM software_item_shared_features WHERE snapshot_key = ? AND list_name = 'demo_cart' \
-         AND item_name = 'demo_game' ORDER BY value_order",
+        "SELECT feature.value_order, feature.name, feature.value, feature.source_line, feature.source_column \
+         FROM software_item_shared_features AS feature JOIN records USING (record_id) \
+         JOIN record_namespaces AS namespaces USING (namespace_id) \
+         WHERE namespaces.snapshot_key = ? AND namespaces.source_name = 'demo_cart' \
+         AND records.source_name = 'demo_game' ORDER BY feature.value_order",
     )
     .bind::<Text, _>(snapshot.as_str())
     .load::<SoftwareNamedValueRow>(connection)?;
@@ -3463,9 +3457,13 @@ fn assert_software_list_fields(
     );
 
     let part_feature = sql_query(
-        "SELECT value_order, name, value, source_line, source_column \
-         FROM software_part_features WHERE snapshot_key = ? AND list_name = 'demo_cart' \
-         AND item_name = 'demo_game' AND part_name = 'cart' ORDER BY value_order",
+        "SELECT feature.value_order, feature.name, feature.value, feature.source_line, feature.source_column \
+         FROM software_part_features AS feature JOIN software_parts USING (part_id) \
+         JOIN records USING (record_id) \
+         JOIN record_namespaces AS namespaces USING (namespace_id) \
+         WHERE namespaces.snapshot_key = ? AND namespaces.source_name = 'demo_cart' \
+         AND records.source_name = 'demo_game' AND software_parts.part_name = 'cart' \
+         ORDER BY feature.value_order",
     )
     .bind::<Text, _>(snapshot.as_str())
     .load::<SoftwareNamedValueRow>(connection)?;
@@ -3479,9 +3477,11 @@ fn assert_software_list_fields(
     );
 
     let absent_value = sql_query(
-        "SELECT value_order, name, value, source_line, source_column \
-         FROM software_item_info WHERE snapshot_key = ? AND list_name = 'demo_cart' \
-         AND item_name = 'demo_original' ORDER BY value_order",
+        "SELECT info.value_order, info.name, info.value, info.source_line, info.source_column \
+         FROM software_item_info AS info JOIN records USING (record_id) \
+         JOIN record_namespaces AS namespaces USING (namespace_id) \
+         WHERE namespaces.snapshot_key = ? AND namespaces.source_name = 'demo_cart' \
+         AND records.source_name = 'demo_original' ORDER BY info.value_order",
     )
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<SoftwareNamedValueRow>(connection)?;
@@ -3511,8 +3511,11 @@ fn assert_software_list_parts(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let parts = sql_query(
         "SELECT GROUP_CONCAT(part_name, ',') AS value FROM ( \
-         SELECT part_name FROM software_parts WHERE snapshot_key = ? \
-         AND list_name = 'demo_cart' AND item_name = 'demo_game' ORDER BY part_order)",
+         SELECT software_parts.part_name FROM software_parts \
+         JOIN records USING (record_id) \
+         JOIN record_namespaces AS namespaces USING (namespace_id) \
+         WHERE namespaces.snapshot_key = ? AND namespaces.source_name = 'demo_cart' \
+         AND records.source_name = 'demo_game' ORDER BY software_parts.part_order)",
     )
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<TextRow>(connection)?;
@@ -3520,8 +3523,11 @@ fn assert_software_list_parts(
 
     let part_interfaces = sql_query(
         "SELECT GROUP_CONCAT(interface, ',') AS value FROM ( \
-         SELECT interface FROM software_parts WHERE snapshot_key = ? \
-         AND list_name = 'demo_cart' AND item_name = 'demo_game' ORDER BY part_order)",
+         SELECT software_parts.interface FROM software_parts \
+         JOIN records USING (record_id) \
+         JOIN record_namespaces AS namespaces USING (namespace_id) \
+         WHERE namespaces.snapshot_key = ? AND namespaces.source_name = 'demo_cart' \
+         AND records.source_name = 'demo_game' ORDER BY software_parts.part_order)",
     )
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<TextRow>(connection)?;
@@ -3529,18 +3535,27 @@ fn assert_software_list_parts(
 
     let area_order = sql_query(
         "SELECT GROUP_CONCAT(area_kind || ':' || area_name, ',') AS value FROM ( \
-         SELECT area_kind, area_name FROM software_areas WHERE snapshot_key = ? \
-         AND list_name = 'demo_cart' AND item_name = 'demo_game' AND part_name = 'cart' \
-         ORDER BY area_order)",
+         SELECT areas.area_kind, areas.area_name FROM software_areas AS areas \
+         JOIN software_parts AS parts ON parts.part_id = areas.part_id \
+         JOIN records USING (record_id) \
+         JOIN record_namespaces AS namespaces USING (namespace_id) \
+         WHERE namespaces.snapshot_key = ? AND namespaces.source_name = 'demo_cart' \
+         AND records.source_name = 'demo_game' AND parts.part_name = 'cart' \
+         ORDER BY areas.area_order)",
     )
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<TextRow>(connection)?;
     assert_eq!(area_order.value, "data:program,disk:media");
 
     let area = sql_query(
-        "SELECT declared_size, width, endianness, source_line FROM software_areas \
-         WHERE snapshot_key = ? AND list_name = 'demo_cart' AND item_name = 'demo_game' \
-         AND part_name = 'cart' AND area_name = 'program' AND area_kind = 'data'",
+        "SELECT areas.declared_size, areas.width, areas.endianness, areas.source_line \
+         FROM software_areas AS areas \
+         JOIN software_parts AS parts ON parts.part_id = areas.part_id \
+         JOIN records USING (record_id) \
+         JOIN record_namespaces AS namespaces USING (namespace_id) \
+         WHERE namespaces.snapshot_key = ? AND namespaces.source_name = 'demo_cart' \
+         AND records.source_name = 'demo_game' AND parts.part_name = 'cart' \
+         AND areas.area_name = 'program' AND areas.area_kind = 'data'",
     )
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<SoftwareAreaRow>(connection)?;
@@ -3550,9 +3565,14 @@ fn assert_software_list_parts(
     assert!(item_line < area.source_line);
 
     let sparse_area = sql_query(
-        "SELECT declared_size, width, endianness, source_line FROM software_areas \
-         WHERE snapshot_key = ? AND list_name = 'demo_cart' AND item_name = 'demo_game' \
-         AND part_name = 'manual' AND area_name = 'text' AND area_kind = 'data'",
+        "SELECT areas.declared_size, areas.width, areas.endianness, areas.source_line \
+         FROM software_areas AS areas \
+         JOIN software_parts AS parts ON parts.part_id = areas.part_id \
+         JOIN records USING (record_id) \
+         JOIN record_namespaces AS namespaces USING (namespace_id) \
+         WHERE namespaces.snapshot_key = ? AND namespaces.source_name = 'demo_cart' \
+         AND records.source_name = 'demo_game' AND parts.part_name = 'manual' \
+         AND areas.area_name = 'text' AND areas.area_kind = 'data'",
     )
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<SoftwareAreaRow>(connection)?;
@@ -3606,9 +3626,13 @@ fn assert_software_list_components(
     assert!(no_dump.sha1.is_none());
     assert_eq!(no_dump.load_instruction.as_deref(), Some("continue"));
     let parent_area_line = sql_query(
-        "SELECT source_line AS value FROM software_areas WHERE snapshot_key = ? \
-         AND list_name = 'demo_cart' AND item_name = 'demo_game' AND part_name = 'cart' \
-         AND area_name = 'program' AND area_kind = 'data'",
+        "SELECT areas.source_line AS value FROM software_areas AS areas \
+         JOIN software_parts AS parts ON parts.part_id = areas.part_id \
+         JOIN records USING (record_id) \
+         JOIN record_namespaces AS namespaces USING (namespace_id) \
+         WHERE namespaces.snapshot_key = ? AND namespaces.source_name = 'demo_cart' \
+         AND records.source_name = 'demo_game' AND parts.part_name = 'cart' \
+         AND areas.area_name = 'program' AND areas.area_kind = 'data'",
     )
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<IntegerRow>(connection)?;
@@ -3756,7 +3780,7 @@ fn assert_malformed_software_list_fails(
 #[test]
 fn imports_clrmamepro_sets_rom_statuses_and_retained_source_tokens()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (_directory, database, mut connection) = setup()?;
+    let (directory, database, mut connection) = setup()?;
     let request = clrmamepro_request()?;
     let report = app::import_catalog(&database, &request)?;
     let repeated = app::import_catalog(&database, &request)?;
@@ -3776,6 +3800,16 @@ fn imports_clrmamepro_sets_rom_statuses_and_retained_source_tokens()
     assert_clrmamepro_set_metadata(&mut connection, &snapshot)?;
     assert_clrmamepro_rom_facts(&mut connection, &snapshot)?;
     assert_clrmamepro_retained_tokens(&mut connection, &snapshot)?;
+    let document_key =
+        sql_query("SELECT document_key AS value FROM catalog_snapshots WHERE snapshot_key = ?")
+            .bind::<Text, _>(snapshot.as_str())
+            .get_result::<TextRow>(&mut connection)?
+            .value
+            .parse::<DocumentKey>()?;
+    assert_eq!(
+        retained_document(&directory, &document_key)?,
+        std::fs::read(&request.document_path)?
+    );
     assert_eq!(report.diagnostic_count, 0);
     Ok(())
 }
@@ -3876,20 +3910,18 @@ fn assert_clrmamepro_retained_tokens(
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<TextRow>(connection)?;
     assert!(unknown.value.contains("future-token"));
-    let header_tokens = sql_query(
-        "SELECT raw_value_json AS value FROM snapshot_extensions \
-         WHERE snapshot_key = ? AND record_kind = 'clrmamepro' AND field_name = 'source_tokens'",
-    )
-    .bind::<Text, _>(snapshot.as_str())
-    .get_result::<TextRow>(connection)?;
-    assert!(header_tokens.value.contains("Synthetic Catalog"));
-    let comment_count = sql_query(
+    let header_name =
+        sql_query("SELECT name AS value FROM cmp_header_facts WHERE snapshot_key = ?")
+            .bind::<Text, _>(snapshot.as_str())
+            .get_result::<TextRow>(connection)?;
+    assert_eq!(header_name.value, "Synthetic Catalog");
+    let source_copy_count = sql_query(
         "SELECT COUNT(*) AS count FROM snapshot_extensions \
-         WHERE snapshot_key = ? AND field_name = 'comment'",
+         WHERE snapshot_key = ? AND field_name = 'source_tokens'",
     )
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<CountRow>(connection)?;
-    assert!(comment_count.count >= 2);
+    assert_eq!(source_copy_count.count, 0);
     let version =
         sql_query("SELECT declared_version AS value FROM catalog_snapshots WHERE snapshot_key = ?")
             .bind::<Text, _>(snapshot.as_str())
@@ -4851,11 +4883,11 @@ fn snapshot_diff_compares_duplicate_asset_fields_as_unordered_multisets()
     let second_path = directory.path().join("duplicates-v2.dat");
     std::fs::write(
         &first_path,
-        br#"<datafile><header><name>Duplicates</name></header><game name="set"><rom name="same.bin" size="1" crc="11111111" status="good"/><rom name="same.bin" size="2" crc="11111111" status="bad"/></game></datafile>"#,
+        br#"<datafile><header><name>Duplicates</name></header><game name="set"><rom name="same.bin" size="1" crc="11111111" status="good"/><rom name="same.bin" size="2" crc="11111111" status="baddump"/></game></datafile>"#,
     )?;
     std::fs::write(
         &second_path,
-        br#"<datafile><header><name>Duplicates</name></header><game name="set"><rom name="same.bin" size="2" crc="11111111" status="good"/><rom name="same.bin" size="1" crc="11111111" status="bad"/></game></datafile>"#,
+        br#"<datafile><header><name>Duplicates</name></header><game name="set"><rom name="same.bin" size="2" crc="11111111" status="good"/><rom name="same.bin" size="1" crc="11111111" status="baddump"/></game></datafile>"#,
     )?;
     let mut first_request = request(
         first_path,

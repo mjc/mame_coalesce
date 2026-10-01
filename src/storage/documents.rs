@@ -820,11 +820,7 @@ mod tests {
         thread,
     };
 
-    use diesel::{
-        SqliteConnection, connection::SimpleConnection, migration::MigrationSource,
-        sql_types::BigInt,
-    };
-    use diesel_migrations::MigrationHarness;
+    use diesel::sql_types::BigInt;
     use flate2::{Compression, write::GzEncoder};
     use tempfile::TempDir;
 
@@ -1048,7 +1044,7 @@ mod tests {
         assert_eq!(retained_bytes, VALID_DAT);
         assert_eq!(
             DataFile::from_reader(retained_bytes.as_slice())?
-                .header()
+                .header()?
                 .name(),
             "Retention fixture"
         );
@@ -1340,56 +1336,9 @@ mod tests {
         assert_eq!(store.load(&retained.document_key)?, compressed);
         assert_eq!(
             DataFile::from_reader(compressed.as_slice())?
-                .header()
+                .header()?
                 .name(),
             "Retention fixture"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn migration_keeps_prior_identity_rows_unavailable_until_bytes_are_retained() -> TestResult {
-        let mut conn = SqliteConnection::establish(":memory:")?;
-        conn.batch_execute("PRAGMA foreign_keys = ON")?;
-        let migrations = crate::storage::db::MIGRATIONS.migrations()?;
-        assert!(migrations.len() > 1);
-        let retain_source_documents_index = migrations
-            .iter()
-            .position(|migration| {
-                migration.name().to_string() == "2026-09-24-000001_retain_source_documents"
-            })
-            .ok_or("retain_source_documents migration not found")?;
-        conn.applied_migrations()?;
-        for migration in &migrations[..retain_source_documents_index] {
-            conn.run_migration(migration.as_ref())?;
-        }
-        sql_query(
-            "INSERT INTO publishing_sources (source_key, display_name) VALUES ('legacy', 'Legacy')",
-        )
-        .execute(&mut conn)?;
-        sql_query("INSERT INTO documents (document_key, sha1, byte_length) VALUES ('metadata-only', X'0000000000000000000000000000000000000000', 1)")
-            .execute(&mut conn)?;
-        sql_query(
-            "INSERT INTO acquisitions (acquisition_key, source_key, document_key, method) \
-             VALUES ('legacy-acquisition', 'legacy', 'metadata-only', 'legacy-import')",
-        )
-        .execute(&mut conn)?;
-
-        conn.run_pending_migrations(crate::storage::db::MIGRATIONS)?;
-        let document = sql_query(
-            "SELECT retention_status FROM documents WHERE document_key = 'metadata-only'",
-        )
-        .get_result::<DocumentStatusRow>(&mut conn)?;
-        assert_eq!(document.retention_status, "unavailable");
-        let status = sql_query(
-            "SELECT verification_status FROM acquisitions WHERE acquisition_key = 'legacy-acquisition'",
-        )
-        .get_result::<StatusRow>(&mut conn)?
-        .verification_status;
-        assert_eq!(status, "unverified");
-        assert!(
-            conn.run_pending_migrations(crate::storage::db::MIGRATIONS)?
-                .is_empty()
         );
         Ok(())
     }
@@ -1523,120 +1472,6 @@ mod tests {
         let columns = sql_query("PRAGMA table_info(documents)").load::<ColumnNameRow>(&mut conn)?;
         assert!(!columns.iter().any(|column| column.name == "payload"));
         Ok(())
-    }
-
-    #[test]
-    fn down_migrations_remove_software_list_snapshot_and_document_retention_extensions()
-    -> TestResult {
-        let mut conn = SqliteConnection::establish(":memory:")?;
-        conn.batch_execute("PRAGMA foreign_keys = ON")?;
-        let migrations = crate::storage::db::MIGRATIONS.migrations()?;
-        let document_retention_index = migrations
-            .iter()
-            .position(|migration| {
-                migration.name().to_string() == "2026-09-24-000001_retain_source_documents"
-            })
-            .ok_or("document retention migration not found")?;
-        let legacy_retention_index = migrations
-            .iter()
-            .position(|migration| {
-                migration.name().to_string() == "2026-09-25-000000_allow_legacy_document_retention"
-            })
-            .ok_or("legacy document retention migration not found")?;
-        let snapshot_index = migrations
-            .iter()
-            .position(|migration| {
-                migration.name().to_string() == "2026-09-24-000002_publish_logiqx_snapshots"
-            })
-            .ok_or("snapshot migration not found")?;
-        let machine_asset_index = migrations
-            .iter()
-            .position(|migration| {
-                migration.name().to_string() == "2026-09-24-000003_mame_machine_asset_semantics"
-            })
-            .ok_or("machine asset migration not found")?;
-        let software_list_index = migrations
-            .iter()
-            .position(|migration| {
-                migration.name().to_string() == "2026-09-24-000004_mame_softwarelist_semantics"
-            })
-            .ok_or("software-list migration not found")?;
-        assert!(document_retention_index < legacy_retention_index);
-        conn.applied_migrations()?;
-        for migration in &migrations[..=legacy_retention_index] {
-            conn.run_migration(migration.as_ref())?;
-        }
-        conn.run_pending_migrations(crate::storage::db::MIGRATIONS)?;
-
-        sql_query(
-            "INSERT INTO publishing_sources (source_key, display_name) VALUES ('legacy', 'Legacy')",
-        )
-        .execute(&mut conn)?;
-        sql_query("INSERT INTO documents (document_key) VALUES ('legacy-document')")
-            .execute(&mut conn)?;
-        sql_query(
-            "INSERT INTO acquisitions (acquisition_key, source_key, document_key) \
-             VALUES ('legacy-acquisition', 'legacy', 'legacy-document')",
-        )
-        .execute(&mut conn)?;
-
-        // Keep the legacy-retention migration applied for its explicit rollback
-        // assertion below.
-        let rollback_indexes = (legacy_retention_index + 1..migrations.len())
-            .rev()
-            .chain((software_list_index..legacy_retention_index).rev());
-        for index in rollback_indexes {
-            conn.revert_migration(migrations[index].as_ref())?;
-        }
-        let software_list_tables = sql_query(
-            "SELECT COUNT(*) AS count FROM sqlite_master \
-             WHERE type = 'table' AND name IN ('software_lists', 'software_items', \
-                 'software_parts', 'software_areas', 'software_components', \
-                 'software_item_dependencies')",
-        )
-        .get_result::<CountRow>(&mut conn)?
-        .count;
-        assert_eq!(software_list_tables, 0);
-
-        conn.revert_migration(migrations[machine_asset_index].as_ref())?;
-        let snapshot_tables_after_asset_revert = sql_query(
-            "SELECT COUNT(*) AS count FROM sqlite_master \
-             WHERE type = 'table' AND name IN ('snapshot_publications', 'snapshot_sets', 'asset_requirements', \
-                 'snapshot_extensions', 'import_diagnostics')",
-        )
-        .get_result::<CountRow>(&mut conn)?
-        .count;
-        assert_eq!(snapshot_tables_after_asset_revert, 5);
-        conn.revert_migration(migrations[snapshot_index].as_ref())?;
-        let snapshot_tables = sql_query(
-            "SELECT COUNT(*) AS count FROM sqlite_master \
-             WHERE type = 'table' AND name IN ('snapshot_publications', 'snapshot_sets', 'asset_requirements', \
-                 'snapshot_extensions', 'import_diagnostics')",
-        )
-        .get_result::<CountRow>(&mut conn)?
-        .count;
-        assert_eq!(snapshot_tables, 0);
-        conn.revert_migration(migrations[legacy_retention_index].as_ref())?;
-        conn.revert_migration(migrations[document_retention_index].as_ref())?;
-        sql_query(
-            "UPDATE acquisitions SET source_uri = 'restored' \
-             WHERE acquisition_key = 'legacy-acquisition'",
-        )
-        .execute(&mut conn)?;
-        let attempts_table = sql_query(
-            "SELECT COUNT(*) AS count FROM sqlite_master \
-             WHERE type = 'table' AND name = 'acquisition_attempts'",
-        )
-        .get_result::<CountRow>(&mut conn)?
-        .count;
-        assert_eq!(attempts_table, 0);
-        Ok(())
-    }
-
-    #[derive(QueryableByName)]
-    struct DocumentStatusRow {
-        #[diesel(sql_type = Text)]
-        retention_status: String,
     }
 
     #[derive(QueryableByName)]

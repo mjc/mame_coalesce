@@ -234,6 +234,27 @@
       "expected_error_contains": null
     },
     {
+      "id": "mame-machine-all-fields",
+      "path": "fixtures/catalog/mame/all-fields.xml",
+      "format": "mame-listxml",
+      "dialect": "MAME -listxml machine specification synthetic subset",
+      "version": "synthetic-mame-all-fields-v1",
+      "source_reference": "https://github.com/mamedev/mame/blob/master/src/frontend/mame/infoxml.cpp",
+      "license": "CC0-1.0",
+      "provenance": "Synthetic fixture authored for this repository to exercise every supported machine specification family and omitted defaults; contains no ROM payload.",
+      "sha1": "fd3e5de7b6601d4125fa6f89c7355a7b6ebddb75",
+      "size_bytes": 2429,
+      "parser_status": "mame-listxml-supported",
+      "scope": "Ordered machine specification fields, nested owners and source defaults for native catalog storage.",
+      "normalized_facts": ["The complete machine contains fourteen specification entries across thirteen families.", "The defaults machine exercises omitted optional attributes without inventing values."],
+      "retained_raw_fields": ["original XML source document"],
+      "expected_adapter_fields": ["chip", "display", "sound", "input", "control", "analog", "driver", "device", "instance", "extension", "slot", "slotoption", "ramoption", "adjuster", "condition", "dipswitch", "dipvalue", "configuration", "confsetting"],
+      "unsupported_semantics": ["Source coordinates are retained; hardware emulation and ROM payload verification are outside this metadata fixture."],
+      "expected_diagnostics": [],
+      "expected": null,
+      "expected_error_contains": null
+    },
+    {
       "id": "mame-machine-asset-semantics",
       "path": "fixtures/catalog/mame/semantics.xml",
       "format": "mame-listxml",

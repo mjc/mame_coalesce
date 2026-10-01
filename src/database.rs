@@ -85,7 +85,7 @@ pub(crate) fn reject_multiple_hard_links(path: &Utf8Path) -> crate::Result<()> {
 }
 
 impl Database {
-    /// Open or create a cache database at `cache_path`, applying pending migrations.
+    /// Open a current database or create an empty one directly from the schema.
     pub fn open(cache_path: &Utf8PathBuf) -> crate::Result<Self> {
         let (canonical_path, cache_lock) = lock_cache_file(cache_path, CacheLockMode::Shared)?;
         crate::storage::db::create_db_pool(canonical_path.as_str()).map(|pool| Self {

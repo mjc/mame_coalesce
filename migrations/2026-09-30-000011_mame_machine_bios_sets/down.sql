@@ -1,4 +1,0 @@
-DROP TRIGGER machine_bios_sets_are_immutable_delete;
-DROP TRIGGER machine_bios_sets_are_immutable_update;
-DROP INDEX machine_bios_sets_name_index;
-DROP TABLE machine_bios_sets;

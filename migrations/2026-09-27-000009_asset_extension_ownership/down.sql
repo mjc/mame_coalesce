@@ -1,6 +1,0 @@
-DROP INDEX relationship_assertions_target_snapshot_kind_index;
-DROP INDEX relationship_assertions_subject_snapshot_kind_index;
-DROP INDEX snapshot_extensions_asset_owner_index;
-
-ALTER TABLE snapshot_extensions DROP COLUMN owner_component_order;
-ALTER TABLE snapshot_extensions DROP COLUMN owner_set_name;

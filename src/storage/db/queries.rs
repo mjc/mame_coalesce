@@ -21,7 +21,7 @@ pub fn traverse_and_insert_data_file(
     pool: &DbPool,
     logiqx_data_file: &logiqx::DataFile,
 ) -> crate::Result<i32> {
-    let new_data_file = NewDataFile::from_logiqx(logiqx_data_file);
+    let new_data_file = NewDataFile::from_logiqx(logiqx_data_file)?;
     let mut conn = pool.get()?;
 
     conn.transaction::<_, crate::Error, _>(|conn| {

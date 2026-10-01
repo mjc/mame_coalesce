@@ -1,3 +1,0 @@
-DROP TRIGGER mame_machine_dependencies_are_immutable_delete;
-DROP TRIGGER mame_machine_dependencies_are_immutable_update;
-DROP TABLE mame_machine_dependencies;

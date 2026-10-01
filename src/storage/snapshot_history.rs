@@ -287,8 +287,8 @@ struct MachineSpecificationRow {
     display_type: Option<String>,
     #[diesel(sql_type = Nullable<Text>)]
     display_rotate: Option<String>,
-    #[diesel(sql_type = Bool)]
-    flipx: bool,
+    #[diesel(sql_type = Nullable<Bool>)]
+    flipx: Option<bool>,
     #[diesel(sql_type = Nullable<Text>)]
     display_width: Option<String>,
     #[diesel(sql_type = Nullable<Text>)]
@@ -311,10 +311,10 @@ struct MachineSpecificationRow {
     display_vbstart: Option<String>,
     #[diesel(sql_type = Nullable<Text>)]
     sound_channels: Option<String>,
-    #[diesel(sql_type = Bool)]
-    input_service: bool,
-    #[diesel(sql_type = Bool)]
-    input_tilt: bool,
+    #[diesel(sql_type = Nullable<Bool>)]
+    input_service: Option<bool>,
+    #[diesel(sql_type = Nullable<Bool>)]
+    input_tilt: Option<bool>,
     #[diesel(sql_type = Nullable<Text>)]
     input_players: Option<String>,
     #[diesel(sql_type = Nullable<Text>)]
@@ -333,14 +333,14 @@ struct MachineSpecificationRow {
     driver_cocktail: Option<String>,
     #[diesel(sql_type = Nullable<Text>)]
     driver_savestate: Option<String>,
-    #[diesel(sql_type = Bool)]
-    driver_requiresartwork: bool,
-    #[diesel(sql_type = Bool)]
-    driver_unofficial: bool,
-    #[diesel(sql_type = Bool)]
-    driver_nosoundhardware: bool,
-    #[diesel(sql_type = Bool)]
-    driver_incomplete: bool,
+    #[diesel(sql_type = Nullable<Bool>)]
+    driver_requiresartwork: Option<bool>,
+    #[diesel(sql_type = Nullable<Bool>)]
+    driver_unofficial: Option<bool>,
+    #[diesel(sql_type = Nullable<Bool>)]
+    driver_nosoundhardware: Option<bool>,
+    #[diesel(sql_type = Nullable<Bool>)]
+    driver_incomplete: Option<bool>,
     #[diesel(sql_type = Nullable<Text>)]
     feature_type: Option<String>,
     #[diesel(sql_type = Nullable<Text>)]
@@ -623,8 +623,8 @@ struct LogiqxDocumentMetadataRow {
     file_name: Option<String>,
     #[diesel(sql_type = Nullable<Binary>)]
     sha1: Option<Vec<u8>>,
-    #[diesel(sql_type = Text)]
-    header_name: String,
+    #[diesel(sql_type = Nullable<Text>)]
+    header_name: Option<String>,
     #[diesel(sql_type = Nullable<Text>)]
     header_description: Option<String>,
     #[diesel(sql_type = Nullable<Text>)]

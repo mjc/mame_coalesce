@@ -10,8 +10,62 @@ const MAX_FORM_DEPTH: usize = 128;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Catalog {
     pub version: Option<String>,
+    pub header: Option<Header>,
     pub sets: Vec<Set>,
     pub extensions: Vec<Extension>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Header {
+    pub name: Option<FieldValue>,
+    pub description: Option<FieldValue>,
+    pub version: Option<FieldValue>,
+    pub date: Option<FieldValue>,
+    pub author: Option<FieldValue>,
+    pub email: Option<FieldValue>,
+    pub homepage: Option<FieldValue>,
+    pub url: Option<FieldValue>,
+    pub comment: Option<FieldValue>,
+    pub category: Option<FieldValue>,
+    pub directives: HeaderDirectives,
+    pub location: RecordLocation,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HeaderDirectives {
+    pub header: Option<FieldValue>,
+    pub forcemerging: Option<FieldValue>,
+    pub forcezipping: Option<FieldValue>,
+    pub forcepacking: Option<FieldValue>,
+    pub forcenodump: Option<FieldValue>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FieldValue {
+    pub source_name: String,
+    pub value: String,
+    pub quoted: bool,
+    pub order: usize,
+    pub location: RecordLocation,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SetFacts {
+    pub description: Option<FieldValue>,
+    pub year: Option<FieldValue>,
+    pub manufacturer: Option<FieldValue>,
+    pub rebuildto: Option<FieldValue>,
+    pub sampleof: Option<FieldValue>,
+    pub samples: Vec<FieldValue>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AssetFacts {
+    pub date: Option<FieldValue>,
+    pub serial: Option<FieldValue>,
+    pub status_field: Option<FieldValue>,
+    pub nodump_order: Option<usize>,
+    pub baddump_order: Option<usize>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -22,6 +76,7 @@ pub struct Set {
     pub location: RecordLocation,
     pub assets: Vec<Asset>,
     pub extensions: Vec<Extension>,
+    pub native: SetFacts,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -36,6 +91,7 @@ pub struct Asset {
     pub location: RecordLocation,
     pub metadata: Value,
     pub extensions: Vec<Extension>,
+    pub native: AssetFacts,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -116,11 +172,11 @@ impl Catalog {
                 header.map(|form| form.tag.location),
             ));
         }
-        let version = header
-            .map(|form| single_field(form, "version", "clrmamepro", None))
-            .transpose()?
-            .flatten()
-            .map(|field| field.value.value().to_owned());
+        let native_header = header.map(parse_header).transpose()?;
+        let version = native_header
+            .as_ref()
+            .and_then(|header| header.version.as_ref())
+            .map(|field| field.value.clone());
 
         let mut sets = Vec::new();
         let mut extensions = parser
@@ -134,14 +190,39 @@ impl Catalog {
                 location: token.location,
             })
             .collect::<Vec<_>>();
-        if let Some(header) = header {
-            extensions.push(Extension {
-                record_kind: "clrmamepro".into(),
-                record_name: None,
-                field_name: "source_tokens".into(),
-                value: json!({"raw_form": header.raw}),
-                location: header.tag.location,
-            });
+        if let Some(header_form) = header {
+            let known_fields = [
+                "name",
+                "description",
+                "version",
+                "date",
+                "author",
+                "email",
+                "homepage",
+                "url",
+                "comment",
+                "category",
+                "header",
+                "forcemerging",
+                "forcezipping",
+                "forcepacking",
+                "forcenodump",
+            ];
+            for item in &header_form.items {
+                match item {
+                    FormItem::Field(field)
+                        if known_fields.iter().any(|known| field.key.word_eq(known)) => {}
+                    FormItem::Field(field) => {
+                        extensions.push(field_extension("clrmamepro", "", field));
+                    }
+                    FormItem::Flag(flag) => {
+                        extensions.push(flag_extension("clrmamepro", "", flag));
+                    }
+                    FormItem::Form(child) => {
+                        extensions.push(form_extension("clrmamepro", "", child));
+                    }
+                }
+            }
         }
         for form in &forms {
             if form.tag.word_eq("game") || form.tag.word_eq("set") {
@@ -166,6 +247,7 @@ impl Catalog {
         }
         Ok(Self {
             version,
+            header: native_header,
             sets,
             extensions,
         })
@@ -478,28 +560,86 @@ impl<'a> Parser<'a> {
 fn is_value_keyword(form: &Token<'_>, keyword: &Token<'_>) -> bool {
     if form.word_eq("rom") {
         [
-            "name", "size", "crc", "crc32", "md5", "sha1", "merge", "status",
+            "name", "size", "crc", "crc32", "md5", "sha1", "merge", "status", "date", "serial",
         ]
         .iter()
         .any(|field| keyword.word_eq(field))
     } else if form.word_eq("game") || form.word_eq("set") {
-        ["name", "cloneof", "description", "year", "manufacturer"]
-            .iter()
-            .any(|field| keyword.word_eq(field))
+        [
+            "name",
+            "cloneof",
+            "description",
+            "year",
+            "manufacturer",
+            "rebuildto",
+            "sampleof",
+            "sample",
+        ]
+        .iter()
+        .any(|field| keyword.word_eq(field))
     } else if form.word_eq("clrmamepro") {
         [
             "name",
-            "version",
-            "author",
             "description",
+            "version",
+            "date",
+            "author",
+            "email",
+            "comment",
+            "category",
             "homepage",
             "url",
+            "header",
+            "forcemerging",
+            "forcezipping",
+            "forcepacking",
+            "forcenodump",
         ]
         .iter()
         .any(|field| keyword.word_eq(field))
     } else {
         false
     }
+}
+
+fn field_value(form: &Form<'_>, field_name: &str) -> crate::Result<Option<FieldValue>> {
+    let field = single_field(form, field_name, form.tag.value(), None)?;
+    Ok(field.map(|field| FieldValue {
+        source_name: field.key.value().to_owned(),
+        value: field.value.value().to_owned(),
+        quoted: matches!(field.value.kind, TokenKind::Quoted(_)),
+        order: form
+            .items
+            .iter()
+            .position(
+                |item| matches!(item, FormItem::Field(candidate) if std::ptr::eq(candidate, field)),
+            )
+            .unwrap_or_default(),
+        location: field.value.location,
+    }))
+}
+
+fn parse_header(form: &Form<'_>) -> crate::Result<Header> {
+    Ok(Header {
+        name: field_value(form, "name")?,
+        description: field_value(form, "description")?,
+        version: field_value(form, "version")?,
+        date: field_value(form, "date")?,
+        author: field_value(form, "author")?,
+        email: field_value(form, "email")?,
+        homepage: field_value(form, "homepage")?,
+        url: field_value(form, "url")?,
+        comment: field_value(form, "comment")?,
+        category: field_value(form, "category")?,
+        directives: HeaderDirectives {
+            header: field_value(form, "header")?,
+            forcemerging: field_value(form, "forcemerging")?,
+            forcezipping: field_value(form, "forcezipping")?,
+            forcepacking: field_value(form, "forcepacking")?,
+            forcenodump: field_value(form, "forcenodump")?,
+        },
+        location: form.tag.location,
+    })
 }
 
 fn form_record_name<'items>(items: &'items [FormItem<'_>]) -> Option<&'items str> {
@@ -530,10 +670,36 @@ fn parse_set(form: &Form<'_>) -> crate::Result<Set> {
     }
     let parent = single_field(form, "cloneof", "set", Some(&name))?
         .map(|field| field.value.value().to_owned());
+    let native = SetFacts {
+        description: field_value(form, "description")?,
+        year: field_value(form, "year")?,
+        manufacturer: field_value(form, "manufacturer")?,
+        rebuildto: field_value(form, "rebuildto")?,
+        sampleof: field_value(form, "sampleof")?,
+        samples: form
+            .items
+            .iter()
+            .enumerate()
+            .filter_map(|(order, item)| match item {
+                FormItem::Field(field) if field.key.word_eq("sample") => Some(FieldValue {
+                    source_name: field.key.value().to_owned(),
+                    value: field.value.value().to_owned(),
+                    quoted: matches!(field.value.kind, TokenKind::Quoted(_)),
+                    order,
+                    location: field.value.location,
+                }),
+                _ => None,
+            })
+            .collect(),
+    };
     let mut metadata: BTreeMap<String, Value> = BTreeMap::new();
-    for field_name in ["description", "year", "manufacturer"] {
-        if let Some(field) = single_field(form, field_name, "set", Some(&name))? {
-            metadata.insert(field_name.into(), json!(field.value.value()));
+    for (name, value) in [
+        ("description", &native.description),
+        ("year", &native.year),
+        ("manufacturer", &native.manufacturer),
+    ] {
+        if let Some(value) = value {
+            metadata.insert(name.into(), json!(value.value));
         }
     }
     metadata.insert("source_tokens".into(), json!(form.raw));
@@ -547,9 +713,18 @@ fn parse_set(form: &Form<'_>) -> crate::Result<Set> {
             }
             FormItem::Form(child) => extensions.push(form_extension("set", &name, child)),
             FormItem::Field(field)
-                if ["name", "cloneof", "description", "year", "manufacturer"]
-                    .iter()
-                    .any(|known| field.key.word_eq(known)) => {}
+                if [
+                    "name",
+                    "cloneof",
+                    "description",
+                    "year",
+                    "manufacturer",
+                    "rebuildto",
+                    "sampleof",
+                    "sample",
+                ]
+                .iter()
+                .any(|known| field.key.word_eq(known)) => {}
             FormItem::Field(field) => extensions.push(field_extension("set", &name, field)),
             FormItem::Flag(flag) => extensions.push(flag_extension("set", &name, flag)),
         }
@@ -561,6 +736,7 @@ fn parse_set(form: &Form<'_>) -> crate::Result<Set> {
         location: form.tag.location,
         assets,
         extensions,
+        native,
     })
 }
 
@@ -604,37 +780,10 @@ fn parse_asset(form: &Form<'_>, set_name: &str) -> crate::Result<Asset> {
     let sha1 = digest_field(form, "sha1", 40, "rom", &name)?;
     let merge = single_field(form, "merge", "rom", Some(&name))?
         .map(|field| field.value.value().to_owned());
-    let explicit_status = single_field(form, "status", "rom", Some(&name))?
-        .map(|field| field.value.value().to_owned());
-    let nodump = form.flags("nodump");
-    let baddump = form.flags("baddump");
-    if nodump.len() > 1 || baddump.len() > 1 || (!nodump.is_empty() && !baddump.is_empty()) {
-        return Err(parse_error(
-            "duplicate or conflicting nodump/baddump flags",
-            "rom",
-            Some(&name),
-            Some(form.tag.location),
-        ));
-    }
-    if explicit_status.is_some() && (!nodump.is_empty() || !baddump.is_empty()) {
-        return Err(parse_error(
-            "status field conflicts with nodump/baddump flag",
-            "rom",
-            Some(&name),
-            Some(form.tag.location),
-        ));
-    }
-    let status = explicit_status.or_else(|| {
-        if !nodump.is_empty() {
-            Some("nodump".into())
-        } else if !baddump.is_empty() {
-            Some("baddump".into())
-        } else {
-            None
-        }
-    });
+    let status = parse_asset_status(form, &name)?;
+    let native = parse_asset_facts(form)?;
     let known_fields = [
-        "name", "size", "crc", "crc32", "md5", "sha1", "merge", "status",
+        "name", "size", "crc", "crc32", "md5", "sha1", "merge", "status", "date", "serial",
     ];
     let mut extensions = Vec::new();
     for item in &form.items {
@@ -660,6 +809,55 @@ fn parse_asset(form: &Form<'_>, set_name: &str) -> crate::Result<Asset> {
         location: form.tag.location,
         metadata: json!(metadata),
         extensions,
+        native,
+    })
+}
+
+fn parse_asset_status(form: &Form<'_>, name: &str) -> crate::Result<Option<String>> {
+    let explicit_status = single_field(form, "status", "rom", Some(name))?
+        .map(|field| field.value.value().to_owned());
+    let nodump = form.flags("nodump");
+    let baddump = form.flags("baddump");
+    if nodump.len() > 1 || baddump.len() > 1 || (!nodump.is_empty() && !baddump.is_empty()) {
+        return Err(parse_error(
+            "duplicate or conflicting nodump/baddump flags",
+            "rom",
+            Some(name),
+            Some(form.tag.location),
+        ));
+    }
+    if explicit_status.is_some() && (!nodump.is_empty() || !baddump.is_empty()) {
+        return Err(parse_error(
+            "status field conflicts with nodump/baddump flag",
+            "rom",
+            Some(name),
+            Some(form.tag.location),
+        ));
+    }
+    Ok(explicit_status.or_else(|| {
+        if !nodump.is_empty() {
+            Some("nodump".into())
+        } else if !baddump.is_empty() {
+            Some("baddump".into())
+        } else {
+            None
+        }
+    }))
+}
+
+fn parse_asset_facts(form: &Form<'_>) -> crate::Result<AssetFacts> {
+    Ok(AssetFacts {
+        date: field_value(form, "date")?,
+        serial: field_value(form, "serial")?,
+        status_field: field_value(form, "status")?,
+        nodump_order: form
+            .items
+            .iter()
+            .position(|item| matches!(item, FormItem::Flag(flag) if flag.word_eq("nodump"))),
+        baddump_order: form
+            .items
+            .iter()
+            .position(|item| matches!(item, FormItem::Flag(flag) if flag.word_eq("baddump"))),
     })
 }
 

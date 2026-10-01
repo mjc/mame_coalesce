@@ -7,6 +7,7 @@ use diesel::{
     sql_types::{BigInt, Binary, Nullable, Text},
 };
 
+use super::catalog_identity::OccurrenceId;
 use crate::domain::CatalogContentId;
 
 #[derive(Clone, Copy)]
@@ -64,22 +65,6 @@ impl<'a> ContentDigestAssertions<'a> {
     }
 }
 
-#[derive(Clone, Copy)]
-pub enum CatalogContentOccurrence<'a> {
-    MachineAsset {
-        set_id: i64,
-        component_order: i64,
-    },
-    SoftwareComponent {
-        snapshot_key: &'a str,
-        list_name: &'a str,
-        item_name: &'a str,
-        part_name: &'a str,
-        area_order: i64,
-        component_order: i64,
-    },
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ContentIdentityConflict {
     AmbiguousAlias,
@@ -107,7 +92,7 @@ pub enum ContentIdentityResolution {
 
 pub fn record_occurrence_digest_assertions(
     connection: &mut SqliteConnection,
-    occurrence: CatalogContentOccurrence<'_>,
+    occurrence: OccurrenceId,
     assertions: ContentDigestAssertions<'_>,
     provenance: &str,
 ) -> crate::Result<()> {
@@ -122,49 +107,15 @@ pub fn record_occurrence_digest_assertions(
                 .bind::<Binary, _>(assertion.value)
                 .get_result::<DigestIdRow>(connection)?
                 .digest_id;
-
-        match occurrence {
-            CatalogContentOccurrence::MachineAsset {
-                set_id,
-                component_order,
-            } => {
-                sql_query(
-                    "INSERT OR IGNORE INTO asset_requirement_digest_assertions \
-                     (set_id, component_order, digest_id, scope, provenance) \
-                     VALUES (?, ?, ?, ?, ?)",
-                )
-                .bind::<BigInt, _>(set_id)
-                .bind::<BigInt, _>(component_order)
-                .bind::<BigInt, _>(digest_id)
-                .bind::<Text, _>(assertion.scope)
-                .bind::<Text, _>(provenance)
-                .execute(connection)?;
-            }
-            CatalogContentOccurrence::SoftwareComponent {
-                snapshot_key,
-                list_name,
-                item_name,
-                part_name,
-                area_order,
-                component_order,
-            } => {
-                sql_query(
-                    "INSERT OR IGNORE INTO software_component_digest_assertions \
-                     (snapshot_key, list_name, item_name, part_name, area_order, component_order, \
-                      digest_id, scope, provenance) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                )
-                .bind::<Text, _>(snapshot_key)
-                .bind::<Text, _>(list_name)
-                .bind::<Text, _>(item_name)
-                .bind::<Text, _>(part_name)
-                .bind::<BigInt, _>(area_order)
-                .bind::<BigInt, _>(component_order)
-                .bind::<BigInt, _>(digest_id)
-                .bind::<Text, _>(assertion.scope)
-                .bind::<Text, _>(provenance)
-                .execute(connection)?;
-            }
-        }
+        sql_query(
+            "INSERT OR IGNORE INTO occurrence_digest_assertions \
+             (occurrence_id, digest_id, scope, provenance) VALUES (?, ?, ?, ?)",
+        )
+        .bind::<BigInt, _>(occurrence.database_value())
+        .bind::<BigInt, _>(digest_id)
+        .bind::<Text, _>(assertion.scope)
+        .bind::<Text, _>(provenance)
+        .execute(connection)?;
     }
     Ok(())
 }
@@ -307,52 +258,21 @@ pub fn resolve_content_identity(
 
 pub fn record_content_identity_conflict(
     connection: &mut SqliteConnection,
-    occurrence: CatalogContentOccurrence<'_>,
+    occurrence: OccurrenceId,
     resolution: &ContentIdentityResolution,
 ) -> crate::Result<()> {
     let ContentIdentityResolution::Conflict { reason, candidates } = resolution else {
         return Ok(());
     };
     for candidate in candidates {
-        match occurrence {
-            CatalogContentOccurrence::MachineAsset {
-                set_id,
-                component_order,
-            } => {
-                sql_query(
-                    "INSERT OR IGNORE INTO asset_requirement_content_conflicts \
-                     (set_id, component_order, candidate_content_uuid, reason) VALUES (?, ?, ?, ?)",
-                )
-                .bind::<BigInt, _>(set_id)
-                .bind::<BigInt, _>(component_order)
-                .bind::<Binary, _>(candidate.as_bytes().as_slice())
-                .bind::<Text, _>(reason.as_str())
-                .execute(connection)?;
-            }
-            CatalogContentOccurrence::SoftwareComponent {
-                snapshot_key,
-                list_name,
-                item_name,
-                part_name,
-                area_order,
-                component_order,
-            } => {
-                sql_query(
-                    "INSERT OR IGNORE INTO software_component_content_conflicts \
-                     (snapshot_key, list_name, item_name, part_name, area_order, component_order, \
-                      candidate_content_uuid, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                )
-                .bind::<Text, _>(snapshot_key)
-                .bind::<Text, _>(list_name)
-                .bind::<Text, _>(item_name)
-                .bind::<Text, _>(part_name)
-                .bind::<BigInt, _>(area_order)
-                .bind::<BigInt, _>(component_order)
-                .bind::<Binary, _>(candidate.as_bytes().as_slice())
-                .bind::<Text, _>(reason.as_str())
-                .execute(connection)?;
-            }
-        }
+        sql_query(
+            "INSERT OR IGNORE INTO occurrence_content_conflicts \
+             (occurrence_id, candidate_content_uuid, reason) VALUES (?, ?, ?)",
+        )
+        .bind::<BigInt, _>(occurrence.database_value())
+        .bind::<Binary, _>(candidate.as_bytes().as_slice())
+        .bind::<Text, _>(reason.as_str())
+        .execute(connection)?;
     }
     Ok(())
 }

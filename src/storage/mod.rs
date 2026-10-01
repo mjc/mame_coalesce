@@ -1,5 +1,6 @@
 pub mod backup;
 pub mod catalog_content;
+pub mod catalog_identity;
 pub mod catalog_import;
 pub mod catalog_reconciliation;
 pub mod db;
