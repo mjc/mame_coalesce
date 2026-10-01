@@ -28,6 +28,34 @@ struct TextValue {
 }
 
 #[test]
+fn catalog_storage_has_no_json_columns_or_catch_all_vendor_fields()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let path = Utf8PathBuf::from_path_buf(directory.path().join("catalog.sqlite"))
+        .map_err(|_| "non-UTF-8 path")?;
+    let _database = Database::open(&path)?;
+    let mut connection = SqliteConnection::establish(path.as_str())?;
+    let json_columns = sql_query(
+        "SELECT count(*) AS count FROM sqlite_schema AS schema \
+         JOIN pragma_table_info(schema.name) AS columns \
+         WHERE schema.type = 'table' AND lower(columns.name) LIKE '%json%'",
+    )
+    .get_result::<Count>(&mut connection)?;
+    assert_eq!(
+        json_columns.count, 0,
+        "catalog facts must use typed native columns"
+    );
+    let catch_all =
+        sql_query("SELECT count(*) AS count FROM sqlite_schema WHERE name = 'snapshot_extensions'")
+            .get_result::<Count>(&mut connection)?;
+    assert_eq!(
+        catch_all.count, 0,
+        "vendor-only fields belong in external source documents"
+    );
+    Ok(())
+}
+
+#[test]
 fn shared_identity_storage_does_not_encode_scope_or_set_metadata_as_json()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;

@@ -86,10 +86,15 @@ parser-internal representations the public contract.
   those IDs; old set/fact names are read-only views, not duplicate stored rows.
   Coverage is normalized into typed root/software members, including selected
   but absent sets and partial known/unknown coverage. Shared file UUIDs are
-  sixteen-byte BLOBs. Source assertions and extensions use numeric native
-  owners. Duplicate-name history groups compare whole-owner fact multisets;
+  sixteen-byte BLOBs. Source assertions use numeric native owners. Unknown
+  vendor fields remain recoverable from the external original document; there
+  is no catch-all table or JSON catalog column. Duplicate-name history groups compare whole-owner fact multisets;
   changed ambiguous groups do not invent row continuity from source positions.
-  Remaining extension value persistence, build-cache projections
+  Logiqx options and repeated child families have native tables, including
+  source order and explicit-versus-default presence. History derives relative
+  native-child ranks in memory so vendor-only gaps do not produce false edits;
+  the original XML ordinals remain stored. Published Logiqx media owners reject
+  both new occurrences and late native payload inserts. Build-cache projections
   and full per-format field coverage are not the finished schema design.
 - Retained catalog documents are content-addressed and immutable. Re-imports
   record acquisitions/import runs and normalized snapshots; an import's

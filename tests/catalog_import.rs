@@ -316,21 +316,11 @@ struct ImportDiagnosticRow {
     #[diesel(sql_type = Nullable<Text>)]
     field_name: Option<String>,
     #[diesel(sql_type = Nullable<Text>)]
-    raw_value_json: Option<String>,
+    offending_text: Option<String>,
     #[diesel(sql_type = Nullable<BigInt>)]
     source_line: Option<i64>,
     #[diesel(sql_type = Nullable<BigInt>)]
     source_column: Option<i64>,
-}
-
-#[derive(QueryableByName)]
-struct StoredExtensionRow {
-    #[diesel(sql_type = Text)]
-    field_name: String,
-    #[diesel(sql_type = Nullable<Text>)]
-    namespace_uri: Option<String>,
-    #[diesel(sql_type = Text)]
-    value: String,
 }
 
 #[derive(QueryableByName)]
@@ -381,6 +371,26 @@ struct LogiqxSetFactsRow {
     year: Option<String>,
     #[diesel(sql_type = Nullable<Text>)]
     manufacturer: Option<String>,
+}
+
+#[derive(QueryableByName)]
+struct LogiqxDefaultsRow {
+    #[diesel(sql_type = Text)]
+    debug: String,
+    #[diesel(sql_type = BigInt)]
+    debug_was_present: i64,
+    #[diesel(sql_type = Text)]
+    is_bios: String,
+    #[diesel(sql_type = BigInt)]
+    is_bios_was_present: i64,
+    #[diesel(sql_type = Nullable<Text>)]
+    size_text: Option<String>,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    size: Option<i64>,
+    #[diesel(sql_type = Text)]
+    dump_status: String,
+    #[diesel(sql_type = BigInt)]
+    status_was_present: i64,
 }
 
 fn setup() -> Result<(tempfile::TempDir, Database, SqliteConnection), Box<dyn std::error::Error>> {
@@ -727,51 +737,16 @@ fn imports_overlapping_catalogs_and_reimports_idempotently()
     assert_eq!(count(&mut connection, "import_runs")?, 3);
     assert_eq!(count(&mut connection, "snapshot_publications")?, 2);
 
-    let shared_content = sql_query(
-        "SELECT COUNT(*) AS occurrences, COUNT(content_uuid) AS linked_occurrences, \
-         COUNT(DISTINCT content_uuid) AS identities, MIN(length(content_uuid)) AS minimum_uuid_bytes, \
-         MIN(typeof(content_uuid)) AS storage_class FROM asset_requirements WHERE sha1 = ?",
-    )
-    .bind::<Binary, _>([0xaa; 20].as_slice())
-    .get_result::<SharedContentStats>(&mut connection)?;
-    assert_eq!(shared_content.occurrences, 2);
-    assert_eq!(shared_content.linked_occurrences, 2);
-    assert_eq!(shared_content.identities, 1);
-    assert_eq!(shared_content.minimum_uuid_bytes, Some(16));
-    assert_eq!(shared_content.storage_class.as_deref(), Some("blob"));
-    let interned_sha1 = sql_query(
-        "SELECT COUNT(*) AS count FROM digest_values \
-         WHERE algorithm = 'sha1' AND digest = ?",
-    )
-    .bind::<Binary, _>([0xaa; 20].as_slice())
-    .get_result::<CountRow>(&mut connection)?;
-    assert_eq!(interned_sha1.count, 1);
-    let preserved_occurrence_assertions = sql_query(
-        "SELECT COUNT(*) AS count FROM asset_requirement_digest_assertions AS assertion \
-         JOIN digest_values AS digest USING (digest_id) \
-         WHERE digest.algorithm = 'sha1' AND digest.digest = ? \
-           AND assertion.scope = 'whole_asset' AND assertion.provenance = 'source_declared'",
-    )
-    .bind::<Binary, _>([0xaa; 20].as_slice())
-    .get_result::<CountRow>(&mut connection)?;
-    assert_eq!(preserved_occurrence_assertions.count, 2);
-    for table in ["asset_requirement_rows", "software_component_occurrences"] {
-        let duplicated_hash_columns = sql_query(format!(
-            "SELECT COUNT(*) AS count FROM pragma_table_info('{table}') \
-             WHERE name IN ('crc', 'md5', 'sha1')"
-        ))
-        .get_result::<CountRow>(&mut connection)?;
-        assert_eq!(
-            duplicated_hash_columns.count, 0,
-            "{table} stores no digest bytes"
-        );
-    }
+    assert_shared_whole_file_identity(&mut connection, [0xaa; 20], 2)?;
 
-    let unknown_attribute = sql_query(
-        "SELECT field_name AS value FROM snapshot_extensions WHERE field_name = 'future-policy'",
-    )
-    .get_result::<TextRow>(&mut connection)?;
-    assert_eq!(unknown_attribute.value, "future-policy");
+    assert_snapshot_source_literal(
+        &database,
+        overlap
+            .snapshot_key
+            .as_ref()
+            .ok_or("overlap snapshot missing")?,
+        b"future-policy=\"retain-or-report\"",
+    )?;
     let line = sql_query(
         "SELECT source_line AS value FROM snapshot_sets WHERE set_name = 'alpha' LIMIT 1",
     )
@@ -799,11 +774,74 @@ fn imports_overlapping_catalogs_and_reimports_idempotently()
     )
     .get_result::<NullableTextRow>(&mut connection)?;
     assert!(absent_size.value.is_none());
-    let namespace = sql_query(
-        "SELECT namespace_uri AS value FROM snapshot_extensions WHERE field_name = 'status'",
+    assert_snapshot_source_literal(
+        &database,
+        sparse
+            .snapshot_key
+            .as_ref()
+            .ok_or("sparse snapshot missing")?,
+        b"vendor:status=\"curated\"",
+    )?;
+    Ok(())
+}
+
+fn assert_shared_whole_file_identity(
+    connection: &mut SqliteConnection,
+    sha1: [u8; 20],
+    expected_occurrences: i64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let shared_content = sql_query(
+        "SELECT COUNT(*) AS occurrences, COUNT(content_uuid) AS linked_occurrences, \
+         COUNT(DISTINCT content_uuid) AS identities, MIN(length(content_uuid)) AS minimum_uuid_bytes, \
+         MIN(typeof(content_uuid)) AS storage_class FROM asset_requirements WHERE sha1 = ?",
     )
-    .get_result::<NullableTextRow>(&mut connection)?;
-    assert_eq!(namespace.value.as_deref(), Some("urn:vendor"));
+    .bind::<Binary, _>(sha1.as_slice())
+    .get_result::<SharedContentStats>(connection)?;
+    assert_eq!(shared_content.occurrences, expected_occurrences);
+    assert_eq!(shared_content.linked_occurrences, expected_occurrences);
+    assert_eq!(shared_content.identities, 1);
+    assert_eq!(shared_content.minimum_uuid_bytes, Some(16));
+    assert_eq!(shared_content.storage_class.as_deref(), Some("blob"));
+    let interned_sha1 = sql_query(
+        "SELECT COUNT(*) AS count FROM digest_values \
+         WHERE algorithm = 'sha1' AND digest = ?",
+    )
+    .bind::<Binary, _>(sha1.as_slice())
+    .get_result::<CountRow>(connection)?;
+    assert_eq!(interned_sha1.count, 1);
+    let preserved_occurrence_assertions = sql_query(
+        "SELECT COUNT(*) AS count FROM asset_requirement_digest_assertions AS assertion \
+         JOIN digest_values AS digest USING (digest_id) \
+         WHERE digest.algorithm = 'sha1' AND digest.digest = ? \
+           AND assertion.scope = 'whole_asset' AND assertion.provenance = 'source_declared'",
+    )
+    .bind::<Binary, _>(sha1.as_slice())
+    .get_result::<CountRow>(connection)?;
+    assert_eq!(preserved_occurrence_assertions.count, expected_occurrences);
+    for table in ["asset_requirement_rows", "software_component_occurrences"] {
+        let duplicated_hash_columns = sql_query(format!(
+            "SELECT COUNT(*) AS count FROM pragma_table_info('{table}') \
+             WHERE name IN ('crc', 'md5', 'sha1')"
+        ))
+        .get_result::<CountRow>(connection)?;
+        assert_eq!(
+            duplicated_hash_columns.count, 0,
+            "{table} stores no digest bytes"
+        );
+    }
+    Ok(())
+}
+fn assert_snapshot_source_literal(
+    database: &Database,
+    snapshot: &SnapshotKey,
+    literal: &[u8],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let source = app::load_snapshot_source(database, snapshot)?;
+    assert!(
+        source
+            .windows(literal.len())
+            .any(|window| window == literal)
+    );
     Ok(())
 }
 
@@ -1002,6 +1040,45 @@ fn persists_logiqx_document_and_set_specification_fields_and_diffs_them()
 }
 
 #[test]
+fn logiqx_effective_defaults_keep_presence_and_root_rom_size_text()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, mut connection) = setup()?;
+    let path = directory.path().join("logiqx-defaults.xml");
+    std::fs::write(
+        &path,
+        "<datafile><header><name>Defaults</name></header><game name='defaults'><description>Defaults</description><rom name='leading-zero.bin' size='00016'/></game></datafile>",
+    )?;
+    let import = app::import_catalog(
+        &database,
+        &request(path, "logiqx-defaults", "logiqx-defaults", "Defaults")?,
+    )?;
+    let snapshot = import.snapshot_key.ok_or("Logiqx snapshot missing")?;
+    let row = sql_query(
+        "SELECT document.debug, document.debug_was_present, game.is_bios, \
+                game.is_bios_was_present, rom.size_text, rom.size, rom.dump_status, \
+                rom.status_was_present \
+         FROM logiqx_document_facts AS document \
+         JOIN snapshot_sets AS sets ON sets.snapshot_key = document.snapshot_key \
+         JOIN logiqx_games AS game ON game.set_id = sets.set_id \
+         JOIN asset_occurrences AS occurrence ON occurrence.record_id = sets.set_id \
+         JOIN logiqx_rom_claims AS rom USING (occurrence_id) \
+         WHERE document.snapshot_key = ? AND sets.set_name = 'defaults' \
+           AND rom.name = 'leading-zero.bin'",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<LogiqxDefaultsRow>(&mut connection)?;
+    assert_eq!(row.debug, "no");
+    assert_eq!(row.debug_was_present, 0);
+    assert_eq!(row.is_bios, "no");
+    assert_eq!(row.is_bios_was_present, 0);
+    assert_eq!(row.size_text.as_deref(), Some("00016"));
+    assert_eq!(row.size, Some(16));
+    assert_eq!(row.dump_status, "good");
+    assert_eq!(row.status_was_present, 0);
+    Ok(())
+}
+
+#[test]
 fn publishing_completes_a_matching_identity_only_snapshot() -> Result<(), Box<dyn std::error::Error>>
 {
     let (directory, database, mut connection) = setup()?;
@@ -1128,13 +1205,12 @@ fn imports_no_intro_pc_xml_metadata_without_inventing_title_relationships()
         &report.run_key.to_string(),
     )?;
 
-    let retained_unknown = sql_query(
-        "SELECT raw_value_json AS value FROM snapshot_extensions \
-         WHERE snapshot_key = ? AND field_name = 'future-field'",
-    )
-    .bind::<Text, _>(snapshot.as_str())
-    .get_result::<TextRow>(&mut connection)?;
-    assert_eq!(retained_unknown.value, "\"retained\"");
+    let retained_source = app::load_snapshot_source(&database, &snapshot)?;
+    assert!(
+        retained_source
+            .windows(b"future-field=\"retained\"".len())
+            .any(|window| window == b"future-field=\"retained\"")
+    );
 
     assert_no_intro_retained_document(
         &directory,
@@ -1507,24 +1583,38 @@ fn no_intro_unknown_rom_fields_keep_the_rom_record_identity()
         Utf8PathBuf::from_path_buf(path).map_err(|_| "non-UTF8 fixture path")?;
     let report = app::import_catalog(&database, &request)?;
     assert_eq!(report.status, app::CatalogImportStatus::Succeeded);
-    let first = sql_query(
-        "SELECT raw_value_json AS value FROM snapshot_extensions \
-         WHERE record_kind = 'rom' AND record_name = 'a.bin' AND field_name = 'future'",
+    let source = app::load_snapshot_source(
+        &database,
+        report
+            .snapshot_key
+            .as_ref()
+            .ok_or("No-Intro snapshot missing")?,
+    )?;
+    assert_eq!(source, std::fs::read(request.document_path.as_std_path())?);
+    for literal in [
+        b"name=\"a.bin\" future=\"A\"".as_slice(),
+        b"<future-child value=\"a\"/>".as_slice(),
+        b"name=\"b.bin\" future=\"B\"".as_slice(),
+    ] {
+        assert!(
+            source
+                .windows(literal.len())
+                .any(|window| window == literal)
+        );
+    }
+    let rom_names = sql_query(
+        "SELECT GROUP_CONCAT(asset_name, ',') AS value FROM \
+         (SELECT asset_name FROM asset_requirements WHERE snapshot_key = ? ORDER BY asset_name)",
+    )
+    .bind::<Text, _>(
+        report
+            .snapshot_key
+            .as_ref()
+            .ok_or("No-Intro snapshot missing")?
+            .as_str(),
     )
     .get_result::<TextRow>(&mut connection)?;
-    let second = sql_query(
-        "SELECT raw_value_json AS value FROM snapshot_extensions \
-         WHERE record_kind = 'rom' AND record_name = 'b.bin' AND field_name = 'future'",
-    )
-    .get_result::<TextRow>(&mut connection)?;
-    let nested = sql_query(
-        "SELECT COUNT(*) AS count FROM snapshot_extensions \
-         WHERE record_kind = 'rom' AND record_name = 'a.bin' AND field_name = 'element:future-child'",
-    )
-    .get_result::<CountRow>(&mut connection)?;
-    assert_eq!(first.value, "\"A\"");
-    assert_eq!(second.value, "\"B\"");
-    assert_eq!(nested.count, 1);
+    assert_eq!(rom_names.value, "a.bin,b.bin");
     Ok(())
 }
 
@@ -1692,7 +1782,6 @@ fn imports_mame_machine_rom_disk_bios_and_device_semantics_loss_aware()
             .bind::<Text, _>(snapshot.as_str())
             .get_result::<TextRow>(&mut connection)?;
     assert_eq!(version.value, "0.216-synthetic");
-    assert!(count(&mut connection, "snapshot_extensions")? >= 1);
     let source = app::load_snapshot_source(&database, &snapshot)?;
     assert!(
         source
@@ -1799,13 +1888,6 @@ fn imports_mame_switch_specification_fields_as_ordered_query_facts()
         (1, "Hard", 1, 1)
     );
 
-    let switch_extensions = sql_query(
-        "SELECT COUNT(*) AS count FROM snapshot_extensions \
-         WHERE snapshot_key = ? AND record_kind IN ('dipswitch', 'diplocation', 'dipvalue', 'configuration', 'conflocation', 'confsetting')",
-    )
-    .bind::<Text, _>(snapshot.as_str())
-    .get_result::<CountRow>(&mut connection)?;
-    assert_eq!(switch_extensions.count, 0);
     Ok(())
 }
 
@@ -2005,13 +2087,6 @@ fn imports_every_mame_machine_dtd_family_as_typed_query_facts()
     .map_err(|error| io::Error::other(format!("read MAME dependency tag: {error}")))?;
     assert_eq!(reference_tag.value, ":cpu");
 
-    let opaque_spec_fields = sql_query(
-        "SELECT COUNT(*) AS count FROM snapshot_extensions WHERE snapshot_key = ? AND record_kind IN ('sample', 'chip', 'display', 'sound', 'input', 'control', 'port', 'analog', 'adjuster', 'driver', 'feature', 'device', 'instance', 'extension', 'slot', 'slotoption', 'softwarelist', 'ramoption')",
-    )
-    .bind::<Text, _>(snapshot.as_str())
-    .get_result::<CountRow>(&mut connection)
-    .map_err(|error| io::Error::other(format!("read MAME extensions: {error}")))?;
-    assert_eq!(opaque_spec_fields.count, 0);
     Ok(())
 }
 
@@ -2240,8 +2315,7 @@ fn snapshot_diff_detects_mame_document_fact_changes() -> Result<(), Box<dyn std:
 }
 
 #[test]
-fn imports_mame_asset_facts_and_recovers_extensions_from_source()
--> Result<(), Box<dyn std::error::Error>> {
+fn imports_mame_asset_facts_and_recovers_vendor_source() -> Result<(), Box<dyn std::error::Error>> {
     let (_directory, database, mut connection) = setup()?;
     let mut request = request(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/catalog/mame/semantics.xml"),
@@ -2284,30 +2358,18 @@ fn imports_mame_asset_facts_and_recovers_extensions_from_source()
     .get_result::<TextRow>(&mut connection)?;
     assert_eq!(disk_fields.value, "parent.disk:nodump");
 
-    let asset_extension_count = sql_query(
-        "SELECT COUNT(*) AS count FROM snapshot_extensions \
-         WHERE snapshot_key = ? AND record_kind = 'rom' AND field_name = 'flag'",
-    )
-    .bind::<Text, _>(snapshot.as_str())
-    .get_result::<CountRow>(&mut connection)?
-    .count;
-    assert_eq!(asset_extension_count, 1);
     let source = app::load_snapshot_source(&database, &snapshot)?;
+    assert_eq!(source, std::fs::read(request.document_path.as_std_path())?);
     assert!(
         source
             .windows(b"future:flag".len())
             .any(|window| window == b"future:flag")
     );
-    let asset_extension = sql_query(
-        "SELECT raw_value_json AS value FROM snapshot_extensions \
-         JOIN catalog_sets ON catalog_sets.set_id = snapshot_extensions.owner_set_id \
-         WHERE snapshot_key = ? AND record_kind = 'rom' AND record_name = 'clone.rom' \
-           AND catalog_sets.set_name = 'clone' AND field_name = 'flag' \
-           AND namespace_uri = 'urn:future'",
-    )
-    .bind::<Text, _>(snapshot.as_str())
-    .get_result::<TextRow>(&mut connection)?;
-    assert_eq!(asset_extension.value, "\"retained\"");
+    assert!(
+        source
+            .windows(b"future:flag=\"retained\"".len())
+            .any(|window| window == b"future:flag=\"retained\"")
+    );
 
     let format_hint = sql_query(
         "SELECT documents.format_hint AS value FROM documents \
@@ -2418,7 +2480,6 @@ fn failed_late_mame_duplicate_does_not_publish_streamed_records()
         "snapshot_publications",
         "snapshot_sets",
         "asset_requirements",
-        "snapshot_extensions",
         "relationship_assertions",
     ] {
         assert_eq!(
@@ -2595,7 +2656,6 @@ fn mame_asset_storage_error_rolls_back_staged_import_and_keeps_document()
         "records",
         "asset_occurrences",
         "mame_rom_claims",
-        "snapshot_extensions",
         "relationship_assertions",
         "import_runs",
         "import_diagnostics",
@@ -2642,7 +2702,7 @@ fn mame_nested_unknown_extension_and_reimport_keep_semantics_and_diagnostics()
         "unknown source XML is not a failed import"
     );
     let first_diagnostics = sql_query(
-        "SELECT code, message, record_kind, record_name, field_name, raw_value_json, source_line, source_column \
+        "SELECT code, message, record_kind, record_name, field_name, offending_text, source_line, source_column \
          FROM import_diagnostics WHERE run_key = ? \
          ORDER BY code, message, record_kind, record_name, field_name, source_line, source_column",
     )
@@ -2650,43 +2710,26 @@ fn mame_nested_unknown_extension_and_reimport_keep_semantics_and_diagnostics()
     .load::<ImportDiagnosticRow>(&mut connection)?;
     assert!(first_diagnostics.is_empty());
 
-    let extension = sql_query(
-        "SELECT field_name, namespace_uri, raw_value_json AS value FROM snapshot_extensions \
-         WHERE snapshot_key = ? AND record_kind = 'machine' AND record_name = 'alpha' \
-           AND field_name = 'element:payload'",
-    )
-    .bind::<Text, _>(snapshot.as_str())
-    .get_result::<StoredExtensionRow>(&mut connection)?;
-    assert_eq!(extension.field_name, "element:payload");
-    assert_eq!(extension.namespace_uri.as_deref(), Some("urn:vendor"));
-    let extension_json: serde_json::Value = serde_json::from_str(&extension.value)?;
-    assert_eq!(extension_json["name"], "{urn:vendor}payload");
-    assert_eq!(extension_json["attributes"]["code"], "A & B");
-    assert_eq!(
-        extension_json["content"],
-        serde_json::json!([
-            {"kind": "text", "value": "left "},
-            {"kind": "text", "value": "<"},
-            {"kind": "text", "value": "middle"},
-            {"kind": "text", "value": ">"},
-            {"kind": "element", "value": {
-                "name": "{urn:vendor}part", "attributes": {"code": "x"},
-                "content": [
-                    {"kind": "text", "value": "inside "},
-                    {"kind": "text", "value": "&"},
-                    {"kind": "text", "value": " out"}
-                ]
-            }},
-            {"kind": "text", "value": " right"}
-        ])
-    );
+    let source = app::load_snapshot_source(&database, &snapshot)?;
+    assert_eq!(source, std::fs::read(import.document_path.as_std_path())?);
+    for literal in [
+        b"xmlns:v=\"urn:vendor\"".as_slice(),
+        b"<v:payload code=\"A &amp; B\">".as_slice(),
+        b"left &lt;middle&gt;<v:part code=\"x\">inside &amp; out</v:part> right".as_slice(),
+    ] {
+        assert!(
+            source
+                .windows(literal.len())
+                .any(|window| window == literal)
+        );
+    }
 
     let repeated = app::import_catalog(&database, &import)?;
     assert_eq!(repeated.snapshot_key.as_ref(), Some(&snapshot));
     assert_eq!(repeated.diagnostic_count, 0);
     assert_eq!(count(&mut connection, "catalog_snapshots")?, 1);
     let repeated_diagnostics = sql_query(
-        "SELECT code, message, record_kind, record_name, field_name, raw_value_json, source_line, source_column \
+        "SELECT code, message, record_kind, record_name, field_name, offending_text, source_line, source_column \
          FROM import_diagnostics WHERE run_key = ? \
          ORDER BY code, message, record_kind, record_name, field_name, source_line, source_column",
     )
@@ -3098,7 +3141,7 @@ fn imports_mame_softwarelists_with_nested_order_dependencies_and_load_claims()
     assert_software_list_identity_and_dependencies(&mut connection, &snapshot)?;
     assert_software_list_nesting(&mut connection, &snapshot)?;
     assert_software_list_components(&mut connection, &snapshot)?;
-    assert_software_list_extensions(&mut connection, &snapshot)?;
+    assert_software_list_vendor_source(&database, &request, &snapshot)?;
     assert_malformed_software_list_fails(directory.path(), &database, &mut connection, &request)?;
     Ok(())
 }
@@ -3787,25 +3830,23 @@ fn assert_software_list_components(
     Ok(())
 }
 
-fn assert_software_list_extensions(
-    connection: &mut SqliteConnection,
+fn assert_software_list_vendor_source(
+    database: &Database,
+    request: &CatalogImportRequest,
     snapshot: &mame_coalesce::domain::SnapshotKey,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let unknown_element = sql_query(
-        "SELECT raw_value_json AS value FROM snapshot_extensions WHERE snapshot_key = ? \
-         AND field_name = 'element:future-policy'",
-    )
-    .bind::<Text, _>(snapshot.as_str())
-    .get_result::<TextRow>(connection)?;
-    assert!(unknown_element.value.contains("vendor payload"));
-
-    let unknown_attribute = sql_query(
-        "SELECT raw_value_json AS value FROM snapshot_extensions WHERE snapshot_key = ? \
-         AND field_name = '@future-flag'",
-    )
-    .bind::<Text, _>(snapshot.as_str())
-    .get_result::<TextRow>(connection)?;
-    assert!(unknown_attribute.value.contains("retained"));
+    let source = app::load_snapshot_source(database, snapshot)?;
+    assert_eq!(source, std::fs::read(request.document_path.as_std_path())?);
+    for literal in [
+        b"future-flag=\"retained\"".as_slice(),
+        b"<future-policy mode=\"preserve\">vendor payload</future-policy>".as_slice(),
+    ] {
+        assert!(
+            source
+                .windows(literal.len())
+                .any(|window| window == literal)
+        );
+    }
     Ok(())
 }
 
@@ -3899,7 +3940,7 @@ fn assert_malformed_software_list_fails(
 }
 
 #[test]
-fn imports_clrmamepro_sets_rom_statuses_and_retained_source_tokens()
+fn imports_clrmamepro_sets_rom_statuses_and_retains_original_source()
 -> Result<(), Box<dyn std::error::Error>> {
     let (directory, database, mut connection) = setup()?;
     let request = clrmamepro_request()?;
@@ -3920,7 +3961,7 @@ fn imports_clrmamepro_sets_rom_statuses_and_retained_source_tokens()
     assert_eq!(count(&mut connection, "asset_requirements")?, 6);
     assert_clrmamepro_set_metadata(&mut connection, &snapshot)?;
     assert_clrmamepro_rom_facts(&mut connection, &snapshot)?;
-    assert_clrmamepro_retained_tokens(&mut connection, &snapshot)?;
+    assert_clrmamepro_source_recovery(&database, &request, &mut connection, &snapshot)?;
     let document_key =
         sql_query("SELECT document_key AS value FROM catalog_snapshots WHERE snapshot_key = ?")
             .bind::<Text, _>(snapshot.as_str())
@@ -4018,29 +4059,24 @@ fn assert_clrmamepro_rom_facts(
     Ok(())
 }
 
-fn assert_clrmamepro_retained_tokens(
+fn assert_clrmamepro_source_recovery(
+    database: &Database,
+    request: &CatalogImportRequest,
     connection: &mut SqliteConnection,
     snapshot: &mame_coalesce::domain::SnapshotKey,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let unknown = sql_query(
-        "SELECT raw_value_json AS value FROM snapshot_extensions \
-         WHERE snapshot_key = ? AND field_name = 'futureflag'",
-    )
-    .bind::<Text, _>(snapshot.as_str())
-    .get_result::<TextRow>(connection)?;
-    assert!(unknown.value.contains("future-token"));
+    let source = app::load_snapshot_source(database, snapshot)?;
+    assert_eq!(source, std::fs::read(request.document_path.as_std_path())?);
+    assert!(
+        source
+            .windows(b"futureflag \"future-token\"".len())
+            .any(|window| window == b"futureflag \"future-token\"")
+    );
     let header_name =
         sql_query("SELECT name AS value FROM cmp_header_facts WHERE snapshot_key = ?")
             .bind::<Text, _>(snapshot.as_str())
             .get_result::<TextRow>(connection)?;
     assert_eq!(header_name.value, "Synthetic Catalog");
-    let source_copy_count = sql_query(
-        "SELECT COUNT(*) AS count FROM snapshot_extensions \
-         WHERE snapshot_key = ? AND field_name = 'source_tokens'",
-    )
-    .bind::<Text, _>(snapshot.as_str())
-    .get_result::<CountRow>(connection)?;
-    assert_eq!(source_copy_count.count, 0);
     let version =
         sql_query("SELECT declared_version AS value FROM catalog_snapshots WHERE snapshot_key = ?")
             .bind::<Text, _>(snapshot.as_str())
@@ -4518,15 +4554,37 @@ fn snapshot_diff_tracks_unknown_extensions_and_does_not_call_missing_hashes_chan
     let second = app::import_catalog(&database, &second_request)?;
     let diff = app::diff_catalog_snapshots(
         &database,
-        &first.snapshot_key.ok_or("first snapshot missing")?,
-        &second.snapshot_key.ok_or("second snapshot missing")?,
+        first
+            .snapshot_key
+            .as_ref()
+            .ok_or("first snapshot missing")?,
+        second
+            .snapshot_key
+            .as_ref()
+            .ok_or("second snapshot missing")?,
     )?;
     let thing = diff
         .records
         .iter()
         .find(|record| record.set_name == "thing")
         .ok_or("machine diff missing")?;
-    assert!(thing.metadata_changed);
+    assert!(!thing.metadata_changed);
+    let second_source = app::load_snapshot_source(
+        &database,
+        second
+            .snapshot_key
+            .as_ref()
+            .ok_or("second snapshot missing")?,
+    )?;
+    assert!(
+        second_source
+            .windows(b"<future value=\"two\"/>".len())
+            .any(|window| window == b"<future value=\"two\"/>")
+    );
+    assert_eq!(
+        second_source,
+        std::fs::read(second_request.document_path.as_std_path())?
+    );
     let undumped = thing
         .requirement_changes
         .iter()
@@ -4538,7 +4596,8 @@ fn snapshot_diff_tracks_unknown_extensions_and_does_not_call_missing_hashes_chan
 }
 
 #[test]
-fn snapshot_diff_tracks_logiqx_game_extensions() -> Result<(), Box<dyn std::error::Error>> {
+fn snapshot_diff_ignores_logiqx_vendor_fields_and_retains_source()
+-> Result<(), Box<dyn std::error::Error>> {
     let (directory, database, _connection) = setup()?;
     let logiqx_v1 = directory.path().join("logiqx-extension-v1.dat");
     let logiqx_v2 = directory.path().join("logiqx-extension-v2.dat");
@@ -4568,17 +4627,42 @@ fn snapshot_diff_tracks_logiqx_game_extensions() -> Result<(), Box<dyn std::erro
     let second = app::import_catalog(&database, &logiqx_second)?;
     let logiqx_diff = app::diff_catalog_snapshots(
         &database,
-        &first.snapshot_key.ok_or("Logiqx first snapshot missing")?,
-        &second
+        first
             .snapshot_key
+            .as_ref()
+            .ok_or("Logiqx first snapshot missing")?,
+        second
+            .snapshot_key
+            .as_ref()
             .ok_or("Logiqx second snapshot missing")?,
     )?;
-    assert!(logiqx_diff.records[0].metadata_changed);
+    assert_eq!(
+        logiqx_diff.records[0].status,
+        SnapshotRecordStatus::Unchanged
+    );
+    assert!(!logiqx_diff.records[0].metadata_changed);
+    assert!(logiqx_diff.records[0].requirement_changes.is_empty());
+    let source = app::load_snapshot_source(
+        &database,
+        second
+            .snapshot_key
+            .as_ref()
+            .ok_or("Logiqx second snapshot missing")?,
+    )?;
+    assert!(
+        source
+            .windows(b"future=\"two\"".len())
+            .any(|window| window == b"future=\"two\"")
+    );
+    assert_eq!(
+        source,
+        std::fs::read(logiqx_second.document_path.as_std_path())?
+    );
     Ok(())
 }
 
 #[test]
-fn snapshot_diff_attributes_logiqx_extensions_to_their_asset_and_game()
+fn snapshot_diff_ignores_logiqx_vendor_fields_and_retains_source_owners()
 -> Result<(), Box<dyn std::error::Error>> {
     let (directory, database, _connection) = setup()?;
     let first_path = directory.path().join("logiqx-owned-extensions-v1.dat");
@@ -4609,22 +4693,23 @@ fn snapshot_diff_attributes_logiqx_extensions_to_their_asset_and_game()
     let second = app::import_catalog(&database, &second_request)?;
     let diff = app::diff_catalog_snapshots(
         &database,
-        &first.snapshot_key.ok_or("first snapshot missing")?,
-        &second.snapshot_key.ok_or("second snapshot missing")?,
+        first
+            .snapshot_key
+            .as_ref()
+            .ok_or("first snapshot missing")?,
+        second
+            .snapshot_key
+            .as_ref()
+            .ok_or("second snapshot missing")?,
     )?;
     let owner = diff
         .records
         .iter()
         .find(|record| record.set_name == "owner")
         .ok_or("owner diff missing")?;
-    assert_eq!(owner.status, SnapshotRecordStatus::Changed);
-    assert!(owner.metadata_changed);
-    let asset = owner
-        .requirement_changes
-        .iter()
-        .find(|change| change.asset_name == "shared.rom")
-        .ok_or("owned asset extension change missing")?;
-    assert!(asset.other_evidence_changed);
+    assert_eq!(owner.status, SnapshotRecordStatus::Unchanged);
+    assert!(!owner.metadata_changed);
+    assert!(owner.requirement_changes.is_empty());
 
     let target = diff
         .records
@@ -4633,11 +4718,29 @@ fn snapshot_diff_attributes_logiqx_extensions_to_their_asset_and_game()
         .ok_or("target diff missing")?;
     assert_eq!(target.status, SnapshotRecordStatus::Unchanged);
     assert!(!target.metadata_changed);
+    assert!(target.requirement_changes.is_empty());
+    let source = app::load_snapshot_source(
+        &database,
+        second
+            .snapshot_key
+            .as_ref()
+            .ok_or("second snapshot missing")?,
+    )?;
+    assert_eq!(
+        source,
+        std::fs::read(second_request.document_path.as_std_path())?
+    );
+    assert_eq!(
+        std::str::from_utf8(&source)?
+            .matches("future=\"two\"")
+            .count(),
+        2
+    );
     Ok(())
 }
 
 #[test]
-fn snapshot_diff_attributes_device_ref_extensions_to_the_owning_set()
+fn snapshot_diff_ignores_device_ref_vendor_fields_and_retains_source()
 -> Result<(), Box<dyn std::error::Error>> {
     let (directory, database, _connection) = setup()?;
     let device_ref_v1 = directory.path().join("device-ref-v1.xml");
@@ -4670,11 +4773,13 @@ fn snapshot_diff_attributes_device_ref_extensions_to_the_owning_set()
     let second = app::import_catalog(&database, &device_ref_second)?;
     let device_ref_diff = app::diff_catalog_snapshots(
         &database,
-        &first
+        first
             .snapshot_key
+            .as_ref()
             .ok_or("device-ref first snapshot missing")?,
-        &second
+        second
             .snapshot_key
+            .as_ref()
             .ok_or("device-ref second snapshot missing")?,
     )?;
     let owner = device_ref_diff
@@ -4682,8 +4787,9 @@ fn snapshot_diff_attributes_device_ref_extensions_to_the_owning_set()
         .iter()
         .find(|record| record.set_name == "owner")
         .ok_or("owner diff missing")?;
-    assert_eq!(owner.status, SnapshotRecordStatus::Changed);
-    assert!(owner.metadata_changed);
+    assert_eq!(owner.status, SnapshotRecordStatus::Unchanged);
+    assert!(!owner.metadata_changed);
+    assert!(owner.requirement_changes.is_empty());
 
     let target = device_ref_diff
         .records
@@ -4692,13 +4798,30 @@ fn snapshot_diff_attributes_device_ref_extensions_to_the_owning_set()
         .ok_or("target diff missing")?;
     assert_eq!(target.status, SnapshotRecordStatus::Unchanged);
     assert!(!target.metadata_changed);
+    assert!(target.requirement_changes.is_empty());
+    let source = app::load_snapshot_source(
+        &database,
+        second
+            .snapshot_key
+            .as_ref()
+            .ok_or("device-ref second snapshot missing")?,
+    )?;
+    assert!(
+        source
+            .windows(b"future=\"two\"".len())
+            .any(|window| window == b"future=\"two\"")
+    );
+    assert_eq!(
+        source,
+        std::fs::read(device_ref_second.document_path.as_std_path())?
+    );
     Ok(())
 }
 
 #[test]
-fn snapshot_diff_keeps_asset_extensions_with_their_owning_set()
+fn snapshot_diff_ignores_asset_vendor_fields_and_retains_source()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (directory, database, mut connection) = setup()?;
+    let (directory, database, _connection) = setup()?;
     let first_path = directory.path().join("asset-extension-v1.xml");
     let second_path = directory.path().join("asset-extension-v2.xml");
     for (path, changed_value) in [(&first_path, "one"), (&second_path, "two")] {
@@ -4744,12 +4867,9 @@ fn snapshot_diff_keeps_asset_extensions_with_their_owning_set()
         .iter()
         .find(|record| record.set_name == "alpha")
         .ok_or("alpha diff missing")?;
-    let alpha_asset = alpha
-        .requirement_changes
-        .iter()
-        .find(|change| change.asset_name == "shared.rom")
-        .ok_or("alpha asset extension change missing")?;
-    assert!(alpha_asset.other_evidence_changed);
+    assert_eq!(alpha.status, SnapshotRecordStatus::Unchanged);
+    assert!(!alpha.metadata_changed);
+    assert!(alpha.requirement_changes.is_empty());
 
     let beta = diff
         .records
@@ -4759,26 +4879,27 @@ fn snapshot_diff_keeps_asset_extensions_with_their_owning_set()
     assert_eq!(beta.status, SnapshotRecordStatus::Unchanged);
     assert!(beta.requirement_changes.is_empty());
 
-    let extension = sql_query(
-        "SELECT raw_value_json AS value FROM snapshot_extensions \
-         JOIN catalog_sets ON catalog_sets.set_id = snapshot_extensions.owner_set_id \
-         WHERE snapshot_key = ? AND record_kind = 'rom' AND catalog_sets.set_name = 'alpha' \
-           AND field_name = 'future'",
-    )
-    .bind::<Text, _>(
+    let source = app::load_snapshot_source(
+        &database,
         second
             .snapshot_key
             .as_ref()
-            .ok_or("second snapshot missing")?
-            .as_str(),
-    )
-    .get_result::<TextRow>(&mut connection)?;
-    assert_eq!(extension.value, "\"two\"");
+            .ok_or("second snapshot missing")?,
+    )?;
+    assert_eq!(
+        source,
+        std::fs::read(second_request.document_path.as_std_path())?
+    );
+    assert!(
+        source
+            .windows(b"future=\"two\"".len())
+            .any(|window| { window == b"future=\"two\"" })
+    );
     Ok(())
 }
 
 #[test]
-fn snapshot_diff_attributes_no_intro_rom_extensions_to_their_asset()
+fn snapshot_diff_ignores_no_intro_vendor_fields_and_retains_source()
 -> Result<(), Box<dyn std::error::Error>> {
     let (directory, database, _connection) = setup()?;
     let first_path = directory.path().join("no-intro-asset-extension-v1.xml");
@@ -4820,18 +4941,35 @@ fn snapshot_diff_attributes_no_intro_rom_extensions_to_their_asset()
             .as_ref()
             .ok_or("second snapshot missing")?,
     )?;
-    assert!(diff.records.iter().any(|record| {
-        record.set_name == "alpha"
-            && record
-                .requirement_changes
-                .iter()
-                .any(|change| change.asset_name == "shared.bin" && change.other_evidence_changed)
-    }));
+    let alpha = diff
+        .records
+        .iter()
+        .find(|record| record.set_name == "alpha")
+        .ok_or("alpha record missing")?;
+    assert_eq!(alpha.status, SnapshotRecordStatus::Unchanged);
+    assert!(!alpha.metadata_changed);
+    assert!(alpha.requirement_changes.is_empty());
     assert!(diff.records.iter().any(|record| {
         record.set_name == "beta"
             && record.status == SnapshotRecordStatus::Unchanged
             && record.requirement_changes.is_empty()
     }));
+    let source = app::load_snapshot_source(
+        &database,
+        second
+            .snapshot_key
+            .as_ref()
+            .ok_or("second snapshot missing")?,
+    )?;
+    assert!(
+        source
+            .windows(b"future=\"two\"".len())
+            .any(|window| window == b"future=\"two\"")
+    );
+    assert_eq!(
+        source,
+        std::fs::read(second_request.document_path.as_std_path())?
+    );
     Ok(())
 }
 
@@ -4948,7 +5086,7 @@ fn snapshot_diff_does_not_treat_unpublished_complete_identity_as_removal()
 }
 
 #[test]
-fn snapshot_diff_preserves_duplicate_asset_extension_occurrences()
+fn snapshot_diff_ignores_duplicate_vendor_children_and_retains_source()
 -> Result<(), Box<dyn std::error::Error>> {
     let (directory, database, _connection) = setup()?;
     let first_path = directory.path().join("duplicate-extension-v1.xml");
@@ -4991,13 +5129,48 @@ fn snapshot_diff_preserves_duplicate_asset_extension_occurrences()
             .as_ref()
             .ok_or("second snapshot missing")?,
     )?;
-    assert!(diff.records.iter().any(|record| {
-        record.set_name == "alpha"
-            && record
-                .requirement_changes
-                .iter()
-                .any(|change| change.asset_name == "shared.rom" && change.other_evidence_changed)
-    }));
+    let alpha = diff
+        .records
+        .iter()
+        .find(|record| record.set_name == "alpha")
+        .ok_or("alpha record missing")?;
+    assert_eq!(alpha.status, SnapshotRecordStatus::Unchanged);
+    assert!(!alpha.metadata_changed);
+    assert!(alpha.requirement_changes.is_empty());
+    let first_source = app::load_snapshot_source(
+        &database,
+        first
+            .snapshot_key
+            .as_ref()
+            .ok_or("first snapshot missing")?,
+    )?;
+    let second_source = app::load_snapshot_source(
+        &database,
+        second
+            .snapshot_key
+            .as_ref()
+            .ok_or("second snapshot missing")?,
+    )?;
+    assert_eq!(
+        first_source,
+        std::fs::read(first_request.document_path.as_std_path())?
+    );
+    assert_eq!(
+        second_source,
+        std::fs::read(second_request.document_path.as_std_path())?
+    );
+    assert_eq!(
+        std::str::from_utf8(&first_source)?
+            .matches("<future/>")
+            .count(),
+        2
+    );
+    assert_eq!(
+        std::str::from_utf8(&second_source)?
+            .matches("<future/>")
+            .count(),
+        1
+    );
     Ok(())
 }
 

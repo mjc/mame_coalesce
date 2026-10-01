@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-use crate::xml_reader::Element;
+use crate::{logiqx::RecordLocation, xml_reader::Element};
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct Header {
@@ -18,10 +18,13 @@ pub struct Header {
     clrmamepro: Option<ClrMameProOptions>,
     #[serde(skip)]
     romcenter: Option<RomCenterOptions>,
+    #[serde(skip)]
+    child_locations: Vec<RecordLocation>,
 }
 
 #[derive(Clone, Debug)]
 pub struct ClrMameProOptions {
+    location: RecordLocation,
     header: Option<String>,
     forcemerging: Option<String>,
     forcenodump: Option<String>,
@@ -30,6 +33,7 @@ pub struct ClrMameProOptions {
 
 #[derive(Clone, Debug)]
 pub struct RomCenterOptions {
+    location: RecordLocation,
     plugin: Option<String>,
     rommode: Option<String>,
     biosmode: Option<String>,
@@ -56,11 +60,17 @@ fn option_value(element: &Element, name: &str, values: &[&str]) -> crate::Result
 impl ClrMameProOptions {
     fn from_xml(element: &Element) -> crate::Result<Self> {
         Ok(Self {
+            location: element.location,
             header: element.attributes.get("header").cloned(),
             forcemerging: option_value(element, "forcemerging", &["none", "split", "full"])?,
             forcenodump: option_value(element, "forcenodump", &["obsolete", "required", "ignore"])?,
             forcepacking: option_value(element, "forcepacking", &["zip", "unzip"])?,
         })
+    }
+
+    #[must_use]
+    pub const fn location(&self) -> RecordLocation {
+        self.location
     }
 
     #[must_use]
@@ -96,6 +106,7 @@ impl ClrMameProOptions {
 impl RomCenterOptions {
     fn from_xml(element: &Element) -> crate::Result<Self> {
         Ok(Self {
+            location: element.location,
             plugin: element.attributes.get("plugin").cloned(),
             rommode: option_value(element, "rommode", &["merged", "split", "unmerged"])?,
             biosmode: option_value(element, "biosmode", &["merged", "split", "unmerged"])?,
@@ -104,6 +115,11 @@ impl RomCenterOptions {
             lockbiosmode: option_value(element, "lockbiosmode", &["yes", "no"])?,
             locksamplemode: option_value(element, "locksamplemode", &["yes", "no"])?,
         })
+    }
+
+    #[must_use]
+    pub const fn location(&self) -> RecordLocation {
+        self.location
     }
 
     #[must_use]
@@ -204,7 +220,18 @@ impl Header {
             category: element.child_text("category")?,
             clrmamepro,
             romcenter,
+            child_locations: element.children().map(|child| child.location).collect(),
         })
+    }
+
+    /// Position among all header children, including intervening scalar fields.
+    #[must_use]
+    pub fn child_source_order(&self, location: RecordLocation) -> Option<usize> {
+        self.child_locations
+            .binary_search_by_key(&(location.line, location.column), |child| {
+                (child.line, child.column)
+            })
+            .ok()
     }
 
     /// Get a reference to the header's name.

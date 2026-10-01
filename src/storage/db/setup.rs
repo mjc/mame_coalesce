@@ -14,7 +14,9 @@ use super::Pool;
 const SCHEMA: &str = concat!(
     include_str!("coverage.sql"),
     "\n",
-    include_str!("schema.sql")
+    include_str!("schema.sql"),
+    "\n",
+    include_str!("logiqx.sql")
 );
 
 #[derive(Debug)]

@@ -38,6 +38,35 @@ struct CountRow {
 }
 
 #[test]
+fn published_logiqx_occurrences_reject_late_native_payloads() {
+    let (_directory, mut conn) = connection();
+    conn.batch_execute(
+        "INSERT INTO parser_interpretations(interpretation_key,format) VALUES ('parser-logiqx','logiqx');
+         INSERT INTO catalog_snapshots(snapshot_key,catalog_key,document_key,interpretation_key,coverage_id)
+         VALUES ('logiqx-snapshot','catalog','document','parser-logiqx',1);
+         INSERT INTO catalog_set_groups(set_group_id,snapshot_key,kind,list_order)
+         VALUES (1,'logiqx-snapshot','root',0);
+         INSERT INTO catalog_sets(set_id,set_group_id,source_element_kind,list_order,set_name,source_line,source_column)
+         VALUES (1,1,'logiqx_game',0,'game',1,1);
+         INSERT INTO asset_occurrences(occurrence_id,record_id,occurrence_order,claim_kind)
+         VALUES (1,1,0,'logiqx_rom'),(2,1,1,'logiqx_disk'),(3,1,2,'logiqx_sample');
+         INSERT INTO snapshot_publications(catalog_key,document_key,interpretation_key,snapshot_key)
+         VALUES ('catalog','document','parser-logiqx','logiqx-snapshot');",
+    )
+    .expect("stage occurrences before publication");
+    for statement in [
+        "INSERT INTO logiqx_rom_claims(occurrence_id,name,evidence_scope,evidence_provenance,source_line,source_column)
+         VALUES (1,'late.rom','whole_asset','source_declared',1,1)",
+        "INSERT INTO logiqx_disk_claims(occurrence_id,name,evidence_scope,evidence_provenance,source_line,source_column)
+         VALUES (2,'late.disk','disk_data','source_declared',1,1)",
+        "INSERT INTO logiqx_sample_claims(occurrence_id,name,source_order,source_line,source_column)
+         VALUES (3,'late.sample',2,1,1)",
+    ] {
+        assert!(conn.batch_execute(statement).is_err(), "accepted: {statement}");
+    }
+}
+
+#[test]
 fn native_sets_have_scoped_integer_identity_and_typed_detail_owners() {
     let (_directory, mut conn) = connection();
     conn.batch_execute(
@@ -131,37 +160,6 @@ fn native_groups_and_list_details_require_the_matching_parser_format() {
     .expect("format-matching groups and list details");
     assert!(conn.batch_execute(
         "INSERT INTO software_lists(namespace_id,name,source_line,source_column) VALUES (2,'wrong format',1,1)"
-    ).is_err());
-}
-
-#[test]
-fn extension_owners_cannot_cross_snapshots_or_sets_or_append_after_publication() {
-    let (_directory, mut conn) = connection();
-    conn.batch_execute(
-        "INSERT INTO catalog_set_groups(set_group_id,snapshot_key,kind,list_order)
-         VALUES (1,'mame-snapshot','root',0),(2,'software-snapshot','software_list',0);
-         INSERT INTO catalog_sets(set_id,set_group_id,source_element_kind,list_order,set_name,source_line,source_column)
-         VALUES (1,1,'mame_machine',0,'machine',1,1),(2,2,'software_item',0,'game',1,1);
-         INSERT INTO asset_occurrences(occurrence_id,record_id,occurrence_order,claim_kind)
-         VALUES (1,1,0,'mame_rom'),(2,2,0,'software_rom_entry');
-         INSERT INTO snapshot_extensions(snapshot_key,record_kind,field_name,raw_value_json,source_line,source_column,owner_set_id,owner_occurrence_id)
-         VALUES ('mame-snapshot','rom','future','null',1,1,1,1);",
-    )
-    .expect("native extension owner");
-    for (set_id, occurrence_id) in [(2, "NULL"), (1, "2"), (1, "999"), (999, "NULL")] {
-        assert!(conn.batch_execute(&format!(
-            "INSERT INTO snapshot_extensions(snapshot_key,record_kind,field_name,raw_value_json,source_line,source_column,owner_set_id,owner_occurrence_id)
-             VALUES ('mame-snapshot','rom','future','null',1,1,{set_id},{occurrence_id})"
-        )).is_err());
-    }
-    conn.batch_execute(
-        "INSERT INTO snapshot_publications(catalog_key,document_key,interpretation_key,snapshot_key)
-         VALUES ('catalog','document','parser-mame','mame-snapshot')",
-    )
-    .expect("publish snapshot");
-    assert!(conn.batch_execute(
-        "INSERT INTO snapshot_extensions(snapshot_key,record_kind,field_name,raw_value_json,source_line,source_column)
-         VALUES ('mame-snapshot','document','late','null',1,1)"
     ).is_err());
 }
 

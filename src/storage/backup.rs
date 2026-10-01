@@ -880,7 +880,9 @@ mod tests {
             catalog_display_name: "Machine catalog".to_owned(),
             scope: CatalogScope::Unknown,
         };
-        app::import_catalog(&database, &machine_request)?;
+        let machine_snapshot = app::import_catalog(&database, &machine_request)?
+            .snapshot_key
+            .ok_or_else(|| crate::Error::InvalidPath("MAME snapshot missing".to_owned()))?;
 
         let logiqx_bytes =
             std::fs::read(fixture_root.join("fixtures/catalog/logiqx/catalog-a-v1.dat"))?;
@@ -950,17 +952,20 @@ mod tests {
                 "{table}: expected at least {expected}, got {count}"
             );
         }
-        let unknown_fields = sql_query(
-            "SELECT COUNT(*) AS count FROM snapshot_extensions \
-             WHERE field_name = 'flag' AND raw_value_json = '\"preserved\"'",
-        )
-        .get_result::<CountRow>(&mut restored)?
-        .count;
-        assert_eq!(unknown_fields, 1);
         for bytes in [&machine_bytes, &logiqx_bytes] {
             assert_eq!(load_document(&restored_path, bytes)?, *bytes);
         }
         drop(restored);
+        let restored_database = crate::database::Database::open(&restored_path)?;
+        let restored_source = app::load_snapshot_source(&restored_database, &machine_snapshot)?;
+        assert_eq!(restored_source, machine_bytes);
+        assert!(
+            restored_source
+                .windows(b"future:flag=\"preserved\"".len())
+                .any(|window| window == b"future:flag=\"preserved\""),
+            "restored source retains the vendor literal"
+        );
+        drop(restored_database);
         assert!(check_integrity(&restored_path)?.is_clean());
         let mut restored = connect(&restored_path)?;
         sql_query("DROP TRIGGER snapshot_publications_are_immutable_delete")

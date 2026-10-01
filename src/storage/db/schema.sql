@@ -274,7 +274,7 @@ CREATE TABLE import_diagnostics (
     record_kind TEXT,
     record_name TEXT,
     field_name TEXT,
-    raw_value_json TEXT,
+    offending_text TEXT,
     source_line INTEGER,
     source_column INTEGER
 );
@@ -302,21 +302,22 @@ CREATE TABLE logiqx_disk_claims (
     occurrence_id INTEGER PRIMARY KEY NOT NULL,
     claim_kind TEXT NOT NULL DEFAULT 'logiqx_disk' CHECK (claim_kind = 'logiqx_disk'),
     name TEXT NOT NULL,
-    size INTEGER CHECK (size IS NULL OR size >= 0),
     evidence_scope TEXT NOT NULL,
     evidence_provenance TEXT NOT NULL,
     merge_name TEXT,
-    dump_status TEXT,
+    dump_status TEXT NOT NULL DEFAULT 'good' CHECK (dump_status IN ('good','baddump','nodump','verified')),
+    status_was_present INTEGER NOT NULL DEFAULT 0 CHECK (status_was_present IN (0,1)),
+    source_order INTEGER NOT NULL DEFAULT 0 CHECK (source_order >= 0),
     source_line INTEGER NOT NULL CHECK (source_line > 0),
     source_column INTEGER NOT NULL CHECK (source_column > 0),
-    serial TEXT,
-    date TEXT,
+    CHECK (status_was_present = 1 OR dump_status = 'good'),
     FOREIGN KEY (occurrence_id,claim_kind) REFERENCES asset_occurrences(occurrence_id,claim_kind) ON DELETE RESTRICT
 );
 CREATE TABLE logiqx_document_facts (
     snapshot_key TEXT PRIMARY KEY NOT NULL,
     build TEXT,
-    debug TEXT,
+    debug TEXT NOT NULL DEFAULT 'no' CHECK (debug IN ('yes','no')),
+    debug_was_present INTEGER NOT NULL DEFAULT 0 CHECK (debug_was_present IN (0,1)),
     file_name TEXT,
     sha1 BLOB,
     header_name TEXT,
@@ -330,33 +331,88 @@ CREATE TABLE logiqx_document_facts (
     header_comment TEXT,
     header_category TEXT,
     FOREIGN KEY (snapshot_key) REFERENCES catalog_snapshots (snapshot_key) ON DELETE RESTRICT,
-    CHECK (sha1 IS NULL OR length(sha1) = 20)
+    CHECK (sha1 IS NULL OR length(sha1) = 20),
+    CHECK (debug_was_present = 1 OR debug = 'no')
 );
 CREATE TABLE logiqx_rom_claims (
     occurrence_id INTEGER PRIMARY KEY NOT NULL,
     claim_kind TEXT NOT NULL DEFAULT 'logiqx_rom' CHECK (claim_kind = 'logiqx_rom'),
     name TEXT NOT NULL,
-    size INTEGER CHECK (size IS NULL OR size >= 0),
+    size_text TEXT,
+    size INTEGER GENERATED ALWAYS AS (CAST(size_text AS INTEGER)) VIRTUAL,
     evidence_scope TEXT NOT NULL,
     evidence_provenance TEXT NOT NULL,
     merge_name TEXT,
-    dump_status TEXT,
+    dump_status TEXT NOT NULL DEFAULT 'good' CHECK (dump_status IN ('good','baddump','nodump','verified')),
+    status_was_present INTEGER NOT NULL DEFAULT 0 CHECK (status_was_present IN (0,1)),
+    source_order INTEGER NOT NULL DEFAULT 0 CHECK (source_order >= 0),
     source_line INTEGER NOT NULL CHECK (source_line > 0),
     source_column INTEGER NOT NULL CHECK (source_column > 0),
     serial TEXT,
     date TEXT,
+    CHECK (status_was_present = 1 OR dump_status = 'good'),
+    CHECK (size_text IS NULL OR (length(size_text) > 0 AND size_text NOT GLOB '*[^0-9]*'
+        AND (length(ltrim(size_text,'0')) < 19 OR (length(ltrim(size_text,'0')) = 19
+        AND ltrim(size_text,'0') <= '9223372036854775807')))),
     FOREIGN KEY (occurrence_id,claim_kind) REFERENCES asset_occurrences(occurrence_id,claim_kind) ON DELETE RESTRICT
 );
+CREATE TABLE logiqx_sample_claims (
+    occurrence_id INTEGER PRIMARY KEY NOT NULL,
+    claim_kind TEXT NOT NULL DEFAULT 'logiqx_sample' CHECK (claim_kind = 'logiqx_sample'),
+    name TEXT NOT NULL,
+    source_order INTEGER NOT NULL CHECK (source_order >= 0),
+    source_line INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    FOREIGN KEY (occurrence_id,claim_kind) REFERENCES asset_occurrences(occurrence_id,claim_kind) ON DELETE RESTRICT
+);
+CREATE TRIGGER logiqx_sample_claims_immutable_update BEFORE UPDATE ON logiqx_sample_claims
+BEGIN SELECT RAISE(ABORT,'native sample claims are immutable'); END;
+CREATE TRIGGER logiqx_sample_claims_immutable_delete BEFORE DELETE ON logiqx_sample_claims
+BEGIN SELECT RAISE(ABORT,'native sample claims are immutable'); END;
+CREATE TRIGGER logiqx_rom_claims_require_unpublished_snapshot
+BEFORE INSERT ON logiqx_rom_claims
+WHEN EXISTS (
+    SELECT 1 FROM asset_occurrences
+    JOIN catalog_sets ON set_id = record_id
+    JOIN catalog_set_groups USING (set_group_id)
+    JOIN snapshot_publications USING (snapshot_key)
+    WHERE occurrence_id = NEW.occurrence_id
+)
+BEGIN SELECT RAISE(ABORT, 'published catalog claims are immutable'); END;
+
+CREATE TRIGGER logiqx_disk_claims_require_unpublished_snapshot
+BEFORE INSERT ON logiqx_disk_claims
+WHEN EXISTS (
+    SELECT 1 FROM asset_occurrences
+    JOIN catalog_sets ON set_id = record_id
+    JOIN catalog_set_groups USING (set_group_id)
+    JOIN snapshot_publications USING (snapshot_key)
+    WHERE occurrence_id = NEW.occurrence_id
+)
+BEGIN SELECT RAISE(ABORT, 'published catalog claims are immutable'); END;
+
+CREATE TRIGGER logiqx_sample_claims_require_unpublished_snapshot
+BEFORE INSERT ON logiqx_sample_claims
+WHEN EXISTS (
+    SELECT 1 FROM asset_occurrences
+    JOIN catalog_sets ON set_id = record_id
+    JOIN catalog_set_groups USING (set_group_id)
+    JOIN snapshot_publications USING (snapshot_key)
+    WHERE occurrence_id = NEW.occurrence_id
+)
+BEGIN SELECT RAISE(ABORT, 'published catalog claims are immutable'); END;
 CREATE TABLE logiqx_games (
     set_id INTEGER NOT NULL REFERENCES catalog_sets(set_id) ON DELETE RESTRICT,
     source_file TEXT,
-    is_bios TEXT,
+    is_bios TEXT NOT NULL DEFAULT 'no' CHECK (is_bios IN ('yes','no')),
+    is_bios_was_present INTEGER NOT NULL DEFAULT 0 CHECK (is_bios_was_present IN (0,1)),
     board TEXT,
     rebuild_to TEXT,
     description TEXT,
     year TEXT,
     manufacturer TEXT,
-    PRIMARY KEY (set_id)
+    PRIMARY KEY (set_id),
+    CHECK (is_bios_was_present = 1 OR is_bios = 'no')
 ) WITHOUT ROWID;
 CREATE TABLE mame_bios_sets (
     set_id INTEGER NOT NULL REFERENCES catalog_sets(set_id) ON DELETE RESTRICT,
@@ -1078,19 +1134,6 @@ CREATE TABLE "roms" (
     game_id         INTEGER REFERENCES games (id),
     archive_file_id INTEGER REFERENCES archive_files (id)
 );
-CREATE TABLE snapshot_extensions (
-    extension_id INTEGER PRIMARY KEY NOT NULL,
-    snapshot_key TEXT NOT NULL REFERENCES catalog_snapshots (snapshot_key) ON DELETE RESTRICT,
-    record_kind TEXT NOT NULL,
-    record_name TEXT,
-    field_name TEXT NOT NULL,
-    namespace_uri TEXT,
-    raw_value_json TEXT NOT NULL,
-    source_line INTEGER NOT NULL CHECK (source_line > 0),
-    source_column INTEGER NOT NULL CHECK (source_column > 0),
-    owner_set_id INTEGER REFERENCES catalog_sets(set_id) ON DELETE RESTRICT,
-    owner_occurrence_id INTEGER REFERENCES asset_occurrences(occurrence_id) ON DELETE RESTRICT,
-    CHECK (owner_occurrence_id IS NULL OR owner_set_id IS NOT NULL));
 CREATE TABLE snapshot_publications (
     catalog_key TEXT NOT NULL,
     document_key TEXT NOT NULL,
@@ -1295,7 +1338,6 @@ CREATE INDEX documents_byte_length_index ON documents (byte_length);
 CREATE INDEX documents_sha1_index ON documents (sha1);
 CREATE UNIQUE INDEX documents_sha256_unique ON documents (sha256)
     WHERE sha256 IS NOT NULL;
-CREATE INDEX extensions_snapshot_index ON snapshot_extensions (snapshot_key);
 CREATE INDEX game_name ON games (name);
 CREATE INDEX games_data_file_id_relation_index ON games (data_file_id);
 CREATE UNIQUE INDEX games_data_file_name_unique ON games (data_file_id, name);
@@ -1333,8 +1375,6 @@ CREATE INDEX rom_files_scan_root_index ON rom_files (scan_root);
 CREATE INDEX roms_game_id_relation_index ON roms (game_id);
 CREATE UNIQUE INDEX roms_game_name_unique ON roms (game_id, name);
 CREATE INDEX sha1_index ON roms (sha1);
-CREATE INDEX snapshot_extensions_asset_owner_index
-    ON snapshot_extensions (snapshot_key, owner_set_id, owner_occurrence_id);
 CREATE INDEX snapshots_catalog_key_index ON catalog_snapshots (catalog_key);
 CREATE INDEX snapshots_document_key_index ON catalog_snapshots (document_key);
 CREATE INDEX snapshots_interpretation_key_index ON catalog_snapshots (interpretation_key);
@@ -1555,9 +1595,15 @@ FROM logiqx_rom_claims AS payload JOIN asset_occurrences AS occurrence USING (oc
 UNION ALL
 SELECT occurrence.record_id AS set_id,occurrence.occurrence_order AS component_order,
        payload.name AS asset_name,'disk' AS role,
-       payload.size,payload.evidence_scope,payload.evidence_provenance,payload.merge_name,payload.dump_status,payload.source_line,payload.source_column,payload.serial,payload.date,NULL AS region,NULL AS bios,NULL AS offset,NULL AS optional,NULL AS sound_only,NULL AS dispose,NULL AS load_flag,NULL AS value,NULL AS inverted,NULL AS ovha,NULL AS no_thread,NULL AS disk_index,NULL AS writable,NULL AS writeable,
+       NULL AS size,payload.evidence_scope,payload.evidence_provenance,payload.merge_name,payload.dump_status,payload.source_line,payload.source_column,NULL AS serial,NULL AS date,NULL AS region,NULL AS bios,NULL AS offset,NULL AS optional,NULL AS sound_only,NULL AS dispose,NULL AS load_flag,NULL AS value,NULL AS inverted,NULL AS ovha,NULL AS no_thread,NULL AS disk_index,NULL AS writable,NULL AS writeable,
        occurrence.content_uuid
 FROM logiqx_disk_claims AS payload JOIN asset_occurrences AS occurrence USING (occurrence_id)
+UNION ALL
+SELECT occurrence.record_id AS set_id,occurrence.occurrence_order AS component_order,
+       payload.name AS asset_name,'other' AS role,
+       NULL AS size,'unknown' AS evidence_scope,'source_declared' AS evidence_provenance,NULL AS merge_name,NULL AS dump_status,payload.source_line,payload.source_column,NULL AS serial,NULL AS date,NULL AS region,NULL AS bios,NULL AS offset,NULL AS optional,NULL AS sound_only,NULL AS dispose,NULL AS load_flag,NULL AS value,NULL AS inverted,NULL AS ovha,NULL AS no_thread,NULL AS disk_index,NULL AS writable,NULL AS writeable,
+       occurrence.content_uuid
+FROM logiqx_sample_claims AS payload JOIN asset_occurrences AS occurrence USING (occurrence_id)
 UNION ALL
 SELECT occurrence.record_id AS set_id,occurrence.occurrence_order AS component_order,
        payload.name AS asset_name,'rom' AS role,
@@ -1925,6 +1971,17 @@ WHEN NOT EXISTS (
 BEGIN
     SELECT RAISE(ABORT, 'occurrence kind does not match its native record');
 END;
+CREATE TRIGGER occurrences_require_unpublished_snapshot
+BEFORE INSERT ON asset_occurrences
+WHEN EXISTS (
+    SELECT 1 FROM catalog_sets
+    JOIN catalog_set_groups USING (set_group_id)
+    JOIN snapshot_publications USING (snapshot_key)
+    WHERE set_id = NEW.record_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'published catalog occurrences are immutable');
+END;
 CREATE TRIGGER parser_interpretations_are_immutable_update
 BEFORE UPDATE ON parser_interpretations
 WHEN (
@@ -2173,28 +2230,6 @@ WHEN NOT (
 )
 BEGIN
     SELECT RAISE(ABORT, 'scan metadata must be stored together');
-END;
-CREATE TRIGGER snapshot_extensions_require_native_owner BEFORE INSERT ON snapshot_extensions
-WHEN (NEW.owner_set_id IS NOT NULL AND NOT EXISTS (
-    SELECT 1 FROM catalog_sets JOIN catalog_set_groups USING (set_group_id)
-    WHERE set_id = NEW.owner_set_id AND snapshot_key = NEW.snapshot_key
-)) OR (NEW.owner_occurrence_id IS NOT NULL AND NOT EXISTS (
-    SELECT 1 FROM asset_occurrences
-    WHERE occurrence_id = NEW.owner_occurrence_id AND record_id = NEW.owner_set_id
-))
-BEGIN SELECT RAISE(ABORT, 'extension owner does not match its source snapshot or set'); END;
-CREATE TRIGGER snapshot_extensions_require_unpublished_snapshot BEFORE INSERT ON snapshot_extensions
-WHEN EXISTS (SELECT 1 FROM snapshot_publications WHERE snapshot_key = NEW.snapshot_key)
-BEGIN SELECT RAISE(ABORT, 'published source extensions are immutable'); END;
-CREATE TRIGGER snapshot_extensions_are_immutable_delete
-BEFORE DELETE ON snapshot_extensions
-BEGIN
-    SELECT RAISE(ABORT, 'snapshot extensions are immutable');
-END;
-CREATE TRIGGER snapshot_extensions_are_immutable_update
-BEFORE UPDATE ON snapshot_extensions
-BEGIN
-    SELECT RAISE(ABORT, 'snapshot extensions are immutable');
 END;
 CREATE TRIGGER snapshot_publications_are_immutable_delete
 BEFORE DELETE ON snapshot_publications

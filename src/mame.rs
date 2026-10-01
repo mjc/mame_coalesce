@@ -247,7 +247,7 @@ impl ExtensionValue {
         serde_json::to_string(value).map(Self).map_err(Into::into)
     }
 
-    #[must_use]
+    #[cfg(test)]
     pub fn as_str(&self) -> &str {
         &self.0
     }

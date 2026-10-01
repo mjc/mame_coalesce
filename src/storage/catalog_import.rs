@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use diesel::{
     OptionalExtension, QueryableByName, RunQueryDsl, SqliteConnection, sql_query,
     sql_types::{BigInt, Binary, Nullable, Text},
@@ -13,7 +11,7 @@ use crate::{
         ImportRunKey, ParserInterpretationKey, RelationshipType, SnapshotKey,
     },
     logiqx::{DataFile, Game, XmlSourceMap},
-    mame::{self, ExtensionValue, MameRecord, ValidatedMame},
+    mame::{self, MameRecord, ValidatedMame},
     mame_softwarelist::SoftwareListCatalog,
     no_intro_pc_xml::Catalog as NoIntroCatalog,
     storage::{
@@ -28,6 +26,7 @@ use crate::{
 };
 
 mod cmp_native;
+mod logiqx_native;
 mod mame_specification;
 mod merges;
 mod root_assets;
@@ -98,25 +97,20 @@ struct IdentityRow {
     second_value: Option<String>,
 }
 
-#[derive(QueryableByName)]
-struct ExtensionOccurrenceId {
-    #[diesel(sql_type = BigInt)]
-    value: i64,
-}
-
 struct SnapshotData {
     version: Option<String>,
     sets: Vec<SnapshotSet>,
     software_lists: Option<SoftwareListCatalog>,
-    extensions: Vec<StoredExtension>,
     logiqx_document_facts: Option<LogiqxDocumentFacts>,
+    logiqx_document_details: Option<logiqx_native::DocumentDetails>,
     cmp_header_facts: Option<crate::clrmamepro::Header>,
 }
 
 #[derive(Clone)]
 struct LogiqxDocumentFacts {
     build: Option<String>,
-    debug: Option<String>,
+    debug: String,
+    debug_was_present: bool,
     file_name: Option<String>,
     sha1: Option<Vec<u8>>,
     header_name: Option<String>,
@@ -136,7 +130,8 @@ impl LogiqxDocumentFacts {
         let header = data_file.header_opt();
         Self {
             build: data_file.build().map(str::to_owned),
-            debug: data_file.debug().map(str::to_owned),
+            debug: data_file.debug().unwrap_or("no").to_owned(),
+            debug_was_present: data_file.debug().is_some(),
             file_name: data_file.file_name().map(str::to_owned),
             sha1: data_file.sha1().map(<[u8]>::to_vec),
             header_name: header.map(|header| header.name().to_owned()),
@@ -156,7 +151,8 @@ impl LogiqxDocumentFacts {
 #[derive(Clone)]
 struct LogiqxSetFacts {
     source_file: Option<String>,
-    is_bios: Option<String>,
+    is_bios: String,
+    is_bios_was_present: bool,
     board: Option<String>,
     rebuild_to: Option<String>,
     description: Option<String>,
@@ -168,7 +164,8 @@ impl LogiqxSetFacts {
     fn from_game(game: &Game) -> Self {
         Self {
             source_file: game.sourcefile_opt().map(str::to_owned),
-            is_bios: game.isbios_opt().map(str::to_owned),
+            is_bios: game.isbios_effective().to_owned(),
+            is_bios_was_present: game.isbios_was_explicit(),
             board: game.board_opt().map(str::to_owned),
             rebuild_to: game.rebuildto_opt().map(str::to_owned),
             description: game.description_opt().map(str::to_owned),
@@ -191,6 +188,7 @@ struct SnapshotSet {
     mame_facts: Option<crate::mame::MachineFacts>,
     no_intro_facts: Option<crate::no_intro_pc_xml::GameFacts>,
     logiqx_facts: Option<LogiqxSetFacts>,
+    logiqx_details: Option<logiqx_native::GameDetails>,
     cmp_facts: Option<crate::clrmamepro::SetFacts>,
     machine_dependencies: Vec<SnapshotDependency>,
 }
@@ -215,14 +213,22 @@ struct SnapshotAsset {
     serial: Option<String>,
     date: Option<String>,
     mame_attributes: Option<mame::MameAssetAttributes>,
+    logiqx_attributes: Option<LogiqxAssetAttributes>,
     cmp_facts: Option<crate::clrmamepro::AssetFacts>,
     location: crate::logiqx::RecordLocation,
+}
+
+struct LogiqxAssetAttributes {
+    size_text: Option<String>,
+    status_was_present: bool,
+    source_order: i64,
 }
 
 impl SnapshotAsset {
     fn from_logiqx(
         rom: &crate::logiqx::Rom,
         location: crate::logiqx::RecordLocation,
+        source_order: i64,
     ) -> crate::Result<Self> {
         let expected = crate::domain::ExpectedEvidence::from_logiqx(rom)?;
         Ok(Self {
@@ -238,21 +244,15 @@ impl SnapshotAsset {
             serial: expected.serial,
             date: expected.date,
             mame_attributes: None,
+            logiqx_attributes: Some(LogiqxAssetAttributes {
+                size_text: rom.size_text().map(str::to_owned),
+                status_was_present: rom.status_was_explicit(),
+                source_order,
+            }),
             cmp_facts: None,
             location,
         })
     }
-}
-
-struct StoredExtension {
-    record_kind: String,
-    record_name: Option<String>,
-    owner_set_index: Option<usize>,
-    owner_component_index: Option<usize>,
-    field_name: String,
-    namespace_uri: Option<String>,
-    value: ExtensionValue,
-    location: crate::logiqx::RecordLocation,
 }
 
 fn interpretation(request: &CatalogImportRequest) -> ParserInterpretationKey {
@@ -288,13 +288,7 @@ impl SnapshotData {
                         .into(),
                 ));
             }
-            let mut assets = Vec::with_capacity(game.roms().len());
-            for (index, rom) in game.roms().iter().enumerate() {
-                let location = *rom_locations.get(index).ok_or_else(|| {
-                    crate::Error::InvalidPath("Logiqx asset source location is missing".into())
-                })?;
-                assets.push(SnapshotAsset::from_logiqx(rom, location)?);
-            }
+            let assets = logiqx_assets(game, rom_locations)?;
             sets.push(SnapshotSet {
                 name: game.name().into(),
                 parent: game.cloneof().map(str::to_owned),
@@ -333,6 +327,7 @@ impl SnapshotData {
                 mame_facts: None,
                 no_intro_facts: None,
                 logiqx_facts: Some(LogiqxSetFacts::from_game(game)),
+                logiqx_details: Some(logiqx_native::GameDetails::from_game(game)?),
                 cmp_facts: None,
                 machine_dependencies: Vec::new(),
             });
@@ -343,70 +338,51 @@ impl SnapshotData {
                 .and_then(|header| header.version().cloned()),
             sets,
             software_lists: None,
-            extensions: stored_logiqx_extensions(source_map),
             logiqx_document_facts: Some(LogiqxDocumentFacts::from_data_file(data_file)),
+            logiqx_document_details: Some(logiqx_native::DocumentDetails::from_data_file(
+                data_file,
+            )?),
             cmp_header_facts: None,
         })
     }
 
     fn from_mame_softwarelist(catalog: SoftwareListCatalog) -> Self {
         let version = catalog.build.clone();
-        let extensions = catalog
-            .extensions
-            .iter()
-            .cloned()
-            .map(stored_extension)
-            .collect();
         Self {
             version,
             sets: Vec::new(),
             software_lists: Some(catalog),
-            extensions,
             logiqx_document_facts: None,
+            logiqx_document_details: None,
             cmp_header_facts: None,
         }
     }
 
     fn from_clrmamepro(catalog: ClrMameProCatalog) -> Self {
-        let mut extensions = catalog
-            .extensions
-            .into_iter()
-            .map(stored_clrmamepro_extension)
-            .collect::<Vec<_>>();
         let sets = catalog
             .sets
             .into_iter()
-            .enumerate()
-            .map(|(set_index, set)| {
-                extensions.extend(set.extensions.into_iter().map(|extension| {
-                    stored_clrmamepro_extension(extension).with_set_owner(set_index)
-                }));
+            .map(|set| {
                 let parent_field = set.parent.as_ref().map(|_| "cloneof".to_owned());
                 let assets = set
                     .assets
                     .into_iter()
-                    .enumerate()
-                    .map(|(component_index, asset)| {
-                        extensions.extend(asset.extensions.into_iter().map(|extension| {
-                            stored_clrmamepro_extension(extension)
-                                .with_asset_owner(set_index, component_index)
-                        }));
-                        SnapshotAsset {
-                            name: asset.name,
-                            role: "rom",
-                            size: asset.size,
-                            crc: asset.crc,
-                            md5: asset.md5,
-                            sha1: asset.sha1,
-                            evidence_scope: "whole_asset",
-                            merge: asset.merge,
-                            dump_status: asset.status,
-                            serial: None,
-                            date: None,
-                            mame_attributes: None,
-                            cmp_facts: Some(asset.native),
-                            location: asset.location,
-                        }
+                    .map(|asset| SnapshotAsset {
+                        name: asset.name,
+                        role: "rom",
+                        size: asset.size,
+                        crc: asset.crc,
+                        md5: asset.md5,
+                        sha1: asset.sha1,
+                        evidence_scope: "whole_asset",
+                        merge: asset.merge,
+                        dump_status: asset.status,
+                        serial: None,
+                        date: None,
+                        mame_attributes: None,
+                        logiqx_attributes: None,
+                        cmp_facts: Some(asset.native),
+                        location: asset.location,
                     })
                     .collect();
                 SnapshotSet {
@@ -422,6 +398,7 @@ impl SnapshotData {
                     mame_facts: None,
                     no_intro_facts: None,
                     logiqx_facts: None,
+                    logiqx_details: None,
                     cmp_facts: Some(set.native),
                     machine_dependencies: Vec::new(),
                 }
@@ -431,55 +408,38 @@ impl SnapshotData {
             version: catalog.version,
             sets,
             software_lists: None,
-            extensions,
             logiqx_document_facts: None,
+            logiqx_document_details: None,
             cmp_header_facts: catalog.header,
         }
     }
 
     fn from_no_intro(catalog: NoIntroCatalog) -> Self {
-        let mut extensions = catalog
-            .extensions
-            .into_iter()
-            .map(stored_extension)
-            .collect::<Vec<_>>();
         let sets = catalog
             .entries
             .into_iter()
-            .enumerate()
-            .map(|(set_index, entry)| {
-                extensions.extend(
-                    entry
-                        .extensions
-                        .into_iter()
-                        .map(|extension| stored_extension(extension).with_set_owner(set_index)),
-                );
+            .map(|entry| {
                 let entry_name = entry.name;
                 let no_intro_facts = entry.facts;
                 let assets = entry
                     .assets
                     .into_iter()
-                    .enumerate()
-                    .map(|(component_order, asset)| {
-                        extensions.extend(asset.extensions.into_iter().map(|extension| {
-                            stored_extension(extension).with_asset_owner(set_index, component_order)
-                        }));
-                        SnapshotAsset {
-                            name: asset.name,
-                            role: "rom",
-                            size: asset.size,
-                            crc: asset.crc,
-                            md5: asset.md5,
-                            sha1: asset.sha1,
-                            evidence_scope: "whole_asset",
-                            merge: None,
-                            dump_status: None,
-                            serial: None,
-                            date: None,
-                            mame_attributes: None,
-                            cmp_facts: None,
-                            location: asset.location,
-                        }
+                    .map(|asset| SnapshotAsset {
+                        name: asset.name,
+                        role: "rom",
+                        size: asset.size,
+                        crc: asset.crc,
+                        md5: asset.md5,
+                        sha1: asset.sha1,
+                        evidence_scope: "whole_asset",
+                        merge: None,
+                        dump_status: None,
+                        serial: None,
+                        date: None,
+                        mame_attributes: None,
+                        logiqx_attributes: None,
+                        cmp_facts: None,
+                        location: asset.location,
                     })
                     .collect();
                 SnapshotSet {
@@ -495,6 +455,7 @@ impl SnapshotData {
                     mame_facts: None,
                     no_intro_facts: Some(no_intro_facts),
                     logiqx_facts: None,
+                    logiqx_details: None,
                     cmp_facts: None,
                     machine_dependencies: Vec::new(),
                 }
@@ -504,16 +465,86 @@ impl SnapshotData {
             version: catalog.version,
             sets,
             software_lists: None,
-            extensions,
             logiqx_document_facts: None,
+            logiqx_document_details: None,
             cmp_header_facts: None,
         }
     }
 }
 
-fn machine_contents(machine: crate::mame::Machine) -> (SnapshotSet, Vec<StoredExtension>) {
-    let mut extensions = Vec::new();
-    extensions.extend(machine.extensions.into_iter().map(stored_extension));
+fn logiqx_assets(
+    game: &Game,
+    rom_locations: &[crate::logiqx::RecordLocation],
+) -> crate::Result<Vec<SnapshotAsset>> {
+    let mut assets = Vec::with_capacity(game.roms().len());
+    for (index, rom) in game.roms().iter().enumerate() {
+        let location = *rom_locations.get(index).ok_or_else(|| {
+            crate::Error::InvalidPath("Logiqx asset source location is missing".into())
+        })?;
+        assets.push(SnapshotAsset::from_logiqx(
+            rom,
+            location,
+            logiqx_child_order(game, location)?,
+        )?);
+    }
+    for disk in game.disks() {
+        assets.push(SnapshotAsset {
+            name: disk.name().to_owned(),
+            role: "disk",
+            size: None,
+            crc: None,
+            md5: disk.md5().map(<[u8]>::to_vec),
+            sha1: disk.sha1().map(<[u8]>::to_vec),
+            evidence_scope: "disk_data",
+            merge: disk.merge().map(str::to_owned),
+            dump_status: Some(disk.effective_status().to_owned()),
+            serial: None,
+            date: None,
+            mame_attributes: None,
+            logiqx_attributes: Some(LogiqxAssetAttributes {
+                size_text: None,
+                status_was_present: disk.status_was_explicit(),
+                source_order: logiqx_child_order(game, disk.location())?,
+            }),
+            cmp_facts: None,
+            location: disk.location(),
+        });
+    }
+    for sample in game.samples() {
+        assets.push(SnapshotAsset {
+            name: sample.name().to_owned(),
+            role: "other",
+            size: None,
+            crc: None,
+            md5: None,
+            sha1: None,
+            evidence_scope: "unknown",
+            merge: None,
+            dump_status: None,
+            serial: None,
+            date: None,
+            mame_attributes: None,
+            logiqx_attributes: Some(LogiqxAssetAttributes {
+                size_text: None,
+                status_was_present: false,
+                source_order: logiqx_child_order(game, sample.location())?,
+            }),
+            cmp_facts: None,
+            location: sample.location(),
+        });
+    }
+    assets.sort_by_key(|asset| (asset.location.line, asset.location.column));
+    Ok(assets)
+}
+
+fn logiqx_child_order(game: &Game, location: crate::logiqx::RecordLocation) -> crate::Result<i64> {
+    let order = game.child_source_order(location).ok_or_else(|| {
+        crate::Error::InvalidPath("Logiqx child source ordinal is missing".into())
+    })?;
+    checked_order(order, "Logiqx children")
+}
+
+fn machine_contents(machine: crate::mame::Machine) -> SnapshotSet {
     let runtime_dependencies: Vec<SnapshotDependency> = machine
         .device_refs
         .into_iter()
@@ -541,7 +572,7 @@ fn machine_contents(machine: crate::mame::Machine) -> (SnapshotSet, Vec<StoredEx
                 }),
         )
         .collect();
-    let assets = machine_assets(machine.assets, &mut extensions);
+    let assets = machine_assets(machine.assets);
     let parent_field = machine.parent.as_ref().map(|_| "cloneof".to_owned());
     let switches = machine.switches;
     let bios_sets = machine.bios_sets;
@@ -555,7 +586,7 @@ fn machine_contents(machine: crate::mame::Machine) -> (SnapshotSet, Vec<StoredEx
             location: dependency.location,
         })
         .collect();
-    let set = SnapshotSet {
+    SnapshotSet {
         name: machine.name,
         parent: machine.parent,
         parent_field,
@@ -569,27 +600,15 @@ fn machine_contents(machine: crate::mame::Machine) -> (SnapshotSet, Vec<StoredEx
         mame_facts: Some(mame_facts),
         no_intro_facts: None,
         logiqx_facts: None,
+        logiqx_details: None,
         cmp_facts: None,
-    };
-    for extension in &mut extensions {
-        extension.owner_set_index = Some(0);
     }
-    (set, extensions)
 }
 
-fn machine_assets(
-    assets: Vec<crate::mame::MachineAsset>,
-    extensions: &mut Vec<StoredExtension>,
-) -> Vec<SnapshotAsset> {
+fn machine_assets(assets: Vec<crate::mame::MachineAsset>) -> Vec<SnapshotAsset> {
     assets
         .into_iter()
-        .enumerate()
-        .map(|(component_order, asset)| {
-            extensions.extend(
-                asset.extensions.into_iter().map(|extension| {
-                    stored_extension(extension).with_asset_owner(0, component_order)
-                }),
-            );
+        .map(|asset| {
             let evidence_scope = asset
                 .disk_requirement
                 .as_ref()
@@ -624,99 +643,12 @@ fn machine_assets(
                 serial: None,
                 date: None,
                 mame_attributes: Some(asset.attributes),
+                logiqx_attributes: None,
                 cmp_facts: None,
                 location: asset.location,
             }
         })
         .collect()
-}
-
-fn stored_extension(ext: crate::mame::XmlExtension) -> StoredExtension {
-    StoredExtension {
-        record_kind: ext.record_kind,
-        record_name: ext.record_name,
-        owner_set_index: None,
-        owner_component_index: None,
-        field_name: ext.field_name,
-        namespace_uri: ext.namespace_uri,
-        value: ext.value,
-        location: ext.location,
-    }
-}
-
-fn stored_logiqx_extensions(source_map: &XmlSourceMap) -> Vec<StoredExtension> {
-    let mut rom_owners = HashMap::new();
-    for (game_index, locations) in source_map.rom_locations.iter().enumerate() {
-        for (component_order, location) in locations.iter().enumerate() {
-            rom_owners.insert(
-                (location.line, location.column),
-                (game_index, component_order),
-            );
-        }
-    }
-    source_map
-        .unsupported_attributes
-        .iter()
-        .map(|ext| {
-            let mut stored = StoredExtension {
-                record_kind: ext.record_kind.clone(),
-                record_name: ext.record_name.clone(),
-                owner_set_index: None,
-                owner_component_index: None,
-                field_name: ext.field_name.clone(),
-                namespace_uri: ext.namespace_uri.clone(),
-                value: serde_json::json!(ext.value).into(),
-                location: ext.location,
-            };
-            if ext.record_kind == "rom" {
-                let owner = rom_owners
-                    .get(&(ext.location.line, ext.location.column))
-                    .copied();
-                if let Some((game_index, component_order)) = owner {
-                    stored = stored.with_asset_owner(game_index, component_order);
-                }
-            } else if ext.record_kind != "document" {
-                // Logiqx currently exposes child positions only for ROMs; other nested
-                // extensions keep set ownership until their source map carries ordinals.
-                let owner_index = source_map
-                    .game_locations
-                    .partition_point(|location| {
-                        (location.line, location.column) <= (ext.location.line, ext.location.column)
-                    })
-                    .checked_sub(1);
-                if let Some(game_index) = owner_index {
-                    stored = stored.with_set_owner(game_index);
-                }
-            }
-            stored
-        })
-        .collect()
-}
-
-fn stored_clrmamepro_extension(ext: crate::clrmamepro::Extension) -> StoredExtension {
-    StoredExtension {
-        record_kind: ext.record_kind,
-        record_name: ext.record_name,
-        owner_set_index: None,
-        owner_component_index: None,
-        field_name: ext.field_name,
-        namespace_uri: None,
-        value: ext.value.into(),
-        location: ext.location,
-    }
-}
-
-impl StoredExtension {
-    const fn with_set_owner(mut self, set_index: usize) -> Self {
-        self.owner_set_index = Some(set_index);
-        self
-    }
-
-    const fn with_asset_owner(mut self, set_index: usize, component_index: usize) -> Self {
-        self.owner_set_index = Some(set_index);
-        self.owner_component_index = Some(component_index);
-        self
-    }
 }
 
 pub fn import(pool: &Pool, request: &CatalogImportRequest) -> crate::Result<CatalogImportReport> {
@@ -805,32 +737,19 @@ struct StreamingImport<'a> {
 }
 
 impl StreamingImport<'_> {
-    fn extensions(
-        &mut self,
-        extensions: impl IntoIterator<Item = StoredExtension>,
-        set_ids: &[CatalogSetId],
-    ) -> crate::Result<()> {
-        if let SnapshotPublication::Pending(key) = &self.publication {
-            let extensions: Vec<_> = extensions.into_iter().collect();
-            insert_stored_extensions(self.conn, key, &extensions, set_ids)?;
-        }
-        Ok(())
-    }
-
     fn consume(&mut self, record: MameRecord) -> crate::Result<()> {
         match record {
             MameRecord::Machine(machine) => {
-                let (set, extensions) = machine_contents(*machine);
+                let set = machine_contents(*machine);
                 if let SnapshotPublication::Pending(key) = &self.publication {
-                    let owner = insert_snapshot_set(self.conn, key, &set)?;
-                    self.extensions(extensions, &[owner])?;
-                } else {
-                    self.extensions(extensions, &[])?;
+                    insert_snapshot_set(self.conn, key, &set)?;
                 }
                 Ok(())
             }
             MameRecord::Extension(extension) => {
-                self.extensions(std::iter::once(stored_extension(extension)), &[])
+                // Vendor-only data remains recoverable from the external source document.
+                drop(extension);
+                Ok(())
             }
         }
     }
@@ -850,6 +769,7 @@ fn import_mame(
         let validated = mame::read_with::<_, StreamingImportError>(
             bytes,
             |header| {
+                drop(header.extensions);
                 let publication = prepare_snapshot(
                     conn,
                     request,
@@ -881,13 +801,11 @@ fn import_mame(
                     "succeeded",
                     None,
                 )?;
-                let mut sink = StreamingImport {
+                let sink = StreamingImport {
                     conn,
                     publication,
                     run_key,
                 };
-                sink.extensions(header.extensions.into_iter().map(stored_extension), &[])
-                    .map_err(StreamingImportError::Storage)?;
                 Ok(sink)
             },
             |sink, record| sink.consume(record).map_err(StreamingImportError::Storage),
@@ -1235,9 +1153,8 @@ fn insert_snapshot_contents(
     snapshot_key: &SnapshotKey,
     snapshot_data: &SnapshotData,
 ) -> crate::Result<()> {
-    let mut set_ids = Vec::with_capacity(snapshot_data.sets.len());
     for set in &snapshot_data.sets {
-        set_ids.push(insert_snapshot_set(conn, snapshot_key, set)?);
+        insert_snapshot_set(conn, snapshot_key, set)?;
     }
 
     merges::persist_snapshot_merges(conn, snapshot_key)?;
@@ -1248,60 +1165,13 @@ fn insert_snapshot_contents(
     if let Some(facts) = &snapshot_data.logiqx_document_facts {
         insert_logiqx_document_facts(conn, snapshot_key, facts)?;
     }
+    if let Some(details) = &snapshot_data.logiqx_document_details {
+        details.insert(conn, snapshot_key)?;
+    }
     if let Some(header) = &snapshot_data.cmp_header_facts {
         cmp_native::insert_header_facts(conn, snapshot_key, header)?;
     }
 
-    insert_stored_extensions(conn, snapshot_key, &snapshot_data.extensions, &set_ids)?;
-    Ok(())
-}
-
-fn insert_stored_extensions(
-    conn: &mut SqliteConnection,
-    snapshot_key: &SnapshotKey,
-    extensions: &[StoredExtension],
-    set_ids: &[CatalogSetId],
-) -> crate::Result<()> {
-    for extension in extensions {
-        let owner_set = extension
-            .owner_set_index
-            .map(|index| {
-                set_ids.get(index).copied().ok_or_else(|| {
-                    crate::Error::InvalidPath(
-                        "catalog extension source set index is out of range".into(),
-                    )
-                })
-            })
-            .transpose()?;
-        let owner_occurrence_id = match (owner_set, extension.owner_component_index) {
-            (Some(set_id), Some(component_index)) => Some(
-                sql_query(
-                    "SELECT occurrence_id AS value FROM asset_occurrences \
-                     WHERE record_id = ? AND occurrence_order = ?",
-                )
-                .bind::<BigInt, _>(set_id.as_i64())
-                .bind::<BigInt, _>(checked_order(
-                    component_index,
-                    "extension owner components",
-                )?)
-                .get_result::<ExtensionOccurrenceId>(conn)?
-                .value,
-            ),
-            (None, Some(_)) => {
-                return Err(crate::Error::InvalidPath(
-                    "catalog extension occurrence has no source set".into(),
-                ));
-            }
-            (_, None) => None,
-        };
-        insert_snapshot_extension(
-            conn,
-            snapshot_key,
-            extension,
-            owner_set,
-            owner_occurrence_id,
-        )?;
-    }
     Ok(())
 }
 
@@ -1323,6 +1193,9 @@ fn insert_snapshot_set(
     }
     if let Some(facts) = &set.logiqx_facts {
         insert_logiqx_set_facts(conn, set_id, facts)?;
+    }
+    if let Some(details) = &set.logiqx_details {
+        details.insert(conn, owner)?;
     }
     if let Some(facts) = &set.cmp_facts {
         cmp_native::insert_set_facts(conn, set_id, facts)?;
@@ -1403,14 +1276,15 @@ fn insert_logiqx_document_facts(
 ) -> crate::Result<()> {
     sql_query(
         "INSERT INTO logiqx_document_facts \
-         (snapshot_key, build, debug, file_name, sha1, header_name, header_description, \
+         (snapshot_key, build, debug, debug_was_present, file_name, sha1, header_name, header_description, \
           header_version, header_date, header_author, header_email, header_homepage, header_url, \
           header_comment, header_category) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind::<Text, _>(snapshot_key.as_str())
     .bind::<Nullable<Text>, _>(facts.build.as_deref())
-    .bind::<Nullable<Text>, _>(facts.debug.as_deref())
+    .bind::<Text, _>(&facts.debug)
+    .bind::<diesel::sql_types::Bool, _>(facts.debug_was_present)
     .bind::<Nullable<Text>, _>(facts.file_name.as_deref())
     .bind::<Nullable<Binary>, _>(facts.sha1.as_deref())
     .bind::<Nullable<Text>, _>(facts.header_name.as_deref())
@@ -1434,12 +1308,13 @@ fn insert_logiqx_set_facts(
 ) -> crate::Result<()> {
     sql_query(
         "INSERT INTO logiqx_games \
-         (set_id, source_file, is_bios, board, rebuild_to, description, year, manufacturer) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+         (set_id, source_file, is_bios, is_bios_was_present, board, rebuild_to, description, year, manufacturer) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind::<BigInt, _>(set_id)
     .bind::<Nullable<Text>, _>(facts.source_file.as_deref())
-    .bind::<Nullable<Text>, _>(facts.is_bios.as_deref())
+    .bind::<Text, _>(&facts.is_bios)
+    .bind::<diesel::sql_types::Bool, _>(facts.is_bios_was_present)
     .bind::<Nullable<Text>, _>(facts.board.as_deref())
     .bind::<Nullable<Text>, _>(facts.rebuild_to.as_deref())
     .bind::<Nullable<Text>, _>(facts.description.as_deref())
@@ -1689,34 +1564,6 @@ fn insert_machine_switches(
             }
         }
     }
-    Ok(())
-}
-
-fn insert_snapshot_extension(
-    conn: &mut SqliteConnection,
-    snapshot_key: &SnapshotKey,
-    extension: &StoredExtension,
-    owner_set_id: Option<CatalogSetId>,
-    owner_occurrence_id: Option<i64>,
-) -> crate::Result<()> {
-    sql_query(
-        "INSERT INTO snapshot_extensions \
-         (snapshot_key, record_kind, record_name, owner_set_id, owner_occurrence_id, \
-          field_name, namespace_uri, raw_value_json, \
-          source_line, source_column) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind::<Text, _>(snapshot_key.as_str())
-    .bind::<Text, _>(&extension.record_kind)
-    .bind::<Nullable<Text>, _>(&extension.record_name)
-    .bind::<Nullable<BigInt>, _>(owner_set_id.map(CatalogSetId::as_i64))
-    .bind::<Nullable<BigInt>, _>(owner_occurrence_id)
-    .bind::<Text, _>(&extension.field_name)
-    .bind::<Nullable<Text>, _>(extension.namespace_uri.as_deref())
-    .bind::<Text, _>(extension.value.as_str())
-    .bind::<BigInt, _>(extension.location.line)
-    .bind::<BigInt, _>(extension.location.column)
-    .execute(conn)?;
     Ok(())
 }
 

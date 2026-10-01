@@ -23,6 +23,7 @@ pub struct Game {
     samples: Vec<Sample>,
     archives: Vec<Archive>,
     device_refs: Vec<String>,
+    child_locations: Vec<RecordLocation>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -81,6 +82,17 @@ fn enum_attribute(
 }
 
 impl Game {
+    /// Element ordinal within this game's source children, including native
+    /// metadata and vendor elements rather than only the requested family.
+    #[must_use]
+    pub fn child_source_order(&self, location: RecordLocation) -> Option<usize> {
+        self.child_locations
+            .binary_search_by_key(&(location.line, location.column), |child| {
+                (child.line, child.column)
+            })
+            .ok()
+    }
+
     pub(crate) fn from_xml(element: &Element) -> crate::Result<Self> {
         let mut device_refs = Vec::new();
         let mut comments = Vec::new();
@@ -113,6 +125,7 @@ impl Game {
             }
         }
         Ok(Self {
+            child_locations: element.children().map(|child| child.location).collect(),
             name: element.required_attribute("name")?,
             sourcefile: element.attributes.get("sourcefile").cloned(),
             isbios: enum_attribute(element, "isbios", "no", &["yes", "no"])?,

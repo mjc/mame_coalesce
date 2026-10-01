@@ -62,8 +62,6 @@ struct SetRow {
 struct RequirementRow {
     #[diesel(sql_type = BigInt)]
     set_id: i64,
-    #[diesel(sql_type = BigInt)]
-    occurrence_id: i64,
     #[diesel(sql_type = Text)]
     asset_name: String,
     #[diesel(sql_type = Text)]
@@ -116,24 +114,12 @@ struct RequirementRow {
     mame_writable: Option<i64>,
     #[diesel(sql_type = Nullable<BigInt>)]
     mame_writeable: Option<i64>,
-}
-
-#[derive(QueryableByName)]
-struct ExtensionRow {
-    #[diesel(sql_type = Text)]
-    record_kind: String,
     #[diesel(sql_type = Nullable<Text>)]
-    record_name: Option<String>,
+    logiqx_size_text: Option<String>,
+    #[diesel(sql_type = Nullable<Bool>)]
+    logiqx_status_was_present: Option<bool>,
     #[diesel(sql_type = Nullable<BigInt>)]
-    owner_set_id: Option<i64>,
-    #[diesel(sql_type = Nullable<BigInt>)]
-    owner_occurrence_id: Option<i64>,
-    #[diesel(sql_type = Text)]
-    field_name: String,
-    #[diesel(sql_type = Nullable<Text>)]
-    namespace_uri: Option<String>,
-    #[diesel(sql_type = Text)]
-    raw_value_json: String,
+    logiqx_source_order: Option<i64>,
 }
 
 #[derive(QueryableByName)]
@@ -301,8 +287,10 @@ struct LogiqxSetFactsRow {
     set_id: i64,
     #[diesel(sql_type = Nullable<Text>)]
     source_file: Option<String>,
-    #[diesel(sql_type = Nullable<Text>)]
-    is_bios: Option<String>,
+    #[diesel(sql_type = Text)]
+    is_bios: String,
+    #[diesel(sql_type = Bool)]
+    is_bios_was_present: bool,
     #[diesel(sql_type = Nullable<Text>)]
     board: Option<String>,
     #[diesel(sql_type = Nullable<Text>)]
@@ -313,6 +301,128 @@ struct LogiqxSetFactsRow {
     year: Option<String>,
     #[diesel(sql_type = Nullable<Text>)]
     manufacturer: Option<String>,
+}
+
+#[derive(QueryableByName)]
+struct LogiqxGameCommentRow {
+    #[diesel(sql_type = BigInt)]
+    set_id: i64,
+    #[diesel(sql_type = BigInt)]
+    comment_order: i64,
+    #[diesel(sql_type = BigInt)]
+    source_order: i64,
+    #[diesel(sql_type = Text)]
+    comment_text: String,
+}
+
+#[derive(QueryableByName)]
+struct LogiqxReleaseRow {
+    #[diesel(sql_type = BigInt)]
+    set_id: i64,
+    #[diesel(sql_type = BigInt)]
+    release_order: i64,
+    #[diesel(sql_type = BigInt)]
+    source_order: i64,
+    #[diesel(sql_type = Text)]
+    name: String,
+    #[diesel(sql_type = Text)]
+    region: String,
+    #[diesel(sql_type = Nullable<Text>)]
+    language: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    date: Option<String>,
+    #[diesel(sql_type = Text)]
+    default: String,
+    #[diesel(sql_type = Bool)]
+    default_was_present: bool,
+}
+
+#[derive(QueryableByName)]
+struct LogiqxBiosSetRow {
+    #[diesel(sql_type = BigInt)]
+    set_id: i64,
+    #[diesel(sql_type = BigInt)]
+    bios_order: i64,
+    #[diesel(sql_type = BigInt)]
+    source_order: i64,
+    #[diesel(sql_type = Text)]
+    name: String,
+    #[diesel(sql_type = Text)]
+    description: String,
+    #[diesel(sql_type = Text)]
+    is_default: String,
+    #[diesel(sql_type = Bool)]
+    default_was_present: bool,
+}
+
+#[derive(QueryableByName)]
+struct LogiqxArchiveReferenceRow {
+    #[diesel(sql_type = BigInt)]
+    set_id: i64,
+    #[diesel(sql_type = BigInt)]
+    archive_order: i64,
+    #[diesel(sql_type = BigInt)]
+    source_order: i64,
+    #[diesel(sql_type = Text)]
+    archive_name: String,
+}
+
+#[derive(QueryableByName, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)] // Each field preserves an independent Logiqx option presence bit.
+struct LogiqxClrMameProOptionsRow {
+    #[diesel(sql_type = BigInt)]
+    source_order: i64,
+    #[diesel(sql_type = Nullable<Text>)]
+    header: Option<String>,
+    #[diesel(sql_type = Bool)]
+    header_was_present: bool,
+    #[diesel(sql_type = Text)]
+    forcemerging: String,
+    #[diesel(sql_type = Bool)]
+    forcemerging_was_present: bool,
+    #[diesel(sql_type = Text)]
+    forcenodump: String,
+    #[diesel(sql_type = Bool)]
+    forcenodump_was_present: bool,
+    #[diesel(sql_type = Text)]
+    forcepacking: String,
+    #[diesel(sql_type = Bool)]
+    forcepacking_was_present: bool,
+}
+
+#[derive(QueryableByName, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)] // Each field preserves an independent Logiqx option presence bit.
+struct LogiqxRomCenterOptionsRow {
+    #[diesel(sql_type = BigInt)]
+    source_order: i64,
+    #[diesel(sql_type = Nullable<Text>)]
+    plugin: Option<String>,
+    #[diesel(sql_type = Bool)]
+    plugin_was_present: bool,
+    #[diesel(sql_type = Text)]
+    rommode: String,
+    #[diesel(sql_type = Bool)]
+    rommode_was_present: bool,
+    #[diesel(sql_type = Text)]
+    biosmode: String,
+    #[diesel(sql_type = Bool)]
+    biosmode_was_present: bool,
+    #[diesel(sql_type = Text)]
+    samplemode: String,
+    #[diesel(sql_type = Bool)]
+    samplemode_was_present: bool,
+    #[diesel(sql_type = Text)]
+    lockrommode: String,
+    #[diesel(sql_type = Bool)]
+    lockrommode_was_present: bool,
+    #[diesel(sql_type = Text)]
+    lockbiosmode: String,
+    #[diesel(sql_type = Bool)]
+    lockbiosmode_was_present: bool,
+    #[diesel(sql_type = Text)]
+    locksamplemode: String,
+    #[diesel(sql_type = Bool)]
+    locksamplemode_was_present: bool,
 }
 
 #[derive(QueryableByName, serde::Serialize)]
@@ -541,8 +651,6 @@ struct MachineConditionRow {
 struct CatalogRecords {
     sets: BTreeMap<String, Vec<SetRow>>,
     requirements: BTreeMap<i64, BTreeMap<String, Vec<serde_json::Value>>>,
-    extensions: BTreeMap<i64, Vec<serde_json::Value>>,
-    asset_extensions: BTreeMap<i64, Vec<serde_json::Value>>,
     machine_switches: BTreeMap<i64, Vec<serde_json::Value>>,
     machine_bios_sets: BTreeMap<i64, Vec<serde_json::Value>>,
     mame_machine_dependencies: BTreeMap<i64, Vec<serde_json::Value>>,
@@ -550,6 +658,10 @@ struct CatalogRecords {
     mame_machine_specification_facts: BTreeMap<i64, Vec<serde_json::Value>>,
     no_intro_game_facts: BTreeMap<i64, Vec<serde_json::Value>>,
     logiqx_set_facts: BTreeMap<i64, Vec<serde_json::Value>>,
+    logiqx_game_comments: BTreeMap<i64, Vec<serde_json::Value>>,
+    logiqx_releases: BTreeMap<i64, Vec<serde_json::Value>>,
+    logiqx_bios_sets: BTreeMap<i64, Vec<serde_json::Value>>,
+    logiqx_archive_references: BTreeMap<i64, Vec<serde_json::Value>>,
     cmp_set_facts: BTreeMap<i64, Vec<serde_json::Value>>,
 }
 
@@ -718,8 +830,10 @@ struct MameDocumentMetadataRow {
 struct LogiqxDocumentMetadataRow {
     #[diesel(sql_type = Nullable<Text>)]
     build: Option<String>,
-    #[diesel(sql_type = Nullable<Text>)]
-    debug: Option<String>,
+    #[diesel(sql_type = Text)]
+    debug: String,
+    #[diesel(sql_type = Bool)]
+    debug_was_present: bool,
     #[diesel(sql_type = Nullable<Text>)]
     file_name: Option<String>,
     #[diesel(sql_type = Nullable<Binary>)]
@@ -746,27 +860,70 @@ struct LogiqxDocumentMetadataRow {
     header_category: Option<String>,
 }
 
+#[derive(PartialEq, Eq)]
+struct DocumentMetadata {
+    mame: Option<MameDocumentMetadataRow>,
+    logiqx: Option<LogiqxDocumentMetadataRow>,
+    clrmamepro: Option<LogiqxClrMameProOptionsRow>,
+    romcenter: Option<LogiqxRomCenterOptionsRow>,
+}
+
 fn document_metadata(
     conn: &mut diesel::SqliteConnection,
     snapshot: &SnapshotKey,
-) -> crate::Result<(
-    Option<MameDocumentMetadataRow>,
-    Option<LogiqxDocumentMetadataRow>,
-)> {
+) -> crate::Result<DocumentMetadata> {
     let mame =
         sql_query("SELECT debug, config_version FROM mame_document_facts WHERE snapshot_key = ?")
             .bind::<Text, _>(snapshot.as_str())
             .get_result::<MameDocumentMetadataRow>(conn)
             .optional()?;
     let logiqx = sql_query(
-        "SELECT build, debug, file_name, sha1, header_name, header_description, \
+        "SELECT build, debug, debug_was_present, file_name, sha1, header_name, header_description, \
          header_version, header_date, header_author, header_email, header_homepage, header_url, \
          header_comment, header_category FROM logiqx_document_facts WHERE snapshot_key = ?",
     )
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<LogiqxDocumentMetadataRow>(conn)
     .optional()?;
-    Ok((mame, logiqx))
+    let mut clrmamepro = sql_query(
+        "SELECT source_order, header, header_was_present, forcemerging, \
+         forcemerging_was_present, forcenodump, forcenodump_was_present, forcepacking, \
+         forcepacking_was_present FROM logiqx_clrmamepro_options WHERE snapshot_key = ?",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<LogiqxClrMameProOptionsRow>(conn)
+    .optional()?;
+    let mut romcenter = sql_query(
+        "SELECT source_order, plugin, plugin_was_present, rommode, rommode_was_present, \
+         biosmode, biosmode_was_present, samplemode, samplemode_was_present, lockrommode, \
+         lockrommode_was_present, lockbiosmode, lockbiosmode_was_present, locksamplemode, \
+         locksamplemode_was_present FROM logiqx_romcenter_options WHERE snapshot_key = ?",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<LogiqxRomCenterOptionsRow>(conn)
+    .optional()?;
+    let clrmamepro_order = match (&clrmamepro, &romcenter) {
+        (Some(clrmamepro), Some(romcenter)) => {
+            i64::from(clrmamepro.source_order > romcenter.source_order)
+        }
+        _ => 0,
+    };
+    if let Some(options) = &mut clrmamepro {
+        options.source_order = clrmamepro_order;
+    }
+    if let Some(options) = &mut romcenter {
+        options.source_order = if clrmamepro.is_some() {
+            1 - clrmamepro_order
+        } else {
+            0
+        };
+    }
+    Ok(DocumentMetadata {
+        mame,
+        logiqx,
+        clrmamepro,
+        romcenter,
+    })
 }
 
 fn is_software_list_snapshot(snapshot: &SnapshotRow) -> bool {
@@ -911,13 +1068,6 @@ fn records(
     .bind::<Text, _>(key.as_str())
     .load::<SetRow>(conn)?;
     let requirements = load_requirements(conn, key)?;
-    let extensions = sql_query(
-        "SELECT record_kind, record_name, owner_set_id, owner_occurrence_id, field_name, namespace_uri, raw_value_json \
-         FROM snapshot_extensions WHERE snapshot_key = ? \
-         ORDER BY owner_set_id, owner_occurrence_id, record_kind, field_name, namespace_uri, raw_value_json",
-    )
-    .bind::<Text, _>(key.as_str())
-    .load::<ExtensionRow>(conn)?;
     let machine_switches = mame_switch_facts(conn, key)?;
     let machine_bios_sets = mame_bios_set_facts(conn, key)?;
     let mame_machine_facts = load_mame_machine_facts(conn, key)?;
@@ -925,6 +1075,10 @@ fn records(
     let mame_machine_dependencies = load_mame_machine_dependencies(conn, key)?;
     let no_intro_game_facts = load_no_intro_game_facts(conn, key)?;
     let logiqx_set_facts = load_logiqx_set_facts(conn, key)?;
+    let logiqx_game_comments = load_logiqx_game_comments(conn, key)?;
+    let logiqx_releases = load_logiqx_releases(conn, key)?;
+    let logiqx_bios_sets = load_logiqx_bios_sets(conn, key)?;
+    let logiqx_archive_references = load_logiqx_archive_references(conn, key)?;
     let cmp_set_facts = load_cmp_set_facts(conn, key)?;
 
     let mut result = CatalogRecords::default();
@@ -938,24 +1092,6 @@ fn records(
     for owners in result.sets.values_mut() {
         owners.sort_by_key(|owner| owner.source_order);
     }
-    for extension in extensions {
-        let value = serde_json::json!({
-            "record_kind": extension.record_kind,
-            "record_name": extension.record_name,
-            "field": extension.field_name,
-            "namespace": extension.namespace_uri,
-            "value": json(&extension.raw_value_json),
-        });
-        match (extension.owner_set_id, extension.owner_occurrence_id) {
-            (Some(_), Some(occurrence_id)) => result
-                .asset_extensions
-                .entry(occurrence_id)
-                .or_default()
-                .push(value),
-            (Some(set_id), None) => result.extensions.entry(set_id).or_default().push(value),
-            (None, _) => {}
-        }
-    }
     result.machine_switches = machine_switches;
     result.machine_bios_sets = machine_bios_sets;
     result.mame_machine_facts = mame_machine_facts;
@@ -963,6 +1099,10 @@ fn records(
     result.mame_machine_dependencies = mame_machine_dependencies;
     result.no_intro_game_facts = no_intro_game_facts;
     result.logiqx_set_facts = logiqx_set_facts;
+    result.logiqx_game_comments = logiqx_game_comments;
+    result.logiqx_releases = logiqx_releases;
+    result.logiqx_bios_sets = logiqx_bios_sets;
+    result.logiqx_archive_references = logiqx_archive_references;
     result.cmp_set_facts = cmp_set_facts;
     sort_json_groups(&mut result.machine_switches);
     sort_json_groups(&mut result.machine_bios_sets);
@@ -971,10 +1111,81 @@ fn records(
     sort_json_groups(&mut result.mame_machine_specification_facts);
     sort_json_groups(&mut result.no_intro_game_facts);
     sort_json_groups(&mut result.logiqx_set_facts);
+    sort_json_groups(&mut result.logiqx_game_comments);
+    sort_json_groups(&mut result.logiqx_releases);
+    sort_json_groups(&mut result.logiqx_bios_sets);
+    sort_json_groups(&mut result.logiqx_archive_references);
     sort_json_groups(&mut result.cmp_set_facts);
-    sort_json_groups(&mut result.extensions);
     assemble_requirements(&mut result, requirements);
+    normalize_logiqx_child_order(&mut result);
     Ok(result)
+}
+
+/// Compare native-child ordering without treating vendor-only gaps as edits.
+/// The persisted XML ordinals remain unchanged for source provenance.
+fn normalize_logiqx_child_order(records: &mut CatalogRecords) {
+    let mut orders = BTreeMap::<i64, BTreeSet<i64>>::new();
+    for family in [
+        &records.logiqx_game_comments,
+        &records.logiqx_releases,
+        &records.logiqx_bios_sets,
+        &records.logiqx_archive_references,
+    ] {
+        for (set_id, facts) in family {
+            for fact in facts {
+                if let Some(order) = fact["source_order"].as_i64() {
+                    orders.entry(*set_id).or_default().insert(order);
+                }
+            }
+        }
+    }
+    for (set_id, assets) in &records.requirements {
+        for fact in assets.values().flatten() {
+            if let Some(order) = fact["logiqx_attributes"]["source_order"].as_i64() {
+                orders.entry(*set_id).or_default().insert(order);
+            }
+        }
+    }
+    let ranks: BTreeMap<_, BTreeMap<_, _>> = orders
+        .into_iter()
+        .map(|(set_id, orders)| (set_id, orders.into_iter().zip(0_i64..).collect()))
+        .collect();
+    for family in [
+        &mut records.logiqx_game_comments,
+        &mut records.logiqx_releases,
+        &mut records.logiqx_bios_sets,
+        &mut records.logiqx_archive_references,
+    ] {
+        for (set_id, facts) in family {
+            for fact in facts.iter_mut() {
+                normalize_native_order(fact, *set_id, &ranks);
+            }
+            facts.sort_by_key(serde_json::Value::to_string);
+        }
+    }
+    for (set_id, assets) in &mut records.requirements {
+        for fact in assets.values_mut().flatten() {
+            normalize_native_order(&mut fact["logiqx_attributes"], *set_id, &ranks);
+        }
+        for facts in assets.values_mut() {
+            facts.sort_by_key(serde_json::Value::to_string);
+        }
+    }
+}
+
+fn normalize_native_order(
+    fact: &mut serde_json::Value,
+    set_id: i64,
+    ranks: &BTreeMap<i64, BTreeMap<i64, i64>>,
+) {
+    let rank = fact["source_order"]
+        .as_i64()
+        .and_then(|order| ranks.get(&set_id)?.get(&order))
+        .copied();
+    if let Some(fields) = fact.as_object_mut() {
+        fields.remove("source_order");
+        fields.insert("native_order".into(), rank.into());
+    }
 }
 
 fn load_requirements(
@@ -982,7 +1193,7 @@ fn load_requirements(
     key: &SnapshotKey,
 ) -> crate::Result<Vec<RequirementRow>> {
     Ok(sql_query(
-        "SELECT sets.set_id, occurrence.occurrence_id, asset.asset_name, asset.role, asset.size, \
+        "SELECT sets.set_id, asset.asset_name, asset.role, asset.size, \
          (SELECT digest.digest FROM asset_requirement_digest_assertions AS assertion \
           JOIN digest_values AS digest USING (digest_id) \
           WHERE assertion.set_id = asset.set_id \
@@ -1005,12 +1216,20 @@ fn load_requirements(
          facts.dispose AS mame_dispose, facts.load_flag AS mame_load_flag, facts.value AS mame_value, \
          facts.inverted AS mame_inverted, facts.ovha AS mame_ovha, facts.no_thread AS mame_no_thread, \
          facts.disk_index AS mame_disk_index, facts.writable AS mame_writable, \
-         facts.writeable AS mame_writeable \
+         facts.writeable AS mame_writeable, rom_claim.size_text AS logiqx_size_text, \
+         COALESCE(rom_claim.status_was_present, disk_claim.status_was_present) AS logiqx_status_was_present, \
+         COALESCE(rom_claim.source_order, disk_claim.source_order, sample_claim.source_order) AS logiqx_source_order \
          FROM asset_requirement_rows AS asset \
          JOIN snapshot_sets AS sets USING (set_id) \
          JOIN asset_occurrences AS occurrence \
            ON occurrence.record_id = asset.set_id \
           AND occurrence.occurrence_order = asset.component_order \
+         LEFT JOIN logiqx_rom_claims AS rom_claim \
+           ON rom_claim.occurrence_id = occurrence.occurrence_id AND asset.role = 'rom' \
+         LEFT JOIN logiqx_disk_claims AS disk_claim \
+           ON disk_claim.occurrence_id = occurrence.occurrence_id AND asset.role = 'disk' \
+         LEFT JOIN logiqx_sample_claims AS sample_claim \
+           ON sample_claim.occurrence_id = occurrence.occurrence_id AND asset.role = 'other' \
          LEFT JOIN mame_asset_facts AS facts \
            ON facts.set_id = asset.set_id \
           AND facts.component_order = asset.component_order \
@@ -1054,7 +1273,7 @@ fn load_logiqx_set_facts(
     key: &SnapshotKey,
 ) -> crate::Result<BTreeMap<i64, Vec<serde_json::Value>>> {
     let rows = sql_query(
-        "SELECT set_id, source_file, is_bios, board, rebuild_to, description, year, manufacturer \
+        "SELECT set_id, source_file, is_bios, is_bios_was_present, board, rebuild_to, description, year, manufacturer \
          FROM logiqx_set_facts WHERE snapshot_key = ? ORDER BY set_name",
     )
     .bind::<Text, _>(key.as_str())
@@ -1067,11 +1286,127 @@ fn load_logiqx_set_facts(
             .push(serde_json::json!({
                 "source_file": row.source_file,
                 "is_bios": row.is_bios,
+                "is_bios_was_present": row.is_bios_was_present,
                 "board": row.board,
                 "rebuild_to": row.rebuild_to,
                 "description": row.description,
                 "year": row.year,
                 "manufacturer": row.manufacturer,
+            }));
+    }
+    Ok(grouped)
+}
+
+fn load_logiqx_game_comments(
+    conn: &mut diesel::SqliteConnection,
+    key: &SnapshotKey,
+) -> crate::Result<BTreeMap<i64, Vec<serde_json::Value>>> {
+    let rows = sql_query(
+        "SELECT comments.set_id, comments.comment_order, comments.source_order, comments.comment_text \
+         FROM logiqx_game_comments AS comments JOIN snapshot_sets AS sets USING (set_id) \
+         WHERE sets.snapshot_key = ? \
+         ORDER BY sets.set_name, comments.source_order, comments.comment_order",
+    )
+    .bind::<Text, _>(key.as_str())
+    .load::<LogiqxGameCommentRow>(conn)?;
+    let mut grouped = BTreeMap::<i64, Vec<serde_json::Value>>::new();
+    for row in rows {
+        grouped
+            .entry(row.set_id)
+            .or_default()
+            .push(serde_json::json!({
+                "comment_order": row.comment_order,
+                "source_order": row.source_order,
+                "comment": row.comment_text,
+            }));
+    }
+    Ok(grouped)
+}
+
+fn load_logiqx_releases(
+    conn: &mut diesel::SqliteConnection,
+    key: &SnapshotKey,
+) -> crate::Result<BTreeMap<i64, Vec<serde_json::Value>>> {
+    let rows = sql_query(
+        "SELECT releases.set_id, releases.release_order, releases.source_order, releases.name, \
+         releases.region, releases.language, releases.date, releases.\"default\", \
+         releases.default_was_present \
+         FROM logiqx_releases AS releases JOIN snapshot_sets AS sets USING (set_id) \
+         WHERE sets.snapshot_key = ? \
+         ORDER BY sets.set_name, releases.source_order, releases.release_order",
+    )
+    .bind::<Text, _>(key.as_str())
+    .load::<LogiqxReleaseRow>(conn)?;
+    let mut grouped = BTreeMap::<i64, Vec<serde_json::Value>>::new();
+    for row in rows {
+        grouped
+            .entry(row.set_id)
+            .or_default()
+            .push(serde_json::json!({
+                "release_order": row.release_order,
+                "source_order": row.source_order,
+                "name": row.name,
+                "region": row.region,
+                "language": row.language,
+                "date": row.date,
+                "default": row.default,
+                "default_was_present": row.default_was_present,
+            }));
+    }
+    Ok(grouped)
+}
+
+fn load_logiqx_bios_sets(
+    conn: &mut diesel::SqliteConnection,
+    key: &SnapshotKey,
+) -> crate::Result<BTreeMap<i64, Vec<serde_json::Value>>> {
+    let rows = sql_query(
+        "SELECT bios.set_id, bios.bios_order, bios.source_order, bios.name, bios.description, \
+         bios.is_default, bios.default_was_present \
+         FROM logiqx_bios_sets AS bios JOIN snapshot_sets AS sets USING (set_id) \
+         WHERE sets.snapshot_key = ? \
+         ORDER BY sets.set_name, bios.source_order, bios.bios_order",
+    )
+    .bind::<Text, _>(key.as_str())
+    .load::<LogiqxBiosSetRow>(conn)?;
+    let mut grouped = BTreeMap::<i64, Vec<serde_json::Value>>::new();
+    for row in rows {
+        grouped
+            .entry(row.set_id)
+            .or_default()
+            .push(serde_json::json!({
+                "bios_order": row.bios_order,
+                "source_order": row.source_order,
+                "name": row.name,
+                "description": row.description,
+                "is_default": row.is_default,
+                "default_was_present": row.default_was_present,
+            }));
+    }
+    Ok(grouped)
+}
+
+fn load_logiqx_archive_references(
+    conn: &mut diesel::SqliteConnection,
+    key: &SnapshotKey,
+) -> crate::Result<BTreeMap<i64, Vec<serde_json::Value>>> {
+    let rows = sql_query(
+        "SELECT archives.set_id, archives.archive_order, archives.source_order, archives.archive_name \
+         FROM logiqx_archive_references AS archives JOIN snapshot_sets AS sets USING (set_id) \
+         WHERE sets.snapshot_key = ? \
+         ORDER BY sets.set_name, archives.source_order, archives.archive_order",
+    )
+    .bind::<Text, _>(key.as_str())
+    .load::<LogiqxArchiveReferenceRow>(conn)?;
+    let mut grouped = BTreeMap::<i64, Vec<serde_json::Value>>::new();
+    for row in rows {
+        grouped
+            .entry(row.set_id)
+            .or_default()
+            .push(serde_json::json!({
+                "archive_order": row.archive_order,
+                "source_order": row.source_order,
+                "archive_name": row.archive_name,
             }));
     }
     Ok(grouped)
@@ -1193,10 +1528,6 @@ fn load_no_intro_archive_links(
 
 fn assemble_requirements(result: &mut CatalogRecords, requirements: Vec<RequirementRow>) {
     for row in requirements {
-        let source_extensions = result
-            .asset_extensions
-            .remove(&row.occurrence_id)
-            .unwrap_or_default();
         let value = serde_json::json!({
             "role": row.role,
             "size": row.size,
@@ -1225,7 +1556,11 @@ fn assemble_requirements(result: &mut CatalogRecords, requirements: Vec<Requirem
                 "writable": row.mame_writable.map(|value| value != 0),
                 "writeable": row.mame_writeable.map(|value| value != 0),
             },
-            "extensions": source_extensions,
+            "logiqx_attributes": {
+                "size_text": row.logiqx_size_text,
+                "status_was_present": row.logiqx_status_was_present,
+                "source_order": row.logiqx_source_order,
+            },
         });
         result
             .requirements
@@ -1597,10 +1932,6 @@ fn field_values(rows: Option<&Vec<serde_json::Value>>, field: &str) -> Vec<serde
     values
 }
 
-fn json(value: &str) -> serde_json::Value {
-    serde_json::from_str(value).unwrap_or_else(|_| serde_json::Value::String(value.to_owned()))
-}
-
 fn parent_names(sets: &[SetRow]) -> Vec<Option<String>> {
     let mut names = sets
         .iter()
@@ -1632,10 +1963,13 @@ fn set_metadata(records: &CatalogRecords, set: &SetRow) -> serde_json::Value {
         "mame_machine_dependencies": records.mame_machine_dependencies.get(&set.set_id),
         "no_intro_game_facts": records.no_intro_game_facts.get(&set.set_id),
         "logiqx_set_facts": records.logiqx_set_facts.get(&set.set_id),
+        "logiqx_game_comments": records.logiqx_game_comments.get(&set.set_id),
+        "logiqx_releases": records.logiqx_releases.get(&set.set_id),
+        "logiqx_bios_sets": records.logiqx_bios_sets.get(&set.set_id),
+        "logiqx_archive_references": records.logiqx_archive_references.get(&set.set_id),
         "cmp_set_facts": records.cmp_set_facts.get(&set.set_id),
         "machine_switches": records.machine_switches.get(&set.set_id),
         "machine_bios_sets": records.machine_bios_sets.get(&set.set_id),
-        "source_extensions": records.extensions.get(&set.set_id),
     })
 }
 

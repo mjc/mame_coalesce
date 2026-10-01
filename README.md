@@ -295,7 +295,8 @@ and required device-reference tags are stored as typed facts, with ordered neste
 rows and snapshot-diff coverage. The separate software-list adapter imports list-scoped items, parts,
 data/disk areas, component evidence, and load instructions as source data; it
 does not execute those instructions or expand dependencies. Both adapters
-preserve unrecognized XML as extensions. Imports accept retained documents and
+retain unrecognized XML in the external original document, not a generic
+SQLite field table. Imports accept retained documents and
 gzip-expanded XML up to 384 MiB. XML tree adapters are limited to 200,000
 elements; the record-streaming MAME machine and software-list adapters allow up
 to 6,000,000 elements to accommodate official full catalogs and larger lists.
@@ -390,13 +391,20 @@ and catalog regressions cover these behaviors:
 - `catalog_history_ownership` compares complete same-name owner fact multisets,
   preserves unchanged permutations and reports ambiguous changes without
   inventing continuity between entries.
-- `catalog_extension_ownership` keeps unknown game/ROM fields attached to their
-  numeric source owners even when both game and ROM names repeat.
+- `catalog_extension_ownership` checks exact external-document recovery of
+  unknown game/ROM fields even when both game and ROM names repeat.
 - Coverage unit tests check exact scope reuse, root/software qualification,
   selected-but-absent sets, partial unknown members and immutable referenced
   coverage rows.
 - `logiqx_native_model` checks parser defaults and repeated ROM, disk, sample,
   release and BIOS-set fields, plus headerless native imports and snapshot diffs.
+- `native_logiqx_specification` checks native header options and repeated game
+  children, explicit/default presence, empty fields, ordering and owner guards.
+- `catalog_logiqx_persistence` checks separate ROM/disk/sample occurrences,
+  original size text, qualified disk identity and immutable published owners.
+- `native_logiqx_history` checks option and repeated-child edits, native order
+  across media families, default presence, vendor-only insertions, whitespace
+  changes and repeated-owner permutations without false size/hash changes.
 - `native_mame_specification` checks ordered machine specification facts and
   their stored field values.
 - `clrmamepro_native_model` checks native CMP header directives, set/sample

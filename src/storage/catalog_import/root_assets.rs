@@ -20,6 +20,7 @@ enum RootClaimKind {
     MameDisk,
     LogiqxRom,
     LogiqxDisk,
+    LogiqxSample,
     CmpRom,
     NoIntroPcFile,
 }
@@ -31,6 +32,7 @@ impl RootClaimKind {
             ("mame_machine", "disk") => Ok(Self::MameDisk),
             ("logiqx_game", "rom") => Ok(Self::LogiqxRom),
             ("logiqx_game", "disk") => Ok(Self::LogiqxDisk),
+            ("logiqx_game", "other") => Ok(Self::LogiqxSample),
             ("cmp_set", "rom") => Ok(Self::CmpRom),
             ("no_intro_pc_game", "rom") => Ok(Self::NoIntroPcFile),
             _ => Err(crate::Error::InvalidPath(format!(
@@ -45,6 +47,7 @@ impl RootClaimKind {
             Self::MameDisk => "mame_disk",
             Self::LogiqxRom => "logiqx_rom",
             Self::LogiqxDisk => "logiqx_disk",
+            Self::LogiqxSample => "logiqx_sample",
             Self::CmpRom => "cmp_rom",
             Self::NoIntroPcFile => "no_intro_pc_file",
         }
@@ -56,6 +59,7 @@ impl RootClaimKind {
             Self::MameDisk => "mame_disk_claims",
             Self::LogiqxRom => "logiqx_rom_claims",
             Self::LogiqxDisk => "logiqx_disk_claims",
+            Self::LogiqxSample => "logiqx_sample_claims",
             Self::CmpRom => "cmp_rom_claims",
             Self::NoIntroPcFile => "no_intro_pc_file_claims",
         }
@@ -91,24 +95,8 @@ pub(super) fn insert(
         RootClaimKind::MameRom | RootClaimKind::MameDisk => {
             insert_mame(conn, id, kind, asset, size)?;
         }
-        RootClaimKind::LogiqxRom | RootClaimKind::LogiqxDisk => {
-            sql_query(format!(
-                "INSERT INTO {} (occurrence_id,name,size,evidence_scope,evidence_provenance, \
-                 merge_name,dump_status,source_line,source_column,serial,date) \
-                 VALUES (?, ?, ?, ?, 'source_declared', ?, ?, ?, ?, ?, ?)",
-                kind.table()
-            ))
-            .bind::<BigInt, _>(id.database_value())
-            .bind::<Text, _>(&asset.name)
-            .bind::<Nullable<BigInt>, _>(size)
-            .bind::<Text, _>(asset.evidence_scope)
-            .bind::<Nullable<Text>, _>(asset.merge.as_deref())
-            .bind::<Nullable<Text>, _>(asset.dump_status.as_deref())
-            .bind::<BigInt, _>(asset.location.line)
-            .bind::<BigInt, _>(asset.location.column)
-            .bind::<Nullable<Text>, _>(asset.serial.as_deref())
-            .bind::<Nullable<Text>, _>(asset.date.as_deref())
-            .execute(conn)?;
+        RootClaimKind::LogiqxRom | RootClaimKind::LogiqxDisk | RootClaimKind::LogiqxSample => {
+            insert_logiqx(conn, id, kind, asset)?;
         }
         RootClaimKind::CmpRom | RootClaimKind::NoIntroPcFile => {
             sql_query(format!(
@@ -129,6 +117,61 @@ pub(super) fn insert(
         }
     }
     Ok(id)
+}
+
+fn insert_logiqx(
+    conn: &mut SqliteConnection,
+    id: OccurrenceId,
+    kind: RootClaimKind,
+    asset: &SnapshotAsset,
+) -> crate::Result<()> {
+    let facts = asset.logiqx_attributes.as_ref().ok_or_else(|| {
+        crate::Error::InvalidPath("Logiqx media entry has no native attributes".into())
+    })?;
+    if matches!(kind, RootClaimKind::LogiqxSample) {
+        sql_query("INSERT INTO logiqx_sample_claims(occurrence_id,name,source_order,source_line,source_column) VALUES (?,?,?,?,?)")
+            .bind::<BigInt, _>(id.database_value()).bind::<Text, _>(&asset.name)
+            .bind::<BigInt, _>(facts.source_order)
+            .bind::<BigInt, _>(asset.location.line).bind::<BigInt, _>(asset.location.column)
+            .execute(conn)?;
+        return Ok(());
+    }
+    let statement = format!(
+        "INSERT INTO {} (occurrence_id,name,evidence_scope,evidence_provenance,merge_name, \
+         dump_status,status_was_present,source_order,source_line,source_column{}) \
+         VALUES (?,?,?,'source_declared',?,?,?,?,?,?{})",
+        kind.table(),
+        if matches!(kind, RootClaimKind::LogiqxRom) {
+            ",size_text,serial,date"
+        } else {
+            ""
+        },
+        if matches!(kind, RootClaimKind::LogiqxRom) {
+            ",?,?,?"
+        } else {
+            ""
+        },
+    );
+    let query = sql_query(statement)
+        .bind::<BigInt, _>(id.database_value())
+        .bind::<Text, _>(&asset.name)
+        .bind::<Text, _>(asset.evidence_scope)
+        .bind::<Nullable<Text>, _>(asset.merge.as_deref())
+        .bind::<Text, _>(asset.dump_status.as_deref().unwrap_or("good"))
+        .bind::<diesel::sql_types::Bool, _>(facts.status_was_present)
+        .bind::<BigInt, _>(facts.source_order)
+        .bind::<BigInt, _>(asset.location.line)
+        .bind::<BigInt, _>(asset.location.column);
+    if matches!(kind, RootClaimKind::LogiqxRom) {
+        query
+            .bind::<Nullable<Text>, _>(facts.size_text.as_deref())
+            .bind::<Nullable<Text>, _>(asset.serial.as_deref())
+            .bind::<Nullable<Text>, _>(asset.date.as_deref())
+            .execute(conn)?;
+    } else {
+        query.execute(conn)?;
+    }
+    Ok(())
 }
 
 fn insert_mame(

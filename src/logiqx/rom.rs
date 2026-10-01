@@ -4,6 +4,7 @@ use crate::{logiqx::RecordLocation, xml_reader::Element};
 pub struct Rom {
     name: String,
     size: Option<u64>,
+    size_text: Option<String>,
     md5: Option<Vec<u8>>,
     sha1: Option<Vec<u8>>,
     crc: Option<Vec<u8>>,
@@ -39,6 +40,7 @@ impl Rom {
         Ok(Self {
             name: element.required_attribute("name")?,
             size,
+            size_text: element.attributes.get("size").cloned(),
             md5: xml_hash(element, "md5", 16)?,
             sha1: xml_hash(element, "sha1", 20)?,
             crc: xml_hash(element, "crc", 4)?,
@@ -59,6 +61,11 @@ impl Rom {
     #[must_use]
     pub const fn size(&self) -> Option<u64> {
         self.size
+    }
+
+    #[must_use]
+    pub fn size_text(&self) -> Option<&str> {
+        self.size_text.as_deref()
     }
 
     #[must_use]

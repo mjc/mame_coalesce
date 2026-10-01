@@ -45,11 +45,16 @@ does not establish complete field coverage for every input format. Native
 integer IDs, and retain source names as values. `snapshot_sets`, `records` and
 `record_namespaces` are read-only consumer views, not stored owners. Native
 MAME, Logiqx and P/C set details no longer copy snapshot keys and set names.
-Coverage members are typed relational rows, not JSON. Source assertions and
-extensions follow numeric set/occurrence owners, including repeated names.
+Coverage members are typed relational rows, not JSON. Source assertions follow
+numeric set/occurrence owners, including repeated names. Unknown vendor fields
+remain in the external source document, not a catch-all SQLite table.
 History compares complete same-name fact multisets rather than treating source
-positions as continuity. Extension value persistence, build-cache projections
-and remaining per-format coverage still need cutover.
+positions as continuity. SQLite has no JSON columns or generic vendor-field
+storage. Logiqx header options, comments, releases, BIOS sets and archive
+references now have native tables; ROM, disk and sample occurrences retain
+source order and default presence. ROM size text is retained once, with a
+virtual numeric projection. Build-cache projections and remaining per-format
+coverage still need cutover; this is not a claim of complete DTD conformance.
 
 The target hierarchy uses integer IDs for ownership and retains names and
 publisher IDs as source fields:

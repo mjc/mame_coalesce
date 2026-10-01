@@ -151,7 +151,7 @@ fn inserting_a_repeated_name_owner_reports_an_ambiguous_group_change()
 }
 
 #[test]
-fn repeated_name_source_extensions_remain_attached_to_owner_ids()
+fn repeated_name_vendor_fields_do_not_change_native_history()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let (database, previous, current) = snapshot_pair(
@@ -166,11 +166,15 @@ fn repeated_name_source_extensions_remain_attached_to_owner_ids()
         .iter()
         .find(|record| record.set_name == "same")
         .ok_or("repeated-name record missing from diff")?;
-    assert_eq!(record.status, SnapshotRecordStatus::Changed);
+    assert_eq!(record.status, SnapshotRecordStatus::Unchanged);
     assert_eq!(
         record.correspondence,
-        SnapshotRecordCorrespondence::Ambiguous
+        SnapshotRecordCorrespondence::ExactFacts
     );
+    assert!(!record.metadata_changed);
     assert!(record.requirement_changes.is_empty());
+
+    let recovered_source = app::load_snapshot_source(&database, &current)?;
+    assert!(String::from_utf8(recovered_source)?.contains("future='second'"));
     Ok(())
 }
