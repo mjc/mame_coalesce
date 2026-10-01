@@ -56,7 +56,8 @@ pub enum OccurrenceKind {
     ClrMameProSample,
     NoIntroPcFile,
     NoIntroDatRom,
-    NoIntroDatabaseFile,
+    NoIntroDatabaseSourceFile,
+    NoIntroDatabaseReleaseFile,
     SoftwareRomEntry,
     SoftwareRomOperation,
     SoftwareDiskEntry,
@@ -140,6 +141,121 @@ pub struct CatalogFileOccurrence {
     pub provenance: OccurrenceProvenance,
     pub digests: Vec<OccurrenceDigest>,
     pub no_intro_dat_rom: Option<NoIntroDatRomPayload>,
+    pub no_intro_database_file: Option<NoIntroDatabaseFilePayload>,
+}
+
+/// Stable row identity for a native No-Intro dump source.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct NoIntroDumpSourceId(i64);
+
+impl NoIntroDumpSourceId {
+    #[must_use]
+    pub const fn as_i64(self) -> i64 {
+        self.0
+    }
+}
+
+/// Stable row identity for a native No-Intro release.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct NoIntroReleaseId(i64);
+
+impl NoIntroReleaseId {
+    #[must_use]
+    pub const fn as_i64(self) -> i64 {
+        self.0
+    }
+}
+
+/// A parsed native digest or its exact invalid source literal.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NoIntroDatabaseDigestValue {
+    Valid(Vec<u8>),
+    Invalid(String),
+}
+
+/// Digest fields declared on a No-Intro database file.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NoIntroDatabaseFileDigests {
+    pub crc32: Option<NoIntroDatabaseDigestValue>,
+    pub md5: Option<NoIntroDatabaseDigestValue>,
+    pub sha1: Option<NoIntroDatabaseDigestValue>,
+    pub sha256: Option<NoIntroDatabaseDigestValue>,
+}
+
+/// Native file ownership and fields from a No-Intro database export.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NoIntroDatabaseFilePayload {
+    Source(NoIntroDatabaseSourceFile),
+    Release(NoIntroDatabaseReleaseFile),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NoIntroDatabaseFileOwnerKind {
+    Source,
+    Release,
+}
+
+/// File owned by a dump source. `source_size` preserves declared text and `size` is its
+/// database-normalized integer value. `origin_sha256` is distinct from the file SHA-256.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NoIntroDatabaseSourceFile {
+    pub dump_source_id: NoIntroDumpSourceId,
+    pub source_order: i64,
+    pub location: SourceLocation,
+    pub evidence_scope: NoIntroDatabaseEvidenceScope,
+    pub bad: Option<String>,
+    pub date: Option<String>,
+    pub extension: Option<String>,
+    pub filter: Option<String>,
+    pub forcename: Option<String>,
+    pub forcescenename: Option<String>,
+    pub format: Option<String>,
+    pub header: Option<String>,
+    pub id: Option<String>,
+    pub item: Option<String>,
+    pub mia: Option<String>,
+    pub note: Option<String>,
+    pub origin_size: Option<String>,
+    pub serial: Option<String>,
+    pub source_size: Option<String>,
+    pub size: Option<i64>,
+    pub unique: Option<String>,
+    pub update_type: Option<String>,
+    pub version: Option<String>,
+    pub digests: NoIntroDatabaseFileDigests,
+    pub origin_sha256: Option<NoIntroDatabaseDigestValue>,
+}
+
+/// File owned by a No-Intro release. `source_size` preserves declared text and `size` is its
+/// database-normalized integer value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NoIntroDatabaseReleaseFile {
+    pub release_id: NoIntroReleaseId,
+    pub source_order: i64,
+    pub location: SourceLocation,
+    pub evidence_scope: NoIntroDatabaseEvidenceScope,
+    pub bad: Option<String>,
+    pub extension: Option<String>,
+    pub forcename: Option<String>,
+    pub forcescenename: Option<String>,
+    pub format: Option<String>,
+    pub header: Option<String>,
+    pub id: Option<String>,
+    pub item: Option<String>,
+    pub note: Option<String>,
+    pub serial: Option<String>,
+    pub source_size: Option<String>,
+    pub size: Option<i64>,
+    pub update_type: Option<String>,
+    pub version: Option<String>,
+    pub digests: NoIntroDatabaseFileDigests,
+}
+
+/// Scope recorded for hashes in the native No-Intro database tables.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NoIntroDatabaseEvidenceScope {
+    WholeFile,
+    Unknown,
 }
 
 /// No-Intro flat DAT declarations attached to one ROM occurrence.
@@ -219,6 +335,10 @@ pub enum CatalogFilesError {
     MissingNoIntroDatRomPayload(i64),
     #[error("No-Intro DAT ROM occurrence {0} is not owned by a No-Intro DAT game")]
     MismatchedNoIntroDatRomOwner(i64),
+    #[error("No-Intro database file occurrence {0} has no native payload")]
+    MissingNoIntroDatabaseFilePayload(i64),
+    #[error("No-Intro database file occurrence {0} has a mismatched native owner")]
+    MismatchedNoIntroDatabaseFileOwner(i64),
     #[error("page size cannot be represented by SQLite")]
     PageLimitOverflow,
     #[error("bulk request contains {requested} occurrence IDs; maximum is {maximum}")]
@@ -352,6 +472,82 @@ struct NoIntroDatRomRow {
     source_line: i64,
     #[diesel(sql_type = BigInt)]
     source_column: i64,
+}
+
+#[derive(QueryableByName)]
+struct NoIntroDatabaseFileRow {
+    #[diesel(sql_type = Text)]
+    owner_kind: String,
+    #[diesel(sql_type = BigInt)]
+    owner_id: i64,
+    #[diesel(sql_type = BigInt)]
+    occurrence_id: i64,
+    #[diesel(sql_type = BigInt)]
+    source_order: i64,
+    #[diesel(sql_type = BigInt)]
+    source_line: i64,
+    #[diesel(sql_type = BigInt)]
+    source_column: i64,
+    #[diesel(sql_type = Text)]
+    evidence_scope: String,
+    #[diesel(sql_type = Nullable<Text>)]
+    bad: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    date: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    extension: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    filter: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    forcename: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    forcescenename: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    format: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    header: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    id: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    item: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    mia: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    note: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    origin_size: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    serial: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    source_size: Option<String>,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    size: Option<i64>,
+    #[diesel(sql_type = Nullable<Text>)]
+    unique_text: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    update_type: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    version: Option<String>,
+    #[diesel(sql_type = Nullable<Binary>)]
+    crc32: Option<Vec<u8>>,
+    #[diesel(sql_type = Nullable<Text>)]
+    crc32_invalid: Option<String>,
+    #[diesel(sql_type = Nullable<Binary>)]
+    md5: Option<Vec<u8>>,
+    #[diesel(sql_type = Nullable<Text>)]
+    md5_invalid: Option<String>,
+    #[diesel(sql_type = Nullable<Binary>)]
+    sha1: Option<Vec<u8>>,
+    #[diesel(sql_type = Nullable<Text>)]
+    sha1_invalid: Option<String>,
+    #[diesel(sql_type = Nullable<Binary>)]
+    sha256: Option<Vec<u8>>,
+    #[diesel(sql_type = Nullable<Text>)]
+    sha256_invalid: Option<String>,
+    #[diesel(sql_type = Nullable<Binary>)]
+    origin_sha256: Option<Vec<u8>>,
+    #[diesel(sql_type = Nullable<Text>)]
+    origin_sha256_invalid: Option<String>,
 }
 
 /// Resolve a batch of source occurrence identities in one database transaction.
@@ -648,6 +844,7 @@ fn assemble_occurrences(
         };
     }
     attach_no_intro_dat_rom_payloads(connection, &mut occurrences)?;
+    attach_no_intro_database_file_payloads(connection, &mut occurrences)?;
     let digests = sql_query(digest_select()).load::<DigestRow>(connection)?;
     for row in digests {
         let algorithm = parse_algorithm(row.algorithm)?;
@@ -733,6 +930,244 @@ fn attach_no_intro_dat_rom_payloads(
         return Err(CatalogFilesError::MissingOccurrenceOwner(*occurrence_id));
     }
     Ok(())
+}
+
+fn attach_no_intro_database_file_payloads(
+    connection: &mut SqliteConnection,
+    occurrences: &mut [CatalogFileOccurrence],
+) -> Result<(), CatalogFilesError> {
+    let mut native_files = sql_query(no_intro_database_file_select())
+        .load::<NoIntroDatabaseFileRow>(connection)?
+        .into_iter()
+        .map(|row| {
+            let occurrence_id = row.occurrence_id;
+            Ok((occurrence_id, no_intro_database_file_payload(row)?))
+        })
+        .collect::<Result<BTreeMap<_, _>, CatalogFilesError>>()?;
+
+    for occurrence in occurrences {
+        let occurrence_id = occurrence.occurrence_id.database_value();
+        let payload = match occurrence.provenance.occurrence_kind {
+            OccurrenceKind::NoIntroDatabaseSourceFile
+            | OccurrenceKind::NoIntroDatabaseReleaseFile => {
+                Some(native_files.remove(&occurrence_id).ok_or(
+                    CatalogFilesError::MissingNoIntroDatabaseFilePayload(occurrence_id),
+                )?)
+            }
+            _ if native_files.contains_key(&occurrence_id) => {
+                return Err(CatalogFilesError::MismatchedNoIntroDatabaseFileOwner(
+                    occurrence_id,
+                ));
+            }
+            _ => None,
+        };
+        if let Some(payload) = payload {
+            let expected = match occurrence.provenance.occurrence_kind {
+                OccurrenceKind::NoIntroDatabaseSourceFile => {
+                    matches!(&payload, NoIntroDatabaseFilePayload::Source(_))
+                }
+                OccurrenceKind::NoIntroDatabaseReleaseFile => {
+                    matches!(&payload, NoIntroDatabaseFilePayload::Release(_))
+                }
+                _ => false,
+            };
+            if !expected {
+                return Err(CatalogFilesError::MismatchedNoIntroDatabaseFileOwner(
+                    occurrence_id,
+                ));
+            }
+            let location = match &payload {
+                NoIntroDatabaseFilePayload::Source(file) => file.location,
+                NoIntroDatabaseFilePayload::Release(file) => file.location,
+            };
+            occurrence.provenance.native_occurrence_location = Some(location);
+            occurrence.no_intro_database_file = Some(payload);
+        }
+    }
+    if let Some((occurrence_id, _)) = native_files.first_key_value() {
+        return Err(CatalogFilesError::MissingOccurrenceOwner(*occurrence_id));
+    }
+    Ok(())
+}
+
+fn no_intro_database_file_select() -> String {
+    format!(
+        "SELECT 'source' AS owner_kind, file.dump_source_id AS owner_id, \
+                file.occurrence_id AS occurrence_id, file.source_order, file.source_line, file.source_column, \
+                file.evidence_scope, file.bad, file.date, file.extension, file.filter, \
+                file.forcename, file.forcescenename, file.format, file.header, file.id, \
+                file.item, file.mia, file.note, file.origin_size, file.serial, file.source_size, \
+                file.size, file.\"unique\" AS unique_text, file.update_type, file.version, \
+                crc_value.digest AS crc32, crc.invalid_literal AS crc32_invalid, \
+                md5_value.digest AS md5, md5.invalid_literal AS md5_invalid, \
+                sha1_value.digest AS sha1, sha1.invalid_literal AS sha1_invalid, \
+                sha256_value.digest AS sha256, sha256.invalid_literal AS sha256_invalid, \
+                origin_value.digest AS origin_sha256, origin.invalid_literal AS origin_sha256_invalid \
+         FROM {REQUEST_TABLE} AS requested \
+         CROSS JOIN no_intro_dump_files AS file \
+         JOIN no_intro_dump_sources AS owner \
+           ON owner.dump_source_id = file.dump_source_id AND owner.set_id = file.set_id \
+         LEFT JOIN no_intro_dump_file_digests AS crc \
+           ON crc.occurrence_id = file.occurrence_id AND crc.field_kind = 0 \
+         LEFT JOIN digest_values AS crc_value ON crc_value.digest_id = crc.digest_id \
+         LEFT JOIN no_intro_dump_file_digests AS md5 \
+           ON md5.occurrence_id = file.occurrence_id AND md5.field_kind = 1 \
+         LEFT JOIN digest_values AS md5_value ON md5_value.digest_id = md5.digest_id \
+         LEFT JOIN no_intro_dump_file_digests AS sha1 \
+           ON sha1.occurrence_id = file.occurrence_id AND sha1.field_kind = 2 \
+         LEFT JOIN digest_values AS sha1_value ON sha1_value.digest_id = sha1.digest_id \
+         LEFT JOIN no_intro_dump_file_digests AS sha256 \
+           ON sha256.occurrence_id = file.occurrence_id AND sha256.field_kind = 3 \
+         LEFT JOIN digest_values AS sha256_value ON sha256_value.digest_id = sha256.digest_id \
+         LEFT JOIN no_intro_dump_file_digests AS origin \
+           ON origin.occurrence_id = file.occurrence_id AND origin.field_kind = 4 \
+         LEFT JOIN digest_values AS origin_value ON origin_value.digest_id = origin.digest_id \
+         WHERE file.occurrence_id = requested.occurrence_id \
+         UNION ALL \
+         SELECT 'release' AS owner_kind, file.release_id AS owner_id, \
+                file.occurrence_id, file.source_order, file.source_line, file.source_column, \
+                file.evidence_scope, file.bad, NULL AS date, file.extension, NULL AS filter, \
+                file.forcename, file.forcescenename, file.format, file.header, file.id, \
+                file.item, NULL AS mia, file.note, NULL AS origin_size, file.serial, \
+                file.source_size, file.size, NULL AS unique_text, file.update_type, file.version, \
+                crc_value.digest AS crc32, crc.invalid_literal AS crc32_invalid, \
+                md5_value.digest AS md5, md5.invalid_literal AS md5_invalid, \
+                sha1_value.digest AS sha1, sha1.invalid_literal AS sha1_invalid, \
+                sha256_value.digest AS sha256, sha256.invalid_literal AS sha256_invalid, \
+                NULL AS origin_sha256, NULL AS origin_sha256_invalid \
+         FROM {REQUEST_TABLE} AS requested \
+         CROSS JOIN no_intro_release_files AS file \
+         JOIN no_intro_releases AS owner \
+           ON owner.release_id = file.release_id AND owner.set_id = file.set_id \
+         LEFT JOIN no_intro_release_file_digests AS crc \
+           ON crc.occurrence_id = file.occurrence_id AND crc.field_kind = 0 \
+         LEFT JOIN digest_values AS crc_value ON crc_value.digest_id = crc.digest_id \
+         LEFT JOIN no_intro_release_file_digests AS md5 \
+           ON md5.occurrence_id = file.occurrence_id AND md5.field_kind = 1 \
+         LEFT JOIN digest_values AS md5_value ON md5_value.digest_id = md5.digest_id \
+         LEFT JOIN no_intro_release_file_digests AS sha1 \
+           ON sha1.occurrence_id = file.occurrence_id AND sha1.field_kind = 2 \
+         LEFT JOIN digest_values AS sha1_value ON sha1_value.digest_id = sha1.digest_id \
+         LEFT JOIN no_intro_release_file_digests AS sha256 \
+           ON sha256.occurrence_id = file.occurrence_id AND sha256.field_kind = 3 \
+         LEFT JOIN digest_values AS sha256_value ON sha256_value.digest_id = sha256.digest_id \
+         WHERE file.occurrence_id = requested.occurrence_id \
+         ORDER BY occurrence_id"
+    )
+}
+
+fn no_intro_database_file_payload(
+    row: NoIntroDatabaseFileRow,
+) -> Result<NoIntroDatabaseFilePayload, CatalogFilesError> {
+    let owner_kind = match row.owner_kind.as_str() {
+        "source" => NoIntroDatabaseFileOwnerKind::Source,
+        "release" => NoIntroDatabaseFileOwnerKind::Release,
+        _ => return Err(invalid_value("No-Intro file owner kind", row.owner_kind)),
+    };
+    let digests = NoIntroDatabaseFileDigests {
+        crc32: native_digest(row.crc32, row.crc32_invalid, "No-Intro CRC32")?,
+        md5: native_digest(row.md5, row.md5_invalid, "No-Intro MD5")?,
+        sha1: native_digest(row.sha1, row.sha1_invalid, "No-Intro SHA-1")?,
+        sha256: native_digest(row.sha256, row.sha256_invalid, "No-Intro SHA-256")?,
+    };
+    let evidence_scope = match row.evidence_scope.as_str() {
+        "whole_file" => NoIntroDatabaseEvidenceScope::WholeFile,
+        "unknown" => NoIntroDatabaseEvidenceScope::Unknown,
+        _ => return Err(invalid_value("No-Intro evidence scope", row.evidence_scope)),
+    };
+    let location = SourceLocation {
+        line: row.source_line,
+        column: row.source_column,
+    };
+    match owner_kind {
+        NoIntroDatabaseFileOwnerKind::Source => Ok(NoIntroDatabaseFilePayload::Source(
+            NoIntroDatabaseSourceFile {
+                dump_source_id: NoIntroDumpSourceId(row.owner_id),
+                source_order: row.source_order,
+                location,
+                evidence_scope,
+                bad: row.bad,
+                date: row.date,
+                extension: row.extension,
+                filter: row.filter,
+                forcename: row.forcename,
+                forcescenename: row.forcescenename,
+                format: row.format,
+                header: row.header,
+                id: row.id,
+                item: row.item,
+                mia: row.mia,
+                note: row.note,
+                origin_size: row.origin_size,
+                serial: row.serial,
+                source_size: row.source_size,
+                size: row.size,
+                unique: row.unique_text,
+                update_type: row.update_type,
+                version: row.version,
+                digests,
+                origin_sha256: native_digest(
+                    row.origin_sha256,
+                    row.origin_sha256_invalid,
+                    "No-Intro origin SHA-256",
+                )?,
+            },
+        )),
+        NoIntroDatabaseFileOwnerKind::Release => {
+            if row.date.is_some()
+                || row.filter.is_some()
+                || row.mia.is_some()
+                || row.origin_size.is_some()
+                || row.unique_text.is_some()
+                || row.origin_sha256.is_some()
+                || row.origin_sha256_invalid.is_some()
+            {
+                return Err(invalid_value(
+                    "No-Intro release file fields",
+                    "source-only fields populated".to_owned(),
+                ));
+            }
+            Ok(NoIntroDatabaseFilePayload::Release(
+                NoIntroDatabaseReleaseFile {
+                    release_id: NoIntroReleaseId(row.owner_id),
+                    source_order: row.source_order,
+                    location,
+                    evidence_scope,
+                    bad: row.bad,
+                    extension: row.extension,
+                    forcename: row.forcename,
+                    forcescenename: row.forcescenename,
+                    format: row.format,
+                    header: row.header,
+                    id: row.id,
+                    item: row.item,
+                    note: row.note,
+                    serial: row.serial,
+                    source_size: row.source_size,
+                    size: row.size,
+                    update_type: row.update_type,
+                    version: row.version,
+                    digests,
+                },
+            ))
+        }
+    }
+}
+
+fn native_digest(
+    digest: Option<Vec<u8>>,
+    invalid_literal: Option<String>,
+    field: &'static str,
+) -> Result<Option<NoIntroDatabaseDigestValue>, CatalogFilesError> {
+    match (digest, invalid_literal) {
+        (Some(value), None) => Ok(Some(NoIntroDatabaseDigestValue::Valid(value))),
+        (None, Some(value)) => Ok(Some(NoIntroDatabaseDigestValue::Invalid(value))),
+        (None, None) => Ok(None),
+        (Some(_), Some(_)) => Err(invalid_value(
+            field,
+            "valid digest and invalid literal both populated".to_owned(),
+        )),
+    }
 }
 
 fn no_intro_dat_rom_select() -> String {
@@ -837,6 +1272,7 @@ fn try_occurrence(row: OccurrenceRow) -> Result<CatalogFileOccurrence, CatalogFi
         },
         digests: Vec::new(),
         no_intro_dat_rom: None,
+        no_intro_database_file: None,
     })
 }
 
@@ -892,7 +1328,8 @@ fn parse_occurrence_kind(value: String) -> Result<OccurrenceKind, CatalogFilesEr
         "cmp_sample" => Ok(OccurrenceKind::ClrMameProSample),
         "no_intro_pc_file" => Ok(OccurrenceKind::NoIntroPcFile),
         "no_intro_dat_rom" => Ok(OccurrenceKind::NoIntroDatRom),
-        "no_intro_database_file" => Ok(OccurrenceKind::NoIntroDatabaseFile),
+        "no_intro_database_source_file" => Ok(OccurrenceKind::NoIntroDatabaseSourceFile),
+        "no_intro_database_release_file" => Ok(OccurrenceKind::NoIntroDatabaseReleaseFile),
         "software_rom_entry" => Ok(OccurrenceKind::SoftwareRomEntry),
         "software_rom_operation" => Ok(OccurrenceKind::SoftwareRomOperation),
         "software_disk_entry" => Ok(OccurrenceKind::SoftwareDiskEntry),

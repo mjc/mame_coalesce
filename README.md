@@ -156,8 +156,13 @@ observed-compatible and NUL-recovery modes accept both single-root and sibling
 header/datafile framing. Recovery changes only decoded U+0000 in the parse view;
 warnings are generated lazily with original coordinates after validated EOF.
 Clean input remains borrowed, and the header is moved to the caller once.
-This reader is not yet a `cache catalog-import` format: native database-export
-tables, writer and query/backup acceptance remain unfinished.
+Both interpretations are also `cache catalog-import` formats. Native tables
+retain archive descriptions, distinct dump-source/release owners, details,
+serials, file fields and their order/locations. Valid hashes share interned
+binary values; origin and NFO hashes are separate scoped evidence. Export
+file hashes have unknown scope until a whole-file contract is established,
+so they do not assign shared file UUIDs. Bulk file queries and paired backups
+include these native owners. Full corpus/history acceptance remains open.
 
 `examples/no_intro_database_profile.rs` exercises that reader with the
 `no-intro-database-xml-compatible` or `no-intro-database-xml-nul-compatible`
@@ -175,8 +180,11 @@ XML character and encoding failures capture their actual bytes, including
 NUL, invalid UTF-8 and UTF-16. Gzip excerpts name the decoded XML view and do
 not claim compressed-file offsets. Unknown ranges stay absent. The schema
 checks paired integer bounds and links each diagnostic to its run and source
-document; failed catalog facts still roll back. Recovery-warning persistence,
-additional token/field highlights and native catalog-owner links remain open.
+document; failed catalog facts still roll back. Database-export NUL recovery
+persists the original encoded bytes and exact excerpt-relative ranges after
+validated EOF. Warnings inside a details opening tag link to that actual dump
+source or release through a foreign key. Additional token/field highlights and
+other native diagnostic owners remain open.
 
 Format version 1 is marked in the SQLite header and includes the cache database,
 acquisitions, catalog snapshots, assertions, reviews, diagnostics, and

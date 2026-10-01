@@ -1,6 +1,8 @@
 #![allow(clippy::expect_used, clippy::panic)]
 
-use std::fmt::Write;
+use std::{fmt::Write, io::Write as IoWrite};
+
+use flate2::{Compression, write::GzEncoder};
 
 use super::*;
 
@@ -719,6 +721,272 @@ fn null_recovery_is_decoded_only_and_records_all_six_original_locations() {
             .map(|warning| warning.location)
             .collect::<Vec<_>>(),
         document_warning_locations(&xml)
+    );
+}
+
+#[test]
+fn detail_opening_ranges_own_only_warnings_inside_multiline_tags() {
+    let xml = detail_opening_ranges_xml();
+    let parsed = read_with::<_, Error>(
+        xml.as_bytes(),
+        NoIntroDatabaseMode::NullRecoveryCompatible,
+        |document| Ok((document, Vec::<DatabaseGame>::new())),
+        |state, game| {
+            state.1.push(game);
+            Ok(())
+        },
+    )
+    .expect("multiline details tags with recovered NULs parse");
+    let warnings = parsed
+        .recovery_warnings()
+        .map(|warning| warning.location)
+        .collect::<Vec<_>>();
+    assert_eq!(warnings.len(), 4);
+
+    let ranges = detail_opening_ranges(xml.as_bytes());
+    assert_detail_opening_end_locations(xml, ranges);
+    assert_eq!(detail_warning_counts(&warnings, ranges), [1, 1, 2]);
+
+    assert_eq!(detail_opening_ranges(&utf16le_with_bom(xml)), ranges);
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    encoder
+        .write_all(xml.as_bytes())
+        .expect("gzip fixture writes");
+    let gzip = encoder.finish().expect("gzip fixture finishes");
+    assert_eq!(detail_opening_ranges(&gzip), ranges);
+}
+
+fn detail_opening_ranges_xml() -> &'static str {
+    concat!(
+        "<datafile>\r\n",
+        "<game name=\"before\0\"/>\r\n",
+        "<game name=\"details\">\r\n",
+        " <source>\r\n",
+        "  <details\r\n",
+        "    comment1=\"before&#x26;😀\0after\"\r\n",
+        "    id=\"source&#x31;\"\r\n",
+        "  />\r\n",
+        " </source>\r\n",
+        " <release>\r\n",
+        "  <details\r\n",
+        "    comment=\"release\r\n",
+        "      &#x26;😀\0tail\"\r\n",
+        "  ></details>\r\n",
+        " </release>\r\n",
+        "</game>\r\n",
+        "<game name=\"after\0\"/>\r\n",
+        "</datafile>"
+    )
+}
+
+fn assert_detail_opening_end_locations(xml: &str, ranges: [(RecordLocation, RecordLocation); 2]) {
+    assert_eq!(
+        ranges[0].1,
+        location_at(
+            xml,
+            xml.find("  />").expect("source empty tag") + "  />".len()
+        )
+    );
+    assert_eq!(
+        ranges[1].1,
+        location_at(
+            xml,
+            xml.find("  >").expect("release opening tag") + "  >".len()
+        )
+    );
+}
+
+fn detail_warning_counts(
+    warnings: &[RecordLocation],
+    ranges: [(RecordLocation, RecordLocation); 2],
+) -> [usize; 3] {
+    let inside = |(start, end)| {
+        warnings
+            .iter()
+            .filter(|&&warning| location_in_range(warning, start, end))
+            .count()
+    };
+    let outside = warnings
+        .iter()
+        .filter(|&&warning| {
+            !location_in_range(warning, ranges[0].0, ranges[0].1)
+                && !location_in_range(warning, ranges[1].0, ranges[1].1)
+        })
+        .count();
+    [inside(ranges[0]), inside(ranges[1]), outside]
+}
+
+fn location_in_range(location: RecordLocation, start: RecordLocation, end: RecordLocation) -> bool {
+    (start.line, start.column) <= (location.line, location.column)
+        && (location.line, location.column) < (end.line, end.column)
+}
+
+fn location_at(xml: &str, byte_offset: usize) -> RecordLocation {
+    let mut position = SourcePosition::new();
+    for character in xml[..byte_offset].chars() {
+        position.advance(character);
+    }
+    position.location()
+}
+
+fn detail_opening_ranges(input: &[u8]) -> [(RecordLocation, RecordLocation); 2] {
+    let parsed = read_with::<_, Error>(
+        input,
+        NoIntroDatabaseMode::NullRecoveryCompatible,
+        |document| Ok((document, Vec::<DatabaseGame>::new())),
+        |state, game| {
+            state.1.push(game);
+            Ok(())
+        },
+    )
+    .expect("details with recovered NULs parse");
+    let (_, games) = parsed.into_inner();
+    let details_game = &games[1];
+    let SourceOrRelease::Source(source) = &details_game.source_or_release[0] else {
+        panic!("source")
+    };
+    let SourceOrRelease::Release(release) = &details_game.source_or_release[1] else {
+        panic!("release")
+    };
+    let source_details = source.details.as_ref().expect("source details retained");
+    let release_details = release.details.as_ref().expect("release details retained");
+    [
+        (source_details.location, source_details.opening_end),
+        (release_details.location, release_details.opening_end),
+    ]
+}
+
+#[test]
+fn recovery_warnings_retain_exact_utf8_utf16_and_gzip_byte_excerpts() {
+    let xml = "<datafile><game name=\"😀\0\"/></datafile>";
+    let nul = xml.find('\0').expect("fixture contains NUL");
+    let parsed = read_with::<_, Error>(
+        xml.as_bytes(),
+        NoIntroDatabaseMode::NullRecoveryCompatible,
+        |_| Ok(()),
+        |(), _| Ok(()),
+    )
+    .expect("recovery parses");
+    let warning = parsed.recovery_warnings().next().expect("NUL warning");
+    let excerpt = warning.excerpt.expect("warning retains exact byte excerpt");
+    assert_eq!(excerpt.bytes(), b"\0");
+    assert_eq!(excerpt.view(), ExcerptView::RetainedOriginalBytes);
+    assert_eq!(excerpt.start_byte(), nul);
+    assert_eq!(excerpt.problem(), ByteRange::new(0, 1));
+    assert_eq!(excerpt.original_problem(), ByteRange::new(nul, nul + 1));
+
+    let utf16 = utf16le_with_bom(xml);
+    let encoded_nul = 2 + xml[..nul].encode_utf16().count() * 2;
+    let parsed = read_with::<_, Error>(
+        &utf16,
+        NoIntroDatabaseMode::NullRecoveryCompatible,
+        |_| Ok(()),
+        |(), _| Ok(()),
+    )
+    .expect("UTF-16 recovery parses");
+    let excerpt = parsed
+        .recovery_warnings()
+        .next()
+        .expect("UTF-16 NUL warning")
+        .excerpt
+        .expect("UTF-16 warning retains bytes");
+    assert_eq!(excerpt.bytes(), &[0, 0]);
+    assert_eq!(excerpt.view(), ExcerptView::RetainedOriginalBytes);
+    assert_eq!(excerpt.start_byte(), encoded_nul);
+    assert_eq!(excerpt.problem(), ByteRange::new(0, 2));
+    assert_eq!(
+        excerpt.original_problem(),
+        ByteRange::new(encoded_nul, encoded_nul + 2)
+    );
+
+    let clipped = excerpt
+        .clone()
+        .clip(ByteRange::new(0, 1).expect("ordered clip range"))
+        .expect("partial byte clip retained");
+    assert_eq!(clipped.bytes(), &[0]);
+    assert_eq!(clipped.start_byte(), encoded_nul);
+    assert_eq!(clipped.problem(), None);
+    assert_eq!(clipped.source_problem(), excerpt.source_problem());
+
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    encoder
+        .write_all(xml.as_bytes())
+        .expect("gzip fixture writes");
+    let gzip = encoder.finish().expect("gzip fixture finishes");
+    let parsed = read_with::<_, Error>(
+        &gzip,
+        NoIntroDatabaseMode::NullRecoveryCompatible,
+        |_| Ok(()),
+        |(), _| Ok(()),
+    )
+    .expect("gzip recovery parses");
+    let excerpt = parsed
+        .recovery_warnings()
+        .next()
+        .expect("gzip NUL warning")
+        .excerpt
+        .expect("gzip warning retains decoded bytes");
+    assert_eq!(excerpt.bytes(), b"\0");
+    assert_eq!(excerpt.view(), ExcerptView::TransportDecodedXmlBytes);
+    assert_eq!(excerpt.start_byte(), nul);
+    assert_eq!(excerpt.original_problem(), None);
+}
+
+#[test]
+fn strict_nul_error_retains_the_exact_encoded_excerpt() {
+    let xml = "<datafile><game name=\"😀\0\"/></datafile>";
+    let nul = xml.find('\0').expect("fixture contains NUL");
+    let Err(error) = read_with::<_, Error>(
+        xml.as_bytes(),
+        NoIntroDatabaseMode::ObservedCompatible,
+        |_| Ok(()),
+        |(), _| Ok(()),
+    ) else {
+        panic!("strict mode rejects NUL")
+    };
+    let Error::CatalogParse {
+        excerpt: Some(excerpt),
+        line: Some(_),
+        column: Some(_),
+        ..
+    } = error
+    else {
+        panic!("strict NUL error carries coordinates and an excerpt")
+    };
+    assert_eq!(excerpt.bytes(), b"\0");
+    assert_eq!(excerpt.start_byte(), nul);
+    assert_eq!(excerpt.original_problem(), ByteRange::new(nul, nul + 1));
+
+    let utf16 = utf16le_with_bom(xml);
+    let encoded_nul = 2 + xml[..nul].encode_utf16().count() * 2;
+    let Err(error) = read_with::<_, Error>(
+        &utf16,
+        NoIntroDatabaseMode::ObservedCompatible,
+        |_| Ok(()),
+        |(), _| Ok(()),
+    ) else {
+        panic!("strict mode rejects UTF-16 NUL")
+    };
+    let Error::CatalogParse {
+        excerpt: Some(excerpt),
+        line: Some(line),
+        column: Some(column),
+        coordinates: Some(crate::diagnostics::CoordinateConvention::XmlUnicodeScalars),
+        ..
+    } = error
+    else {
+        panic!("UTF-16 strict NUL error carries Unicode coordinates and an excerpt")
+    };
+    assert_eq!(excerpt.bytes(), &[0, 0]);
+    assert_eq!(excerpt.start_byte(), encoded_nul);
+    assert_eq!(
+        excerpt.original_problem(),
+        ByteRange::new(encoded_nul, encoded_nul + 2)
+    );
+    assert_eq!(line, 1);
+    assert_eq!(
+        column,
+        i64::try_from(xml[..nul].chars().count()).expect("fixture column fits i64") + 1
     );
 }
 

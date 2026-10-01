@@ -24,7 +24,11 @@ const SCHEMA: &str = concat!(
     "\n",
     include_str!("no_intro_dat.sql"),
     "\n",
-    include_str!("no_intro_dat_guards.sql")
+    include_str!("no_intro_dat_guards.sql"),
+    "\n",
+    include_str!("no_intro_database.sql"),
+    "\n",
+    include_str!("no_intro_database_guards.sql")
 );
 
 #[derive(Debug)]

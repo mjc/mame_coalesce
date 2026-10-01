@@ -191,6 +191,54 @@ pub fn insert_source_assertion(
     Ok(key)
 }
 
+pub(super) fn insert_no_intro_archive_reference(
+    conn: &mut SqliteConnection,
+    snapshot: &SnapshotKey,
+    set: CatalogSetId,
+    archive: crate::domain::NoIntroArchiveId,
+    field: crate::domain::NoIntroArchiveReferenceField,
+    text: &crate::xml_reader::DeclaredText,
+) -> crate::Result<()> {
+    use crate::domain::NoIntroArchiveReferenceField;
+    let owner = sql_query("SELECT COUNT(*) AS found FROM no_intro_archive_descriptions a JOIN catalog_sets s USING(set_id) JOIN catalog_set_groups g USING(set_group_id) WHERE a.archive_id=? AND a.set_id=? AND g.snapshot_key=?")
+        .bind::<BigInt,_>(archive.as_i64()).bind::<BigInt,_>(set.as_i64()).bind::<Text,_>(snapshot.as_str())
+        .get_result::<AssertionKeyRow>(conn)?;
+    if owner.found != 1 {
+        return Err(crate::Error::DatabaseSchema(
+            "archive reference has no matching native owner".into(),
+        ));
+    }
+    let key = RelationshipAssertionKey::fresh();
+    let relation = match field {
+        NoIntroArchiveReferenceField::Clone => RelationshipType::SourceParentClone,
+        NoIntroArchiveReferenceField::MergeOf => RelationshipType::AlternateRepresentationOf,
+    };
+    sql_query("INSERT INTO relationship_assertions(assertion_key,relation_type,origin,source_snapshot_key,source_field,source_line,source_column,subject_kind,subject_archive_id,target_kind) VALUES(?,?,'source_assertion',?,?,?,?,'no_intro_archive',?,'no_intro_archive_reference')")
+        .bind::<Text,_>(key.as_str()).bind::<Text,_>(relation.as_str()).bind::<Text,_>(snapshot.as_str())
+        .bind::<Text,_>(field.as_str()).bind::<BigInt,_>(text.location.line).bind::<BigInt,_>(text.location.column)
+        .bind::<BigInt,_>(archive.as_i64()).execute(conn)?;
+    let sql = match field {
+        NoIntroArchiveReferenceField::Clone => {
+            "INSERT INTO no_intro_archive_clone_links(archive_id,declared_target_number,relationship_id,source_order,source_line,source_column) VALUES(?,?,?,?,?,?)"
+        }
+        NoIntroArchiveReferenceField::MergeOf => {
+            "INSERT INTO no_intro_archive_merge_links(archive_id,declared_mergeof,relationship_id,source_order,source_line,source_column) VALUES(?,?,?,?,?,?)"
+        }
+    };
+    let order = i64::try_from(text.source_order).map_err(|_| {
+        crate::Error::DatabaseSchema("archive field order exceeds SQLite range".into())
+    })?;
+    sql_query(sql)
+        .bind::<BigInt, _>(archive.as_i64())
+        .bind::<Text, _>(text.as_str())
+        .bind::<Text, _>(key.as_str())
+        .bind::<BigInt, _>(order)
+        .bind::<BigInt, _>(text.location.line)
+        .bind::<BigInt, _>(text.location.column)
+        .execute(conn)?;
+    Ok(())
+}
+
 fn insert_source_claim(
     conn: &mut SqliteConnection,
     assertion_key: &RelationshipAssertionKey,
@@ -531,6 +579,10 @@ fn endpoint_parts(endpoint: &RelationshipEndpoint) -> crate::Result<EndpointPart
             Some(record.key.as_str().to_owned()),
             None,
             None,
+        )),
+        RelationshipEndpoint::NoIntroArchive { .. }
+        | RelationshipEndpoint::NoIntroArchiveReference { .. } => Err(crate::Error::InvalidPath(
+            "native archive endpoints require a native source assertion".into(),
         )),
     }
 }
@@ -1281,6 +1333,10 @@ fn source_evidence_value(row: &ExplanationRow) -> crate::Result<serde_json::Valu
         .as_deref()
         .ok_or_else(|| crate::Error::InvalidPath("source evidence has no target name".into()))?;
     match row.source_field.as_deref() {
+        Some("archive_clone" | "archive_mergeof") => Ok(serde_json::json!({
+            "declared_archive_reference": target_name,
+            "source_field": row.source_field,
+        })),
         Some("merge") => Ok(serde_json::json!({
             "declared_merge_name": row.source_asset_merge_name,
             "parent_set_name": target_name,
@@ -1316,6 +1372,21 @@ fn source_endpoint(
     let snapshot = SnapshotKey::from_persisted(snapshot.ok_or_else(|| {
         crate::Error::InvalidPath("source relationship endpoint has no snapshot".into())
     })?);
+    if kind == "no_intro_archive" {
+        let id = third.ok_or_else(|| {
+            crate::Error::InvalidPath("archive endpoint has no native owner".into())
+        })?;
+        return Ok(RelationshipEndpoint::NoIntroArchive {
+            snapshot,
+            archive_id: id.try_into()?,
+        });
+    }
+    if kind == "no_intro_archive_reference" {
+        let literal = first.ok_or_else(|| {
+            crate::Error::InvalidPath("archive reference has no native declaration".into())
+        })?;
+        return Ok(RelationshipEndpoint::NoIntroArchiveReference { snapshot, literal });
+    }
     let first = first.ok_or_else(|| {
         crate::Error::InvalidPath("source relationship endpoint has no first key part".into())
     })?;

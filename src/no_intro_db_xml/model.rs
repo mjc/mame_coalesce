@@ -1,4 +1,4 @@
-use crate::{logiqx::RecordLocation, xml_reader::DeclaredText};
+use crate::{diagnostics::SourceExcerpt, logiqx::RecordLocation, xml_reader::DeclaredText};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 /// Selects an observed-compatible No-Intro database-export interpretation.
@@ -38,6 +38,8 @@ pub struct RecoveryWarning {
     pub replacement: char,
     /// One-based line and Unicode-scalar column in the decoded original.
     pub location: RecordLocation,
+    /// Exact encoded bytes for this NUL, in the retained or gzip-decoded view.
+    pub excerpt: Option<SourceExcerpt>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -199,6 +201,8 @@ pub struct DumpSource {
 pub struct SourceDetails {
     pub source_order: usize,
     pub location: RecordLocation,
+    /// Exclusive position immediately after the complete `<details>` opening tag.
+    pub opening_end: RecordLocation,
     pub comment1: Option<DeclaredText>,
     pub comment2: Option<DeclaredText>,
     pub d_date: Option<DeclaredText>,
@@ -259,6 +263,8 @@ pub struct DatabaseRelease {
 pub struct ReleaseDetails {
     pub source_order: usize,
     pub location: RecordLocation,
+    /// Exclusive position immediately after the complete `<details>` opening tag.
+    pub opening_end: RecordLocation,
     pub archivename: Option<DeclaredText>,
     pub category: Option<DeclaredText>,
     pub comment: Option<DeclaredText>,

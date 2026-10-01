@@ -164,8 +164,15 @@ parser-internal representations the public contract.
   returns a privately constructed EOF proof. NUL recovery modifies only the
   decoded parse view; the proof exposes original-coordinate warnings lazily.
   Original-byte encoding declarations, XML line endings and accumulated scalar
-  limits are checked by the shared XML boundary. Database-export SQL tables,
-  writer, query and backup integration are still unfinished.
+  limits are checked by the shared XML boundary. Native export, archive,
+  dump-source/release details, serials and file tables persist one game's facts
+  at a time. Closed position-only children retain order and coordinates, while
+  valid digests share interned binary values. Origin/NFO evidence stays scoped;
+  unknown export-file scope cannot assign a whole-file UUID. Bulk file queries
+  and paired backups include native source/release owners. Recovery warnings
+  persist only after valid EOF, with exact encoded byte highlights and proven
+  details-opening owner FKs; linked diagnostic/run evidence is immutable.
+  Full corpus/history and all native diagnostic-owner acceptance remains open.
 - `catalog_files` queries published occurrences in one transaction, preserving
   one row per source owner and separate digest children. Bulk lookups include
   unlinked entries; reverse UUID membership uses keyset pagination and checks

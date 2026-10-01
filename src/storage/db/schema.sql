@@ -60,7 +60,7 @@ CREATE TABLE asset_occurrences (
     claim_kind TEXT NOT NULL CHECK (claim_kind IN (
         'mame_rom', 'mame_disk', 'mame_sample', 'logiqx_rom', 'logiqx_disk',
         'logiqx_sample', 'cmp_rom', 'cmp_sample', 'no_intro_pc_file',
-        'no_intro_dat_rom', 'no_intro_database_file', 'software_rom_entry',
+        'no_intro_dat_rom', 'no_intro_database_source_file', 'no_intro_database_release_file', 'software_rom_entry',
         'software_rom_operation', 'software_disk_entry'
     )),
     content_uuid BLOB REFERENCES catalog_contents(content_uuid) ON DELETE RESTRICT,
@@ -992,6 +992,7 @@ CREATE TABLE relationship_assertions (
     generic_subject_snapshot_key TEXT REFERENCES catalog_snapshots (snapshot_key) ON DELETE RESTRICT,
     subject_kind TEXT NOT NULL,
     subject_set_id INTEGER REFERENCES catalog_sets(set_id) ON DELETE RESTRICT,
+    subject_archive_id INTEGER REFERENCES no_intro_archive_descriptions(archive_id) ON DELETE RESTRICT,
     generic_subject_a TEXT,
     generic_subject_b TEXT,
     generic_subject_c BIGINT,
@@ -1020,8 +1021,12 @@ CREATE TABLE relationship_assertions (
     CHECK (
         (origin = 'source_assertion' AND source_snapshot_key IS NOT NULL
             AND source_field IS NOT NULL AND generic_subject_snapshot_key IS NULL
-            AND generic_target_snapshot_key IS NULL AND source_subject_a IS NOT NULL
-            AND source_target_a IS NOT NULL AND generic_subject_a IS NULL
+            AND generic_target_snapshot_key IS NULL
+            AND ((subject_kind = 'no_intro_archive' AND source_subject_a IS NULL)
+                 OR (subject_kind <> 'no_intro_archive' AND source_subject_a IS NOT NULL))
+            AND ((target_kind = 'no_intro_archive_reference' AND source_target_a IS NULL)
+                 OR (target_kind <> 'no_intro_archive_reference' AND source_target_a IS NOT NULL))
+            AND generic_subject_a IS NULL
             AND generic_subject_b IS NULL AND generic_subject_c IS NULL
             AND generic_target_a IS NULL AND generic_target_b IS NULL
             AND generic_target_c IS NULL)
@@ -1044,8 +1049,20 @@ CREATE TABLE relationship_assertions (
              AND ((target_kind = 'asset_requirement') = (generic_target_c IS NOT NULL))))),
     CHECK ((origin = 'derived_candidate') = (rule_version IS NOT NULL)),
     CHECK (origin != 'source_assertion' OR
-        (subject_kind IN ('catalog_set', 'software_item', 'asset_requirement')
-         AND target_kind IN ('catalog_set', 'software_item', 'asset_requirement'))),
+        ((subject_kind IN ('catalog_set', 'software_item', 'asset_requirement')
+         AND target_kind IN ('catalog_set', 'software_item', 'asset_requirement'))
+         OR (subject_kind = 'no_intro_archive' AND target_kind = 'no_intro_archive_reference'))),
+    CHECK ((subject_kind = 'no_intro_archive') = (subject_archive_id IS NOT NULL)),
+    CHECK (origin <> 'source_assertion' OR
+        ((source_field IN ('archive_clone','archive_mergeof')) = (subject_kind='no_intro_archive'))),
+    CHECK (subject_kind <> 'no_intro_archive' OR
+        (origin = 'source_assertion' AND target_kind = 'no_intro_archive_reference'
+         AND source_field IN ('archive_clone', 'archive_mergeof')
+         AND relation_type = CASE source_field WHEN 'archive_clone' THEN 'source_parent_clone'
+                                              ELSE 'alternate_representation_of' END
+         AND subject_set_id IS NULL AND target_set_id IS NULL
+         AND source_subject_b IS NULL AND source_subject_c IS NULL
+         AND source_target_b IS NULL AND source_target_c IS NULL)),
     CHECK (origin != 'source_assertion' OR source_field != 'merge' OR
         (subject_kind = 'asset_requirement' AND target_kind = 'asset_requirement')),
     CHECK (origin != 'source_assertion' OR
@@ -1469,7 +1486,8 @@ WHEN NOT EXISTS (
         (NEW.kind = 'software_list' AND format = 'mame-softwarelist-xml') OR
         (NEW.kind = 'root' AND format IN ('mame-listxml', 'logiqx', 'clrmamepro-dat', 'no-intro-pc-xml',
             'no-intro-dat-v3-strict', 'no-intro-dat-v3-compatible',
-            'no-intro-dat-v4-strict', 'no-intro-dat-v4-compatible'))
+            'no-intro-dat-v4-strict', 'no-intro-dat-v4-compatible',
+            'no-intro-database-xml-compatible', 'no-intro-database-xml-nul-compatible'))
     )
 )
 BEGIN SELECT RAISE(ABORT, 'catalog group does not match its parser format'); END;
@@ -1684,9 +1702,12 @@ CREATE VIEW relationship_assertion_explanations AS
 SELECT assertion_key, relation_type, origin, source_snapshot_key, source_field,
        source_line, source_column, generic_subject_snapshot_key, subject_kind, subject_set_id,
        generic_subject_a, generic_subject_b, generic_subject_c, source_subject_a,
-       source_subject_b, source_subject_c, subject_snapshot_key,
+       source_subject_b, CASE WHEN subject_kind = 'no_intro_archive' THEN subject_archive_id ELSE source_subject_c END AS source_subject_c, subject_snapshot_key,
        generic_target_snapshot_key, target_kind, target_set_id, generic_target_a, generic_target_b,
-       generic_target_c, source_target_a, source_target_b, source_target_c,
+       generic_target_c, CASE WHEN target_kind = 'no_intro_archive_reference' THEN
+           CASE source_field WHEN 'archive_clone' THEN (SELECT declared_target_number FROM no_intro_archive_clone_links WHERE relationship_id = assertion_key)
+                             WHEN 'archive_mergeof' THEN (SELECT declared_mergeof FROM no_intro_archive_merge_links WHERE relationship_id = assertion_key) END
+           ELSE source_target_a END AS source_target_a, source_target_b, source_target_c,
        target_snapshot_key, rule_version
 FROM relationship_assertions
 UNION ALL
@@ -1943,7 +1964,7 @@ WHEN NOT EXISTS (
         OR (kind = 'cmp_set' AND NEW.claim_kind IN ('cmp_rom', 'cmp_sample'))
         OR (kind = 'no_intro_pc_game' AND NEW.claim_kind = 'no_intro_pc_file')
         OR (kind = 'no_intro_dat_game' AND NEW.claim_kind = 'no_intro_dat_rom')
-        OR (kind = 'no_intro_database_game' AND NEW.claim_kind = 'no_intro_database_file')
+        OR (kind = 'no_intro_database_game' AND NEW.claim_kind IN ('no_intro_database_source_file', 'no_intro_database_release_file'))
     )
 )
 BEGIN
@@ -2011,6 +2032,8 @@ WHEN NOT EXISTS (
                    'no-intro-dat-v4-strict', 'no-intro-dat-v4-compatible')
             AND NEW.source_element_kind = 'no_intro_dat_game') OR
         (format = 'mame-softwarelist-xml' AND NEW.source_element_kind = 'software_item')
+        OR (format IN ('no-intro-database-xml-compatible', 'no-intro-database-xml-nul-compatible')
+            AND NEW.source_element_kind = 'no_intro_database_game')
     )
 )
 BEGIN SELECT RAISE(ABORT, 'set kind does not match its parser format'); END;

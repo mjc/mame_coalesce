@@ -201,6 +201,10 @@ pub enum CatalogDocumentFormatArg {
     NoIntroDatV4Strict,
     #[value(name = "no-intro-dat-v4-compatible")]
     NoIntroDatV4Compatible,
+    #[value(name = "no-intro-database-xml-compatible")]
+    NoIntroDatabaseCompatible,
+    #[value(name = "no-intro-database-xml-nul-compatible")]
+    NoIntroDatabaseNullRecovery,
 }
 
 impl From<CatalogDocumentFormatArg> for mame_coalesce::app::CatalogDocumentFormat {
@@ -223,6 +227,12 @@ impl From<CatalogDocumentFormatArg> for mame_coalesce::app::CatalogDocumentForma
             CatalogDocumentFormatArg::NoIntroDatV4Compatible => {
                 Self::NoIntroDat(mame_coalesce::NoIntroDatMode::V4Compatible)
             }
+            CatalogDocumentFormatArg::NoIntroDatabaseCompatible => Self::NoIntroDatabase(
+                mame_coalesce::no_intro_db_xml::NoIntroDatabaseMode::ObservedCompatible,
+            ),
+            CatalogDocumentFormatArg::NoIntroDatabaseNullRecovery => Self::NoIntroDatabase(
+                mame_coalesce::no_intro_db_xml::NoIntroDatabaseMode::NullRecoveryCompatible,
+            ),
         }
     }
 }

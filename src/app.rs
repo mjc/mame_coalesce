@@ -59,6 +59,7 @@ pub enum CatalogDocumentFormat {
     ClrMamePro,
     NoIntroPcXml,
     NoIntroDat(crate::NoIntroDatMode),
+    NoIntroDatabase(crate::no_intro_db_xml::NoIntroDatabaseMode),
 }
 
 impl CatalogDocumentFormat {
@@ -72,6 +73,7 @@ impl CatalogDocumentFormat {
             Self::ClrMamePro => "clrmamepro-dat",
             Self::NoIntroPcXml => "no-intro-pc-xml",
             Self::NoIntroDat(mode) => mode.as_str(),
+            Self::NoIntroDatabase(mode) => mode.format(),
         }
     }
 }

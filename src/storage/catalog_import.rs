@@ -30,6 +30,7 @@ mod logiqx_native;
 mod mame_specification;
 mod merges;
 mod no_intro_dat_native;
+mod no_intro_database_native;
 mod root_assets;
 mod root_sets;
 mod software_native;
@@ -736,6 +737,10 @@ pub fn import(pool: &Pool, request: &CatalogImportRequest) -> crate::Result<Cata
             .retain_path_no_intro_pc_xml(request.source_key.clone(), &request.document_path)?,
         CatalogDocumentFormat::NoIntroDat(_) => documents
             .retain_path_no_intro_dat_xml(request.source_key.clone(), &request.document_path)?,
+        CatalogDocumentFormat::NoIntroDatabase(_) => documents.retain_path_no_intro_database_xml(
+            request.source_key.clone(),
+            &request.document_path,
+        )?,
     };
     let bytes = documents.load(&retained.document_key)?;
     let parsed = match request.format {
@@ -761,6 +766,16 @@ pub fn import(pool: &Pool, request: &CatalogImportRequest) -> crate::Result<Cata
         }
         CatalogDocumentFormat::NoIntroDat(mode) => {
             return import_no_intro_dat(
+                pool,
+                request,
+                retained.document_key,
+                &retained.acquisition_key.to_string(),
+                &bytes,
+                mode,
+            );
+        }
+        CatalogDocumentFormat::NoIntroDatabase(mode) => {
+            return import_no_intro_database(
                 pool,
                 request,
                 retained.document_key,
@@ -1035,6 +1050,114 @@ fn publish_no_intro_dat_import(
         no_intro_dat_native::seal_document(sink.import.conn, key, &sink.counts)?;
     }
     finish_streaming_import(sink.import, request, document_key, interpretation)
+}
+
+struct NoIntroDatabaseImport<'a> {
+    import: StreamingImport<'a>,
+    counts: no_intro_database_native::ImportCounts,
+}
+
+fn import_no_intro_database(
+    pool: &Pool,
+    request: &CatalogImportRequest,
+    document_key: DocumentKey,
+    acquisition_key: &str,
+    bytes: &[u8],
+    mode: crate::no_intro_db_xml::NoIntroDatabaseMode,
+) -> crate::Result<CatalogImportReport> {
+    let interpretation = interpretation(request);
+    let mut conn = pool.get()?;
+    let result = conn.immediate_transaction::<_, StreamingImportError, _>(|conn| {
+        ensure_identities(conn, request, &interpretation).map_err(StreamingImportError::Storage)?;
+        let validated = crate::no_intro_db_xml::read_with::<_, StreamingImportError>(
+            bytes,
+            mode,
+            |document| {
+                let publication = prepare_snapshot(
+                    conn,
+                    request,
+                    &document_key,
+                    acquisition_key,
+                    &interpretation,
+                    None,
+                )
+                .map_err(StreamingImportError::Storage)?;
+                let counts = no_intro_database_native::ImportCounts::from_document(&document)
+                    .map_err(StreamingImportError::Storage)?;
+                if let SnapshotPublication::Pending(key) = &publication {
+                    no_intro_database_native::insert_document(conn, key, &document)
+                        .map_err(StreamingImportError::Storage)?;
+                }
+                let run_key = ImportRunKey::fresh();
+                insert_import_run(
+                    conn,
+                    request,
+                    &document_key,
+                    &interpretation,
+                    acquisition_key,
+                    &run_key,
+                    Some(publication.key()),
+                    "succeeded",
+                    None,
+                )?;
+                Ok(NoIntroDatabaseImport {
+                    import: StreamingImport {
+                        conn,
+                        publication,
+                        run_key,
+                    },
+                    counts,
+                })
+            },
+            |sink, game| {
+                sink.counts
+                    .include_game(&game)
+                    .map_err(StreamingImportError::Storage)?;
+                if let SnapshotPublication::Pending(key) = &sink.import.publication {
+                    no_intro_database_native::insert_game(sink.import.conn, key, &game)
+                        .map_err(StreamingImportError::Storage)?;
+                }
+                Ok(())
+            },
+        )?;
+        let (sink, recovery) = validated.into_parts();
+        let mut diagnostic_count = 0_usize;
+        if let Some(recovery) = &recovery {
+            for warning in recovery.warnings() {
+                let diagnostic = super::import_diagnostics::insert_recovery_warning(
+                    sink.import.conn,
+                    &sink.import.run_key,
+                    &document_key,
+                    &warning,
+                )
+                .map_err(StreamingImportError::Storage)?;
+                super::import_diagnostics::link_no_intro_details(sink.import.conn, &diagnostic)
+                    .map_err(StreamingImportError::Storage)?;
+                diagnostic_count = diagnostic_count.checked_add(1).ok_or_else(|| {
+                    StreamingImportError::Storage(crate::Error::DatabaseSchema(
+                        "diagnostic count overflow".into(),
+                    ))
+                })?;
+            }
+        }
+        if let SnapshotPublication::Pending(key) = &sink.import.publication {
+            no_intro_database_native::seal_document(sink.import.conn, key, &sink.counts)
+                .map_err(StreamingImportError::Storage)?;
+        }
+        let mut report =
+            finish_streaming_import(sink.import, request, &document_key, &interpretation)
+                .map_err(StreamingImportError::Storage)?;
+        report.diagnostic_count = diagnostic_count;
+        Ok(report)
+    });
+    drop(conn);
+    match result {
+        Ok(report) => Ok(report),
+        Err(StreamingImportError::Storage(error)) => Err(error),
+        Err(StreamingImportError::Parse(error)) => {
+            record_failed_import(pool, request, document_key, acquisition_key, &error)
+        }
+    }
 }
 
 fn ensure_source(pool: &Pool, request: &CatalogImportRequest) -> crate::Result<()> {

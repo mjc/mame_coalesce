@@ -369,15 +369,108 @@ fn validate_xml10_characters(xml: &str, source: Option<(&[u8], ExcerptView)>) ->
     Ok(())
 }
 
-/// Decode gzip and UTF-16 inputs while borrowing ordinary UTF-8 documents.
-pub fn decode(bytes: &[u8]) -> Result<Cow<'_, str>> {
-    let view = input_view(bytes);
-    match document_input::decode_xml(bytes)? {
-        Cow::Borrowed(bytes) => decode_text(bytes, view),
-        Cow::Owned(bytes) => decode_text(&bytes, view)
-            .map(Cow::into_owned)
-            .map(Cow::Owned),
+/// Decoded text plus the byte source needed by format-specific recovery.
+/// UTF-8 bytes are the text itself; UTF-16 keeps its encoded input separately.
+pub enum DecodedRecoveryInput<'a> {
+    Utf8 {
+        text: Cow<'a, str>,
+        view: ExcerptView,
+    },
+    Utf16 {
+        text: String,
+        encoded: Cow<'a, [u8]>,
+        view: ExcerptView,
+        skip: usize,
+    },
+}
+
+impl<'a> DecodedRecoveryInput<'a> {
+    pub(crate) fn text(&self) -> &str {
+        match self {
+            Self::Utf8 { text, .. } => text,
+            Self::Utf16 { text, .. } => text,
+        }
     }
+
+    pub(crate) const fn initial_offset(&self) -> usize {
+        match self {
+            Self::Utf8 { .. } => 0,
+            Self::Utf16 { skip, .. } => *skip,
+        }
+    }
+
+    pub(crate) const fn encoded_width(&self, character: char) -> usize {
+        match self {
+            Self::Utf8 { .. } => character.len_utf8(),
+            Self::Utf16 { .. } => character.len_utf16() * 2,
+        }
+    }
+
+    pub(crate) fn excerpt(&self, offset: usize, width: usize) -> Option<Box<SourceExcerpt>> {
+        let (bytes, view) = match self {
+            Self::Utf8 { text, view } => (text.as_bytes(), *view),
+            Self::Utf16 { encoded, view, .. } => (encoded.as_ref(), *view),
+        };
+        character_excerpt(bytes, view, offset, width)
+    }
+
+    pub(crate) fn discard_encoded_source(&mut self) {
+        if let Self::Utf16 { encoded, .. } = self {
+            *encoded = Cow::Borrowed(&[]);
+        }
+    }
+
+    pub(crate) fn into_parts(self) -> (Cow<'a, str>, Option<Cow<'a, [u8]>>, ExcerptView, usize) {
+        match self {
+            Self::Utf8 { text, view } => (text, None, view, 0),
+            Self::Utf16 {
+                text,
+                encoded,
+                view,
+                skip,
+            } => (Cow::Owned(text), Some(encoded), view, skip),
+        }
+    }
+}
+
+/// Decode an XML source once while retaining the correct exact-byte view for
+/// recovery diagnostics. Owned gzip UTF-8 is converted into a String in place.
+pub fn decode_recovery_input(bytes: &[u8]) -> Result<DecodedRecoveryInput<'_>> {
+    let view = input_view(bytes);
+    let encoded = document_input::decode_xml(bytes)?;
+    if let Some((_, skip)) = utf16_encoding(&encoded) {
+        let text = decode_text(&encoded, view)?.into_owned();
+        return Ok(DecodedRecoveryInput::Utf16 {
+            text,
+            encoded,
+            view,
+            skip,
+        });
+    }
+
+    let text = match encoded {
+        Cow::Borrowed(bytes) => decode_text(bytes, view)?,
+        Cow::Owned(bytes) => {
+            let text = String::from_utf8(bytes).map_err(|error| {
+                let invalid = error.utf8_error();
+                let bytes = error.as_bytes();
+                encoding_error(
+                    format!("XML is not valid UTF-8: {invalid}"),
+                    character_excerpt(
+                        bytes,
+                        view,
+                        invalid.valid_up_to(),
+                        invalid
+                            .error_len()
+                            .unwrap_or_else(|| bytes.len() - invalid.valid_up_to()),
+                    ),
+                )
+            })?;
+            validate_declared_encoding(&text, TextEncoding::Utf8)?;
+            Cow::Owned(text)
+        }
+    };
+    Ok(DecodedRecoveryInput::Utf8 { text, view })
 }
 
 const fn input_view(bytes: &[u8]) -> ExcerptView {

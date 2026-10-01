@@ -27,7 +27,7 @@ WHERE occurrence.content_uuid IS NOT NULL
   AND assertion.provenance = 'source_declared'
   AND assertion.scope IN ('whole_asset', 'whole_file')
   AND occurrence.claim_kind IN ('mame_rom', 'logiqx_rom', 'cmp_rom', 'no_intro_pc_file',
-      'no_intro_dat_rom', 'no_intro_database_file', 'software_rom_entry');
+      'no_intro_dat_rom', 'no_intro_database_source_file', 'no_intro_database_release_file', 'software_rom_entry');
 
 -- Only lengths whose native meaning is a complete file participate. Software
 -- loading-step lengths and logical disks do not become whole-file lengths.
@@ -45,7 +45,13 @@ SELECT occurrence_id, 'no_intro_pc_file_size', size
 FROM no_intro_pc_file_claims WHERE size IS NOT NULL AND evidence_scope IN ('whole_asset', 'whole_file')
 UNION ALL
 SELECT occurrence_id, 'no_intro_dat_rom_size', size
-FROM no_intro_dat_rom_claims WHERE size IS NOT NULL AND evidence_scope = 'whole_file';
+FROM no_intro_dat_rom_claims WHERE size IS NOT NULL AND evidence_scope = 'whole_file'
+UNION ALL
+SELECT occurrence_id, 'no_intro_database_source_file_size', size
+FROM no_intro_dump_files WHERE size IS NOT NULL AND evidence_scope='whole_file'
+UNION ALL
+SELECT occurrence_id, 'no_intro_database_release_file_size', size
+FROM no_intro_release_files WHERE size IS NOT NULL AND evidence_scope='whole_file';
 
 CREATE TABLE occurrence_content_conflict_hashes (
     occurrence_id INTEGER NOT NULL,
@@ -66,7 +72,7 @@ CREATE TABLE occurrence_content_conflict_sizes (
     occurrence_id INTEGER NOT NULL,
     candidate_content_uuid BLOB NOT NULL,
     evidence_occurrence_id INTEGER NOT NULL REFERENCES asset_occurrences(occurrence_id) ON DELETE RESTRICT,
-    size_field TEXT NOT NULL CHECK (size_field IN ('mame_rom_size', 'logiqx_rom_size', 'cmp_rom_size', 'no_intro_pc_file_size', 'no_intro_dat_rom_size')),
+    size_field TEXT NOT NULL CHECK (size_field IN ('mame_rom_size', 'logiqx_rom_size', 'cmp_rom_size', 'no_intro_pc_file_size', 'no_intro_dat_rom_size', 'no_intro_database_source_file_size', 'no_intro_database_release_file_size')),
     role TEXT NOT NULL CHECK (role IN ('incoming', 'candidate')),
     PRIMARY KEY (occurrence_id, candidate_content_uuid, evidence_occurrence_id, size_field, role),
     FOREIGN KEY (occurrence_id, candidate_content_uuid)

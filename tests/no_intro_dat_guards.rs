@@ -100,6 +100,8 @@ impl Fixture {
             include_str!("../src/storage/db/no_intro_dat.sql"),
             "\n",
             include_str!("../src/storage/db/no_intro_dat_guards.sql"),
+            include_str!("../src/storage/db/no_intro_database.sql"),
+            include_str!("../src/storage/db/no_intro_database_guards.sql"),
         ))?;
         connection.batch_execute(
             "PRAGMA foreign_keys=ON; PRAGMA recursive_triggers=OFF;

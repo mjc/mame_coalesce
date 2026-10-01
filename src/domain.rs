@@ -311,6 +311,8 @@ impl ParserInterpretationKey {
             "no-intro-dat-v3-compatible" | "no-intro-dat-v4-compatible" => {
                 "no-intro-dat-observed-compat-v1"
             }
+            "no-intro-database-xml-compatible" => "no-intro-database-observed-compat-v1",
+            "no-intro-database-xml-nul-compatible" => "no-intro-database-nul-recovery-v1",
             _ => "normalization-v1",
         }
     }
@@ -945,6 +947,55 @@ pub enum RelationshipEndpoint {
     CatalogRecord(CatalogRecordRef),
     ContentObject(ContentIdentity),
     ExternalRecord(ExternalRecordRef),
+    /// One concrete archive declaration, not a publisher number or game name.
+    NoIntroArchive {
+        snapshot: SnapshotKey,
+        archive_id: NoIntroArchiveId,
+    },
+    /// An unresolved export-local literal, never a resolved set-name endpoint.
+    NoIntroArchiveReference {
+        snapshot: SnapshotKey,
+        literal: String,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "i64")]
+pub struct NoIntroArchiveId(i64);
+
+impl NoIntroArchiveId {
+    #[must_use]
+    pub const fn as_i64(self) -> i64 {
+        self.0
+    }
+}
+
+impl TryFrom<i64> for NoIntroArchiveId {
+    type Error = crate::Error;
+    fn try_from(value: i64) -> crate::Result<Self> {
+        if value > 0 {
+            Ok(Self(value))
+        } else {
+            Err(crate::Error::InvalidPath(
+                "archive owner must be a positive database ID".into(),
+            ))
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NoIntroArchiveReferenceField {
+    Clone,
+    MergeOf,
+}
+
+impl NoIntroArchiveReferenceField {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Clone => "archive_clone",
+            Self::MergeOf => "archive_mergeof",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

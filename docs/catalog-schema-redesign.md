@@ -90,7 +90,7 @@ assertions; they are not reduced to a shared game name and ROM tuple.
 | Logiqx XML / TOSEC | Document/header/options -> game -> comments, releases, BIOS sets, ROM/disk/sample claims, archive references and distinct parent declarations. | Partial document/game facts and ROMs exist; native options, releases, BIOS/disk/sample/archive families and specification defaults remain incomplete. |
 | ClrMamePro text | Header/directives -> set -> ROM claims and scalar sample claims; native flags and sample-parent declarations. | Native CMP facts/directives and numeric set/occurrence owners exist; remaining specification fields and complete query witnesses remain open. |
 | No-Intro flat DAT v3/v4 | Document/header/directives -> game -> scoped identifiers, categories, releases and ROM declarations; name-based and ID-based parents stay distinct. | Separate v3/v4 strict and observed-compatible interpretations stream into native typed owners. Raw size text, interned valid hashes, typed invalid hash literals, SHA-256 assertions, options, field positions and repeated children are retained. Full corpus/query/performance acceptance remains open; this is not a Logiqx envelope import or database-export coverage. |
-| No-Intro database XML | Game -> archive, source histories and releases. A source or release owns its own details, serials and files; numeric file IDs may repeat under different owners. | A separate typed one-pass reader covers the observed field ledger, both envelope forms and narrowly decoded NUL recovery. All 275 acquired exports pass reader verification. Native tables/writer and query/backup acceptance remain unfinished. |
+| No-Intro database XML | Game -> archive, source histories and releases. A source or release owns its own details, serials and files; numeric file IDs may repeat under different owners. | The one-pass reader and native writer preserve the observed field ledger, both envelopes, field presence/order and distinct details/serial/file owners. Bulk file queries, scoped interned digests, typed archive references, NUL warning ownership and paired backup regressions exist. All 275 exports pass reader verification; full native SQL corpus/history acceptance remains open. |
 | Synthetic No-Intro P/C projection | Archive record -> ordered language/native fields and file claims, with parent-marker/reference/merge-token distinctions. | Typed archive, region, alternate name, version, BIOS, ordered languages and distinct clone/merge tokens exist; this is not proof of authentic DAT-o-MATIC P/C conformance. |
 
 TOSEC ISO/PIX assets retain their source `rom` declaration even when the file
@@ -123,8 +123,28 @@ an independent scan. After removing repeated nested-header cloning, the rebuilt
 profiling executable took 5.04 seconds and 55,936 KiB peak RSS including startup.
 This proves parser coverage, not native SQL persistence or complete importer
 acceptance. Recovery warnings iterate borrowed decoded originals rather than
-owning another catalog-sized collection. The approved database-export table
-dictionary still needs its writer, query, diagnostic and paired-backup proof.
+owning another catalog-sized collection. Native persistence now uses that
+single-pass reader rather than a second parsed catalog tree. Its regression
+witnesses cover every observed owner field, empty/absent values, header and
+mixed-child order, scoped digest interning, typed file queries, unresolved
+archive references, late-EOF rollback and paired backups. Recovered NULs retain
+exact UTF-8/UTF-16 bytes, separate gzip-view offsets and excerpt-local highlights;
+details-opening bounds prove source/release diagnostic owner links. This does
+not substitute for a fresh full native SQL corpus run or history acceptance.
+
+A fresh profiling-build SQL import of the acquired FDS and Xbox 360 exports
+published both documents: 17,853 games/archives, 14,544 dump sources, 4,751
+releases, 31,938 source files and 5,045 release files. There are 115,136 scoped
+file digest assertions and 116,478 interned digest values, including NFO
+companions. Unknown export-file scope assigns no shared file UUID. All six Xbox
+NUL diagnostics retain original byte offsets and a `[0,1)` highlight within
+the stored `00` excerpt; independent original-file scanning matched every
+offset and Unicode line/column. Five warnings link to actual release details
+and one to dump-source details. SQLite quick/FK checks pass. Including startup,
+the import took 216.61 seconds with 155,072 KiB peak RSS. SQLite logical size is
+64,593,920 bytes; compressed external originals occupy 3,798,264 directory
+bytes. This is native persistence evidence for two exports, not the complete
+275-document SQL/query/performance acceptance matrix.
 
 A native DAT corpus run exposed a publication bug: a later conflicting claim
 could invalidate an earlier association and reject the whole document. The
@@ -422,12 +442,15 @@ document bytes, catalog identity, interpretation, and scope.
 
 ## Import diagnostics and exact source excerpts
 
-The excerpt/range columns and run/document FKs are now implemented for fatal
-XML character and encoding diagnostics. Checked Rust ranges capture original
-encoded bytes, and clipping rebases the highlight or makes it NULL if only
-part of the problem remains. Recovery-warning persistence, token/field
-highlights and native catalog-owner links are still required; this is not
-complete diagnostic acceptance. Diagnostics are
+The excerpt/range columns and run/document FKs are implemented for fatal XML
+character/encoding diagnostics and database-export NUL-recovery warnings.
+Checked Rust ranges capture original encoded bytes, and clipping rebases the
+highlight or makes it NULL if only part of the problem remains. A recovered NUL
+inside a details opening tag has a typed FK to its actual dump-source or release
+details owner, validated against the import snapshot and Unicode coordinates.
+Linked diagnostic evidence, runs and links cannot be rewritten or replaced.
+Additional token/field highlights and other native catalog-owner links remain
+required; this is not complete diagnostic acceptance. Diagnostics are
 warnings or errors about actual malformed or failed input. A report table
 exposes the message and a relevant import-file excerpt. Necessary nearby field
 text may appear in the excerpt, but diagnostics are not a second catalog-field

@@ -70,6 +70,12 @@ fn parse_format(value: &str) -> Result<CatalogDocumentFormat, Box<dyn std::error
         "no-intro-dat-v4-compatible" => Ok(CatalogDocumentFormat::NoIntroDat(
             mame_coalesce::NoIntroDatMode::V4Compatible,
         )),
+        "no-intro-database-xml-compatible" => Ok(CatalogDocumentFormat::NoIntroDatabase(
+            mame_coalesce::no_intro_db_xml::NoIntroDatabaseMode::ObservedCompatible,
+        )),
+        "no-intro-database-xml-nul-compatible" => Ok(CatalogDocumentFormat::NoIntroDatabase(
+            mame_coalesce::no_intro_db_xml::NoIntroDatabaseMode::NullRecoveryCompatible,
+        )),
         _ => Err(format!("unsupported catalog format: {value}").into()),
     }
 }

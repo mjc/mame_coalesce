@@ -7,6 +7,7 @@ use quick_xml::{
 
 use crate::{
     Error, Result,
+    diagnostics::{ByteRange, ExcerptView, SourceExcerpt},
     logiqx::RecordLocation,
     xml_reader::{self, DeclaredText, PositionMap, SourcePosition, XmlReader},
 };
@@ -30,11 +31,11 @@ const MAX_FIELDS_PER_ELEMENT: usize = 128;
 #[must_use = "the EOF proof should be retained until publication is complete"]
 pub struct ValidatedNoIntroDatabase<'a, S> {
     inner: S,
-    recovery_source: Option<Cow<'a, str>>,
+    recovery_source: Option<RecoverySource<'a>>,
 }
 
 impl<'a, S> ValidatedNoIntroDatabase<'a, S> {
-    const fn after_eof(inner: S, recovery_source: Option<Cow<'a, str>>) -> Self {
+    const fn after_eof(inner: S, recovery_source: Option<RecoverySource<'a>>) -> Self {
         Self {
             inner,
             recovery_source,
@@ -50,9 +51,38 @@ impl<'a, S> ValidatedNoIntroDatabase<'a, S> {
     /// Iterate all recovered U+0000 locations without owning a warning collection.
     #[must_use]
     pub fn recovery_warnings(&self) -> RecoveryWarnings<'_> {
+        self.recovery_source
+            .as_ref()
+            .map_or_else(RecoveryWarnings::empty, RecoverySource::warnings)
+    }
+
+    /// Return the EOF-validated state and lazy recovery source for persistence.
+    #[must_use]
+    pub(crate) fn into_parts(self) -> (S, Option<RecoverySource<'a>>) {
+        (self.inner, self.recovery_source)
+    }
+}
+
+/// Retained decoded source plus its exact pre-recovery byte representation.
+pub struct RecoverySource<'a> {
+    text: Cow<'a, str>,
+    encoded: Option<Cow<'a, [u8]>>,
+    view: ExcerptView,
+    initial_offset: usize,
+}
+
+impl RecoverySource<'_> {
+    pub(crate) fn warnings(&self) -> RecoveryWarnings<'_> {
         RecoveryWarnings {
-            characters: self.recovery_source.as_deref().unwrap_or("").chars(),
+            characters: self.text.chars(),
             position: SourcePosition::new(),
+            bytes: self
+                .encoded
+                .as_deref()
+                .unwrap_or_else(|| self.text.as_bytes()),
+            view: self.view,
+            utf16: self.encoded.is_some(),
+            encoded_offset: self.initial_offset,
         }
     }
 }
@@ -61,6 +91,23 @@ impl<'a, S> ValidatedNoIntroDatabase<'a, S> {
 pub struct RecoveryWarnings<'a> {
     characters: Chars<'a>,
     position: SourcePosition,
+    bytes: &'a [u8],
+    view: ExcerptView,
+    utf16: bool,
+    encoded_offset: usize,
+}
+
+impl RecoveryWarnings<'_> {
+    fn empty() -> Self {
+        Self {
+            characters: "".chars(),
+            position: SourcePosition::new(),
+            bytes: &[],
+            view: ExcerptView::RetainedOriginalBytes,
+            utf16: false,
+            encoded_offset: 0,
+        }
+    }
 }
 
 impl Iterator for RecoveryWarnings<'_> {
@@ -70,13 +117,28 @@ impl Iterator for RecoveryWarnings<'_> {
         for character in self.characters.by_ref() {
             let location = self.position.location();
             self.position.advance(character);
+            let width = if self.utf16 {
+                character.len_utf16() * 2
+            } else {
+                character.len_utf8()
+            };
             if character == '\0' {
+                let excerpt = self
+                    .encoded_offset
+                    .checked_add(width)
+                    .and_then(|end| ByteRange::new(self.encoded_offset, end))
+                    .and_then(|problem| {
+                        SourceExcerpt::capture(self.bytes, self.view, problem, Some(problem))
+                    });
+                self.encoded_offset += width;
                 return Some(RecoveryWarning {
                     replaced: '\0',
                     replacement: '\u{fffd}',
                     location,
+                    excerpt,
                 });
             }
+            self.encoded_offset += width;
         }
         None
     }
@@ -97,34 +159,56 @@ pub fn read_with<S, E: From<Error>>(
     begin: impl FnOnce(NoIntroDatabaseDocument) -> std::result::Result<S, E>,
     consume: impl FnMut(&mut S, DatabaseGame) -> std::result::Result<(), E>,
 ) -> std::result::Result<ValidatedNoIntroDatabase<'_, S>, E> {
-    let decoded = xml_reader::decode(bytes)?;
+    let mut decoded = xml_reader::decode_recovery_input(bytes)?;
     let mut position = SourcePosition::new();
     let mut sanitized: Option<String> = None;
+    let mut encoded_offset = decoded.initial_offset();
 
-    for (offset, character) in decoded.char_indices() {
-        if character == '\0' {
-            let location = position.location();
-            if mode == NoIntroDatabaseMode::ObservedCompatible {
-                return Err(
-                    parse_error("XML 1.0 forbids U+0000", "document", None, location).into(),
-                );
+    {
+        let decoded_text = decoded.text();
+        for (offset, character) in decoded_text.char_indices() {
+            let encoded_width = decoded.encoded_width(character);
+            if character == '\0' {
+                let location = position.location();
+                if mode == NoIntroDatabaseMode::ObservedCompatible {
+                    let mut error =
+                        parse_error("XML 1.0 forbids U+0000", "document", None, location);
+                    if let Error::CatalogParse { excerpt, .. } = &mut error {
+                        *excerpt = decoded.excerpt(encoded_offset, encoded_width);
+                    }
+                    return Err(error.into());
+                }
+                let view = sanitized.get_or_insert_with(|| {
+                    let mut view = String::with_capacity(decoded_text.len());
+                    view.push_str(&decoded_text[..offset]);
+                    view
+                });
+                view.push('\u{fffd}');
+            } else if let Some(view) = sanitized.as_mut() {
+                view.push(character);
             }
-            let view = sanitized.get_or_insert_with(|| {
-                let mut view = String::with_capacity(decoded.len());
-                view.push_str(&decoded[..offset]);
-                view
-            });
-            view.push('\u{fffd}');
-        } else if let Some(view) = sanitized.as_mut() {
-            view.push(character);
+            position.advance(character);
+            encoded_offset += encoded_width;
         }
-        position.advance(character);
     }
-    let parse_xml = sanitized.as_deref().unwrap_or_else(|| decoded.as_ref());
+    if sanitized.is_none() {
+        decoded.discard_encoded_source();
+    }
+    let parse_xml = sanitized.as_deref().unwrap_or_else(|| decoded.text());
     let state = xml_reader::with_decoded_reader::<_, E>(parse_xml, |reader, positions| {
         parse_document(reader, positions, mode, begin, consume)
     })?;
-    let recovery_source = sanitized.is_some().then_some(decoded);
+    let recovery_source = if sanitized.is_some() {
+        let (text, encoded, view, initial_offset) = decoded.into_parts();
+        Some(RecoverySource {
+            text,
+            encoded,
+            view,
+            initial_offset,
+        })
+    } else {
+        None
+    };
     Ok(ValidatedNoIntroDatabase::after_eof(state, recovery_source))
 }
 
@@ -425,11 +509,14 @@ impl Parser {
                 ordinal,
             });
         }
+        let (line, column) = positions.at(reader.buffer_position());
+        let opening_end = RecordLocation { line, column };
         Ok(StartInfo {
             namespace,
             local: start.local_name().as_ref().to_owned(),
             source_order,
             location,
+            opening_end,
             attributes,
         })
     }
@@ -465,6 +552,7 @@ struct StartInfo {
     local: String,
     source_order: usize,
     location: RecordLocation,
+    opening_end: RecordLocation,
     attributes: Vec<Attribute>,
 }
 
@@ -919,6 +1007,7 @@ fn parse_source_details(
     Ok(SourceDetails {
         source_order: info.source_order,
         location: info.location,
+        opening_end: info.opening_end,
         comment1,
         comment2,
         d_date,
@@ -989,6 +1078,7 @@ fn parse_release_details(
     Ok(ReleaseDetails {
         source_order: info.source_order,
         location: info.location,
+        opening_end: info.opening_end,
         archivename,
         category,
         comment,
