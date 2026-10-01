@@ -100,8 +100,18 @@ parser-internal representations the public contract.
   spaces remain intact. Uninterpretable ROM declarations and disk-data hashes
   cannot assign shared-file UUIDs. Publication requires complete scalar position
   ownership and valid source evidence for UUID links. Published Logiqx media
-  owners reject both new occurrences and late native payload inserts. Full per-format field
-  coverage and the remaining shared identity work are not finished.
+  owners reject both new occurrences and late native payload inserts.
+  CMP ROM claims now retain raw size/checksum text, both CRC aliases and
+  independent dump flags once, with virtual size/status projections. A closed
+  field-position table preserves keyword spelling, quotation, order and
+  location. Publication requires every native claim and field position, rejects
+  late claims, and verifies both directions of native-to-normalized source
+  digest ownership. Contradictory declarations bypass UUID resolution; common
+  root matching queries derive only unambiguous scope/provenance-qualified
+  digests, keeping computed observations separate. CMP history compares
+  relative native-field order, ignoring vendor gaps and source locations.
+  Full per-format field coverage and the remaining shared identity work are
+  not finished.
 - Ordinary DAT imports publish native snapshots and retain originals externally.
   Local catalog identity follows the canonical source path, not its header title.
   `storage::build_catalog` resolves one published snapshot and reads its names,

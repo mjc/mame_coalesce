@@ -130,84 +130,147 @@ pub(super) fn insert_set_facts(
     Ok(())
 }
 
-pub(super) fn insert_rom_facts(
+#[derive(Clone, Copy)]
+#[repr(i64)]
+enum RomField {
+    Name,
+    Size,
+    Crc,
+    Crc32,
+    Md5,
+    Sha1,
+    Merge,
+    Date,
+    Serial,
+    Status,
+    NoDump,
+    BadDump,
+}
+
+pub(super) fn insert_rom_claim(
+    conn: &mut SqliteConnection,
+    occurrence_id: i64,
+    asset: &super::SnapshotAsset,
+) -> crate::Result<()> {
+    let facts = asset
+        .cmp_facts
+        .as_ref()
+        .ok_or_else(|| crate::Error::InvalidPath("CMP ROM has no native declarations".into()))?;
+    sql_query(
+        "INSERT INTO cmp_rom_claims (
+         occurrence_id,name,size_text,crc_text,crc32_text,md5_text,sha1_text,
+         evidence_scope,evidence_provenance,merge_name,date,serial,status_text,
+         nodump_present,baddump_present,source_line,source_column)
+         VALUES (?,?,?,?,?,?,?,?,'source_declared',?,?,?,?,?,?,?,?)",
+    )
+    .bind::<BigInt, _>(occurrence_id)
+    .bind::<Text, _>(&asset.name)
+    .bind::<Nullable<Text>, _>(facts.size.as_ref().map(field_text))
+    .bind::<Nullable<Text>, _>(facts.crc.as_ref().map(field_text))
+    .bind::<Nullable<Text>, _>(facts.crc32.as_ref().map(field_text))
+    .bind::<Nullable<Text>, _>(facts.md5.as_ref().map(field_text))
+    .bind::<Nullable<Text>, _>(facts.sha1.as_ref().map(field_text))
+    .bind::<Text, _>(asset.evidence_scope)
+    .bind::<Nullable<Text>, _>(facts.merge.as_ref().map(field_text))
+    .bind::<Nullable<Text>, _>(facts.date.as_ref().map(field_text))
+    .bind::<Nullable<Text>, _>(facts.serial.as_ref().map(field_text))
+    .bind::<Nullable<Text>, _>(facts.status_field.as_ref().map(field_text))
+    .bind::<Bool, _>(facts.nodump.is_some())
+    .bind::<Bool, _>(facts.baddump.is_some())
+    .bind::<BigInt, _>(asset.location.line)
+    .bind::<BigInt, _>(asset.location.column)
+    .execute(conn)?;
+    Ok(())
+}
+
+const fn field_text(field: &FieldValue) -> &str {
+    field.value.as_str()
+}
+
+pub(super) fn insert_rom_positions(
     conn: &mut SqliteConnection,
     occurrence_id: i64,
     facts: &AssetFacts,
 ) -> crate::Result<()> {
-    if facts.date.is_none()
-        && facts.serial.is_none()
-        && facts.nodump_order.is_none()
-        && facts.baddump_order.is_none()
-        && facts.status_field.is_none()
-    {
-        return Ok(());
+    for (kind, field) in [
+        (RomField::Name, &facts.name),
+        (RomField::Size, &facts.size),
+        (RomField::Crc, &facts.crc),
+        (RomField::Crc32, &facts.crc32),
+        (RomField::Md5, &facts.md5),
+        (RomField::Sha1, &facts.sha1),
+        (RomField::Merge, &facts.merge),
+        (RomField::Date, &facts.date),
+        (RomField::Serial, &facts.serial),
+        (RomField::Status, &facts.status_field),
+    ] {
+        if let Some(field) = field {
+            insert_rom_position(
+                conn,
+                occurrence_id,
+                RomPosition {
+                    kind,
+                    source_field: &field.source_name,
+                    order: field.order,
+                    quoted: field.quoted,
+                    location: field.location,
+                },
+            )?;
+        }
     }
+    for (kind, flag) in [
+        (RomField::NoDump, &facts.nodump),
+        (RomField::BadDump, &facts.baddump),
+    ] {
+        if let Some(flag) = flag {
+            insert_rom_position(
+                conn,
+                occurrence_id,
+                RomPosition {
+                    kind,
+                    source_field: &flag.source_name,
+                    order: flag.order,
+                    quoted: false,
+                    location: flag.location,
+                },
+            )?;
+        }
+    }
+    Ok(())
+}
 
+#[derive(Clone, Copy)]
+struct RomPosition<'a> {
+    kind: RomField,
+    source_field: &'a str,
+    order: usize,
+    quoted: bool,
+    location: crate::logiqx::RecordLocation,
+}
+
+fn insert_rom_position(
+    conn: &mut SqliteConnection,
+    occurrence_id: i64,
+    position: RomPosition<'_>,
+) -> crate::Result<()> {
     sql_query(
-        "INSERT INTO cmp_rom_facts (
-           occurrence_id, date, date_source_field, date_source_order, date_quoted,
-           date_source_line, date_source_column,
-           serial, serial_source_field, serial_source_order, serial_quoted,
-           serial_source_line, serial_source_column,
-           nodump_order, baddump_order, status_explicit_order, status_source_field,
-           status_quoted, status_source_line, status_source_column
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO cmp_rom_field_positions(
+         occurrence_id,field_kind,source_field,source_order,is_quoted,source_line,source_column)
+         VALUES (?,?,?,?,?,?,?)",
     )
     .bind::<BigInt, _>(occurrence_id)
-    .bind::<Nullable<Text>, _>(facts.date.as_ref().map(|field| field.value.as_str()))
-    .bind::<Nullable<Text>, _>(facts.date.as_ref().map(|field| field.source_name.as_str()))
-    .bind::<Nullable<BigInt>, _>(facts.date.as_ref().map(field_order).transpose()?)
-    .bind::<Nullable<Bool>, _>(facts.date.as_ref().map(|field| field.quoted))
-    .bind::<Nullable<BigInt>, _>(facts.date.as_ref().map(|field| field.location.line))
-    .bind::<Nullable<BigInt>, _>(facts.date.as_ref().map(|field| field.location.column))
-    .bind::<Nullable<Text>, _>(facts.serial.as_ref().map(|field| field.value.as_str()))
-    .bind::<Nullable<Text>, _>(
-        facts
-            .serial
-            .as_ref()
-            .map(|field| field.source_name.as_str()),
-    )
-    .bind::<Nullable<BigInt>, _>(facts.serial.as_ref().map(field_order).transpose()?)
-    .bind::<Nullable<Bool>, _>(facts.serial.as_ref().map(|field| field.quoted))
-    .bind::<Nullable<BigInt>, _>(facts.serial.as_ref().map(|field| field.location.line))
-    .bind::<Nullable<BigInt>, _>(facts.serial.as_ref().map(|field| field.location.column))
-    .bind::<Nullable<BigInt>, _>(facts.nodump_order.map(checked_order).transpose()?)
-    .bind::<Nullable<BigInt>, _>(facts.baddump_order.map(checked_order).transpose()?)
-    .bind::<Nullable<BigInt>, _>(facts.status_field.as_ref().map(field_order).transpose()?)
-    .bind::<Nullable<Text>, _>(
-        facts
-            .status_field
-            .as_ref()
-            .map(|field| field.source_name.as_str()),
-    )
-    .bind::<Nullable<Bool>, _>(facts.status_field.as_ref().map(|field| field.quoted))
-    .bind::<Nullable<BigInt>, _>(facts.status_field.as_ref().map(|field| field.location.line))
-    .bind::<Nullable<BigInt>, _>(
-        facts
-            .status_field
-            .as_ref()
-            .map(|field| field.location.column),
-    )
+    .bind::<BigInt, _>(position.kind as i64)
+    .bind::<Text, _>(position.source_field)
+    .bind::<BigInt, _>(checked_order(position.order)?)
+    .bind::<Bool, _>(position.quoted)
+    .bind::<BigInt, _>(position.location.line)
+    .bind::<BigInt, _>(position.location.column)
     .execute(conn)?;
     Ok(())
 }
 
 fn checked_order(order: usize) -> crate::Result<i64> {
     i64::try_from(order).map_err(|_| crate::Error::InvalidPath("too many ClrMamePro fields".into()))
-}
-
-macro_rules! bind_short_field {
-    ($query:expr, $field:expr) => {{
-        let field = $field.as_ref();
-        $query
-            .bind::<Nullable<Text>, _>(field.map(|field| field.value.as_str()))
-            .bind::<Nullable<BigInt>, _>(field.map(|field| field_order(field)).transpose()?)
-            .bind::<Nullable<Text>, _>(field.map(|field| field.source_name.as_str()))
-            .bind::<Nullable<Bool>, _>(field.map(|field| field.quoted))
-            .bind::<Nullable<BigInt>, _>(field.map(|field| field.location.line))
-            .bind::<Nullable<BigInt>, _>(field.map(|field| field.location.column))
-    }};
 }
 
 fn insert_directives(
@@ -231,11 +294,11 @@ fn insert_directives(
          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind::<Text, _>(snapshot_key.as_str());
-    let query = bind_short_field!(query, directives.header);
-    let query = bind_short_field!(query, directives.forcemerging);
-    let query = bind_short_field!(query, directives.forcezipping);
-    let query = bind_short_field!(query, directives.forcepacking);
-    let query = bind_short_field!(query, directives.forcenodump);
+    let query = bind_field!(query, directives.header);
+    let query = bind_field!(query, directives.forcemerging);
+    let query = bind_field!(query, directives.forcezipping);
+    let query = bind_field!(query, directives.forcepacking);
+    let query = bind_field!(query, directives.forcenodump);
     query.execute(conn)?;
     Ok(())
 }

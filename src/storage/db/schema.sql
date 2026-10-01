@@ -134,38 +134,38 @@ CREATE TABLE cmp_rom_claims (
     occurrence_id INTEGER PRIMARY KEY NOT NULL,
     claim_kind TEXT NOT NULL DEFAULT 'cmp_rom' CHECK (claim_kind = 'cmp_rom'),
     name TEXT NOT NULL,
-    size INTEGER CHECK (size IS NULL OR size >= 0),
-    evidence_scope TEXT NOT NULL,
-    evidence_provenance TEXT NOT NULL,
+    size_text TEXT,
+    size INTEGER GENERATED ALWAYS AS (CAST(size_text AS INTEGER)) VIRTUAL,
+    crc_text TEXT,
+    crc32_text TEXT,
+    md5_text TEXT,
+    sha1_text TEXT,
+    evidence_scope TEXT NOT NULL CHECK (evidence_scope IN ('whole_file','whole_asset')),
+    evidence_provenance TEXT NOT NULL CHECK (evidence_provenance = 'source_declared'),
     merge_name TEXT,
-    dump_status TEXT,
+    date TEXT,
+    serial TEXT,
+    status_text TEXT,
+    nodump_present INTEGER NOT NULL CHECK (nodump_present IN (0,1)),
+    baddump_present INTEGER NOT NULL CHECK (baddump_present IN (0,1)),
+    dump_status TEXT GENERATED ALWAYS AS (
+        CASE WHEN nodump_present + baddump_present > 1
+               OR (status_text IS NOT NULL AND nodump_present + baddump_present > 0) THEN NULL
+             WHEN status_text IS NOT NULL THEN status_text
+             WHEN nodump_present = 1 THEN 'nodump'
+             WHEN baddump_present = 1 THEN 'baddump' END
+    ) VIRTUAL,
     source_line INTEGER NOT NULL CHECK (source_line > 0),
     source_column INTEGER NOT NULL CHECK (source_column > 0),
-    FOREIGN KEY (occurrence_id,claim_kind) REFERENCES asset_occurrences(occurrence_id,claim_kind) ON DELETE RESTRICT
+    FOREIGN KEY (occurrence_id,claim_kind) REFERENCES asset_occurrences(occurrence_id,claim_kind) ON DELETE RESTRICT,
+    CHECK (size_text IS NULL OR (length(size_text) > 0 AND instr(size_text,char(0)) = 0
+      AND size_text NOT GLOB '*[^0-9]*' AND (length(ltrim(size_text,'0')) < 19
+      OR (length(ltrim(size_text,'0')) = 19 AND ltrim(size_text,'0') <= '9223372036854775807')))),
+    CHECK (crc_text IS NULL OR (length(crc_text) = 8 AND instr(crc_text,char(0)) = 0 AND crc_text NOT GLOB '*[^0-9a-fA-F]*')),
+    CHECK (crc32_text IS NULL OR (length(crc32_text) = 8 AND instr(crc32_text,char(0)) = 0 AND crc32_text NOT GLOB '*[^0-9a-fA-F]*')),
+    CHECK (md5_text IS NULL OR (length(md5_text) = 32 AND instr(md5_text,char(0)) = 0 AND md5_text NOT GLOB '*[^0-9a-fA-F]*')),
+    CHECK (sha1_text IS NULL OR (length(sha1_text) = 40 AND instr(sha1_text,char(0)) = 0 AND sha1_text NOT GLOB '*[^0-9a-fA-F]*'))
 );
-CREATE TABLE cmp_rom_facts (
-    occurrence_id INTEGER PRIMARY KEY NOT NULL
-        REFERENCES asset_occurrences (occurrence_id) ON DELETE RESTRICT,
-    date TEXT,
-    date_source_field TEXT,
-    date_source_order INTEGER CHECK (date_source_order >= 0),
-    date_quoted INTEGER CHECK (date_quoted IN (0, 1)),
-    date_source_line INTEGER CHECK (date_source_line > 0),
-    date_source_column INTEGER CHECK (date_source_column > 0),
-    serial TEXT,
-    serial_source_field TEXT,
-    serial_source_order INTEGER CHECK (serial_source_order >= 0),
-    serial_quoted INTEGER CHECK (serial_quoted IN (0, 1)),
-    serial_source_line INTEGER CHECK (serial_source_line > 0),
-    serial_source_column INTEGER CHECK (serial_source_column > 0),
-    nodump_order INTEGER CHECK (nodump_order >= 0),
-    baddump_order INTEGER CHECK (baddump_order >= 0),
-    status_explicit_order INTEGER CHECK (status_explicit_order >= 0),
-    status_source_field TEXT,
-    status_quoted INTEGER CHECK (status_quoted IN (0, 1)),
-    status_source_line INTEGER CHECK (status_source_line > 0),
-    status_source_column INTEGER CHECK (status_source_column > 0)
-) WITHOUT ROWID;
 CREATE TABLE cmp_sample_parent_links (
     record_id INTEGER PRIMARY KEY NOT NULL
         REFERENCES catalog_sets (set_id) ON DELETE RESTRICT,
@@ -1507,6 +1507,23 @@ CREATE VIEW asset_requirement_digest_assertions AS
 SELECT occurrence.record_id AS set_id,occurrence.occurrence_order AS component_order,assertion.digest_id,assertion.scope,assertion.provenance
 FROM occurrence_digest_assertions AS assertion JOIN asset_occurrences AS occurrence USING (occurrence_id)
 JOIN records ON records.record_id = occurrence.record_id WHERE records.kind <> 'software_item';
+CREATE VIEW usable_occurrence_digest_assertions AS
+SELECT assertion.occurrence_id, assertion.digest_id, assertion.scope, assertion.provenance,
+       digest.algorithm, digest.digest
+FROM occurrence_digest_assertions AS assertion JOIN digest_values AS digest USING (digest_id)
+WHERE NOT EXISTS (
+    SELECT 1 FROM occurrence_digest_assertions AS other
+    JOIN digest_values AS other_digest ON other_digest.digest_id = other.digest_id
+    WHERE other.occurrence_id = assertion.occurrence_id AND other.scope = assertion.scope
+      AND other.provenance = assertion.provenance AND other_digest.algorithm = digest.algorithm
+      AND other_digest.digest <> digest.digest
+);
+CREATE VIEW asset_requirement_usable_digests AS
+SELECT occurrence.record_id AS set_id, occurrence.occurrence_order AS component_order,
+       assertion.digest_id, assertion.scope, assertion.provenance
+FROM usable_occurrence_digest_assertions AS assertion
+JOIN asset_occurrences AS occurrence USING (occurrence_id)
+JOIN records ON records.record_id = occurrence.record_id WHERE records.kind <> 'software_item';
 CREATE VIEW asset_requirement_rows AS
 SELECT occurrence.record_id AS set_id,occurrence.occurrence_order AS component_order,
        payload.name AS asset_name,'rom' AS role,
@@ -1540,9 +1557,9 @@ FROM logiqx_sample_claims AS payload JOIN asset_occurrences AS occurrence USING 
 UNION ALL
 SELECT occurrence.record_id AS set_id,occurrence.occurrence_order AS component_order,
        payload.name AS asset_name,'rom' AS role,
-       payload.size,payload.evidence_scope,payload.evidence_provenance,payload.merge_name,payload.dump_status,payload.source_line,payload.source_column,NULL AS serial,facts.date AS date,NULL AS region,NULL AS bios,NULL AS offset,NULL AS optional,NULL AS sound_only,NULL AS dispose,NULL AS load_flag,NULL AS value,NULL AS inverted,NULL AS ovha,NULL AS no_thread,NULL AS disk_index,NULL AS writable,NULL AS writeable,
+       payload.size,payload.evidence_scope,payload.evidence_provenance,payload.merge_name,payload.dump_status,payload.source_line,payload.source_column,payload.serial,payload.date,NULL AS region,NULL AS bios,NULL AS offset,NULL AS optional,NULL AS sound_only,NULL AS dispose,NULL AS load_flag,NULL AS value,NULL AS inverted,NULL AS ovha,NULL AS no_thread,NULL AS disk_index,NULL AS writable,NULL AS writeable,
        occurrence.content_uuid
-FROM cmp_rom_claims AS payload JOIN asset_occurrences AS occurrence USING (occurrence_id) LEFT JOIN cmp_rom_facts AS facts USING (occurrence_id)
+FROM cmp_rom_claims AS payload JOIN asset_occurrences AS occurrence USING (occurrence_id)
 UNION ALL
 SELECT occurrence.record_id AS set_id,occurrence.occurrence_order AS component_order,
        payload.name AS asset_name,'rom' AS role,
@@ -1551,12 +1568,12 @@ SELECT occurrence.record_id AS set_id,occurrence.occurrence_order AS component_o
 FROM no_intro_pc_file_claims AS payload JOIN asset_occurrences AS occurrence USING (occurrence_id);
 CREATE VIEW asset_requirements AS
 SELECT sets.snapshot_key,sets.set_name,rows.component_order,rows.asset_name,rows.role,rows.size,
-       (SELECT digest.digest FROM occurrence_digest_assertions AS assertion JOIN digest_values AS digest USING (digest_id)
-        WHERE assertion.occurrence_id = occurrence.occurrence_id AND digest.algorithm = 'crc32' AND assertion.scope = rows.evidence_scope) AS crc,
-       (SELECT digest.digest FROM occurrence_digest_assertions AS assertion JOIN digest_values AS digest USING (digest_id)
-        WHERE assertion.occurrence_id = occurrence.occurrence_id AND digest.algorithm = 'md5' AND assertion.scope = rows.evidence_scope) AS md5,
-       (SELECT digest.digest FROM occurrence_digest_assertions AS assertion JOIN digest_values AS digest USING (digest_id)
-        WHERE assertion.occurrence_id = occurrence.occurrence_id AND digest.algorithm = 'sha1' AND assertion.scope = rows.evidence_scope) AS sha1,
+       (SELECT assertion.digest FROM usable_occurrence_digest_assertions AS assertion
+        WHERE assertion.occurrence_id = occurrence.occurrence_id AND assertion.algorithm = 'crc32' AND assertion.scope = rows.evidence_scope AND assertion.provenance = rows.evidence_provenance) AS crc,
+       (SELECT assertion.digest FROM usable_occurrence_digest_assertions AS assertion
+        WHERE assertion.occurrence_id = occurrence.occurrence_id AND assertion.algorithm = 'md5' AND assertion.scope = rows.evidence_scope AND assertion.provenance = rows.evidence_provenance) AS md5,
+       (SELECT assertion.digest FROM usable_occurrence_digest_assertions AS assertion
+        WHERE assertion.occurrence_id = occurrence.occurrence_id AND assertion.algorithm = 'sha1' AND assertion.scope = rows.evidence_scope AND assertion.provenance = rows.evidence_provenance) AS sha1,
        rows.evidence_scope,rows.evidence_provenance,rows.merge_name,rows.dump_status,rows.serial,rows.date,rows.source_line,rows.source_column,rows.content_uuid
 FROM asset_requirement_rows AS rows JOIN snapshot_sets AS sets USING (set_id)
 JOIN asset_occurrences AS occurrence ON occurrence.record_id = rows.set_id AND occurrence.occurrence_order = rows.component_order;

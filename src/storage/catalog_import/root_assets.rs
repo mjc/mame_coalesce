@@ -98,7 +98,10 @@ pub(super) fn insert(
         RootClaimKind::LogiqxRom | RootClaimKind::LogiqxDisk | RootClaimKind::LogiqxSample => {
             insert_logiqx(conn, id, kind, asset)?;
         }
-        RootClaimKind::CmpRom | RootClaimKind::NoIntroPcFile => {
+        RootClaimKind::CmpRom => {
+            super::cmp_native::insert_rom_claim(conn, id.database_value(), asset)?;
+        }
+        RootClaimKind::NoIntroPcFile => {
             sql_query(format!(
                 "INSERT INTO {} (occurrence_id,name,size,evidence_scope,evidence_provenance, \
                  merge_name,dump_status,source_line,source_column) \

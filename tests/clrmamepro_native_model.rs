@@ -155,11 +155,13 @@ fn public_import_persists_native_header_set_sample_and_rom_facts()
     );
 
     let rom = sql_query(
-        "SELECT date, serial, status_explicit_order, status_source_field, status_quoted, \
-                status_source_line, status_source_column \
-         FROM cmp_rom_facts JOIN asset_occurrences USING (occurrence_id) \
+        "SELECT date, serial, position.source_order AS status_explicit_order, \
+                position.source_field AS status_source_field, position.is_quoted AS status_quoted, \
+                position.source_line AS status_source_line, position.source_column AS status_source_column \
+         FROM cmp_rom_claims JOIN cmp_rom_field_positions AS position USING (occurrence_id) \
+         JOIN asset_occurrences USING (occurrence_id) \
          JOIN records USING (record_id) JOIN record_namespaces USING (namespace_id) \
-         WHERE snapshot_key = ? AND records.source_name = 'native-set'",
+         WHERE snapshot_key = ? AND records.source_name = 'native-set' AND position.field_kind = 9",
     )
     .bind::<Text, _>(snapshot_key.as_str())
     .get_result::<RomFactsRow>(&mut connection)?;

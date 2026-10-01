@@ -156,15 +156,15 @@ pub(super) fn persist_snapshot_merges(
              SELECT s.set_name, s.set_group_id, s.set_id, a.component_order, a.asset_name, a.merge_name AS merged_name, \
                     s.parent, \
                     a.role, \
-                    (SELECT digest.digest FROM asset_requirement_digest_assertions AS assertion \
+                    (SELECT digest.digest FROM asset_requirement_usable_digests AS assertion \
                      JOIN digest_values AS digest USING (digest_id) \
-                     WHERE assertion.set_id = a.set_id \
+                     WHERE assertion.set_id = a.set_id AND assertion.provenance = 'source_declared' \
                        AND assertion.component_order = a.component_order \
                        AND assertion.scope = a.evidence_scope \
                        AND digest.algorithm = 'sha1') AS sha1, \
-                    (SELECT digest.digest FROM asset_requirement_digest_assertions AS assertion \
+                    (SELECT digest.digest FROM asset_requirement_usable_digests AS assertion \
                      JOIN digest_values AS digest USING (digest_id) \
-                     WHERE assertion.set_id = a.set_id \
+                     WHERE assertion.set_id = a.set_id AND assertion.provenance = 'source_declared' \
                        AND assertion.component_order = a.component_order \
                        AND assertion.scope = a.evidence_scope \
                        AND digest.algorithm = 'crc32') AS crc, \

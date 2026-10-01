@@ -1261,6 +1261,10 @@ fn insert_asset_requirement(
     // MAME listxml emits complete file size (output_rom/rom_file_size),
     // unlike software-list ROM entries, whose size is one load segment.
     let resolution = if asset.role == "other"
+        || asset
+            .cmp_facts
+            .as_ref()
+            .is_some_and(crate::clrmamepro::AssetFacts::has_conflicting_declarations)
         || asset.logiqx_attributes.as_ref().is_some_and(|fields| {
             matches!(
                 fields.identity_eligibility,
@@ -1283,9 +1287,22 @@ fn insert_asset_requirement(
         content_uuid,
     )?;
     if let Some(facts) = &asset.cmp_facts {
-        cmp_native::insert_rom_facts(conn, occurrence.database_value(), facts)?;
+        cmp_native::insert_rom_positions(conn, occurrence.database_value(), facts)?;
     }
     record_occurrence_digest_assertions(conn, occurrence, digests, "source_declared")?;
+    if let Some(facts) = &asset.cmp_facts {
+        for field in [&facts.crc, &facts.crc32].into_iter().flatten() {
+            let digest = hex::decode(&field.value).map_err(|error| {
+                crate::Error::InvalidHash(format!("invalid ClrMamePro CRC declaration: {error}"))
+            })?;
+            record_occurrence_digest_assertions(
+                conn,
+                occurrence,
+                ContentDigestAssertions::new(asset.evidence_scope, Some(&digest), None, None, None),
+                "source_declared",
+            )?;
+        }
+    }
     record_content_identity_conflict(conn, occurrence, &resolution)?;
     Ok(())
 }

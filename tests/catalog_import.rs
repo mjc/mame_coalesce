@@ -5515,3 +5515,27 @@ fn malformed_record_creates_failed_run_without_hiding_prior_snapshot()
     assert!(String::from_utf8_lossy(&retained).contains("not-hex"));
     Ok(())
 }
+
+#[test]
+fn conflicting_cmp_crc_declarations_never_project_a_usable_crc()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, mut connection) = setup()?;
+    let path = directory.path().join("conflicting-crc.dat");
+    std::fs::write(
+        &path,
+        "set ( name s rom ( name r size 1 crc aabbccdd crc32 11223344 sha1 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ) )",
+    )?;
+    let mut import_request = request(path, "cmp-publisher", "cmp-crc", "CMP CRC")?;
+    import_request.format = CatalogDocumentFormat::ClrMamePro;
+    let report = app::import_catalog(&database, &import_request)?;
+    assert_eq!(report.status, app::CatalogImportStatus::Succeeded);
+    let crc = sql_query("SELECT crc AS value FROM asset_requirements")
+        .get_result::<NullableBinaryRow>(&mut connection)?;
+    assert_eq!(
+        crc.value, None,
+        "conflicting declarations produced an arbitrary usable CRC"
+    );
+    assert_eq!(count(&mut connection, "catalog_contents")?, 0);
+    assert_eq!(count(&mut connection, "occurrence_digest_assertions")?, 3);
+    Ok(())
+}

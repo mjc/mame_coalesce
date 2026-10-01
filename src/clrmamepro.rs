@@ -61,11 +61,39 @@ pub struct SetFacts {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AssetFacts {
+    pub name: Option<FieldValue>,
+    pub size: Option<FieldValue>,
+    pub crc: Option<FieldValue>,
+    pub crc32: Option<FieldValue>,
+    pub md5: Option<FieldValue>,
+    pub sha1: Option<FieldValue>,
+    pub merge: Option<FieldValue>,
     pub date: Option<FieldValue>,
     pub serial: Option<FieldValue>,
     pub status_field: Option<FieldValue>,
-    pub nodump_order: Option<usize>,
-    pub baddump_order: Option<usize>,
+    pub nodump: Option<FlagValue>,
+    pub baddump: Option<FlagValue>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FlagValue {
+    pub source_name: String,
+    pub order: usize,
+    pub location: RecordLocation,
+}
+
+impl AssetFacts {
+    pub(crate) fn has_conflicting_declarations(&self) -> bool {
+        let conflicting_crc = self
+            .crc
+            .as_ref()
+            .zip(self.crc32.as_ref())
+            .is_some_and(|(crc, crc32)| !crc.value.eq_ignore_ascii_case(&crc32.value));
+        let conflicting_dump = self.nodump.is_some() && self.baddump.is_some()
+            || self.status_field.is_some() && (self.nodump.is_some() || self.baddump.is_some());
+
+        conflicting_crc || conflicting_dump
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -756,9 +784,26 @@ fn parse_asset(form: &Form<'_>, set_name: &str) -> crate::Result<Asset> {
     let field = |field_name: &'static str| single_field(form, field_name, "rom", Some(&name));
     let size = field("size")?
         .map(|field| {
-            field.value.value().parse::<u64>().map_err(|_| {
+            let value = field.value.value();
+            if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+                return Err(parse_error(
+                    format!("invalid ROM size {value:?}"),
+                    "rom",
+                    Some(&name),
+                    Some(field.value.location),
+                ));
+            }
+            let size = value.parse::<i64>().map_err(|_| {
                 parse_error(
-                    format!("invalid ROM size {:?}", field.value.value()),
+                    format!("invalid ROM size {value:?}"),
+                    "rom",
+                    Some(&name),
+                    Some(field.value.location),
+                )
+            })?;
+            u64::try_from(size).map_err(|_| {
+                parse_error(
+                    format!("invalid ROM size {value:?}"),
                     "rom",
                     Some(&name),
                     Some(field.value.location),
@@ -768,14 +813,11 @@ fn parse_asset(form: &Form<'_>, set_name: &str) -> crate::Result<Asset> {
         .transpose()?;
     let crc = digest_field(form, "crc", 8, "rom", &name)?;
     let crc32 = digest_field(form, "crc32", 8, "rom", &name)?;
-    if crc.is_some() && crc32.is_some() {
-        return Err(parse_error(
-            "both crc and crc32 are declared",
-            "rom",
-            Some(&name),
-            Some(form.tag.location),
-        ));
-    }
+    let crc = match (crc, crc32) {
+        (Some(crc), Some(crc32)) if crc == crc32 => Some(crc),
+        (Some(_), Some(_)) | (None, None) => None,
+        (Some(crc), None) | (None, Some(crc)) => Some(crc),
+    };
     let md5 = digest_field(form, "md5", 32, "rom", &name)?;
     let sha1 = digest_field(form, "sha1", 40, "rom", &name)?;
     let merge = single_field(form, "merge", "rom", Some(&name))?
@@ -801,7 +843,7 @@ fn parse_asset(form: &Form<'_>, set_name: &str) -> crate::Result<Asset> {
     Ok(Asset {
         name,
         size,
-        crc: crc.or(crc32),
+        crc,
         md5,
         sha1,
         merge,
@@ -818,21 +860,18 @@ fn parse_asset_status(form: &Form<'_>, name: &str) -> crate::Result<Option<Strin
         .map(|field| field.value.value().to_owned());
     let nodump = form.flags("nodump");
     let baddump = form.flags("baddump");
-    if nodump.len() > 1 || baddump.len() > 1 || (!nodump.is_empty() && !baddump.is_empty()) {
+    if nodump.len() > 1 || baddump.len() > 1 {
         return Err(parse_error(
-            "duplicate or conflicting nodump/baddump flags",
+            "duplicate nodump or baddump flag",
             "rom",
             Some(name),
             Some(form.tag.location),
         ));
     }
-    if explicit_status.is_some() && (!nodump.is_empty() || !baddump.is_empty()) {
-        return Err(parse_error(
-            "status field conflicts with nodump/baddump flag",
-            "rom",
-            Some(name),
-            Some(form.tag.location),
-        ));
+    if !nodump.is_empty() && !baddump.is_empty()
+        || explicit_status.is_some() && (!nodump.is_empty() || !baddump.is_empty())
+    {
+        return Ok(None);
     }
     Ok(explicit_status.or_else(|| {
         if !nodump.is_empty() {
@@ -847,18 +886,46 @@ fn parse_asset_status(form: &Form<'_>, name: &str) -> crate::Result<Option<Strin
 
 fn parse_asset_facts(form: &Form<'_>) -> crate::Result<AssetFacts> {
     Ok(AssetFacts {
+        name: field_value(form, "name")?,
+        size: field_value(form, "size")?,
+        crc: field_value(form, "crc")?,
+        crc32: field_value(form, "crc32")?,
+        md5: field_value(form, "md5")?,
+        sha1: field_value(form, "sha1")?,
+        merge: field_value(form, "merge")?,
         date: field_value(form, "date")?,
         serial: field_value(form, "serial")?,
         status_field: field_value(form, "status")?,
-        nodump_order: form
-            .items
-            .iter()
-            .position(|item| matches!(item, FormItem::Flag(flag) if flag.word_eq("nodump"))),
-        baddump_order: form
-            .items
-            .iter()
-            .position(|item| matches!(item, FormItem::Flag(flag) if flag.word_eq("baddump"))),
+        nodump: flag_value(form, "nodump")?,
+        baddump: flag_value(form, "baddump")?,
     })
+}
+
+fn flag_value(form: &Form<'_>, name: &str) -> crate::Result<Option<FlagValue>> {
+    let mut flags = form
+        .items
+        .iter()
+        .enumerate()
+        .filter_map(|(order, item)| match item {
+            FormItem::Flag(flag) if flag.word_eq(name) => Some((order, flag)),
+            _ => None,
+        });
+    let Some((order, flag)) = flags.next() else {
+        return Ok(None);
+    };
+    if flags.next().is_some() {
+        return Err(parse_error(
+            format!("duplicate {name} flag"),
+            "rom",
+            None,
+            Some(form.tag.location),
+        ));
+    }
+    Ok(Some(FlagValue {
+        source_name: flag.value().to_owned(),
+        order,
+        location: flag.location,
+    }))
 }
 
 impl<'src> Form<'src> {
@@ -1063,6 +1130,173 @@ mod tests {
                     && extension.value["raw_token"] == "mysteryflag")
         );
         assert_eq!(set.assets[0].crc, Some(vec![0x12, 0x34, 0x56, 0x78]));
+        Ok(())
+    }
+
+    #[test]
+    fn accepts_matching_crc_and_crc32_declarations() -> crate::Result<()> {
+        let catalog =
+            Catalog::parse(b"game ( name set rom ( name x crc 12345678 crc32 12345678 ) )")?;
+        let asset = catalog
+            .sets
+            .first()
+            .and_then(|set| set.assets.first())
+            .ok_or_else(|| parse_error_unscoped("missing asset"))?;
+        assert_eq!(asset.crc, Some(vec![0x12, 0x34, 0x56, 0x78]));
+        assert!(!asset.native.has_conflicting_declarations());
+        Ok(())
+    }
+
+    #[test]
+    fn retains_native_asset_field_spelling_values_and_order() -> crate::Result<()> {
+        let catalog = Catalog::parse(
+            b"game ( name set rom ( NAME \"X.bin\" SIZE \"0001\" CRC \"AABBCCDD\" CRC32 aabbccdd MD5 0123456789abcdef0123456789abcdef SHA1 0123456789abcdef0123456789abcdef01234567 MERGE \"Parent.BIN\" DATE \"Sep 9\" SERIAL \"MiXeD\" STATUS \"good\" NoDuMp ) )",
+        )?;
+        let asset = catalog
+            .sets
+            .first()
+            .and_then(|set| set.assets.first())
+            .ok_or_else(|| parse_error_unscoped("missing asset"))?;
+        let facts = &asset.native;
+        let fields = [
+            facts.name.as_ref(),
+            facts.size.as_ref(),
+            facts.crc.as_ref(),
+            facts.crc32.as_ref(),
+            facts.md5.as_ref(),
+            facts.sha1.as_ref(),
+            facts.merge.as_ref(),
+            facts.date.as_ref(),
+            facts.serial.as_ref(),
+            facts.status_field.as_ref(),
+        ];
+        let expected = [
+            ("NAME", "X.bin", true),
+            ("SIZE", "0001", true),
+            ("CRC", "AABBCCDD", true),
+            ("CRC32", "aabbccdd", false),
+            ("MD5", "0123456789abcdef0123456789abcdef", false),
+            ("SHA1", "0123456789abcdef0123456789abcdef01234567", false),
+            ("MERGE", "Parent.BIN", true),
+            ("DATE", "Sep 9", true),
+            ("SERIAL", "MiXeD", true),
+            ("STATUS", "good", true),
+        ];
+        for (order, (field, (source_name, value, quoted))) in
+            fields.into_iter().zip(expected).enumerate()
+        {
+            let field = field.ok_or_else(|| parse_error_unscoped("missing native field"))?;
+            assert_eq!(field.source_name, source_name);
+            assert_eq!(field.value, value);
+            assert_eq!(field.quoted, quoted);
+            assert_eq!(field.order, order);
+            assert!(field.location.line > 0);
+        }
+        let nodump = facts
+            .nodump
+            .as_ref()
+            .ok_or_else(|| parse_error_unscoped("missing nodump flag"))?;
+        assert_eq!(nodump.source_name, "NoDuMp");
+        assert_eq!(nodump.order, 10);
+        assert!(nodump.location.line > 0);
+        assert_eq!(facts.baddump, None);
+        assert!(facts.has_conflicting_declarations());
+        Ok(())
+    }
+
+    #[test]
+    fn differing_crc_aliases_are_retained_without_an_effective_crc() -> crate::Result<()> {
+        let catalog =
+            Catalog::parse(b"game ( name set rom ( name x crc 12345678 crc32 87654321 ) )")?;
+        let asset = catalog
+            .sets
+            .first()
+            .and_then(|set| set.assets.first())
+            .ok_or_else(|| parse_error_unscoped("missing asset"))?;
+        assert_eq!(asset.crc, None);
+        assert_eq!(
+            asset.native.crc.as_ref().map(|field| field.value.as_str()),
+            Some("12345678")
+        );
+        assert_eq!(
+            asset
+                .native
+                .crc32
+                .as_ref()
+                .map(|field| field.value.as_str()),
+            Some("87654321")
+        );
+        assert!(asset.native.has_conflicting_declarations());
+        Ok(())
+    }
+
+    #[test]
+    fn retains_conflicting_dump_markers_and_leaves_effective_status_unset() -> crate::Result<()> {
+        let catalog = Catalog::parse(
+            b"game ( name set rom ( name x NoDuMp bAdDuMp ) rom ( name y status \"good\" nodump ) )",
+        )?;
+        let assets = &catalog
+            .sets
+            .first()
+            .ok_or_else(|| parse_error_unscoped("missing set"))?
+            .assets;
+        assert_eq!(assets[0].status, None);
+        assert_eq!(
+            assets[0]
+                .native
+                .nodump
+                .as_ref()
+                .map(|flag| flag.source_name.as_str()),
+            Some("NoDuMp")
+        );
+        assert_eq!(
+            assets[0]
+                .native
+                .baddump
+                .as_ref()
+                .map(|flag| flag.source_name.as_str()),
+            Some("bAdDuMp")
+        );
+        assert!(assets[0].native.has_conflicting_declarations());
+        assert_eq!(assets[1].status, None);
+        assert!(assets[1].native.has_conflicting_declarations());
+        assert!(Catalog::parse(b"game ( name set rom ( name duplicate nodump NODUMP ) )").is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_non_ascii_decimal_and_out_of_range_sizes() {
+        for size in ["+1", "\" 1\"", "١", "9223372036854775808"] {
+            let input = format!("game ( name set rom ( name x size {size} ) )");
+            assert!(
+                matches!(
+                    Catalog::parse(input.as_bytes()),
+                    Err(crate::Error::CatalogParse {
+                        record_kind: Some(kind),
+                        record_name: Some(name),
+                        line: Some(_),
+                        column: Some(_),
+                        ..
+                    }) if kind == "rom" && name == "x"
+                ),
+                "size {size:?} should be rejected with ROM context"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_leading_zero_decimal_sizes() -> crate::Result<()> {
+        let catalog = Catalog::parse(b"game ( name set rom ( name x size 0001 ) )")?;
+        let asset = catalog
+            .sets
+            .first()
+            .and_then(|set| set.assets.first())
+            .ok_or_else(|| parse_error_unscoped("missing asset"))?;
+        assert_eq!(asset.size, Some(1));
+        assert_eq!(
+            asset.native.size.as_ref().map(|field| field.value.as_str()),
+            Some("0001")
+        );
         Ok(())
     }
 

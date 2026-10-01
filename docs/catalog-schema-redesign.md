@@ -552,6 +552,41 @@ vocabulary, not sufficient proof of a text block grammar; require a pinned
 shape/specimen before declaring those forms supported. Real corpus region and
 releaseyear/releasemonth/releaseday fields similarly need an explicit dialect
 contract. Do not claim unspecified multiplicity/default rules as published facts.
+The current `clrmamepro-declared-text-compat-v1` implementation stores ROM name,
+size text, both CRC/CRC32 declarations, MD5/SHA-1 text, merge/date/serial/status
+and independent nodump/baddump presence in `cmp_rom_claims`. Numeric size and
+effective dump status are virtual interpretations, not stored copies. Size is
+nonempty ASCII decimal within signed 64-bit range; hashes are exact-width ASCII
+hex. Duplicate singleton fields/flags and missing names are rejected by this
+adapter. These rules are named compatibility choices, not an inferred complete
+CMP specification. Unequal CRC aliases or competing dump markers remain native
+query data but bypass UUID resolution. Independently valid hash assertions
+remain queryable; singular root consumers use the derived, scope/provenance-
+qualified `usable_occurrence_digest_assertions` view rather than picking an
+arbitrary assertion.
+
+`cmp_rom_field_positions` stores twelve closed native field codes with source
+keyword spelling, order, quote state and location; it does not store values.
+The old partial `cmp_rom_facts` copy is removed. Publication requires a native
+claim for every CMP ROM occurrence and a position for every present declaration.
+Native raw hashes and normalized source assertions must agree in both directions;
+computed evidence cannot stand in for a source field. Linked UUIDs require an
+unambiguous matching source SHA-1 in the native whole-file scope and no native
+declaration conflicts. Native claims and positions cannot be appended after
+publication. History keeps raw spelling and relative native-field order while
+ignoring vendor-only gaps and reindentation. Complete header/set/comment
+provenance, observed region/date-component/set-serial dialect fields and full
+format query witnesses remain unfinished.
+
+A fresh import of the ignored authentic Atari-2600 corpus on 2026-10-01 retained
+905 sets and 905 ROM occurrences, all 4,526 present ROM field positions and
+2,715 normalized digest assertions. Six repeated set-name groups remain
+separate native owners; there are no missing ROM field positions. All 905
+eligible occurrences linked to expected-file UUIDs. SQLite integrity and
+foreign-key checks passed. The 188,849-byte original remains an external source
+object. This is a ROM-owner/query witness, not acceptance of the corpus's still
+unimplemented set-level region, release-date components or serial fields.
+
 Preserve quoted strings and valid flags as typed values; CMP descriptions/year/
 manufacturer no longer live in `metadata_json`. TOSEC naming conventions and
 Redump publisher identity are adapter rules over their actual wire dialect, not

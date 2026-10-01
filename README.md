@@ -109,6 +109,15 @@ file UUID. Logical disk hashes never identify whole-container files. The default
 `logiqx-declared-text-compat-v1` interpretation accepts sparse compatibility
 documents; it is not strict DTD validation.
 
+ClrMamePro ROM declarations likewise retain checksum case, leading-zero size
+text, quoted/empty values, both CRC aliases and independent dump flags in native
+columns. Conflicting declarations remain queryable but cannot assign a shared
+UUID; an ambiguous digest never supplies a singular matching hash. Field
+positions retain source spelling, quotation, order and location without copying
+the values. Publication checks complete ownership and agreement with normalized
+source assertions. The `clrmamepro-declared-text-compat-v1` interpretation is an
+explicit compatibility grammar, not proof of every CMP dialect or set field.
+
 The Rust `catalog_files` API exposes bulk occurrence lookup and keyset-paginated
 file membership across published catalog editions. Results keep each owner and
 its source/list provenance, with digest assertions as separate children.

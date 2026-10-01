@@ -148,19 +148,19 @@ pub(super) fn snapshot_requirements(
     })?;
     let rows = sql_query(
         "SELECT sets.set_id, sets.set_name, rows.component_order, rows.asset_name, rows.role, rows.size, \
-         (SELECT digest.digest FROM asset_requirement_digest_assertions AS assertion \
+         (SELECT digest.digest FROM asset_requirement_usable_digests AS assertion \
           JOIN digest_values AS digest USING (digest_id) \
-          WHERE assertion.set_id = rows.set_id \
+          WHERE assertion.set_id = rows.set_id AND assertion.provenance = 'source_declared' \
             AND assertion.component_order = rows.component_order \
             AND assertion.scope = rows.evidence_scope AND digest.algorithm = 'crc32') AS crc, \
-         (SELECT digest.digest FROM asset_requirement_digest_assertions AS assertion \
+         (SELECT digest.digest FROM asset_requirement_usable_digests AS assertion \
           JOIN digest_values AS digest USING (digest_id) \
-          WHERE assertion.set_id = rows.set_id \
+          WHERE assertion.set_id = rows.set_id AND assertion.provenance = 'source_declared' \
             AND assertion.component_order = rows.component_order \
             AND assertion.scope = rows.evidence_scope AND digest.algorithm = 'md5') AS md5, \
-         (SELECT digest.digest FROM asset_requirement_digest_assertions AS assertion \
+         (SELECT digest.digest FROM asset_requirement_usable_digests AS assertion \
           JOIN digest_values AS digest USING (digest_id) \
-          WHERE assertion.set_id = rows.set_id \
+          WHERE assertion.set_id = rows.set_id AND assertion.provenance = 'source_declared' \
             AND assertion.component_order = rows.component_order \
             AND assertion.scope = rows.evidence_scope AND digest.algorithm = 'sha1') AS sha1, \
          rows.evidence_scope, rows.evidence_provenance, rows.merge_name, rows.dump_status, \

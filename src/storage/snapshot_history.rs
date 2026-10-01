@@ -61,6 +61,8 @@ struct SetRow {
 #[derive(QueryableByName)]
 struct RequirementRow {
     #[diesel(sql_type = BigInt)]
+    occurrence_id: i64,
+    #[diesel(sql_type = BigInt)]
     set_id: i64,
     #[diesel(sql_type = Text)]
     asset_name: String,
@@ -126,6 +128,34 @@ struct RequirementRow {
     logiqx_status_was_present: Option<bool>,
     #[diesel(sql_type = Nullable<BigInt>)]
     logiqx_source_order: Option<i64>,
+    #[diesel(sql_type = Nullable<Text>)]
+    cmp_size_text: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    cmp_crc_text: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    cmp_crc32_text: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    cmp_md5_text: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    cmp_sha1_text: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    cmp_status_text: Option<String>,
+    #[diesel(sql_type = Nullable<Bool>)]
+    cmp_nodump_present: Option<bool>,
+    #[diesel(sql_type = Nullable<Bool>)]
+    cmp_baddump_present: Option<bool>,
+}
+
+#[derive(QueryableByName)]
+struct CmpRomPositionRow {
+    #[diesel(sql_type = BigInt)]
+    occurrence_id: i64,
+    #[diesel(sql_type = BigInt)]
+    field_kind: i64,
+    #[diesel(sql_type = Text)]
+    source_field: String,
+    #[diesel(sql_type = Bool)]
+    is_quoted: bool,
 }
 
 #[derive(QueryableByName)]
@@ -1155,7 +1185,8 @@ fn records(
     sort_json_groups(&mut result.logiqx_bios_sets);
     sort_json_groups(&mut result.logiqx_archive_references);
     sort_json_groups(&mut result.cmp_set_facts);
-    assemble_requirements(&mut result, requirements);
+    let cmp_positions = load_cmp_rom_positions(conn, key)?;
+    assemble_requirements(&mut result, requirements, &cmp_positions);
     normalize_logiqx_child_order(&mut result);
     Ok(result)
 }
@@ -1234,20 +1265,20 @@ fn load_requirements(
     key: &SnapshotKey,
 ) -> crate::Result<Vec<RequirementRow>> {
     Ok(sql_query(
-        "SELECT sets.set_id, asset.asset_name, asset.role, asset.size, \
-         (SELECT digest.digest FROM asset_requirement_digest_assertions AS assertion \
+        "SELECT occurrence.occurrence_id, sets.set_id, asset.asset_name, asset.role, asset.size, \
+         (SELECT digest.digest FROM asset_requirement_usable_digests AS assertion \
           JOIN digest_values AS digest USING (digest_id) \
-          WHERE assertion.set_id = asset.set_id \
+          WHERE assertion.set_id = asset.set_id AND assertion.provenance = 'source_declared' \
             AND assertion.component_order = asset.component_order \
             AND assertion.scope = asset.evidence_scope AND digest.algorithm = 'crc32') AS crc, \
-         (SELECT digest.digest FROM asset_requirement_digest_assertions AS assertion \
+         (SELECT digest.digest FROM asset_requirement_usable_digests AS assertion \
           JOIN digest_values AS digest USING (digest_id) \
-          WHERE assertion.set_id = asset.set_id \
+          WHERE assertion.set_id = asset.set_id AND assertion.provenance = 'source_declared' \
             AND assertion.component_order = asset.component_order \
             AND assertion.scope = asset.evidence_scope AND digest.algorithm = 'md5') AS md5, \
-         (SELECT digest.digest FROM asset_requirement_digest_assertions AS assertion \
+         (SELECT digest.digest FROM asset_requirement_usable_digests AS assertion \
           JOIN digest_values AS digest USING (digest_id) \
-          WHERE assertion.set_id = asset.set_id \
+          WHERE assertion.set_id = asset.set_id AND assertion.provenance = 'source_declared' \
             AND assertion.component_order = asset.component_order \
             AND assertion.scope = asset.evidence_scope AND digest.algorithm = 'sha1') AS sha1, \
          asset.evidence_scope, asset.evidence_provenance, \
@@ -1262,12 +1293,16 @@ fn load_requirements(
          COALESCE(rom_claim.md5_text, disk_claim.md5_text) AS logiqx_md5_text, \
          COALESCE(rom_claim.sha1_text, disk_claim.sha1_text) AS logiqx_sha1_text, \
          COALESCE(rom_claim.status_was_present, disk_claim.status_was_present) AS logiqx_status_was_present, \
-         COALESCE(rom_claim.source_order, disk_claim.source_order, sample_claim.source_order) AS logiqx_source_order \
+         COALESCE(rom_claim.source_order, disk_claim.source_order, sample_claim.source_order) AS logiqx_source_order, \
+         cmp.size_text AS cmp_size_text, cmp.crc_text AS cmp_crc_text, cmp.crc32_text AS cmp_crc32_text, \
+         cmp.md5_text AS cmp_md5_text, cmp.sha1_text AS cmp_sha1_text, cmp.status_text AS cmp_status_text, \
+         cmp.nodump_present AS cmp_nodump_present, cmp.baddump_present AS cmp_baddump_present \
          FROM asset_requirement_rows AS asset \
          JOIN snapshot_sets AS sets USING (set_id) \
          JOIN asset_occurrences AS occurrence \
            ON occurrence.record_id = asset.set_id \
-          AND occurrence.occurrence_order = asset.component_order \
+         AND occurrence.occurrence_order = asset.component_order \
+         LEFT JOIN cmp_rom_claims AS cmp USING (occurrence_id) \
          LEFT JOIN logiqx_rom_claims AS rom_claim \
            ON rom_claim.occurrence_id = occurrence.occurrence_id AND asset.role = 'rom' \
          LEFT JOIN logiqx_disk_claims AS disk_claim \
@@ -1605,7 +1640,33 @@ fn load_no_intro_archive_links(
     Ok(links)
 }
 
-fn assemble_requirements(result: &mut CatalogRecords, requirements: Vec<RequirementRow>) {
+fn load_cmp_rom_positions(
+    conn: &mut diesel::SqliteConnection,
+    key: &SnapshotKey,
+) -> crate::Result<BTreeMap<i64, Vec<serde_json::Value>>> {
+    let positions = sql_query(
+        "SELECT position.occurrence_id, position.field_kind, position.source_field, position.is_quoted \
+         FROM catalog_set_groups JOIN catalog_sets USING (set_group_id) \
+         JOIN asset_occurrences ON record_id = set_id \
+         JOIN cmp_rom_field_positions AS position USING (occurrence_id) \
+         WHERE snapshot_key = ? ORDER BY position.occurrence_id, position.source_order",
+    ).bind::<Text,_>(key.as_str()).load::<CmpRomPositionRow>(conn)?;
+    let mut result = BTreeMap::<i64, Vec<serde_json::Value>>::new();
+    for position in positions {
+        let fields = result.entry(position.occurrence_id).or_default();
+        fields.push(serde_json::json!({
+            "field_kind": position.field_kind, "source_field": position.source_field,
+            "native_order": fields.len(), "is_quoted": position.is_quoted,
+        }));
+    }
+    Ok(result)
+}
+
+fn assemble_requirements(
+    result: &mut CatalogRecords,
+    requirements: Vec<RequirementRow>,
+    cmp_positions: &BTreeMap<i64, Vec<serde_json::Value>>,
+) {
     for row in requirements {
         let value = serde_json::json!({
             "role": row.role,
@@ -1642,6 +1703,13 @@ fn assemble_requirements(result: &mut CatalogRecords, requirements: Vec<Requirem
                 "sha1_text": row.logiqx_sha1_text,
                 "status_was_present": row.logiqx_status_was_present,
                 "source_order": row.logiqx_source_order,
+            },
+            "cmp_declarations": {
+                "size_text": row.cmp_size_text, "crc_text": row.cmp_crc_text,
+                "crc32_text": row.cmp_crc32_text, "md5_text": row.cmp_md5_text,
+                "sha1_text": row.cmp_sha1_text, "status_text": row.cmp_status_text,
+                "nodump_present": row.cmp_nodump_present, "baddump_present": row.cmp_baddump_present,
+                "field_positions": cmp_positions.get(&row.occurrence_id),
             },
         });
         result
@@ -1980,6 +2048,7 @@ fn requirement_changes(
                 "serial",
                 "date",
                 "extensions",
+                "cmp_declarations",
             ]
             .into_iter()
             .any(|field| field_changed(before, after, field))

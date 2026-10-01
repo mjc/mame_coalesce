@@ -18,6 +18,8 @@ const SCHEMA: &str = concat!(
     "\n",
     include_str!("logiqx.sql"),
     "\n",
+    include_str!("cmp.sql"),
+    "\n",
     include_str!("catalog_registry.sql")
 );
 

@@ -780,15 +780,15 @@ pub fn explain_all(pool: &Pool) -> crate::Result<Vec<RelationshipExplanation>> {
                 a.generic_target_c, a.source_target_a, a.source_target_b, a.source_target_c, \
                 a.source_snapshot_key, a.source_field, a.source_line, a.source_column, \
                 source_asset.merge_name AS source_asset_merge_name, \
-                (SELECT digest.digest FROM asset_requirement_digest_assertions AS assertion \
+                (SELECT digest.digest FROM asset_requirement_usable_digests AS assertion \
                  JOIN digest_values AS digest USING (digest_id) \
-                 WHERE assertion.set_id = source_asset.set_id \
+                 WHERE assertion.set_id = source_asset.set_id AND assertion.provenance = 'source_declared' \
                    AND assertion.component_order = source_asset.component_order \
                    AND assertion.scope = source_asset.evidence_scope \
                    AND digest.algorithm = 'sha1') AS source_asset_sha1, \
-                (SELECT digest.digest FROM asset_requirement_digest_assertions AS assertion \
+                (SELECT digest.digest FROM asset_requirement_usable_digests AS assertion \
                  JOIN digest_values AS digest USING (digest_id) \
-                 WHERE assertion.set_id = source_asset.set_id \
+                 WHERE assertion.set_id = source_asset.set_id AND assertion.provenance = 'source_declared' \
                    AND assertion.component_order = source_asset.component_order \
                    AND assertion.scope = source_asset.evidence_scope \
                    AND digest.algorithm = 'crc32') AS source_asset_crc, \
@@ -838,15 +838,15 @@ pub fn explain_catalog_sets_for_snapshots(
                 a.generic_target_c, a.source_target_a, a.source_target_b, a.source_target_c, \
                 a.source_snapshot_key, a.source_field, a.source_line, a.source_column, \
                 source_asset.merge_name AS source_asset_merge_name, \
-                (SELECT digest.digest FROM asset_requirement_digest_assertions AS assertion \
+                (SELECT digest.digest FROM asset_requirement_usable_digests AS assertion \
                  JOIN digest_values AS digest USING (digest_id) \
-                 WHERE assertion.set_id = source_asset.set_id \
+                 WHERE assertion.set_id = source_asset.set_id AND assertion.provenance = 'source_declared' \
                    AND assertion.component_order = source_asset.component_order \
                    AND assertion.scope = source_asset.evidence_scope \
                    AND digest.algorithm = 'sha1') AS source_asset_sha1, \
-                (SELECT digest.digest FROM asset_requirement_digest_assertions AS assertion \
+                (SELECT digest.digest FROM asset_requirement_usable_digests AS assertion \
                  JOIN digest_values AS digest USING (digest_id) \
-                 WHERE assertion.set_id = source_asset.set_id \
+                 WHERE assertion.set_id = source_asset.set_id AND assertion.provenance = 'source_declared' \
                    AND assertion.component_order = source_asset.component_order \
                    AND assertion.scope = source_asset.evidence_scope \
                    AND digest.algorithm = 'crc32') AS source_asset_crc, \
@@ -920,15 +920,15 @@ pub fn explain_for_snapshots(
                 a.generic_target_c, a.source_target_a, a.source_target_b, a.source_target_c, \
                 a.source_snapshot_key, a.source_field, a.source_line, a.source_column, \
                 source_asset.merge_name AS source_asset_merge_name, \
-                (SELECT digest.digest FROM asset_requirement_digest_assertions AS assertion \
+                (SELECT digest.digest FROM asset_requirement_usable_digests AS assertion \
                  JOIN digest_values AS digest USING (digest_id) \
-                 WHERE assertion.set_id = source_asset.set_id \
+                 WHERE assertion.set_id = source_asset.set_id AND assertion.provenance = 'source_declared' \
                    AND assertion.component_order = source_asset.component_order \
                    AND assertion.scope = source_asset.evidence_scope \
                    AND digest.algorithm = 'sha1') AS source_asset_sha1, \
-                (SELECT digest.digest FROM asset_requirement_digest_assertions AS assertion \
+                (SELECT digest.digest FROM asset_requirement_usable_digests AS assertion \
                  JOIN digest_values AS digest USING (digest_id) \
-                 WHERE assertion.set_id = source_asset.set_id \
+                 WHERE assertion.set_id = source_asset.set_id AND assertion.provenance = 'source_declared' \
                    AND assertion.component_order = source_asset.component_order \
                    AND assertion.scope = source_asset.evidence_scope \
                    AND digest.algorithm = 'crc32') AS source_asset_crc, \
