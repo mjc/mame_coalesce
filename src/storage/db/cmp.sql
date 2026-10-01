@@ -1,11 +1,303 @@
+CREATE TABLE cmp_documents (
+    snapshot_key TEXT PRIMARY KEY NOT NULL REFERENCES catalog_snapshots(snapshot_key) ON DELETE RESTRICT,
+    header_present INTEGER NOT NULL CHECK (typeof(header_present) = 'integer' AND header_present IN (0,1)),
+    comment_count INTEGER NOT NULL CHECK (typeof(comment_count) = 'integer' AND comment_count >= 0)
+) WITHOUT ROWID;
+
+CREATE TABLE cmp_header_field_positions (
+    snapshot_key TEXT NOT NULL REFERENCES cmp_header_facts(snapshot_key) ON DELETE RESTRICT,
+    field_kind INTEGER NOT NULL CHECK (typeof(field_kind) = 'integer' AND field_kind BETWEEN 0 AND 14),
+    source_field TEXT NOT NULL,
+    source_order INTEGER NOT NULL CHECK (typeof(source_order) = 'integer' AND source_order >= 0),
+    is_quoted INTEGER NOT NULL CHECK (typeof(is_quoted) = 'integer' AND is_quoted IN (0,1)),
+    source_line INTEGER NOT NULL CHECK (typeof(source_line) = 'integer' AND source_line > 0),
+    source_column INTEGER NOT NULL CHECK (typeof(source_column) = 'integer' AND source_column > 0),
+    PRIMARY KEY (snapshot_key,field_kind),
+    UNIQUE (snapshot_key,source_order),
+    CHECK (lower(source_field) = CASE field_kind
+      WHEN 0 THEN 'name'
+      WHEN 1 THEN 'description'
+      WHEN 2 THEN 'version'
+      WHEN 3 THEN 'date'
+      WHEN 4 THEN 'author'
+      WHEN 5 THEN 'email'
+      WHEN 6 THEN 'homepage'
+      WHEN 7 THEN 'url'
+      WHEN 8 THEN 'comment'
+      WHEN 9 THEN 'category'
+      WHEN 10 THEN 'header'
+      WHEN 11 THEN 'forcemerging'
+      WHEN 12 THEN 'forcezipping'
+      WHEN 13 THEN 'forcepacking'
+      WHEN 14 THEN 'forcenodump' END)
+) WITHOUT ROWID;
+
+CREATE TABLE cmp_set_field_positions (
+    record_id INTEGER NOT NULL REFERENCES cmp_set_facts(record_id) ON DELETE RESTRICT,
+    field_kind INTEGER NOT NULL CHECK (typeof(field_kind) = 'integer' AND field_kind BETWEEN 0 AND 11),
+    source_field TEXT NOT NULL,
+    source_order INTEGER NOT NULL CHECK (typeof(source_order) = 'integer' AND source_order >= 0),
+    is_quoted INTEGER NOT NULL CHECK (typeof(is_quoted) = 'integer' AND is_quoted IN (0,1)),
+    source_line INTEGER NOT NULL CHECK (typeof(source_line) = 'integer' AND source_line > 0),
+    source_column INTEGER NOT NULL CHECK (typeof(source_column) = 'integer' AND source_column > 0),
+    PRIMARY KEY (record_id,field_kind),
+    UNIQUE (record_id,source_order),
+    CHECK (lower(source_field) = CASE field_kind
+      WHEN 0 THEN 'name'
+      WHEN 1 THEN 'cloneof'
+      WHEN 2 THEN 'description'
+      WHEN 3 THEN 'year'
+      WHEN 4 THEN 'manufacturer'
+      WHEN 5 THEN 'rebuildto'
+      WHEN 6 THEN 'sampleof'
+      WHEN 7 THEN 'region'
+      WHEN 8 THEN 'releaseyear'
+      WHEN 9 THEN 'releasemonth'
+      WHEN 10 THEN 'releaseday'
+      WHEN 11 THEN 'serial' END)
+) WITHOUT ROWID;
+
+CREATE TABLE cmp_set_rom_positions (
+    occurrence_id INTEGER PRIMARY KEY NOT NULL REFERENCES cmp_rom_claims(occurrence_id) ON DELETE RESTRICT,
+    source_order INTEGER NOT NULL CHECK (typeof(source_order) = 'integer' AND source_order >= 0)
+) WITHOUT ROWID;
+
+CREATE TABLE cmp_comments (
+    snapshot_key TEXT NOT NULL REFERENCES catalog_snapshots(snapshot_key) ON DELETE RESTRICT,
+    comment_order INTEGER NOT NULL CHECK (typeof(comment_order) = 'integer' AND comment_order >= 0),
+    text TEXT NOT NULL,
+    source_line INTEGER NOT NULL CHECK (typeof(source_line) = 'integer' AND source_line > 0),
+    source_column INTEGER NOT NULL CHECK (typeof(source_column) = 'integer' AND source_column > 0),
+    PRIMARY KEY (snapshot_key,comment_order)
+) WITHOUT ROWID;
+
+CREATE VIEW cmp_header_declared_field_presence AS
+SELECT snapshot_key,0 AS field_kind FROM cmp_header_facts WHERE name IS NOT NULL
+UNION ALL SELECT snapshot_key,1 AS field_kind FROM cmp_header_facts WHERE description IS NOT NULL
+UNION ALL SELECT snapshot_key,2 AS field_kind FROM cmp_header_facts WHERE version IS NOT NULL
+UNION ALL SELECT snapshot_key,3 AS field_kind FROM cmp_header_facts WHERE date IS NOT NULL
+UNION ALL SELECT snapshot_key,4 AS field_kind FROM cmp_header_facts WHERE author IS NOT NULL
+UNION ALL SELECT snapshot_key,5 AS field_kind FROM cmp_header_facts WHERE email IS NOT NULL
+UNION ALL SELECT snapshot_key,6 AS field_kind FROM cmp_header_facts WHERE homepage IS NOT NULL
+UNION ALL SELECT snapshot_key,7 AS field_kind FROM cmp_header_facts WHERE url IS NOT NULL
+UNION ALL SELECT snapshot_key,8 AS field_kind FROM cmp_header_facts WHERE comment IS NOT NULL
+UNION ALL SELECT snapshot_key,9 AS field_kind FROM cmp_header_facts WHERE category IS NOT NULL
+UNION ALL SELECT snapshot_key,10 AS field_kind FROM cmp_header_directives WHERE header_definition IS NOT NULL
+UNION ALL SELECT snapshot_key,11 AS field_kind FROM cmp_header_directives WHERE forcemerging IS NOT NULL
+UNION ALL SELECT snapshot_key,12 AS field_kind FROM cmp_header_directives WHERE forcezipping IS NOT NULL
+UNION ALL SELECT snapshot_key,13 AS field_kind FROM cmp_header_directives WHERE forcepacking IS NOT NULL
+UNION ALL SELECT snapshot_key,14 AS field_kind FROM cmp_header_directives WHERE forcenodump IS NOT NULL;
+
+CREATE VIEW cmp_set_declared_field_presence AS
+SELECT record_id,0 AS field_kind FROM cmp_set_facts
+UNION ALL SELECT set_id AS record_id,1 FROM clrmamepro_set_links
+UNION ALL SELECT record_id,2 FROM cmp_set_facts WHERE description IS NOT NULL
+UNION ALL SELECT record_id,3 FROM cmp_set_facts WHERE year IS NOT NULL
+UNION ALL SELECT record_id,4 FROM cmp_set_facts WHERE manufacturer IS NOT NULL
+UNION ALL SELECT record_id,5 FROM cmp_set_facts WHERE rebuildto IS NOT NULL
+UNION ALL SELECT record_id,6 FROM cmp_sample_parent_links
+UNION ALL SELECT record_id,7 FROM cmp_set_facts WHERE region IS NOT NULL
+UNION ALL SELECT record_id,8 FROM cmp_set_facts WHERE release_year_text IS NOT NULL
+UNION ALL SELECT record_id,9 FROM cmp_set_facts WHERE release_month_text IS NOT NULL
+UNION ALL SELECT record_id,10 FROM cmp_set_facts WHERE release_day_text IS NOT NULL
+UNION ALL SELECT record_id,11 FROM cmp_set_facts WHERE serial IS NOT NULL;
+
+CREATE VIEW cmp_set_native_layout AS
+SELECT record_id,source_order,'field' AS kind,field_kind AS child_order FROM cmp_set_field_positions
+UNION ALL SELECT record_id,source_order,'sample',sample_order FROM cmp_samples
+UNION ALL SELECT record_id,position.source_order,'rom',occurrence_order
+FROM cmp_set_rom_positions AS position JOIN asset_occurrences USING(occurrence_id);
+
+-- REPLACE may bypass delete triggers when recursive_triggers is disabled.
+-- Reject both primary and secondary unique conflicts before conflict handling.
+CREATE TRIGGER cmp_documents_immutable_insert BEFORE INSERT ON cmp_documents
+WHEN EXISTS (SELECT 1 FROM cmp_documents WHERE snapshot_key=NEW.snapshot_key)
+BEGIN SELECT RAISE(ABORT, 'CMP conflicting native inserts are immutable'); END;
+CREATE TRIGGER cmp_header_facts_immutable_insert BEFORE INSERT ON cmp_header_facts
+WHEN EXISTS (SELECT 1 FROM cmp_header_facts WHERE snapshot_key=NEW.snapshot_key)
+BEGIN SELECT RAISE(ABORT, 'CMP conflicting native inserts are immutable'); END;
+CREATE TRIGGER cmp_header_directives_immutable_insert BEFORE INSERT ON cmp_header_directives
+WHEN EXISTS (SELECT 1 FROM cmp_header_directives WHERE snapshot_key=NEW.snapshot_key)
+BEGIN SELECT RAISE(ABORT, 'CMP conflicting native inserts are immutable'); END;
+CREATE TRIGGER cmp_comments_immutable_insert BEFORE INSERT ON cmp_comments
+WHEN EXISTS (SELECT 1 FROM cmp_comments WHERE snapshot_key=NEW.snapshot_key AND comment_order=NEW.comment_order)
+BEGIN SELECT RAISE(ABORT, 'CMP conflicting native inserts are immutable'); END;
+CREATE TRIGGER cmp_set_facts_immutable_insert BEFORE INSERT ON cmp_set_facts
+WHEN EXISTS (SELECT 1 FROM cmp_set_facts WHERE record_id=NEW.record_id)
+BEGIN SELECT RAISE(ABORT, 'CMP conflicting native inserts are immutable'); END;
+CREATE TRIGGER clrmamepro_set_links_immutable_insert BEFORE INSERT ON clrmamepro_set_links
+WHEN EXISTS (SELECT 1 FROM clrmamepro_set_links WHERE set_id=NEW.set_id AND link_kind=NEW.link_kind)
+BEGIN SELECT RAISE(ABORT, 'CMP conflicting native inserts are immutable'); END;
+CREATE TRIGGER cmp_sample_parent_links_immutable_insert BEFORE INSERT ON cmp_sample_parent_links
+WHEN EXISTS (SELECT 1 FROM cmp_sample_parent_links WHERE record_id=NEW.record_id)
+BEGIN SELECT RAISE(ABORT, 'CMP conflicting native inserts are immutable'); END;
+CREATE TRIGGER cmp_samples_immutable_insert BEFORE INSERT ON cmp_samples
+WHEN EXISTS (SELECT 1 FROM cmp_samples WHERE record_id=NEW.record_id AND sample_order=NEW.sample_order)
+BEGIN SELECT RAISE(ABORT, 'CMP conflicting native inserts are immutable'); END;
+CREATE TRIGGER cmp_header_field_positions_immutable_insert BEFORE INSERT ON cmp_header_field_positions
+WHEN EXISTS (SELECT 1 FROM cmp_header_field_positions WHERE snapshot_key=NEW.snapshot_key AND (field_kind=NEW.field_kind OR source_order=NEW.source_order))
+BEGIN SELECT RAISE(ABORT, 'CMP conflicting native inserts are immutable'); END;
+CREATE TRIGGER cmp_set_field_positions_immutable_insert BEFORE INSERT ON cmp_set_field_positions
+WHEN EXISTS (SELECT 1 FROM cmp_set_field_positions WHERE record_id=NEW.record_id AND (field_kind=NEW.field_kind OR source_order=NEW.source_order))
+BEGIN SELECT RAISE(ABORT, 'CMP conflicting native inserts are immutable'); END;
+CREATE TRIGGER cmp_rom_claims_immutable_insert BEFORE INSERT ON cmp_rom_claims
+WHEN EXISTS (SELECT 1 FROM cmp_rom_claims WHERE occurrence_id=NEW.occurrence_id)
+BEGIN SELECT RAISE(ABORT, 'CMP conflicting native inserts are immutable'); END;
+CREATE TRIGGER cmp_set_rom_positions_immutable_insert BEFORE INSERT ON cmp_set_rom_positions
+WHEN EXISTS (SELECT 1 FROM cmp_set_rom_positions WHERE occurrence_id=NEW.occurrence_id)
+BEGIN SELECT RAISE(ABORT, 'CMP conflicting native inserts are immutable'); END;
+
+CREATE TRIGGER cmp_documents_native_insert BEFORE INSERT ON cmp_documents
+WHEN NOT EXISTS (SELECT 1 FROM catalog_snapshots JOIN parser_interpretations USING(interpretation_key)
+    WHERE snapshot_key = NEW.snapshot_key AND format = 'clrmamepro-dat') OR EXISTS (SELECT 1 FROM snapshot_publications WHERE snapshot_key = NEW.snapshot_key)
+BEGIN SELECT RAISE(ABORT, 'CMP document facts require an unpublished matching interpretation'); END;
+CREATE TRIGGER cmp_documents_immutable_update BEFORE UPDATE ON cmp_documents
+BEGIN SELECT RAISE(ABORT, 'CMP document facts are immutable'); END;
+CREATE TRIGGER cmp_documents_immutable_delete BEFORE DELETE ON cmp_documents
+BEGIN SELECT RAISE(ABORT, 'CMP document facts are immutable'); END;
+
+CREATE TRIGGER cmp_header_facts_native_insert BEFORE INSERT ON cmp_header_facts
+WHEN NOT EXISTS (SELECT 1 FROM catalog_snapshots JOIN parser_interpretations USING(interpretation_key)
+    WHERE snapshot_key = NEW.snapshot_key AND format = 'clrmamepro-dat') OR EXISTS (SELECT 1 FROM snapshot_publications WHERE snapshot_key = NEW.snapshot_key)
+BEGIN SELECT RAISE(ABORT, 'CMP document facts require an unpublished matching interpretation'); END;
+CREATE TRIGGER cmp_header_facts_immutable_update BEFORE UPDATE ON cmp_header_facts
+BEGIN SELECT RAISE(ABORT, 'CMP document facts are immutable'); END;
+CREATE TRIGGER cmp_header_facts_immutable_delete BEFORE DELETE ON cmp_header_facts
+BEGIN SELECT RAISE(ABORT, 'CMP document facts are immutable'); END;
+
+CREATE TRIGGER cmp_header_directives_native_insert BEFORE INSERT ON cmp_header_directives
+WHEN NOT EXISTS (SELECT 1 FROM catalog_snapshots JOIN parser_interpretations USING(interpretation_key)
+    WHERE snapshot_key = NEW.snapshot_key AND format = 'clrmamepro-dat') OR EXISTS (SELECT 1 FROM snapshot_publications WHERE snapshot_key = NEW.snapshot_key)
+BEGIN SELECT RAISE(ABORT, 'CMP document facts require an unpublished matching interpretation'); END;
+CREATE TRIGGER cmp_header_directives_immutable_update BEFORE UPDATE ON cmp_header_directives
+BEGIN SELECT RAISE(ABORT, 'CMP document facts are immutable'); END;
+CREATE TRIGGER cmp_header_directives_immutable_delete BEFORE DELETE ON cmp_header_directives
+BEGIN SELECT RAISE(ABORT, 'CMP document facts are immutable'); END;
+
+CREATE TRIGGER cmp_comments_native_insert BEFORE INSERT ON cmp_comments
+WHEN NOT EXISTS (SELECT 1 FROM catalog_snapshots JOIN parser_interpretations USING(interpretation_key)
+    WHERE snapshot_key = NEW.snapshot_key AND format = 'clrmamepro-dat') OR EXISTS (SELECT 1 FROM snapshot_publications WHERE snapshot_key = NEW.snapshot_key)
+BEGIN SELECT RAISE(ABORT, 'CMP document facts require an unpublished matching interpretation'); END;
+CREATE TRIGGER cmp_comments_immutable_update BEFORE UPDATE ON cmp_comments
+BEGIN SELECT RAISE(ABORT, 'CMP document facts are immutable'); END;
+CREATE TRIGGER cmp_comments_immutable_delete BEFORE DELETE ON cmp_comments
+BEGIN SELECT RAISE(ABORT, 'CMP document facts are immutable'); END;
+
+CREATE TRIGGER cmp_samples_native_insert BEFORE INSERT ON cmp_samples
+WHEN NOT EXISTS (SELECT 1 FROM catalog_sets JOIN catalog_set_groups USING(set_group_id)
+    WHERE set_id = NEW.record_id AND source_element_kind = 'cmp_set') OR EXISTS (SELECT 1 FROM catalog_sets JOIN catalog_set_groups USING(set_group_id)
+    JOIN snapshot_publications USING(snapshot_key) WHERE set_id = NEW.record_id)
+BEGIN SELECT RAISE(ABORT, 'CMP child facts require an unpublished matching set'); END;
+CREATE TRIGGER cmp_samples_immutable_update BEFORE UPDATE ON cmp_samples
+BEGIN SELECT RAISE(ABORT, 'CMP child facts are immutable'); END;
+CREATE TRIGGER cmp_samples_immutable_delete BEFORE DELETE ON cmp_samples
+BEGIN SELECT RAISE(ABORT, 'CMP child facts are immutable'); END;
+
+CREATE TRIGGER cmp_sample_parent_links_native_insert BEFORE INSERT ON cmp_sample_parent_links
+WHEN NOT EXISTS (SELECT 1 FROM catalog_sets JOIN catalog_set_groups USING(set_group_id)
+    WHERE set_id = NEW.record_id AND source_element_kind = 'cmp_set') OR EXISTS (SELECT 1 FROM catalog_sets JOIN catalog_set_groups USING(set_group_id)
+    JOIN snapshot_publications USING(snapshot_key) WHERE set_id = NEW.record_id)
+BEGIN SELECT RAISE(ABORT, 'CMP child facts require an unpublished matching set'); END;
+CREATE TRIGGER cmp_sample_parent_links_immutable_update BEFORE UPDATE ON cmp_sample_parent_links
+BEGIN SELECT RAISE(ABORT, 'CMP child facts are immutable'); END;
+CREATE TRIGGER cmp_sample_parent_links_immutable_delete BEFORE DELETE ON cmp_sample_parent_links
+BEGIN SELECT RAISE(ABORT, 'CMP child facts are immutable'); END;
+
+CREATE TRIGGER cmp_header_field_positions_native_insert BEFORE INSERT ON cmp_header_field_positions
+WHEN NOT EXISTS (SELECT 1 FROM cmp_header_declared_field_presence WHERE snapshot_key = NEW.snapshot_key AND field_kind = NEW.field_kind)
+  OR EXISTS (SELECT 1 FROM snapshot_publications WHERE snapshot_key = NEW.snapshot_key)
+BEGIN SELECT RAISE(ABORT, 'CMP positions require a present unpublished native field'); END;
+CREATE TRIGGER cmp_header_field_positions_immutable_update BEFORE UPDATE ON cmp_header_field_positions
+BEGIN SELECT RAISE(ABORT, 'CMP field positions are immutable'); END;
+CREATE TRIGGER cmp_header_field_positions_immutable_delete BEFORE DELETE ON cmp_header_field_positions
+BEGIN SELECT RAISE(ABORT, 'CMP field positions are immutable'); END;
+
+CREATE TRIGGER cmp_set_field_positions_native_insert BEFORE INSERT ON cmp_set_field_positions
+WHEN NOT EXISTS (SELECT 1 FROM cmp_set_declared_field_presence WHERE record_id = NEW.record_id AND field_kind = NEW.field_kind)
+  OR EXISTS (SELECT 1 FROM catalog_sets JOIN catalog_set_groups USING(set_group_id)
+    JOIN snapshot_publications USING(snapshot_key) WHERE set_id = NEW.record_id)
+BEGIN SELECT RAISE(ABORT, 'CMP positions require a present unpublished native field'); END;
+CREATE TRIGGER cmp_set_field_positions_immutable_update BEFORE UPDATE ON cmp_set_field_positions
+BEGIN SELECT RAISE(ABORT, 'CMP field positions are immutable'); END;
+CREATE TRIGGER cmp_set_field_positions_immutable_delete BEFORE DELETE ON cmp_set_field_positions
+BEGIN SELECT RAISE(ABORT, 'CMP field positions are immutable'); END;
+
+CREATE TRIGGER cmp_set_rom_positions_native_insert BEFORE INSERT ON cmp_set_rom_positions
+WHEN NOT EXISTS (SELECT 1 FROM cmp_rom_claims WHERE occurrence_id = NEW.occurrence_id)
+ OR EXISTS (SELECT 1 FROM asset_occurrences JOIN catalog_sets ON record_id=set_id
+    JOIN catalog_set_groups USING(set_group_id) JOIN snapshot_publications USING(snapshot_key)
+    WHERE occurrence_id=NEW.occurrence_id)
+BEGIN SELECT RAISE(ABORT, 'CMP ROM layout requires an unpublished native ROM'); END;
+CREATE TRIGGER cmp_set_rom_positions_immutable_update BEFORE UPDATE ON cmp_set_rom_positions
+BEGIN SELECT RAISE(ABORT, 'CMP ROM layout is immutable'); END;
+CREATE TRIGGER cmp_set_rom_positions_immutable_delete BEFORE DELETE ON cmp_set_rom_positions
+BEGIN SELECT RAISE(ABORT, 'CMP ROM layout is immutable'); END;
+
+CREATE TRIGGER cmp_native_document_requires_complete_publication
+BEFORE INSERT ON snapshot_publications
+WHEN EXISTS (
+    SELECT 1 FROM catalog_snapshots JOIN parser_interpretations USING(interpretation_key)
+    LEFT JOIN cmp_documents USING(snapshot_key)
+    WHERE snapshot_key=NEW.snapshot_key AND format='clrmamepro-dat' AND (
+        cmp_documents.snapshot_key IS NULL
+        OR header_present <> EXISTS(SELECT 1 FROM cmp_header_facts WHERE snapshot_key=NEW.snapshot_key)
+        OR comment_count <> (SELECT COUNT(*) FROM cmp_comments WHERE snapshot_key=NEW.snapshot_key)
+        OR (comment_count > 0 AND (
+          (SELECT MIN(comment_order) FROM cmp_comments WHERE snapshot_key=NEW.snapshot_key) <> 0
+          OR (SELECT MAX(comment_order) FROM cmp_comments WHERE snapshot_key=NEW.snapshot_key) <> comment_count-1))
+    )
+) OR EXISTS (
+    SELECT 1 FROM cmp_header_facts LEFT JOIN cmp_header_directives USING(snapshot_key)
+    WHERE snapshot_key=NEW.snapshot_key AND cmp_header_directives.snapshot_key IS NULL
+) OR EXISTS (
+    SELECT 1 FROM cmp_header_declared_field_presence AS field
+    LEFT JOIN cmp_header_field_positions AS position USING(snapshot_key,field_kind)
+    WHERE field.snapshot_key=NEW.snapshot_key AND position.snapshot_key IS NULL
+)
+BEGIN SELECT RAISE(ABORT, 'CMP document facts require complete native ownership'); END;
+
+CREATE TRIGGER cmp_native_sets_require_complete_publication
+BEFORE INSERT ON snapshot_publications
+WHEN EXISTS (
+    SELECT 1 FROM catalog_sets JOIN catalog_set_groups USING(set_group_id)
+    LEFT JOIN cmp_set_facts ON record_id=set_id
+    WHERE snapshot_key=NEW.snapshot_key AND source_element_kind='cmp_set' AND record_id IS NULL
+) OR EXISTS (
+    SELECT 1 FROM cmp_set_declared_field_presence AS field
+    JOIN catalog_sets ON set_id=field.record_id JOIN catalog_set_groups USING(set_group_id)
+    LEFT JOIN cmp_set_field_positions AS position USING(record_id,field_kind)
+    WHERE snapshot_key=NEW.snapshot_key AND position.record_id IS NULL
+) OR EXISTS (
+    SELECT 1 FROM cmp_rom_claims JOIN asset_occurrences USING(occurrence_id)
+    JOIN catalog_sets ON set_id=record_id JOIN catalog_set_groups USING(set_group_id)
+    LEFT JOIN cmp_set_rom_positions AS position USING(occurrence_id)
+    WHERE snapshot_key=NEW.snapshot_key AND position.occurrence_id IS NULL
+)
+BEGIN SELECT RAISE(ABORT, 'CMP set facts require complete native ownership'); END;
+
+CREATE TRIGGER cmp_native_layout_requires_unique_publication
+BEFORE INSERT ON snapshot_publications
+WHEN EXISTS (
+    SELECT 1 FROM cmp_set_native_layout AS layout
+    JOIN catalog_sets ON set_id=record_id JOIN catalog_set_groups USING(set_group_id)
+    WHERE snapshot_key=NEW.snapshot_key GROUP BY record_id,source_order HAVING COUNT(*)>1
+) OR EXISTS (
+    SELECT 1 FROM (
+      SELECT document_order AS source_order FROM cmp_set_facts JOIN catalog_sets ON record_id=set_id
+      JOIN catalog_set_groups USING(set_group_id) WHERE snapshot_key=NEW.snapshot_key
+      UNION ALL SELECT source_order FROM cmp_header_facts WHERE snapshot_key=NEW.snapshot_key
+    ) GROUP BY source_order HAVING COUNT(*)>1
+)
+BEGIN SELECT RAISE(ABORT, 'CMP native source positions must be unique'); END;
+
 CREATE TABLE cmp_rom_field_positions (
     occurrence_id INTEGER NOT NULL REFERENCES cmp_rom_claims(occurrence_id) ON DELETE RESTRICT,
-    field_kind INTEGER NOT NULL CHECK (field_kind BETWEEN 0 AND 11),
+    field_kind INTEGER NOT NULL CHECK (typeof(field_kind) = 'integer' AND field_kind BETWEEN 0 AND 11),
     source_field TEXT NOT NULL,
-    source_order INTEGER NOT NULL CHECK (source_order >= 0),
-    is_quoted INTEGER NOT NULL CHECK (is_quoted IN (0,1)),
-    source_line INTEGER NOT NULL CHECK (source_line > 0),
-    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    source_order INTEGER NOT NULL CHECK (typeof(source_order) = 'integer' AND source_order >= 0),
+    is_quoted INTEGER NOT NULL CHECK (typeof(is_quoted) = 'integer' AND is_quoted IN (0,1)),
+    source_line INTEGER NOT NULL CHECK (typeof(source_line) = 'integer' AND source_line > 0),
+    source_column INTEGER NOT NULL CHECK (typeof(source_column) = 'integer' AND source_column > 0),
     PRIMARY KEY (occurrence_id,field_kind),
     UNIQUE (occurrence_id,source_order),
     CHECK (lower(source_field) = CASE field_kind
@@ -44,6 +336,9 @@ UNION ALL SELECT occurrence_id,9 FROM cmp_rom_claims WHERE status_text IS NOT NU
 UNION ALL SELECT occurrence_id,10 FROM cmp_rom_claims WHERE nodump_present = 1
 UNION ALL SELECT occurrence_id,11 FROM cmp_rom_claims WHERE baddump_present = 1;
 
+CREATE TRIGGER cmp_rom_field_positions_immutable_insert BEFORE INSERT ON cmp_rom_field_positions
+WHEN EXISTS (SELECT 1 FROM cmp_rom_field_positions WHERE occurrence_id=NEW.occurrence_id AND (field_kind=NEW.field_kind OR source_order=NEW.source_order))
+BEGIN SELECT RAISE(ABORT, 'CMP conflicting native inserts are immutable'); END;
 CREATE TRIGGER cmp_rom_field_positions_native_owner_insert
 BEFORE INSERT ON cmp_rom_field_positions
 WHEN NOT EXISTS (

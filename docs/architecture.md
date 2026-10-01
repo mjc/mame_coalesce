@@ -110,6 +110,19 @@ parser-internal representations the public contract.
   root matching queries derive only unambiguous scope/provenance-qualified
   digests, keeping computed observations separate. CMP history compares
   relative native-field order, ignoring vendor gaps and source locations.
+  CMP header/directive/set values now have fixed native owners and separate
+  closed-field positions. Every set retains its original game/set keyword and
+  document ordinal, including region, release-date component text and set serial.
+  Lexical semicolon comments are ordered document children, not header-comment
+  values or generic extensions. Missing forcenodump derives the documented
+  obsolete default; explicit invalid options retain text but disable the mode.
+  Publication requires document/header presence, complete scalar provenance,
+  contiguous declared comments, ROM-form positions and unique cross-family
+  native ordinals. Conflicting primary-key and field-order inserts reject
+  REPLACE writes independently of recursive-trigger settings, including drafts.
+  History compares structural document layout independently
+  of repeated-name owner fact multisets. Native scalar sample rows remain
+  separate from the shared media-entry API; that cutover is not complete.
   Full per-format field coverage and the remaining shared identity work are
   not finished.
 - Ordinary DAT imports publish native snapshots and retain originals externally.

@@ -8,22 +8,78 @@ use crate::{
     domain::SnapshotKey,
 };
 
-macro_rules! bind_field {
-    ($query:expr, $field:expr) => {{
-        let field = $field.as_ref();
+#[derive(Clone, Copy)]
+#[repr(i64)]
+enum HeaderField {
+    Name = 0,
+    Description = 1,
+    Version = 2,
+    Date = 3,
+    Author = 4,
+    Email = 5,
+    Homepage = 6,
+    Url = 7,
+    Comment = 8,
+    Category = 9,
+    HeaderDefinition = 10,
+    ForceMerging = 11,
+    ForceZipping = 12,
+    ForcePacking = 13,
+    ForceNoDump = 14,
+}
+
+#[derive(Clone, Copy)]
+#[repr(i64)]
+enum SetField {
+    Name = 0,
+    CloneOf = 1,
+    Description = 2,
+    Year = 3,
+    Manufacturer = 4,
+    RebuildTo = 5,
+    SampleOf = 6,
+    Region = 7,
+    ReleaseYear = 8,
+    ReleaseMonth = 9,
+    ReleaseDay = 10,
+    Serial = 11,
+}
+
+#[derive(Clone, Copy)]
+struct SourcePosition<'a> {
+    source_field: &'a str,
+    source_order: usize,
+    is_quoted: bool,
+    location: crate::logiqx::RecordLocation,
+}
+
+macro_rules! bind_position {
+    ($query:expr, $position:expr) => {{
+        let position = $position;
         $query
-            .bind::<Nullable<Text>, _>(field.map(|field| field.value.as_str()))
-            .bind::<Nullable<BigInt>, _>(field.map(|field| field_order(field)).transpose()?)
-            .bind::<Nullable<Text>, _>(field.map(|field| field.source_name.as_str()))
-            .bind::<Nullable<Bool>, _>(field.map(|field| field.quoted))
-            .bind::<Nullable<BigInt>, _>(field.map(|field| field.location.line))
-            .bind::<Nullable<BigInt>, _>(field.map(|field| field.location.column))
+            .bind::<Text, _>(position.source_field)
+            .bind::<BigInt, _>(checked_order(position.source_order)?)
+            .bind::<Bool, _>(position.is_quoted)
+            .bind::<BigInt, _>(position.location.line)
+            .bind::<BigInt, _>(position.location.column)
     }};
 }
 
-fn field_order(field: &FieldValue) -> crate::Result<i64> {
-    i64::try_from(field.order)
-        .map_err(|_| crate::Error::InvalidPath("too many ClrMamePro fields".into()))
+fn source_position(field: &FieldValue) -> SourcePosition<'_> {
+    SourcePosition {
+        source_field: &field.source_name,
+        source_order: field.order,
+        is_quoted: field.quoted,
+        location: field.location,
+    }
+}
+
+fn checked_order(order: usize) -> crate::Result<i64> {
+    i64::try_from(order).map_err(|_| crate::Error::InvalidPath("too many ClrMamePro fields".into()))
+}
+
+const fn field_text(field: &FieldValue) -> &str {
+    field.value.as_str()
 }
 
 pub(super) fn insert_header_facts(
@@ -31,37 +87,80 @@ pub(super) fn insert_header_facts(
     snapshot_key: &SnapshotKey,
     header: &Header,
 ) -> crate::Result<()> {
-    let query = sql_query(
+    sql_query(
         "INSERT INTO cmp_header_facts (
-           snapshot_key, source_line, source_column,
-           name, name_order, name_source_field, name_quoted, name_source_line, name_source_column,
-           description, description_order, description_source_field, description_quoted, description_source_line, description_source_column,
-           version, version_order, version_source_field, version_quoted, version_source_line, version_source_column,
-           date, date_order, date_source_field, date_quoted, date_source_line, date_source_column,
-           author, author_order, author_source_field, author_quoted, author_source_line, author_source_column,
-           email, email_order, email_source_field, email_quoted, email_source_line, email_source_column,
-           homepage, homepage_order, homepage_source_field, homepage_quoted, homepage_source_line, homepage_source_column,
-           url, url_order, url_source_field, url_quoted, url_source_line, url_source_column,
-           comment, comment_order, comment_source_field, comment_quoted, comment_source_line, comment_source_column,
-           category, category_order, category_source_field, category_quoted, category_source_line, category_source_column
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+           snapshot_key, source_block, source_order, source_line, source_column,
+           name, description, version, date, author, email, homepage, url, comment, category
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind::<Text, _>(snapshot_key.as_str())
+    .bind::<Text, _>(&header.source_name)
+    .bind::<BigInt, _>(checked_order(header.source_order)?)
     .bind::<BigInt, _>(header.location.line)
-    .bind::<BigInt, _>(header.location.column);
-    let query = bind_field!(query, header.name);
-    let query = bind_field!(query, header.description);
-    let query = bind_field!(query, header.version);
-    let query = bind_field!(query, header.date);
-    let query = bind_field!(query, header.author);
-    let query = bind_field!(query, header.email);
-    let query = bind_field!(query, header.homepage);
-    let query = bind_field!(query, header.url);
-    let query = bind_field!(query, header.comment);
-    let query = bind_field!(query, header.category);
-    query.execute(conn)?;
+    .bind::<BigInt, _>(header.location.column)
+    .bind::<Nullable<Text>, _>(header.name.as_ref().map(field_text))
+    .bind::<Nullable<Text>, _>(header.description.as_ref().map(field_text))
+    .bind::<Nullable<Text>, _>(header.version.as_ref().map(field_text))
+    .bind::<Nullable<Text>, _>(header.date.as_ref().map(field_text))
+    .bind::<Nullable<Text>, _>(header.author.as_ref().map(field_text))
+    .bind::<Nullable<Text>, _>(header.email.as_ref().map(field_text))
+    .bind::<Nullable<Text>, _>(header.homepage.as_ref().map(field_text))
+    .bind::<Nullable<Text>, _>(header.url.as_ref().map(field_text))
+    .bind::<Nullable<Text>, _>(header.comment.as_ref().map(field_text))
+    .bind::<Nullable<Text>, _>(header.category.as_ref().map(field_text))
+    .execute(conn)?;
 
-    insert_directives(conn, snapshot_key, &header.directives)
+    insert_directives(conn, snapshot_key, &header.directives)?;
+    insert_header_positions(conn, snapshot_key, header)
+}
+
+fn insert_header_positions(
+    conn: &mut SqliteConnection,
+    snapshot_key: &SnapshotKey,
+    header: &Header,
+) -> crate::Result<()> {
+    for (kind, field) in [
+        (HeaderField::Name, &header.name),
+        (HeaderField::Description, &header.description),
+        (HeaderField::Version, &header.version),
+        (HeaderField::Date, &header.date),
+        (HeaderField::Author, &header.author),
+        (HeaderField::Email, &header.email),
+        (HeaderField::Homepage, &header.homepage),
+        (HeaderField::Url, &header.url),
+        (HeaderField::Comment, &header.comment),
+        (HeaderField::Category, &header.category),
+        (HeaderField::HeaderDefinition, &header.directives.header),
+        (HeaderField::ForceMerging, &header.directives.forcemerging),
+        (HeaderField::ForceZipping, &header.directives.forcezipping),
+        (HeaderField::ForcePacking, &header.directives.forcepacking),
+        (HeaderField::ForceNoDump, &header.directives.forcenodump),
+    ] {
+        if let Some(field) = field {
+            insert_header_position(conn, snapshot_key, kind, source_position(field))?;
+        }
+    }
+    Ok(())
+}
+
+fn insert_header_position(
+    conn: &mut SqliteConnection,
+    snapshot_key: &SnapshotKey,
+    kind: HeaderField,
+    position: SourcePosition<'_>,
+) -> crate::Result<()> {
+    bind_position!(
+        sql_query(
+            "INSERT INTO cmp_header_field_positions (
+               snapshot_key, field_kind, source_field, source_order, is_quoted, source_line, source_column
+             ) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind::<Text, _>(snapshot_key.as_str())
+        .bind::<BigInt, _>(kind as i64),
+        position
+    )
+    .execute(conn)?;
+    Ok(())
 }
 
 pub(super) fn insert_set_facts(
@@ -69,45 +168,50 @@ pub(super) fn insert_set_facts(
     record_id: i64,
     facts: &SetFacts,
 ) -> crate::Result<()> {
-    if facts.description.is_some()
-        || facts.year.is_some()
-        || facts.manufacturer.is_some()
-        || facts.rebuildto.is_some()
-    {
-        let query = sql_query(
-            "INSERT INTO cmp_set_facts (
-               record_id,
-               description, description_order, description_source_field, description_quoted,
-               description_source_line, description_source_column,
-               year, year_order, year_source_field, year_quoted, year_source_line, year_source_column,
-               manufacturer, manufacturer_order, manufacturer_source_field, manufacturer_quoted,
-               manufacturer_source_line, manufacturer_source_column,
-               rebuildto, rebuildto_order, rebuildto_source_field, rebuildto_quoted,
-               rebuildto_source_line, rebuildto_source_column
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind::<BigInt, _>(record_id);
-        let query = bind_field!(query, facts.description);
-        let query = bind_field!(query, facts.year);
-        let query = bind_field!(query, facts.manufacturer);
-        let query = bind_field!(query, facts.rebuildto);
-        query.execute(conn)?;
-    }
+    sql_query(
+        "INSERT INTO cmp_set_facts (
+           record_id, source_block, document_order, description, year, manufacturer,
+           rebuildto, region, release_year_text, release_month_text, release_day_text, serial
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind::<BigInt, _>(record_id)
+    .bind::<Text, _>(&facts.source_block)
+    .bind::<BigInt, _>(checked_order(facts.document_order)?)
+    .bind::<Nullable<Text>, _>(facts.description.as_ref().map(field_text))
+    .bind::<Nullable<Text>, _>(facts.year.as_ref().map(field_text))
+    .bind::<Nullable<Text>, _>(facts.manufacturer.as_ref().map(field_text))
+    .bind::<Nullable<Text>, _>(facts.rebuildto.as_ref().map(field_text))
+    .bind::<Nullable<Text>, _>(facts.region.as_ref().map(field_text))
+    .bind::<Nullable<Text>, _>(facts.release_year_text.as_ref().map(field_text))
+    .bind::<Nullable<Text>, _>(facts.release_month_text.as_ref().map(field_text))
+    .bind::<Nullable<Text>, _>(facts.release_day_text.as_ref().map(field_text))
+    .bind::<Nullable<Text>, _>(facts.serial.as_ref().map(field_text))
+    .execute(conn)?;
 
     if let Some(parent) = &facts.sampleof {
-        sql_query(
-            "INSERT INTO cmp_sample_parent_links (
-               record_id, target_name, source_field, source_order, is_quoted, source_line, source_column
-             ) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind::<BigInt, _>(record_id)
-        .bind::<Text, _>(&parent.value)
-        .bind::<Text, _>(&parent.source_name)
-        .bind::<BigInt, _>(field_order(parent)?)
-        .bind::<Bool, _>(parent.quoted)
-        .bind::<BigInt, _>(parent.location.line)
-        .bind::<BigInt, _>(parent.location.column)
-        .execute(conn)?;
+        sql_query("INSERT INTO cmp_sample_parent_links (record_id, target_name) VALUES (?, ?)")
+            .bind::<BigInt, _>(record_id)
+            .bind::<Text, _>(&parent.value)
+            .execute(conn)?;
+    }
+
+    for (kind, field) in [
+        (SetField::Name, &facts.name),
+        (SetField::CloneOf, &facts.cloneof),
+        (SetField::Description, &facts.description),
+        (SetField::Year, &facts.year),
+        (SetField::Manufacturer, &facts.manufacturer),
+        (SetField::RebuildTo, &facts.rebuildto),
+        (SetField::SampleOf, &facts.sampleof),
+        (SetField::Region, &facts.region),
+        (SetField::ReleaseYear, &facts.release_year_text),
+        (SetField::ReleaseMonth, &facts.release_month_text),
+        (SetField::ReleaseDay, &facts.release_day_text),
+        (SetField::Serial, &facts.serial),
+    ] {
+        if let Some(field) = field {
+            insert_set_position(conn, record_id, kind, source_position(field))?;
+        }
     }
 
     for (sample_order, sample) in facts.samples.iter().enumerate() {
@@ -121,12 +225,32 @@ pub(super) fn insert_set_facts(
         .bind::<BigInt, _>(checked_order(sample_order)?)
         .bind::<Text, _>(&sample.value)
         .bind::<Text, _>(&sample.source_name)
-        .bind::<BigInt, _>(field_order(sample)?)
+        .bind::<BigInt, _>(checked_order(sample.order)?)
         .bind::<Bool, _>(sample.quoted)
         .bind::<BigInt, _>(sample.location.line)
         .bind::<BigInt, _>(sample.location.column)
         .execute(conn)?;
     }
+    Ok(())
+}
+
+fn insert_set_position(
+    conn: &mut SqliteConnection,
+    record_id: i64,
+    kind: SetField,
+    position: SourcePosition<'_>,
+) -> crate::Result<()> {
+    bind_position!(
+        sql_query(
+            "INSERT INTO cmp_set_field_positions (
+               record_id, field_kind, source_field, source_order, is_quoted, source_line, source_column
+             ) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind::<BigInt, _>(record_id)
+        .bind::<BigInt, _>(kind as i64),
+        position
+    )
+    .execute(conn)?;
     Ok(())
 }
 
@@ -183,15 +307,16 @@ pub(super) fn insert_rom_claim(
     Ok(())
 }
 
-const fn field_text(field: &FieldValue) -> &str {
-    field.value.as_str()
-}
-
 pub(super) fn insert_rom_positions(
     conn: &mut SqliteConnection,
     occurrence_id: i64,
     facts: &AssetFacts,
 ) -> crate::Result<()> {
+    sql_query("INSERT INTO cmp_set_rom_positions (occurrence_id, source_order) VALUES (?, ?)")
+        .bind::<BigInt, _>(occurrence_id)
+        .bind::<BigInt, _>(checked_order(facts.set_order)?)
+        .execute(conn)?;
+
     for (kind, field) in [
         (RomField::Name, &facts.name),
         (RomField::Size, &facts.size),
@@ -205,17 +330,7 @@ pub(super) fn insert_rom_positions(
         (RomField::Status, &facts.status_field),
     ] {
         if let Some(field) = field {
-            insert_rom_position(
-                conn,
-                occurrence_id,
-                RomPosition {
-                    kind,
-                    source_field: &field.source_name,
-                    order: field.order,
-                    quoted: field.quoted,
-                    location: field.location,
-                },
-            )?;
+            insert_rom_position(conn, occurrence_id, kind, source_position(field))?;
         }
     }
     for (kind, flag) in [
@@ -226,11 +341,11 @@ pub(super) fn insert_rom_positions(
             insert_rom_position(
                 conn,
                 occurrence_id,
-                RomPosition {
-                    kind,
+                kind,
+                SourcePosition {
                     source_field: &flag.source_name,
-                    order: flag.order,
-                    quoted: false,
+                    source_order: flag.order,
+                    is_quoted: false,
                     location: flag.location,
                 },
             )?;
@@ -239,38 +354,61 @@ pub(super) fn insert_rom_positions(
     Ok(())
 }
 
-#[derive(Clone, Copy)]
-struct RomPosition<'a> {
-    kind: RomField,
-    source_field: &'a str,
-    order: usize,
-    quoted: bool,
-    location: crate::logiqx::RecordLocation,
-}
-
 fn insert_rom_position(
     conn: &mut SqliteConnection,
     occurrence_id: i64,
-    position: RomPosition<'_>,
+    kind: RomField,
+    position: SourcePosition<'_>,
 ) -> crate::Result<()> {
-    sql_query(
-        "INSERT INTO cmp_rom_field_positions(
-         occurrence_id,field_kind,source_field,source_order,is_quoted,source_line,source_column)
-         VALUES (?,?,?,?,?,?,?)",
+    bind_position!(
+        sql_query(
+            "INSERT INTO cmp_rom_field_positions (
+               occurrence_id, field_kind, source_field, source_order, is_quoted, source_line, source_column
+             ) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind::<BigInt, _>(occurrence_id)
+        .bind::<BigInt, _>(kind as i64),
+        position
     )
-    .bind::<BigInt, _>(occurrence_id)
-    .bind::<BigInt, _>(position.kind as i64)
-    .bind::<Text, _>(position.source_field)
-    .bind::<BigInt, _>(checked_order(position.order)?)
-    .bind::<Bool, _>(position.quoted)
-    .bind::<BigInt, _>(position.location.line)
-    .bind::<BigInt, _>(position.location.column)
     .execute(conn)?;
     Ok(())
 }
 
-fn checked_order(order: usize) -> crate::Result<i64> {
-    i64::try_from(order).map_err(|_| crate::Error::InvalidPath("too many ClrMamePro fields".into()))
+pub(super) fn insert_document_facts(
+    conn: &mut SqliteConnection,
+    snapshot_key: &SnapshotKey,
+    header_present: bool,
+    comments: &[crate::clrmamepro::Comment],
+) -> crate::Result<()> {
+    sql_query(
+        "INSERT INTO cmp_documents (snapshot_key, header_present, comment_count) VALUES (?, ?, ?)",
+    )
+    .bind::<Text, _>(snapshot_key.as_str())
+    .bind::<Bool, _>(header_present)
+    .bind::<BigInt, _>(checked_order(comments.len())?)
+    .execute(conn)?;
+
+    insert_comments(conn, snapshot_key, comments)
+}
+
+fn insert_comments(
+    conn: &mut SqliteConnection,
+    snapshot_key: &SnapshotKey,
+    comments: &[crate::clrmamepro::Comment],
+) -> crate::Result<()> {
+    for (comment_order, comment) in comments.iter().enumerate() {
+        sql_query(
+            "INSERT INTO cmp_comments (snapshot_key, comment_order, text, source_line, source_column)
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind::<Text, _>(snapshot_key.as_str())
+        .bind::<BigInt, _>(checked_order(comment_order)?)
+        .bind::<Text, _>(&comment.text)
+        .bind::<BigInt, _>(comment.location.line)
+        .bind::<BigInt, _>(comment.location.column)
+        .execute(conn)?;
+    }
+    Ok(())
 }
 
 fn insert_directives(
@@ -278,27 +416,17 @@ fn insert_directives(
     snapshot_key: &SnapshotKey,
     directives: &HeaderDirectives,
 ) -> crate::Result<()> {
-    let query = sql_query(
+    sql_query(
         "INSERT INTO cmp_header_directives (
-           snapshot_key,
-           header_definition, header_definition_order, header_definition_source_field, header_definition_quoted,
-           header_definition_source_line, header_definition_source_column,
-           forcemerging, forcemerging_order, forcemerging_source_field, forcemerging_quoted,
-           forcemerging_source_line, forcemerging_source_column,
-           forcezipping, forcezipping_order, forcezipping_source_field, forcezipping_quoted,
-           forcezipping_source_line, forcezipping_source_column,
-           forcepacking, forcepacking_order, forcepacking_source_field, forcepacking_quoted,
-           forcepacking_source_line, forcepacking_source_column,
-           forcenodump, forcenodump_order, forcenodump_source_field, forcenodump_quoted,
-           forcenodump_source_line, forcenodump_source_column
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+           snapshot_key, header_definition, forcemerging, forcezipping, forcepacking, forcenodump
+         ) VALUES (?, ?, ?, ?, ?, ?)",
     )
-    .bind::<Text, _>(snapshot_key.as_str());
-    let query = bind_field!(query, directives.header);
-    let query = bind_field!(query, directives.forcemerging);
-    let query = bind_field!(query, directives.forcezipping);
-    let query = bind_field!(query, directives.forcepacking);
-    let query = bind_field!(query, directives.forcenodump);
-    query.execute(conn)?;
+    .bind::<Text, _>(snapshot_key.as_str())
+    .bind::<Nullable<Text>, _>(directives.header.as_ref().map(field_text))
+    .bind::<Nullable<Text>, _>(directives.forcemerging.as_ref().map(field_text))
+    .bind::<Nullable<Text>, _>(directives.forcezipping.as_ref().map(field_text))
+    .bind::<Nullable<Text>, _>(directives.forcepacking.as_ref().map(field_text))
+    .bind::<Nullable<Text>, _>(directives.forcenodump.as_ref().map(field_text))
+    .execute(conn)?;
     Ok(())
 }

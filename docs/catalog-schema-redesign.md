@@ -540,18 +540,21 @@ Use these native tables with a pinned, explicit supported text grammar:
 
 | Native CMP relation | Documented fields/structures |
 |---|---|
-| `cmp_headers` | name, description, version, author, comment; category/date/email/homepage/URL metadata documented by the profiler |
+| `cmp_header_facts` | name, description, version, author, comment; witnessed homepage and explicitly accepted category/date/email/URL compatibility values; source block, ordinal and location |
 | `cmp_header_directives` | header-definition filename, forcemerging, forcezipping, forcenodump; exact source spelling and explicitness |
-| `cmp_sets` | game/set name identity, cloneof, description, year, manufacturer, rebuildto |
+| `cmp_set_facts`, `clrmamepro_set_links` | numeric set owner; catalog-owned name, cloneof literal, description/year/manufacturer/rebuildto; witnessed region/release-date-component/set-serial text; original game/set spelling and document ordinal |
 | `cmp_roms` | claim ID; name, size?, CRC/CRC32 alias, MD5?, SHA-1?, declared nodump/baddump flags; explicitly supported merge/status dialect fields |
 | `cmp_samples`, `cmp_sample_parent_links` | scalar sample filename claims with unknown size/digests; sampleof source declaration |
 
 `forcezipping` in documented text and Logiqx's `forcepacking` are distinct source
 fields. BIOS/disk/resource engine aliases are documented transformation
 vocabulary, not sufficient proof of a text block grammar; require a pinned
-shape/specimen before declaring those forms supported. Real corpus region and
-releaseyear/releasemonth/releaseday fields similarly need an explicit dialect
-contract. Do not claim unspecified multiplicity/default rules as published facts.
+shape/specimen before declaring those forms supported. Real corpus region,
+releaseyear/releasemonth/releaseday and set serial are supported under the named
+compatibility contract, not presented as published listinfo fields. Leading
+zeros and empty date components stay text, without invented calendar validation.
+The published forcenodump default is obsolete; other undocumented defaults and
+multiplicity rules are not inferred.
 The current `clrmamepro-declared-text-compat-v1` implementation stores ROM name,
 size text, both CRC/CRC32 declarations, MD5/SHA-1 text, merge/date/serial/status
 and independent nodump/baddump presence in `cmp_rom_claims`. Numeric size and
@@ -574,9 +577,30 @@ computed evidence cannot stand in for a source field. Linked UUIDs require an
 unambiguous matching source SHA-1 in the native whole-file scope and no native
 declaration conflicts. Native claims and positions cannot be appended after
 publication. History keeps raw spelling and relative native-field order while
-ignoring vendor-only gaps and reindentation. Complete header/set/comment
-provenance, observed region/date-component/set-serial dialect fields and full
-format query witnesses remain unfinished.
+ignoring vendor-only gaps and reindentation.
+
+Header values and directives have fixed native columns with fifteen closed
+`cmp_header_field_positions` codes. Set scalar positions use twelve closed
+`cmp_set_field_positions` codes, including name and separate cloneof/sampleof
+literals. Positions never copy values. A mandatory `cmp_documents` row records
+header presence and parsed lexical comment count; `cmp_comments` owns ordered
+semicolon tokens and locations independently of the header's comment value.
+`cmp_set_rom_positions` orders ROM forms alongside scalar fields and repeated
+samples. Publication requires present-value position coverage, matching native
+owners, declared comment count with contiguous comment ordinals and unique
+native document/set ordinals. These checks enforce the importer's declaration,
+not reconstruction of omitted input from a direct-SQL caller's false count.
+All native facts are immutable, and publication rejects late inserts. Insert
+guards reject conflicting primary keys and unique field-order keys even when
+REPLACE deletion triggers are disabled, including unpublished draft rows. Effective
+merging/zipping/nodump modes derive from declared values: missing forcenodump
+means obsolete, while explicit unknown values disable the mode. Forcepacking
+remains an independent named compatibility value, never an alias for forcezipping.
+History compares structural document layout separately from owner fact multisets:
+header crossings remain visible even with repeated names, but indistinguishable
+repeated owners do not gain invented cross-snapshot ordinal identity. Native
+scalar samples still use set/sample-order keys, not shared media-entry owners;
+that API cutover and complete format query witnesses remain unfinished.
 
 A fresh import of the ignored authentic Atari-2600 corpus on 2026-10-01 retained
 905 sets and 905 ROM occurrences, all 4,526 present ROM field positions and
@@ -584,8 +608,10 @@ A fresh import of the ignored authentic Atari-2600 corpus on 2026-10-01 retained
 separate native owners; there are no missing ROM field positions. All 905
 eligible occurrences linked to expected-file UUIDs. SQLite integrity and
 foreign-key checks passed. The 188,849-byte original remains an external source
-object. This is a ROM-owner/query witness, not acceptance of the corpus's still
-unimplemented set-level region, release-date components or serial fields.
+object. The original ROM milestone did not accept its set-level region,
+release-date components or serial fields; the later document/set milestone
+adds those native field owners and provenance. Full format/query/performance
+acceptance is still separate.
 
 Preserve quoted strings and valid flags as typed values; CMP descriptions/year/
 manufacturer no longer live in `metadata_json`. TOSEC naming conventions and

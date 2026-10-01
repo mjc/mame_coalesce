@@ -95,14 +95,19 @@ pub(super) fn insert(
     .get_result::<Id>(conn)?;
     let record = CatalogSetId::from_database(id.value);
     if let (Some(parent), Some(table)) = (&set.parent, kind.parent_table()) {
+        let location = set
+            .cmp_facts
+            .as_ref()
+            .and_then(|facts| facts.cloneof.as_ref())
+            .map_or(set.location, |field| field.location);
         sql_query(format!(
             "INSERT INTO {table}(set_id,link_kind,target_name,source_line,source_column) \
              VALUES (?,'cloneof',?,?,?)"
         ))
         .bind::<BigInt, _>(record.as_i64())
         .bind::<Text, _>(parent)
-        .bind::<BigInt, _>(set.location.line)
-        .bind::<BigInt, _>(set.location.column)
+        .bind::<BigInt, _>(location.line)
+        .bind::<BigInt, _>(location.column)
         .execute(conn)?;
     }
     if matches!(kind, RootSetKind::LogiqxGame) {

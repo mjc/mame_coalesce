@@ -96,39 +96,24 @@ CREATE TABLE catalogs (
     display_name TEXT NOT NULL
 );
 CREATE TABLE cmp_header_directives (
-    snapshot_key TEXT PRIMARY KEY NOT NULL
-        REFERENCES cmp_header_facts (snapshot_key) ON DELETE RESTRICT,
-    header_definition TEXT, header_definition_order INTEGER,
-    header_definition_source_field TEXT, header_definition_quoted INTEGER,
-    header_definition_source_line INTEGER, header_definition_source_column INTEGER,
-    forcemerging TEXT, forcemerging_order INTEGER,
-    forcemerging_source_field TEXT, forcemerging_quoted INTEGER,
-    forcemerging_source_line INTEGER, forcemerging_source_column INTEGER,
-    forcezipping TEXT, forcezipping_order INTEGER,
-    forcezipping_source_field TEXT, forcezipping_quoted INTEGER,
-    forcezipping_source_line INTEGER, forcezipping_source_column INTEGER,
-    forcepacking TEXT, forcepacking_order INTEGER,
-    forcepacking_source_field TEXT, forcepacking_quoted INTEGER,
-    forcepacking_source_line INTEGER, forcepacking_source_column INTEGER,
-    forcenodump TEXT, forcenodump_order INTEGER,
-    forcenodump_source_field TEXT, forcenodump_quoted INTEGER,
-    forcenodump_source_line INTEGER, forcenodump_source_column INTEGER
+    snapshot_key TEXT PRIMARY KEY NOT NULL REFERENCES cmp_header_facts(snapshot_key) ON DELETE RESTRICT,
+    header_definition TEXT, forcemerging TEXT, forcezipping TEXT, forcepacking TEXT, forcenodump TEXT,
+    forcemerging_effective TEXT GENERATED ALWAYS AS (
+      CASE WHEN forcemerging IN ('none','split','full') THEN forcemerging END) VIRTUAL,
+    forcezipping_effective TEXT GENERATED ALWAYS AS (
+      CASE WHEN forcezipping IN ('zip','unzip') THEN forcezipping END) VIRTUAL,
+    forcenodump_effective TEXT GENERATED ALWAYS AS (
+      CASE WHEN forcenodump IS NULL THEN 'obsolete'
+           WHEN forcenodump IN ('obsolete','required','ignore') THEN forcenodump END) VIRTUAL
 ) WITHOUT ROWID;
 CREATE TABLE cmp_header_facts (
-    snapshot_key TEXT PRIMARY KEY NOT NULL
-        REFERENCES catalog_snapshots (snapshot_key) ON DELETE RESTRICT,
-    source_line INTEGER NOT NULL CHECK (source_line > 0),
-    source_column INTEGER NOT NULL CHECK (source_column > 0),
-    name TEXT, name_order INTEGER, name_source_field TEXT, name_quoted INTEGER, name_source_line INTEGER, name_source_column INTEGER,
-    description TEXT, description_order INTEGER, description_source_field TEXT, description_quoted INTEGER, description_source_line INTEGER, description_source_column INTEGER,
-    version TEXT, version_order INTEGER, version_source_field TEXT, version_quoted INTEGER, version_source_line INTEGER, version_source_column INTEGER,
-    date TEXT, date_order INTEGER, date_source_field TEXT, date_quoted INTEGER, date_source_line INTEGER, date_source_column INTEGER,
-    author TEXT, author_order INTEGER, author_source_field TEXT, author_quoted INTEGER, author_source_line INTEGER, author_source_column INTEGER,
-    email TEXT, email_order INTEGER, email_source_field TEXT, email_quoted INTEGER, email_source_line INTEGER, email_source_column INTEGER,
-    homepage TEXT, homepage_order INTEGER, homepage_source_field TEXT, homepage_quoted INTEGER, homepage_source_line INTEGER, homepage_source_column INTEGER,
-    url TEXT, url_order INTEGER, url_source_field TEXT, url_quoted INTEGER, url_source_line INTEGER, url_source_column INTEGER,
-    comment TEXT, comment_order INTEGER, comment_source_field TEXT, comment_quoted INTEGER, comment_source_line INTEGER, comment_source_column INTEGER,
-    category TEXT, category_order INTEGER, category_source_field TEXT, category_quoted INTEGER, category_source_line INTEGER, category_source_column INTEGER
+    snapshot_key TEXT PRIMARY KEY NOT NULL REFERENCES catalog_snapshots(snapshot_key) ON DELETE RESTRICT,
+    source_block TEXT NOT NULL CHECK (lower(source_block) = 'clrmamepro'),
+    source_order INTEGER NOT NULL CHECK (typeof(source_order) = 'integer' AND source_order >= 0),
+    source_line INTEGER NOT NULL CHECK (typeof(source_line) = 'integer' AND source_line > 0),
+    source_column INTEGER NOT NULL CHECK (typeof(source_column) = 'integer' AND source_column > 0),
+    name TEXT, description TEXT, version TEXT, date TEXT, author TEXT,
+    email TEXT, homepage TEXT, url TEXT, comment TEXT, category TEXT
 ) WITHOUT ROWID;
 CREATE TABLE cmp_rom_claims (
     occurrence_id INTEGER PRIMARY KEY NOT NULL,
@@ -169,35 +154,25 @@ CREATE TABLE cmp_rom_claims (
 CREATE TABLE cmp_sample_parent_links (
     record_id INTEGER PRIMARY KEY NOT NULL
         REFERENCES catalog_sets (set_id) ON DELETE RESTRICT,
-    target_name TEXT NOT NULL,
-    source_field TEXT NOT NULL,
-    source_order INTEGER NOT NULL CHECK (source_order >= 0),
-    is_quoted INTEGER NOT NULL CHECK (is_quoted IN (0, 1)),
-    source_line INTEGER NOT NULL CHECK (source_line > 0),
-    source_column INTEGER NOT NULL CHECK (source_column > 0)
+    target_name TEXT NOT NULL
 ) WITHOUT ROWID;
 CREATE TABLE cmp_samples (
     record_id INTEGER NOT NULL REFERENCES catalog_sets (set_id) ON DELETE RESTRICT,
-    sample_order INTEGER NOT NULL CHECK (sample_order >= 0),
+    sample_order INTEGER NOT NULL CHECK (typeof(sample_order) = 'integer' AND sample_order >= 0),
     sample_name TEXT NOT NULL,
-    source_field TEXT NOT NULL,
-    source_order INTEGER NOT NULL CHECK (source_order >= 0),
-    is_quoted INTEGER NOT NULL CHECK (is_quoted IN (0, 1)),
-    source_line INTEGER NOT NULL CHECK (source_line > 0),
-    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    source_field TEXT NOT NULL CHECK (lower(source_field) = 'sample'),
+    source_order INTEGER NOT NULL CHECK (typeof(source_order) = 'integer' AND source_order >= 0),
+    is_quoted INTEGER NOT NULL CHECK (typeof(is_quoted) = 'integer' AND is_quoted IN (0, 1)),
+    source_line INTEGER NOT NULL CHECK (typeof(source_line) = 'integer' AND source_line > 0),
+    source_column INTEGER NOT NULL CHECK (typeof(source_column) = 'integer' AND source_column > 0),
     PRIMARY KEY (record_id, sample_order)
 ) WITHOUT ROWID;
 CREATE TABLE cmp_set_facts (
-    record_id INTEGER PRIMARY KEY NOT NULL
-        REFERENCES catalog_sets (set_id) ON DELETE RESTRICT,
-    description TEXT, description_order INTEGER, description_source_field TEXT, description_quoted INTEGER,
-    description_source_line INTEGER, description_source_column INTEGER,
-    year TEXT, year_order INTEGER, year_source_field TEXT, year_quoted INTEGER,
-    year_source_line INTEGER, year_source_column INTEGER,
-    manufacturer TEXT, manufacturer_order INTEGER, manufacturer_source_field TEXT, manufacturer_quoted INTEGER,
-    manufacturer_source_line INTEGER, manufacturer_source_column INTEGER,
-    rebuildto TEXT, rebuildto_order INTEGER, rebuildto_source_field TEXT, rebuildto_quoted INTEGER,
-    rebuildto_source_line INTEGER, rebuildto_source_column INTEGER
+    record_id INTEGER PRIMARY KEY NOT NULL REFERENCES catalog_sets(set_id) ON DELETE RESTRICT,
+    source_block TEXT NOT NULL CHECK (lower(source_block) IN ('game','set')),
+    document_order INTEGER NOT NULL CHECK (typeof(document_order) = 'integer' AND document_order >= 0),
+    description TEXT, year TEXT, manufacturer TEXT, rebuildto TEXT,
+    region TEXT, release_year_text TEXT, release_month_text TEXT, release_day_text TEXT, serial TEXT
 ) WITHOUT ROWID;
 CREATE TABLE digest_values (
     digest_id INTEGER PRIMARY KEY,

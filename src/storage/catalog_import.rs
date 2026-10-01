@@ -104,6 +104,7 @@ struct SnapshotData {
     logiqx_document_facts: Option<LogiqxDocumentFacts>,
     logiqx_document_details: Option<logiqx_native::DocumentDetails>,
     cmp_header_facts: Option<crate::clrmamepro::Header>,
+    cmp_comments: Option<Vec<crate::clrmamepro::Comment>>,
 }
 
 #[derive(Clone)]
@@ -361,6 +362,7 @@ impl SnapshotData {
                 data_file,
             )?),
             cmp_header_facts: None,
+            cmp_comments: None,
         })
     }
 
@@ -373,6 +375,7 @@ impl SnapshotData {
             logiqx_document_facts: None,
             logiqx_document_details: None,
             cmp_header_facts: None,
+            cmp_comments: None,
         }
     }
 
@@ -429,6 +432,7 @@ impl SnapshotData {
             logiqx_document_facts: None,
             logiqx_document_details: None,
             cmp_header_facts: catalog.header,
+            cmp_comments: Some(catalog.comments),
         }
     }
 
@@ -486,6 +490,7 @@ impl SnapshotData {
             logiqx_document_facts: None,
             logiqx_document_details: None,
             cmp_header_facts: None,
+            cmp_comments: None,
         }
     }
 }
@@ -1199,6 +1204,14 @@ fn insert_snapshot_contents(
     }
     if let Some(header) = &snapshot_data.cmp_header_facts {
         cmp_native::insert_header_facts(conn, snapshot_key, header)?;
+    }
+    if let Some(comments) = &snapshot_data.cmp_comments {
+        cmp_native::insert_document_facts(
+            conn,
+            snapshot_key,
+            snapshot_data.cmp_header_facts.is_some(),
+            comments,
+        )?;
     }
 
     Ok(())

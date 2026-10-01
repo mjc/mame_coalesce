@@ -110,12 +110,17 @@ fn pending_occurrence(
     sql_query("INSERT INTO catalogs(catalog_key,source_key,display_name) SELECT 'pending',source_key,'Pending' FROM catalogs WHERE catalog_key='cmp-declared-fields-test'").execute(connection)?;
     sql_query("INSERT INTO catalog_snapshots(snapshot_key,catalog_key,document_key,interpretation_key,coverage_id) SELECT 'pending','pending',document_key,interpretation_key,coverage_id FROM catalog_snapshots WHERE snapshot_key=?")
         .bind::<Text,_>(original.as_str()).execute(connection)?;
+    sql_query("INSERT INTO cmp_documents(snapshot_key,header_present,comment_count) VALUES('pending',0,0)").execute(connection)?;
     sql_query(
         "INSERT INTO catalog_set_groups(snapshot_key,kind,list_order) VALUES('pending','root',0)",
     )
     .execute(connection)?;
     let set_id = sql_query("INSERT INTO catalog_sets(set_group_id,source_element_kind,list_order,set_name,source_line,source_column) SELECT set_group_id,'cmp_set',0,'pending',1,1 FROM catalog_set_groups WHERE snapshot_key='pending' RETURNING set_id AS value")
         .get_result::<IdValue>(connection)?.value;
+    sql_query("INSERT INTO cmp_set_facts(record_id,source_block,document_order) VALUES(?,'set',0)")
+        .bind::<BigInt, _>(set_id)
+        .execute(connection)?;
+    sql_query("INSERT INTO cmp_set_field_positions(record_id,field_kind,source_field,source_order,is_quoted,source_line,source_column) VALUES(?,0,'name',0,0,1,1)").bind::<BigInt,_>(set_id).execute(connection)?;
     let occurrence_id = sql_query("INSERT INTO asset_occurrences(record_id,occurrence_order,claim_kind,content_uuid) SELECT ?,0,'cmp_rom',CASE WHEN ? THEN content_uuid END FROM asset_occurrences WHERE occurrence_id=(SELECT MIN(occurrence_id) FROM cmp_rom_claims) RETURNING occurrence_id AS value")
         .bind::<BigInt,_>(set_id).bind::<Bool,_>(matches!(identity, IdentityLink::Preserve)).get_result::<IdValue>(connection)?.value;
     Ok(occurrence_id)
@@ -132,6 +137,9 @@ fn pending_rom(
         .bind::<BigInt,_>(occurrence_id).bind::<BigInt,_>(changed_digest_field).execute(connection)?;
     sql_query("INSERT INTO occurrence_digest_assertions(occurrence_id,digest_id,scope,provenance) SELECT ?,digest_id,scope,provenance FROM occurrence_digest_assertions WHERE occurrence_id=(SELECT MIN(occurrence_id) FROM cmp_rom_claims)")
         .bind::<BigInt,_>(occurrence_id).execute(connection)?;
+    sql_query("INSERT INTO cmp_set_rom_positions(occurrence_id,source_order) VALUES(?,1)")
+        .bind::<BigInt, _>(occurrence_id)
+        .execute(connection)?;
     Ok(occurrence_id)
 }
 

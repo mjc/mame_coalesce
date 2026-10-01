@@ -13,10 +13,13 @@ pub struct Catalog {
     pub header: Option<Header>,
     pub sets: Vec<Set>,
     pub extensions: Vec<Extension>,
+    pub comments: Vec<Comment>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Header {
+    pub source_name: String,
+    pub source_order: usize,
     pub name: Option<FieldValue>,
     pub description: Option<FieldValue>,
     pub version: Option<FieldValue>,
@@ -51,16 +54,26 @@ pub struct FieldValue {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SetFacts {
+    pub source_block: String,
+    pub document_order: usize,
+    pub name: Option<FieldValue>,
+    pub cloneof: Option<FieldValue>,
     pub description: Option<FieldValue>,
     pub year: Option<FieldValue>,
+    pub region: Option<FieldValue>,
+    pub release_year_text: Option<FieldValue>,
+    pub release_month_text: Option<FieldValue>,
+    pub release_day_text: Option<FieldValue>,
     pub manufacturer: Option<FieldValue>,
     pub rebuildto: Option<FieldValue>,
     pub sampleof: Option<FieldValue>,
+    pub serial: Option<FieldValue>,
     pub samples: Vec<FieldValue>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AssetFacts {
+    pub set_order: usize,
     pub name: Option<FieldValue>,
     pub size: Option<FieldValue>,
     pub crc: Option<FieldValue>,
@@ -132,6 +145,12 @@ pub struct Extension {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Comment {
+    pub text: String,
+    pub location: RecordLocation,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum TokenKind {
     Word,
     Quoted(String),
@@ -190,71 +209,42 @@ impl Catalog {
         let tokens = Lexer::new(input).tokenize()?;
         let mut parser = Parser::new(input, tokens);
         let forms = parser.parse_document()?;
-        let mut headers = forms.iter().filter(|form| form.tag.word_eq("clrmamepro"));
+        let mut headers = forms
+            .iter()
+            .enumerate()
+            .filter(|(_, form)| form.tag.word_eq("clrmamepro"));
         let header = headers.next();
         if headers.next().is_some() {
             return Err(parse_error(
                 "multiple clrmamepro headers are ambiguous",
                 "document",
                 None,
-                header.map(|form| form.tag.location),
+                header.map(|(_, form)| form.tag.location),
             ));
         }
-        let native_header = header.map(parse_header).transpose()?;
+        let native_header = header
+            .map(|(order, form)| parse_header(form, order))
+            .transpose()?;
         let version = native_header
             .as_ref()
             .and_then(|header| header.version.as_ref())
             .map(|field| field.value.clone());
 
         let mut sets = Vec::new();
-        let mut extensions = parser
+        let comments = parser
             .comments
             .into_iter()
-            .map(|token| Extension {
-                record_kind: "comment".into(),
-                record_name: None,
-                field_name: "comment".into(),
-                value: json!({"raw_token": token.raw}),
+            .map(|token| Comment {
+                text: token.raw.to_owned(),
                 location: token.location,
             })
             .collect::<Vec<_>>();
-        if let Some(header_form) = header {
-            let known_fields = [
-                "name",
-                "description",
-                "version",
-                "date",
-                "author",
-                "email",
-                "homepage",
-                "url",
-                "comment",
-                "category",
-                "header",
-                "forcemerging",
-                "forcezipping",
-                "forcepacking",
-                "forcenodump",
-            ];
-            for item in &header_form.items {
-                match item {
-                    FormItem::Field(field)
-                        if known_fields.iter().any(|known| field.key.word_eq(known)) => {}
-                    FormItem::Field(field) => {
-                        extensions.push(field_extension("clrmamepro", "", field));
-                    }
-                    FormItem::Flag(flag) => {
-                        extensions.push(flag_extension("clrmamepro", "", flag));
-                    }
-                    FormItem::Form(child) => {
-                        extensions.push(form_extension("clrmamepro", "", child));
-                    }
-                }
-            }
-        }
-        for form in &forms {
+        let mut extensions = header
+            .map(|(_, form)| header_extensions(form))
+            .unwrap_or_default();
+        for (document_order, form) in forms.iter().enumerate() {
             if form.tag.word_eq("game") || form.tag.word_eq("set") {
-                sets.push(parse_set(form)?);
+                sets.push(parse_set(form, document_order)?);
             } else if !form.tag.word_eq("clrmamepro") {
                 extensions.push(Extension {
                     record_kind: "document".into(),
@@ -278,8 +268,40 @@ impl Catalog {
             header: native_header,
             sets,
             extensions,
+            comments,
         })
     }
+}
+
+fn header_extensions(form: &Form<'_>) -> Vec<Extension> {
+    let known_fields = [
+        "name",
+        "description",
+        "version",
+        "date",
+        "author",
+        "email",
+        "homepage",
+        "url",
+        "comment",
+        "category",
+        "header",
+        "forcemerging",
+        "forcezipping",
+        "forcepacking",
+        "forcenodump",
+    ];
+    form.items
+        .iter()
+        .filter_map(|item| match item {
+            FormItem::Field(field) if known_fields.iter().any(|known| field.key.word_eq(known)) => {
+                None
+            }
+            FormItem::Field(field) => Some(field_extension("clrmamepro", "", field)),
+            FormItem::Flag(flag) => Some(flag_extension("clrmamepro", "", flag)),
+            FormItem::Form(child) => Some(form_extension("clrmamepro", "", child)),
+        })
+        .collect()
 }
 
 impl<'a> Lexer<'a> {
@@ -503,7 +525,7 @@ impl<'a> Parser<'a> {
                     return Err(parse_error(
                         format!("keyword {} has no value", key.value()),
                         tag.value(),
-                        None,
+                        form_record_name(&items),
                         Some(key.location),
                     ));
                 }
@@ -511,7 +533,7 @@ impl<'a> Parser<'a> {
                 return Err(parse_error(
                     format!("keyword {} has no value", key.value()),
                     tag.value(),
-                    None,
+                    form_record_name(&items),
                     Some(key.location),
                 ));
             }
@@ -598,10 +620,15 @@ fn is_value_keyword(form: &Token<'_>, keyword: &Token<'_>) -> bool {
             "cloneof",
             "description",
             "year",
+            "region",
+            "releaseyear",
+            "releasemonth",
+            "releaseday",
             "manufacturer",
             "rebuildto",
             "sampleof",
             "sample",
+            "serial",
         ]
         .iter()
         .any(|field| keyword.word_eq(field))
@@ -631,7 +658,16 @@ fn is_value_keyword(form: &Token<'_>, keyword: &Token<'_>) -> bool {
 }
 
 fn field_value(form: &Form<'_>, field_name: &str) -> crate::Result<Option<FieldValue>> {
-    let field = single_field(form, field_name, form.tag.value(), None)?;
+    field_value_scoped(form, field_name, form.tag.value(), None)
+}
+
+fn field_value_scoped(
+    form: &Form<'_>,
+    field_name: &str,
+    record_kind: &str,
+    record_name: Option<&str>,
+) -> crate::Result<Option<FieldValue>> {
+    let field = single_field(form, field_name, record_kind, record_name)?;
     Ok(field.map(|field| FieldValue {
         source_name: field.key.value().to_owned(),
         value: field.value.value().to_owned(),
@@ -647,8 +683,10 @@ fn field_value(form: &Form<'_>, field_name: &str) -> crate::Result<Option<FieldV
     }))
 }
 
-fn parse_header(form: &Form<'_>) -> crate::Result<Header> {
+fn parse_header(form: &Form<'_>, source_order: usize) -> crate::Result<Header> {
     Ok(Header {
+        source_name: form.tag.value().to_owned(),
+        source_order,
         name: field_value(form, "name")?,
         description: field_value(form, "description")?,
         version: field_value(form, "version")?,
@@ -677,7 +715,7 @@ fn form_record_name<'items>(items: &'items [FormItem<'_>]) -> Option<&'items str
     })
 }
 
-fn parse_set(form: &Form<'_>) -> crate::Result<Set> {
+fn parse_set(form: &Form<'_>, document_order: usize) -> crate::Result<Set> {
     let mut names = form.fields("name");
     let name_field = names.next().ok_or_else(|| {
         parse_error(
@@ -696,30 +734,8 @@ fn parse_set(form: &Form<'_>) -> crate::Result<Set> {
             Some(form.tag.location),
         ));
     }
-    let parent = single_field(form, "cloneof", "set", Some(&name))?
-        .map(|field| field.value.value().to_owned());
-    let native = SetFacts {
-        description: field_value(form, "description")?,
-        year: field_value(form, "year")?,
-        manufacturer: field_value(form, "manufacturer")?,
-        rebuildto: field_value(form, "rebuildto")?,
-        sampleof: field_value(form, "sampleof")?,
-        samples: form
-            .items
-            .iter()
-            .enumerate()
-            .filter_map(|(order, item)| match item {
-                FormItem::Field(field) if field.key.word_eq("sample") => Some(FieldValue {
-                    source_name: field.key.value().to_owned(),
-                    value: field.value.value().to_owned(),
-                    quoted: matches!(field.value.kind, TokenKind::Quoted(_)),
-                    order,
-                    location: field.value.location,
-                }),
-                _ => None,
-            })
-            .collect(),
-    };
+    let native = parse_set_facts(form, &name, document_order)?;
+    let parent = native.cloneof.as_ref().map(|field| field.value.clone());
     let mut metadata: BTreeMap<String, Value> = BTreeMap::new();
     for (name, value) in [
         ("description", &native.description),
@@ -734,10 +750,10 @@ fn parse_set(form: &Form<'_>) -> crate::Result<Set> {
 
     let mut assets = Vec::new();
     let mut extensions = Vec::new();
-    for item in &form.items {
+    for (set_order, item) in form.items.iter().enumerate() {
         match item {
             FormItem::Form(child) if child.tag.word_eq("rom") => {
-                assets.push(parse_asset(child, &name)?);
+                assets.push(parse_asset(child, &name, set_order)?);
             }
             FormItem::Form(child) => extensions.push(form_extension("set", &name, child)),
             FormItem::Field(field)
@@ -746,10 +762,15 @@ fn parse_set(form: &Form<'_>) -> crate::Result<Set> {
                     "cloneof",
                     "description",
                     "year",
+                    "region",
+                    "releaseyear",
+                    "releasemonth",
+                    "releaseday",
                     "manufacturer",
                     "rebuildto",
                     "sampleof",
                     "sample",
+                    "serial",
                 ]
                 .iter()
                 .any(|known| field.key.word_eq(known)) => {}
@@ -768,7 +789,42 @@ fn parse_set(form: &Form<'_>) -> crate::Result<Set> {
     })
 }
 
-fn parse_asset(form: &Form<'_>, set_name: &str) -> crate::Result<Asset> {
+fn parse_set_facts(form: &Form<'_>, name: &str, document_order: usize) -> crate::Result<SetFacts> {
+    let field = |field_name: &'static str| field_value_scoped(form, field_name, "set", Some(name));
+    Ok(SetFacts {
+        source_block: form.tag.value().to_owned(),
+        document_order,
+        name: field("name")?,
+        cloneof: field("cloneof")?,
+        description: field("description")?,
+        year: field("year")?,
+        region: field("region")?,
+        release_year_text: field("releaseyear")?,
+        release_month_text: field("releasemonth")?,
+        release_day_text: field("releaseday")?,
+        manufacturer: field("manufacturer")?,
+        rebuildto: field("rebuildto")?,
+        sampleof: field("sampleof")?,
+        serial: field("serial")?,
+        samples: form
+            .items
+            .iter()
+            .enumerate()
+            .filter_map(|(order, item)| match item {
+                FormItem::Field(field) if field.key.word_eq("sample") => Some(FieldValue {
+                    source_name: field.key.value().to_owned(),
+                    value: field.value.value().to_owned(),
+                    quoted: matches!(field.value.kind, TokenKind::Quoted(_)),
+                    order,
+                    location: field.value.location,
+                }),
+                _ => None,
+            })
+            .collect(),
+    })
+}
+
+fn parse_asset(form: &Form<'_>, set_name: &str, set_order: usize) -> crate::Result<Asset> {
     let name = single_field(form, "name", "rom", Some(set_name))?
         .ok_or_else(|| {
             parse_error(
@@ -823,7 +879,7 @@ fn parse_asset(form: &Form<'_>, set_name: &str) -> crate::Result<Asset> {
     let merge = single_field(form, "merge", "rom", Some(&name))?
         .map(|field| field.value.value().to_owned());
     let status = parse_asset_status(form, &name)?;
-    let native = parse_asset_facts(form)?;
+    let native = parse_asset_facts(form, set_order)?;
     let known_fields = [
         "name", "size", "crc", "crc32", "md5", "sha1", "merge", "status", "date", "serial",
     ];
@@ -884,8 +940,9 @@ fn parse_asset_status(form: &Form<'_>, name: &str) -> crate::Result<Option<Strin
     }))
 }
 
-fn parse_asset_facts(form: &Form<'_>) -> crate::Result<AssetFacts> {
+fn parse_asset_facts(form: &Form<'_>, set_order: usize) -> crate::Result<AssetFacts> {
     Ok(AssetFacts {
+        set_order,
         name: field_value(form, "name")?,
         size: field_value(form, "size")?,
         crc: field_value(form, "crc")?,
@@ -1098,12 +1155,14 @@ mod tests {
         let catalog = Catalog::parse(
             b"; top\nclrmamepro ( version v1 )\ngame ( name set rom ( name x.bin futuretag \"opaque\" mysteryflag crc 12345678 ) )",
         )?;
-        assert_eq!(
+        assert_eq!(catalog.comments.len(), 1);
+        assert_eq!(catalog.comments[0].text, "; top");
+        assert_eq!(catalog.comments[0].location.line, 1);
+        assert!(
             catalog
                 .extensions
-                .first()
-                .map(|extension| extension.field_name.as_str()),
-            Some("comment")
+                .iter()
+                .all(|extension| extension.field_name != "comment")
         );
         let set = catalog
             .sets
@@ -1131,6 +1190,101 @@ mod tests {
         );
         assert_eq!(set.assets[0].crc, Some(vec![0x12, 0x34, 0x56, 0x78]));
         Ok(())
+    }
+
+    #[test]
+    fn retains_set_provenance_fields_and_form_ordinals() -> crate::Result<()> {
+        let catalog = Catalog::parse(
+            b"; first\nunknown ()\nClRmAmEpRo ( version 1 comment \"header text\" )\nGaMe ( NAME \"MixedCase\" CLONEOF \"Parent\" REGION \"\" RELEASEYEAR 0000 RELEASEMONTH 09 RELEASEDAY 00 SERIAL \"AbC-01\" rom ( name first.bin ) note value rom ( name second.bin ) ) ; last",
+        )?;
+        let header = catalog
+            .header
+            .as_ref()
+            .ok_or_else(|| parse_error_unscoped("missing header"))?;
+        assert_eq!(header.source_name, "ClRmAmEpRo");
+        assert_eq!(header.source_order, 1);
+        assert_eq!(
+            header.comment.as_ref().map(|field| field.value.as_str()),
+            Some("header text")
+        );
+        let set = catalog
+            .sets
+            .first()
+            .ok_or_else(|| parse_error_unscoped("missing set"))?;
+        assert_eq!(set.native.source_block, "GaMe");
+        assert_eq!(set.native.document_order, 2);
+        let name = set
+            .native
+            .name
+            .as_ref()
+            .ok_or_else(|| parse_error_unscoped("missing native set name"))?;
+        assert_eq!(
+            (name.source_name.as_str(), name.value.as_str()),
+            ("NAME", "MixedCase")
+        );
+        let cloneof = set
+            .native
+            .cloneof
+            .as_ref()
+            .ok_or_else(|| parse_error_unscoped("missing cloneof"))?;
+        assert_eq!(cloneof.value, "Parent");
+        for (field, source_name, value) in [
+            (set.native.region.as_ref(), "REGION", ""),
+            (set.native.release_year_text.as_ref(), "RELEASEYEAR", "0000"),
+            (set.native.release_month_text.as_ref(), "RELEASEMONTH", "09"),
+            (set.native.release_day_text.as_ref(), "RELEASEDAY", "00"),
+            (set.native.serial.as_ref(), "SERIAL", "AbC-01"),
+        ] {
+            let field = field.ok_or_else(|| parse_error_unscoped("missing typed set field"))?;
+            assert_eq!(field.source_name, source_name);
+            assert_eq!(field.value, value);
+            assert!(field.location.line > 0);
+        }
+        assert_eq!(set.assets.len(), 2);
+        assert_eq!(set.assets[0].native.set_order, 7);
+        assert_eq!(set.assets[1].native.set_order, 9);
+        assert_eq!(catalog.comments.len(), 2);
+        assert_eq!(catalog.comments[0].text, "; first");
+        assert_eq!(catalog.comments[1].text, "; last");
+        assert!(catalog.comments[0].location.line < catalog.comments[1].location.line);
+        Ok(())
+    }
+
+    #[test]
+    fn set_typed_fields_reject_duplicates_and_missing_values_with_set_context() {
+        for field in [
+            "region",
+            "releaseyear",
+            "releasemonth",
+            "releaseday",
+            "serial",
+        ] {
+            let duplicate = format!("game ( name chosen {field} one {field} two )");
+            assert!(
+                matches!(
+                    Catalog::parse(duplicate.as_bytes()),
+                    Err(crate::Error::CatalogParse {
+                        record_kind: Some(kind),
+                        record_name: Some(name),
+                        ..
+                    }) if kind == "set" && name == "chosen"
+                ),
+                "duplicate {field} should include set context"
+            );
+
+            let missing = format!("game ( name chosen {field} )");
+            assert!(
+                matches!(
+                    Catalog::parse(missing.as_bytes()),
+                    Err(crate::Error::CatalogParse {
+                        record_kind: Some(kind),
+                        record_name: Some(name),
+                        ..
+                    }) if kind == "game" && name == "chosen"
+                ),
+                "missing {field} value should include set context"
+            );
+        }
     }
 
     #[test]

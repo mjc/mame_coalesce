@@ -115,8 +115,18 @@ columns. Conflicting declarations remain queryable but cannot assign a shared
 UUID; an ambiguous digest never supplies a singular matching hash. Field
 positions retain source spelling, quotation, order and location without copying
 the values. Publication checks complete ownership and agreement with normalized
-source assertions. The `clrmamepro-declared-text-compat-v1` interpretation is an
-explicit compatibility grammar, not proof of every CMP dialect or set field.
+source assertions. Headers, directives and set values use fixed native columns
+with separate closed-field positions. Set region, release-date components and
+serial preserve their declared text; set serial is distinct from ROM serial.
+Lexical semicolon comments have ordered document-owned rows, separate from the
+header comment. The documented missing `forcenodump` default is `obsolete`;
+explicit unknown directive values remain stored but have no effective mode.
+History tracks native document and scalar/sample/ROM order without treating
+repeated-name source positions as identity. The
+`clrmamepro-declared-text-compat-v1` interpretation is an explicit compatibility
+grammar, not proof of every CMP dialect. Scalar sample rows are native query
+data; shared media-entry API coverage and the full format witness matrix remain
+unfinished.
 
 The Rust `catalog_files` API exposes bulk occurrence lookup and keyset-paginated
 file membership across published catalog editions. Results keep each owner and
@@ -469,6 +479,13 @@ and catalog regressions cover these behaviors:
   their stored field values.
 - `clrmamepro_native_model` checks native CMP header directives, set/sample
   facts, and ROM date, serial, and status provenance.
+- `cmp_declared_fields` checks raw ROM declarations, conflicting evidence,
+  source assertion agreement and complete immutable ROM field ownership.
+- `cmp_set_provenance` checks all header/set values, date-component text,
+  separate parent declarations, lexical comments and native order in history,
+  including header crossings and unchanged repeated-name owner permutations.
+- `cmp_native_publication` checks missing native rows and field positions,
+  invalid ordinals, foreign-format owners and immutable publication boundaries.
 - `software_native_model` checks shared file UUIDs without confusing load
   segments with file lengths, area-local file owners, and scope-correct digests.
 - `catalog_import` exercises public imports, including format-specific facts,

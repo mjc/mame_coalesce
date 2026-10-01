@@ -151,9 +151,13 @@ struct CmpRomPositionRow {
     #[diesel(sql_type = BigInt)]
     occurrence_id: i64,
     #[diesel(sql_type = BigInt)]
+    set_id: i64,
+    #[diesel(sql_type = BigInt)]
     field_kind: i64,
     #[diesel(sql_type = Text)]
     source_field: String,
+    #[diesel(sql_type = BigInt)]
+    form_source_order: i64,
     #[diesel(sql_type = Bool)]
     is_quoted: bool,
 }
@@ -315,6 +319,148 @@ struct CmpSetFactsRow {
     manufacturer: Option<String>,
     #[diesel(sql_type = Nullable<Text>)]
     rebuildto: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    region: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    release_year_text: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    release_month_text: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    release_day_text: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    serial: Option<String>,
+    #[diesel(sql_type = Text)]
+    source_block: String,
+}
+
+#[derive(QueryableByName)]
+struct CmpHeaderFactsRow {
+    #[diesel(sql_type = Nullable<Text>)]
+    name: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    description: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    version: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    date: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    author: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    email: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    homepage: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    url: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    comment: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    category: Option<String>,
+    #[diesel(sql_type = Text)]
+    source_block: String,
+}
+
+#[derive(QueryableByName)]
+struct CmpHeaderDirectivesRow {
+    #[diesel(sql_type = Nullable<Text>)]
+    header_definition: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    forcemerging: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    forcezipping: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    forcepacking: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    forcenodump: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    forcemerging_effective: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    forcezipping_effective: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    forcenodump_effective: Option<String>,
+}
+
+#[derive(QueryableByName, PartialEq, Eq)]
+struct CmpDocumentMetadataRow {
+    #[diesel(sql_type = Bool)]
+    header_present: bool,
+    #[diesel(sql_type = BigInt)]
+    comment_count: i64,
+}
+
+#[derive(QueryableByName)]
+struct CmpDocumentLayoutRow {
+    #[diesel(sql_type = Text)]
+    layout_kind: String,
+    #[diesel(sql_type = Nullable<Text>)]
+    set_name: Option<String>,
+    #[diesel(sql_type = Text)]
+    source_block: String,
+    #[diesel(sql_type = BigInt)]
+    document_order: i64,
+}
+
+#[derive(QueryableByName, PartialEq, Eq)]
+struct CmpHeaderFieldPositionRow {
+    #[diesel(sql_type = BigInt)]
+    field_kind: i64,
+    #[diesel(sql_type = Text)]
+    source_field: String,
+    #[diesel(sql_type = BigInt)]
+    source_order: i64,
+    #[diesel(sql_type = Bool)]
+    is_quoted: bool,
+}
+
+#[derive(QueryableByName)]
+struct CmpSetFieldPositionRow {
+    #[diesel(sql_type = BigInt)]
+    record_id: i64,
+    #[diesel(sql_type = BigInt)]
+    field_kind: i64,
+    #[diesel(sql_type = Text)]
+    source_field: String,
+    #[diesel(sql_type = BigInt)]
+    source_order: i64,
+    #[diesel(sql_type = Bool)]
+    is_quoted: bool,
+}
+
+#[derive(QueryableByName)]
+struct CmpSamplePositionRow {
+    #[diesel(sql_type = BigInt)]
+    record_id: i64,
+    #[diesel(sql_type = BigInt)]
+    sample_order: i64,
+    #[diesel(sql_type = Text)]
+    sample_name: String,
+    #[diesel(sql_type = Text)]
+    source_field: String,
+    #[diesel(sql_type = BigInt)]
+    source_order: i64,
+    #[diesel(sql_type = Bool)]
+    is_quoted: bool,
+}
+
+#[derive(QueryableByName)]
+struct CmpSampleParentPositionRow {
+    #[diesel(sql_type = BigInt)]
+    record_id: i64,
+    #[diesel(sql_type = Text)]
+    target_name: String,
+}
+
+#[derive(QueryableByName)]
+struct CmpCommentRow {
+    #[diesel(sql_type = Text)]
+    comment_text: String,
+}
+
+#[derive(QueryableByName)]
+struct CmpNativeOrderRow {
+    #[diesel(sql_type = BigInt)]
+    set_id: i64,
+    #[diesel(sql_type = BigInt)]
+    source_order: i64,
 }
 
 #[derive(QueryableByName)]
@@ -904,6 +1050,10 @@ struct DocumentMetadata {
     clrmamepro: Option<LogiqxClrMameProOptionsRow>,
     romcenter: Option<LogiqxRomCenterOptionsRow>,
     text_positions: Vec<LogiqxTextPositionRow>,
+    cmp: Option<serde_json::Value>,
+    cmp_document: Option<CmpDocumentMetadataRow>,
+    cmp_comments: Vec<String>,
+    cmp_layout: Vec<serde_json::Value>,
 }
 
 #[derive(QueryableByName, PartialEq, Eq)]
@@ -955,13 +1105,151 @@ fn document_metadata(
     .bind::<Text, _>(snapshot.as_str())
     .load::<LogiqxTextPositionRow>(conn)?;
     normalize_header_order(&mut text_positions, clrmamepro.as_mut(), romcenter.as_mut());
+    let cmp = load_cmp_header_metadata(conn, snapshot)?;
+    let cmp_document =
+        sql_query("SELECT header_present, comment_count FROM cmp_documents WHERE snapshot_key = ?")
+            .bind::<Text, _>(snapshot.as_str())
+            .get_result::<CmpDocumentMetadataRow>(conn)
+            .optional()?;
+    let cmp_comments = sql_query(
+        "SELECT text AS comment_text \
+         FROM cmp_comments WHERE snapshot_key = ? ORDER BY comment_order",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .load::<CmpCommentRow>(conn)?
+    .into_iter()
+    .map(|comment| comment.comment_text)
+    .collect();
+    let cmp_layout = load_cmp_document_layout(conn, snapshot)?;
     Ok(DocumentMetadata {
         mame,
         logiqx,
         clrmamepro,
         romcenter,
         text_positions,
+        cmp,
+        cmp_document,
+        cmp_comments,
+        cmp_layout,
     })
+}
+
+fn load_cmp_header_metadata(
+    conn: &mut diesel::SqliteConnection,
+    snapshot: &SnapshotKey,
+) -> crate::Result<Option<serde_json::Value>> {
+    let cmp_facts = sql_query(
+        "SELECT name, description, version, date, author, email, homepage, url, comment, category, \
+         source_block \
+         FROM cmp_header_facts WHERE snapshot_key = ?",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<CmpHeaderFactsRow>(conn)
+    .optional()?;
+    let cmp_directives = sql_query(
+        "SELECT header_definition, forcemerging, forcezipping, forcepacking, forcenodump, \
+         forcemerging_effective, forcezipping_effective, forcenodump_effective \
+         FROM cmp_header_directives WHERE snapshot_key = ?",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<CmpHeaderDirectivesRow>(conn)
+    .optional()?;
+    let mut cmp_positions = sql_query(
+        "SELECT field_kind, source_field, source_order, is_quoted \
+         FROM cmp_header_field_positions WHERE snapshot_key = ? ORDER BY source_order, field_kind",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .load::<CmpHeaderFieldPositionRow>(conn)?;
+    normalize_cmp_header_positions(&mut cmp_positions);
+    Ok(cmp_facts.map(|facts| {
+        serde_json::json!({
+            "name": facts.name,
+            "description": facts.description,
+            "version": facts.version,
+            "date": facts.date,
+            "author": facts.author,
+            "email": facts.email,
+            "homepage": facts.homepage,
+            "url": facts.url,
+            "comment": facts.comment,
+            "category": facts.category,
+            "source_block": facts.source_block,
+            "directives": cmp_directives.map(|directives| serde_json::json!({
+                "header_definition": directives.header_definition,
+                "forcemerging": directives.forcemerging,
+                "forcezipping": directives.forcezipping,
+                "forcepacking": directives.forcepacking,
+                "forcenodump": directives.forcenodump,
+                "forcemerging_effective": directives.forcemerging_effective,
+                "forcezipping_effective": directives.forcezipping_effective,
+                "forcenodump_effective": directives.forcenodump_effective,
+            })),
+            "field_positions": cmp_positions.iter().map(|position| serde_json::json!({
+                "field_kind": position.field_kind,
+                "source_field": position.source_field,
+                "native_order": position.source_order,
+                "is_quoted": position.is_quoted,
+            })).collect::<Vec<_>>(),
+        })
+    }))
+}
+
+fn load_cmp_document_layout(
+    conn: &mut diesel::SqliteConnection,
+    snapshot: &SnapshotKey,
+) -> crate::Result<Vec<serde_json::Value>> {
+    let rows = sql_query(
+        "WITH root_sets AS (
+             SELECT sets.set_id, sets.set_name FROM catalog_set_groups AS groups \
+             JOIN catalog_sets AS sets USING (set_group_id) \
+             WHERE groups.snapshot_key = ? AND groups.kind = 'root'
+         )
+         SELECT 'header' AS layout_kind, NULL AS set_name, source_block, source_order AS document_order \
+         FROM cmp_header_facts WHERE snapshot_key = ?
+         UNION ALL
+         SELECT 'set' AS layout_kind, root_sets.set_name, facts.source_block, \
+                facts.document_order \
+         FROM cmp_set_facts AS facts JOIN root_sets ON root_sets.set_id = facts.record_id \
+         ORDER BY document_order",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .bind::<Text, _>(snapshot.as_str())
+    .load::<CmpDocumentLayoutRow>(conn)?;
+    // Compare document structure, never per-owner facts or IDs. Indistinguishable
+    // repeated-name owners can permute without inventing snapshot correspondence.
+    let ranks = rows
+        .iter()
+        .map(|row| row.document_order)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .zip(0_i64..)
+        .collect::<BTreeMap<_, _>>();
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            serde_json::json!({
+                "kind": row.layout_kind,
+                "set_name": row.set_name,
+                "source_block": row.source_block,
+                "native_order": ranks.get(&row.document_order),
+            })
+        })
+        .collect())
+}
+
+fn normalize_cmp_header_positions(positions: &mut [CmpHeaderFieldPositionRow]) {
+    let ranks = positions
+        .iter()
+        .map(|position| position.source_order)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .zip(0_i64..)
+        .collect::<BTreeMap<_, _>>();
+    for position in positions {
+        if let Some(rank) = ranks.get(&position.source_order) {
+            position.source_order = *rank;
+        }
+    }
 }
 
 fn normalize_header_order(
@@ -1147,7 +1435,8 @@ fn records(
     let logiqx_releases = load_logiqx_releases(conn, key)?;
     let logiqx_bios_sets = load_logiqx_bios_sets(conn, key)?;
     let logiqx_archive_references = load_logiqx_archive_references(conn, key)?;
-    let cmp_set_facts = load_cmp_set_facts(conn, key)?;
+    let cmp_native_ranks = cmp_set_native_ranks(conn, key)?;
+    let cmp_set_facts = load_cmp_set_facts(conn, key, &cmp_native_ranks)?;
 
     let mut result = CatalogRecords::default();
     for set in sets {
@@ -1185,7 +1474,7 @@ fn records(
     sort_json_groups(&mut result.logiqx_bios_sets);
     sort_json_groups(&mut result.logiqx_archive_references);
     sort_json_groups(&mut result.cmp_set_facts);
-    let cmp_positions = load_cmp_rom_positions(conn, key)?;
+    let cmp_positions = load_cmp_rom_positions(conn, key, &cmp_native_ranks)?;
     assemble_requirements(&mut result, requirements, &cmp_positions);
     normalize_logiqx_child_order(&mut result);
     Ok(result)
@@ -1529,14 +1818,64 @@ fn load_logiqx_archive_references(
 fn load_cmp_set_facts(
     conn: &mut diesel::SqliteConnection,
     key: &SnapshotKey,
+    native_ranks: &BTreeMap<i64, BTreeMap<i64, i64>>,
 ) -> crate::Result<BTreeMap<i64, Vec<serde_json::Value>>> {
     let rows = sql_query(
-        "SELECT sets.set_id, facts.description, facts.year, facts.manufacturer, facts.rebuildto \
+        "SELECT sets.set_id, facts.description, facts.year, facts.manufacturer, facts.rebuildto, \
+                facts.region, facts.release_year_text, facts.release_month_text, \
+                facts.release_day_text, facts.serial, facts.source_block \
          FROM cmp_set_facts AS facts JOIN snapshot_sets AS sets ON sets.set_id = facts.record_id \
          WHERE sets.snapshot_key = ? ORDER BY sets.set_name, facts.record_id",
     )
     .bind::<Text, _>(key.as_str())
     .load::<CmpSetFactsRow>(conn)?;
+    let positions = sql_query(
+        "SELECT positions.record_id, positions.field_kind, positions.source_field, \
+                positions.source_order, positions.is_quoted \
+         FROM cmp_set_field_positions AS positions \
+         JOIN snapshot_sets AS sets ON sets.set_id = positions.record_id \
+         WHERE sets.snapshot_key = ? ORDER BY positions.record_id, positions.source_order, positions.field_kind",
+    )
+    .bind::<Text, _>(key.as_str())
+    .load::<CmpSetFieldPositionRow>(conn)?;
+    let mut field_positions = BTreeMap::<i64, Vec<serde_json::Value>>::new();
+    let mut sampleof_positions = BTreeMap::<i64, serde_json::Value>::new();
+    for position in positions {
+        let rank = native_ranks
+            .get(&position.record_id)
+            .and_then(|ranks| ranks.get(&position.source_order))
+            .copied();
+        let field_position = serde_json::json!({
+            "field_kind": position.field_kind,
+            "source_field": position.source_field,
+            "native_order": rank,
+            "is_quoted": position.is_quoted,
+        });
+        if position.field_kind == 6 {
+            sampleof_positions.insert(position.record_id, field_position.clone());
+        }
+        field_positions
+            .entry(position.record_id)
+            .or_default()
+            .push(field_position);
+    }
+    let mut sample_facts = load_cmp_samples(conn, key, native_ranks)?;
+    let mut sampleof = sql_query(
+        "SELECT links.record_id, links.target_name \
+         FROM cmp_sample_parent_links AS links JOIN snapshot_sets AS sets ON sets.set_id = links.record_id \
+         WHERE sets.snapshot_key = ? ORDER BY links.record_id",
+    )
+    .bind::<Text, _>(key.as_str())
+    .load::<CmpSampleParentPositionRow>(conn)?
+    .into_iter()
+    .map(|parent| {
+        let mut value = sampleof_positions
+            .remove(&parent.record_id)
+            .unwrap_or_else(|| serde_json::json!({}));
+        value["target_name"] = serde_json::Value::String(parent.target_name);
+        (parent.record_id, value)
+    })
+    .collect::<BTreeMap<_, _>>();
     let mut grouped = BTreeMap::<i64, Vec<serde_json::Value>>::new();
     for row in rows {
         grouped
@@ -1547,9 +1886,89 @@ fn load_cmp_set_facts(
                 "year": row.year,
                 "manufacturer": row.manufacturer,
                 "rebuildto": row.rebuildto,
+                "region": row.region,
+                "release_year_text": row.release_year_text,
+                "release_month_text": row.release_month_text,
+                "release_day_text": row.release_day_text,
+                "serial": row.serial,
+                "source_block": row.source_block,
+                "field_positions": field_positions.remove(&row.set_id).unwrap_or_default(),
+                "sampleof": sampleof.remove(&row.set_id),
+                "samples": sample_facts.remove(&row.set_id).unwrap_or_default(),
             }));
     }
     Ok(grouped)
+}
+
+fn load_cmp_samples(
+    conn: &mut diesel::SqliteConnection,
+    key: &SnapshotKey,
+    native_ranks: &BTreeMap<i64, BTreeMap<i64, i64>>,
+) -> crate::Result<BTreeMap<i64, Vec<serde_json::Value>>> {
+    let samples = sql_query(
+        "SELECT samples.record_id, samples.sample_order, samples.sample_name, samples.source_field, \
+                samples.source_order, samples.is_quoted \
+         FROM cmp_samples AS samples JOIN snapshot_sets AS sets ON sets.set_id = samples.record_id \
+         WHERE sets.snapshot_key = ? ORDER BY samples.record_id, samples.sample_order",
+    )
+    .bind::<Text, _>(key.as_str())
+    .load::<CmpSamplePositionRow>(conn)?;
+    let mut sample_facts = BTreeMap::<i64, Vec<serde_json::Value>>::new();
+    for sample in samples {
+        let rank = native_ranks
+            .get(&sample.record_id)
+            .and_then(|ranks| ranks.get(&sample.source_order))
+            .copied();
+        sample_facts
+            .entry(sample.record_id)
+            .or_default()
+            .push(serde_json::json!({
+                "sample_order": sample.sample_order,
+                "sample_name": sample.sample_name,
+                "source_field": sample.source_field,
+                "native_order": rank,
+                "is_quoted": sample.is_quoted,
+            }));
+    }
+    Ok(sample_facts)
+}
+
+fn cmp_set_native_ranks(
+    conn: &mut diesel::SqliteConnection,
+    key: &SnapshotKey,
+) -> crate::Result<BTreeMap<i64, BTreeMap<i64, i64>>> {
+    let rows = sql_query(
+        "SELECT positions.record_id AS set_id, positions.source_order \
+         FROM cmp_set_field_positions AS positions JOIN snapshot_sets AS sets ON sets.set_id = positions.record_id \
+         WHERE sets.snapshot_key = ? \
+         UNION ALL SELECT samples.record_id AS set_id, samples.source_order \
+         FROM cmp_samples AS samples JOIN snapshot_sets AS sets ON sets.set_id = samples.record_id \
+         WHERE sets.snapshot_key = ? \
+         UNION ALL SELECT occurrences.record_id AS set_id, positions.source_order \
+         FROM cmp_set_rom_positions AS positions JOIN asset_occurrences AS occurrences USING (occurrence_id) \
+         JOIN snapshot_sets AS sets ON sets.set_id = occurrences.record_id WHERE sets.snapshot_key = ? \
+         ORDER BY set_id, source_order",
+    )
+    .bind::<Text, _>(key.as_str())
+    .bind::<Text, _>(key.as_str())
+    .bind::<Text, _>(key.as_str())
+    .load::<CmpNativeOrderRow>(conn)?;
+    let mut orders = BTreeMap::<i64, BTreeSet<i64>>::new();
+    for row in rows {
+        orders
+            .entry(row.set_id)
+            .or_default()
+            .insert(row.source_order);
+    }
+    Ok(orders
+        .into_iter()
+        .map(|(set_id, orders)| {
+            (
+                set_id,
+                orders.into_iter().zip(0_i64..).collect::<BTreeMap<_, _>>(),
+            )
+        })
+        .collect())
 }
 
 fn load_no_intro_game_facts(
@@ -1643,20 +2062,27 @@ fn load_no_intro_archive_links(
 fn load_cmp_rom_positions(
     conn: &mut diesel::SqliteConnection,
     key: &SnapshotKey,
+    native_ranks: &BTreeMap<i64, BTreeMap<i64, i64>>,
 ) -> crate::Result<BTreeMap<i64, Vec<serde_json::Value>>> {
     let positions = sql_query(
-        "SELECT position.occurrence_id, position.field_kind, position.source_field, position.is_quoted \
-         FROM catalog_set_groups JOIN catalog_sets USING (set_group_id) \
-         JOIN asset_occurrences ON record_id = set_id \
+        "SELECT position.occurrence_id, occurrences.record_id AS set_id, position.field_kind, \
+                position.source_field, position.source_order, rom_position.source_order AS form_source_order, \
+                position.is_quoted \
+         FROM catalog_set_groups AS groups JOIN catalog_sets AS sets USING (set_group_id) \
+         JOIN asset_occurrences AS occurrences ON occurrences.record_id = sets.set_id \
+         JOIN cmp_set_rom_positions AS rom_position USING (occurrence_id) \
          JOIN cmp_rom_field_positions AS position USING (occurrence_id) \
-         WHERE snapshot_key = ? ORDER BY position.occurrence_id, position.source_order",
+         WHERE groups.snapshot_key = ? ORDER BY position.occurrence_id, position.source_order",
     ).bind::<Text,_>(key.as_str()).load::<CmpRomPositionRow>(conn)?;
     let mut result = BTreeMap::<i64, Vec<serde_json::Value>>::new();
     for position in positions {
         let fields = result.entry(position.occurrence_id).or_default();
         fields.push(serde_json::json!({
             "field_kind": position.field_kind, "source_field": position.source_field,
-            "native_order": fields.len(), "is_quoted": position.is_quoted,
+            "native_order": fields.len(),
+            "form_native_order": native_ranks.get(&position.set_id)
+                .and_then(|ranks| ranks.get(&position.form_source_order)),
+            "is_quoted": position.is_quoted,
         }));
     }
     Ok(result)
