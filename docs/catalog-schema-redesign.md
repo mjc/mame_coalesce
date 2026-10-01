@@ -59,9 +59,37 @@ association column are removed. Build queries derive expected evidence and
 metadata from native owners in one read transaction. Shared file UUIDs now use
 an immutable registry generation, source-backed hash/size views and native
 conflict evidence; published cross-list membership has bounded bulk and keyset
-queries. Remaining per-format coverage, reviewed conflict settlement/redirects
-and observed-byte endpoints are unfinished; this is not a claim of complete
+queries. Reviewed conflict outcomes and UUID redirects now have an atomic typed
+storage API; remaining per-format coverage and observed-byte endpoints are
+unfinished. This is not a claim of complete
 DTD conformance.
+
+### Reviewed shared-file decisions
+
+Source conflict identity remains its exact `(occurrence_id, candidate UUID)` key,
+not a copied hash tuple or a source name. `file_match_decisions` owns the rationale,
+timestamp and closed keep-separate/merge action; `file_match_decision_conflicts`
+permits one terminal outcome per source conflict. Hash and size disposition rows
+reference the exact immutable conflict-evidence keys without copying values.
+`file_match_decision_publications` activates the complete reviewed action and
+freezes every decision child. The application creates and consumes a draft in
+one immediate transaction; it does not expose durable draft editing.
+
+`merged_file_ids` preserves old issued IDs and points them to the kept ID in the
+same registry. Redirects require actual reviewed source-conflict bridges and
+cannot self-link or cycle. Merge publication checks retained component facts,
+including prior redirect ancestors and undispositioned evidence. Only a specific
+published rejection excludes its underlying hash or qualified native size;
+another accept cannot restore it. Settling one conflict never settles another.
+Incoming entries remain unlinked: reviewing their evidence is not a new source
+declaration or observed-byte proof.
+
+Bulk occurrence results expose immutable source-issued and derived canonical
+UUIDs separately. Keyset pages accept any issued ID, seek its reverse redirect
+component, and pin the requested ID, registry generation and review revision.
+Any later review requires restarting the cursor, preventing omissions when a
+merge adds earlier occurrence IDs. The corpus service uses its frozen earlier
+schema/executable; its preserved database is not upgraded by this source change.
 
 The target hierarchy uses integer IDs for ownership and retains names and
 publisher IDs as source fields:
@@ -155,8 +183,10 @@ allocated-owner guard also prevents assertion-first insertion with deferred
 foreign keys. The three formerly failing 3DS, N64 byte-swapped and encrypted DS
 lists now import 10,991 ordered ROM occurrences into a fresh database, retaining
 nine contradictory-evidence records with clear SQLite/FK checks. The complete
-664-file native baseline run remains ongoing, not accepted as complete; it
-started with the previous guard revision and needs final audit.
+664-file native baseline run was interrupted and is not complete acceptance;
+its preserved artifact started with the previous guard revision. The separate
+275-export SQL run uses a frozen profiling executable and a durable user service;
+it must be audited after that service reaches a terminal result.
 
 Additional schema-backed witnesses cover every strict DAT v3/v4 field with
 distinct values and exact owner/field/ordinal/coordinates, including empty and

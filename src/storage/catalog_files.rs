@@ -10,7 +10,7 @@ use thiserror::Error;
 
 use crate::{
     domain::{CatalogContentId, CatalogRegistryId, CatalogSetId},
-    storage::catalog_content::registry_id,
+    storage::catalog_content::{FILE_COMPONENT_SQL, registry_id, resolve_issued_id},
 };
 
 use super::db::Pool;
@@ -137,7 +137,10 @@ pub struct OccurrenceProvenance {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CatalogFileOccurrence {
     pub occurrence_id: OccurrenceId,
+    /// UUID assigned to this source occurrence. Reviewed redirects never change it.
     pub content_id: Option<CatalogContentId>,
+    /// Current canonical identity after published reviewed redirects.
+    pub canonical_content_id: Option<CatalogContentId>,
     pub provenance: OccurrenceProvenance,
     pub digests: Vec<OccurrenceDigest>,
     pub no_intro_dat_rom: Option<NoIntroDatRomPayload>,
@@ -303,6 +306,7 @@ impl ContentOccurrenceLimit {
 pub struct ContentOccurrenceCursor {
     content: CatalogContentId,
     registry: CatalogRegistryId,
+    review_revision: i64,
     after_occurrence: i64,
 }
 
@@ -325,6 +329,8 @@ pub enum CatalogFilesError {
     CursorContentMismatch,
     #[error("cursor belongs to a different catalog registry generation")]
     CursorRegistryMismatch,
+    #[error("cursor predates a published catalog content review")]
+    CursorReviewRevisionMismatch,
     #[error("catalog registry lookup failed: {0}")]
     Registry(#[from] crate::Error),
     #[error("stored catalog content UUID contains {0} bytes; expected 16")]
@@ -362,6 +368,8 @@ struct OccurrenceRow {
     occurrence_id: i64,
     #[diesel(sql_type = Nullable<Binary>)]
     content_uuid: Option<Vec<u8>>,
+    #[diesel(sql_type = Nullable<Binary>)]
+    canonical_content_uuid: Option<Vec<u8>>,
     #[diesel(sql_type = Text)]
     source_key: String,
     #[diesel(sql_type = Text)]
@@ -398,6 +406,12 @@ struct OccurrenceRow {
     source_line: i64,
     #[diesel(sql_type = BigInt)]
     source_column: i64,
+}
+
+#[derive(QueryableByName)]
+struct ReviewRevisionRow {
+    #[diesel(sql_type = BigInt)]
+    revision: i64,
 }
 
 #[derive(QueryableByName)]
@@ -616,20 +630,22 @@ fn occurrences_for_content_in_pool(
         if cursor.is_some_and(|cursor| cursor.registry != current_registry_id) {
             return Err(CatalogFilesError::CursorRegistryMismatch);
         }
+        let review_revision =
+            sql_query("SELECT COUNT(*) AS revision FROM file_match_decision_publications")
+                .get_result::<ReviewRevisionRow>(connection)?
+                .revision;
+        if cursor.is_some_and(|cursor| cursor.review_revision != review_revision) {
+            return Err(CatalogFilesError::CursorReviewRevisionMismatch);
+        }
+        let canonical_content_id = resolve_issued_id(connection, content_id)?;
         let after_id = cursor.map_or(0, |cursor| cursor.after_occurrence);
-        let rows = sql_query(format!(
-            "{} LIMIT ?",
-            occurrence_select(
-                "occurrence.content_uuid = ? AND occurrence.occurrence_id > ?",
-                "asset_occurrences AS occurrence",
+        let rows = sql_query(format!("{} LIMIT ?", content_occurrence_select()))
+            .bind::<Binary, _>(canonical_content_id.as_bytes().as_slice())
+            .bind::<BigInt, _>(after_id)
+            .bind::<BigInt, _>(
+                i64::try_from(limit.0 + 1).map_err(|_| CatalogFilesError::PageLimitOverflow)?,
             )
-        ))
-        .bind::<Binary, _>(content_id.as_bytes().as_slice())
-        .bind::<BigInt, _>(after_id)
-        .bind::<BigInt, _>(
-            i64::try_from(limit.0 + 1).map_err(|_| CatalogFilesError::PageLimitOverflow)?,
-        )
-        .load::<OccurrenceRow>(connection)?;
+            .load::<OccurrenceRow>(connection)?;
         let has_more = rows.len() > limit.0;
         create_request_table(connection)?;
         let mut occurrences =
@@ -638,6 +654,7 @@ fn occurrences_for_content_in_pool(
             Some(ContentOccurrenceCursor {
                 content: content_id,
                 registry: current_registry_id,
+                review_revision,
                 after_occurrence: occurrences
                     .last()
                     .ok_or(CatalogFilesError::PageLimitOverflow)?
@@ -700,9 +717,22 @@ fn requested_occurrence_select() -> String {
     )
 }
 
+fn content_occurrence_select() -> String {
+    format!(
+        "{}{}",
+        FILE_COMPONENT_SQL,
+        occurrence_select(
+            "occurrence.content_uuid = component.content_uuid \
+             AND occurrence.occurrence_id > ?",
+            "component CROSS JOIN asset_occurrences AS occurrence",
+        )
+    )
+}
+
 fn occurrence_select(predicate: &str, from: &str) -> String {
     format!(
         "SELECT occurrence.occurrence_id, occurrence.content_uuid, \
+                canonical_content.content_uuid AS canonical_content_uuid, \
                 source.source_key, source.display_name AS source_name, \
                 catalog.catalog_key, catalog.display_name AS catalog_name, \
                 snapshot.snapshot_key, snapshot.document_key, snapshot.interpretation_key, \
@@ -720,6 +750,8 @@ fn occurrence_select(predicate: &str, from: &str) -> String {
          JOIN documents AS document ON document.document_key = snapshot.document_key \
          JOIN parser_interpretations AS interpretation \
            ON interpretation.interpretation_key = snapshot.interpretation_key \
+         LEFT JOIN canonical_occurrence_content AS canonical_content \
+           ON canonical_content.occurrence_id = occurrence.occurrence_id \
          LEFT JOIN software_lists AS software_list ON software_list.namespace_id = group_row.set_group_id \
          WHERE {predicate} \
          ORDER BY occurrence.occurrence_id"
@@ -1221,16 +1253,8 @@ fn digest_select() -> String {
 }
 
 fn try_occurrence(row: OccurrenceRow) -> Result<CatalogFileOccurrence, CatalogFilesError> {
-    let content_id = match row.content_uuid {
-        Some(bytes) => {
-            let length = bytes.len();
-            let bytes: [u8; 16] = bytes
-                .try_into()
-                .map_err(|_| CatalogFilesError::InvalidContentIdLength(length))?;
-            Some(CatalogContentId::from_bytes(bytes))
-        }
-        None => None,
-    };
+    let content_id = parse_content_id(row.content_uuid)?;
+    let canonical_content_id = parse_content_id(row.canonical_content_uuid)?;
     let set_group_kind = match row.group_kind.as_str() {
         "root" => SetGroupKind::Root,
         "software_list" => SetGroupKind::SoftwareList {
@@ -1246,6 +1270,7 @@ fn try_occurrence(row: OccurrenceRow) -> Result<CatalogFileOccurrence, CatalogFi
     Ok(CatalogFileOccurrence {
         occurrence_id: OccurrenceId::from_database(row.occurrence_id),
         content_id,
+        canonical_content_id,
         provenance: OccurrenceProvenance {
             source_key: row.source_key,
             source_name: row.source_name,
@@ -1274,6 +1299,19 @@ fn try_occurrence(row: OccurrenceRow) -> Result<CatalogFileOccurrence, CatalogFi
         no_intro_dat_rom: None,
         no_intro_database_file: None,
     })
+}
+
+fn parse_content_id(bytes: Option<Vec<u8>>) -> Result<Option<CatalogContentId>, CatalogFilesError> {
+    match bytes {
+        Some(bytes) => {
+            let length = bytes.len();
+            let bytes: [u8; 16] = bytes
+                .try_into()
+                .map_err(|_| CatalogFilesError::InvalidContentIdLength(length))?;
+            Ok(Some(CatalogContentId::from_bytes(bytes)))
+        }
+        None => Ok(None),
+    }
 }
 
 fn required_native<T>(value: Option<T>, field: &'static str) -> Result<T, CatalogFilesError> {

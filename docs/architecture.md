@@ -151,8 +151,14 @@ parser-internal representations the public contract.
   qualified native source declarations, not independently stored copies.
   Whole-file scopes compare as one byte representation. Conflict children point
   to the actual incoming/candidate hash assertions and native size owners;
-  unresolved disputes block later sparse claims. Explicit reviewed settlement
-  and UUID redirects are still unfinished. Paired backup/restore retains the
+  unresolved disputes block later sparse claims. `file_match_reviews` publishes
+  exact terminal conflict outcomes, separate hash/size dispositions and explicit
+  UUID redirects atomically. A draft has no lookup effect; publication freezes
+  its parent, links, evidence and redirects. Rejection is monotonic for the
+  underlying source assertion. Redirected IDs remain issued and immutable;
+  canonical lookup follows published edges only. Reviews do not assign a UUID
+  to unlinked incoming entries or claim observed-byte verification.
+  Paired backup/restore retains the
   generation; rebuilding without the registry declares a new generation.
 - No-Intro DAT source assertions require an already allocated occurrence owner,
   even with deferred foreign keys. Already disputed hashes cannot be inserted
@@ -177,7 +183,11 @@ parser-internal representations the public contract.
 - `catalog_files` queries published occurrences in one transaction, preserving
   one row per source owner and separate digest children. Bulk lookups include
   unlinked entries; reverse UUID membership uses keyset pagination and checks
-  both file identity and registry generation before resuming a cursor.
+  file identity, registry generation and published-review revision before
+  resuming a cursor. Results retain source-issued and canonical UUIDs separately;
+  old UUID queries include the whole canonical component through indexed reverse
+  redirect traversal. A review invalidates existing cursors rather than silently
+  omitting newly merged lower-ID members.
 - There are no mutable `data_files`, `games`, `roms` or `archive_files`
   catalog tables. Scanned-file inventory has no foreign key assigning observed
   bytes to one expected ROM. Whole-file hash candidate counts are derived from

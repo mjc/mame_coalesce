@@ -54,7 +54,7 @@ BEGIN SELECT RAISE(ABORT, 'No-Intro DAT release requires an unpublished native g
 -- the UUID. Computed hashes and hashes of unknown scope do not contradict it.
 CREATE VIEW no_intro_dat_source_file_size_assertions AS
 SELECT size.occurrence_id, size.size
-FROM catalog_file_size_assertions AS size
+FROM accepted_file_size_assertions AS size
 JOIN (
     SELECT occurrence_id, evidence_provenance FROM mame_rom_claims
     UNION ALL SELECT occurrence_id, evidence_provenance FROM logiqx_rom_claims
@@ -85,24 +85,41 @@ BEFORE INSERT ON snapshot_publications
 WHEN EXISTS (
     SELECT 1 FROM no_intro_dat_rom_claims AS claim
     JOIN asset_occurrences AS occurrence ON occurrence.occurrence_id = claim.occurrence_id
+    JOIN canonical_occurrence_content AS canonical ON canonical.occurrence_id = occurrence.occurrence_id
     JOIN catalog_sets AS game ON game.set_id = occurrence.record_id
     JOIN catalog_set_groups AS grouping ON grouping.set_group_id = game.set_group_id
     WHERE grouping.snapshot_key = NEW.snapshot_key AND occurrence.content_uuid IS NOT NULL
       AND (
         EXISTS (
+            WITH RECURSIVE component(content_uuid) AS (
+                SELECT canonical.content_uuid
+                UNION
+                SELECT redirect.old_content_uuid FROM component
+                JOIN merged_file_ids AS redirect ON redirect.kept_content_uuid = component.content_uuid
+                JOIN file_match_decision_publications USING (decision_id)
+            )
             SELECT 1 FROM occurrence_digest_assertions AS incoming
             JOIN digest_values AS incoming_digest ON incoming_digest.digest_id = incoming.digest_id
-            JOIN catalog_content_digest_assertions AS known ON known.content_uuid = occurrence.content_uuid
-            JOIN digest_values AS known_digest ON known_digest.digest_id = known.digest_id
+            CROSS JOIN component
+            CROSS JOIN asset_occurrences AS known_owner ON known_owner.content_uuid = component.content_uuid
+            CROSS JOIN catalog_content_digest_assertions AS known ON known.occurrence_id = known_owner.occurrence_id
+            CROSS JOIN digest_values AS known_digest ON known_digest.digest_id = known.digest_id
             WHERE incoming.occurrence_id = occurrence.occurrence_id
               AND incoming.provenance = 'source_declared' AND incoming.scope IN ('whole_asset', 'whole_file')
               AND incoming_digest.algorithm = known_digest.algorithm
               AND incoming_digest.digest <> known_digest.digest
         ) OR EXISTS (
-            SELECT 1 FROM no_intro_dat_source_file_size_assertions AS known_size
-            JOIN asset_occurrences AS known_owner ON known_owner.occurrence_id = known_size.occurrence_id
-            WHERE known_owner.content_uuid = occurrence.content_uuid
-              AND claim.evidence_scope = 'whole_file' AND claim.size IS NOT NULL
+            WITH RECURSIVE component(content_uuid) AS (
+                SELECT canonical.content_uuid
+                UNION
+                SELECT redirect.old_content_uuid FROM component
+                JOIN merged_file_ids AS redirect ON redirect.kept_content_uuid = component.content_uuid
+                JOIN file_match_decision_publications USING (decision_id)
+            )
+            SELECT 1 FROM component
+            CROSS JOIN asset_occurrences AS known_owner ON known_owner.content_uuid = component.content_uuid
+            CROSS JOIN no_intro_dat_source_file_size_assertions AS known_size ON known_size.occurrence_id = known_owner.occurrence_id
+            WHERE claim.evidence_scope = 'whole_file' AND claim.size IS NOT NULL
               AND claim.evidence_provenance = 'source_declared'
               AND known_size.size <> claim.size
         )

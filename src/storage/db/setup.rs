@@ -8,28 +8,7 @@ use diesel::{
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
-use super::Pool;
-
-/// Complete DDL for a new database. It is never an upgrade script.
-const SCHEMA: &str = concat!(
-    include_str!("coverage.sql"),
-    "\n",
-    include_str!("schema.sql"),
-    "\n",
-    include_str!("logiqx.sql"),
-    "\n",
-    include_str!("cmp.sql"),
-    "\n",
-    include_str!("catalog_registry.sql"),
-    "\n",
-    include_str!("no_intro_dat.sql"),
-    "\n",
-    include_str!("no_intro_dat_guards.sql"),
-    "\n",
-    include_str!("no_intro_database.sql"),
-    "\n",
-    include_str!("no_intro_database_guards.sql")
-);
+use super::{Pool, ddl::SCHEMA};
 
 #[derive(Debug)]
 struct EnableForeignKeys;

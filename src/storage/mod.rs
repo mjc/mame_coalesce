@@ -8,6 +8,7 @@ pub mod catalog_import;
 pub mod catalog_reconciliation;
 pub mod db;
 pub mod documents;
+pub mod file_match_reviews;
 mod import_diagnostics;
 pub mod machine_dependencies;
 pub mod models;

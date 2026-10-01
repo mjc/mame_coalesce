@@ -127,6 +127,9 @@ pub enum Error {
     #[error("Database schema error: {0}")]
     DatabaseSchema(String),
 
+    #[error("file match review: {0}")]
+    FileMatchReview(#[from] crate::file_match_reviews::ReviewError),
+
     #[error("cache backup error: {0}")]
     CacheBackup(String),
 

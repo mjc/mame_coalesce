@@ -10,6 +10,12 @@ use diesel::{
 use super::catalog_identity::OccurrenceId;
 use crate::domain::{CatalogContentId, CatalogRegistryId, ContentDigestAlgorithm};
 
+/// Seed reverse traversal with one canonical UUID; unrelated files are never visited.
+pub const FILE_COMPONENT_SQL: &str = "WITH RECURSIVE component(content_uuid) AS ( \
+    SELECT ? UNION SELECT redirect.old_content_uuid FROM component \
+    JOIN merged_file_ids AS redirect ON redirect.kept_content_uuid = component.content_uuid \
+    JOIN file_match_decision_publications USING (decision_id)) ";
+
 #[derive(diesel::QueryableByName)]
 struct RegistryRow {
     #[diesel(sql_type = Binary)]
@@ -167,6 +173,42 @@ struct ContentUuidRow {
     content_uuid: Vec<u8>,
 }
 
+/// Follow published redirects from one issued UUID using primary-key seeks.
+pub fn resolve_issued_id(
+    connection: &mut SqliteConnection,
+    issued: CatalogContentId,
+) -> crate::Result<CatalogContentId> {
+    let rows = sql_query(
+        "WITH RECURSIVE path(content_uuid) AS ( \
+         SELECT content_uuid FROM catalog_contents WHERE content_uuid = ? \
+         UNION SELECT redirect.kept_content_uuid FROM path \
+         JOIN merged_file_ids AS redirect ON redirect.old_content_uuid = path.content_uuid \
+         JOIN file_match_decision_publications USING (decision_id)) \
+         SELECT content_uuid FROM path WHERE NOT EXISTS ( \
+         SELECT 1 FROM merged_file_ids AS redirect JOIN file_match_decision_publications USING (decision_id) \
+         WHERE redirect.old_content_uuid = path.content_uuid)",
+    )
+    .bind::<Binary, _>(issued.as_bytes().as_slice())
+    .load::<ContentUuidRow>(connection)?;
+    match rows.as_slice() {
+        [row] => content_id(row.content_uuid.clone()),
+        [] => {
+            let known =
+                sql_query("SELECT content_uuid FROM catalog_contents WHERE content_uuid = ?")
+                    .bind::<Binary, _>(issued.as_bytes().as_slice())
+                    .get_result::<ContentUuidRow>(connection)
+                    .optional()?;
+            Err(if known.is_some() {
+                super::file_match_reviews::ReviewError::CorruptRedirects
+            } else {
+                super::file_match_reviews::ReviewError::UnknownFile(issued)
+            }
+            .into())
+        }
+        _ => Err(super::file_match_reviews::ReviewError::CorruptRedirects.into()),
+    }
+}
+
 #[derive(diesel::QueryableByName)]
 struct ContentFactsRow {
     #[diesel(sql_type = BigInt)]
@@ -232,7 +274,10 @@ pub fn resolve_content_identity(
         .bind::<Binary, _>(assertion.value)
         .load::<ContentUuidRow>(connection)?;
         for row in rows {
-            candidates.insert(content_id(row.content_uuid)?);
+            candidates.insert(resolve_issued_id(
+                connection,
+                content_id(row.content_uuid)?,
+            )?);
         }
         let conflicting_aliases = sql_query(
             "SELECT DISTINCT dispute.candidate_content_uuid AS content_uuid \
@@ -244,7 +289,10 @@ pub fn resolve_content_identity(
         .load::<ContentUuidRow>(connection)?;
         disputed |= !conflicting_aliases.is_empty();
         for row in conflicting_aliases {
-            candidates.insert(content_id(row.content_uuid)?);
+            candidates.insert(resolve_issued_id(
+                connection,
+                content_id(row.content_uuid)?,
+            )?);
         }
     }
     if disputed {
@@ -311,35 +359,36 @@ pub fn record_content_identity_conflict(
         .bind::<Binary, _>(candidate.as_bytes().as_slice())
         .bind::<BigInt, _>(occurrence.database_value())
         .execute(connection)?;
-        sql_query(
-            "INSERT INTO occurrence_content_conflict_hashes \
+        sql_query(format!(
+            "{FILE_COMPONENT_SQL} INSERT INTO occurrence_content_conflict_hashes \
              (occurrence_id, candidate_content_uuid, evidence_occurrence_id, digest_id, scope, provenance, role) \
-             SELECT ?, ?, occurrence_id, digest_id, scope, provenance, 'candidate' \
-             FROM catalog_content_digest_assertions WHERE content_uuid = ?",
-        )
-        .bind::<BigInt, _>(occurrence.database_value())
+             SELECT ?, ?, assertion.occurrence_id, assertion.digest_id, assertion.scope, assertion.provenance, 'candidate' \
+             FROM component CROSS JOIN asset_occurrences AS entry ON entry.content_uuid = component.content_uuid \
+             CROSS JOIN catalog_content_digest_assertions AS assertion ON assertion.occurrence_id = entry.occurrence_id",
+        ))
         .bind::<Binary, _>(candidate.as_bytes().as_slice())
+        .bind::<BigInt, _>(occurrence.database_value())
         .bind::<Binary, _>(candidate.as_bytes().as_slice())
         .execute(connection)?;
         sql_query(
             "INSERT INTO occurrence_content_conflict_sizes \
              (occurrence_id, candidate_content_uuid, evidence_occurrence_id, size_field, role) \
              SELECT ?, ?, occurrence_id, size_field, 'incoming' \
-             FROM catalog_file_size_assertions WHERE occurrence_id = ?",
+             FROM accepted_file_size_assertions WHERE occurrence_id = ?",
         )
         .bind::<BigInt, _>(occurrence.database_value())
         .bind::<Binary, _>(candidate.as_bytes().as_slice())
         .bind::<BigInt, _>(occurrence.database_value())
         .execute(connection)?;
-        sql_query(
-            "INSERT INTO occurrence_content_conflict_sizes \
+        sql_query(format!(
+            "{FILE_COMPONENT_SQL} INSERT INTO occurrence_content_conflict_sizes \
              (occurrence_id, candidate_content_uuid, evidence_occurrence_id, size_field, role) \
              SELECT ?, ?, sizes.occurrence_id, sizes.size_field, 'candidate' \
-             FROM catalog_file_size_assertions AS sizes \
-             JOIN asset_occurrences AS entry USING (occurrence_id) WHERE entry.content_uuid = ?",
-        )
-        .bind::<BigInt, _>(occurrence.database_value())
+             FROM component CROSS JOIN asset_occurrences AS entry ON entry.content_uuid = component.content_uuid \
+             CROSS JOIN accepted_file_size_assertions AS sizes ON sizes.occurrence_id = entry.occurrence_id",
+        ))
         .bind::<Binary, _>(candidate.as_bytes().as_slice())
+        .bind::<BigInt, _>(occurrence.database_value())
         .bind::<Binary, _>(candidate.as_bytes().as_slice())
         .execute(connection)?;
     }
@@ -362,11 +411,12 @@ fn compatible_identity(
     assertions: ContentDigestAssertions<'_>,
 ) -> crate::Result<bool> {
     if let Some(incoming) = size {
-        let facts = sql_query(
-            "SELECT sizes.size FROM catalog_file_size_assertions AS sizes \
-             JOIN asset_occurrences AS entry USING (occurrence_id) \
-             WHERE entry.content_uuid = ? AND sizes.size <> ? LIMIT 1",
-        )
+        let facts = sql_query(format!(
+            "{FILE_COMPONENT_SQL} SELECT sizes.size FROM component \
+             CROSS JOIN asset_occurrences AS entry ON entry.content_uuid = component.content_uuid \
+             CROSS JOIN accepted_file_size_assertions AS sizes ON sizes.occurrence_id = entry.occurrence_id \
+             WHERE sizes.size <> ? LIMIT 1",
+        ))
         .bind::<Binary, _>(content_id.as_bytes().as_slice())
         .bind::<BigInt, _>(incoming)
         .get_result::<ContentFactsRow>(connection)
@@ -376,12 +426,12 @@ fn compatible_identity(
         }
     }
 
-    let stored = sql_query(
-        "SELECT DISTINCT digest.algorithm, digest.digest \
-         FROM catalog_content_digest_assertions AS assertion \
-         JOIN digest_values AS digest USING (digest_id) \
-         WHERE assertion.content_uuid = ?",
-    )
+    let stored = sql_query(format!(
+        "{FILE_COMPONENT_SQL} SELECT DISTINCT digest.algorithm, digest.digest FROM component \
+         CROSS JOIN asset_occurrences AS entry ON entry.content_uuid = component.content_uuid \
+         CROSS JOIN catalog_content_digest_assertions AS assertion ON assertion.occurrence_id = entry.occurrence_id \
+         CROSS JOIN digest_values AS digest ON digest.digest_id = assertion.digest_id",
+    ))
     .bind::<Binary, _>(content_id.as_bytes().as_slice())
     .load::<DigestFactRow>(connection)?;
     let mut known = BTreeMap::new();
@@ -547,6 +597,10 @@ mod tests {
              );
              CREATE TABLE native_file_sizes (occurrence_id INTEGER PRIMARY KEY,size INTEGER);
              CREATE VIEW catalog_file_size_assertions AS SELECT * FROM native_file_sizes;
+             CREATE VIEW accepted_file_size_assertions AS SELECT * FROM native_file_sizes;
+             CREATE VIEW canonical_occurrence_content AS SELECT occurrence_id,content_uuid FROM asset_occurrences;
+             CREATE TABLE merged_file_ids(old_content_uuid BLOB PRIMARY KEY, kept_content_uuid BLOB, decision_id INTEGER);
+             CREATE TABLE file_match_decision_publications(decision_id INTEGER PRIMARY KEY);
              CREATE VIEW catalog_content_digest_assertions AS
              SELECT occurrence.content_uuid,assertion.* FROM occurrence_digest_assertions AS assertion
              JOIN asset_occurrences AS occurrence USING(occurrence_id)

@@ -98,7 +98,13 @@ Eligible whole-file SHA-1/SHA-256 source declarations share a persistent
 the original declarations; shared identities store no copied hashes or size.
 Contradictions and ambiguous bridges remain unlinked, with references to the
 specific source hash and size evidence. A disputed hash also blocks later sparse
-claims until reviewed settlement is implemented. Backup/restore preserves the
+claims until their exact conflicts receive published reviewed outcomes. The
+`file_match_reviews` Rust API records append-only decisions with a rationale,
+exact hash/size dispositions, and explicit UUID merges. Rejection excludes only
+the named source assertion and cannot be undone by a later accept. A merge
+preserves every issued UUID and source occurrence; old IDs resolve to the kept
+UUID. Unlinked incoming entries are not assigned identities by a review.
+Backup/restore preserves the
 database-wide registry generation; a fresh rebuild starts a new generation.
 UUID interchange uses 32 hexadecimal characters without dashes.
 
@@ -180,6 +186,9 @@ The Rust `catalog_files` API exposes bulk occurrence lookup and keyset-paginated
 file membership across published catalog editions. Results keep each owner and
 its source/list provenance, with digest assertions as separate children.
 Pagination cursors belong to one file UUID and registry generation.
+Results distinguish the immutable source-issued UUID from its current canonical
+UUID. Published reviews also version cursors: after another review, restart
+pagination rather than silently skip newly merged members.
 
 Import errors can retain an exact byte excerpt with a start-inclusive,
 end-exclusive highlight relative to that saved excerpt, not the whole file.

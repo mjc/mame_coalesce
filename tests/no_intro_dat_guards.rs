@@ -1,5 +1,8 @@
 #![allow(clippy::expect_used)]
 
+#[path = "../src/storage/db/ddl.rs"]
+mod bundled_ddl;
+
 use diesel::{
     Connection, QueryableByName, RunQueryDsl, SqliteConnection,
     connection::SimpleConnection,
@@ -86,23 +89,7 @@ struct Fixture {
 impl Fixture {
     fn new() -> TestResult<Self> {
         let mut connection = SqliteConnection::establish(":memory:")?;
-        connection.batch_execute(concat!(
-            include_str!("../src/storage/db/coverage.sql"),
-            "\n",
-            include_str!("../src/storage/db/schema.sql"),
-            "\n",
-            include_str!("../src/storage/db/logiqx.sql"),
-            "\n",
-            include_str!("../src/storage/db/cmp.sql"),
-            "\n",
-            include_str!("../src/storage/db/catalog_registry.sql"),
-            "\n",
-            include_str!("../src/storage/db/no_intro_dat.sql"),
-            "\n",
-            include_str!("../src/storage/db/no_intro_dat_guards.sql"),
-            include_str!("../src/storage/db/no_intro_database.sql"),
-            include_str!("../src/storage/db/no_intro_database_guards.sql"),
-        ))?;
+        connection.batch_execute(bundled_ddl::SCHEMA)?;
         connection.batch_execute(
             "PRAGMA foreign_keys=ON; PRAGMA recursive_triggers=OFF;
              INSERT INTO publishing_sources(source_key,display_name) VALUES('source','Source');

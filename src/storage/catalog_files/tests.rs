@@ -7,12 +7,20 @@ use diesel::{
 
 use super::*;
 
-type TestResult = Result<(), Box<dyn std::error::Error>>;
+type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
 #[derive(QueryableByName)]
 struct IdRow {
     #[diesel(sql_type = BigInt)]
     occurrence_id: i64,
+}
+
+#[derive(QueryableByName)]
+struct CanonicalContentRow {
+    #[diesel(sql_type = BigInt)]
+    occurrence_id: i64,
+    #[diesel(sql_type = Binary)]
+    content_uuid: Vec<u8>,
 }
 
 #[derive(QueryableByName)]
@@ -31,6 +39,12 @@ struct ExplainRow {
 struct DigestIdRow {
     #[diesel(sql_type = BigInt)]
     digest_id: i64,
+}
+
+#[derive(QueryableByName)]
+struct ReviewCandidateRow {
+    #[diesel(sql_type = Binary)]
+    candidate_content_uuid: Vec<u8>,
 }
 
 fn pool() -> crate::Result<Pool> {
@@ -107,6 +121,163 @@ fn request_temp_table_exists(pool: &Pool) -> crate::Result<bool> {
     )
     .get_result::<TempTableRow>(&mut connection)?
     .present)
+}
+
+fn seed_published_merge(
+    database: &crate::database::Database,
+    pool: &Pool,
+    directory: &tempfile::TempDir,
+) -> TestResult<(CatalogContentId, CatalogContentId, Vec<OccurrenceId>)> {
+    use crate::storage::file_match_reviews::{
+        ConflictRef, FileMatchReview, ReviewAction, record_review,
+    };
+
+    import_document(
+        pool,
+        directory,
+        "candidate-sha1.xml",
+        crate::app::CatalogDocumentFormat::Logiqx,
+        r#"<datafile><header><name>SHA-1 candidate</name></header>
+          <game name="candidate-sha1"><rom name="a.bin" size="16"
+            crc="12345678" md5="00112233445566778899aabbccddeeff"
+            sha1="0123456789abcdef0123456789abcdef01234567"/>
+          </game></datafile>"#,
+    )?;
+    import_document(
+        pool,
+        directory,
+        "candidate-sha256.dat",
+        crate::app::CatalogDocumentFormat::NoIntroDat(crate::NoIntroDatMode::V4Compatible),
+        r#"<datafile><header><id>1</id><name>SHA-256 candidate</name>
+          <description>SHA-256 candidate</description><version>1</version><author>test</author></header>
+          <game name="candidate-sha256"><description>Candidate</description><rom name="b.bin" size="16"
+            crc="12345678" md5="00112233445566778899aabbccddeeff"
+            sha256="abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd"/>
+          </game></datafile>"#,
+    )?;
+    import_document(
+        pool,
+        directory,
+        "incoming.dat",
+        crate::app::CatalogDocumentFormat::NoIntroDat(crate::NoIntroDatMode::V4Compatible),
+        r#"<datafile><header><id>1</id><name>Ambiguous incoming</name>
+          <description>Ambiguous incoming</description><version>1</version><author>test</author></header>
+          <game name="incoming"><description>Incoming</description><rom name="incoming.bin" size="32"
+            crc="87654321" md5="ffeeddccbbaa99887766554433221100"
+            sha1="0123456789abcdef0123456789abcdef01234567"
+            sha256="abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd"/>
+          </game></datafile>"#,
+    )?;
+    let ids = occurrence_ids(pool)?;
+    assert_eq!(ids.len(), 3);
+    let entries = occurrences_for_ids_in_pool(pool, &ids)?;
+    let kept = entries[0].content_id.ok_or("SHA-1 owner was not linked")?;
+    let old = entries[1]
+        .content_id
+        .ok_or("SHA-256 owner was not linked")?;
+    assert_ne!(kept, old);
+    assert_eq!(entries[2].content_id, None, "bridge stays source-unlinked");
+    let mut connection = pool.get()?;
+    let candidates = sql_query(
+        "SELECT candidate_content_uuid FROM occurrence_content_conflicts \
+         WHERE occurrence_id = ? ORDER BY candidate_content_uuid",
+    )
+    .bind::<BigInt, _>(ids[2].database_value())
+    .load::<ReviewCandidateRow>(&mut connection)?
+    .into_iter()
+    .map(|row| {
+        let bytes: [u8; 16] = row
+            .candidate_content_uuid
+            .try_into()
+            .map_err(|bytes: Vec<u8>| {
+                crate::Error::DatabaseSchema(format!("candidate UUID has {} bytes", bytes.len()))
+            })?;
+        Ok(CatalogContentId::from_bytes(bytes))
+    })
+    .collect::<crate::Result<Vec<_>>>()?;
+    assert_eq!(candidates.len(), 2);
+    assert!(candidates.contains(&kept));
+    assert!(candidates.contains(&old));
+    drop(connection);
+
+    record_review(
+        database,
+        &FileMatchReview {
+            rationale: "review imported SHA-1/SHA-256 bridge evidence".to_owned(),
+            conflicts: candidates
+                .into_iter()
+                .map(|candidate| ConflictRef {
+                    incoming: ids[2],
+                    candidate,
+                })
+                .collect(),
+            evidence: Vec::new(),
+            action: ReviewAction::Merge {
+                kept,
+                old: vec![old],
+            },
+        },
+    )?;
+    Ok((kept, old, ids))
+}
+
+fn publish_later_separate_review(
+    database: &crate::database::Database,
+    pool: &Pool,
+    directory: &tempfile::TempDir,
+    kept: CatalogContentId,
+) -> TestResult {
+    use crate::storage::file_match_reviews::{
+        ConflictRef, FileMatchReview, ReviewAction, record_review,
+    };
+
+    import_document(
+        pool,
+        directory,
+        "later-bridge.dat",
+        crate::app::CatalogDocumentFormat::NoIntroDat(crate::NoIntroDatMode::V4Compatible),
+        r#"<datafile><header><id>1</id><name>Later bridge</name>
+          <description>Later bridge</description><version>1</version><author>test</author></header>
+          <game name="later"><description>Later</description><rom name="later.bin" size="32"
+            crc="87654321" md5="ffeeddccbbaa99887766554433221100"
+            sha1="0123456789abcdef0123456789abcdef01234567"
+            sha256="abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd"/>
+          </game></datafile>"#,
+    )?;
+    let incoming = *occurrence_ids(pool)?
+        .last()
+        .ok_or("missing later occurrence")?;
+    let mut connection = pool.get()?;
+    let candidates = sql_query(
+        "SELECT candidate_content_uuid FROM occurrence_content_conflicts \
+         WHERE occurrence_id = ?",
+    )
+    .bind::<BigInt, _>(incoming.database_value())
+    .load::<ReviewCandidateRow>(&mut connection)?;
+    drop(connection);
+    let candidate = candidates
+        .first()
+        .ok_or("later imported bridge has no published conflict")?
+        .candidate_content_uuid
+        .clone();
+    let candidate: [u8; 16] = candidate
+        .try_into()
+        .map_err(|_| "later bridge candidate UUID is malformed")?;
+    let candidate = CatalogContentId::from_bytes(candidate);
+    assert_eq!(candidate, kept);
+    record_review(
+        database,
+        &FileMatchReview {
+            rationale: "retain the later source conflict separately".to_owned(),
+            conflicts: vec![ConflictRef {
+                incoming,
+                candidate,
+            }],
+            evidence: Vec::new(),
+            action: ReviewAction::KeepSeparate,
+        },
+    )?;
+    Ok(())
 }
 
 fn logiqx_document() -> &'static str {
@@ -277,8 +448,17 @@ fn bulk_keeps_repeated_and_unlinked_owners_and_digests_as_children() -> TestResu
         ["same", "same", "sample-owner"]
     );
     assert!(occurrences[0].content_id.is_some());
+    assert_eq!(
+        occurrences[0].canonical_content_id,
+        occurrences[0].content_id
+    );
     assert!(occurrences[1].content_id.is_some());
+    assert_eq!(
+        occurrences[1].canonical_content_id,
+        occurrences[1].content_id
+    );
     assert_eq!(occurrences[2].content_id, None);
+    assert_eq!(occurrences[2].canonical_content_id, None);
     assert_eq!(occurrences[0].provenance.set_group_kind, SetGroupKind::Root);
     assert_eq!(
         occurrences[0].provenance.asset_name.as_deref(),
@@ -326,6 +506,43 @@ fn bulk_keeps_repeated_and_unlinked_owners_and_digests_as_children() -> TestResu
 }
 
 #[test]
+fn canonical_occurrence_content_exposes_only_linked_native_occurrences() -> TestResult {
+    let pool = pool()?;
+    let directory = tempfile::tempdir()?;
+    import_document(
+        &pool,
+        &directory,
+        "root.dat",
+        crate::app::CatalogDocumentFormat::Logiqx,
+        logiqx_document(),
+    )?;
+    let ids = occurrence_ids(&pool)?;
+    let occurrences = occurrences_for_ids_in_pool(&pool, &ids)?;
+    let expected = occurrences
+        .iter()
+        .filter_map(|occurrence| {
+            occurrence
+                .content_id
+                .map(|content_id| (occurrence.occurrence_id.database_value(), content_id))
+        })
+        .collect::<Vec<_>>();
+
+    let mut connection = pool.get()?;
+    let canonical = sql_query(
+        "SELECT occurrence_id, content_uuid FROM canonical_occurrence_content \
+         ORDER BY occurrence_id",
+    )
+    .load::<CanonicalContentRow>(&mut connection)?;
+
+    assert_eq!(canonical.len(), expected.len());
+    for (row, (occurrence_id, content_id)) in canonical.iter().zip(expected) {
+        assert_eq!(row.occurrence_id, occurrence_id);
+        assert_eq!(row.content_uuid, content_id.as_bytes());
+    }
+    Ok(())
+}
+
+#[test]
 fn content_pages_are_keyset_ordered_and_cursor_is_uuid_bound() -> TestResult {
     let pool = pool()?;
     let directory = tempfile::tempdir()?;
@@ -368,11 +585,87 @@ fn content_pages_are_keyset_ordered_and_cursor_is_uuid_bound() -> TestResult {
     let stale_registry_cursor = ContentOccurrenceCursor {
         content: content_id,
         registry: CatalogRegistryId::from_bytes([0xA5; 16]),
+        review_revision: cursor.review_revision,
         after_occurrence: cursor.after_occurrence,
     };
     assert!(matches!(
         occurrences_for_content_in_pool(&pool, content_id, limit, Some(&stale_registry_cursor)),
         Err(CatalogFilesError::CursorRegistryMismatch)
+    ));
+    Ok(())
+}
+
+#[test]
+fn merged_uuid_pages_combine_occurrences_preserve_source_ids_and_invalidate_cursors() -> TestResult
+{
+    let database = crate::database::Database::in_memory()?;
+    let pool = database.pool().clone();
+    let directory = tempfile::tempdir()?;
+    let (kept, old, ids) = seed_published_merge(&database, &pool, &directory)?;
+
+    let bulk = occurrences_for_ids_in_pool(&pool, &[ids[0], ids[1]])?;
+    assert_eq!(bulk[0].content_id, Some(kept));
+    assert_eq!(bulk[0].canonical_content_id, Some(kept));
+    assert_eq!(
+        bulk[1].content_id,
+        Some(old),
+        "stored source UUID is immutable"
+    );
+    assert_eq!(bulk[1].canonical_content_id, Some(kept));
+
+    let mut connection = pool.get()?;
+    let plan = sql_query(format!(
+        "EXPLAIN QUERY PLAN {} LIMIT ?",
+        content_occurrence_select()
+    ))
+    .bind::<Binary, _>(kept.as_bytes().as_slice())
+    .bind::<BigInt, _>(0_i64)
+    .bind::<BigInt, _>(2_i64)
+    .load::<ExplainRow>(&mut connection)?;
+    let plan = plan
+        .into_iter()
+        .map(|row| row.detail)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(plan.contains("occurrence_content_lookup"), "{plan}");
+    assert!(plan.contains("merged_file_kept_lookup"), "{plan}");
+    drop(connection);
+
+    let limit = ContentOccurrenceLimit::new(1)?;
+    let old_first = occurrences_for_content_in_pool(&pool, old, limit, None)?;
+    assert_eq!(old_first.occurrences.len(), 1);
+    assert_eq!(old_first.occurrences[0].occurrence_id, ids[0]);
+    assert_eq!(old_first.occurrences[0].content_id, Some(kept));
+    assert_eq!(old_first.occurrences[0].canonical_content_id, Some(kept));
+    let cursor = old_first
+        .next_cursor
+        .as_ref()
+        .ok_or("expected second merged page")?;
+    assert_eq!(
+        cursor.content, old,
+        "cursor stays bound to the requested old UUID"
+    );
+    let old_second = occurrences_for_content_in_pool(&pool, old, limit, Some(cursor))?;
+    assert_eq!(old_second.occurrences.len(), 1);
+    assert_eq!(old_second.occurrences[0].occurrence_id, ids[1]);
+    assert_eq!(old_second.occurrences[0].content_id, Some(old));
+    assert_eq!(old_second.occurrences[0].canonical_content_id, Some(kept));
+    assert!(old_second.next_cursor.is_none());
+
+    let kept_first = occurrences_for_content_in_pool(&pool, kept, limit, None)?;
+    let kept_cursor = kept_first
+        .next_cursor
+        .as_ref()
+        .ok_or("expected kept cursor")?;
+    assert!(matches!(
+        occurrences_for_content_in_pool(&pool, old, limit, Some(kept_cursor)),
+        Err(CatalogFilesError::CursorContentMismatch)
+    ));
+
+    publish_later_separate_review(&database, &pool, &directory, kept)?;
+    assert!(matches!(
+        occurrences_for_content_in_pool(&pool, old, limit, Some(cursor)),
+        Err(CatalogFilesError::CursorReviewRevisionMismatch)
     ));
     Ok(())
 }
@@ -460,16 +753,17 @@ fn empty_missing_and_invalid_page_requests_are_bounded() -> TestResult {
         ContentOccurrenceLimit::new(MAX_PAGE_SIZE + 1),
         Err(CatalogFilesError::InvalidPageLimit { .. })
     ));
-    assert!(
+    assert!(matches!(
         occurrences_for_content_in_pool(
             &pool,
             CatalogContentId::from_bytes([0xA5; 16]),
             ContentOccurrenceLimit::new(5)?,
             None
-        )?
-        .occurrences
-        .is_empty()
-    );
+        ),
+        Err(CatalogFilesError::Registry(crate::Error::FileMatchReview(
+            crate::file_match_reviews::ReviewError::UnknownFile(_)
+        )))
+    ));
     Ok(())
 }
 

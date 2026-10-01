@@ -1,23 +1,14 @@
 use diesel::{Connection, RunQueryDsl, SqliteConnection, connection::SimpleConnection};
 
+#[path = "../src/storage/db/ddl.rs"]
+mod bundled_ddl;
+
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
 fn fresh_database(header_present: bool) -> TestResult<SqliteConnection> {
     let mut connection = SqliteConnection::establish(":memory:")?;
     connection.batch_execute("PRAGMA foreign_keys = ON;")?;
-    for ddl in [
-        include_str!("../src/storage/db/coverage.sql"),
-        include_str!("../src/storage/db/schema.sql"),
-        include_str!("../src/storage/db/logiqx.sql"),
-        include_str!("../src/storage/db/cmp.sql"),
-        include_str!("../src/storage/db/catalog_registry.sql"),
-        include_str!("../src/storage/db/no_intro_dat.sql"),
-        include_str!("../src/storage/db/no_intro_dat_guards.sql"),
-        include_str!("../src/storage/db/no_intro_database.sql"),
-        include_str!("../src/storage/db/no_intro_database_guards.sql"),
-    ] {
-        connection.batch_execute(ddl)?;
-    }
+    connection.batch_execute(bundled_ddl::SCHEMA)?;
 
     connection.batch_execute(
         "INSERT INTO publishing_sources(source_key,display_name) VALUES('source','source');
