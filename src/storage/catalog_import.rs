@@ -9,8 +9,8 @@ use crate::{
     app::{CatalogDocumentFormat, CatalogImportReport, CatalogImportRequest, CatalogImportStatus},
     clrmamepro::Catalog as ClrMameProCatalog,
     domain::{
-        CatalogRecordKind, CatalogRecordRef, DocumentKey, DocumentLocation, ImportRunKey,
-        ParserInterpretationKey, RelationshipType, SnapshotKey,
+        CatalogRecordKind, CatalogRecordRef, CatalogSetId, DocumentKey, DocumentLocation,
+        ImportRunKey, ParserInterpretationKey, RelationshipType, SnapshotKey,
     },
     logiqx::{DataFile, Game, XmlSourceMap},
     mame::{self, ExtensionValue, MameRecord, ValidatedMame},
@@ -31,6 +31,7 @@ mod cmp_native;
 mod mame_specification;
 mod merges;
 mod root_assets;
+mod root_sets;
 mod software_native;
 
 enum SnapshotPublication {
@@ -83,24 +84,10 @@ struct IdentityOnlySnapshot {
     snapshot_key: String,
     #[diesel(sql_type = Nullable<Text>)]
     declared_version: Option<String>,
-    #[diesel(sql_type = Text)]
-    scope_kind: String,
-    #[diesel(sql_type = Nullable<Text>)]
-    scope_json: Option<String>,
+    #[diesel(sql_type = BigInt)]
+    coverage_id: i64,
     #[diesel(sql_type = Nullable<Text>)]
     acquisition_source: Option<String>,
-}
-
-#[derive(QueryableByName)]
-struct SnapshotSetIdRow {
-    #[diesel(sql_type = BigInt)]
-    set_id: i64,
-}
-
-#[derive(QueryableByName)]
-struct ComponentOrderRow {
-    #[diesel(sql_type = BigInt)]
-    component_order: i64,
 }
 
 #[derive(QueryableByName)]
@@ -109,6 +96,12 @@ struct IdentityRow {
     first_value: String,
     #[diesel(sql_type = Nullable<Text>)]
     second_value: Option<String>,
+}
+
+#[derive(QueryableByName)]
+struct ExtensionOccurrenceId {
+    #[diesel(sql_type = BigInt)]
+    value: i64,
 }
 
 struct SnapshotData {
@@ -190,7 +183,6 @@ struct SnapshotSet {
     parent: Option<String>,
     parent_field: Option<String>,
     runtime_dependencies: Vec<SnapshotDependency>,
-    metadata: serde_json::Value,
     location: crate::logiqx::RecordLocation,
     assets: Vec<SnapshotAsset>,
     switches: Vec<crate::mame::MachineSwitch>,
@@ -255,8 +247,8 @@ impl SnapshotAsset {
 struct StoredExtension {
     record_kind: String,
     record_name: Option<String>,
-    owner_set_name: Option<String>,
-    owner_component_order: Option<String>,
+    owner_set_index: Option<usize>,
+    owner_component_index: Option<usize>,
     field_name: String,
     namespace_uri: Option<String>,
     value: ExtensionValue,
@@ -333,7 +325,6 @@ impl SnapshotData {
                             }),
                     )
                     .collect(),
-                metadata: serde_json::Value::Null,
                 location,
                 assets,
                 switches: Vec::new(),
@@ -352,7 +343,7 @@ impl SnapshotData {
                 .and_then(|header| header.version().cloned()),
             sets,
             software_lists: None,
-            extensions: stored_logiqx_extensions(data_file, source_map),
+            extensions: stored_logiqx_extensions(source_map),
             logiqx_document_facts: Some(LogiqxDocumentFacts::from_data_file(data_file)),
             cmp_header_facts: None,
         })
@@ -385,19 +376,21 @@ impl SnapshotData {
         let sets = catalog
             .sets
             .into_iter()
-            .map(|set| {
-                extensions.extend(set.extensions.into_iter().map(stored_clrmamepro_extension));
+            .enumerate()
+            .map(|(set_index, set)| {
+                extensions.extend(set.extensions.into_iter().map(|extension| {
+                    stored_clrmamepro_extension(extension).with_set_owner(set_index)
+                }));
                 let parent_field = set.parent.as_ref().map(|_| "cloneof".to_owned());
                 let assets = set
                     .assets
                     .into_iter()
-                    .map(|asset| {
-                        extensions.extend(
-                            asset
-                                .extensions
-                                .into_iter()
-                                .map(stored_clrmamepro_extension),
-                        );
+                    .enumerate()
+                    .map(|(component_index, asset)| {
+                        extensions.extend(asset.extensions.into_iter().map(|extension| {
+                            stored_clrmamepro_extension(extension)
+                                .with_asset_owner(set_index, component_index)
+                        }));
                         SnapshotAsset {
                             name: asset.name,
                             role: "rom",
@@ -421,7 +414,6 @@ impl SnapshotData {
                     parent: set.parent,
                     parent_field,
                     runtime_dependencies: Vec::new(),
-                    metadata: set.metadata,
                     location: set.location,
                     assets,
                     switches: Vec::new(),
@@ -454,24 +446,23 @@ impl SnapshotData {
         let sets = catalog
             .entries
             .into_iter()
-            .map(|entry| {
-                extensions.extend(entry.extensions.into_iter().map(stored_extension));
+            .enumerate()
+            .map(|(set_index, entry)| {
+                extensions.extend(
+                    entry
+                        .extensions
+                        .into_iter()
+                        .map(|extension| stored_extension(extension).with_set_owner(set_index)),
+                );
                 let entry_name = entry.name;
-                let no_intro_facts = crate::no_intro_pc_xml::GameFacts {
-                    archive_id: entry.facts.archive_id,
-                    description: entry.facts.description,
-                    description_location: entry.facts.description_location,
-                };
+                let no_intro_facts = entry.facts;
                 let assets = entry
                     .assets
                     .into_iter()
                     .enumerate()
                     .map(|(component_order, asset)| {
                         extensions.extend(asset.extensions.into_iter().map(|extension| {
-                            let mut extension = stored_extension(extension);
-                            extension.owner_set_name = Some(entry_name.clone());
-                            extension.owner_component_order = Some(component_order.to_string());
-                            extension
+                            stored_extension(extension).with_asset_owner(set_index, component_order)
                         }));
                         SnapshotAsset {
                             name: asset.name,
@@ -496,7 +487,6 @@ impl SnapshotData {
                     parent: None,
                     parent_field: None,
                     runtime_dependencies: Vec::new(),
-                    metadata: serde_json::json!(entry.metadata),
                     location: entry.location,
                     assets,
                     switches: Vec::new(),
@@ -523,8 +513,7 @@ impl SnapshotData {
 
 fn machine_contents(machine: crate::mame::Machine) -> (SnapshotSet, Vec<StoredExtension>) {
     let mut extensions = Vec::new();
-    let machine_name = &machine.name;
-    extensions.extend(stored_machine_extensions(machine_name, machine.extensions));
+    extensions.extend(machine.extensions.into_iter().map(stored_extension));
     let runtime_dependencies: Vec<SnapshotDependency> = machine
         .device_refs
         .into_iter()
@@ -552,7 +541,7 @@ fn machine_contents(machine: crate::mame::Machine) -> (SnapshotSet, Vec<StoredEx
                 }),
         )
         .collect();
-    let assets = machine_assets(machine_name, machine.assets, &mut extensions);
+    let assets = machine_assets(machine.assets, &mut extensions);
     let parent_field = machine.parent.as_ref().map(|_| "cloneof".to_owned());
     let switches = machine.switches;
     let bios_sets = machine.bios_sets;
@@ -571,7 +560,6 @@ fn machine_contents(machine: crate::mame::Machine) -> (SnapshotSet, Vec<StoredEx
         parent: machine.parent,
         parent_field,
         runtime_dependencies,
-        metadata: serde_json::Value::Null,
         location: machine.location,
         assets,
         switches,
@@ -583,11 +571,13 @@ fn machine_contents(machine: crate::mame::Machine) -> (SnapshotSet, Vec<StoredEx
         logiqx_facts: None,
         cmp_facts: None,
     };
+    for extension in &mut extensions {
+        extension.owner_set_index = Some(0);
+    }
     (set, extensions)
 }
 
 fn machine_assets(
-    machine_name: &str,
     assets: Vec<crate::mame::MachineAsset>,
     extensions: &mut Vec<StoredExtension>,
 ) -> Vec<SnapshotAsset> {
@@ -595,12 +585,11 @@ fn machine_assets(
         .into_iter()
         .enumerate()
         .map(|(component_order, asset)| {
-            extensions.extend(asset.extensions.into_iter().map(|extension| {
-                let mut extension = stored_extension(extension);
-                extension.owner_set_name = Some(machine_name.to_owned());
-                extension.owner_component_order = Some(component_order.to_string());
-                extension
-            }));
+            extensions.extend(
+                asset.extensions.into_iter().map(|extension| {
+                    stored_extension(extension).with_asset_owner(0, component_order)
+                }),
+            );
             let evidence_scope = asset
                 .disk_requirement
                 .as_ref()
@@ -646,8 +635,8 @@ fn stored_extension(ext: crate::mame::XmlExtension) -> StoredExtension {
     StoredExtension {
         record_kind: ext.record_kind,
         record_name: ext.record_name,
-        owner_set_name: None,
-        owner_component_order: None,
+        owner_set_index: None,
+        owner_component_index: None,
         field_name: ext.field_name,
         namespace_uri: ext.namespace_uri,
         value: ext.value,
@@ -655,10 +644,7 @@ fn stored_extension(ext: crate::mame::XmlExtension) -> StoredExtension {
     }
 }
 
-fn stored_logiqx_extensions(
-    data_file: &DataFile,
-    source_map: &XmlSourceMap,
-) -> Vec<StoredExtension> {
+fn stored_logiqx_extensions(source_map: &XmlSourceMap) -> Vec<StoredExtension> {
     let mut rom_owners = HashMap::new();
     for (game_index, locations) in source_map.rom_locations.iter().enumerate() {
         for (component_order, location) in locations.iter().enumerate() {
@@ -675,8 +661,8 @@ fn stored_logiqx_extensions(
             let mut stored = StoredExtension {
                 record_kind: ext.record_kind.clone(),
                 record_name: ext.record_name.clone(),
-                owner_set_name: None,
-                owner_component_order: None,
+                owner_set_index: None,
+                owner_component_index: None,
                 field_name: ext.field_name.clone(),
                 namespace_uri: ext.namespace_uri.clone(),
                 value: serde_json::json!(ext.value).into(),
@@ -686,21 +672,20 @@ fn stored_logiqx_extensions(
                 let owner = rom_owners
                     .get(&(ext.location.line, ext.location.column))
                     .copied();
-                if let Some((game_index, component_order)) = owner
-                    && let Some(game) = data_file.games().get(game_index)
-                {
-                    stored.owner_set_name = Some(game.name().to_owned());
-                    stored.owner_component_order = Some(component_order.to_string());
+                if let Some((game_index, component_order)) = owner {
+                    stored = stored.with_asset_owner(game_index, component_order);
                 }
-            } else if ext.record_kind != "game" && ext.record_kind != "document" {
+            } else if ext.record_kind != "document" {
+                // Logiqx currently exposes child positions only for ROMs; other nested
+                // extensions keep set ownership until their source map carries ordinals.
                 let owner_index = source_map
                     .game_locations
                     .partition_point(|location| {
                         (location.line, location.column) <= (ext.location.line, ext.location.column)
                     })
                     .checked_sub(1);
-                if let Some(game) = owner_index.and_then(|index| data_file.games().get(index)) {
-                    stored.owner_set_name = Some(game.name().to_owned());
+                if let Some(game_index) = owner_index {
+                    stored = stored.with_set_owner(game_index);
                 }
             }
             stored
@@ -708,29 +693,29 @@ fn stored_logiqx_extensions(
         .collect()
 }
 
-fn stored_machine_extensions(
-    machine_name: &str,
-    extensions: Vec<crate::mame::XmlExtension>,
-) -> impl Iterator<Item = StoredExtension> + '_ {
-    extensions.into_iter().map(move |extension| {
-        let mut extension = stored_extension(extension);
-        if extension.record_kind == "device_ref" {
-            extension.owner_set_name = Some(machine_name.to_owned());
-        }
-        extension
-    })
-}
-
 fn stored_clrmamepro_extension(ext: crate::clrmamepro::Extension) -> StoredExtension {
     StoredExtension {
         record_kind: ext.record_kind,
         record_name: ext.record_name,
-        owner_set_name: None,
-        owner_component_order: None,
+        owner_set_index: None,
+        owner_component_index: None,
         field_name: ext.field_name,
         namespace_uri: None,
         value: ext.value.into(),
         location: ext.location,
+    }
+}
+
+impl StoredExtension {
+    const fn with_set_owner(mut self, set_index: usize) -> Self {
+        self.owner_set_index = Some(set_index);
+        self
+    }
+
+    const fn with_asset_owner(mut self, set_index: usize, component_index: usize) -> Self {
+        self.owner_set_index = Some(set_index);
+        self.owner_component_index = Some(component_index);
+        self
     }
 }
 
@@ -823,11 +808,11 @@ impl StreamingImport<'_> {
     fn extensions(
         &mut self,
         extensions: impl IntoIterator<Item = StoredExtension>,
+        set_ids: &[CatalogSetId],
     ) -> crate::Result<()> {
-        for extension in extensions {
-            if let SnapshotPublication::Pending(key) = &self.publication {
-                insert_snapshot_extension(self.conn, key, &extension)?;
-            }
+        if let SnapshotPublication::Pending(key) = &self.publication {
+            let extensions: Vec<_> = extensions.into_iter().collect();
+            insert_stored_extensions(self.conn, key, &extensions, set_ids)?;
         }
         Ok(())
     }
@@ -837,12 +822,15 @@ impl StreamingImport<'_> {
             MameRecord::Machine(machine) => {
                 let (set, extensions) = machine_contents(*machine);
                 if let SnapshotPublication::Pending(key) = &self.publication {
-                    insert_snapshot_set(self.conn, key, &set)?;
+                    let owner = insert_snapshot_set(self.conn, key, &set)?;
+                    self.extensions(extensions, &[owner])?;
+                } else {
+                    self.extensions(extensions, &[])?;
                 }
-                self.extensions(extensions)
+                Ok(())
             }
             MameRecord::Extension(extension) => {
-                self.extensions(std::iter::once(stored_extension(extension)))
+                self.extensions(std::iter::once(stored_extension(extension)), &[])
             }
         }
     }
@@ -898,7 +886,7 @@ fn import_mame(
                     publication,
                     run_key,
                 };
-                sink.extensions(header.extensions.into_iter().map(stored_extension))
+                sink.extensions(header.extensions.into_iter().map(stored_extension), &[])
                     .map_err(StreamingImportError::Storage)?;
                 Ok(sink)
             },
@@ -1107,10 +1095,10 @@ fn prepare_snapshot(
         )));
     }
 
-    let (scope_kind, scope_json) = request.scope.as_storage();
+    let coverage_id = super::catalog_coverage::ensure(conn, &request.scope)?;
     let identity_rows = sql_query(
-        "SELECT snapshot.snapshot_key, snapshot.declared_version, snapshot.scope_kind, \
-                snapshot.scope_json, acquisition.source_key AS acquisition_source \
+        "SELECT snapshot.snapshot_key, snapshot.declared_version, snapshot.coverage_id, \
+                acquisition.source_key AS acquisition_source \
          FROM catalog_snapshots AS snapshot \
          LEFT JOIN acquisitions AS acquisition \
            ON acquisition.acquisition_key = snapshot.acquisition_key \
@@ -1124,8 +1112,7 @@ fn prepare_snapshot(
     .load::<IdentityOnlySnapshot>(conn)?;
     let matching_identity = identity_rows.iter().find(|row| {
         row.declared_version.as_deref() == version
-            && row.scope_kind == scope_kind
-            && row.scope_json.as_deref() == scope_json.as_deref()
+            && row.coverage_id == coverage_id.database_value()
             && row.acquisition_source.as_deref() == Some(request.source_key.as_str())
     });
     let snapshot_key = if let Some(existing) = matching_identity {
@@ -1139,8 +1126,8 @@ fn prepare_snapshot(
         sql_query(
             "INSERT INTO catalog_snapshots \
              (snapshot_key, catalog_key, document_key, interpretation_key, acquisition_key, \
-              declared_version, scope_kind, scope_json) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+              declared_version, coverage_id) \
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
         .bind::<Text, _>(snapshot_key.as_str())
         .bind::<Text, _>(request.catalog_key.as_str())
@@ -1148,8 +1135,7 @@ fn prepare_snapshot(
         .bind::<Text, _>(interpretation.as_str())
         .bind::<Nullable<Text>, _>(Some(acquisition_key.to_owned()))
         .bind::<Nullable<Text>, _>(version)
-        .bind::<Text, _>(scope_kind)
-        .bind::<Nullable<Text>, _>(scope_json)
+        .bind::<BigInt, _>(coverage_id.database_value())
         .execute(conn)?;
         snapshot_key
     };
@@ -1202,22 +1188,15 @@ fn ensure_identities(
         ));
     }
 
-    let (scope_kind, scope_details) = request.scope.as_storage();
-    let options_json = serde_json::json!({
-        "snapshot_scope": scope_kind,
-        "scope_details": scope_details,
-    })
-    .to_string();
     sql_query(
         "INSERT INTO parser_interpretations \
-         (interpretation_key, format, parser_name, parser_version, rules_version, options_json) \
-         VALUES (?, ?, 'mame_coalesce', ?, 'normalization-v1', ?) \
+         (interpretation_key, format, parser_name, parser_version, rules_version) \
+         VALUES (?, ?, 'mame_coalesce', ?, 'normalization-v1') \
          ON CONFLICT(interpretation_key) DO NOTHING",
     )
     .bind::<Text, _>(interpretation.as_str())
     .bind::<Text, _>(request.format.as_str())
     .bind::<Nullable<Text>, _>(Some(env!("CARGO_PKG_VERSION").to_owned()))
-    .bind::<Nullable<Text>, _>(Some(options_json))
     .execute(conn)?;
     Ok(())
 }
@@ -1256,17 +1235,12 @@ fn insert_snapshot_contents(
     snapshot_key: &SnapshotKey,
     snapshot_data: &SnapshotData,
 ) -> crate::Result<()> {
+    let mut set_ids = Vec::with_capacity(snapshot_data.sets.len());
     for set in &snapshot_data.sets {
-        insert_snapshot_set(conn, snapshot_key, set)?;
+        set_ids.push(insert_snapshot_set(conn, snapshot_key, set)?);
     }
 
-    for set in &snapshot_data.sets {
-        for (component_order, asset) in set.assets.iter().enumerate() {
-            let component_order = i64::try_from(component_order)
-                .map_err(|_| crate::Error::InvalidPath("too many catalog assets".into()))?;
-            persist_asset_merge_relationship(conn, snapshot_key, set, asset, component_order)?;
-        }
-    }
+    merges::persist_snapshot_merges(conn, snapshot_key)?;
 
     if let Some(catalog) = &snapshot_data.software_lists {
         software_native::insert(conn, snapshot_key, catalog)?;
@@ -1278,8 +1252,55 @@ fn insert_snapshot_contents(
         cmp_native::insert_header_facts(conn, snapshot_key, header)?;
     }
 
-    for extension in &snapshot_data.extensions {
-        insert_snapshot_extension(conn, snapshot_key, extension)?;
+    insert_stored_extensions(conn, snapshot_key, &snapshot_data.extensions, &set_ids)?;
+    Ok(())
+}
+
+fn insert_stored_extensions(
+    conn: &mut SqliteConnection,
+    snapshot_key: &SnapshotKey,
+    extensions: &[StoredExtension],
+    set_ids: &[CatalogSetId],
+) -> crate::Result<()> {
+    for extension in extensions {
+        let owner_set = extension
+            .owner_set_index
+            .map(|index| {
+                set_ids.get(index).copied().ok_or_else(|| {
+                    crate::Error::InvalidPath(
+                        "catalog extension source set index is out of range".into(),
+                    )
+                })
+            })
+            .transpose()?;
+        let owner_occurrence_id = match (owner_set, extension.owner_component_index) {
+            (Some(set_id), Some(component_index)) => Some(
+                sql_query(
+                    "SELECT occurrence_id AS value FROM asset_occurrences \
+                     WHERE record_id = ? AND occurrence_order = ?",
+                )
+                .bind::<BigInt, _>(set_id.as_i64())
+                .bind::<BigInt, _>(checked_order(
+                    component_index,
+                    "extension owner components",
+                )?)
+                .get_result::<ExtensionOccurrenceId>(conn)?
+                .value,
+            ),
+            (None, Some(_)) => {
+                return Err(crate::Error::InvalidPath(
+                    "catalog extension occurrence has no source set".into(),
+                ));
+            }
+            (_, None) => None,
+        };
+        insert_snapshot_extension(
+            conn,
+            snapshot_key,
+            extension,
+            owner_set,
+            owner_occurrence_id,
+        )?;
     }
     Ok(())
 }
@@ -1288,45 +1309,33 @@ fn insert_snapshot_set(
     conn: &mut SqliteConnection,
     snapshot_key: &SnapshotKey,
     set: &SnapshotSet,
-) -> crate::Result<()> {
-    let set_id = sql_query(
-        "INSERT INTO snapshot_sets \
-         (snapshot_key, set_name, parent_name, metadata_json, source_line, source_column, set_id) \
-         VALUES (?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(record_id), 0) + 1 FROM records)) \
-         RETURNING set_id",
-    )
-    .bind::<Text, _>(snapshot_key.as_str())
-    .bind::<Text, _>(&set.name)
-    .bind::<Nullable<Text>, _>(set.parent.as_deref())
-    .bind::<Text, _>(serde_json::to_string(&set.metadata)?)
-    .bind::<BigInt, _>(set.location.line)
-    .bind::<BigInt, _>(set.location.column)
-    .get_result::<SnapshotSetIdRow>(conn)?
-    .set_id;
+) -> crate::Result<CatalogSetId> {
+    let owner = root_sets::insert(conn, snapshot_key, set)?;
+    let set_id = owner.as_i64();
 
     if let Some(facts) = &set.mame_facts {
-        insert_mame_machine_facts(conn, snapshot_key, set, facts)?;
+        insert_mame_machine_facts(conn, set_id, facts)?;
         insert_mame_machine_dependencies(conn, set_id, set)?;
         mame_specification::insert(conn, set_id, set)?;
     }
     if let Some(facts) = &set.no_intro_facts {
-        insert_no_intro_game_facts(conn, snapshot_key, set, facts)?;
+        insert_no_intro_game_facts(conn, set_id, facts)?;
     }
     if let Some(facts) = &set.logiqx_facts {
-        insert_logiqx_set_facts(conn, snapshot_key, set, facts)?;
+        insert_logiqx_set_facts(conn, set_id, facts)?;
     }
     if let Some(facts) = &set.cmp_facts {
         cmp_native::insert_set_facts(conn, set_id, facts)?;
     }
 
-    persist_set_relationships(conn, snapshot_key, set)?;
+    persist_set_relationships(conn, snapshot_key, owner, set)?;
 
     for (order, asset) in set.assets.iter().enumerate() {
         insert_asset_requirement(conn, set_id, checked_order(order, "catalog assets")?, asset)?;
     }
     insert_machine_switches(conn, set_id, set)?;
-    insert_machine_bios_sets(conn, snapshot_key, set)?;
-    Ok(())
+    insert_machine_bios_sets(conn, set_id, set)?;
+    Ok(owner)
 }
 
 fn insert_asset_requirement(
@@ -1359,7 +1368,7 @@ fn insert_asset_requirement(
         .map(|content_id| content_id.as_bytes().to_vec());
     let occurrence = root_assets::insert(
         conn,
-        crate::storage::catalog_identity::RecordId::from_database(set_id),
+        CatalogSetId::from_database(set_id),
         component_order,
         asset,
         size,
@@ -1420,17 +1429,15 @@ fn insert_logiqx_document_facts(
 
 fn insert_logiqx_set_facts(
     conn: &mut SqliteConnection,
-    snapshot_key: &SnapshotKey,
-    set: &SnapshotSet,
+    set_id: i64,
     facts: &LogiqxSetFacts,
 ) -> crate::Result<()> {
     sql_query(
-        "INSERT INTO logiqx_set_facts \
-         (snapshot_key, set_name, source_file, is_bios, board, rebuild_to, description, year, manufacturer) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO logiqx_games \
+         (set_id, source_file, is_bios, board, rebuild_to, description, year, manufacturer) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     )
-    .bind::<Text, _>(snapshot_key.as_str())
-    .bind::<Text, _>(&set.name)
+    .bind::<BigInt, _>(set_id)
     .bind::<Nullable<Text>, _>(facts.source_file.as_deref())
     .bind::<Nullable<Text>, _>(facts.is_bios.as_deref())
     .bind::<Nullable<Text>, _>(facts.board.as_deref())
@@ -1444,17 +1451,16 @@ fn insert_logiqx_set_facts(
 
 fn insert_no_intro_game_facts(
     conn: &mut SqliteConnection,
-    snapshot_key: &SnapshotKey,
-    set: &SnapshotSet,
+    set_id: i64,
     facts: &crate::no_intro_pc_xml::GameFacts,
 ) -> crate::Result<()> {
     sql_query(
-        "INSERT INTO no_intro_game_facts \
-         (snapshot_key, set_name, archive_id, description, description_line, description_column) \
-         VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO no_intro_pc_games \
+         (set_id, archive_id, description, description_line, description_column, \
+          name_alt, region, version, bios_text, languages_present) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
-    .bind::<Text, _>(snapshot_key.as_str())
-    .bind::<Text, _>(&set.name)
+    .bind::<BigInt, _>(set_id)
     .bind::<Nullable<Text>, _>(
         facts
             .archive_id
@@ -1464,7 +1470,43 @@ fn insert_no_intro_game_facts(
     .bind::<Nullable<Text>, _>(facts.description.as_deref())
     .bind::<Nullable<BigInt>, _>(facts.description_location.map(|location| location.line))
     .bind::<Nullable<BigInt>, _>(facts.description_location.map(|location| location.column))
+    .bind::<Nullable<Text>, _>(facts.name_alt.as_deref())
+    .bind::<Nullable<Text>, _>(facts.region.as_deref())
+    .bind::<Nullable<Text>, _>(facts.version.as_deref())
+    .bind::<Nullable<Text>, _>(facts.bios_text.as_deref())
+    .bind::<diesel::sql_types::Bool, _>(facts.languages.is_some())
     .execute(conn)?;
+    if let Some(languages) = &facts.languages {
+        for (order, language) in languages.iter().enumerate() {
+            sql_query(
+                "INSERT INTO no_intro_pc_languages(set_id,language_order,language) VALUES (?,?,?)",
+            )
+            .bind::<BigInt, _>(set_id)
+            .bind::<BigInt, _>(checked_order(order, "P/C languages")?)
+            .bind::<Text, _>(language)
+            .execute(conn)?;
+        }
+    }
+    match &facts.clone_reference {
+        Some(crate::no_intro_pc_xml::CloneReference::Parent) => {
+            sql_query("INSERT INTO no_intro_pc_clone_markers(set_id) VALUES (?)")
+                .bind::<BigInt, _>(set_id)
+                .execute(conn)?;
+        }
+        Some(crate::no_intro_pc_xml::CloneReference::Archive(target)) => {
+            sql_query("INSERT INTO no_intro_pc_clone_links(set_id,target_archive_id) VALUES (?,?)")
+                .bind::<BigInt, _>(set_id)
+                .bind::<Text, _>(target.as_str())
+                .execute(conn)?;
+        }
+        None => {}
+    }
+    if let Some(target) = &facts.merge_of {
+        sql_query("INSERT INTO no_intro_pc_merge_links(set_id,target_archive_id) VALUES (?,?)")
+            .bind::<BigInt, _>(set_id)
+            .bind::<Text, _>(target.as_str())
+            .execute(conn)?;
+    }
     Ok(())
 }
 
@@ -1493,19 +1535,17 @@ fn insert_mame_machine_dependencies(
 
 fn insert_mame_machine_facts(
     conn: &mut SqliteConnection,
-    snapshot_key: &SnapshotKey,
-    set: &SnapshotSet,
+    set_id: i64,
     facts: &crate::mame::MachineFacts,
 ) -> crate::Result<()> {
     sql_query(
-        "INSERT INTO mame_machine_facts \
-         (snapshot_key, set_name, source_file, description, description_line, description_column, \
+        "INSERT INTO mame_machines \
+         (set_id, source_file, description, description_line, description_column, \
           year, year_line, year_column, manufacturer, manufacturer_line, manufacturer_column, \
           is_device, runnable, is_bios, is_mechanical, is_consumable, attributes_line, attributes_column) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
-    .bind::<Text, _>(snapshot_key.as_str())
-    .bind::<Text, _>(&set.name)
+    .bind::<BigInt, _>(set_id)
     .bind::<Nullable<Text>, _>(facts.source_file.as_deref())
     .bind::<Text, _>(&facts.description)
     .bind::<BigInt, _>(facts.description_location.line)
@@ -1554,17 +1594,16 @@ fn insert_mame_document_facts(
 
 fn insert_machine_bios_sets(
     conn: &mut SqliteConnection,
-    snapshot_key: &SnapshotKey,
+    set_id: i64,
     set: &SnapshotSet,
 ) -> crate::Result<()> {
     for (bios_order, bios_set) in set.bios_sets.iter().enumerate() {
         sql_query(
-            "INSERT INTO machine_bios_sets \
-             (snapshot_key, set_name, bios_order, name, description, is_default, source_line, source_column) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO mame_bios_sets \
+             (set_id, bios_order, name, description, is_default, source_line, source_column) \
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
-        .bind::<Text, _>(snapshot_key.as_str())
-        .bind::<Text, _>(&set.name)
+        .bind::<BigInt, _>(set_id)
         .bind::<BigInt, _>(checked_order(bios_order, "MAME BIOS sets")?)
         .bind::<Text, _>(&bios_set.name)
         .bind::<Nullable<Text>, _>(bios_set.description.as_deref())
@@ -1657,17 +1696,21 @@ fn insert_snapshot_extension(
     conn: &mut SqliteConnection,
     snapshot_key: &SnapshotKey,
     extension: &StoredExtension,
+    owner_set_id: Option<CatalogSetId>,
+    owner_occurrence_id: Option<i64>,
 ) -> crate::Result<()> {
     sql_query(
         "INSERT INTO snapshot_extensions \
-         (snapshot_key, record_kind, record_name, owner_set_name, owner_component_order, field_name, namespace_uri, raw_value_json, source_line, source_column) \
+         (snapshot_key, record_kind, record_name, owner_set_id, owner_occurrence_id, \
+          field_name, namespace_uri, raw_value_json, \
+          source_line, source_column) \
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind::<Text, _>(snapshot_key.as_str())
     .bind::<Text, _>(&extension.record_kind)
     .bind::<Nullable<Text>, _>(&extension.record_name)
-    .bind::<Nullable<Text>, _>(&extension.owner_set_name)
-    .bind::<Nullable<Text>, _>(&extension.owner_component_order)
+    .bind::<Nullable<BigInt>, _>(owner_set_id.map(CatalogSetId::as_i64))
+    .bind::<Nullable<BigInt>, _>(owner_occurrence_id)
     .bind::<Text, _>(&extension.field_name)
     .bind::<Nullable<Text>, _>(extension.namespace_uri.as_deref())
     .bind::<Text, _>(extension.value.as_str())
@@ -1680,9 +1723,11 @@ fn insert_snapshot_extension(
 fn persist_set_relationships(
     conn: &mut SqliteConnection,
     snapshot: &SnapshotKey,
+    owner: CatalogSetId,
     set: &SnapshotSet,
 ) -> crate::Result<()> {
-    let subject = CatalogRecordRef::new(snapshot.clone(), CatalogRecordKind::Set, &set.name);
+    let subject = CatalogRecordRef::new(snapshot.clone(), CatalogRecordKind::Set, &set.name)
+        .with_owner(owner);
     let location = Some(DocumentLocation {
         line: set.location.line,
         column: set.location.column,
@@ -1726,41 +1771,6 @@ fn persist_set_relationships(
             },
         )?;
     }
-    Ok(())
-}
-
-fn persist_asset_merge_relationship(
-    conn: &mut SqliteConnection,
-    snapshot: &SnapshotKey,
-    set: &SnapshotSet,
-    asset: &SnapshotAsset,
-    component_order: i64,
-) -> crate::Result<()> {
-    let merge_set = set
-        .runtime_dependencies
-        .iter()
-        .find(|dependency| dependency.source_field == "romof")
-        .map(|dependency| dependency.target_name.as_str())
-        .or(set.parent.as_deref());
-    let (Some(parent), Some(merged_name)) = (merge_set, asset.merge.as_deref()) else {
-        return Ok(());
-    };
-    merges::persist_merge_relationship(
-        conn,
-        snapshot,
-        merges::MergeDeclaration {
-            set_name: &set.name,
-            component_order,
-            asset_name: &asset.name,
-            merged_name,
-            parent,
-            role: asset.role,
-            sha1: asset.sha1.as_deref(),
-            crc: asset.crc.as_deref(),
-            size: asset.size,
-            location: asset.location,
-        },
-    )?;
     Ok(())
 }
 

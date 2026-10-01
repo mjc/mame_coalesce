@@ -1,7 +1,10 @@
 #![allow(clippy::expect_used)]
 
 use camino::Utf8PathBuf;
-use diesel::{Connection, SqliteConnection, connection::SimpleConnection};
+use diesel::{
+    Connection, QueryableByName, RunQueryDsl, SqliteConnection, connection::SimpleConnection,
+    sql_query, sql_types::BigInt,
+};
 use mame_coalesce::database::Database;
 
 fn connection() -> (tempfile::TempDir, SqliteConnection) {
@@ -16,61 +19,219 @@ fn connection() -> (tempfile::TempDir, SqliteConnection) {
         "INSERT INTO publishing_sources VALUES ('source','Publisher',NULL);
          INSERT INTO catalogs VALUES ('catalog','source','Catalog');
          INSERT INTO documents(document_key) VALUES ('document');
-         INSERT INTO parser_interpretations(interpretation_key,format) VALUES ('parser','mame_xml');
-         INSERT INTO catalog_snapshots(snapshot_key,catalog_key,document_key,interpretation_key)
-         VALUES ('snapshot','catalog','document','parser');",
+         INSERT INTO parser_interpretations(interpretation_key,format)
+         VALUES ('parser-mame','mame-listxml'),('parser-software','mame-softwarelist-xml');
+         INSERT INTO catalog_coverage(coverage_id,kind) VALUES (1,'complete');
+         INSERT INTO catalog_snapshots(
+             snapshot_key,catalog_key,document_key,interpretation_key,coverage_id
+         ) VALUES ('mame-snapshot','catalog','document','parser-mame',1),
+                  ('software-snapshot','catalog','document','parser-software',1);",
     )
-    .expect("parents");
+    .expect("snapshot parents");
     (directory, conn)
 }
 
+#[derive(QueryableByName)]
+struct CountRow {
+    #[diesel(sql_type = BigInt)]
+    count: i64,
+}
+
 #[test]
-fn records_have_scoped_integer_identity_not_global_name_identity() {
+fn native_sets_have_scoped_integer_identity_and_typed_detail_owners() {
     let (_directory, mut conn) = connection();
     conn.batch_execute(
-        "INSERT INTO record_namespaces(namespace_id,snapshot_key,kind,source_order,source_name)
-         VALUES (1,'snapshot','software_list',0,'first'),(2,'snapshot','software_list',1,'second');
-         INSERT INTO records(record_id,namespace_id,kind,source_order,source_name,source_line,source_column)
-         VALUES (1,1,'software_item',0,'same',1,1),(2,2,'software_item',0,'same',2,1);
-         INSERT INTO records(namespace_id,kind,source_order,source_name,source_line,source_column)
-         VALUES (1,'software_item',1,'same',3,1);",
-    ).expect("same source name can denote distinct ordered native records");
+        "INSERT INTO catalog_set_groups(set_group_id,snapshot_key,kind,list_order)
+         VALUES (1,'mame-snapshot','root',0),
+                (2,'software-snapshot','software_list',0),
+                (3,'software-snapshot','software_list',1);
+         INSERT INTO software_lists(namespace_id,name,source_line,source_column)
+         VALUES (2,'first',1,1),(3,'second',1,1);
+         INSERT INTO catalog_sets(set_id,set_group_id,source_element_kind,list_order,set_name,source_line,source_column)
+         VALUES (1,1,'mame_machine',0,'machine',2,1),
+                (2,2,'software_item',0,'same',3,1),
+                (3,3,'software_item',0,'same',4,1),
+                (4,2,'software_item',1,'same',5,1);
+         INSERT INTO mame_machines(
+             set_id,description,description_line,description_column,
+             is_device,runnable,is_bios,is_mechanical,is_consumable,attributes_line,attributes_column
+         ) VALUES (1,'Machine',2,1,0,1,0,0,0,2,1);
+         INSERT INTO software_items(record_id,description,year,publisher)
+         VALUES (2,'First game','1980','Publisher'),
+                (3,'Second game','1980','Publisher'),
+                (4,'Same-list duplicate','1981','Publisher');",
+    )
+    .expect("scoped set identities and native detail owners");
+
+    let scoped_sets = sql_query(
+        "SELECT COUNT(*) AS count FROM catalog_set_groups \
+         JOIN catalog_sets USING (set_group_id) WHERE set_name = 'same'",
+    )
+    .get_result::<CountRow>(&mut conn)
+    .expect("scoped sets");
+    assert_eq!(scoped_sets.count, 3);
+    let software_details = sql_query("SELECT COUNT(*) AS count FROM software_items")
+        .get_result::<CountRow>(&mut conn)
+        .expect("software item details");
+    assert_eq!(software_details.count, 3);
+
+    conn.batch_execute(
+        "INSERT INTO snapshot_publications(
+             catalog_key,document_key,interpretation_key,snapshot_key
+         ) VALUES ('catalog','document','parser-software','software-snapshot')",
+    )
+    .expect("publish software snapshot");
+    assert!(
+        conn.batch_execute(
+            "INSERT INTO catalog_set_groups(set_group_id,snapshot_key,kind,list_order)
+             VALUES (4,'software-snapshot','software_list',2)",
+        )
+        .is_err()
+    );
+    assert!(conn
+        .batch_execute(
+            "INSERT INTO catalog_sets(set_id,set_group_id,source_element_kind,list_order,set_name,source_line,source_column)
+             VALUES (5,2,'software_item',2,'after publication',6,1)",
+        )
+        .is_err());
+
+    assert!(conn
+        .batch_execute(
+            "INSERT INTO catalog_sets(set_id,set_group_id,source_element_kind,list_order,set_name,source_line,source_column)
+             VALUES (5,1,'software_item',1,'wrong group',6,1)",
+        )
+        .is_err());
+}
+
+#[test]
+fn native_groups_and_list_details_require_the_matching_parser_format() {
+    let (_directory, mut conn) = connection();
+    conn.batch_execute(
+        "INSERT INTO parser_interpretations(interpretation_key,format) VALUES ('parser-logiqx','logiqx');
+         INSERT INTO catalog_snapshots(snapshot_key,catalog_key,document_key,interpretation_key,coverage_id)
+         VALUES ('logiqx-snapshot','catalog','document','parser-logiqx',1);",
+    )
+    .expect("Logiqx snapshot");
+    for statement in [
+        "INSERT INTO catalog_set_groups(snapshot_key,kind,list_order) VALUES ('mame-snapshot','software_list',0)",
+        "INSERT INTO catalog_set_groups(snapshot_key,kind,list_order) VALUES ('logiqx-snapshot','software_list',0)",
+        "INSERT INTO catalog_set_groups(snapshot_key,kind,list_order) VALUES ('software-snapshot','root',0)",
+    ] {
+        assert!(
+            conn.batch_execute(statement).is_err(),
+            "accepted: {statement}"
+        );
+    }
+    conn.batch_execute(
+        "INSERT INTO catalog_set_groups(set_group_id,snapshot_key,kind,list_order)
+         VALUES (1,'mame-snapshot','root',0),(2,'logiqx-snapshot','root',0),
+                (3,'software-snapshot','software_list',0);
+         INSERT INTO software_lists(namespace_id,name,source_line,source_column) VALUES (3,'valid',1,1);",
+    )
+    .expect("format-matching groups and list details");
     assert!(conn.batch_execute(
-        "INSERT INTO records(namespace_id,kind,source_order,source_name,source_line,source_column)
-         VALUES (1,'mame_machine',2,'wrong namespace',4,1)",
+        "INSERT INTO software_lists(namespace_id,name,source_line,source_column) VALUES (2,'wrong format',1,1)"
     ).is_err());
 }
 
 #[test]
-fn occurrences_cannot_borrow_another_formats_native_claim_or_content_for_an_operation() {
+fn extension_owners_cannot_cross_snapshots_or_sets_or_append_after_publication() {
     let (_directory, mut conn) = connection();
     conn.batch_execute(
-        "INSERT INTO record_namespaces(namespace_id,snapshot_key,kind,source_order,source_name)
-         VALUES (1,'snapshot','root',0,NULL),(2,'snapshot','software_list',0,'list');
-         INSERT INTO records(record_id,namespace_id,kind,source_order,source_name,source_line,source_column)
-         VALUES (1,1,'mame_machine',0,'machine',1,1),(2,2,'software_item',0,'game',2,1);
+        "INSERT INTO catalog_set_groups(set_group_id,snapshot_key,kind,list_order)
+         VALUES (1,'mame-snapshot','root',0),(2,'software-snapshot','software_list',0);
+         INSERT INTO catalog_sets(set_id,set_group_id,source_element_kind,list_order,set_name,source_line,source_column)
+         VALUES (1,1,'mame_machine',0,'machine',1,1),(2,2,'software_item',0,'game',1,1);
+         INSERT INTO asset_occurrences(occurrence_id,record_id,occurrence_order,claim_kind)
+         VALUES (1,1,0,'mame_rom'),(2,2,0,'software_rom_entry');
+         INSERT INTO snapshot_extensions(snapshot_key,record_kind,field_name,raw_value_json,source_line,source_column,owner_set_id,owner_occurrence_id)
+         VALUES ('mame-snapshot','rom','future','null',1,1,1,1);",
+    )
+    .expect("native extension owner");
+    for (set_id, occurrence_id) in [(2, "NULL"), (1, "2"), (1, "999"), (999, "NULL")] {
+        assert!(conn.batch_execute(&format!(
+            "INSERT INTO snapshot_extensions(snapshot_key,record_kind,field_name,raw_value_json,source_line,source_column,owner_set_id,owner_occurrence_id)
+             VALUES ('mame-snapshot','rom','future','null',1,1,{set_id},{occurrence_id})"
+        )).is_err());
+    }
+    conn.batch_execute(
+        "INSERT INTO snapshot_publications(catalog_key,document_key,interpretation_key,snapshot_key)
+         VALUES ('catalog','document','parser-mame','mame-snapshot')",
+    )
+    .expect("publish snapshot");
+    assert!(conn.batch_execute(
+        "INSERT INTO snapshot_extensions(snapshot_key,record_kind,field_name,raw_value_json,source_line,source_column)
+         VALUES ('mame-snapshot','document','late','null',1,1)"
+    ).is_err());
+}
+
+#[test]
+fn native_occurrences_and_details_cannot_cross_set_or_format_ownership() {
+    let (_directory, mut conn) = connection();
+    conn.batch_execute(
+        "INSERT INTO catalog_set_groups(set_group_id,snapshot_key,kind,list_order)
+         VALUES (1,'mame-snapshot','root',0),(2,'software-snapshot','software_list',0);
+         INSERT INTO software_lists(namespace_id,name,source_line,source_column)
+         VALUES (2,'list',1,1);
+         INSERT INTO catalog_sets(set_id,set_group_id,source_element_kind,list_order,set_name,source_line,source_column)
+         VALUES (1,1,'mame_machine',0,'machine',2,1),(2,2,'software_item',0,'game',3,1);
+         INSERT INTO mame_machines(
+             set_id,description,description_line,description_column,
+             is_device,runnable,is_bios,is_mechanical,is_consumable,attributes_line,attributes_column
+         ) VALUES (1,'Machine',2,1,0,1,0,0,0,2,1);
+         INSERT INTO software_items(record_id,description,year,publisher)
+         VALUES (2,'Game','1980','Publisher');
+         INSERT INTO software_parts(part_id,record_id,part_name,part_order,interface,source_line,source_column)
+         VALUES (1,2,'cart',0,'cart',4,1);
+         INSERT INTO software_areas(area_id,part_id,record_id,area_name,area_kind,area_order,source_line,source_column)
+         VALUES (1,1,2,'rom','data',0,5,1);
          INSERT INTO catalog_contents(content_uuid) VALUES (zeroblob(16));
-         INSERT INTO asset_occurrences(record_id,occurrence_order,claim_kind)
-         VALUES (1,0,'mame_rom'),(2,0,'software_rom_entry');",
-    ).expect("native occurrences");
+         INSERT INTO asset_occurrences(occurrence_id,record_id,occurrence_order,claim_kind)
+         VALUES (1,1,0,'mame_rom'),(2,2,0,'software_rom_entry'),(3,2,1,'software_rom_operation');
+         INSERT INTO mame_rom_claims(
+             occurrence_id,name,evidence_scope,evidence_provenance,source_line,source_column
+         ) VALUES (1,'machine.rom','whole_asset','source_declared',6,1);
+         INSERT INTO software_rom_entries(
+             occurrence_id,record_id,area_id,component_order,name,evidence_scope,source_line,source_column
+         ) VALUES (2,2,1,0,'game.rom','whole_asset',7,1);
+         INSERT INTO software_file_uses(occurrence_id,record_id,operation)
+         VALUES (3,2,'continue');",
+    )
+    .expect("native occurrence and detail owners");
+
     assert!(
         conn.batch_execute(
             "INSERT INTO asset_occurrences(record_id,occurrence_order,claim_kind)
-         VALUES (1,1,'software_disk_entry')",
+             VALUES (1,1,'software_disk_entry')",
         )
         .is_err()
     );
     assert!(
         conn.batch_execute(
             "INSERT INTO asset_occurrences(record_id,occurrence_order,claim_kind,content_uuid)
-         VALUES (2,1,'software_rom_operation',zeroblob(16))",
+             VALUES (2,2,'software_rom_operation',zeroblob(16))",
         )
         .is_err()
     );
     assert!(
         conn.batch_execute(
+            "INSERT INTO mame_rom_claims(
+                 occurrence_id,name,evidence_scope,evidence_provenance,source_line,source_column
+             ) VALUES (2,'wrong-format.rom','whole_asset','source_declared',8,1)",
+        )
+        .is_err()
+    );
+    assert!(conn
+        .batch_execute(
+            "INSERT INTO software_rom_entries(
+                 occurrence_id,record_id,area_id,component_order,name,evidence_scope,source_line,source_column
+             ) VALUES (1,1,1,1,'wrong-area.rom','whole_asset',9,1)",
+        )
+        .is_err());
+    assert!(
+        conn.batch_execute(
             "INSERT INTO occurrence_digest_assertions(occurrence_id,digest_id,scope,provenance)
-         VALUES (999,999,'whole_asset','source_declared')",
+             VALUES (999,999,'whole_asset','source_declared')",
         )
         .is_err()
     );

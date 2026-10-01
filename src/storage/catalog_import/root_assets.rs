@@ -1,5 +1,8 @@
 use super::{SnapshotAsset, sqlite_mame_boolean, sqlite_mame_offset};
-use crate::storage::catalog_identity::{AllocatedOccurrence, OccurrenceId, RecordId};
+use crate::{
+    domain::CatalogSetId,
+    storage::catalog_identity::{AllocatedOccurrence, OccurrenceId},
+};
 use diesel::{
     QueryableByName, RunQueryDsl, SqliteConnection, sql_query,
     sql_types::{BigInt, Binary, Nullable, Text},
@@ -63,21 +66,22 @@ impl RootClaimKind {
 /// never exposes an occurrence without a typed field owner.
 pub(super) fn insert(
     conn: &mut SqliteConnection,
-    record: RecordId,
+    record: CatalogSetId,
     order: i64,
     asset: &SnapshotAsset,
     size: Option<i64>,
     content_uuid: Option<Vec<u8>>,
 ) -> crate::Result<OccurrenceId> {
-    let record_kind = sql_query("SELECT kind FROM records WHERE record_id = ?")
-        .bind::<BigInt, _>(record.database_value())
-        .get_result::<NativeRecordKind>(conn)?;
+    let record_kind =
+        sql_query("SELECT source_element_kind AS kind FROM catalog_sets WHERE set_id = ?")
+            .bind::<BigInt, _>(record.as_i64())
+            .get_result::<NativeRecordKind>(conn)?;
     let kind = RootClaimKind::for_record(&record_kind.kind, asset.role)?;
     let occurrence = sql_query(
         "INSERT INTO asset_occurrences(record_id,occurrence_order,claim_kind,content_uuid) \
          VALUES (?, ?, ?, ?) RETURNING occurrence_id",
     )
-    .bind::<BigInt, _>(record.database_value())
+    .bind::<BigInt, _>(record.as_i64())
     .bind::<BigInt, _>(order)
     .bind::<Text, _>(kind.code())
     .bind::<Nullable<Binary>, _>(content_uuid)

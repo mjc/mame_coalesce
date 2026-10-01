@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 
 use crate::{
     logiqx::RecordLocation,
@@ -18,7 +18,6 @@ pub struct Entry {
     pub name: String,
     pub facts: GameFacts,
     pub location: RecordLocation,
-    pub metadata: BTreeMap<String, serde_json::Value>,
     pub assets: Vec<Asset>,
     pub extensions: Vec<XmlExtension>,
 }
@@ -28,6 +27,13 @@ pub struct GameFacts {
     pub archive_id: Option<ArchiveId>,
     pub description: Option<String>,
     pub description_location: Option<RecordLocation>,
+    pub name_alt: Option<String>,
+    pub region: Option<String>,
+    pub languages: Option<Vec<String>>,
+    pub version: Option<String>,
+    pub bios_text: Option<String>,
+    pub clone_reference: Option<CloneReference>,
+    pub merge_of: Option<ArchiveId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -64,7 +70,7 @@ impl TryFrom<&str> for ArchiveId {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum CloneReference {
+pub enum CloneReference {
     Parent,
     Archive(ArchiveId),
 }
@@ -198,7 +204,8 @@ fn parse_header(
 fn parse_entry(node: &Element) -> crate::Result<Entry> {
     let name = required(node, "name", "game")?.to_owned();
     reject_record_text(node, "game", Some(&name))?;
-    let (metadata, mut extensions) = parse_entry_attributes(node, &name)?;
+    let mut facts = parse_entry_attributes(node, &name)?;
+    let mut extensions = unknown_entry_attributes(node, &name);
     let archive_id = node
         .attributes
         .get("id")
@@ -228,86 +235,50 @@ fn parse_entry(node: &Element) -> crate::Result<Entry> {
         }
     }
     let assets = parse_assets(node, &name, &mut extensions)?;
+    facts.archive_id = archive_id;
+    facts.description = description;
+    facts.description_location = description_location;
     Ok(Entry {
         name,
-        facts: GameFacts {
-            archive_id,
-            description,
-            description_location,
-        },
+        facts,
         location: node.location,
-        metadata,
         assets,
         extensions,
     })
 }
 
-fn parse_entry_attributes(
-    node: &Element,
-    name: &str,
-) -> crate::Result<(BTreeMap<String, serde_json::Value>, Vec<XmlExtension>)> {
-    let mut metadata = BTreeMap::new();
-    for (source, target) in [
-        ("namealt", "name_alt"),
-        ("region", "region"),
-        ("version", "version"),
-        ("bios", "bios"),
-    ] {
-        metadata.insert(
-            target.into(),
-            node.attributes
-                .get(source)
-                .map_or(serde_json::Value::Null, |value| serde_json::json!(value)),
-        );
-    }
-    metadata.insert(
-        "languages".into(),
-        node.attributes
-            .get("languages")
-            .map_or(serde_json::Value::Null, |value| {
-                serde_json::json!(
-                    value
-                        .split(',')
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty())
-                        .collect::<Vec<_>>()
-                )
-            }),
-    );
+fn parse_entry_attributes(node: &Element, name: &str) -> crate::Result<GameFacts> {
+    Ok(GameFacts {
+        archive_id: None,
+        description: None,
+        description_location: None,
+        name_alt: node.attributes.get("namealt").cloned(),
+        region: node.attributes.get("region").cloned(),
+        languages: node.attributes.get("languages").map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|token| !token.is_empty())
+                .map(str::to_owned)
+                .collect()
+        }),
+        version: node.attributes.get("version").cloned(),
+        bios_text: node.attributes.get("bios").cloned(),
+        clone_reference: node
+            .attributes
+            .get("clone")
+            .map(|value| parse_clone_reference(value, name, node.location))
+            .transpose()?,
+        merge_of: node
+            .attributes
+            .get("mergeof")
+            .map(|value| parse_archive_id(value, "mergeof", name, node.location))
+            .transpose()?,
+    })
+}
 
-    let mut extensions = Vec::new();
-    if let Some(value) = node.attributes.get("clone") {
-        metadata.insert(
-            "clone".into(),
-            serde_json::json!(parse_clone_reference(value, name, node.location)?),
-        );
-        extensions.push(attribute_extension(
-            "game",
-            Some(name),
-            "clone",
-            value,
-            node.location,
-        ));
-    } else {
-        metadata.insert("clone".into(), serde_json::Value::Null);
-    }
-    if let Some(value) = node.attributes.get("mergeof") {
-        metadata.insert(
-            "mergeof".into(),
-            serde_json::json!(parse_archive_id(value, "mergeof", name, node.location)?.as_str()),
-        );
-        extensions.push(attribute_extension(
-            "game",
-            Some(name),
-            "mergeof",
-            value,
-            node.location,
-        ));
-    } else {
-        metadata.insert("mergeof".into(), serde_json::Value::Null);
-    }
-
-    let known = [
+fn unknown_entry_attributes(node: &Element, name: &str) -> Vec<XmlExtension> {
+    const KNOWN: &[&str] = &[
         "name",
         "id",
         "namealt",
@@ -318,34 +289,22 @@ fn parse_entry_attributes(
         "clone",
         "mergeof",
     ];
-    for (field, value) in &node.attributes {
-        if !known.contains(&field.as_str()) {
-            extensions.push(attribute_extension(
-                "game",
-                Some(name),
-                field,
-                value,
-                node.location,
-            ));
-        }
-    }
-
-    Ok((metadata, extensions))
+    node.attributes
+        .iter()
+        .filter(|(field, _)| !KNOWN.contains(&field.as_str()))
+        .map(|(field, value)| attribute_extension("game", Some(name), field, value, node.location))
+        .collect()
 }
 
 fn parse_clone_reference(
     value: &str,
     name: &str,
     location: RecordLocation,
-) -> crate::Result<String> {
-    let reference = if value == "P" {
+) -> crate::Result<CloneReference> {
+    Ok(if value == "P" {
         CloneReference::Parent
     } else {
         CloneReference::Archive(parse_archive_id(value, "clone", name, location)?)
-    };
-    Ok(match reference {
-        CloneReference::Parent => "P".to_owned(),
-        CloneReference::Archive(id) => id.0,
     })
 }
 

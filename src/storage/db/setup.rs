@@ -11,7 +11,11 @@ use std::collections::BTreeSet;
 use super::Pool;
 
 /// Complete DDL for a new database. It is never an upgrade script.
-const SCHEMA: &str = include_str!("schema.sql");
+const SCHEMA: &str = concat!(
+    include_str!("coverage.sql"),
+    "\n",
+    include_str!("schema.sql")
+);
 
 #[derive(Debug)]
 struct EnableForeignKeys;

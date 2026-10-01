@@ -1,38 +1,43 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use diesel::{
     QueryableByName, RunQueryDsl, sql_query,
-    sql_types::{Bool, Nullable, Text},
+    sql_types::{BigInt, Bool, Nullable, Text},
 };
 
 use crate::{
-    domain::{SetName, SnapshotKey},
+    domain::{CatalogScope, QualifiedCatalogSet, SetName, SnapshotKey},
     machine_dependencies::{
         MachineDependency, MachineDependencyCatalog, MachineDependencyKind, MachineSet,
         SnapshotCompleteness,
     },
 };
 
-use super::db::Pool;
+use super::{
+    catalog_coverage::{self, CoverageId},
+    db::Pool,
+};
 
 #[derive(QueryableByName)]
 struct SetRow {
+    #[diesel(sql_type = BigInt)]
+    set_id: i64,
     #[diesel(sql_type = Text)]
     set_name: String,
     #[diesel(sql_type = diesel::sql_types::Nullable<Text>)]
     parent_name: Option<String>,
-    #[diesel(sql_type = Text)]
-    metadata_json: String,
     #[diesel(sql_type = Nullable<Bool>)]
     is_bios: Option<bool>,
     #[diesel(sql_type = Nullable<Bool>)]
     is_device: Option<bool>,
+    #[diesel(sql_type = Nullable<Text>)]
+    logiqx_is_bios: Option<String>,
 }
 
 #[derive(QueryableByName)]
 struct MameDependencyRow {
-    #[diesel(sql_type = Text)]
-    set_name: String,
+    #[diesel(sql_type = BigInt)]
+    set_id: i64,
     #[diesel(sql_type = Text)]
     dependency_kind: String,
     #[diesel(sql_type = Text)]
@@ -46,7 +51,7 @@ pub fn load_catalog(
 ) -> crate::Result<MachineDependencyCatalog> {
     let mut conn = pool.get()?;
     let exists = sql_query(
-        "SELECT s.scope_kind, s.scope_json, pi.format AS parser_format \
+        "SELECT s.coverage_id, pi.format AS parser_format \
          FROM catalog_snapshots s \
          JOIN parser_interpretations pi ON pi.interpretation_key = s.interpretation_key \
          WHERE s.snapshot_key = ?",
@@ -65,31 +70,39 @@ pub fn load_catalog(
             header.parser_format,
         ));
     }
-    let completeness = match header.scope_kind.as_str() {
-        "complete" => SnapshotCompleteness::Complete,
-        "filtered" => {
-            SnapshotCompleteness::Filtered(filtered_set_scope(header.scope_json.as_deref()))
-        }
-        "partial" => SnapshotCompleteness::Partial,
-        _ => SnapshotCompleteness::Unknown,
+    let scope = catalog_coverage::load(&mut conn, CoverageId::from_database(header.coverage_id))?;
+    let completeness = match scope {
+        CatalogScope::Unknown => SnapshotCompleteness::Unknown,
+        CatalogScope::Complete => SnapshotCompleteness::Complete,
+        CatalogScope::Filtered(sets) => SnapshotCompleteness::Filtered(Some(
+            sets.into_iter()
+                .filter_map(|set| match set {
+                    QualifiedCatalogSet::RootSet(name) => Some(name),
+                    QualifiedCatalogSet::SoftwareItem { .. } => None,
+                })
+                .collect(),
+        )),
+        CatalogScope::Partial(_) => SnapshotCompleteness::Partial,
     };
 
     let is_mame = header.parser_format == "mame-listxml";
     let rows = sql_query(
-        "SELECT s.set_name, s.parent_name, s.metadata_json, mf.is_bios, mf.is_device \
+        "SELECT s.set_id, s.set_name, s.parent_name, mf.is_bios, mf.is_device, lf.is_bios AS logiqx_is_bios \
          FROM snapshot_sets AS s LEFT JOIN mame_machine_facts AS mf \
-           ON mf.snapshot_key = s.snapshot_key AND mf.set_name = s.set_name \
-         WHERE s.snapshot_key = ? ORDER BY s.set_name",
+           ON mf.set_id = s.set_id \
+         LEFT JOIN logiqx_set_facts AS lf \
+           ON lf.set_id = s.set_id \
+         WHERE s.snapshot_key = ? ORDER BY s.set_name, s.set_id",
     )
     .bind::<Text, _>(snapshot.as_str())
     .load::<SetRow>(&mut conn)?;
 
-    let mame_dependencies = load_mame_dependencies(&mut conn, snapshot, is_mame)?;
+    let dependencies = load_dependencies(&mut conn, snapshot, is_mame)?;
 
     let sets = rows
         .into_iter()
-        .map(|row| machine_set_from_row(row, is_mame, &mame_dependencies))
-        .collect::<crate::Result<Vec<_>>>()?;
+        .map(|row| machine_set_from_row(row, &dependencies))
+        .collect();
 
     Ok(MachineDependencyCatalog::with_completeness(
         snapshot.clone(),
@@ -98,27 +111,39 @@ pub fn load_catalog(
     ))
 }
 
-fn load_mame_dependencies(
+fn load_dependencies(
     conn: &mut diesel::SqliteConnection,
     snapshot: &SnapshotKey,
     is_mame: bool,
-) -> crate::Result<BTreeMap<String, Vec<MameDependencyRow>>> {
-    if !is_mame {
-        return Ok(BTreeMap::new());
-    }
-    Ok(sql_query(
-        "SELECT sets.set_name, dependency.dependency_kind, dependency.target_name \
+) -> crate::Result<BTreeMap<i64, Vec<MameDependencyRow>>> {
+    let query = if is_mame {
+        "SELECT dependency.set_id, dependency.dependency_kind, dependency.target_name \
          FROM mame_machine_dependencies AS dependency \
          JOIN snapshot_sets AS sets USING (set_id) \
-         WHERE sets.snapshot_key = ? ORDER BY sets.set_name, dependency.dependency_order",
-    )
-    .bind::<Text, _>(snapshot.as_str())
-    .load::<MameDependencyRow>(conn)?
-    .into_iter()
-    .fold(
-        BTreeMap::<String, Vec<MameDependencyRow>>::new(),
+         WHERE sets.snapshot_key = ? ORDER BY sets.set_name, dependency.dependency_order"
+    } else {
+        "SELECT links.set_id, links.link_kind AS dependency_kind, links.target_name \
+         FROM (SELECT sets.set_id, sets.set_name, link.link_kind, link.target_name, link.source_line, link.source_column, 0 AS reference_order \
+               FROM logiqx_set_links AS link JOIN snapshot_sets AS sets USING (set_id) \
+               WHERE sets.snapshot_key = ? AND link.link_kind IN ('romof', 'sampleof') \
+               UNION ALL \
+               SELECT sets.set_id, sets.set_name, 'device_ref', reference.target_name, reference.source_line, reference.source_column, reference.reference_order \
+               FROM logiqx_device_references AS reference JOIN snapshot_sets AS sets USING (set_id) \
+               WHERE sets.snapshot_key = ?) AS links \
+         ORDER BY links.set_name, links.source_line, links.source_column, links.reference_order"
+    };
+    let query = sql_query(query).bind::<Text, _>(snapshot.as_str());
+    let rows = if is_mame {
+        query.load::<MameDependencyRow>(conn)?
+    } else {
+        query
+            .bind::<Text, _>(snapshot.as_str())
+            .load::<MameDependencyRow>(conn)?
+    };
+    Ok(rows.into_iter().fold(
+        BTreeMap::<i64, Vec<MameDependencyRow>>::new(),
         |mut by_set, row| {
-            by_set.entry(row.set_name.clone()).or_default().push(row);
+            by_set.entry(row.set_id).or_default().push(row);
             by_set
         },
     ))
@@ -126,106 +151,43 @@ fn load_mame_dependencies(
 
 fn machine_set_from_row(
     row: SetRow,
-    is_mame: bool,
-    mame_dependencies: &BTreeMap<String, Vec<MameDependencyRow>>,
-) -> crate::Result<MachineSet> {
-    let metadata: serde_json::Value = serde_json::from_str(&row.metadata_json)?;
+    dependencies: &BTreeMap<i64, Vec<MameDependencyRow>>,
+) -> MachineSet {
     let mut set = MachineSet::new(row.set_name);
     set.parent_clone = row.parent_name.map(SetName::new);
     set.is_bios = row
         .is_bios
-        .unwrap_or_else(|| flag(&metadata, &["is_bios", "isbios"]));
-    set.is_device = row
-        .is_device
-        .unwrap_or_else(|| flag(&metadata, &["isdevice", "is_device"]));
+        .or_else(|| row.logiqx_is_bios.as_deref().map(is_true))
+        .unwrap_or(false);
+    set.is_device = row.is_device.unwrap_or(false);
 
-    if is_mame {
-        for dependency in mame_dependencies
-            .get(set.name.as_str())
-            .into_iter()
-            .flatten()
-        {
-            match dependency.dependency_kind.as_str() {
-                "romof" => set.dependencies.push(MachineDependency {
-                    kind: MachineDependencyKind::RomOf,
-                    target: SetName::new(&dependency.target_name),
-                }),
-                "device_ref" => set.dependencies.push(MachineDependency {
-                    kind: MachineDependencyKind::DeviceReference,
-                    target: SetName::new(&dependency.target_name),
-                }),
-                "sampleof" => set
-                    .unsupported_relationships
-                    .push(("sampleof".to_owned(), SetName::new(&dependency.target_name))),
-                _ => unreachable!("MAME dependency kind is schema constrained"),
-            }
-        }
-    } else {
-        if let Some(target) = string(&metadata, &["romof", "rom_of"]) {
-            set.dependencies.push(MachineDependency {
+    for dependency in dependencies.get(&row.set_id).into_iter().flatten() {
+        match dependency.dependency_kind.as_str() {
+            "romof" => set.dependencies.push(MachineDependency {
                 kind: MachineDependencyKind::RomOf,
-                target: SetName::new(target),
-            });
-        }
-        for target in device_references(&metadata) {
-            set.dependencies.push(MachineDependency {
+                target: SetName::new(&dependency.target_name),
+            }),
+            "device_ref" => set.dependencies.push(MachineDependency {
                 kind: MachineDependencyKind::DeviceReference,
-                target: SetName::new(target),
-            });
-        }
-        if let Some(target) = string(&metadata, &["sampleof", "sample_of"]) {
-            set.unsupported_relationships
-                .push(("sampleof".to_owned(), SetName::new(target)));
+                target: SetName::new(&dependency.target_name),
+            }),
+            "sampleof" => set
+                .unsupported_relationships
+                .push(("sampleof".to_owned(), SetName::new(&dependency.target_name))),
+            _ => unreachable!("machine dependency kind is source constrained"),
         }
     }
-    Ok(set)
+    set
 }
 
 #[derive(QueryableByName)]
 struct SnapshotExists {
-    #[diesel(sql_type = Text)]
-    scope_kind: String,
-    #[diesel(sql_type = Nullable<Text>)]
-    scope_json: Option<String>,
+    #[diesel(sql_type = BigInt)]
+    coverage_id: i64,
     #[diesel(sql_type = Text)]
     parser_format: String,
 }
 
-fn filtered_set_scope(scope_json: Option<&str>) -> Option<BTreeSet<SetName>> {
-    let details = serde_json::from_str::<serde_json::Value>(scope_json?).ok()?;
-    details
-        .get("sets")?
-        .as_array()?
-        .iter()
-        .map(|name| name.as_str().map(SetName::new))
-        .collect()
-}
-
-fn flag(metadata: &serde_json::Value, keys: &[&str]) -> bool {
-    keys.iter().any(|key| {
-        metadata.get(*key).is_some_and(|value| {
-            value.as_bool() == Some(true)
-                || value.as_str().is_some_and(|text| {
-                    matches!(text.to_ascii_lowercase().as_str(), "yes" | "true" | "1")
-                })
-        })
-    })
-}
-
-fn string<'a>(metadata: &'a serde_json::Value, keys: &[&str]) -> Option<&'a str> {
-    keys.iter()
-        .find_map(|key| metadata.get(*key).and_then(serde_json::Value::as_str))
-}
-
-fn device_references(metadata: &serde_json::Value) -> impl Iterator<Item = &str> {
-    metadata
-        .get("device_refs")
-        .and_then(serde_json::Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|reference| {
-            reference
-                .as_str()
-                .or_else(|| reference.get("name").and_then(serde_json::Value::as_str))
-        })
+fn is_true(value: &str) -> bool {
+    matches!(value.to_ascii_lowercase().as_str(), "yes" | "true" | "1")
 }

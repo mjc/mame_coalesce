@@ -419,12 +419,19 @@ fn related_assertions(
     relationships: &BTreeMap<CatalogRecordRef, Vec<&RelationshipExplanation>>,
     records: &[&CatalogRecordRef],
 ) -> Vec<RelationshipExplanation> {
-    let mut related = records
-        .iter()
-        .filter_map(|record| relationships.get(*record))
-        .flatten()
-        .copied()
-        .collect::<Vec<_>>();
+    let mut related = Vec::new();
+    for record in records {
+        if let Some(assertions) = relationships.get(*record) {
+            related.extend(assertions.iter().copied());
+        }
+        if record.owner_set_id.is_some() {
+            let mut logical_selector = (*record).clone();
+            logical_selector.owner_set_id = None;
+            if let Some(assertions) = relationships.get(&logical_selector) {
+                related.extend(assertions.iter().copied());
+            }
+        }
+    }
     related.sort_by(|a, b| a.assertion_key.cmp(&b.assertion_key));
     related.dedup_by(|a, b| a.assertion_key == b.assertion_key);
     related.into_iter().cloned().collect()

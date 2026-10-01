@@ -79,10 +79,18 @@ parser-internal representations the public contract.
   a different schema is rejected without conversion, repair, or deletion.
   There is no migration runner or historical migration chain. After a schema
   change, use a new cache and reimport catalogs and scan inventory.
-- The native-model cutover is ongoing. MAME hardware families and software-list
-  owners use format-specific tables with numeric record/occurrence identities;
-  shared file UUIDs are stored as sixteen-byte BLOBs. Remaining shared JSON
-  metadata and duplicated projections are not the finished schema design.
+- The native-model cutover is ongoing. `catalog_set_groups` owns ordered root
+  or software-list groups; `catalog_sets` owns ordered sets with numeric IDs.
+  Names are source fields, not ownership keys: repeated Logiqx names retain
+  separate facts and occurrences. Native MAME, Logiqx and P/C details refer to
+  those IDs; old set/fact names are read-only views, not duplicate stored rows.
+  Coverage is normalized into typed root/software members, including selected
+  but absent sets and partial known/unknown coverage. Shared file UUIDs are
+  sixteen-byte BLOBs. Source assertions and extensions use numeric native
+  owners. Duplicate-name history groups compare whole-owner fact multisets;
+  changed ambiguous groups do not invent row continuity from source positions.
+  Remaining extension value persistence, build-cache projections
+  and full per-format field coverage are not the finished schema design.
 - Retained catalog documents are content-addressed and immutable. Re-imports
   record acquisitions/import runs and normalized snapshots; an import's
   snapshot publication is transactional, so a failed parse or persistence

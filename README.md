@@ -384,6 +384,17 @@ and catalog regressions cover these behaviors:
   matching schema, and rejection of schema drift without repair.
 - `native_catalog_model` checks scoped record identity and rejects occurrences
   whose claim kind or content identity conflicts with their native record.
+- `catalog_shared_model` checks relational scope/set storage, separate owners
+  for repeated names, owner-aware relationship explanations, publication
+  immutability, and P/C empty fields, ordered languages and archive-ID tokens.
+- `catalog_history_ownership` compares complete same-name owner fact multisets,
+  preserves unchanged permutations and reports ambiguous changes without
+  inventing continuity between entries.
+- `catalog_extension_ownership` keeps unknown game/ROM fields attached to their
+  numeric source owners even when both game and ROM names repeat.
+- Coverage unit tests check exact scope reuse, root/software qualification,
+  selected-but-absent sets, partial unknown members and immutable referenced
+  coverage rows.
 - `logiqx_native_model` checks parser defaults and repeated ROM, disk, sample,
   release and BIOS-set fields, plus headerless native imports and snapshot diffs.
 - `native_mame_specification` checks ordered machine specification facts and

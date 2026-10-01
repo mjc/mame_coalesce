@@ -5,7 +5,8 @@ use diesel::{
 
 use crate::{
     domain::{
-        CatalogRecordKind, CatalogRecordRef, DocumentLocation, RelationshipType, SnapshotKey,
+        CatalogRecordKind, CatalogRecordRef, CatalogSetId, DocumentLocation, RelationshipType,
+        SnapshotKey,
     },
     mame_softwarelist::{
         LoadInstruction, SoftwareArea, SoftwareComponent, SoftwareDisk, SoftwareItem, SoftwareList,
@@ -16,7 +17,7 @@ use crate::{
             ContentDigestAssertions, ContentIdentityResolution, record_content_identity_conflict,
             record_occurrence_digest_assertions, resolve_content_identity,
         },
-        catalog_identity::{AllocatedOccurrence, OccurrenceId, RecordId},
+        catalog_identity::{AllocatedOccurrence, OccurrenceId},
         relationships::{SourceRelationshipDraft, insert_source_assertion},
     },
 };
@@ -64,20 +65,20 @@ fn insert_list(
     list_order: usize,
 ) -> crate::Result<()> {
     let namespace = sql_query(
-        "INSERT INTO record_namespaces (snapshot_key, kind, source_order, source_name) \
-         VALUES (?, 'software_list', ?, ?) RETURNING namespace_id",
+        "INSERT INTO catalog_set_groups (snapshot_key, kind, list_order) \
+         VALUES (?, 'software_list', ?) RETURNING set_group_id AS namespace_id",
     )
     .bind::<Text, _>(snapshot_key.as_str())
     .bind::<BigInt, _>(checked_order(list_order, "software lists")?)
-    .bind::<Text, _>(list.name.as_str())
     .get_result::<NamespaceIdRow>(conn)?
     .namespace_id;
 
     sql_query(
-        "INSERT INTO software_lists (namespace_id, description, notes, source_line, source_column) \
-         VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO software_lists (namespace_id, name, description, notes, source_line, source_column) \
+         VALUES (?, ?, ?, ?, ?, ?)",
     )
     .bind::<BigInt, _>(namespace)
+    .bind::<Text, _>(list.name.as_str())
     .bind::<Nullable<Text>, _>(list.description.as_deref())
     .bind::<Nullable<Text>, _>(list.notes.as_deref())
     .bind::<BigInt, _>(list.location.line)
@@ -99,8 +100,8 @@ fn insert_item(
     item_order: usize,
 ) -> crate::Result<()> {
     let record = sql_query(
-        "INSERT INTO records (namespace_id, kind, source_order, source_name, source_line, source_column) \
-         VALUES (?, 'software_item', ?, ?, ?, ?) RETURNING record_id",
+        "INSERT INTO catalog_sets (set_group_id, source_element_kind, list_order, set_name, source_line, source_column) \
+         VALUES (?, 'software_item', ?, ?, ?, ?) RETURNING set_id AS record_id",
     )
     .bind::<BigInt, _>(namespace_id)
     .bind::<BigInt, _>(checked_order(item_order, "software items")?)
@@ -109,13 +110,13 @@ fn insert_item(
     .bind::<BigInt, _>(item.location.column)
     .get_result::<RecordIdRow>(conn)?
     .record_id;
-    let record = RecordId::from_database(record);
+    let record = CatalogSetId::from_database(record);
 
     sql_query(
         "INSERT INTO software_items (record_id, clone_of, supported, description, year, publisher, notes) \
          VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
-    .bind::<BigInt, _>(record.database_value())
+    .bind::<BigInt, _>(record.as_i64())
     .bind::<Nullable<Text>, _>(
         item.clone_of
             .as_ref()
@@ -136,7 +137,7 @@ fn insert_item(
             "INSERT INTO software_item_dependencies (record_id, dependency_kind, target_name) \
              VALUES (?, 'clone_of', ?)",
         )
-        .bind::<BigInt, _>(record.database_value())
+        .bind::<BigInt, _>(record.as_i64())
         .bind::<Text, _>(parent.as_str())
         .execute(conn)?;
         insert_source_assertion(
@@ -150,7 +151,8 @@ fn insert_item(
                         list.name.as_str(),
                         item.name.as_str(),
                     ))?,
-                ),
+                )
+                .with_owner(record),
                 target: CatalogRecordRef::new(
                     snapshot_key.clone(),
                     CatalogRecordKind::SoftwareItem,
@@ -197,7 +199,7 @@ fn insert_item(
 fn insert_named_values(
     conn: &mut SqliteConnection,
     table: &str,
-    record: RecordId,
+    record: CatalogSetId,
     values: &[crate::mame_softwarelist::NamedValue],
     kind: &str,
 ) -> crate::Result<()> {
@@ -206,7 +208,7 @@ fn insert_named_values(
             "INSERT INTO {table} (record_id, value_order, name, value, source_line, source_column) \
              VALUES (?, ?, ?, ?, ?, ?)"
         ))
-        .bind::<BigInt, _>(record.database_value())
+        .bind::<BigInt, _>(record.as_i64())
         .bind::<BigInt, _>(checked_order(order, kind)?)
         .bind::<Text, _>(&value.name)
         .bind::<Nullable<Text>, _>(value.value.as_deref())
@@ -219,7 +221,7 @@ fn insert_named_values(
 
 fn insert_part(
     conn: &mut SqliteConnection,
-    record: RecordId,
+    record: CatalogSetId,
     part: &SoftwarePart,
     part_order: usize,
     occurrence_order: &mut i64,
@@ -228,7 +230,7 @@ fn insert_part(
         "INSERT INTO software_parts (record_id, part_name, part_order, interface, source_line, source_column) \
          VALUES (?, ?, ?, ?, ?, ?) RETURNING part_id",
     )
-    .bind::<BigInt, _>(record.database_value())
+    .bind::<BigInt, _>(record.as_i64())
     .bind::<Text, _>(part.name.as_str())
     .bind::<BigInt, _>(checked_order(part_order, "software parts")?)
     .bind::<Text, _>(&part.interface)
@@ -291,7 +293,7 @@ fn insert_part(
 
 fn insert_area(
     conn: &mut SqliteConnection,
-    record: RecordId,
+    record: CatalogSetId,
     part_id: i64,
     area: &SoftwareArea,
     area_order: usize,
@@ -304,7 +306,7 @@ fn insert_area(
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING area_id",
     )
     .bind::<BigInt, _>(part_id)
-    .bind::<BigInt, _>(record.database_value())
+    .bind::<BigInt, _>(record.as_i64())
     .bind::<Text, _>(area.name.as_str())
     .bind::<Text, _>(area.kind.as_str())
     .bind::<BigInt, _>(checked_order(area_order, "software areas")?)
@@ -336,7 +338,7 @@ fn insert_area(
 
 fn insert_component(
     conn: &mut SqliteConnection,
-    record: RecordId,
+    record: CatalogSetId,
     area_id: i64,
     component: &SoftwareComponent,
     component_order: i64,
@@ -397,7 +399,7 @@ impl SoftwareClaim {
 
 fn allocate_occurrence(
     conn: &mut SqliteConnection,
-    record: RecordId,
+    record: CatalogSetId,
     occurrence_order: i64,
     claim: SoftwareClaim,
     digests: ContentDigestAssertions<'_>,
@@ -414,7 +416,7 @@ fn allocate_occurrence(
         "INSERT INTO asset_occurrences (record_id, occurrence_order, claim_kind, content_uuid) \
          VALUES (?, ?, ?, ?) RETURNING occurrence_id",
     )
-    .bind::<BigInt, _>(record.database_value())
+    .bind::<BigInt, _>(record.as_i64())
     .bind::<BigInt, _>(occurrence_order)
     .bind::<Text, _>(claim.code())
     .bind::<Nullable<Binary>, _>(content_uuid)
@@ -426,7 +428,7 @@ fn allocate_occurrence(
 
 fn insert_rom_component(
     conn: &mut SqliteConnection,
-    record: RecordId,
+    record: CatalogSetId,
     area_id: i64,
     rom: &SoftwareRom,
     component_order: i64,
@@ -499,7 +501,7 @@ fn record_occurrence_identity_evidence(
 
 fn insert_rom_entry(
     conn: &mut SqliteConnection,
-    record: RecordId,
+    record: CatalogSetId,
     area_id: i64,
     component_order: i64,
     occurrence: OccurrenceId,
@@ -513,7 +515,7 @@ fn insert_rom_entry(
          VALUES (?, ?, ?, ?, ?, 'whole_asset', ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind::<BigInt, _>(occurrence.database_value())
-    .bind::<BigInt, _>(record.database_value())
+    .bind::<BigInt, _>(record.as_i64())
     .bind::<BigInt, _>(area_id)
     .bind::<BigInt, _>(component_order)
     .bind::<Nullable<Text>, _>(
@@ -534,7 +536,7 @@ fn insert_rom_entry(
 
 fn update_rom_declaration(
     conn: &mut SqliteConnection,
-    record: RecordId,
+    record: CatalogSetId,
     occurrence: OccurrenceId,
     is_declaration: bool,
     file_name: Option<&str>,
@@ -549,7 +551,7 @@ fn update_rom_declaration(
              VALUES (?, ?, ?, ?)",
         )
         .bind::<BigInt, _>(occurrence.database_value())
-        .bind::<BigInt, _>(record.database_value())
+        .bind::<BigInt, _>(record.as_i64())
         .bind::<Text, _>(name)
         .bind::<Nullable<BigInt>, _>(None::<i64>)
         .execute(conn)?;
@@ -564,7 +566,7 @@ fn update_rom_declaration(
 
 fn insert_rom_use(
     conn: &mut SqliteConnection,
-    record: RecordId,
+    record: CatalogSetId,
     occurrence: OccurrenceId,
     rom: &SoftwareRom,
     offset: Option<i64>,
@@ -576,7 +578,7 @@ fn insert_rom_use(
          VALUES (?, ?, ?, ?, ?, ?)",
     )
     .bind::<BigInt, _>(occurrence.database_value())
-    .bind::<BigInt, _>(record.database_value())
+    .bind::<BigInt, _>(record.as_i64())
     .bind::<Nullable<BigInt>, _>(declaration.map(OccurrenceId::database_value))
     .bind::<Text, _>(rom_operation(rom.load))
     .bind::<Nullable<BigInt>, _>(offset)
@@ -587,7 +589,7 @@ fn insert_rom_use(
 
 fn insert_disk_component(
     conn: &mut SqliteConnection,
-    record: RecordId,
+    record: CatalogSetId,
     area_id: i64,
     disk: &SoftwareDisk,
     component_order: i64,
@@ -618,7 +620,7 @@ fn insert_disk_component(
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind::<BigInt, _>(occurrence.database_value())
-    .bind::<BigInt, _>(record.database_value())
+    .bind::<BigInt, _>(record.as_i64())
     .bind::<BigInt, _>(area_id)
     .bind::<BigInt, _>(component_order)
     .bind::<Text, _>(disk.requirement.name().as_str())
@@ -634,7 +636,7 @@ fn insert_disk_component(
          VALUES (?, ?, NULL, 'disk', NULL, NULL)",
     )
     .bind::<BigInt, _>(occurrence.database_value())
-    .bind::<BigInt, _>(record.database_value())
+    .bind::<BigInt, _>(record.as_i64())
     .execute(conn)?;
 
     record_occurrence_identity_evidence(conn, occurrence, digests, &resolution)?;

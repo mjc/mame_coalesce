@@ -6,21 +6,28 @@ use diesel::{
 };
 
 use crate::domain::{
-    CatalogKey, CatalogScope, CatalogSnapshotDiff, CatalogSnapshotEntry, RelationshipEndpoint,
-    RelationshipExplanation, SnapshotKey, SnapshotRecordDiff, SnapshotRecordStatus,
+    CatalogKey, CatalogScope, CatalogSnapshotDiff, CatalogSnapshotEntry, QualifiedCatalogSet,
+    RelationshipEndpoint, RelationshipExplanation, SetCoverage, SetName, SnapshotKey,
+    SnapshotRecordCorrespondence, SnapshotRecordDiff, SnapshotRecordStatus,
     SnapshotRequirementChange,
 };
 
+use super::catalog_coverage::CoverageId;
 use super::db::Pool;
 
-#[derive(QueryableByName)]
 struct SnapshotRow {
+    catalog_key: String,
+    scope: CatalogScope,
+    format_hint: Option<String>,
+    published: bool,
+}
+
+#[derive(QueryableByName)]
+struct SnapshotHeaderRow {
     #[diesel(sql_type = Text)]
     catalog_key: String,
-    #[diesel(sql_type = Text)]
-    scope_kind: String,
-    #[diesel(sql_type = Nullable<Text>)]
-    scope_json: Option<String>,
+    #[diesel(sql_type = BigInt)]
+    coverage_id: i64,
     #[diesel(sql_type = Nullable<Text>)]
     format_hint: Option<String>,
     #[diesel(sql_type = Bool)]
@@ -35,28 +42,28 @@ struct HistoryRow {
     document_key: String,
     #[diesel(sql_type = Nullable<Text>)]
     declared_version: Option<String>,
-    #[diesel(sql_type = Text)]
-    scope_kind: String,
-    #[diesel(sql_type = Nullable<Text>)]
-    scope_json: Option<String>,
+    #[diesel(sql_type = BigInt)]
+    coverage_id: i64,
 }
 
 #[derive(QueryableByName)]
 struct SetRow {
+    #[diesel(sql_type = BigInt)]
+    set_id: i64,
     #[diesel(sql_type = Text)]
     set_name: String,
     #[diesel(sql_type = Nullable<Text>)]
     parent_name: Option<String>,
-    #[diesel(sql_type = Text)]
-    metadata_json: String,
+    #[diesel(sql_type = BigInt)]
+    source_order: i64,
 }
 
 #[derive(QueryableByName)]
 struct RequirementRow {
-    #[diesel(sql_type = Text)]
-    set_name: String,
     #[diesel(sql_type = BigInt)]
-    component_order: i64,
+    set_id: i64,
+    #[diesel(sql_type = BigInt)]
+    occurrence_id: i64,
     #[diesel(sql_type = Text)]
     asset_name: String,
     #[diesel(sql_type = Text)]
@@ -81,8 +88,6 @@ struct RequirementRow {
     serial: Option<String>,
     #[diesel(sql_type = Nullable<Text>)]
     date: Option<String>,
-    #[diesel(sql_type = Text)]
-    metadata_json: String,
     #[diesel(sql_type = Nullable<Text>)]
     mame_region: Option<String>,
     #[diesel(sql_type = Nullable<Text>)]
@@ -119,10 +124,10 @@ struct ExtensionRow {
     record_kind: String,
     #[diesel(sql_type = Nullable<Text>)]
     record_name: Option<String>,
-    #[diesel(sql_type = Nullable<Text>)]
-    owner_set_name: Option<String>,
-    #[diesel(sql_type = Nullable<Text>)]
-    owner_component_order: Option<String>,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    owner_set_id: Option<i64>,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    owner_occurrence_id: Option<i64>,
     #[diesel(sql_type = Text)]
     field_name: String,
     #[diesel(sql_type = Nullable<Text>)]
@@ -133,8 +138,8 @@ struct ExtensionRow {
 
 #[derive(QueryableByName)]
 struct MachineSwitchRow {
-    #[diesel(sql_type = Text)]
-    set_name: String,
+    #[diesel(sql_type = BigInt)]
+    set_id: i64,
     #[diesel(sql_type = BigInt)]
     switch_order: i64,
     #[diesel(sql_type = Text)]
@@ -149,8 +154,8 @@ struct MachineSwitchRow {
 
 #[derive(QueryableByName)]
 struct MachineSwitchLocationRow {
-    #[diesel(sql_type = Text)]
-    set_name: String,
+    #[diesel(sql_type = BigInt)]
+    set_id: i64,
     #[diesel(sql_type = BigInt)]
     switch_order: i64,
     #[diesel(sql_type = BigInt)]
@@ -165,8 +170,8 @@ struct MachineSwitchLocationRow {
 
 #[derive(QueryableByName)]
 struct MachineSwitchValueRow {
-    #[diesel(sql_type = Text)]
-    set_name: String,
+    #[diesel(sql_type = BigInt)]
+    set_id: i64,
     #[diesel(sql_type = BigInt)]
     switch_order: i64,
     #[diesel(sql_type = BigInt)]
@@ -181,8 +186,8 @@ struct MachineSwitchValueRow {
 
 #[derive(QueryableByName)]
 struct MachineBiosSetRow {
-    #[diesel(sql_type = Text)]
-    set_name: String,
+    #[diesel(sql_type = BigInt)]
+    set_id: i64,
     #[diesel(sql_type = BigInt)]
     bios_order: i64,
     #[diesel(sql_type = Text)]
@@ -195,8 +200,8 @@ struct MachineBiosSetRow {
 
 #[derive(QueryableByName)]
 struct MameMachineDependencyRow {
-    #[diesel(sql_type = Text)]
-    set_name: String,
+    #[diesel(sql_type = BigInt)]
+    set_id: i64,
     #[diesel(sql_type = BigInt)]
     dependency_order: i64,
     #[diesel(sql_type = Text)]
@@ -210,8 +215,8 @@ struct MameMachineDependencyRow {
 #[derive(QueryableByName)]
 #[allow(clippy::struct_excessive_bools)] // Mirrors independent MAME DTD flags from one SQLite row.
 struct MameMachineFactsRow {
-    #[diesel(sql_type = Text)]
-    set_name: String,
+    #[diesel(sql_type = BigInt)]
+    set_id: i64,
     #[diesel(sql_type = Nullable<Text>)]
     source_file: Option<String>,
     #[diesel(sql_type = Text)]
@@ -234,18 +239,66 @@ struct MameMachineFactsRow {
 
 #[derive(QueryableByName)]
 struct NoIntroGameFactsRow {
-    #[diesel(sql_type = Text)]
-    set_name: String,
+    #[diesel(sql_type = BigInt)]
+    set_id: i64,
     #[diesel(sql_type = Nullable<Text>)]
     archive_id: Option<String>,
     #[diesel(sql_type = Nullable<Text>)]
     description: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    name_alt: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    region: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    version: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    bios_text: Option<String>,
+    #[diesel(sql_type = Bool)]
+    languages_present: bool,
+}
+
+#[derive(QueryableByName)]
+struct NoIntroLanguageRow {
+    #[diesel(sql_type = BigInt)]
+    set_id: i64,
+    #[diesel(sql_type = BigInt)]
+    language_order: i64,
+    #[diesel(sql_type = Text)]
+    language: String,
+}
+
+#[derive(QueryableByName)]
+struct NoIntroCloneMarkerRow {
+    #[diesel(sql_type = BigInt)]
+    set_id: i64,
+}
+
+#[derive(QueryableByName)]
+struct NoIntroArchiveLinkRow {
+    #[diesel(sql_type = BigInt)]
+    set_id: i64,
+    #[diesel(sql_type = Text)]
+    target_archive_id: String,
+}
+
+#[derive(QueryableByName)]
+struct CmpSetFactsRow {
+    #[diesel(sql_type = BigInt)]
+    set_id: i64,
+    #[diesel(sql_type = Nullable<Text>)]
+    description: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    year: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    manufacturer: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    rebuildto: Option<String>,
 }
 
 #[derive(QueryableByName)]
 struct LogiqxSetFactsRow {
-    #[diesel(sql_type = Text)]
-    set_name: String,
+    #[diesel(sql_type = BigInt)]
+    set_id: i64,
     #[diesel(sql_type = Nullable<Text>)]
     source_file: Option<String>,
     #[diesel(sql_type = Nullable<Text>)]
@@ -265,8 +318,9 @@ struct LogiqxSetFactsRow {
 #[derive(QueryableByName, serde::Serialize)]
 #[allow(clippy::struct_excessive_bools)] // Mirrors independent DTD boolean columns for snapshot comparison.
 struct MachineSpecificationRow {
-    #[diesel(sql_type = Text)]
-    set_name: String,
+    #[serde(skip)]
+    #[diesel(sql_type = BigInt)]
+    set_id: i64,
     #[diesel(sql_type = BigInt)]
     element_order: i64,
     #[diesel(sql_type = Text)]
@@ -389,8 +443,8 @@ struct MachineSpecificationRow {
 
 #[derive(QueryableByName)]
 struct MachineInputControlRow {
-    #[diesel(sql_type = Text)]
-    set_name: String,
+    #[diesel(sql_type = BigInt)]
+    set_id: i64,
     #[diesel(sql_type = BigInt)]
     element_order: i64,
     #[diesel(sql_type = BigInt)]
@@ -421,8 +475,8 @@ struct MachineInputControlRow {
 
 #[derive(QueryableByName)]
 struct MachineAnalogRow {
-    #[diesel(sql_type = Text)]
-    set_name: String,
+    #[diesel(sql_type = BigInt)]
+    set_id: i64,
     #[diesel(sql_type = BigInt)]
     element_order: i64,
     #[diesel(sql_type = BigInt)]
@@ -433,8 +487,8 @@ struct MachineAnalogRow {
 
 #[derive(QueryableByName)]
 struct MachineDeviceExtensionRow {
-    #[diesel(sql_type = Text)]
-    set_name: String,
+    #[diesel(sql_type = BigInt)]
+    set_id: i64,
     #[diesel(sql_type = BigInt)]
     element_order: i64,
     #[diesel(sql_type = BigInt)]
@@ -445,8 +499,8 @@ struct MachineDeviceExtensionRow {
 
 #[derive(QueryableByName)]
 struct MachineSlotOptionRow {
-    #[diesel(sql_type = Text)]
-    set_name: String,
+    #[diesel(sql_type = BigInt)]
+    set_id: i64,
     #[diesel(sql_type = BigInt)]
     element_order: i64,
     #[diesel(sql_type = BigInt)]
@@ -461,8 +515,8 @@ struct MachineSlotOptionRow {
 
 #[derive(QueryableByName)]
 struct MachineConditionRow {
-    #[diesel(sql_type = Text)]
-    set_name: String,
+    #[diesel(sql_type = BigInt)]
+    set_id: i64,
     #[diesel(sql_type = Text)]
     owner_kind: String,
     #[diesel(sql_type = Nullable<BigInt>)]
@@ -485,17 +539,18 @@ struct MachineConditionRow {
 
 #[derive(Default)]
 struct CatalogRecords {
-    sets: BTreeMap<String, SetRow>,
-    requirements: BTreeMap<String, BTreeMap<String, Vec<serde_json::Value>>>,
-    extensions: BTreeMap<(String, String), Vec<serde_json::Value>>,
-    asset_extensions: BTreeMap<(String, String), Vec<serde_json::Value>>,
-    machine_switches: BTreeMap<String, Vec<serde_json::Value>>,
-    machine_bios_sets: BTreeMap<String, Vec<serde_json::Value>>,
-    mame_machine_dependencies: BTreeMap<String, Vec<serde_json::Value>>,
-    mame_machine_facts: BTreeMap<String, serde_json::Value>,
-    mame_machine_specification_facts: BTreeMap<String, Vec<serde_json::Value>>,
-    no_intro_game_facts: BTreeMap<String, serde_json::Value>,
-    logiqx_set_facts: BTreeMap<String, serde_json::Value>,
+    sets: BTreeMap<String, Vec<SetRow>>,
+    requirements: BTreeMap<i64, BTreeMap<String, Vec<serde_json::Value>>>,
+    extensions: BTreeMap<i64, Vec<serde_json::Value>>,
+    asset_extensions: BTreeMap<i64, Vec<serde_json::Value>>,
+    machine_switches: BTreeMap<i64, Vec<serde_json::Value>>,
+    machine_bios_sets: BTreeMap<i64, Vec<serde_json::Value>>,
+    mame_machine_dependencies: BTreeMap<i64, Vec<serde_json::Value>>,
+    mame_machine_facts: BTreeMap<i64, Vec<serde_json::Value>>,
+    mame_machine_specification_facts: BTreeMap<i64, Vec<serde_json::Value>>,
+    no_intro_game_facts: BTreeMap<i64, Vec<serde_json::Value>>,
+    logiqx_set_facts: BTreeMap<i64, Vec<serde_json::Value>>,
+    cmp_set_facts: BTreeMap<i64, Vec<serde_json::Value>>,
 }
 
 pub fn diff(
@@ -537,59 +592,32 @@ pub fn diff(
                 let before = previous_records.sets.get(&name);
                 let after = current_records.sets.get(&name);
                 let relationship_evidence = evidence_by_set.remove(&name).unwrap_or_default();
-                let (status, metadata_changed, regrouped, requirement_changes) =
-                    match (before, after) {
-                        (None, None) => unreachable!("name came from one of the set maps"),
-                        (None, Some(_))
-                            if scopes_cover_set(&previous_header, &current_header, &name) =>
-                        {
-                            (
-                                SnapshotRecordStatus::AddedWithinScope,
-                                false,
-                                false,
-                                Vec::new(),
-                            )
-                        }
-                        (Some(_), None)
-                            if scopes_cover_set(&previous_header, &current_header, &name) =>
-                        {
-                            (
-                                SnapshotRecordStatus::RemovedWithinScope,
-                                false,
-                                false,
-                                Vec::new(),
-                            )
-                        }
-                        (None, _) | (_, None) => (
-                            absence_status(&previous_header, &current_header, &name),
-                            false,
-                            false,
-                            Vec::new(),
-                        ),
-                        (Some(before), Some(after)) => {
-                            let metadata_changed = set_metadata(&previous_records, &name, before)
-                                != set_metadata(&current_records, &name, after);
-                            let regrouped = before.parent_name != after.parent_name;
-                            let requirement_changes = requirement_changes(
-                                previous_records.requirements.get(&name),
-                                current_records.requirements.get(&name),
-                            );
-                            let status =
-                                if metadata_changed || regrouped || !requirement_changes.is_empty()
-                                {
-                                    SnapshotRecordStatus::Changed
-                                } else {
-                                    SnapshotRecordStatus::Unchanged
-                                };
-                            (status, metadata_changed, regrouped, requirement_changes)
-                        }
-                    };
+                let comparison = match (before, after) {
+                    (None, None) => unreachable!("name came from one of the set maps"),
+                    (None, Some(_))
+                        if scopes_cover_set(&previous_header, &current_header, &name) =>
+                    {
+                        no_counterpart(SnapshotRecordStatus::AddedWithinScope)
+                    }
+                    (Some(_), None)
+                        if scopes_cover_set(&previous_header, &current_header, &name) =>
+                    {
+                        no_counterpart(SnapshotRecordStatus::RemovedWithinScope)
+                    }
+                    (None, _) | (_, None) => {
+                        no_counterpart(absence_status(&previous_header, &current_header, &name))
+                    }
+                    (Some(before), Some(after)) => {
+                        compare_owner_group(before, after, &previous_records, &current_records)
+                    }
+                };
                 SnapshotRecordDiff {
                     set_name: name,
-                    status,
-                    metadata_changed,
-                    regrouped,
-                    requirement_changes,
+                    status: comparison.status,
+                    correspondence: comparison.correspondence,
+                    metadata_changed: comparison.metadata_changed,
+                    regrouped: comparison.regrouped,
+                    requirement_changes: comparison.requirement_changes,
                     relationship_evidence,
                 }
             })
@@ -603,6 +631,79 @@ pub fn diff(
             records,
         })
     })
+}
+
+struct OwnerGroupComparison {
+    status: SnapshotRecordStatus,
+    correspondence: SnapshotRecordCorrespondence,
+    metadata_changed: bool,
+    regrouped: bool,
+    requirement_changes: Vec<SnapshotRequirementChange>,
+}
+
+const fn no_counterpart(status: SnapshotRecordStatus) -> OwnerGroupComparison {
+    OwnerGroupComparison {
+        status,
+        correspondence: SnapshotRecordCorrespondence::NoCounterpart,
+        metadata_changed: false,
+        regrouped: false,
+        requirement_changes: Vec::new(),
+    }
+}
+
+fn compare_owner_group(
+    before: &[SetRow],
+    after: &[SetRow],
+    previous_records: &CatalogRecords,
+    current_records: &CatalogRecords,
+) -> OwnerGroupComparison {
+    let metadata_changed =
+        owner_metadata(before, previous_records) != owner_metadata(after, current_records);
+    let regrouped = parent_names(before) != parent_names(after);
+    let correspondence = match (before.len(), after.len()) {
+        (1, 1) => SnapshotRecordCorrespondence::UniqueName,
+        _ if owner_signatures(before, previous_records)
+            == owner_signatures(after, current_records) =>
+        {
+            SnapshotRecordCorrespondence::ExactFacts
+        }
+        _ => SnapshotRecordCorrespondence::Ambiguous,
+    };
+    let requirement_changes = match correspondence {
+        SnapshotRecordCorrespondence::UniqueName => {
+            let previous = before
+                .first()
+                .and_then(|set| previous_records.requirements.get(&set.set_id));
+            let current = after
+                .first()
+                .and_then(|set| current_records.requirements.get(&set.set_id));
+            requirement_changes(previous, current)
+        }
+        SnapshotRecordCorrespondence::ExactFacts
+        | SnapshotRecordCorrespondence::Ambiguous
+        | SnapshotRecordCorrespondence::NoCounterpart => Vec::new(),
+    };
+    let status = match correspondence {
+        SnapshotRecordCorrespondence::Ambiguous => SnapshotRecordStatus::Changed,
+        SnapshotRecordCorrespondence::UniqueName
+        | SnapshotRecordCorrespondence::ExactFacts
+        | SnapshotRecordCorrespondence::NoCounterpart
+            if metadata_changed || regrouped || !requirement_changes.is_empty() =>
+        {
+            SnapshotRecordStatus::Changed
+        }
+        SnapshotRecordCorrespondence::UniqueName
+        | SnapshotRecordCorrespondence::ExactFacts
+        | SnapshotRecordCorrespondence::NoCounterpart => SnapshotRecordStatus::Unchanged,
+    };
+
+    OwnerGroupComparison {
+        status,
+        correspondence,
+        metadata_changed,
+        regrouped,
+        requirement_changes,
+    }
 }
 
 #[derive(QueryableByName, PartialEq, Eq)]
@@ -704,7 +805,7 @@ fn relationship_evidence_by_set(
 pub fn history(pool: &Pool, catalog: &CatalogKey) -> crate::Result<Vec<CatalogSnapshotEntry>> {
     let mut conn = pool.get()?;
     let rows = sql_query(
-        "SELECT snapshot_key, document_key, declared_version, scope_kind, scope_json \
+        "SELECT snapshot_key, document_key, declared_version, coverage_id \
          FROM catalog_snapshots WHERE catalog_key = ? \
          ORDER BY document_key, interpretation_key, snapshot_key",
     )
@@ -712,17 +813,10 @@ pub fn history(pool: &Pool, catalog: &CatalogKey) -> crate::Result<Vec<CatalogSn
     .load::<HistoryRow>(&mut conn)?;
     rows.into_iter()
         .map(|row| {
-            let scope = match row.scope_kind.as_str() {
-                "unknown" => CatalogScope::Unknown,
-                "complete" => CatalogScope::Complete,
-                "filtered" => CatalogScope::Filtered(parse_scope(row.scope_json)?),
-                "partial" => CatalogScope::Partial(parse_scope(row.scope_json)?),
-                kind => {
-                    return Err(crate::Error::InvalidPath(format!(
-                        "invalid persisted catalog scope: {kind}"
-                    )));
-                }
-            };
+            let scope = super::catalog_coverage::load(
+                &mut conn,
+                CoverageId::from_database(row.coverage_id),
+            )?;
             Ok(CatalogSnapshotEntry {
                 snapshot: SnapshotKey::from_persisted(row.snapshot_key),
                 document_key: row.document_key,
@@ -733,27 +827,28 @@ pub fn history(pool: &Pool, catalog: &CatalogKey) -> crate::Result<Vec<CatalogSn
         .collect()
 }
 
-fn parse_scope(value: Option<String>) -> crate::Result<serde_json::Value> {
-    value
-        .ok_or_else(|| crate::Error::InvalidPath("snapshot scope details are missing".to_owned()))
-        .and_then(|json| serde_json::from_str(&json).map_err(Into::into))
-}
-
 fn snapshot(conn: &mut diesel::SqliteConnection, key: &SnapshotKey) -> crate::Result<SnapshotRow> {
-    sql_query(
-        "SELECT snapshot.catalog_key, snapshot.scope_kind, snapshot.scope_json, documents.format_hint, \
+    let row = sql_query(
+        "SELECT snapshot.catalog_key, snapshot.coverage_id, documents.format_hint, \
                 EXISTS (SELECT 1 FROM snapshot_publications AS publication \
                         WHERE publication.snapshot_key = snapshot.snapshot_key) AS published \
          FROM catalog_snapshots AS snapshot \
          JOIN documents USING (document_key) WHERE snapshot.snapshot_key = ?",
     )
     .bind::<Text, _>(key.as_str())
-    .get_result(conn)
+    .get_result::<SnapshotHeaderRow>(conn)
     .map_err(|error| match error {
         diesel::result::Error::NotFound => {
             crate::Error::InvalidPath(format!("catalog snapshot {} does not exist", key.as_str()))
         }
         error => error.into(),
+    })?;
+    let scope = super::catalog_coverage::load(conn, CoverageId::from_database(row.coverage_id))?;
+    Ok(SnapshotRow {
+        catalog_key: row.catalog_key,
+        scope,
+        format_hint: row.format_hint,
+        published: row.published,
     })
 }
 
@@ -761,24 +856,9 @@ fn comparable_scope(previous: &SnapshotRow, current: &SnapshotRow) -> bool {
     if !previous.published || !current.published {
         return false;
     }
-    if previous.scope_kind == "complete" && current.scope_kind == "complete" {
-        return true;
-    }
-    if previous.scope_kind != "filtered" || current.scope_kind != "filtered" {
-        return false;
-    }
-    match (
-        scope_set_names(previous),
-        scope_set_names(current),
-        scope_policy(previous),
-        scope_policy(current),
-    ) {
-        (
-            Some(previous_names),
-            Some(current_names),
-            Some(previous_policy),
-            Some(current_policy),
-        ) => previous_names == current_names && previous_policy == current_policy,
+    match (&previous.scope, &current.scope) {
+        (CatalogScope::Complete, CatalogScope::Complete) => true,
+        (CatalogScope::Filtered(previous), CatalogScope::Filtered(current)) => previous == current,
         _ => false,
     }
 }
@@ -788,10 +868,10 @@ fn absence_status(
     current: &SnapshotRow,
     name: &str,
 ) -> SnapshotRecordStatus {
+    let member = QualifiedCatalogSet::RootSet(SetName::new(name));
     let explicitly_excluded = [previous, current].into_iter().any(|snapshot| {
         snapshot.published
-            && snapshot.scope_kind == "filtered"
-            && scope_set_names(snapshot).is_some_and(|names| !names.contains(name))
+            && matches!(&snapshot.scope, CatalogScope::Filtered(members) if !members.contains(&member))
     });
     if explicitly_excluded {
         SnapshotRecordStatus::OutOfScope
@@ -801,37 +881,20 @@ fn absence_status(
 }
 
 fn scopes_cover_set(previous: &SnapshotRow, current: &SnapshotRow, name: &str) -> bool {
-    snapshot_covers_set(previous, name)
-        && snapshot_covers_set(current, name)
-        && (previous.scope_kind != "filtered"
-            || current.scope_kind != "filtered"
-            || scope_policy(previous) == scope_policy(current))
+    snapshot_covers_set(previous, name) && snapshot_covers_set(current, name)
 }
 
 fn snapshot_covers_set(snapshot: &SnapshotRow, name: &str) -> bool {
-    snapshot.published
-        && match snapshot.scope_kind.as_str() {
-            "complete" => true,
-            "filtered" => scope_set_names(snapshot).is_some_and(|names| names.contains(name)),
-            _ => false,
-        }
-}
-
-fn scope_policy(snapshot: &SnapshotRow) -> Option<serde_json::Value> {
-    let mut details =
-        serde_json::from_str::<serde_json::Value>(snapshot.scope_json.as_deref()?).ok()?;
-    details.as_object_mut()?.remove("sets");
-    Some(details)
-}
-
-fn scope_set_names(snapshot: &SnapshotRow) -> Option<BTreeSet<String>> {
-    serde_json::from_str::<serde_json::Value>(snapshot.scope_json.as_deref()?)
-        .ok()?
-        .get("sets")?
-        .as_array()?
-        .iter()
-        .map(|value| value.as_str().map(str::to_owned))
-        .collect()
+    if !snapshot.published {
+        return false;
+    }
+    let member = QualifiedCatalogSet::RootSet(SetName::new(name));
+    match &snapshot.scope {
+        CatalogScope::Complete => true,
+        CatalogScope::Filtered(members) => members.contains(&member),
+        CatalogScope::Partial(members) => members.get(&member) == Some(&SetCoverage::Covered),
+        CatalogScope::Unknown => false,
+    }
 }
 
 fn records(
@@ -839,16 +902,19 @@ fn records(
     key: &SnapshotKey,
 ) -> crate::Result<CatalogRecords> {
     let sets = sql_query(
-        "SELECT set_name, parent_name, metadata_json FROM snapshot_sets \
-         WHERE snapshot_key = ? ORDER BY set_name",
+        "SELECT sets.set_id, sets.set_name, parents.parent_name, sets.list_order AS source_order \
+         FROM catalog_sets AS sets JOIN catalog_set_groups AS groups USING (set_group_id) \
+         JOIN snapshot_sets AS parents USING (set_id) \
+         WHERE groups.snapshot_key = ? AND groups.kind = 'root' \
+         ORDER BY sets.set_name, sets.list_order",
     )
     .bind::<Text, _>(key.as_str())
     .load::<SetRow>(conn)?;
     let requirements = load_requirements(conn, key)?;
     let extensions = sql_query(
-        "SELECT record_kind, record_name, owner_set_name, owner_component_order, field_name, namespace_uri, raw_value_json \
+        "SELECT record_kind, record_name, owner_set_id, owner_occurrence_id, field_name, namespace_uri, raw_value_json \
          FROM snapshot_extensions WHERE snapshot_key = ? \
-         ORDER BY record_kind, record_name, field_name, namespace_uri, raw_value_json",
+         ORDER BY owner_set_id, owner_occurrence_id, record_kind, field_name, namespace_uri, raw_value_json",
     )
     .bind::<Text, _>(key.as_str())
     .load::<ExtensionRow>(conn)?;
@@ -857,59 +923,37 @@ fn records(
     let mame_machine_facts = load_mame_machine_facts(conn, key)?;
     let mame_machine_specification_facts = load_mame_machine_specification_facts(conn, key)?;
     let mame_machine_dependencies = load_mame_machine_dependencies(conn, key)?;
-    let no_intro_game_facts = sql_query(
-        "SELECT set_name, archive_id, description FROM no_intro_game_facts \
-         WHERE snapshot_key = ? ORDER BY set_name",
-    )
-    .bind::<Text, _>(key.as_str())
-    .load::<NoIntroGameFactsRow>(conn)?
-    .into_iter()
-    .map(|row| {
-        (
-            row.set_name,
-            serde_json::json!({
-                "archive_id": row.archive_id,
-                "description": row.description,
-            }),
-        )
-    })
-    .collect();
+    let no_intro_game_facts = load_no_intro_game_facts(conn, key)?;
     let logiqx_set_facts = load_logiqx_set_facts(conn, key)?;
+    let cmp_set_facts = load_cmp_set_facts(conn, key)?;
 
     let mut result = CatalogRecords::default();
     for set in sets {
-        result.sets.insert(set.set_name.clone(), set);
+        result
+            .sets
+            .entry(set.set_name.clone())
+            .or_default()
+            .push(set);
+    }
+    for owners in result.sets.values_mut() {
+        owners.sort_by_key(|owner| owner.source_order);
     }
     for extension in extensions {
-        let record_kind = extension.record_kind.clone();
-        let record_name = extension.record_name.clone();
         let value = serde_json::json!({
-            "record_kind": record_kind,
-            "record_name": record_name,
+            "record_kind": extension.record_kind,
+            "record_name": extension.record_name,
             "field": extension.field_name,
             "namespace": extension.namespace_uri,
             "value": json(&extension.raw_value_json),
         });
-        match (extension.owner_set_name, extension.owner_component_order) {
-            (Some(set), Some(component_order)) => result
+        match (extension.owner_set_id, extension.owner_occurrence_id) {
+            (Some(_), Some(occurrence_id)) => result
                 .asset_extensions
-                .entry((set, component_order))
+                .entry(occurrence_id)
                 .or_default()
                 .push(value),
-            (Some(set), None) => result
-                .extensions
-                .entry(("set".to_owned(), set))
-                .or_default()
-                .push(value),
-            (None, _) => {
-                if let Some(record_name) = record_name {
-                    result
-                        .extensions
-                        .entry((record_kind, record_name))
-                        .or_default()
-                        .push(value);
-                }
-            }
+            (Some(set_id), None) => result.extensions.entry(set_id).or_default().push(value),
+            (None, _) => {}
         }
     }
     result.machine_switches = machine_switches;
@@ -919,9 +963,16 @@ fn records(
     result.mame_machine_dependencies = mame_machine_dependencies;
     result.no_intro_game_facts = no_intro_game_facts;
     result.logiqx_set_facts = logiqx_set_facts;
-    for extensions in result.extensions.values_mut() {
-        extensions.sort_by_key(serde_json::Value::to_string);
-    }
+    result.cmp_set_facts = cmp_set_facts;
+    sort_json_groups(&mut result.machine_switches);
+    sort_json_groups(&mut result.machine_bios_sets);
+    sort_json_groups(&mut result.mame_machine_dependencies);
+    sort_json_groups(&mut result.mame_machine_facts);
+    sort_json_groups(&mut result.mame_machine_specification_facts);
+    sort_json_groups(&mut result.no_intro_game_facts);
+    sort_json_groups(&mut result.logiqx_set_facts);
+    sort_json_groups(&mut result.cmp_set_facts);
+    sort_json_groups(&mut result.extensions);
     assemble_requirements(&mut result, requirements);
     Ok(result)
 }
@@ -931,7 +982,7 @@ fn load_requirements(
     key: &SnapshotKey,
 ) -> crate::Result<Vec<RequirementRow>> {
     Ok(sql_query(
-        "SELECT sets.set_name, asset.component_order, asset.asset_name, asset.role, asset.size, \
+        "SELECT sets.set_id, occurrence.occurrence_id, asset.asset_name, asset.role, asset.size, \
          (SELECT digest.digest FROM asset_requirement_digest_assertions AS assertion \
           JOIN digest_values AS digest USING (digest_id) \
           WHERE assertion.set_id = asset.set_id \
@@ -948,7 +999,7 @@ fn load_requirements(
             AND assertion.component_order = asset.component_order \
             AND assertion.scope = asset.evidence_scope AND digest.algorithm = 'sha1') AS sha1, \
          asset.evidence_scope, asset.evidence_provenance, \
-         asset.merge_name, asset.dump_status, asset.serial, asset.date, asset.metadata_json, \
+         asset.merge_name, asset.dump_status, asset.serial, asset.date, \
          facts.region AS mame_region, facts.bios AS mame_bios, facts.offset AS mame_offset, \
          facts.optional AS mame_optional, facts.sound_only AS mame_sound_only, \
          facts.dispose AS mame_dispose, facts.load_flag AS mame_load_flag, facts.value AS mame_value, \
@@ -957,8 +1008,11 @@ fn load_requirements(
          facts.writeable AS mame_writeable \
          FROM asset_requirement_rows AS asset \
          JOIN snapshot_sets AS sets USING (set_id) \
+         JOIN asset_occurrences AS occurrence \
+           ON occurrence.record_id = asset.set_id \
+          AND occurrence.occurrence_order = asset.component_order \
          LEFT JOIN mame_asset_facts AS facts \
-           ON facts.snapshot_key = sets.snapshot_key AND facts.set_name = sets.set_name \
+           ON facts.set_id = asset.set_id \
           AND facts.component_order = asset.component_order \
          WHERE sets.snapshot_key = ? \
          ORDER BY sets.set_name, asset.asset_name, asset.component_order",
@@ -970,9 +1024,9 @@ fn load_requirements(
 fn load_mame_machine_dependencies(
     conn: &mut diesel::SqliteConnection,
     key: &SnapshotKey,
-) -> crate::Result<BTreeMap<String, Vec<serde_json::Value>>> {
+) -> crate::Result<BTreeMap<i64, Vec<serde_json::Value>>> {
     let rows = sql_query(
-        "SELECT sets.set_name, dependency.dependency_order, dependency.dependency_kind, \
+        "SELECT sets.set_id, dependency.dependency_order, dependency.dependency_kind, \
                 dependency.target_name, dependency.reference_tag \
          FROM mame_machine_dependencies AS dependency \
          JOIN snapshot_sets AS sets USING (set_id) \
@@ -980,10 +1034,10 @@ fn load_mame_machine_dependencies(
     )
     .bind::<Text, _>(key.as_str())
     .load::<MameMachineDependencyRow>(conn)?;
-    let mut facts = BTreeMap::<String, Vec<serde_json::Value>>::new();
+    let mut facts = BTreeMap::<i64, Vec<serde_json::Value>>::new();
     for row in rows {
         facts
-            .entry(row.set_name)
+            .entry(row.set_id)
             .or_default()
             .push(serde_json::json!({
                 "order": row.dependency_order,
@@ -998,37 +1052,150 @@ fn load_mame_machine_dependencies(
 fn load_logiqx_set_facts(
     conn: &mut diesel::SqliteConnection,
     key: &SnapshotKey,
-) -> crate::Result<BTreeMap<String, serde_json::Value>> {
+) -> crate::Result<BTreeMap<i64, Vec<serde_json::Value>>> {
     let rows = sql_query(
-        "SELECT set_name, source_file, is_bios, board, rebuild_to, description, year, manufacturer \
+        "SELECT set_id, source_file, is_bios, board, rebuild_to, description, year, manufacturer \
          FROM logiqx_set_facts WHERE snapshot_key = ? ORDER BY set_name",
     )
     .bind::<Text, _>(key.as_str())
     .load::<LogiqxSetFactsRow>(conn)?;
-    Ok(rows
+    let mut grouped = BTreeMap::<i64, Vec<serde_json::Value>>::new();
+    for row in rows {
+        grouped
+            .entry(row.set_id)
+            .or_default()
+            .push(serde_json::json!({
+                "source_file": row.source_file,
+                "is_bios": row.is_bios,
+                "board": row.board,
+                "rebuild_to": row.rebuild_to,
+                "description": row.description,
+                "year": row.year,
+                "manufacturer": row.manufacturer,
+            }));
+    }
+    Ok(grouped)
+}
+
+fn load_cmp_set_facts(
+    conn: &mut diesel::SqliteConnection,
+    key: &SnapshotKey,
+) -> crate::Result<BTreeMap<i64, Vec<serde_json::Value>>> {
+    let rows = sql_query(
+        "SELECT sets.set_id, facts.description, facts.year, facts.manufacturer, facts.rebuildto \
+         FROM cmp_set_facts AS facts JOIN snapshot_sets AS sets ON sets.set_id = facts.record_id \
+         WHERE sets.snapshot_key = ? ORDER BY sets.set_name, facts.record_id",
+    )
+    .bind::<Text, _>(key.as_str())
+    .load::<CmpSetFactsRow>(conn)?;
+    let mut grouped = BTreeMap::<i64, Vec<serde_json::Value>>::new();
+    for row in rows {
+        grouped
+            .entry(row.set_id)
+            .or_default()
+            .push(serde_json::json!({
+                "description": row.description,
+                "year": row.year,
+                "manufacturer": row.manufacturer,
+                "rebuildto": row.rebuildto,
+            }));
+    }
+    Ok(grouped)
+}
+
+fn load_no_intro_game_facts(
+    conn: &mut diesel::SqliteConnection,
+    key: &SnapshotKey,
+) -> crate::Result<BTreeMap<i64, Vec<serde_json::Value>>> {
+    let mut facts = BTreeMap::<i64, NoIntroGameFactsRow>::new();
+    for row in sql_query(
+        "SELECT set_id, archive_id, description, name_alt, region, version, \
+                bios_text, languages_present FROM no_intro_game_facts \
+         WHERE snapshot_key = ? ORDER BY set_name, set_id",
+    )
+    .bind::<Text, _>(key.as_str())
+    .load::<NoIntroGameFactsRow>(conn)?
+    {
+        facts.insert(row.set_id, row);
+    }
+
+    let mut languages = BTreeMap::<i64, Vec<serde_json::Value>>::new();
+    for row in sql_query(
+        "SELECT languages.set_id, languages.language_order, languages.language \
+         FROM no_intro_pc_languages AS languages \
+         JOIN snapshot_sets AS sets USING (set_id) \
+         WHERE sets.snapshot_key = ? ORDER BY languages.set_id, languages.language_order",
+    )
+    .bind::<Text, _>(key.as_str())
+    .load::<NoIntroLanguageRow>(conn)?
+    {
+        languages
+            .entry(row.set_id)
+            .or_default()
+            .push(serde_json::json!({"order": row.language_order, "language": row.language}));
+    }
+
+    let clone_markers = sql_query(
+        "SELECT markers.set_id FROM no_intro_pc_clone_markers AS markers \
+         JOIN snapshot_sets AS sets USING (set_id) WHERE sets.snapshot_key = ?",
+    )
+    .bind::<Text, _>(key.as_str())
+    .load::<NoIntroCloneMarkerRow>(conn)?
+    .into_iter()
+    .map(|row| row.set_id)
+    .collect::<BTreeSet<_>>();
+
+    let clone_links = load_no_intro_archive_links(conn, key, "no_intro_pc_clone_links")?;
+    let merge_links = load_no_intro_archive_links(conn, key, "no_intro_pc_merge_links")?;
+    Ok(facts
         .into_iter()
-        .map(|row| {
-            (
-                row.set_name,
-                serde_json::json!({
-                    "source_file": row.source_file,
-                    "is_bios": row.is_bios,
-                    "board": row.board,
-                    "rebuild_to": row.rebuild_to,
-                    "description": row.description,
-                    "year": row.year,
-                    "manufacturer": row.manufacturer,
-                }),
-            )
+        .map(|(set_id, row)| {
+            let fact = serde_json::json!({
+                "archive_id": row.archive_id,
+                "description": row.description,
+                "name_alt": row.name_alt,
+                "region": row.region,
+                "version": row.version,
+                "bios_text": row.bios_text,
+                "languages_present": row.languages_present,
+                "languages": languages.remove(&set_id).unwrap_or_default(),
+                "clone_marker": clone_markers.contains(&set_id),
+                "clone_links": clone_links.get(&set_id).cloned().unwrap_or_default(),
+                "merge_links": merge_links.get(&set_id).cloned().unwrap_or_default(),
+            });
+            (set_id, vec![fact])
         })
         .collect())
+}
+
+fn load_no_intro_archive_links(
+    conn: &mut diesel::SqliteConnection,
+    key: &SnapshotKey,
+    table: &str,
+) -> crate::Result<BTreeMap<i64, Vec<serde_json::Value>>> {
+    let query = format!(
+        "SELECT links.set_id, links.target_archive_id FROM {table} AS links \
+         JOIN snapshot_sets AS sets USING (set_id) \
+         WHERE sets.snapshot_key = ? ORDER BY links.set_id, links.target_archive_id"
+    );
+    let mut links = BTreeMap::<i64, Vec<serde_json::Value>>::new();
+    for row in sql_query(query)
+        .bind::<Text, _>(key.as_str())
+        .load::<NoIntroArchiveLinkRow>(conn)?
+    {
+        links
+            .entry(row.set_id)
+            .or_default()
+            .push(serde_json::Value::String(row.target_archive_id));
+    }
+    Ok(links)
 }
 
 fn assemble_requirements(result: &mut CatalogRecords, requirements: Vec<RequirementRow>) {
     for row in requirements {
         let source_extensions = result
             .asset_extensions
-            .remove(&(row.set_name.clone(), row.component_order.to_string()))
+            .remove(&row.occurrence_id)
             .unwrap_or_default();
         let value = serde_json::json!({
             "role": row.role,
@@ -1042,7 +1209,6 @@ fn assemble_requirements(result: &mut CatalogRecords, requirements: Vec<Requirem
             "dump_status": row.dump_status,
             "serial": row.serial,
             "date": row.date,
-            "metadata": json(&row.metadata_json),
             "mame_attributes": {
                 "region": row.mame_region,
                 "bios": row.mame_bios,
@@ -1063,7 +1229,7 @@ fn assemble_requirements(result: &mut CatalogRecords, requirements: Vec<Requirem
         });
         result
             .requirements
-            .entry(row.set_name)
+            .entry(row.set_id)
             .or_default()
             .entry(row.asset_name)
             .or_default()
@@ -1079,9 +1245,9 @@ fn assemble_requirements(result: &mut CatalogRecords, requirements: Vec<Requirem
 fn mame_switch_facts(
     conn: &mut diesel::SqliteConnection,
     key: &SnapshotKey,
-) -> crate::Result<BTreeMap<String, Vec<serde_json::Value>>> {
+) -> crate::Result<BTreeMap<i64, Vec<serde_json::Value>>> {
     let switches = sql_query(
-        "SELECT sets.set_name, switches.switch_order, switches.kind, switches.name, \
+        "SELECT sets.set_id, switches.switch_order, switches.kind, switches.name, \
                 switches.tag, switches.mask \
          FROM machine_switches AS switches JOIN snapshot_sets AS sets USING (set_id) \
          WHERE sets.snapshot_key = ? ORDER BY sets.set_name, switches.switch_order",
@@ -1089,7 +1255,7 @@ fn mame_switch_facts(
     .bind::<Text, _>(key.as_str())
     .load::<MachineSwitchRow>(conn)?;
     let switch_locations = sql_query(
-        "SELECT sets.set_name, locations.switch_order, locations.location_order, \
+        "SELECT sets.set_id, locations.switch_order, locations.location_order, \
                 locations.name, locations.number, locations.inverted \
          FROM machine_switch_locations AS locations \
          JOIN snapshot_sets AS sets USING (set_id) \
@@ -1099,7 +1265,7 @@ fn mame_switch_facts(
     .bind::<Text, _>(key.as_str())
     .load::<MachineSwitchLocationRow>(conn)?;
     let switch_values = sql_query(
-        "SELECT sets.set_name, switch_values.switch_order, switch_values.value_order, \
+        "SELECT sets.set_id, switch_values.switch_order, switch_values.value_order, \
                 switch_values.name, switch_values.value, switch_values.is_default \
          FROM machine_switch_values AS switch_values \
          JOIN snapshot_sets AS sets USING (set_id) \
@@ -1109,10 +1275,10 @@ fn mame_switch_facts(
     .bind::<Text, _>(key.as_str())
     .load::<MachineSwitchValueRow>(conn)?;
 
-    let mut locations = BTreeMap::<(String, i64), Vec<serde_json::Value>>::new();
+    let mut locations = BTreeMap::<(i64, i64), Vec<serde_json::Value>>::new();
     for location in switch_locations {
         locations
-            .entry((location.set_name, location.switch_order))
+            .entry((location.set_id, location.switch_order))
             .or_default()
             .push(serde_json::json!({
                 "order": location.location_order,
@@ -1121,10 +1287,10 @@ fn mame_switch_facts(
                 "inverted": location.inverted,
             }));
     }
-    let mut values = BTreeMap::<(String, i64), Vec<serde_json::Value>>::new();
+    let mut values = BTreeMap::<(i64, i64), Vec<serde_json::Value>>::new();
     for value in switch_values {
         values
-            .entry((value.set_name, value.switch_order))
+            .entry((value.set_id, value.switch_order))
             .or_default()
             .push(serde_json::json!({
                 "order": value.value_order,
@@ -1133,11 +1299,11 @@ fn mame_switch_facts(
                 "default": value.is_default,
             }));
     }
-    let mut result = BTreeMap::<String, Vec<serde_json::Value>>::new();
+    let mut result = BTreeMap::<i64, Vec<serde_json::Value>>::new();
     for switch in switches {
-        let key = (switch.set_name.clone(), switch.switch_order);
+        let key = (switch.set_id, switch.switch_order);
         result
-            .entry(switch.set_name)
+            .entry(switch.set_id)
             .or_default()
             .push(serde_json::json!({
                 "kind": switch.kind,
@@ -1154,17 +1320,17 @@ fn mame_switch_facts(
 fn mame_bios_set_facts(
     conn: &mut diesel::SqliteConnection,
     key: &SnapshotKey,
-) -> crate::Result<BTreeMap<String, Vec<serde_json::Value>>> {
+) -> crate::Result<BTreeMap<i64, Vec<serde_json::Value>>> {
     let rows = sql_query(
-        "SELECT set_name, bios_order, name, description, is_default FROM machine_bios_sets \
+        "SELECT set_id, bios_order, name, description, is_default FROM machine_bios_sets \
          WHERE snapshot_key = ? ORDER BY set_name, bios_order",
     )
     .bind::<Text, _>(key.as_str())
     .load::<MachineBiosSetRow>(conn)?;
-    let mut facts = BTreeMap::<String, Vec<serde_json::Value>>::new();
+    let mut facts = BTreeMap::<i64, Vec<serde_json::Value>>::new();
     for row in rows {
         facts
-            .entry(row.set_name)
+            .entry(row.set_id)
             .or_default()
             .push(serde_json::json!({
                 "order": row.bios_order,
@@ -1179,56 +1345,55 @@ fn mame_bios_set_facts(
 fn load_mame_machine_facts(
     conn: &mut diesel::SqliteConnection,
     key: &SnapshotKey,
-) -> crate::Result<BTreeMap<String, serde_json::Value>> {
+) -> crate::Result<BTreeMap<i64, Vec<serde_json::Value>>> {
     let rows = sql_query(
-        "SELECT set_name, source_file, description, year, manufacturer, is_device, runnable, \
+        "SELECT set_id, source_file, description, year, manufacturer, is_device, runnable, \
          is_bios, is_mechanical, is_consumable FROM mame_machine_facts \
          WHERE snapshot_key = ? ORDER BY set_name",
     )
     .bind::<Text, _>(key.as_str())
     .load::<MameMachineFactsRow>(conn)?;
-    Ok(rows
-        .into_iter()
-        .map(|row| {
-            (
-                row.set_name,
-                serde_json::json!({
-                    "source_file": row.source_file,
-                    "description": row.description,
-                    "year": row.year,
-                    "manufacturer": row.manufacturer,
-                    "is_device": row.is_device,
-                    "runnable": row.runnable,
-                    "is_bios": row.is_bios,
-                    "is_mechanical": row.is_mechanical,
-                    "is_consumable": row.is_consumable,
-                }),
-            )
-        })
-        .collect())
+    let mut grouped = BTreeMap::<i64, Vec<serde_json::Value>>::new();
+    for row in rows {
+        grouped
+            .entry(row.set_id)
+            .or_default()
+            .push(serde_json::json!({
+                "source_file": row.source_file,
+                "description": row.description,
+                "year": row.year,
+                "manufacturer": row.manufacturer,
+                "is_device": row.is_device,
+                "runnable": row.runnable,
+                "is_bios": row.is_bios,
+                "is_mechanical": row.is_mechanical,
+                "is_consumable": row.is_consumable,
+            }));
+    }
+    Ok(grouped)
 }
 
 fn load_mame_machine_specification_facts(
     conn: &mut diesel::SqliteConnection,
     key: &SnapshotKey,
-) -> crate::Result<BTreeMap<String, Vec<serde_json::Value>>> {
+) -> crate::Result<BTreeMap<i64, Vec<serde_json::Value>>> {
     let rows = sql_query(
-        "SELECT sets.set_name, elements.* FROM mame_machine_spec_elements AS elements \
+        "SELECT elements.* FROM mame_machine_spec_elements AS elements \
          JOIN snapshot_sets AS sets USING (set_id) \
          WHERE sets.snapshot_key = ? ORDER BY sets.set_name, elements.element_order",
     )
     .bind::<Text, _>(key.as_str())
     .load::<MachineSpecificationRow>(conn)?;
-    let mut elements = BTreeMap::<(String, i64), serde_json::Value>::new();
+    let mut elements = BTreeMap::<(i64, i64), serde_json::Value>::new();
     for row in rows {
-        let identity = (row.set_name.clone(), row.element_order);
+        let identity = (row.set_id, row.element_order);
         let mut value = serde_json::to_value(row)?;
         remove_source_locations(&mut value);
         elements.insert(identity, value);
     }
 
     for row in sql_query(
-        "SELECT sets.set_name, facts.element_order, facts.control_order, facts.control_type, \
+        "SELECT sets.set_id, facts.element_order, facts.control_order, facts.control_type, \
          facts.player, facts.buttons, facts.minimum, facts.maximum, facts.sensitivity, \
          facts.keydelta, facts.reverse, facts.ways, facts.ways2, facts.ways3 \
          FROM mame_machine_input_controls AS facts JOIN snapshot_sets AS sets USING (set_id) \
@@ -1237,7 +1402,7 @@ fn load_mame_machine_specification_facts(
     .bind::<Text, _>(key.as_str())
     .load::<MachineInputControlRow>(conn)?
     {
-        let identity = (row.set_name.clone(), row.element_order);
+        let identity = (row.set_id, row.element_order);
         let value = serde_json::json!({
             "order": row.control_order, "type": row.control_type, "player": row.player,
             "buttons": row.buttons, "minimum": row.minimum, "maximum": row.maximum,
@@ -1247,35 +1412,35 @@ fn load_mame_machine_specification_facts(
         append_nested_spec_fact(&mut elements, &identity, "controls", value);
     }
     for row in sql_query(
-        "SELECT sets.set_name, facts.element_order, facts.analog_order, facts.mask \
+        "SELECT sets.set_id, facts.element_order, facts.analog_order, facts.mask \
          FROM mame_machine_analogs AS facts JOIN snapshot_sets AS sets USING (set_id) \
          WHERE sets.snapshot_key = ? ORDER BY sets.set_name, facts.element_order, facts.analog_order",
     )
     .bind::<Text, _>(key.as_str())
     .load::<MachineAnalogRow>(conn)?
     {
-        let identity = (row.set_name.clone(), row.element_order);
+        let identity = (row.set_id, row.element_order);
         let value = serde_json::json!({
             "order": row.analog_order, "mask": row.mask,
         });
         append_nested_spec_fact(&mut elements, &identity, "analogs", value);
     }
     for row in sql_query(
-        "SELECT sets.set_name, facts.element_order, facts.extension_order, facts.name \
+        "SELECT sets.set_id, facts.element_order, facts.extension_order, facts.name \
          FROM mame_machine_device_extensions AS facts JOIN snapshot_sets AS sets USING (set_id) \
          WHERE sets.snapshot_key = ? ORDER BY sets.set_name, facts.element_order, facts.extension_order",
     )
     .bind::<Text, _>(key.as_str())
     .load::<MachineDeviceExtensionRow>(conn)?
     {
-        let identity = (row.set_name.clone(), row.element_order);
+        let identity = (row.set_id, row.element_order);
         let value = serde_json::json!({
             "order": row.extension_order, "name": row.name,
         });
         append_nested_spec_fact(&mut elements, &identity, "extensions", value);
     }
     for row in sql_query(
-        "SELECT sets.set_name, facts.element_order, facts.option_order, facts.name, \
+        "SELECT sets.set_id, facts.element_order, facts.option_order, facts.name, \
          facts.devname, facts.is_default \
          FROM mame_machine_slot_options AS facts JOIN snapshot_sets AS sets USING (set_id) \
          WHERE sets.snapshot_key = ? ORDER BY sets.set_name, facts.element_order, facts.option_order",
@@ -1283,7 +1448,7 @@ fn load_mame_machine_specification_facts(
     .bind::<Text, _>(key.as_str())
     .load::<MachineSlotOptionRow>(conn)?
     {
-        let identity = (row.set_name.clone(), row.element_order);
+        let identity = (row.set_id, row.element_order);
         let value = serde_json::json!({
             "order": row.option_order, "name": row.name, "devname": row.devname,
             "default": row.is_default,
@@ -1291,14 +1456,14 @@ fn load_mame_machine_specification_facts(
         append_nested_spec_fact(&mut elements, &identity, "options", value);
     }
 
-    let mut result = BTreeMap::<String, Vec<serde_json::Value>>::new();
-    for ((set_name, _), value) in elements {
-        result.entry(set_name).or_default().push(value);
+    let mut result = BTreeMap::<i64, Vec<serde_json::Value>>::new();
+    for ((set_id, _), value) in elements {
+        result.entry(set_id).or_default().push(value);
     }
     let conditions_by_set = load_mame_conditions(conn, key)?;
-    for (set_name, conditions) in conditions_by_set {
+    for (set_id, conditions) in conditions_by_set {
         result
-            .entry(set_name)
+            .entry(set_id)
             .or_default()
             .push(serde_json::json!({"conditions": conditions}));
     }
@@ -1308,10 +1473,10 @@ fn load_mame_machine_specification_facts(
 fn load_mame_conditions(
     conn: &mut diesel::SqliteConnection,
     key: &SnapshotKey,
-) -> crate::Result<BTreeMap<String, Vec<serde_json::Value>>> {
-    let mut conditions_by_set = BTreeMap::<String, Vec<serde_json::Value>>::new();
+) -> crate::Result<BTreeMap<i64, Vec<serde_json::Value>>> {
+    let mut conditions_by_set = BTreeMap::<i64, Vec<serde_json::Value>>::new();
     for row in sql_query(
-        "SELECT sets.set_name, conditions.owner_kind, conditions.owner_element_order, \
+        "SELECT sets.set_id, conditions.owner_kind, conditions.owner_element_order, \
                 conditions.owner_switch_order, conditions.owner_child_order, \
                 conditions.condition_order, conditions.tag, conditions.mask, \
                 conditions.relation, conditions.value \
@@ -1324,13 +1489,14 @@ fn load_mame_conditions(
     .bind::<Text, _>(key.as_str())
     .load::<MachineConditionRow>(conn)?
     {
-        conditions_by_set.entry(row.set_name).or_default().push(serde_json::json!({
+        conditions_by_set.entry(row.set_id).or_default().push(serde_json::json!({
             "owner_kind": row.owner_kind, "element_order": row.owner_element_order,
             "switch_order": row.owner_switch_order, "child_order": row.owner_child_order,
             "order": row.condition_order, "tag": row.tag, "mask": row.mask,
             "relation": row.relation, "value": row.value,
         }));
     }
+    sort_json_groups(&mut conditions_by_set);
     Ok(conditions_by_set)
 }
 
@@ -1347,8 +1513,8 @@ fn remove_source_locations(value: &mut serde_json::Value) {
 }
 
 fn append_nested_spec_fact(
-    elements: &mut BTreeMap<(String, i64), serde_json::Value>,
-    identity: &(String, i64),
+    elements: &mut BTreeMap<(i64, i64), serde_json::Value>,
+    identity: &(i64, i64),
     field: &str,
     value: serde_json::Value,
 ) {
@@ -1396,7 +1562,6 @@ fn requirement_changes(
                 "dump_status",
                 "serial",
                 "date",
-                "metadata",
                 "extensions",
             ]
             .into_iter()
@@ -1436,25 +1601,55 @@ fn json(value: &str) -> serde_json::Value {
     serde_json::from_str(value).unwrap_or_else(|_| serde_json::Value::String(value.to_owned()))
 }
 
-fn set_metadata(records: &CatalogRecords, name: &str, set: &SetRow) -> serde_json::Value {
+fn parent_names(sets: &[SetRow]) -> Vec<Option<String>> {
+    let mut names = sets
+        .iter()
+        .map(|set| set.parent_name.clone())
+        .collect::<Vec<_>>();
+    names.sort();
+    names
+}
+
+fn sort_json_groups<K: Ord>(groups: &mut BTreeMap<K, Vec<serde_json::Value>>) {
+    for values in groups.values_mut() {
+        values.sort_by_key(serde_json::Value::to_string);
+    }
+}
+
+fn owner_metadata(sets: &[SetRow], records: &CatalogRecords) -> Vec<serde_json::Value> {
+    let mut metadata = sets
+        .iter()
+        .map(|set| set_metadata(records, set))
+        .collect::<Vec<_>>();
+    metadata.sort_by_key(serde_json::Value::to_string);
+    metadata
+}
+
+fn set_metadata(records: &CatalogRecords, set: &SetRow) -> serde_json::Value {
     serde_json::json!({
-        "metadata": json(&set.metadata_json),
-        "mame_machine_facts": records.mame_machine_facts.get(name),
-        "mame_machine_specification_facts": records.mame_machine_specification_facts.get(name),
-        "mame_machine_dependencies": records.mame_machine_dependencies.get(name),
-        "no_intro_game_facts": records.no_intro_game_facts.get(name),
-        "logiqx_set_facts": records.logiqx_set_facts.get(name),
-        "machine_switches": records.machine_switches.get(name),
-        "machine_bios_sets": records.machine_bios_sets.get(name),
-        "source_extensions": records.extensions.iter()
-            .filter(|((kind, record_name), _)| {
-                record_name == name && matches!(kind.as_str(), "game" | "machine" | "set")
-            })
-            .flat_map(|((kind, _), extensions)| {
-                extensions.iter().map(move |extension| {
-                    serde_json::json!({"record_kind": kind, "extension": extension})
-                })
-            })
-            .collect::<Vec<_>>(),
+        "mame_machine_facts": records.mame_machine_facts.get(&set.set_id),
+        "mame_machine_specification_facts": records.mame_machine_specification_facts.get(&set.set_id),
+        "mame_machine_dependencies": records.mame_machine_dependencies.get(&set.set_id),
+        "no_intro_game_facts": records.no_intro_game_facts.get(&set.set_id),
+        "logiqx_set_facts": records.logiqx_set_facts.get(&set.set_id),
+        "cmp_set_facts": records.cmp_set_facts.get(&set.set_id),
+        "machine_switches": records.machine_switches.get(&set.set_id),
+        "machine_bios_sets": records.machine_bios_sets.get(&set.set_id),
+        "source_extensions": records.extensions.get(&set.set_id),
     })
+}
+
+fn owner_signatures(sets: &[SetRow], records: &CatalogRecords) -> Vec<serde_json::Value> {
+    let mut signatures = sets
+        .iter()
+        .map(|set| {
+            serde_json::json!({
+                "metadata": set_metadata(records, set),
+                "parent": set.parent_name,
+                "requirements": records.requirements.get(&set.set_id),
+            })
+        })
+        .collect::<Vec<_>>();
+    signatures.sort_by_key(serde_json::Value::to_string);
+    signatures
 }

@@ -2,7 +2,7 @@ use crate::hashes::Sha1Digest;
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub mod media;
 
@@ -236,7 +236,8 @@ impl ParserInterpretationKey {
 
     #[must_use]
     pub fn for_format(format: &str, scope: &CatalogScope) -> Self {
-        let (scope_kind, scope_details) = scope.as_storage();
+        let scope_kind = scope.kind();
+        let scope_identity = scope.stable_identity();
         Self(stable_key(
             "parser-interpretation-v1",
             &[
@@ -244,7 +245,7 @@ impl ParserInterpretationKey {
                 env!("CARGO_PKG_VERSION"),
                 "normalization-v1",
                 scope_kind,
-                scope_details.as_deref().unwrap_or_default(),
+                &scope_identity,
             ],
         ))
     }
@@ -332,18 +333,75 @@ fn stable_key(domain: &str, parts: &[&str]) -> String {
 pub enum CatalogScope {
     Unknown,
     Complete,
-    Filtered(serde_json::Value),
-    Partial(serde_json::Value),
+    Filtered(BTreeSet<QualifiedCatalogSet>),
+    Partial(BTreeMap<QualifiedCatalogSet, SetCoverage>),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum QualifiedCatalogSet {
+    RootSet(SetName),
+    SoftwareItem { list_name: String, name: SetName },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SetCoverage {
+    Covered,
+    Unknown,
 }
 
 impl CatalogScope {
     #[must_use]
-    pub fn as_storage(&self) -> (&'static str, Option<String>) {
+    pub const fn kind(&self) -> &'static str {
         match self {
-            Self::Unknown => ("unknown", None),
-            Self::Complete => ("complete", None),
-            Self::Filtered(details) => ("filtered", Some(details.to_string())),
-            Self::Partial(details) => ("partial", Some(details.to_string())),
+            Self::Unknown => "unknown",
+            Self::Complete => "complete",
+            Self::Filtered(_) => "filtered",
+            Self::Partial(_) => "partial",
+        }
+    }
+
+    fn stable_identity(&self) -> String {
+        let mut identity = String::new();
+        let mut append = |part: &str| {
+            identity.push_str(&part.len().to_string());
+            identity.push(':');
+            identity.push_str(part);
+        };
+
+        match self {
+            Self::Unknown | Self::Complete => {}
+            Self::Filtered(members) => {
+                append(&members.len().to_string());
+                for member in members {
+                    append_member_identity(&mut append, member);
+                    append("covered");
+                }
+            }
+            Self::Partial(members) => {
+                append(&members.len().to_string());
+                for (member, coverage) in members {
+                    append_member_identity(&mut append, member);
+                    append(match coverage {
+                        SetCoverage::Covered => "covered",
+                        SetCoverage::Unknown => "unknown",
+                    });
+                }
+            }
+        }
+        identity
+    }
+}
+
+fn append_member_identity(append: &mut impl FnMut(&str), member: &QualifiedCatalogSet) {
+    match member {
+        QualifiedCatalogSet::RootSet(name) => {
+            append("root");
+            append(name.as_str());
+        }
+        QualifiedCatalogSet::SoftwareItem { list_name, name } => {
+            append("software_item");
+            append(list_name);
+            append(name.as_str());
         }
     }
 }
@@ -356,6 +414,18 @@ pub enum SnapshotRecordStatus {
     Unchanged,
     Unknown,
     OutOfScope,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SnapshotRecordCorrespondence {
+    /// The qualified name occurs exactly once in each snapshot.
+    UniqueName,
+    /// Duplicate-name groups have the same multiset of complete owner facts.
+    ExactFacts,
+    /// The group changed, but facts do not prove continuity between its entries.
+    Ambiguous,
+    /// An entry is absent or outside comparable known coverage.
+    NoCounterpart,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -372,6 +442,7 @@ pub struct SnapshotRequirementChange {
 pub struct SnapshotRecordDiff {
     pub set_name: String,
     pub status: SnapshotRecordStatus,
+    pub correspondence: SnapshotRecordCorrespondence,
     pub metadata_changed: bool,
     pub regrouped: bool,
     pub requirement_changes: Vec<SnapshotRequirementChange>,
@@ -624,11 +695,41 @@ impl RelationshipRecordKey {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "i64")]
+pub struct CatalogSetId(i64);
+
+impl CatalogSetId {
+    pub(crate) const fn from_database(value: i64) -> Self {
+        Self(value)
+    }
+
+    #[must_use]
+    pub const fn as_i64(self) -> i64 {
+        self.0
+    }
+}
+
+impl TryFrom<i64> for CatalogSetId {
+    type Error = crate::Error;
+
+    fn try_from(value: i64) -> Result<Self, Self::Error> {
+        if value <= 0 {
+            return Err(crate::Error::InvalidPath(
+                "catalog set ID must be positive".to_owned(),
+            ));
+        }
+        Ok(Self(value))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct CatalogRecordRef {
     pub snapshot: SnapshotKey,
     pub kind: CatalogRecordKind,
     pub key: RelationshipRecordKey,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_set_id: Option<CatalogSetId>,
 }
 
 impl CatalogRecordRef {
@@ -638,7 +739,34 @@ impl CatalogRecordRef {
             snapshot,
             kind,
             key: RelationshipRecordKey::new(key),
+            owner_set_id: None,
         }
+    }
+
+    #[must_use]
+    pub fn new_owned(
+        snapshot: SnapshotKey,
+        kind: CatalogRecordKind,
+        key: impl Into<String>,
+        owner_set_id: CatalogSetId,
+    ) -> Self {
+        Self::new(snapshot, kind, key).with_owner(owner_set_id)
+    }
+
+    #[must_use]
+    pub const fn with_owner(mut self, owner_set_id: CatalogSetId) -> Self {
+        self.owner_set_id = Some(owner_set_id);
+        self
+    }
+
+    #[must_use]
+    pub fn matches_selector(&self, selector: &Self) -> bool {
+        self.snapshot == selector.snapshot
+            && self.kind == selector.kind
+            && self.key == selector.key
+            && selector
+                .owner_set_id
+                .is_none_or(|owner_set_id| self.owner_set_id == Some(owner_set_id))
     }
 }
 

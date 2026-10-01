@@ -61,7 +61,7 @@ CREATE TABLE archive_files (
 );
 CREATE TABLE asset_occurrences (
     occurrence_id INTEGER PRIMARY KEY NOT NULL,
-    record_id INTEGER NOT NULL REFERENCES records(record_id) ON DELETE RESTRICT,
+    record_id INTEGER NOT NULL REFERENCES catalog_sets (set_id) ON DELETE RESTRICT,
     occurrence_order INTEGER NOT NULL CHECK (occurrence_order >= 0),
     claim_kind TEXT NOT NULL CHECK (claim_kind IN (
         'mame_rom', 'mame_disk', 'mame_sample', 'logiqx_rom', 'logiqx_disk',
@@ -96,11 +96,8 @@ CREATE TABLE catalog_snapshots (
     interpretation_key  TEXT NOT NULL REFERENCES parser_interpretations (interpretation_key) ON DELETE RESTRICT,
     acquisition_key     TEXT REFERENCES acquisitions (acquisition_key) ON DELETE RESTRICT,
     declared_version    TEXT,
-    scope_kind          TEXT NOT NULL DEFAULT 'unknown'
-                                CHECK (scope_kind IN ('unknown', 'complete', 'filtered', 'partial')),
-    scope_json          TEXT,
+    coverage_id INTEGER NOT NULL REFERENCES catalog_coverage(coverage_id) ON DELETE RESTRICT,
     parent_snapshot_key TEXT,
-    CHECK (scope_kind NOT IN ('filtered', 'partial') OR scope_json IS NOT NULL),
     CHECK (parent_snapshot_key IS NULL OR parent_snapshot_key <> snapshot_key),
     UNIQUE (snapshot_key, catalog_key),
     UNIQUE (snapshot_key, catalog_key, document_key, interpretation_key),
@@ -189,7 +186,7 @@ CREATE TABLE cmp_rom_facts (
 ) WITHOUT ROWID;
 CREATE TABLE cmp_sample_parent_links (
     record_id INTEGER PRIMARY KEY NOT NULL
-        REFERENCES records (record_id) ON DELETE RESTRICT,
+        REFERENCES catalog_sets (set_id) ON DELETE RESTRICT,
     target_name TEXT NOT NULL,
     source_field TEXT NOT NULL,
     source_order INTEGER NOT NULL CHECK (source_order >= 0),
@@ -198,7 +195,7 @@ CREATE TABLE cmp_sample_parent_links (
     source_column INTEGER NOT NULL CHECK (source_column > 0)
 ) WITHOUT ROWID;
 CREATE TABLE cmp_samples (
-    record_id INTEGER NOT NULL REFERENCES records (record_id) ON DELETE RESTRICT,
+    record_id INTEGER NOT NULL REFERENCES catalog_sets (set_id) ON DELETE RESTRICT,
     sample_order INTEGER NOT NULL CHECK (sample_order >= 0),
     sample_name TEXT NOT NULL,
     source_field TEXT NOT NULL,
@@ -210,7 +207,7 @@ CREATE TABLE cmp_samples (
 ) WITHOUT ROWID;
 CREATE TABLE cmp_set_facts (
     record_id INTEGER PRIMARY KEY NOT NULL
-        REFERENCES records (record_id) ON DELETE RESTRICT,
+        REFERENCES catalog_sets (set_id) ON DELETE RESTRICT,
     description TEXT, description_order INTEGER, description_source_field TEXT, description_quoted INTEGER,
     description_source_line INTEGER, description_source_column INTEGER,
     year TEXT, year_order INTEGER, year_source_field TEXT, year_quoted INTEGER,
@@ -350,9 +347,8 @@ CREATE TABLE logiqx_rom_claims (
     date TEXT,
     FOREIGN KEY (occurrence_id,claim_kind) REFERENCES asset_occurrences(occurrence_id,claim_kind) ON DELETE RESTRICT
 );
-CREATE TABLE logiqx_set_facts (
-    snapshot_key TEXT NOT NULL,
-    set_name TEXT NOT NULL,
+CREATE TABLE logiqx_games (
+    set_id INTEGER NOT NULL REFERENCES catalog_sets(set_id) ON DELETE RESTRICT,
     source_file TEXT,
     is_bios TEXT,
     board TEXT,
@@ -360,22 +356,17 @@ CREATE TABLE logiqx_set_facts (
     description TEXT,
     year TEXT,
     manufacturer TEXT,
-    PRIMARY KEY (snapshot_key, set_name),
-    FOREIGN KEY (snapshot_key, set_name)
-        REFERENCES snapshot_sets (snapshot_key, set_name) ON DELETE RESTRICT
+    PRIMARY KEY (set_id)
 ) WITHOUT ROWID;
-CREATE TABLE machine_bios_sets (
-    snapshot_key TEXT NOT NULL,
-    set_name TEXT NOT NULL,
+CREATE TABLE mame_bios_sets (
+    set_id INTEGER NOT NULL REFERENCES catalog_sets(set_id) ON DELETE RESTRICT,
     bios_order INTEGER NOT NULL CHECK (bios_order >= 0),
     name TEXT NOT NULL,
     description TEXT,
     is_default INTEGER NOT NULL CHECK (is_default IN (0, 1)),
     source_line INTEGER NOT NULL CHECK (source_line > 0),
     source_column INTEGER NOT NULL CHECK (source_column > 0),
-    PRIMARY KEY (snapshot_key, set_name, bios_order),
-    FOREIGN KEY (snapshot_key, set_name)
-        REFERENCES snapshot_sets (snapshot_key, set_name) ON DELETE RESTRICT
+    PRIMARY KEY (set_id, bios_order)
 ) WITHOUT ROWID;
 CREATE TABLE machine_switch_conditions (
     set_id INTEGER NOT NULL,
@@ -442,7 +433,7 @@ CREATE TABLE "machine_switches" (
     source_line INTEGER NOT NULL CHECK (source_line > 0),
     source_column INTEGER NOT NULL CHECK (source_column > 0),
     PRIMARY KEY (set_id, switch_order),
-    FOREIGN KEY (set_id) REFERENCES snapshot_sets (set_id) ON DELETE RESTRICT
+    FOREIGN KEY (set_id) REFERENCES catalog_sets (set_id) ON DELETE RESTRICT
 ) WITHOUT ROWID;
 CREATE TABLE mame_disk_claims (
     occurrence_id INTEGER PRIMARY KEY NOT NULL,
@@ -502,7 +493,7 @@ CREATE TABLE mame_machine_adjusters (
     source_line INTEGER NOT NULL CHECK (source_line > 0),
     source_column INTEGER NOT NULL CHECK (source_column > 0),
     PRIMARY KEY (set_id, element_order),
-    FOREIGN KEY (set_id) REFERENCES records (record_id) ON DELETE RESTRICT
+    FOREIGN KEY (set_id) REFERENCES catalog_sets (set_id) ON DELETE RESTRICT
 ) WITHOUT ROWID;
 CREATE TABLE mame_machine_analogs (
     set_id INTEGER NOT NULL,
@@ -525,7 +516,7 @@ CREATE TABLE mame_machine_chips (
     source_line INTEGER NOT NULL CHECK (source_line > 0),
     source_column INTEGER NOT NULL CHECK (source_column > 0),
     PRIMARY KEY (set_id, element_order),
-    FOREIGN KEY (set_id) REFERENCES records (record_id) ON DELETE RESTRICT
+    FOREIGN KEY (set_id) REFERENCES catalog_sets (set_id) ON DELETE RESTRICT
 ) WITHOUT ROWID;
 CREATE TABLE "mame_machine_dependencies" (
     set_id INTEGER NOT NULL,
@@ -536,7 +527,7 @@ CREATE TABLE "mame_machine_dependencies" (
     source_line INTEGER NOT NULL CHECK (source_line > 0),
     source_column INTEGER NOT NULL CHECK (source_column > 0),
     PRIMARY KEY (set_id, dependency_order),
-    FOREIGN KEY (set_id) REFERENCES snapshot_sets (set_id) ON DELETE RESTRICT
+    FOREIGN KEY (set_id) REFERENCES catalog_sets (set_id) ON DELETE RESTRICT
 ) WITHOUT ROWID;
 CREATE TABLE mame_machine_device_extensions (
     set_id INTEGER NOT NULL,
@@ -571,7 +562,7 @@ CREATE TABLE mame_machine_devices (
     source_line INTEGER NOT NULL CHECK (source_line > 0),
     source_column INTEGER NOT NULL CHECK (source_column > 0),
     PRIMARY KEY (set_id, element_order),
-    FOREIGN KEY (set_id) REFERENCES records (record_id) ON DELETE RESTRICT
+    FOREIGN KEY (set_id) REFERENCES catalog_sets (set_id) ON DELETE RESTRICT
 ) WITHOUT ROWID;
 CREATE TABLE mame_machine_displays (
     set_id INTEGER NOT NULL,
@@ -593,7 +584,7 @@ CREATE TABLE mame_machine_displays (
     source_line INTEGER NOT NULL CHECK (source_line > 0),
     source_column INTEGER NOT NULL CHECK (source_column > 0),
     PRIMARY KEY (set_id, element_order),
-    FOREIGN KEY (set_id) REFERENCES records (record_id) ON DELETE RESTRICT
+    FOREIGN KEY (set_id) REFERENCES catalog_sets (set_id) ON DELETE RESTRICT
 ) WITHOUT ROWID;
 CREATE TABLE mame_machine_drivers (
     set_id INTEGER NOT NULL,
@@ -609,11 +600,10 @@ CREATE TABLE mame_machine_drivers (
     source_line INTEGER NOT NULL CHECK (source_line > 0),
     source_column INTEGER NOT NULL CHECK (source_column > 0),
     PRIMARY KEY (set_id, element_order),
-    FOREIGN KEY (set_id) REFERENCES records (record_id) ON DELETE RESTRICT
+    FOREIGN KEY (set_id) REFERENCES catalog_sets (set_id) ON DELETE RESTRICT
 ) WITHOUT ROWID;
-CREATE TABLE mame_machine_facts (
-    snapshot_key TEXT NOT NULL,
-    set_name TEXT NOT NULL,
+CREATE TABLE mame_machines (
+    set_id INTEGER NOT NULL REFERENCES catalog_sets(set_id) ON DELETE RESTRICT,
     source_file TEXT,
     description TEXT NOT NULL,
     description_line INTEGER NOT NULL CHECK (description_line > 0),
@@ -635,9 +625,7 @@ CREATE TABLE mame_machine_facts (
     CHECK ((year IS NULL) = (year_line IS NULL)),
     CHECK ((manufacturer_line IS NULL) = (manufacturer_column IS NULL)),
     CHECK ((manufacturer IS NULL) = (manufacturer_line IS NULL)),
-    PRIMARY KEY (snapshot_key, set_name),
-    FOREIGN KEY (snapshot_key, set_name)
-        REFERENCES snapshot_sets (snapshot_key, set_name) ON DELETE RESTRICT
+    PRIMARY KEY (set_id)
 ) WITHOUT ROWID;
 CREATE TABLE mame_machine_features (
     set_id INTEGER NOT NULL,
@@ -652,7 +640,7 @@ CREATE TABLE mame_machine_features (
     source_line INTEGER NOT NULL CHECK (source_line > 0),
     source_column INTEGER NOT NULL CHECK (source_column > 0),
     PRIMARY KEY (set_id, element_order),
-    FOREIGN KEY (set_id) REFERENCES records (record_id) ON DELETE RESTRICT
+    FOREIGN KEY (set_id) REFERENCES catalog_sets (set_id) ON DELETE RESTRICT
 ) WITHOUT ROWID;
 CREATE TABLE mame_machine_input_controls (
     set_id INTEGER NOT NULL,
@@ -685,7 +673,7 @@ CREATE TABLE mame_machine_inputs (
     source_line INTEGER NOT NULL CHECK (source_line > 0),
     source_column INTEGER NOT NULL CHECK (source_column > 0),
     PRIMARY KEY (set_id, element_order),
-    FOREIGN KEY (set_id) REFERENCES records (record_id) ON DELETE RESTRICT
+    FOREIGN KEY (set_id) REFERENCES catalog_sets (set_id) ON DELETE RESTRICT
 ) WITHOUT ROWID;
 CREATE TABLE mame_machine_ports (
     set_id INTEGER NOT NULL,
@@ -694,7 +682,7 @@ CREATE TABLE mame_machine_ports (
     source_line INTEGER NOT NULL CHECK (source_line > 0),
     source_column INTEGER NOT NULL CHECK (source_column > 0),
     PRIMARY KEY (set_id, element_order),
-    FOREIGN KEY (set_id) REFERENCES records (record_id) ON DELETE RESTRICT
+    FOREIGN KEY (set_id) REFERENCES catalog_sets (set_id) ON DELETE RESTRICT
 ) WITHOUT ROWID;
 CREATE TABLE mame_machine_ram_options (
     set_id INTEGER NOT NULL,
@@ -705,7 +693,7 @@ CREATE TABLE mame_machine_ram_options (
     source_line INTEGER NOT NULL CHECK (source_line > 0),
     source_column INTEGER NOT NULL CHECK (source_column > 0),
     PRIMARY KEY (set_id, element_order),
-    FOREIGN KEY (set_id) REFERENCES records (record_id) ON DELETE RESTRICT
+    FOREIGN KEY (set_id) REFERENCES catalog_sets (set_id) ON DELETE RESTRICT
 ) WITHOUT ROWID;
 CREATE TABLE mame_machine_samples (
     set_id INTEGER NOT NULL,
@@ -714,7 +702,7 @@ CREATE TABLE mame_machine_samples (
     source_line INTEGER NOT NULL CHECK (source_line > 0),
     source_column INTEGER NOT NULL CHECK (source_column > 0),
     PRIMARY KEY (set_id, element_order),
-    FOREIGN KEY (set_id) REFERENCES records (record_id) ON DELETE RESTRICT
+    FOREIGN KEY (set_id) REFERENCES catalog_sets (set_id) ON DELETE RESTRICT
 ) WITHOUT ROWID;
 CREATE TABLE mame_machine_slot_options (
     set_id INTEGER NOT NULL,
@@ -736,7 +724,7 @@ CREATE TABLE mame_machine_slots (
     source_line INTEGER NOT NULL CHECK (source_line > 0),
     source_column INTEGER NOT NULL CHECK (source_column > 0),
     PRIMARY KEY (set_id, element_order),
-    FOREIGN KEY (set_id) REFERENCES records (record_id) ON DELETE RESTRICT
+    FOREIGN KEY (set_id) REFERENCES catalog_sets (set_id) ON DELETE RESTRICT
 ) WITHOUT ROWID;
 CREATE TABLE mame_machine_software_lists (
     set_id INTEGER NOT NULL,
@@ -748,7 +736,7 @@ CREATE TABLE mame_machine_software_lists (
     source_line INTEGER NOT NULL CHECK (source_line > 0),
     source_column INTEGER NOT NULL CHECK (source_column > 0),
     PRIMARY KEY (set_id, element_order),
-    FOREIGN KEY (set_id) REFERENCES records (record_id) ON DELETE RESTRICT
+    FOREIGN KEY (set_id) REFERENCES catalog_sets (set_id) ON DELETE RESTRICT
 ) WITHOUT ROWID;
 CREATE TABLE mame_machine_sounds (
     set_id INTEGER NOT NULL,
@@ -757,7 +745,7 @@ CREATE TABLE mame_machine_sounds (
     source_line INTEGER NOT NULL CHECK (source_line > 0),
     source_column INTEGER NOT NULL CHECK (source_column > 0),
     PRIMARY KEY (set_id, element_order),
-    FOREIGN KEY (set_id) REFERENCES records (record_id) ON DELETE RESTRICT
+    FOREIGN KEY (set_id) REFERENCES catalog_sets (set_id) ON DELETE RESTRICT
 ) WITHOUT ROWID;
 CREATE TABLE mame_rom_claims (
     occurrence_id INTEGER PRIMARY KEY NOT NULL,
@@ -786,20 +774,80 @@ CREATE TABLE mame_rom_claims (
     writeable INTEGER CHECK (writeable IS NULL OR writeable IN (0,1)),
     FOREIGN KEY (occurrence_id,claim_kind) REFERENCES asset_occurrences(occurrence_id,claim_kind) ON DELETE RESTRICT
 );
-CREATE TABLE no_intro_game_facts (
-    snapshot_key TEXT NOT NULL,
-    set_name TEXT NOT NULL,
+CREATE TABLE no_intro_pc_games (
+    set_id INTEGER NOT NULL REFERENCES catalog_sets(set_id) ON DELETE RESTRICT,
     archive_id TEXT,
     description TEXT,
     description_line INTEGER,
     description_column INTEGER,
-    PRIMARY KEY (snapshot_key, set_name),
-    FOREIGN KEY (snapshot_key, set_name)
-        REFERENCES snapshot_sets (snapshot_key, set_name) ON DELETE RESTRICT,
+    name_alt TEXT,
+    region TEXT,
+    version TEXT,
+    bios_text TEXT,
+    languages_present INTEGER NOT NULL DEFAULT 0 CHECK (languages_present IN (0,1)),
+    PRIMARY KEY (set_id),
     CHECK ((description_line IS NULL) = (description_column IS NULL)),
     CHECK (description_line IS NULL OR description_line > 0),
     CHECK (description_column IS NULL OR description_column > 0)
 ) WITHOUT ROWID;
+CREATE TABLE no_intro_pc_languages (
+    set_id INTEGER NOT NULL REFERENCES no_intro_pc_games(set_id) ON DELETE RESTRICT,
+    language_order INTEGER NOT NULL CHECK (language_order >= 0),
+    language TEXT NOT NULL,
+    PRIMARY KEY (set_id, language_order)
+) WITHOUT ROWID;
+CREATE TABLE no_intro_pc_clone_markers (
+    set_id INTEGER PRIMARY KEY NOT NULL REFERENCES no_intro_pc_games(set_id) ON DELETE RESTRICT
+) WITHOUT ROWID;
+CREATE TABLE no_intro_pc_clone_links (
+    set_id INTEGER PRIMARY KEY NOT NULL REFERENCES no_intro_pc_games(set_id) ON DELETE RESTRICT,
+    target_archive_id TEXT NOT NULL CHECK (target_archive_id <> '' AND target_archive_id NOT GLOB '*[^0-9]*')
+) WITHOUT ROWID;
+CREATE TABLE no_intro_pc_merge_links (
+    set_id INTEGER PRIMARY KEY NOT NULL REFERENCES no_intro_pc_games(set_id) ON DELETE RESTRICT,
+    target_archive_id TEXT NOT NULL CHECK (target_archive_id <> '' AND target_archive_id NOT GLOB '*[^0-9]*')
+) WITHOUT ROWID;
+CREATE TRIGGER no_intro_pc_languages_unpublished_owner_insert BEFORE INSERT ON no_intro_pc_languages
+WHEN EXISTS (SELECT 1 FROM catalog_sets JOIN catalog_set_groups USING (set_group_id)
+             JOIN snapshot_publications USING (snapshot_key) WHERE set_id = NEW.set_id)
+BEGIN SELECT RAISE(ABORT, 'published P/C facts are immutable'); END;
+CREATE TRIGGER no_intro_pc_languages_immutable_update BEFORE UPDATE ON no_intro_pc_languages
+BEGIN SELECT RAISE(ABORT, 'P/C facts are immutable'); END;
+CREATE TRIGGER no_intro_pc_languages_immutable_delete BEFORE DELETE ON no_intro_pc_languages
+BEGIN SELECT RAISE(ABORT, 'P/C facts are immutable'); END;
+CREATE TRIGGER no_intro_pc_clone_markers_unpublished_owner_insert BEFORE INSERT ON no_intro_pc_clone_markers
+WHEN EXISTS (SELECT 1 FROM catalog_sets JOIN catalog_set_groups USING (set_group_id)
+             JOIN snapshot_publications USING (snapshot_key) WHERE set_id = NEW.set_id)
+BEGIN SELECT RAISE(ABORT, 'published P/C facts are immutable'); END;
+CREATE TRIGGER no_intro_pc_clone_markers_immutable_update BEFORE UPDATE ON no_intro_pc_clone_markers
+BEGIN SELECT RAISE(ABORT, 'P/C facts are immutable'); END;
+CREATE TRIGGER no_intro_pc_clone_markers_immutable_delete BEFORE DELETE ON no_intro_pc_clone_markers
+BEGIN SELECT RAISE(ABORT, 'P/C facts are immutable'); END;
+CREATE TRIGGER no_intro_pc_clone_links_unpublished_owner_insert BEFORE INSERT ON no_intro_pc_clone_links
+WHEN EXISTS (SELECT 1 FROM catalog_sets JOIN catalog_set_groups USING (set_group_id)
+             JOIN snapshot_publications USING (snapshot_key) WHERE set_id = NEW.set_id)
+BEGIN SELECT RAISE(ABORT, 'published P/C facts are immutable'); END;
+CREATE TRIGGER no_intro_pc_clone_links_immutable_update BEFORE UPDATE ON no_intro_pc_clone_links
+BEGIN SELECT RAISE(ABORT, 'P/C facts are immutable'); END;
+CREATE TRIGGER no_intro_pc_clone_links_immutable_delete BEFORE DELETE ON no_intro_pc_clone_links
+BEGIN SELECT RAISE(ABORT, 'P/C facts are immutable'); END;
+CREATE TRIGGER no_intro_pc_merge_links_unpublished_owner_insert BEFORE INSERT ON no_intro_pc_merge_links
+WHEN EXISTS (SELECT 1 FROM catalog_sets JOIN catalog_set_groups USING (set_group_id)
+             JOIN snapshot_publications USING (snapshot_key) WHERE set_id = NEW.set_id)
+BEGIN SELECT RAISE(ABORT, 'published P/C facts are immutable'); END;
+CREATE TRIGGER no_intro_pc_merge_links_immutable_update BEFORE UPDATE ON no_intro_pc_merge_links
+BEGIN SELECT RAISE(ABORT, 'P/C facts are immutable'); END;
+CREATE TRIGGER no_intro_pc_merge_links_immutable_delete BEFORE DELETE ON no_intro_pc_merge_links
+BEGIN SELECT RAISE(ABORT, 'P/C facts are immutable'); END;
+CREATE TRIGGER no_intro_pc_language_presence_insert BEFORE INSERT ON no_intro_pc_languages
+WHEN NOT EXISTS (SELECT 1 FROM no_intro_pc_games WHERE set_id = NEW.set_id AND languages_present = 1)
+BEGIN SELECT RAISE(ABORT, 'P/C language requires a present language declaration'); END;
+CREATE TRIGGER no_intro_pc_clone_marker_excludes_link BEFORE INSERT ON no_intro_pc_clone_markers
+WHEN EXISTS (SELECT 1 FROM no_intro_pc_clone_links WHERE set_id = NEW.set_id)
+BEGIN SELECT RAISE(ABORT, 'P/C clone is a marker or a link, never both'); END;
+CREATE TRIGGER no_intro_pc_clone_link_excludes_marker BEFORE INSERT ON no_intro_pc_clone_links
+WHEN EXISTS (SELECT 1 FROM no_intro_pc_clone_markers WHERE set_id = NEW.set_id)
+BEGIN SELECT RAISE(ABORT, 'P/C clone is a marker or a link, never both'); END;
 CREATE TABLE no_intro_pc_file_claims (
     occurrence_id INTEGER PRIMARY KEY NOT NULL,
     claim_kind TEXT NOT NULL DEFAULT 'no_intro_pc_file' CHECK (claim_kind = 'no_intro_pc_file'),
@@ -831,37 +879,34 @@ CREATE TABLE parser_interpretations (
     format              TEXT NOT NULL,
     parser_name         TEXT,
     parser_version      TEXT,
-    rules_version       TEXT,
-    options_json        TEXT
+    rules_version       TEXT
 );
 CREATE TABLE publishing_sources (
     source_key  TEXT PRIMARY KEY NOT NULL,
     display_name TEXT NOT NULL,
     locator     TEXT
 );
-CREATE TABLE record_namespaces (
-    namespace_id INTEGER PRIMARY KEY NOT NULL,
+CREATE TABLE catalog_set_groups (
+    set_group_id INTEGER PRIMARY KEY NOT NULL CHECK (set_group_id > 0),
     snapshot_key TEXT NOT NULL REFERENCES catalog_snapshots(snapshot_key) ON DELETE RESTRICT,
     kind TEXT NOT NULL CHECK (kind IN ('root', 'software_list')),
-    source_order INTEGER NOT NULL CHECK (source_order >= 0),
-    source_name TEXT,
-    CHECK ((kind = 'root' AND source_order = 0 AND source_name IS NULL)
-        OR (kind = 'software_list' AND source_name IS NOT NULL)),
-    UNIQUE (snapshot_key, kind, source_order)
+    list_order INTEGER NOT NULL CHECK (list_order >= 0),
+    CHECK (kind <> 'root' OR list_order = 0),
+    UNIQUE (snapshot_key, kind, list_order)
 );
-CREATE TABLE records (
-    record_id INTEGER PRIMARY KEY NOT NULL,
-    namespace_id INTEGER NOT NULL REFERENCES record_namespaces(namespace_id) ON DELETE RESTRICT,
-    kind TEXT NOT NULL CHECK (kind IN (
+CREATE TABLE catalog_sets (
+    set_id INTEGER PRIMARY KEY NOT NULL CHECK (set_id > 0),
+    set_group_id INTEGER NOT NULL REFERENCES catalog_set_groups(set_group_id) ON DELETE RESTRICT,
+    source_element_kind TEXT NOT NULL CHECK (source_element_kind IN (
         'mame_machine', 'software_item', 'logiqx_game', 'cmp_set',
         'no_intro_pc_game', 'no_intro_dat_game', 'no_intro_database_game'
     )),
-    source_order INTEGER NOT NULL CHECK (source_order >= 0),
-    source_name TEXT NOT NULL,
+    list_order INTEGER NOT NULL CHECK (list_order >= 0),
+    set_name TEXT NOT NULL,
     source_line INTEGER NOT NULL CHECK (source_line > 0),
     source_column INTEGER NOT NULL CHECK (source_column > 0),
-    UNIQUE (namespace_id, source_order),
-    UNIQUE (record_id, kind)
+    UNIQUE (set_group_id, list_order),
+    UNIQUE (set_id, source_element_kind)
 );
 CREATE TABLE relationship_assertion_evidence (
     assertion_key TEXT NOT NULL REFERENCES relationship_assertions (assertion_key) ON DELETE RESTRICT,
@@ -911,6 +956,7 @@ CREATE TABLE relationship_assertions (
 
     generic_subject_snapshot_key TEXT REFERENCES catalog_snapshots (snapshot_key) ON DELETE RESTRICT,
     subject_kind TEXT NOT NULL,
+    subject_set_id INTEGER REFERENCES catalog_sets(set_id) ON DELETE RESTRICT,
     generic_subject_a TEXT,
     generic_subject_b TEXT,
     generic_subject_c BIGINT,
@@ -923,6 +969,7 @@ CREATE TABLE relationship_assertions (
     ) VIRTUAL,
     generic_target_snapshot_key TEXT REFERENCES catalog_snapshots (snapshot_key) ON DELETE RESTRICT,
     target_kind TEXT NOT NULL,
+    target_set_id INTEGER REFERENCES catalog_sets(set_id) ON DELETE RESTRICT,
     generic_target_a TEXT,
     generic_target_b TEXT,
     generic_target_c BIGINT,
@@ -1040,8 +1087,10 @@ CREATE TABLE snapshot_extensions (
     namespace_uri TEXT,
     raw_value_json TEXT NOT NULL,
     source_line INTEGER NOT NULL CHECK (source_line > 0),
-    source_column INTEGER NOT NULL CHECK (source_column > 0)
-, owner_set_name TEXT, owner_component_order TEXT);
+    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    owner_set_id INTEGER REFERENCES catalog_sets(set_id) ON DELETE RESTRICT,
+    owner_occurrence_id INTEGER REFERENCES asset_occurrences(occurrence_id) ON DELETE RESTRICT,
+    CHECK (owner_occurrence_id IS NULL OR owner_set_id IS NOT NULL));
 CREATE TABLE snapshot_publications (
     catalog_key TEXT NOT NULL,
     document_key TEXT NOT NULL,
@@ -1054,15 +1103,6 @@ CREATE TABLE snapshot_publications (
             (snapshot_key, catalog_key, document_key, interpretation_key)
         ON DELETE RESTRICT
 );
-CREATE TABLE snapshot_sets (
-    snapshot_key TEXT NOT NULL REFERENCES catalog_snapshots (snapshot_key) ON DELETE RESTRICT,
-    set_name TEXT NOT NULL,
-    parent_name TEXT,
-    metadata_json TEXT NOT NULL,
-    source_line INTEGER NOT NULL CHECK (source_line > 0),
-    source_column INTEGER NOT NULL CHECK (source_column > 0), set_id INTEGER,
-    PRIMARY KEY (snapshot_key, set_name)
-) WITHOUT ROWID;
 CREATE TABLE software_areas (
     area_id       INTEGER PRIMARY KEY,
     part_id       INTEGER NOT NULL,
@@ -1157,15 +1197,16 @@ CREATE TABLE software_items (
     year        TEXT NOT NULL,
     publisher   TEXT NOT NULL,
     notes       TEXT,
-    FOREIGN KEY (record_id) REFERENCES records (record_id) ON DELETE RESTRICT
+    FOREIGN KEY (record_id) REFERENCES catalog_sets (set_id) ON DELETE RESTRICT
 );
 CREATE TABLE software_lists (
     namespace_id  INTEGER PRIMARY KEY NOT NULL,
+    name TEXT NOT NULL,
     description   TEXT,
     notes         TEXT,
     source_line   INTEGER NOT NULL CHECK (source_line > 0),
     source_column INTEGER NOT NULL CHECK (source_column > 0),
-    FOREIGN KEY (namespace_id) REFERENCES record_namespaces (namespace_id)
+    FOREIGN KEY (namespace_id) REFERENCES catalog_set_groups (set_group_id)
         ON DELETE RESTRICT
 );
 CREATE TABLE software_part_dip_values (
@@ -1262,18 +1303,18 @@ CREATE INDEX games_parent_id_relation_index ON games (parent_id);
 CREATE INDEX import_runs_catalog_key_index ON import_runs (catalog_key);
 CREATE INDEX import_runs_document_key_index ON import_runs (document_key);
 CREATE INDEX import_runs_snapshot_key_index ON import_runs (snapshot_key);
-CREATE INDEX machine_bios_sets_name_index ON machine_bios_sets (name);
+CREATE INDEX mame_bios_sets_name_index ON mame_bios_sets (name);
 CREATE INDEX machine_switches_tag_index ON machine_switches (tag, name, set_id);
 CREATE INDEX mame_machine_chips_name_index ON mame_machine_chips (name, set_id);
 CREATE INDEX mame_machine_devices_tag_index ON mame_machine_devices (tag, set_id);
-CREATE INDEX mame_machine_facts_source_file_index ON mame_machine_facts (source_file);
+CREATE INDEX mame_machines_source_file_index ON mame_machines (source_file);
 CREATE INDEX mame_machine_samples_name_index ON mame_machine_samples (name, set_id);
 CREATE INDEX mame_machine_software_lists_name_index ON mame_machine_software_lists (name, set_id);
 CREATE INDEX md5_index ON roms (md5);
 CREATE INDEX occurrence_content_lookup ON asset_occurrences(content_uuid, occurrence_id)
     WHERE content_uuid IS NOT NULL;
 CREATE INDEX occurrence_digest_lookup ON occurrence_digest_assertions(digest_id, occurrence_id);
-CREATE INDEX record_name_lookup ON records(namespace_id, source_name);
+CREATE INDEX catalog_set_name_lookup ON catalog_sets(set_group_id, set_name);
 CREATE INDEX relationship_assertions_source_snapshot_index
     ON relationship_assertions (source_snapshot_key)
     WHERE origin = 'source_assertion';
@@ -1293,9 +1334,7 @@ CREATE INDEX roms_game_id_relation_index ON roms (game_id);
 CREATE UNIQUE INDEX roms_game_name_unique ON roms (game_id, name);
 CREATE INDEX sha1_index ON roms (sha1);
 CREATE INDEX snapshot_extensions_asset_owner_index
-    ON snapshot_extensions (snapshot_key, owner_set_name, owner_component_order);
-CREATE UNIQUE INDEX snapshot_sets_set_id_index ON snapshot_sets (set_id);
-CREATE INDEX snapshot_sets_snapshot_index ON snapshot_sets (snapshot_key);
+    ON snapshot_extensions (snapshot_key, owner_set_id, owner_occurrence_id);
 CREATE INDEX snapshots_catalog_key_index ON catalog_snapshots (catalog_key);
 CREATE INDEX snapshots_document_key_index ON catalog_snapshots (document_key);
 CREATE INDEX snapshots_interpretation_key_index ON catalog_snapshots (interpretation_key);
@@ -1305,6 +1344,188 @@ CREATE INDEX software_disk_entries_area_order ON software_disk_entries (area_id,
 CREATE INDEX software_file_uses_declaration ON software_file_uses (declaration_occurrence_id);
 CREATE INDEX software_parts_item_order ON software_parts (record_id, part_order);
 CREATE INDEX software_rom_entries_area_order ON software_rom_entries (area_id, component_order);
+CREATE TABLE logiqx_set_links (
+    set_id INTEGER NOT NULL REFERENCES catalog_sets(set_id) ON DELETE RESTRICT,
+    link_kind TEXT NOT NULL CHECK (link_kind IN ('cloneof','romof','sampleof')),
+    target_name TEXT NOT NULL,
+    source_line INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    PRIMARY KEY (set_id, link_kind)
+) WITHOUT ROWID;
+CREATE TABLE logiqx_device_references (
+    set_id INTEGER NOT NULL REFERENCES catalog_sets(set_id) ON DELETE RESTRICT,
+    reference_order INTEGER NOT NULL CHECK (reference_order >= 0),
+    target_name TEXT NOT NULL,
+    source_line INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    PRIMARY KEY (set_id, reference_order)
+) WITHOUT ROWID;
+CREATE TABLE mame_machine_links (
+    set_id INTEGER NOT NULL REFERENCES catalog_sets(set_id) ON DELETE RESTRICT,
+    link_kind TEXT NOT NULL CHECK (link_kind = 'cloneof'),
+    target_name TEXT NOT NULL,
+    source_line INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    PRIMARY KEY (set_id, link_kind)
+) WITHOUT ROWID;
+CREATE TABLE clrmamepro_set_links (
+    set_id INTEGER NOT NULL REFERENCES catalog_sets(set_id) ON DELETE RESTRICT,
+    link_kind TEXT NOT NULL CHECK (link_kind = 'cloneof'),
+    target_name TEXT NOT NULL,
+    source_line INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0),
+    PRIMARY KEY (set_id, link_kind)
+) WITHOUT ROWID;
+-- Native payloads are format-qualified, immutable source facts.
+CREATE TRIGGER logiqx_games_native_owner_insert BEFORE INSERT ON logiqx_games
+WHEN NOT EXISTS (SELECT 1 FROM catalog_sets WHERE set_id = NEW.set_id AND source_element_kind = 'logiqx_game')
+ OR EXISTS (SELECT 1 FROM catalog_sets JOIN catalog_set_groups USING (set_group_id)
+            JOIN snapshot_publications USING (snapshot_key) WHERE set_id = NEW.set_id)
+BEGIN SELECT RAISE(ABORT, 'native details require an unpublished set of the matching format'); END;
+CREATE TRIGGER logiqx_games_native_immutable_update BEFORE UPDATE ON logiqx_games
+BEGIN SELECT RAISE(ABORT, 'native set details are immutable'); END;
+CREATE TRIGGER logiqx_games_native_immutable_delete BEFORE DELETE ON logiqx_games
+BEGIN SELECT RAISE(ABORT, 'native set details are immutable'); END;
+CREATE TRIGGER logiqx_set_links_native_owner_insert BEFORE INSERT ON logiqx_set_links
+WHEN NOT EXISTS (SELECT 1 FROM catalog_sets WHERE set_id = NEW.set_id AND source_element_kind = 'logiqx_game')
+ OR EXISTS (SELECT 1 FROM catalog_sets JOIN catalog_set_groups USING (set_group_id)
+            JOIN snapshot_publications USING (snapshot_key) WHERE set_id = NEW.set_id)
+BEGIN SELECT RAISE(ABORT, 'native details require an unpublished set of the matching format'); END;
+CREATE TRIGGER logiqx_set_links_native_immutable_update BEFORE UPDATE ON logiqx_set_links
+BEGIN SELECT RAISE(ABORT, 'native set details are immutable'); END;
+CREATE TRIGGER logiqx_set_links_native_immutable_delete BEFORE DELETE ON logiqx_set_links
+BEGIN SELECT RAISE(ABORT, 'native set details are immutable'); END;
+CREATE TRIGGER logiqx_device_references_native_owner_insert BEFORE INSERT ON logiqx_device_references
+WHEN NOT EXISTS (SELECT 1 FROM catalog_sets WHERE set_id = NEW.set_id AND source_element_kind = 'logiqx_game')
+ OR EXISTS (SELECT 1 FROM catalog_sets JOIN catalog_set_groups USING (set_group_id)
+            JOIN snapshot_publications USING (snapshot_key) WHERE set_id = NEW.set_id)
+BEGIN SELECT RAISE(ABORT, 'native details require an unpublished set of the matching format'); END;
+CREATE TRIGGER logiqx_device_references_native_immutable_update BEFORE UPDATE ON logiqx_device_references
+BEGIN SELECT RAISE(ABORT, 'native set details are immutable'); END;
+CREATE TRIGGER logiqx_device_references_native_immutable_delete BEFORE DELETE ON logiqx_device_references
+BEGIN SELECT RAISE(ABORT, 'native set details are immutable'); END;
+CREATE TRIGGER mame_machines_native_owner_insert BEFORE INSERT ON mame_machines
+WHEN NOT EXISTS (SELECT 1 FROM catalog_sets WHERE set_id = NEW.set_id AND source_element_kind = 'mame_machine')
+ OR EXISTS (SELECT 1 FROM catalog_sets JOIN catalog_set_groups USING (set_group_id)
+            JOIN snapshot_publications USING (snapshot_key) WHERE set_id = NEW.set_id)
+BEGIN SELECT RAISE(ABORT, 'native details require an unpublished set of the matching format'); END;
+CREATE TRIGGER mame_machines_native_immutable_update BEFORE UPDATE ON mame_machines
+BEGIN SELECT RAISE(ABORT, 'native set details are immutable'); END;
+CREATE TRIGGER mame_machines_native_immutable_delete BEFORE DELETE ON mame_machines
+BEGIN SELECT RAISE(ABORT, 'native set details are immutable'); END;
+CREATE TRIGGER mame_bios_sets_native_owner_insert BEFORE INSERT ON mame_bios_sets
+WHEN NOT EXISTS (SELECT 1 FROM catalog_sets WHERE set_id = NEW.set_id AND source_element_kind = 'mame_machine')
+ OR EXISTS (SELECT 1 FROM catalog_sets JOIN catalog_set_groups USING (set_group_id)
+            JOIN snapshot_publications USING (snapshot_key) WHERE set_id = NEW.set_id)
+BEGIN SELECT RAISE(ABORT, 'native details require an unpublished set of the matching format'); END;
+CREATE TRIGGER mame_bios_sets_native_immutable_update BEFORE UPDATE ON mame_bios_sets
+BEGIN SELECT RAISE(ABORT, 'native set details are immutable'); END;
+CREATE TRIGGER mame_bios_sets_native_immutable_delete BEFORE DELETE ON mame_bios_sets
+BEGIN SELECT RAISE(ABORT, 'native set details are immutable'); END;
+CREATE TRIGGER mame_machine_links_native_owner_insert BEFORE INSERT ON mame_machine_links
+WHEN NOT EXISTS (SELECT 1 FROM catalog_sets WHERE set_id = NEW.set_id AND source_element_kind = 'mame_machine')
+ OR EXISTS (SELECT 1 FROM catalog_sets JOIN catalog_set_groups USING (set_group_id)
+            JOIN snapshot_publications USING (snapshot_key) WHERE set_id = NEW.set_id)
+BEGIN SELECT RAISE(ABORT, 'native details require an unpublished set of the matching format'); END;
+CREATE TRIGGER mame_machine_links_native_immutable_update BEFORE UPDATE ON mame_machine_links
+BEGIN SELECT RAISE(ABORT, 'native set details are immutable'); END;
+CREATE TRIGGER mame_machine_links_native_immutable_delete BEFORE DELETE ON mame_machine_links
+BEGIN SELECT RAISE(ABORT, 'native set details are immutable'); END;
+CREATE TRIGGER no_intro_pc_games_native_owner_insert BEFORE INSERT ON no_intro_pc_games
+WHEN NOT EXISTS (SELECT 1 FROM catalog_sets WHERE set_id = NEW.set_id AND source_element_kind = 'no_intro_pc_game')
+ OR EXISTS (SELECT 1 FROM catalog_sets JOIN catalog_set_groups USING (set_group_id)
+            JOIN snapshot_publications USING (snapshot_key) WHERE set_id = NEW.set_id)
+BEGIN SELECT RAISE(ABORT, 'native details require an unpublished set of the matching format'); END;
+CREATE TRIGGER no_intro_pc_games_native_immutable_update BEFORE UPDATE ON no_intro_pc_games
+BEGIN SELECT RAISE(ABORT, 'native set details are immutable'); END;
+CREATE TRIGGER no_intro_pc_games_native_immutable_delete BEFORE DELETE ON no_intro_pc_games
+BEGIN SELECT RAISE(ABORT, 'native set details are immutable'); END;
+CREATE TRIGGER cmp_set_facts_native_owner_insert BEFORE INSERT ON cmp_set_facts
+WHEN NOT EXISTS (SELECT 1 FROM catalog_sets WHERE set_id = NEW.record_id AND source_element_kind = 'cmp_set')
+ OR EXISTS (SELECT 1 FROM catalog_sets JOIN catalog_set_groups USING (set_group_id)
+            JOIN snapshot_publications USING (snapshot_key) WHERE set_id = NEW.record_id)
+BEGIN SELECT RAISE(ABORT, 'native details require an unpublished set of the matching format'); END;
+CREATE TRIGGER cmp_set_facts_native_immutable_update BEFORE UPDATE ON cmp_set_facts
+BEGIN SELECT RAISE(ABORT, 'native set details are immutable'); END;
+CREATE TRIGGER cmp_set_facts_native_immutable_delete BEFORE DELETE ON cmp_set_facts
+BEGIN SELECT RAISE(ABORT, 'native set details are immutable'); END;
+CREATE TRIGGER clrmamepro_set_links_native_owner_insert BEFORE INSERT ON clrmamepro_set_links
+WHEN NOT EXISTS (SELECT 1 FROM catalog_sets WHERE set_id = NEW.set_id AND source_element_kind = 'cmp_set')
+ OR EXISTS (SELECT 1 FROM catalog_sets JOIN catalog_set_groups USING (set_group_id)
+            JOIN snapshot_publications USING (snapshot_key) WHERE set_id = NEW.set_id)
+BEGIN SELECT RAISE(ABORT, 'native details require an unpublished set of the matching format'); END;
+CREATE TRIGGER clrmamepro_set_links_native_immutable_update BEFORE UPDATE ON clrmamepro_set_links
+BEGIN SELECT RAISE(ABORT, 'native set details are immutable'); END;
+CREATE TRIGGER clrmamepro_set_links_native_immutable_delete BEFORE DELETE ON clrmamepro_set_links
+BEGIN SELECT RAISE(ABORT, 'native set details are immutable'); END;
+CREATE TRIGGER software_items_native_owner_insert BEFORE INSERT ON software_items
+WHEN NOT EXISTS (SELECT 1 FROM catalog_sets WHERE set_id = NEW.record_id AND source_element_kind = 'software_item')
+ OR EXISTS (SELECT 1 FROM catalog_sets JOIN catalog_set_groups USING (set_group_id)
+            JOIN snapshot_publications USING (snapshot_key) WHERE set_id = NEW.record_id)
+BEGIN SELECT RAISE(ABORT, 'native details require an unpublished set of the matching format'); END;
+CREATE TRIGGER software_items_native_immutable_update BEFORE UPDATE ON software_items
+BEGIN SELECT RAISE(ABORT, 'native set details are immutable'); END;
+CREATE TRIGGER software_items_native_immutable_delete BEFORE DELETE ON software_items
+BEGIN SELECT RAISE(ABORT, 'native set details are immutable'); END;
+CREATE TRIGGER catalog_groups_require_unpublished_snapshot BEFORE INSERT ON catalog_set_groups
+WHEN EXISTS (SELECT 1 FROM snapshot_publications WHERE snapshot_key = NEW.snapshot_key)
+BEGIN SELECT RAISE(ABORT, 'published catalog groups are immutable'); END;
+CREATE TRIGGER catalog_groups_require_matching_format BEFORE INSERT ON catalog_set_groups
+WHEN NOT EXISTS (
+    SELECT 1 FROM catalog_snapshots JOIN parser_interpretations USING (interpretation_key)
+    WHERE snapshot_key = NEW.snapshot_key AND (
+        (NEW.kind = 'software_list' AND format = 'mame-softwarelist-xml') OR
+        (NEW.kind = 'root' AND format IN ('mame-listxml', 'logiqx', 'clrmamepro-dat', 'no-intro-pc-xml'))
+    )
+)
+BEGIN SELECT RAISE(ABORT, 'catalog group does not match its parser format'); END;
+CREATE TRIGGER catalog_sets_require_unpublished_snapshot BEFORE INSERT ON catalog_sets
+WHEN EXISTS (SELECT 1 FROM catalog_set_groups JOIN snapshot_publications USING (snapshot_key)
+             WHERE set_group_id = NEW.set_group_id)
+BEGIN SELECT RAISE(ABORT, 'published catalog sets are immutable'); END;
+CREATE TRIGGER software_lists_native_owner_insert BEFORE INSERT ON software_lists
+WHEN NOT EXISTS (
+    SELECT 1 FROM catalog_set_groups
+    JOIN catalog_snapshots USING (snapshot_key)
+    JOIN parser_interpretations USING (interpretation_key)
+    WHERE set_group_id = NEW.namespace_id AND kind = 'software_list' AND format = 'mame-softwarelist-xml'
+)
+ OR EXISTS (SELECT 1 FROM catalog_set_groups JOIN snapshot_publications USING (snapshot_key)
+            WHERE set_group_id = NEW.namespace_id)
+BEGIN SELECT RAISE(ABORT, 'software lists require an unpublished software-list group'); END;
+CREATE TRIGGER software_lists_native_immutable_update BEFORE UPDATE ON software_lists
+BEGIN SELECT RAISE(ABORT, 'native software lists are immutable'); END;
+CREATE TRIGGER software_lists_native_immutable_delete BEFORE DELETE ON software_lists
+BEGIN SELECT RAISE(ABORT, 'native software lists are immutable'); END;
+CREATE VIEW record_namespaces AS
+SELECT groups.set_group_id AS namespace_id, groups.snapshot_key, groups.kind,
+       groups.list_order AS source_order, lists.name AS source_name
+FROM catalog_set_groups AS groups LEFT JOIN software_lists AS lists ON lists.namespace_id = groups.set_group_id;
+CREATE VIEW records AS
+SELECT set_id AS record_id, set_group_id AS namespace_id, source_element_kind AS kind,
+       list_order AS source_order, set_name AS source_name, source_line, source_column
+FROM catalog_sets;
+CREATE VIEW snapshot_sets AS
+SELECT sets.set_id, sets.set_group_id, groups.snapshot_key, sets.set_name,
+       COALESCE(mame.target_name, logiqx.target_name, cmp.target_name) AS parent_name,
+       sets.source_line, sets.source_column
+FROM catalog_sets AS sets JOIN catalog_set_groups AS groups USING (set_group_id)
+LEFT JOIN mame_machine_links AS mame ON mame.set_id = sets.set_id AND mame.link_kind = 'cloneof'
+LEFT JOIN logiqx_set_links AS logiqx ON logiqx.set_id = sets.set_id AND logiqx.link_kind = 'cloneof'
+LEFT JOIN clrmamepro_set_links AS cmp ON cmp.set_id = sets.set_id AND cmp.link_kind = 'cloneof'
+WHERE groups.kind = 'root';
+CREATE VIEW mame_machine_facts AS
+SELECT sets.snapshot_key, sets.set_name, machines.*
+FROM mame_machines AS machines JOIN snapshot_sets AS sets USING (set_id);
+CREATE VIEW logiqx_set_facts AS
+SELECT sets.snapshot_key, sets.set_name, games.*
+FROM logiqx_games AS games JOIN snapshot_sets AS sets USING (set_id);
+CREATE VIEW no_intro_game_facts AS
+SELECT sets.snapshot_key, sets.set_name, games.*
+FROM no_intro_pc_games AS games JOIN snapshot_sets AS sets USING (set_id);
+CREATE VIEW machine_bios_sets AS
+SELECT sets.snapshot_key, sets.set_name, bios.*
+FROM mame_bios_sets AS bios JOIN snapshot_sets AS sets USING (set_id);
 CREATE VIEW asset_requirement_content_conflicts AS
 SELECT occurrence.record_id AS set_id,occurrence.occurrence_order AS component_order,conflict.candidate_content_uuid,conflict.reason
 FROM occurrence_content_conflicts AS conflict JOIN asset_occurrences AS occurrence USING (occurrence_id)
@@ -1317,37 +1538,37 @@ CREATE VIEW asset_requirement_rows AS
 SELECT occurrence.record_id AS set_id,occurrence.occurrence_order AS component_order,
        payload.name AS asset_name,'rom' AS role,
        payload.size,payload.evidence_scope,payload.evidence_provenance,payload.merge_name,payload.dump_status,payload.source_line,payload.source_column,NULL AS serial,NULL AS date,payload.region,payload.bios,payload.offset,payload.optional,payload.sound_only,payload.dispose,payload.load_flag,payload.value,payload.inverted,payload.ovha,payload.no_thread,payload.disk_index,payload.writable,payload.writeable,
-       '{}' AS metadata_json,occurrence.content_uuid
+       occurrence.content_uuid
 FROM mame_rom_claims AS payload JOIN asset_occurrences AS occurrence USING (occurrence_id)
 UNION ALL
 SELECT occurrence.record_id AS set_id,occurrence.occurrence_order AS component_order,
        payload.name AS asset_name,'disk' AS role,
        payload.size,payload.evidence_scope,payload.evidence_provenance,payload.merge_name,payload.dump_status,payload.source_line,payload.source_column,NULL AS serial,NULL AS date,payload.region,payload.bios,payload.offset,payload.optional,payload.sound_only,payload.dispose,payload.load_flag,payload.value,payload.inverted,payload.ovha,payload.no_thread,payload.disk_index,payload.writable,payload.writeable,
-       '{}' AS metadata_json,occurrence.content_uuid
+       occurrence.content_uuid
 FROM mame_disk_claims AS payload JOIN asset_occurrences AS occurrence USING (occurrence_id)
 UNION ALL
 SELECT occurrence.record_id AS set_id,occurrence.occurrence_order AS component_order,
        payload.name AS asset_name,'rom' AS role,
        payload.size,payload.evidence_scope,payload.evidence_provenance,payload.merge_name,payload.dump_status,payload.source_line,payload.source_column,payload.serial,payload.date,NULL AS region,NULL AS bios,NULL AS offset,NULL AS optional,NULL AS sound_only,NULL AS dispose,NULL AS load_flag,NULL AS value,NULL AS inverted,NULL AS ovha,NULL AS no_thread,NULL AS disk_index,NULL AS writable,NULL AS writeable,
-       '{}' AS metadata_json,occurrence.content_uuid
+       occurrence.content_uuid
 FROM logiqx_rom_claims AS payload JOIN asset_occurrences AS occurrence USING (occurrence_id)
 UNION ALL
 SELECT occurrence.record_id AS set_id,occurrence.occurrence_order AS component_order,
        payload.name AS asset_name,'disk' AS role,
        payload.size,payload.evidence_scope,payload.evidence_provenance,payload.merge_name,payload.dump_status,payload.source_line,payload.source_column,payload.serial,payload.date,NULL AS region,NULL AS bios,NULL AS offset,NULL AS optional,NULL AS sound_only,NULL AS dispose,NULL AS load_flag,NULL AS value,NULL AS inverted,NULL AS ovha,NULL AS no_thread,NULL AS disk_index,NULL AS writable,NULL AS writeable,
-       '{}' AS metadata_json,occurrence.content_uuid
+       occurrence.content_uuid
 FROM logiqx_disk_claims AS payload JOIN asset_occurrences AS occurrence USING (occurrence_id)
 UNION ALL
 SELECT occurrence.record_id AS set_id,occurrence.occurrence_order AS component_order,
        payload.name AS asset_name,'rom' AS role,
        payload.size,payload.evidence_scope,payload.evidence_provenance,payload.merge_name,payload.dump_status,payload.source_line,payload.source_column,NULL AS serial,facts.date AS date,NULL AS region,NULL AS bios,NULL AS offset,NULL AS optional,NULL AS sound_only,NULL AS dispose,NULL AS load_flag,NULL AS value,NULL AS inverted,NULL AS ovha,NULL AS no_thread,NULL AS disk_index,NULL AS writable,NULL AS writeable,
-       '{}' AS metadata_json,occurrence.content_uuid
+       occurrence.content_uuid
 FROM cmp_rom_claims AS payload JOIN asset_occurrences AS occurrence USING (occurrence_id) LEFT JOIN cmp_rom_facts AS facts USING (occurrence_id)
 UNION ALL
 SELECT occurrence.record_id AS set_id,occurrence.occurrence_order AS component_order,
        payload.name AS asset_name,'rom' AS role,
        payload.size,payload.evidence_scope,payload.evidence_provenance,payload.merge_name,payload.dump_status,payload.source_line,payload.source_column,NULL AS serial,NULL AS date,NULL AS region,NULL AS bios,NULL AS offset,NULL AS optional,NULL AS sound_only,NULL AS dispose,NULL AS load_flag,NULL AS value,NULL AS inverted,NULL AS ovha,NULL AS no_thread,NULL AS disk_index,NULL AS writable,NULL AS writeable,
-       '{}' AS metadata_json,occurrence.content_uuid
+       occurrence.content_uuid
 FROM no_intro_pc_file_claims AS payload JOIN asset_occurrences AS occurrence USING (occurrence_id);
 CREATE VIEW asset_requirements AS
 SELECT sets.snapshot_key,sets.set_name,rows.component_order,rows.asset_name,rows.role,rows.size,
@@ -1357,11 +1578,11 @@ SELECT sets.snapshot_key,sets.set_name,rows.component_order,rows.asset_name,rows
         WHERE assertion.occurrence_id = occurrence.occurrence_id AND digest.algorithm = 'md5' AND assertion.scope = rows.evidence_scope) AS md5,
        (SELECT digest.digest FROM occurrence_digest_assertions AS assertion JOIN digest_values AS digest USING (digest_id)
         WHERE assertion.occurrence_id = occurrence.occurrence_id AND digest.algorithm = 'sha1' AND assertion.scope = rows.evidence_scope) AS sha1,
-       rows.evidence_scope,rows.evidence_provenance,rows.merge_name,rows.dump_status,rows.serial,rows.date,rows.metadata_json,rows.source_line,rows.source_column,rows.content_uuid
+       rows.evidence_scope,rows.evidence_provenance,rows.merge_name,rows.dump_status,rows.serial,rows.date,rows.source_line,rows.source_column,rows.content_uuid
 FROM asset_requirement_rows AS rows JOIN snapshot_sets AS sets USING (set_id)
 JOIN asset_occurrences AS occurrence ON occurrence.record_id = rows.set_id AND occurrence.occurrence_order = rows.component_order;
 CREATE VIEW mame_asset_facts AS
-SELECT sets.snapshot_key,sets.set_name,rows.component_order,rows.region,rows.bios,rows.offset,rows.optional,rows.sound_only,rows.dispose,rows.load_flag,rows.value,rows.inverted,rows.ovha,rows.no_thread,rows.disk_index,rows.writable,rows.writeable
+SELECT sets.set_id,sets.snapshot_key,sets.set_name,rows.component_order,rows.region,rows.bios,rows.offset,rows.optional,rows.sound_only,rows.dispose,rows.load_flag,rows.value,rows.inverted,rows.ovha,rows.no_thread,rows.disk_index,rows.writable,rows.writeable
 FROM asset_requirement_rows AS rows JOIN snapshot_sets AS sets USING (set_id) JOIN records ON records.record_id = rows.set_id
 WHERE records.kind = 'mame_machine';
 CREATE VIEW mame_machine_conditions AS
@@ -1437,10 +1658,10 @@ LEFT JOIN mame_machine_software_lists AS software_list USING (set_id, element_or
 LEFT JOIN mame_machine_ram_options AS ram USING (set_id, element_order);
 CREATE VIEW relationship_assertion_explanations AS
 SELECT assertion_key, relation_type, origin, source_snapshot_key, source_field,
-       source_line, source_column, generic_subject_snapshot_key, subject_kind,
+       source_line, source_column, generic_subject_snapshot_key, subject_kind, subject_set_id,
        generic_subject_a, generic_subject_b, generic_subject_c, source_subject_a,
        source_subject_b, source_subject_c, subject_snapshot_key,
-       generic_target_snapshot_key, target_kind, generic_target_a, generic_target_b,
+       generic_target_snapshot_key, target_kind, target_set_id, generic_target_a, generic_target_b,
        generic_target_c, source_target_a, source_target_b, source_target_c,
        target_snapshot_key, rule_version
 FROM relationship_assertions
@@ -1448,9 +1669,9 @@ UNION ALL
 SELECT 'mame-dependency:' || dependency.set_id || ':' || dependency.dependency_order,
        'runtime_dependency', 'source_assertion', set_row.snapshot_key,
        dependency.dependency_kind, dependency.source_line, dependency.source_column,
-       NULL, 'catalog_set', NULL, NULL, NULL,
+       NULL, 'catalog_set', dependency.set_id, NULL, NULL, NULL,
        set_row.set_name, NULL, NULL, set_row.snapshot_key,
-       NULL, 'catalog_set', NULL, NULL, NULL,
+       NULL, 'catalog_set', NULL, NULL, NULL, NULL,
        dependency.target_name, NULL, NULL, set_row.snapshot_key, NULL
 FROM mame_machine_dependencies AS dependency
 JOIN snapshot_sets AS set_row ON set_row.set_id = dependency.set_id;
@@ -1601,12 +1822,12 @@ BEGIN SELECT RAISE(ABORT,'native asset claims are immutable'); END;
 CREATE TRIGGER logiqx_rom_claims_immutable_update BEFORE UPDATE ON logiqx_rom_claims
 BEGIN SELECT RAISE(ABORT,'native asset claims are immutable'); END;
 CREATE TRIGGER machine_bios_sets_are_immutable_delete
-BEFORE DELETE ON machine_bios_sets
+BEFORE DELETE ON mame_bios_sets
 BEGIN
     SELECT RAISE(ABORT, 'machine BIOS sets are immutable');
 END;
 CREATE TRIGGER machine_bios_sets_are_immutable_update
-BEFORE UPDATE ON machine_bios_sets
+BEFORE UPDATE ON mame_bios_sets
 BEGIN
     SELECT RAISE(ABORT, 'machine BIOS sets are immutable');
 END;
@@ -1671,12 +1892,12 @@ BEGIN
     SELECT RAISE(ABORT, 'MAME machine dependency requires a catalog set');
 END;
 CREATE TRIGGER mame_machine_facts_are_immutable_delete
-BEFORE DELETE ON mame_machine_facts
+BEFORE DELETE ON mame_machines
 BEGIN
     SELECT RAISE(ABORT, 'MAME machine facts are immutable');
 END;
 CREATE TRIGGER mame_machine_facts_are_immutable_update
-BEFORE UPDATE ON mame_machine_facts
+BEFORE UPDATE ON mame_machines
 BEGIN
     SELECT RAISE(ABORT, 'MAME machine facts are immutable');
 END;
@@ -1712,7 +1933,6 @@ WHEN (
     OR OLD.parser_name IS NOT NEW.parser_name
     OR OLD.parser_version IS NOT NEW.parser_version
     OR OLD.rules_version IS NOT NEW.rules_version
-    OR OLD.options_json IS NOT NEW.options_json
 ) AND (
     EXISTS (
         SELECT 1 FROM catalog_snapshots
@@ -1726,21 +1946,36 @@ WHEN (
 BEGIN
     SELECT RAISE(ABORT, 'referenced parser interpretations are immutable');
 END;
-CREATE TRIGGER record_namespaces_are_immutable_delete BEFORE DELETE ON record_namespaces
+CREATE TRIGGER record_namespaces_are_immutable_delete BEFORE DELETE ON catalog_set_groups
 BEGIN SELECT RAISE(ABORT, 'record namespaces are immutable'); END;
-CREATE TRIGGER record_namespaces_are_immutable_update BEFORE UPDATE ON record_namespaces
+CREATE TRIGGER record_namespaces_are_immutable_update BEFORE UPDATE ON catalog_set_groups
 BEGIN SELECT RAISE(ABORT, 'record namespaces are immutable'); END;
-CREATE TRIGGER records_are_immutable_delete BEFORE DELETE ON records
+CREATE TRIGGER records_are_immutable_delete BEFORE DELETE ON catalog_sets
 BEGIN SELECT RAISE(ABORT, 'native records are immutable'); END;
-CREATE TRIGGER records_are_immutable_update BEFORE UPDATE ON records
+CREATE TRIGGER records_are_immutable_update BEFORE UPDATE ON catalog_sets
 BEGIN SELECT RAISE(ABORT, 'native records are immutable'); END;
-CREATE TRIGGER records_require_native_namespace
-BEFORE INSERT ON records
-WHEN (NEW.kind = 'software_item') IS NOT
-     (SELECT kind = 'software_list' FROM record_namespaces WHERE namespace_id = NEW.namespace_id)
+CREATE TRIGGER catalog_sets_require_matching_group
+BEFORE INSERT ON catalog_sets
+WHEN (NEW.source_element_kind = 'software_item') IS NOT
+     (SELECT kind = 'software_list' FROM catalog_set_groups WHERE set_group_id = NEW.set_group_id)
 BEGIN
-    SELECT RAISE(ABORT, 'record kind does not match its native namespace');
+    SELECT RAISE(ABORT, 'set kind does not match its catalog group');
 END;
+CREATE TRIGGER catalog_sets_require_matching_format
+BEFORE INSERT ON catalog_sets
+WHEN NOT EXISTS (
+    SELECT 1 FROM catalog_set_groups
+    JOIN catalog_snapshots USING (snapshot_key)
+    JOIN parser_interpretations USING (interpretation_key)
+    WHERE set_group_id = NEW.set_group_id AND (
+        (format = 'mame-listxml' AND NEW.source_element_kind = 'mame_machine') OR
+        (format = 'logiqx' AND NEW.source_element_kind = 'logiqx_game') OR
+        (format = 'clrmamepro-dat' AND NEW.source_element_kind = 'cmp_set') OR
+        (format = 'no-intro-pc-xml' AND NEW.source_element_kind = 'no_intro_pc_game') OR
+        (format = 'mame-softwarelist-xml' AND NEW.source_element_kind = 'software_item')
+    )
+)
+BEGIN SELECT RAISE(ABORT, 'set kind does not match its parser format'); END;
 CREATE TRIGGER relationship_assertion_evidence_immutable_delete
 BEFORE DELETE ON relationship_assertion_evidence
 BEGIN
@@ -1788,6 +2023,40 @@ WHEN NOT EXISTS (
 BEGIN
     SELECT RAISE(ABORT, 'supported relationship assertion does not exist');
 END;
+CREATE TRIGGER relationship_subject_owner_matches_endpoint BEFORE INSERT ON relationship_assertions
+WHEN NEW.subject_set_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM catalog_sets AS sets
+    JOIN catalog_set_groups AS groups USING (set_group_id)
+    LEFT JOIN software_lists AS lists ON lists.namespace_id = groups.set_group_id
+    WHERE sets.set_id = NEW.subject_set_id
+      AND groups.snapshot_key = NEW.subject_snapshot_key
+      AND (
+          (NEW.subject_kind IN ('catalog_set','asset_requirement') AND groups.kind = 'root'
+           AND sets.set_name = CASE WHEN NEW.origin = 'source_assertion' THEN NEW.source_subject_a ELSE NEW.generic_subject_a END)
+          OR
+          (NEW.subject_kind = 'software_item' AND groups.kind = 'software_list'
+           AND lists.name = CASE WHEN NEW.origin = 'source_assertion' THEN NEW.source_subject_a ELSE NEW.generic_subject_a END
+           AND sets.set_name = CASE WHEN NEW.origin = 'source_assertion' THEN NEW.source_subject_b ELSE NEW.generic_subject_b END)
+      )
+)
+BEGIN SELECT RAISE(ABORT, 'relationship owner does not match its catalog endpoint'); END;
+CREATE TRIGGER relationship_target_owner_matches_endpoint BEFORE INSERT ON relationship_assertions
+WHEN NEW.target_set_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM catalog_sets AS sets
+    JOIN catalog_set_groups AS groups USING (set_group_id)
+    LEFT JOIN software_lists AS lists ON lists.namespace_id = groups.set_group_id
+    WHERE sets.set_id = NEW.target_set_id
+      AND groups.snapshot_key = NEW.target_snapshot_key
+      AND (
+          (NEW.target_kind IN ('catalog_set','asset_requirement') AND groups.kind = 'root'
+           AND sets.set_name = CASE WHEN NEW.origin = 'source_assertion' THEN NEW.source_target_a ELSE NEW.generic_target_a END)
+          OR
+          (NEW.target_kind = 'software_item' AND groups.kind = 'software_list'
+           AND lists.name = CASE WHEN NEW.origin = 'source_assertion' THEN NEW.source_target_a ELSE NEW.generic_target_a END
+           AND sets.set_name = CASE WHEN NEW.origin = 'source_assertion' THEN NEW.source_target_b ELSE NEW.generic_target_b END)
+      )
+)
+BEGIN SELECT RAISE(ABORT, 'relationship owner does not match its catalog endpoint'); END;
 CREATE TRIGGER relationship_assertions_are_immutable_delete
 BEFORE DELETE ON relationship_assertions
 BEGIN
@@ -1905,6 +2174,18 @@ WHEN NOT (
 BEGIN
     SELECT RAISE(ABORT, 'scan metadata must be stored together');
 END;
+CREATE TRIGGER snapshot_extensions_require_native_owner BEFORE INSERT ON snapshot_extensions
+WHEN (NEW.owner_set_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM catalog_sets JOIN catalog_set_groups USING (set_group_id)
+    WHERE set_id = NEW.owner_set_id AND snapshot_key = NEW.snapshot_key
+)) OR (NEW.owner_occurrence_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM asset_occurrences
+    WHERE occurrence_id = NEW.owner_occurrence_id AND record_id = NEW.owner_set_id
+))
+BEGIN SELECT RAISE(ABORT, 'extension owner does not match its source snapshot or set'); END;
+CREATE TRIGGER snapshot_extensions_require_unpublished_snapshot BEFORE INSERT ON snapshot_extensions
+WHEN EXISTS (SELECT 1 FROM snapshot_publications WHERE snapshot_key = NEW.snapshot_key)
+BEGIN SELECT RAISE(ABORT, 'published source extensions are immutable'); END;
 CREATE TRIGGER snapshot_extensions_are_immutable_delete
 BEFORE DELETE ON snapshot_extensions
 BEGIN
@@ -1936,33 +2217,4 @@ CREATE TRIGGER snapshot_publications_are_immutable_update
 BEFORE UPDATE ON snapshot_publications
 BEGIN
     SELECT RAISE(ABORT, 'snapshot publications are immutable');
-END;
-CREATE TRIGGER snapshot_sets_are_immutable_delete
-BEFORE DELETE ON snapshot_sets
-BEGIN
-    SELECT RAISE(ABORT, 'snapshot sets are immutable');
-END;
-CREATE TRIGGER snapshot_sets_are_immutable_update
-BEFORE UPDATE ON snapshot_sets
-BEGIN
-    SELECT RAISE(ABORT, 'snapshot sets are immutable');
-END;
-CREATE TRIGGER snapshot_sets_register_native_record
-AFTER INSERT ON snapshot_sets
-BEGIN
-    INSERT OR IGNORE INTO record_namespaces(snapshot_key,kind,source_order)
-    VALUES (NEW.snapshot_key,'root',0);
-    INSERT INTO records(record_id,namespace_id,kind,source_order,source_name,source_line,source_column)
-    SELECT NEW.set_id,namespace.namespace_id,
-           CASE interpretation.format
-               WHEN 'mame-listxml' THEN 'mame_machine'
-               WHEN 'clrmamepro-dat' THEN 'cmp_set'
-               WHEN 'no-intro-pc-xml' THEN 'no_intro_pc_game'
-               ELSE 'logiqx_game' END,
-           (SELECT count(*) FROM records WHERE namespace_id = namespace.namespace_id),
-           NEW.set_name,NEW.source_line,NEW.source_column
-    FROM record_namespaces AS namespace
-    JOIN catalog_snapshots AS snapshot ON snapshot.snapshot_key = namespace.snapshot_key
-    JOIN parser_interpretations AS interpretation USING (interpretation_key)
-    WHERE namespace.snapshot_key = NEW.snapshot_key AND namespace.kind = 'root';
 END;

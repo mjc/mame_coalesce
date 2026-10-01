@@ -164,7 +164,7 @@ fn machine_specification_is_stored_in_native_families_with_typed_owners()
 
     let record_fk = sql_query(
         "SELECT COUNT(*) AS value FROM pragma_foreign_key_list('mame_machine_displays') \
-         WHERE \"table\" = 'records' AND \"to\" = 'record_id'",
+         WHERE \"table\" = 'catalog_sets' AND \"to\" = 'set_id'",
     )
     .get_result::<IntegerRow>(&mut connection)?;
     assert_eq!(record_fk.value, 1);

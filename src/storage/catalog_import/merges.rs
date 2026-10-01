@@ -5,7 +5,8 @@ use diesel::{
 
 use crate::{
     domain::{
-        CatalogRecordKind, CatalogRecordRef, DocumentLocation, RelationshipType, SnapshotKey,
+        CatalogRecordKind, CatalogRecordRef, CatalogSetId, DocumentLocation, RelationshipType,
+        SnapshotKey,
     },
     logiqx::RecordLocation,
     storage::relationships::{SourceRelationshipDraft, insert_source_assertion},
@@ -16,6 +17,8 @@ const MERGE_BATCH_SIZE: i64 = 256;
 #[derive(Clone, Copy)]
 pub(super) struct MergeDeclaration<'a> {
     pub(super) set_name: &'a str,
+    pub(super) set_id: CatalogSetId,
+    pub(super) set_group_id: i64,
     pub(super) component_order: i64,
     pub(super) asset_name: &'a str,
     pub(super) merged_name: &'a str,
@@ -31,6 +34,10 @@ pub(super) struct MergeDeclaration<'a> {
 struct MergeAssetRow {
     #[diesel(sql_type = Text)]
     set_name: String,
+    #[diesel(sql_type = BigInt)]
+    set_group_id: i64,
+    #[diesel(sql_type = BigInt)]
+    set_id: i64,
     #[diesel(sql_type = BigInt)]
     component_order: i64,
     #[diesel(sql_type = Text)]
@@ -53,23 +60,32 @@ struct MergeAssetRow {
     source_column: i64,
 }
 
+#[derive(QueryableByName)]
+struct ParentComponentRow {
+    #[diesel(sql_type = BigInt)]
+    set_id: i64,
+    #[diesel(sql_type = BigInt)]
+    component_order: i64,
+}
+
 pub(super) fn persist_merge_relationship(
     conn: &mut SqliteConnection,
     snapshot: &SnapshotKey,
     declaration: MergeDeclaration<'_>,
 ) -> crate::Result<()> {
     let parent_components = sql_query(
-        "SELECT asset.component_order FROM asset_requirement_rows AS asset \
+        "SELECT asset.set_id, asset.component_order FROM asset_requirement_rows AS asset \
          JOIN snapshot_sets AS sets USING (set_id) \
-         WHERE sets.snapshot_key = ? AND sets.set_name = ? \
+         WHERE sets.snapshot_key = ? AND sets.set_group_id = ? AND sets.set_name = ? \
            AND asset.asset_name = ? AND asset.role = ? \
          ORDER BY asset.component_order LIMIT 2",
     )
     .bind::<Text, _>(snapshot.as_str())
+    .bind::<BigInt, _>(declaration.set_group_id)
     .bind::<Text, _>(declaration.parent)
     .bind::<Text, _>(declaration.merged_name)
     .bind::<Text, _>(declaration.role)
-    .load::<super::ComponentOrderRow>(conn)?;
+    .load::<ParentComponentRow>(conn)?;
     let [parent_component] = parent_components.as_slice() else {
         return Ok(());
     };
@@ -86,7 +102,8 @@ pub(super) fn persist_merge_relationship(
                     declaration.asset_name,
                     declaration.component_order,
                 ))?,
-            ),
+            )
+            .with_owner(declaration.set_id),
             target: CatalogRecordRef::new(
                 snapshot.clone(),
                 CatalogRecordKind::AssetRequirement,
@@ -95,7 +112,8 @@ pub(super) fn persist_merge_relationship(
                     declaration.merged_name,
                     parent_component.component_order,
                 ))?,
-            ),
+            )
+            .with_owner(CatalogSetId::from_database(parent_component.set_id)),
             source_field: "merge".to_owned(),
             source_location: Some(DocumentLocation {
                 line: declaration.location.line,
@@ -117,11 +135,26 @@ pub(super) fn persist_snapshot_merges(
     conn: &mut SqliteConnection,
     snapshot: &SnapshotKey,
 ) -> crate::Result<()> {
-    let mut cursor = (String::new(), -1_i64);
+    let mut cursor = (String::new(), -1_i64, -1_i64);
     loop {
         let rows = sql_query(
-            "SELECT s.set_name, a.component_order, a.asset_name, a.merge_name AS merged_name, \
-                    COALESCE(mf_romof.target_name, json_extract(s.metadata_json, '$.romof'), s.parent_name) AS parent, \
+            "WITH sets_with_parent AS (\
+                 SELECT s.set_id, s.set_group_id, s.snapshot_key, s.set_name, COALESCE( \
+                     (SELECT dependency.target_name FROM mame_machine_dependencies AS dependency \
+                      WHERE dependency.set_id = s.set_id AND dependency.dependency_kind = 'romof'), \
+                     (SELECT link.target_name FROM logiqx_set_links AS link \
+                      WHERE link.set_id = s.set_id AND link.link_kind = 'romof'), \
+                     (SELECT link.target_name FROM mame_machine_links AS link \
+                      WHERE link.set_id = s.set_id AND link.link_kind = 'cloneof'), \
+                     (SELECT link.target_name FROM logiqx_set_links AS link \
+                      WHERE link.set_id = s.set_id AND link.link_kind = 'cloneof') \
+                     ,(SELECT link.target_name FROM clrmamepro_set_links AS link \
+                       WHERE link.set_id = s.set_id AND link.link_kind = 'cloneof') \
+                 ) AS parent \
+                 FROM snapshot_sets AS s \
+             ) \
+             SELECT s.set_name, s.set_group_id, s.set_id, a.component_order, a.asset_name, a.merge_name AS merged_name, \
+                    s.parent, \
                     a.role, \
                     (SELECT digest.digest FROM asset_requirement_digest_assertions AS assertion \
                      JOIN digest_values AS digest USING (digest_id) \
@@ -137,18 +170,16 @@ pub(super) fn persist_snapshot_merges(
                        AND digest.algorithm = 'crc32') AS crc, \
                     a.size, a.source_line, a.source_column \
              FROM asset_requirement_rows AS a \
-             JOIN snapshot_sets AS s USING (set_id) \
-             LEFT JOIN mame_machine_dependencies AS mf_romof \
-               ON mf_romof.set_id = s.set_id \
-              AND mf_romof.dependency_kind = 'romof' \
+             JOIN sets_with_parent AS s USING (set_id) \
              WHERE s.snapshot_key = ? AND a.merge_name IS NOT NULL \
-               AND COALESCE(mf_romof.target_name, json_extract(s.metadata_json, '$.romof'), s.parent_name) IS NOT NULL \
-               AND (s.set_name, a.component_order) > (?, ?) \
-             ORDER BY s.set_name, a.component_order LIMIT ?",
+               AND s.parent IS NOT NULL \
+               AND (s.set_name, s.set_id, a.component_order) > (?, ?, ?) \
+             ORDER BY s.set_name, s.set_id, a.component_order LIMIT ?",
         )
         .bind::<Text, _>(snapshot.as_str())
         .bind::<Text, _>(&cursor.0)
         .bind::<BigInt, _>(cursor.1)
+        .bind::<BigInt, _>(cursor.2)
         .bind::<BigInt, _>(MERGE_BATCH_SIZE)
         .load::<MergeAssetRow>(conn)?;
         let Some(last) = rows.last() else {
@@ -165,6 +196,8 @@ pub(super) fn persist_snapshot_merges(
                 snapshot,
                 MergeDeclaration {
                     set_name: &row.set_name,
+                    set_id: CatalogSetId::from_database(row.set_id),
+                    set_group_id: row.set_group_id,
                     component_order: row.component_order,
                     asset_name: &row.asset_name,
                     merged_name: &row.merged_name,
@@ -181,7 +214,7 @@ pub(super) fn persist_snapshot_merges(
             )?;
         }
 
-        cursor = (last.set_name.clone(), last.component_order);
+        cursor = (last.set_name.clone(), last.set_id, last.component_order);
     }
     Ok(())
 }

@@ -6,7 +6,7 @@ use serde::Serialize;
 
 use crate::{
     domain::{
-        AssetRole, CatalogKey, CatalogRecordKind, CatalogRecordRef, Crc32Digest,
+        AssetRole, CatalogKey, CatalogRecordKind, CatalogRecordRef, CatalogSetId, Crc32Digest,
         EvidenceProvenance, EvidenceScope, ExpectedEvidence, Md5Digest, SnapshotKey,
     },
     reconciliation::{
@@ -25,6 +25,8 @@ struct SnapshotIdentityRow {
 
 #[derive(QueryableByName)]
 struct RequirementRow {
+    #[diesel(sql_type = BigInt)]
+    set_id: i64,
     #[diesel(sql_type = Text)]
     set_name: String,
     #[diesel(sql_type = BigInt)]
@@ -57,6 +59,8 @@ struct RequirementRow {
 
 #[derive(QueryableByName)]
 struct SoftwareRequirementRow {
+    #[diesel(sql_type = BigInt)]
+    set_id: i64,
     #[diesel(sql_type = Text)]
     list_name: String,
     #[diesel(sql_type = Text)]
@@ -129,7 +133,7 @@ fn snapshot_requirements(
         error => error.into(),
     })?;
     let mut requirements = sql_query(
-        "SELECT sets.set_name, rows.component_order, rows.asset_name, rows.role, rows.size, \
+        "SELECT sets.set_id, sets.set_name, rows.component_order, rows.asset_name, rows.role, rows.size, \
          (SELECT digest.digest FROM asset_requirement_digest_assertions AS assertion \
           JOIN digest_values AS digest USING (digest_id) \
           WHERE assertion.set_id = rows.set_id \
@@ -159,12 +163,12 @@ fn snapshot_requirements(
                 snapshot.clone(),
                 CatalogRecordKind::AssetRequirement,
                 record_key(&(&row.set_name, &row.asset_name, row.component_order))?,
-            ),
+            ).with_owner(CatalogSetId::from_database(row.set_id)),
             owner: CatalogRecordRef::new(
                 snapshot.clone(),
                 CatalogRecordKind::Set,
                 row.set_name.clone(),
-            ),
+            ).with_owner(CatalogSetId::from_database(row.set_id)),
             role: parse_role(&row.role),
             expected: ExpectedEvidence {
                 scope: parse_scope(&row.evidence_scope),
@@ -201,7 +205,7 @@ fn software_requirements(
     snapshot: &SnapshotKey,
 ) -> crate::Result<Vec<ExpectedAssetRequirement>> {
     let rows = sql_query(
-        "SELECT component.list_name, component.item_name, component.part_name, \
+        "SELECT occurrence.record_id AS set_id, component.list_name, component.item_name, component.part_name, \
          component.area_kind, component.area_name, component.area_order, \
          component.component_order, component.component_kind, component.component_name, \
          component.size, \
@@ -224,7 +228,8 @@ fn software_requirements(
                      AND assertion.scope = component.evidence_scope \
                      AND digest.algorithm IN ('crc32', 'sha1')) AS evidence_provenance, \
          component.dump_status \
-         FROM software_components AS component WHERE component.snapshot_key = ?",
+         FROM software_components AS component \
+         JOIN asset_occurrences AS occurrence USING (occurrence_id) WHERE component.snapshot_key = ?",
     )
     .bind::<Text, _>(snapshot.as_str())
     .load::<SoftwareRequirementRow>(conn)?;
@@ -244,12 +249,14 @@ fn software_requirements(
                         &row.component_name,
                         row.component_order,
                     ))?,
-                ),
+                )
+                .with_owner(CatalogSetId::from_database(row.set_id)),
                 owner: CatalogRecordRef::new(
                     snapshot.clone(),
                     CatalogRecordKind::SoftwareItem,
                     record_key(&(&row.list_name, &row.item_name))?,
-                ),
+                )
+                .with_owner(CatalogSetId::from_database(row.set_id)),
                 role: parse_role(&row.component_kind),
                 expected: ExpectedEvidence {
                     scope: parse_scope(&row.evidence_scope),

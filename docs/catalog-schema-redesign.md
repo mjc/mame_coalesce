@@ -39,16 +39,23 @@ for this redesign. No new memory cap or field truncation is proposed.
 
 ## Schema shape and implementation state
 
-The shared identity/digest migration is only the first part of this redesign.
-It does not establish field coverage for another input format. The existing
-`snapshot_sets` and software hierarchy still use source names in their keys;
-those tables are not the proposed native record model.
+The greenfield cutover is underway, not a migration. Shared file/digest identity
+does not establish complete field coverage for every input format. Native
+`catalog_set_groups` and `catalog_sets` now own ordered groups and sets by
+integer IDs, and retain source names as values. `snapshot_sets`, `records` and
+`record_namespaces` are read-only consumer views, not stored owners. Native
+MAME, Logiqx and P/C set details no longer copy snapshot keys and set names.
+Coverage members are typed relational rows, not JSON. Source assertions and
+extensions follow numeric set/occurrence owners, including repeated names.
+History compares complete same-name fact multisets rather than treating source
+positions as continuity. Extension value persistence, build-cache projections
+and remaining per-format coverage still need cutover.
 
 The target hierarchy uses integer IDs for ownership and retains names and
 publisher IDs as source fields:
 
 ```text
-snapshot -> namespace -> record
+snapshot -> set group -> ROM set or software item
                            |
                            +-- exactly one native record payload
                            |
@@ -66,13 +73,13 @@ assertions; they are not reduced to a shared game name and ROM tuple.
 
 | Input | Native structure and facts | Current implementation gap |
 |---|---|---|
-| MAME machine XML | Machine -> ROM/disk/sample, chips, displays, input/controls, switches/values/conditions, ports, devices, slots, driver/features, software-list references and RAM options. | Many fields exist, but specification families still occupy one wide union; native sample claims and full presence/default ownership remain incomplete. |
-| MAME software-list XML | List -> item -> part -> data/disk area -> ordered ROM/disk entries. File declarations and load/continue/reload/ignore uses are separate relations; fill has no file claim. | Hierarchy still repeats name keys; source entries and physical file declarations are not yet separated. |
+| MAME machine XML | Machine -> ROM/disk/sample, chips, displays, input/controls, switches/values/conditions, ports, devices, slots, driver/features, software-list references and RAM options. | Native families and numeric owners replace the wide stored union; complete specification presence/default and field witnesses remain open. |
+| MAME software-list XML | List -> item -> part -> data/disk area -> ordered ROM/disk entries. File declarations and load/continue/reload/ignore uses are separate relations; fill has no file claim. | Numeric owners, separate declarations/operations and area-local loading chains exist; complete per-flag loading rules and native field witnesses remain open. |
 | Logiqx XML / TOSEC | Document/header/options -> game -> comments, releases, BIOS sets, ROM/disk/sample claims, archive references and distinct parent declarations. | Partial document/game facts and ROMs exist; native options, releases, BIOS/disk/sample/archive families and specification defaults remain incomplete. |
-| ClrMamePro text | Header/directives -> set -> ROM claims and scalar sample claims; native flags and sample-parent declarations. | No native CMP tables; descriptions/year/manufacturer still use shared JSON metadata and directives/sample families are incomplete. |
+| ClrMamePro text | Header/directives -> set -> ROM claims and scalar sample claims; native flags and sample-parent declarations. | Native CMP facts/directives and numeric set/occurrence owners exist; remaining specification fields and complete query witnesses remain open. |
 | No-Intro flat DAT v3/v4 | Document/header/directives -> game -> scoped identifiers, categories, releases and ROM declarations; name-based and ID-based parents stay distinct. | A Logiqx envelope import is not dialect coverage. Native field/cardinality/default storage and SHA-256 parsing remain incomplete; observed compatibility cases require their own interpretation. |
 | No-Intro database XML | Game -> archive, source histories and releases. A source or release owns its own details, serials and files; numeric file IDs may repeat under different owners. | No database-export parser/native schema yet. Source/release ownership, sibling-root framing and documented NUL recovery need end-to-end importer coverage. |
-| Synthetic No-Intro P/C projection | Archive record -> ordered language/native fields and file claims, with parent-marker/reference/merge-token distinctions. | Only archive ID and description have narrow native rows; remaining fields still need typed ownership. |
+| Synthetic No-Intro P/C projection | Archive record -> ordered language/native fields and file claims, with parent-marker/reference/merge-token distinctions. | Typed archive, region, alternate name, version, BIOS, ordered languages and distinct clone/merge tokens exist; this is not proof of authentic DAT-o-MATIC P/C conformance. |
 
 TOSEC ISO/PIX assets retain their source `rom` declaration even when the file
 is a CUE, image or manual. OfflineList and PureDOS-specific structures remain
@@ -574,9 +581,9 @@ valid records from unrelated files.
 ### Synthetic P/C projection and OfflineList
 
 The existing No-Intro adapter accepts a synthetic `<datafile>/<game>/<rom>`
-projection. Its persistent typed facts currently cover only archive ID and
-description beyond shared asset fields. Alternate name, region, languages,
-version, BIOS, clone and merge tokens remain JSON/extensions. Actual flat DAT
+projection. Its persistent typed facts now cover archive ID, description,
+alternate name, region, ordered languages, version, BIOS and distinct clone
+and merge tokens beyond asset claims. Actual flat DAT
 files use attributes and nested releases/game IDs that do not fit that
 projection, and DB exports use nested archive/source/file records instead.
 

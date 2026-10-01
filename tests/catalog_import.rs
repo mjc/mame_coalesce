@@ -15,9 +15,9 @@ use mame_coalesce::{
     database::Database,
     domain::{
         CatalogKey, CatalogRecordKind, CatalogRecordRef, CatalogScope, DocumentKey,
-        ExternalRecordRef, ParserInterpretationKey, PublishingSourceKey, RelationshipClaim,
-        RelationshipEndpoint, RelationshipOrigin, RelationshipType, SnapshotKey,
-        SnapshotRecordStatus,
+        ExternalRecordRef, ParserInterpretationKey, PublishingSourceKey, QualifiedCatalogSet,
+        RelationshipClaim, RelationshipEndpoint, RelationshipOrigin, RelationshipType, SetName,
+        SnapshotKey, SnapshotRecordStatus,
     },
 };
 
@@ -202,6 +202,28 @@ struct NoIntroGameFactsRow {
 }
 
 #[derive(QueryableByName)]
+struct NoIntroPcMetadataRow {
+    #[diesel(sql_type = Nullable<Text>)]
+    name_alt: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    region: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    version: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    bios_text: Option<String>,
+    #[diesel(sql_type = BigInt)]
+    languages_present: i64,
+}
+
+#[derive(QueryableByName)]
+struct NoIntroLanguageRow {
+    #[diesel(sql_type = BigInt)]
+    language_order: i64,
+    #[diesel(sql_type = Text)]
+    language: String,
+}
+
+#[derive(QueryableByName)]
 struct IntegerRow {
     #[diesel(sql_type = diesel::sql_types::BigInt)]
     value: i64,
@@ -378,20 +400,20 @@ fn composite_key_catalog_tables_cluster_rows_by_their_primary_keys()
         "SELECT COUNT(*) AS count FROM pragma_table_list \
          WHERE schema = 'main' AND type = 'table' AND wr = 1 AND name IN ( \
              'acquisition_transport_headers', 'acquisition_attempt_transport_headers', \
-             'snapshot_sets', 'software_item_info', \
+             'software_item_info', \
              'software_item_shared_features', 'software_part_features', \
              'software_item_dependencies', 'machine_switches', \
-             'machine_switch_locations', 'machine_switch_values', 'machine_bios_sets', \
-             'mame_machine_facts', 'mame_machine_dependencies', \
-             'software_part_dipswitches', 'software_part_dip_values', 'no_intro_game_facts', \
-             'logiqx_set_facts', 'mame_machine_input_controls', \
+             'machine_switch_locations', 'machine_switch_values', 'mame_bios_sets', \
+             'mame_machines', 'mame_machine_dependencies', \
+             'software_part_dipswitches', 'software_part_dip_values', 'no_intro_pc_games', \
+             'logiqx_games', 'mame_machine_input_controls', \
              'mame_machine_analogs', 'mame_machine_device_extensions', 'mame_machine_slot_options', \
              'relationship_assertion_evidence', 'relationship_assertion_support' \
          )",
     )
     .get_result::<CountRow>(&mut connection)?;
 
-    assert_eq!(clustered.count, 23);
+    assert_eq!(clustered.count, 22);
 
     let specification_tables = sql_query(
         "SELECT COUNT(*) AS count FROM pragma_table_list \
@@ -407,8 +429,8 @@ fn composite_key_catalog_tables_cluster_rows_by_their_primary_keys()
     assert_eq!(specification_tables.count, 14);
 
     for (table, identity_column) in [
-        ("record_namespaces", "namespace_id"),
-        ("records", "record_id"),
+        ("catalog_set_groups", "set_group_id"),
+        ("catalog_sets", "set_id"),
         ("asset_occurrences", "occurrence_id"),
         ("mame_rom_claims", "occurrence_id"),
         ("mame_disk_claims", "occurrence_id"),
@@ -645,8 +667,30 @@ fn no_intro_request() -> Result<CatalogImportRequest, Box<dyn std::error::Error>
         "Synthetic No-Intro P/C XML",
     )?;
     request.format = CatalogDocumentFormat::NoIntroPcXml;
-    request.scope = CatalogScope::Filtered(serde_json::json!({"fixture": "synthetic"}));
+    request.scope =
+        filtered_root_scope(&["Synthetic Cartridge (World)", "Synthetic Cartridge (Japan)"]);
     Ok(request)
+}
+
+fn filtered_root_scope(names: &[&str]) -> CatalogScope {
+    CatalogScope::Filtered(
+        names
+            .iter()
+            .map(|name| QualifiedCatalogSet::RootSet(SetName::new(*name)))
+            .collect(),
+    )
+}
+
+fn insert_coverage(
+    connection: &mut SqliteConnection,
+    kind: &str,
+) -> Result<i64, diesel::result::Error> {
+    sql_query("INSERT INTO catalog_coverage (kind) VALUES (?)")
+        .bind::<Text, _>(kind)
+        .execute(connection)?;
+    sql_query("SELECT last_insert_rowid() AS value")
+        .get_result::<IntegerRow>(connection)
+        .map(|row| row.value)
 }
 
 fn count(connection: &mut SqliteConnection, table: &str) -> Result<i64, diesel::result::Error> {
@@ -967,6 +1011,7 @@ fn publishing_completes_a_matching_identity_only_snapshot() -> Result<(), Box<dy
     let request = request(path, "legacy-publisher", "legacy-catalog", "Legacy")?;
     let document_key = DocumentKey::from_bytes(bytes).to_string();
     let interpretation = ParserInterpretationKey::logiqx_v1(&request.scope);
+    let coverage_id = insert_coverage(&mut connection, "unknown")?;
     sql_query("INSERT INTO publishing_sources (source_key, display_name) VALUES (?, ?)")
         .bind::<Text, _>(request.source_key.as_str())
         .bind::<Text, _>(&request.source_display_name)
@@ -993,12 +1038,13 @@ fn publishing_completes_a_matching_identity_only_snapshot() -> Result<(), Box<dy
     .execute(&mut connection)?;
     sql_query(
         "INSERT INTO catalog_snapshots \
-         (snapshot_key, catalog_key, document_key, interpretation_key, acquisition_key) \
-         VALUES ('identity-only-snapshot', ?, ?, ?, 'legacy-acquisition')",
+         (snapshot_key, catalog_key, document_key, interpretation_key, acquisition_key, coverage_id) \
+         VALUES ('identity-only-snapshot', ?, ?, ?, 'legacy-acquisition', ?)",
     )
     .bind::<Text, _>(request.catalog_key.as_str())
     .bind::<Text, _>(&document_key)
     .bind::<Text, _>(interpretation.as_str())
+    .bind::<BigInt, _>(coverage_id)
     .execute(&mut connection)?;
 
     let report = app::import_catalog(&database, &request)?;
@@ -1042,13 +1088,25 @@ fn imports_no_intro_pc_xml_metadata_without_inventing_title_relationships()
 
     assert_no_intro_game_facts(&mut connection, snapshot.as_str())?;
 
-    let snapshot_scope =
-        sql_query("SELECT scope_json AS value FROM catalog_snapshots WHERE snapshot_key = ?")
-            .bind::<Text, _>(snapshot.as_str())
-            .get_result::<TextRow>(&mut connection)?;
+    let scope_members = sql_query(
+        "SELECT covered.set_name AS value FROM catalog_snapshots AS snapshots \
+         JOIN catalog_coverage AS coverage USING (coverage_id) \
+         JOIN catalog_covered_sets AS covered USING (coverage_id) \
+         WHERE snapshots.snapshot_key = ? AND coverage.kind = 'filtered' \
+           AND covered.set_kind = 'root' AND covered.coverage = 'covered' \
+         ORDER BY covered.list_order",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .load::<TextRow>(&mut connection)?;
     assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&snapshot_scope.value)?,
-        serde_json::json!({"fixture": "synthetic"})
+        scope_members
+            .into_iter()
+            .map(|row| row.value)
+            .collect::<Vec<_>>(),
+        [
+            "Synthetic Cartridge (Japan)".to_owned(),
+            "Synthetic Cartridge (World)".to_owned(),
+        ]
     );
     let declared_version =
         sql_query("SELECT declared_version AS value FROM catalog_snapshots WHERE snapshot_key = ?")
@@ -1062,37 +1120,7 @@ fn imports_no_intro_pc_xml_metadata_without_inventing_title_relationships()
             .get_result::<TextRow>(&mut connection)?;
     assert_eq!(source_lineage.value, "no-intro");
 
-    let metadata = sql_query(
-        "SELECT metadata_json AS value FROM snapshot_sets \
-         WHERE snapshot_key = ? AND set_name = 'Synthetic Cartridge (Japan)'",
-    )
-    .bind::<Text, _>(snapshot.as_str())
-    .get_result::<TextRow>(&mut connection)?;
-    let metadata: serde_json::Value = serde_json::from_str(&metadata.value)?;
-    assert_eq!(metadata["name_alt"], "合成カートリッジ (日本)");
-    assert_eq!(metadata["region"], "Japan");
-    assert_eq!(metadata["languages"], serde_json::json!(["Ja"]));
-    assert_eq!(metadata["version"], "1.0");
-    assert_eq!(metadata["bios"], serde_json::Value::Null);
-    assert_eq!(metadata["clone"], "1041");
-    assert_eq!(metadata["mergeof"], "1042");
-    let source_line = sql_query(
-        "SELECT source_line AS value FROM snapshot_sets \
-         WHERE snapshot_key = ? AND set_name = 'Synthetic Cartridge (Japan)'",
-    )
-    .bind::<Text, _>(snapshot.as_str())
-    .get_result::<IntegerRow>(&mut connection)?;
-    assert!(source_line.value > 0);
-
-    let parent_metadata = sql_query(
-        "SELECT metadata_json AS value FROM snapshot_sets \
-         WHERE snapshot_key = ? AND set_name = 'Synthetic Cartridge (World)'",
-    )
-    .bind::<Text, _>(snapshot.as_str())
-    .get_result::<TextRow>(&mut connection)?;
-    let parent_metadata: serde_json::Value = serde_json::from_str(&parent_metadata.value)?;
-    assert_eq!(parent_metadata["clone"], "P");
-    assert_eq!(parent_metadata["bios"], "0");
+    assert_no_intro_pc_native_metadata(&mut connection, snapshot.as_str())?;
 
     assert_no_intro_source_assertions(
         &mut connection,
@@ -1115,6 +1143,85 @@ fn imports_no_intro_pc_xml_metadata_without_inventing_title_relationships()
         request.document_path.as_std_path(),
     )?;
 
+    Ok(())
+}
+
+fn assert_no_intro_pc_native_metadata(
+    connection: &mut SqliteConnection,
+    snapshot: &str,
+) -> Result<(), diesel::result::Error> {
+    let japan_facts = sql_query(
+        "SELECT name_alt, region, version, bios_text, languages_present \
+         FROM no_intro_game_facts \
+         WHERE snapshot_key = ? AND set_name = 'Synthetic Cartridge (Japan)'",
+    )
+    .bind::<Text, _>(snapshot)
+    .get_result::<NoIntroPcMetadataRow>(connection)?;
+    assert_eq!(
+        japan_facts.name_alt.as_deref(),
+        Some("合成カートリッジ (日本)")
+    );
+    assert_eq!(japan_facts.region.as_deref(), Some("Japan"));
+    assert_eq!(japan_facts.version.as_deref(), Some("1.0"));
+    assert_eq!(japan_facts.bios_text, None);
+    assert_eq!(japan_facts.languages_present, 1);
+    let japan_languages = sql_query(
+        "SELECT languages.language_order, languages.language \
+         FROM no_intro_pc_languages AS languages \
+         JOIN snapshot_sets AS sets USING (set_id) \
+         WHERE sets.snapshot_key = ? AND sets.set_name = 'Synthetic Cartridge (Japan)' \
+         ORDER BY languages.language_order",
+    )
+    .bind::<Text, _>(snapshot)
+    .load::<NoIntroLanguageRow>(connection)?;
+    assert_eq!(
+        japan_languages
+            .into_iter()
+            .map(|row| (row.language_order, row.language))
+            .collect::<Vec<_>>(),
+        [(0, "Ja".to_owned())]
+    );
+    let source_line = sql_query(
+        "SELECT source_line AS value FROM snapshot_sets \
+         WHERE snapshot_key = ? AND set_name = 'Synthetic Cartridge (Japan)'",
+    )
+    .bind::<Text, _>(snapshot)
+    .get_result::<IntegerRow>(connection)?;
+    assert!(source_line.value > 0);
+
+    let parent_facts = sql_query(
+        "SELECT name_alt, region, version, bios_text, languages_present FROM no_intro_game_facts \
+         WHERE snapshot_key = ? AND set_name = 'Synthetic Cartridge (World)'",
+    )
+    .bind::<Text, _>(snapshot)
+    .get_result::<NoIntroPcMetadataRow>(connection)?;
+    assert_eq!(parent_facts.name_alt, None);
+    assert_eq!(parent_facts.bios_text.as_deref(), Some("0"));
+    assert_eq!(parent_facts.languages_present, 1);
+    let parent_clone_marker = sql_query(
+        "SELECT COUNT(*) AS count FROM no_intro_pc_clone_markers AS markers \
+         JOIN snapshot_sets AS sets USING (set_id) \
+         WHERE sets.snapshot_key = ? AND sets.set_name = 'Synthetic Cartridge (World)'",
+    )
+    .bind::<Text, _>(snapshot)
+    .get_result::<CountRow>(connection)?;
+    assert_eq!(parent_clone_marker.count, 1);
+    let parent_languages = sql_query(
+        "SELECT languages.language_order, languages.language \
+         FROM no_intro_pc_languages AS languages \
+         JOIN snapshot_sets AS sets USING (set_id) \
+         WHERE sets.snapshot_key = ? AND sets.set_name = 'Synthetic Cartridge (World)' \
+         ORDER BY languages.language_order",
+    )
+    .bind::<Text, _>(snapshot)
+    .load::<NoIntroLanguageRow>(connection)?;
+    assert_eq!(
+        parent_languages
+            .into_iter()
+            .map(|row| (row.language_order, row.language))
+            .collect::<Vec<_>>(),
+        [(0, "En".to_owned()), (1, "Ja".to_owned())]
+    );
     Ok(())
 }
 
@@ -1208,13 +1315,22 @@ fn assert_no_intro_source_assertions(
     .bind::<Text, _>(snapshot)
     .get_result::<CountRow>(connection)?;
     assert_eq!(merge_links.count, 0);
-    let raw_reference = sql_query(
-        "SELECT raw_value_json AS value FROM snapshot_extensions \
-         WHERE snapshot_key = ? AND field_name = 'clone' AND record_name = 'Synthetic Cartridge (Japan)'",
+    let clone_reference = sql_query(
+        "SELECT links.target_archive_id AS value FROM no_intro_pc_clone_links AS links \
+         JOIN snapshot_sets AS sets USING (set_id) \
+         WHERE sets.snapshot_key = ? AND sets.set_name = 'Synthetic Cartridge (Japan)'",
     )
     .bind::<Text, _>(snapshot)
     .get_result::<TextRow>(connection)?;
-    assert_eq!(raw_reference.value, "\"1041\"");
+    assert_eq!(clone_reference.value, "1041");
+    let merge_reference = sql_query(
+        "SELECT links.target_archive_id AS value FROM no_intro_pc_merge_links AS links \
+         JOIN snapshot_sets AS sets USING (set_id) \
+         WHERE sets.snapshot_key = ? AND sets.set_name = 'Synthetic Cartridge (Japan)'",
+    )
+    .bind::<Text, _>(snapshot)
+    .get_result::<TextRow>(connection)?;
+    assert_eq!(merge_reference.value, "1042");
     let diagnostics = sql_query(
         "SELECT COUNT(*) AS count FROM import_diagnostics \
          WHERE run_key = ? AND field_name = 'clone' AND code = 'unsupported_attribute'",
@@ -1235,6 +1351,7 @@ fn stale_identity_only_metadata_is_not_published_as_current()
     let request = request(path, "legacy-publisher", "legacy-catalog", "Legacy")?;
     let document_key = DocumentKey::from_bytes(bytes).to_string();
     let interpretation = ParserInterpretationKey::logiqx_v1(&request.scope);
+    let coverage_id = insert_coverage(&mut connection, "complete")?;
     sql_query("INSERT INTO publishing_sources (source_key, display_name) VALUES (?, ?)")
         .bind::<Text, _>(request.source_key.as_str())
         .bind::<Text, _>(&request.source_display_name)
@@ -1254,12 +1371,13 @@ fn stale_identity_only_metadata_is_not_published_as_current()
     .execute(&mut connection)?;
     sql_query(
         "INSERT INTO catalog_snapshots \
-         (snapshot_key, catalog_key, document_key, interpretation_key, declared_version, scope_kind) \
-         VALUES ('stale-identity-snapshot', ?, ?, ?, '1.0', 'complete')",
+         (snapshot_key, catalog_key, document_key, interpretation_key, declared_version, coverage_id) \
+         VALUES ('stale-identity-snapshot', ?, ?, ?, '1.0', ?)",
     )
     .bind::<Text, _>(request.catalog_key.as_str())
     .bind::<Text, _>(&document_key)
     .bind::<Text, _>(interpretation.as_str())
+    .bind::<BigInt, _>(coverage_id)
     .execute(&mut connection)?;
 
     let report = app::import_catalog(&database, &request)?;
@@ -2180,13 +2298,16 @@ fn imports_mame_asset_facts_and_recovers_extensions_from_source()
             .windows(b"future:flag".len())
             .any(|window| window == b"future:flag")
     );
-    let asset_metadata = sql_query(
-        "SELECT metadata_json AS value FROM asset_requirements \
-         WHERE snapshot_key = ? AND asset_name = 'clone.rom'",
+    let asset_extension = sql_query(
+        "SELECT raw_value_json AS value FROM snapshot_extensions \
+         JOIN catalog_sets ON catalog_sets.set_id = snapshot_extensions.owner_set_id \
+         WHERE snapshot_key = ? AND record_kind = 'rom' AND record_name = 'clone.rom' \
+           AND catalog_sets.set_name = 'clone' AND field_name = 'flag' \
+           AND namespace_uri = 'urn:future'",
     )
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<TextRow>(&mut connection)?;
-    assert!(!asset_metadata.value.contains("future:flag"));
+    assert_eq!(asset_extension.value, "\"retained\"");
 
     let format_hint = sql_query(
         "SELECT documents.format_hint AS value FROM documents \
@@ -2912,7 +3033,7 @@ fn dependency_absence_respects_filtered_snapshot_scope() -> Result<(), Box<dyn s
         "Filtered machines",
     )?;
     import.format = CatalogDocumentFormat::MameListXml;
-    import.scope = CatalogScope::Filtered(serde_json::json!({"sets": ["root"]}));
+    import.scope = filtered_root_scope(&["root"]);
     let imported = app::import_catalog(&database, &import)?;
     let snapshot = imported.snapshot_key.ok_or("filtered snapshot missing")?;
     let closure = app::resolve_machine_dependencies(
@@ -3825,23 +3946,21 @@ fn assert_clrmamepro_set_metadata(
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<NullableTextRow>(connection)?;
     assert_eq!(clone.value.as_deref(), Some("demo_set"));
-    let metadata = sql_query(
-        "SELECT metadata_json AS value FROM snapshot_sets \
-         WHERE snapshot_key = ? AND set_name = 'demo_set'",
-    )
-    .bind::<Text, _>(snapshot.as_str())
-    .get_result::<TextRow>(connection)?;
-    assert!(metadata.value.contains("Synthetic parent set"));
-    assert!(metadata.value.contains("Example Works"));
-    assert!(metadata.value.contains("1998"));
-    let clone_metadata = sql_query(
-        "SELECT metadata_json AS value FROM snapshot_sets \
-         WHERE snapshot_key = ? AND set_name = 'clone_set'",
-    )
-    .bind::<Text, _>(snapshot.as_str())
-    .get_result::<TextRow>(connection)?;
-    let clone_metadata: serde_json::Value = serde_json::from_str(&clone_metadata.value)?;
-    assert_eq!(clone_metadata["description"], "Clone \"quoted\" set");
+    for (set_name, field, expected) in [
+        ("demo_set", "description", "Synthetic parent set"),
+        ("demo_set", "manufacturer", "Example Works"),
+        ("demo_set", "year", "1998"),
+        ("clone_set", "description", "Clone \"quoted\" set"),
+    ] {
+        let fact = sql_query(format!(
+            "SELECT facts.{field} AS value FROM cmp_set_facts AS facts \
+             JOIN snapshot_sets AS sets ON sets.set_id = facts.record_id \
+             WHERE sets.snapshot_key = ? AND sets.set_name = '{set_name}'"
+        ))
+        .bind::<Text, _>(snapshot.as_str())
+        .get_result::<NullableTextRow>(connection)?;
+        assert_eq!(fact.value.as_deref(), Some(expected), "{set_name}.{field}");
+    }
     Ok(())
 }
 
@@ -4003,16 +4122,16 @@ fn clrmamepro_and_logiqx_normalize_shared_set_and_rom_facts_equivalently()
         ))
         .bind::<Text, _>(logiqx_snapshot.as_str())
         .get_result::<NullableTextRow>(&mut connection)?;
-        let dat_metadata = sql_query(
-            "SELECT metadata_json AS value FROM snapshot_sets \
-             WHERE snapshot_key = ? AND set_name = 'equiv'",
-        )
+        let dat_value = sql_query(format!(
+            "SELECT facts.{field} AS value FROM cmp_set_facts AS facts \
+             JOIN snapshot_sets AS sets ON sets.set_id = facts.record_id \
+             WHERE sets.snapshot_key = ? AND sets.set_name = 'equiv'"
+        ))
         .bind::<Text, _>(clrmamepro_snapshot.as_str())
-        .get_result::<TextRow>(&mut connection)?;
-        let dat_value: serde_json::Value = serde_json::from_str(&dat_metadata.value)?;
+        .get_result::<NullableTextRow>(&mut connection)?;
         assert_eq!(
             logiqx_value.value.as_deref(),
-            dat_value[field].as_str(),
+            dat_value.value.as_deref(),
             "{field}"
         );
     }
@@ -4266,7 +4385,7 @@ fn snapshot_diff_treats_filtered_absence_as_unknown_and_complete_absence_as_remo
     complete_request.scope = CatalogScope::Complete;
     let complete = app::import_catalog(&database, &complete_request)?;
     let mut filtered_request = request(filtered_path, "publisher-scope", "scope", "Scope")?;
-    filtered_request.scope = CatalogScope::Filtered(serde_json::json!({"sets": ["alpha"]}));
+    filtered_request.scope = filtered_root_scope(&["alpha"]);
     let filtered = app::import_catalog(&database, &filtered_request)?;
     let complete_key = complete.snapshot_key.ok_or("complete snapshot missing")?;
     let filtered_key = filtered.snapshot_key.ok_or("filtered snapshot missing")?;
@@ -4326,9 +4445,7 @@ fn snapshot_diff_treats_filtered_absence_as_unknown_and_complete_absence_as_remo
         br#"<datafile><header><name>Scope</name></header><game name="alpha"/><game name="beta"/><game name="gamma"/></datafile>"#,
     )?;
     let mut included_request = request(included_path, "publisher-scope", "scope", "Scope")?;
-    included_request.scope = CatalogScope::Filtered(serde_json::json!({
-        "sets": ["alpha", "beta", "gamma"]
-    }));
+    included_request.scope = filtered_root_scope(&["alpha", "beta", "gamma"]);
     let included = app::import_catalog(&database, &included_request)?;
     let included_key = included.snapshot_key.ok_or("included snapshot missing")?;
     let addition = app::diff_catalog_snapshots(&database, &complete_key, &included_key)?;
@@ -4361,7 +4478,11 @@ fn snapshot_diff_requires_known_filtered_set_membership_to_compare_scopes()
             format!("<datafile><header><name>Scope</name></header>{games}</datafile>"),
         )?;
         let mut import = request(path, "publisher-scope", "scope", "Scope")?;
-        import.scope = CatalogScope::Filtered(serde_json::json!({"source": "manual"}));
+        import.scope = filtered_root_scope(if filename == "filtered-alpha.dat" {
+            &["alpha"]
+        } else {
+            &["alpha", "beta"]
+        });
         snapshots.push(
             app::import_catalog(&database, &import)?
                 .snapshot_key
@@ -4638,8 +4759,11 @@ fn snapshot_diff_keeps_asset_extensions_with_their_owning_set()
     assert_eq!(beta.status, SnapshotRecordStatus::Unchanged);
     assert!(beta.requirement_changes.is_empty());
 
-    let metadata = sql_query(
-        "SELECT metadata_json AS value FROM asset_requirements WHERE snapshot_key = ? LIMIT 1",
+    let extension = sql_query(
+        "SELECT raw_value_json AS value FROM snapshot_extensions \
+         JOIN catalog_sets ON catalog_sets.set_id = snapshot_extensions.owner_set_id \
+         WHERE snapshot_key = ? AND record_kind = 'rom' AND catalog_sets.set_name = 'alpha' \
+           AND field_name = 'future'",
     )
     .bind::<Text, _>(
         second
@@ -4649,7 +4773,7 @@ fn snapshot_diff_keeps_asset_extensions_with_their_owning_set()
             .as_str(),
     )
     .get_result::<TextRow>(&mut connection)?;
-    assert!(!metadata.value.contains("__mame_coalesce_extensions"));
+    assert_eq!(extension.value, "\"two\"");
     Ok(())
 }
 
@@ -4794,6 +4918,7 @@ fn snapshot_diff_does_not_treat_unpublished_complete_identity_as_removal()
     let identity_document_key = DocumentKey::from_bytes(identity_bytes);
     let identity_document = identity_document_key.to_string();
     let interpretation = ParserInterpretationKey::logiqx_v1(&CatalogScope::Complete);
+    let coverage_id = insert_coverage(&mut connection, "complete")?;
     let identity_snapshot = SnapshotKey::new(
         &published_request.catalog_key,
         &identity_document_key,
@@ -4804,13 +4929,14 @@ fn snapshot_diff_does_not_treat_unpublished_complete_identity_as_removal()
         .execute(&mut connection)?;
     sql_query(
         "INSERT INTO catalog_snapshots \
-         (snapshot_key, catalog_key, document_key, interpretation_key, scope_kind) \
-         VALUES (?, ?, ?, ?, 'complete')",
+         (snapshot_key, catalog_key, document_key, interpretation_key, coverage_id) \
+         VALUES (?, ?, ?, ?, ?)",
     )
     .bind::<Text, _>(identity_snapshot.as_str())
     .bind::<Text, _>(published_request.catalog_key.as_str())
     .bind::<Text, _>(&identity_document)
     .bind::<Text, _>(interpretation.as_str())
+    .bind::<BigInt, _>(coverage_id)
     .execute(&mut connection)?;
 
     let diff = app::diff_catalog_snapshots(&database, &published_key, &identity_snapshot)?;
