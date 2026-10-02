@@ -121,7 +121,8 @@ CREATE VIEW relationship_assertion_explanations AS
 SELECT * FROM stored_relationship_assertion_explanations
 UNION ALL SELECT * FROM mame_source_relationships
 UNION ALL SELECT * FROM logiqx_cmp_source_relationships
-UNION ALL SELECT * FROM software_dat_source_relationships;
+UNION ALL SELECT * FROM software_dat_source_relationships
+UNION ALL SELECT * FROM no_intro_database_source_relationships;
 
 CREATE VIEW software_dat_source_relationships AS
 SELECT registry.assertion_key, 'source_parent_clone' AS relation_type,

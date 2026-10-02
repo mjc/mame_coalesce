@@ -59,32 +59,29 @@ CREATE TABLE no_intro_archive_descriptions (
 CREATE TABLE no_intro_archive_clone_markers (
     archive_id INTEGER PRIMARY KEY NOT NULL
         REFERENCES no_intro_archive_descriptions(archive_id) ON DELETE RESTRICT,
-    marker TEXT NOT NULL CHECK (marker = 'P'),
-    source_order INTEGER NOT NULL CHECK (typeof(source_order) = 'integer' AND source_order >= 0),
-    source_line INTEGER NOT NULL CHECK (typeof(source_line) = 'integer' AND source_line > 0),
-    source_column INTEGER NOT NULL CHECK (typeof(source_column) = 'integer' AND source_column > 0)
+    marker TEXT NOT NULL CHECK (marker = 'P')
 ) WITHOUT ROWID;
 
 CREATE TABLE no_intro_archive_clone_links (
     archive_id INTEGER PRIMARY KEY NOT NULL
         REFERENCES no_intro_archive_descriptions(archive_id) ON DELETE RESTRICT,
     declared_target_number TEXT NOT NULL CHECK (declared_target_number IS NOT NULL AND declared_target_number <> 'P'),
-    relationship_id TEXT NOT NULL UNIQUE
-        REFERENCES relationship_assertions(assertion_key) ON DELETE RESTRICT,
-    source_order INTEGER NOT NULL CHECK (typeof(source_order) = 'integer' AND source_order >= 0),
-    source_line INTEGER NOT NULL CHECK (typeof(source_line) = 'integer' AND source_line > 0),
-    source_column INTEGER NOT NULL CHECK (typeof(source_column) = 'integer' AND source_column > 0)
+    relationship_id INTEGER NOT NULL UNIQUE CHECK (typeof(relationship_id) = 'integer'),
+    source_reference_kind TEXT GENERATED ALWAYS AS ('no_intro_database_archive_clone') VIRTUAL,
+    FOREIGN KEY (relationship_id, source_reference_kind)
+        REFERENCES reported_catalog_relationships(relationship_id, source_reference_kind)
+        ON DELETE RESTRICT
 ) WITHOUT ROWID;
 
 CREATE TABLE no_intro_archive_merge_links (
     archive_id INTEGER PRIMARY KEY NOT NULL
         REFERENCES no_intro_archive_descriptions(archive_id) ON DELETE RESTRICT,
     declared_mergeof TEXT NOT NULL,
-    relationship_id TEXT NOT NULL UNIQUE
-        REFERENCES relationship_assertions(assertion_key) ON DELETE RESTRICT,
-    source_order INTEGER NOT NULL CHECK (typeof(source_order) = 'integer' AND source_order >= 0),
-    source_line INTEGER NOT NULL CHECK (typeof(source_line) = 'integer' AND source_line > 0),
-    source_column INTEGER NOT NULL CHECK (typeof(source_column) = 'integer' AND source_column > 0)
+    relationship_id INTEGER NOT NULL UNIQUE CHECK (typeof(relationship_id) = 'integer'),
+    source_reference_kind TEXT GENERATED ALWAYS AS ('no_intro_database_archive_mergeof') VIRTUAL,
+    FOREIGN KEY (relationship_id, source_reference_kind)
+        REFERENCES reported_catalog_relationships(relationship_id, source_reference_kind)
+        ON DELETE RESTRICT
 ) WITHOUT ROWID;
 
 CREATE TABLE no_intro_dump_sources (
@@ -417,3 +414,51 @@ LEFT JOIN parser_interpretations AS parser
   ON parser.interpretation_key = snapshot.interpretation_key
 LEFT JOIN no_intro_dat_headers AS dat_header
   ON dat_header.snapshot_key = snapshot.snapshot_key;
+
+CREATE VIEW no_intro_database_source_relationships AS
+SELECT registry.assertion_key,
+       CASE reported.source_reference_kind
+         WHEN 'no_intro_database_archive_clone' THEN 'source_parent_clone'
+         ELSE 'alternate_representation_of'
+       END AS relation_type,
+       'source_assertion' AS origin, registry.snapshot_key AS source_snapshot_key,
+       CASE reported.source_reference_kind
+         WHEN 'no_intro_database_archive_clone' THEN 'archive_clone'
+         ELSE 'archive_mergeof'
+       END AS source_field,
+       position.source_line, position.source_column,
+       NULL AS generic_subject_snapshot_key, 'no_intro_archive' AS subject_kind,
+       NULL AS subject_set_id, NULL AS generic_subject_a, NULL AS generic_subject_b,
+       NULL AS generic_subject_c, NULL AS source_subject_a, NULL AS source_subject_b,
+       archive.archive_id AS source_subject_c, registry.snapshot_key AS subject_snapshot_key,
+       NULL AS generic_target_snapshot_key, 'no_intro_archive_reference' AS target_kind,
+       NULL AS target_set_id, NULL AS generic_target_a, NULL AS generic_target_b,
+       NULL AS generic_target_c,
+       CASE reported.source_reference_kind
+         WHEN 'no_intro_database_archive_clone' THEN clone.declared_target_number
+         ELSE merge.declared_mergeof
+       END AS source_target_a,
+       NULL AS source_target_b, NULL AS source_target_c,
+       registry.snapshot_key AS target_snapshot_key, NULL AS rule_version
+FROM catalog_relationships AS registry
+JOIN reported_catalog_relationships AS reported USING(relationship_id)
+LEFT JOIN no_intro_archive_clone_links AS clone USING(relationship_id)
+LEFT JOIN no_intro_archive_merge_links AS merge USING(relationship_id)
+JOIN no_intro_archive_descriptions AS archive
+  ON archive.archive_id=COALESCE(clone.archive_id,merge.archive_id)
+JOIN no_intro_archive_field_positions AS position
+  ON position.archive_id=archive.archive_id
+ AND position.field_kind=CASE reported.source_reference_kind
+     WHEN 'no_intro_database_archive_clone' THEN 30 ELSE 31 END
+JOIN no_intro_database_games AS native ON native.set_id=archive.set_id
+JOIN catalog_sets AS sets ON sets.set_id=native.set_id
+JOIN catalog_set_groups AS groups USING(set_group_id)
+JOIN catalog_snapshots AS snapshot ON snapshot.snapshot_key=groups.snapshot_key
+JOIN parser_interpretations AS interpretation
+  ON interpretation.interpretation_key=snapshot.interpretation_key
+WHERE registry.origin='source' AND registry.snapshot_key=groups.snapshot_key
+  AND reported.source_reference_kind IN ('no_intro_database_archive_clone',
+                                         'no_intro_database_archive_mergeof')
+  AND sets.source_element_kind='no_intro_database_game' AND groups.kind='root'
+  AND interpretation.format IN ('no-intro-database-xml-compatible',
+                                 'no-intro-database-xml-nul-compatible');

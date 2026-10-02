@@ -6,7 +6,8 @@ use diesel::{
 };
 
 use crate::domain::{
-    CatalogSetId, MergeMediaKind, OccurrenceId, RelationshipAssertionKey, SnapshotKey,
+    CatalogSetId, MergeMediaKind, NoIntroArchiveId, NoIntroArchiveReferenceField, OccurrenceId,
+    RelationshipAssertionKey, SnapshotKey,
 };
 
 use super::{NativeAssetFacts, SnapshotAsset};
@@ -46,6 +47,7 @@ pub(super) enum ReportedReferenceKind {
     ClrMamePro(CmpReferenceKind),
     SoftwareClone,
     NoIntroDat(DatParentKind),
+    NoIntroDatabase(NoIntroArchiveReferenceField),
 }
 
 #[derive(Clone, Copy)]
@@ -85,52 +87,88 @@ impl ReportedReferenceKind {
             Self::SoftwareClone => "software_cloneof",
             Self::NoIntroDat(DatParentKind::Name) => "no_intro_dat_cloneof",
             Self::NoIntroDat(DatParentKind::PublisherId) => "no_intro_dat_cloneofid",
+            Self::NoIntroDatabase(NoIntroArchiveReferenceField::Clone) => {
+                "no_intro_database_archive_clone"
+            }
+            Self::NoIntroDatabase(NoIntroArchiveReferenceField::MergeOf) => {
+                "no_intro_database_archive_mergeof"
+            }
         }
     }
 }
 
-/// Native parent owners which derive provenance from their existing source rows.
+/// Native reference owners which derive provenance from their existing source rows.
 #[derive(Clone, Copy)]
-pub(super) enum ParentOwner {
-    Software,
-    NoIntroDat(DatParentKind),
+pub(super) enum ReferenceOwner {
+    Software(CatalogSetId),
+    NoIntroDat {
+        set: CatalogSetId,
+        kind: DatParentKind,
+    },
+    NoIntroArchive {
+        archive: NoIntroArchiveId,
+        field: NoIntroArchiveReferenceField,
+    },
 }
 
-impl ParentOwner {
+impl ReferenceOwner {
     const fn reference_kind(self) -> ReportedReferenceKind {
         match self {
-            Self::Software => ReportedReferenceKind::SoftwareClone,
-            Self::NoIntroDat(kind) => ReportedReferenceKind::NoIntroDat(kind),
+            Self::Software(_) => ReportedReferenceKind::SoftwareClone,
+            Self::NoIntroDat { kind, .. } => ReportedReferenceKind::NoIntroDat(kind),
+            Self::NoIntroArchive { field, .. } => ReportedReferenceKind::NoIntroDatabase(field),
         }
     }
 
     const fn insert_query(self) -> &'static str {
         match self {
-            Self::Software => {
+            Self::Software(_) => {
                 "INSERT INTO software_clone_links(set_id,relationship_id,target_name) VALUES (?,?,?)"
             }
-            Self::NoIntroDat(_) => {
+            Self::NoIntroDat { .. } => {
                 "INSERT INTO no_intro_dat_set_links(set_id,relationship_id,target_literal,link_kind) VALUES (?,?,?,?)"
             }
+            Self::NoIntroArchive {
+                field: NoIntroArchiveReferenceField::Clone,
+                ..
+            } => {
+                "INSERT INTO no_intro_archive_clone_links(archive_id,relationship_id,declared_target_number) VALUES (?,?,?)"
+            }
+            Self::NoIntroArchive {
+                field: NoIntroArchiveReferenceField::MergeOf,
+                ..
+            } => {
+                "INSERT INTO no_intro_archive_merge_links(archive_id,relationship_id,declared_mergeof) VALUES (?,?,?)"
+            }
+        }
+    }
+
+    const fn owner_id(self) -> i64 {
+        match self {
+            Self::Software(set) | Self::NoIntroDat { set, .. } => set.as_i64(),
+            Self::NoIntroArchive { archive, .. } => archive.as_i64(),
         }
     }
 }
 
-pub(super) fn insert_parent(
+pub(super) fn insert_reference(
     connection: &mut SqliteConnection,
     snapshot: &SnapshotKey,
-    set: CatalogSetId,
-    owner: ParentOwner,
+    owner: ReferenceOwner,
     literal: &str,
 ) -> crate::Result<()> {
     let relationship = register(connection, snapshot, owner.reference_kind())?;
     let query = sql_query(owner.insert_query())
-        .bind::<BigInt, _>(set.as_i64())
+        .bind::<BigInt, _>(owner.owner_id())
         .bind::<BigInt, _>(relationship.database_value())
         .bind::<Text, _>(literal);
     match owner {
-        ParentOwner::Software => query.execute(connection)?,
-        ParentOwner::NoIntroDat(kind) => query.bind::<Text, _>(kind.field()).execute(connection)?,
+        ReferenceOwner::Software(_) | ReferenceOwner::NoIntroArchive { .. } => {
+            query.execute(connection)?
+        }
+        ReferenceOwner::NoIntroDat { kind, .. } => {
+            query.bind::<Text, _>(kind.field()).execute(connection)?
+        }
     };
     Ok(())
 }

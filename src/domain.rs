@@ -1063,15 +1063,6 @@ pub(crate) enum NoIntroArchiveReferenceField {
     MergeOf,
 }
 
-impl NoIntroArchiveReferenceField {
-    pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::Clone => "archive_clone",
-            Self::MergeOf => "archive_mergeof",
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RelationshipReviewDecision {

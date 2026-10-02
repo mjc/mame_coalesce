@@ -1299,7 +1299,7 @@ fn assert_archive_relationship_fields(imported: &mut Imported) -> TestResult {
     assert_eq!(
         imported.count(
             "SELECT COUNT(*) AS value FROM no_intro_archive_clone_links c \
-             JOIN relationship_assertions r ON r.assertion_key=c.relationship_id \
+             JOIN reported_catalog_relationships r USING(relationship_id) \
              JOIN no_intro_archive_descriptions a USING(archive_id)"
         )?,
         1
@@ -1307,7 +1307,7 @@ fn assert_archive_relationship_fields(imported: &mut Imported) -> TestResult {
     assert_eq!(
         imported.count(
             "SELECT COUNT(*) AS value FROM no_intro_archive_merge_links m \
-             JOIN relationship_assertions r ON r.assertion_key=m.relationship_id \
+             JOIN reported_catalog_relationships r USING(relationship_id) \
              JOIN no_intro_archive_descriptions a USING(archive_id)"
         )?,
         1
@@ -1323,11 +1323,12 @@ fn assert_archive_relationship_fields(imported: &mut Imported) -> TestResult {
     assert_eq!(
         imported.count(&format!(
             "SELECT COUNT(*) AS value FROM no_intro_archive_clone_links l \
-             JOIN relationship_assertions r ON r.assertion_key=l.relationship_id \
+             JOIN catalog_relationships registry USING(relationship_id) \
+             JOIN no_intro_database_source_relationships r ON r.assertion_key=registry.assertion_key \
              WHERE l.archive_id={archive_a_second} \
              AND l.declared_target_number='ambiguous-parent-number' \
-             AND r.source_target_a IS NULL AND r.target_set_id IS NULL \
-             AND r.subject_archive_id=l.archive_id AND r.target_kind='no_intro_archive_reference'"
+             AND r.source_target_a='ambiguous-parent-number' AND r.target_set_id IS NULL \
+             AND r.source_subject_c=l.archive_id AND r.target_kind='no_intro_archive_reference'"
         ))?,
         1,
         "ambiguous raw archive targets are retained without name resolution"

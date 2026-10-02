@@ -1213,6 +1213,60 @@ scaling or full corpus/CPU/heap acceptance. Other No-Intro reported families and
 derived/user/observed endpoint registries remain pending cutovers; this does not
 finish the shared model.
 
+Database-export archive clone and merge declarations extend the same registry
+to 20 closed reported kinds. `no_intro_archive_clone_links` and
+`no_intro_archive_merge_links` own each literal and once-issued integer
+relationship ID on the actual archive FK. Their kind-qualified registry FKs
+cannot attach a different declaration kind. Attribute order and coordinates
+derive from existing `no_intro_archive_field_positions` codes 30 and 31;
+link and `P` marker rows no longer copy them. A `P` marker has no relationship
+identity. Empty values, leading zeros and repeated archive numbers remain exact
+unresolved source text, not names or resolved ordinal-based identities.
+
+One `ReferenceOwner` enum carries the actual software item, flat DAT set or
+database-export archive newtype into the shared identity issuer and native
+writer. Issued-ID proofs are not copied. The canonical explanation projection,
+reverse ownership closure, readiness, reviews and ordered support all use those
+same native owners; the former generic archive assertion payload and archive
+endpoint column are removed. Generic source copies are rejected independently
+of endpoint shape, before and after publication in both export interpretations.
+New regressions cover exact literals/provenance, source-free queries,
+reimport/reviews/support/backup/late-EOF rollback, immutable native owners,
+independent EOF and publication seals for both clone and merge, orphan identities,
+missing field positions and actual-owner edition readiness. Populated query-plan
+witnesses include 600 unrelated native owners across six formats and all 13
+physical relationship-ID tables. Synthetic P/C reported ownership and the
+derived/user/observed endpoint cutovers remain open, as do complete field,
+query, loader and full-corpus CPU/heap acceptance.
+
+GPT-6.1 Sol medium review/fix/re-review is clear for this archive cutover.
+The initial once-issued-identity test failed before implementation. Sol's
+generic-copy finding also had observed failing tests: otherwise-valid set-shaped
+copies could bypass a guard that checked only archive endpoint shapes. The
+corrected guard excludes these native source fields regardless of endpoint
+shape. The final independent-seal tests remove the other seal inside a rolled-back
+fixture savepoint, preserving actual owners/positions and positive controls.
+The frozen final code passes the complete devenv gate (1,140 tests, one existing
+ignore), strict all-target/all-feature Clippy, format/scripts/CLI checks, locked
+all-feature nextest (1,143 tests, three existing optional skips), and
+warning-denied all-feature documentation. Twelve added integration tests extend
+the shared regression fixture; not every test is claimed as an observed TDD cycle.
+
+A fresh optimized/debug-symbol profiling build imported the acquired Atari 2600
+source-code, Seta Aleck64 and Fairchild Channel F database exports: succeeded=3,
+failed=0; 53 games/archives, nine clone identities, 44 `P` markers and no generic
+assertions. These specimens contain no merge declarations; merge behavior is
+covered by the independent regression fixtures, not this authentic sample.
+SQLite quick/FK and application integrity checks are clean. SQLite is 2,240,512
+logical bytes; the external original-object directory is 9,070 bytes for 38,781
+input bytes. Including startup: 0.55 seconds wall and 23,308 KiB peak RSS. The
+frozen importer and logs are preserved in
+`/tmp/mame-coalesce-native-db-archive-corpus.HQS5ne`; importer SHA-256
+`43f22802bbbd098f77d848886097021a35438e6369bd08231c459b6723eff196`.
+This bounded sample is not complete corpus or new CPU/heap profiling acceptance.
+Existing databases, originals, corpus files and profiling artifacts were not
+deleted, converted or committed.
+
 Reconciliation carries the actual occurrence ID in transient root requirements.
 It indexes native evidence by snapshot and occurrence, attaching a declaration
 only to its full source record. Unresolved references do not attach evidence to
@@ -1280,7 +1334,7 @@ checked before publication, including any optional resolved target.
 | `logiqx_set_links`, `logiqx_device_references`, `logiqx_file_merges` | actual game/media-entry FKs and distinct cloneof/romof/sampleof/device/merge source declarations |
 | `clrmamepro_set_links`, `clrmamepro_rom_merges` | actual set/media-entry FKs and cloneof/sampleof/compatibility merge literals; provenance is read from existing native field-position rows |
 | `no_intro_dat_set_links` | actual game FK, once-issued relationship FK and distinct cloneof-name/cloneofid-publisher-ID literals; provenance comes from existing game field positions |
-| `no_intro_archive_links`, `no_intro_file_merge_links` | declared archive-ID or merge token with its own known/unknown semantics; a parent marker remains a marker fact, not a fabricated target edge |
+| `no_intro_archive_clone_links`, `no_intro_archive_merge_links` | actual database-export archive FK, once-issued integer reported relationship FK and literal number/merge token; provenance derives from existing archive attribute positions 30/31. Clone and merge remain distinct unresolved references. `P` has a separate marker owner and no relationship identity. |
 
 The attribute value listed in a native family inventory is stored in this
 declaration owner when it is reviewable, and is exposed on that family's query

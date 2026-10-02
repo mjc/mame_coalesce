@@ -171,54 +171,6 @@ pub fn insert_source_assertion(
     Ok(key)
 }
 
-pub(super) fn insert_no_intro_archive_reference(
-    conn: &mut SqliteConnection,
-    snapshot: &SnapshotKey,
-    set: CatalogSetId,
-    archive: crate::domain::NoIntroArchiveId,
-    field: crate::domain::NoIntroArchiveReferenceField,
-    text: &crate::xml_reader::DeclaredText,
-) -> crate::Result<()> {
-    use crate::domain::NoIntroArchiveReferenceField;
-    let owner = sql_query("SELECT COUNT(*) AS found FROM no_intro_archive_descriptions a JOIN catalog_sets s USING(set_id) JOIN catalog_set_groups g USING(set_group_id) WHERE a.archive_id=? AND a.set_id=? AND g.snapshot_key=?")
-        .bind::<BigInt,_>(archive.as_i64()).bind::<BigInt,_>(set.as_i64()).bind::<Text,_>(snapshot.as_str())
-        .get_result::<AssertionKeyRow>(conn)?;
-    if owner.found != 1 {
-        return Err(crate::Error::DatabaseSchema(
-            "archive reference has no matching native owner".into(),
-        ));
-    }
-    let key = RelationshipAssertionKey::fresh();
-    let relation = match field {
-        NoIntroArchiveReferenceField::Clone => RelationshipType::SourceParentClone,
-        NoIntroArchiveReferenceField::MergeOf => RelationshipType::AlternateRepresentationOf,
-    };
-    sql_query("INSERT INTO relationship_assertions(assertion_key,relation_type,origin,source_snapshot_key,source_field,source_line,source_column,subject_kind,subject_archive_id,target_kind) VALUES(?,?,'source_assertion',?,?,?,?,'no_intro_archive',?,'no_intro_archive_reference')")
-        .bind::<Text,_>(key.as_str()).bind::<Text,_>(relation.as_str()).bind::<Text,_>(snapshot.as_str())
-        .bind::<Text,_>(field.as_str()).bind::<BigInt,_>(text.location.line).bind::<BigInt,_>(text.location.column)
-        .bind::<BigInt,_>(archive.as_i64()).execute(conn)?;
-    let sql = match field {
-        NoIntroArchiveReferenceField::Clone => {
-            "INSERT INTO no_intro_archive_clone_links(archive_id,declared_target_number,relationship_id,source_order,source_line,source_column) VALUES(?,?,?,?,?,?)"
-        }
-        NoIntroArchiveReferenceField::MergeOf => {
-            "INSERT INTO no_intro_archive_merge_links(archive_id,declared_mergeof,relationship_id,source_order,source_line,source_column) VALUES(?,?,?,?,?,?)"
-        }
-    };
-    let order = i64::try_from(text.source_order).map_err(|_| {
-        crate::Error::DatabaseSchema("archive field order exceeds SQLite range".into())
-    })?;
-    sql_query(sql)
-        .bind::<BigInt, _>(archive.as_i64())
-        .bind::<Text, _>(text.as_str())
-        .bind::<Text, _>(key.as_str())
-        .bind::<BigInt, _>(order)
-        .bind::<BigInt, _>(text.location.line)
-        .bind::<BigInt, _>(text.location.column)
-        .execute(conn)?;
-    Ok(())
-}
-
 fn insert_source_claim(
     conn: &mut SqliteConnection,
     assertion_key: &RelationshipAssertionKey,
@@ -420,12 +372,6 @@ pub fn record_claim(
         insert_claim(conn, &key, claim)
     })?;
     Ok(key)
-}
-
-#[derive(QueryableByName)]
-struct AssertionKeyRow {
-    #[diesel(sql_type = BigInt)]
-    found: i64,
 }
 
 fn validate_claim(claim: &RelationshipClaim) -> crate::Result<()> {

@@ -104,7 +104,41 @@ CROSS JOIN catalog_snapshots AS snapshot USING(snapshot_key)
 CROSS JOIN parser_interpretations AS interpretation USING(interpretation_key)
 WHERE sets.source_element_kind='no_intro_dat_game' AND groups.kind='root'
   AND interpretation.format IN ('no-intro-dat-v3-strict','no-intro-dat-v3-compatible',
-                                 'no-intro-dat-v4-strict','no-intro-dat-v4-compatible');
+                                 'no-intro-dat-v4-strict','no-intro-dat-v4-compatible')
+UNION ALL
+SELECT link.relationship_id,link.source_reference_kind,archive.set_id,
+       CAST(NULL AS INTEGER),groups.snapshot_key
+FROM no_intro_archive_clone_links AS link
+CROSS JOIN no_intro_archive_descriptions AS archive USING(archive_id)
+CROSS JOIN no_intro_database_games AS native ON native.set_id=archive.set_id
+CROSS JOIN no_intro_archive_field_positions AS position
+  ON position.archive_id=link.archive_id AND position.field_kind=30
+CROSS JOIN catalog_sets AS sets ON sets.set_id=native.set_id
+CROSS JOIN catalog_set_groups AS groups USING(set_group_id)
+CROSS JOIN no_intro_exports AS export ON export.snapshot_key=groups.snapshot_key
+CROSS JOIN catalog_snapshots AS snapshot ON snapshot.snapshot_key=groups.snapshot_key
+CROSS JOIN parser_interpretations AS interpretation
+  ON interpretation.interpretation_key=snapshot.interpretation_key
+WHERE sets.source_element_kind='no_intro_database_game' AND groups.kind='root'
+  AND interpretation.format IN ('no-intro-database-xml-compatible',
+                                 'no-intro-database-xml-nul-compatible')
+UNION ALL
+SELECT link.relationship_id,link.source_reference_kind,archive.set_id,
+       CAST(NULL AS INTEGER),groups.snapshot_key
+FROM no_intro_archive_merge_links AS link
+CROSS JOIN no_intro_archive_descriptions AS archive USING(archive_id)
+CROSS JOIN no_intro_database_games AS native ON native.set_id=archive.set_id
+CROSS JOIN no_intro_archive_field_positions AS position
+  ON position.archive_id=link.archive_id AND position.field_kind=31
+CROSS JOIN catalog_sets AS sets ON sets.set_id=native.set_id
+CROSS JOIN catalog_set_groups AS groups USING(set_group_id)
+CROSS JOIN no_intro_exports AS export ON export.snapshot_key=groups.snapshot_key
+CROSS JOIN catalog_snapshots AS snapshot ON snapshot.snapshot_key=groups.snapshot_key
+CROSS JOIN parser_interpretations AS interpretation
+  ON interpretation.interpretation_key=snapshot.interpretation_key
+WHERE sets.source_element_kind='no_intro_database_game' AND groups.kind='root'
+  AND interpretation.format IN ('no-intro-database-xml-compatible',
+                                 'no-intro-database-xml-nul-compatible');
 
 CREATE VIEW reported_catalog_relationship_owner_ids AS
 SELECT relationship_id FROM mame_machine_links
@@ -117,7 +151,9 @@ UNION ALL SELECT relationship_id FROM logiqx_file_merges
 UNION ALL SELECT relationship_id FROM clrmamepro_set_links
 UNION ALL SELECT relationship_id FROM clrmamepro_rom_merges
 UNION ALL SELECT relationship_id FROM software_clone_links
-UNION ALL SELECT relationship_id FROM no_intro_dat_set_links;
+UNION ALL SELECT relationship_id FROM no_intro_dat_set_links
+UNION ALL SELECT relationship_id FROM no_intro_archive_clone_links
+UNION ALL SELECT relationship_id FROM no_intro_archive_merge_links;
 
 CREATE VIEW reported_catalog_relationship_raw_owners AS
 SELECT link.relationship_id,link.source_reference_kind,groups.snapshot_key
@@ -177,7 +213,19 @@ UNION ALL
 SELECT link.relationship_id,link.source_reference_kind,groups.snapshot_key
 FROM catalog_set_groups AS groups CROSS JOIN catalog_sets AS sets
 CROSS JOIN no_intro_dat_set_links AS link
-WHERE sets.set_group_id=groups.set_group_id AND link.set_id=sets.set_id;
+WHERE sets.set_group_id=groups.set_group_id AND link.set_id=sets.set_id
+UNION ALL
+SELECT link.relationship_id,link.source_reference_kind,groups.snapshot_key
+FROM catalog_set_groups AS groups CROSS JOIN catalog_sets AS sets
+CROSS JOIN no_intro_archive_descriptions AS archive
+CROSS JOIN no_intro_archive_clone_links AS link USING(archive_id)
+WHERE sets.set_group_id=groups.set_group_id AND archive.set_id=sets.set_id
+UNION ALL
+SELECT link.relationship_id,link.source_reference_kind,groups.snapshot_key
+FROM catalog_set_groups AS groups CROSS JOIN catalog_sets AS sets
+CROSS JOIN no_intro_archive_descriptions AS archive
+CROSS JOIN no_intro_archive_merge_links AS link USING(archive_id)
+WHERE sets.set_group_id=groups.set_group_id AND archive.set_id=sets.set_id;
 
 -- Source identities and their native declarations close in both directions at publication.
 CREATE TRIGGER reported_relationships_require_native_owner_publication

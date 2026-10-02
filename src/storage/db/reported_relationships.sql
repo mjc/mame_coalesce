@@ -16,7 +16,8 @@ CREATE TABLE reported_catalog_relationships (
         'logiqx_cloneof', 'logiqx_romof', 'logiqx_sampleof', 'logiqx_device_ref',
         'logiqx_rom_merge', 'logiqx_disk_merge',
         'clrmamepro_cloneof', 'clrmamepro_sampleof', 'clrmamepro_rom_merge',
-        'software_cloneof', 'no_intro_dat_cloneof', 'no_intro_dat_cloneofid'
+        'software_cloneof', 'no_intro_dat_cloneof', 'no_intro_dat_cloneofid',
+        'no_intro_database_archive_clone', 'no_intro_database_archive_mergeof'
     )),
     UNIQUE (relationship_id, source_reference_kind)
 );

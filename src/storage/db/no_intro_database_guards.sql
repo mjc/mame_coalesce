@@ -77,47 +77,6 @@ BEGIN SELECT RAISE(ABORT,'native diagnostic links are immutable'); END;
 CREATE TRIGGER no_intro_release_details_diagnostics_reject_replace BEFORE INSERT ON no_intro_release_details_diagnostics
 WHEN EXISTS(SELECT 1 FROM no_intro_release_details_diagnostics WHERE diagnostic_key=NEW.diagnostic_key)
 BEGIN SELECT RAISE(ABORT,'native diagnostic links are immutable'); END;
-CREATE TRIGGER no_intro_archive_assertions_require_owner BEFORE INSERT ON relationship_assertions
-WHEN NEW.subject_kind='no_intro_archive' AND NOT EXISTS (
-    SELECT 1 FROM no_intro_archive_descriptions a JOIN catalog_sets s USING(set_id)
-    JOIN catalog_set_groups g USING(set_group_id) JOIN no_intro_exports e USING(snapshot_key)
-    WHERE a.archive_id=NEW.subject_archive_id AND g.snapshot_key=NEW.source_snapshot_key
-      AND NOT EXISTS (SELECT 1 FROM snapshot_publications WHERE snapshot_key=g.snapshot_key)
-      AND NOT EXISTS (SELECT 1 FROM no_intro_database_parse_counts WHERE snapshot_key=g.snapshot_key)
-)
-BEGIN SELECT RAISE(ABORT,'archive assertion requires its real open export owner'); END;
-
-CREATE TRIGGER no_intro_archive_clone_links_require_assertion BEFORE INSERT ON no_intro_archive_clone_links
-WHEN NOT EXISTS (
-    SELECT 1 FROM relationship_assertions r
-    WHERE r.assertion_key=NEW.relationship_id AND r.origin='source_assertion'
-      AND r.subject_archive_id=NEW.archive_id AND r.subject_kind='no_intro_archive'
-      AND r.target_kind='no_intro_archive_reference' AND r.source_field='archive_clone'
-      AND r.source_line=NEW.source_line AND r.source_column=NEW.source_column
-)
-BEGIN SELECT RAISE(ABORT,'clone link requires its own typed archive assertion'); END;
-
-CREATE TRIGGER no_intro_archive_merge_links_require_assertion BEFORE INSERT ON no_intro_archive_merge_links
-WHEN NOT EXISTS (
-    SELECT 1 FROM relationship_assertions r
-    WHERE r.assertion_key=NEW.relationship_id AND r.origin='source_assertion'
-      AND r.subject_archive_id=NEW.archive_id AND r.subject_kind='no_intro_archive'
-      AND r.target_kind='no_intro_archive_reference' AND r.source_field='archive_mergeof'
-      AND r.source_line=NEW.source_line AND r.source_column=NEW.source_column
-)
-BEGIN SELECT RAISE(ABORT,'merge link requires its own typed archive assertion'); END;
-
-CREATE TRIGGER no_intro_archive_assertions_complete_before_publication BEFORE INSERT ON snapshot_publications
-WHEN EXISTS (
-    SELECT 1 FROM relationship_assertions r
-    WHERE r.source_snapshot_key=NEW.snapshot_key AND r.subject_kind='no_intro_archive'
-      AND NOT ((r.source_field='archive_clone' AND EXISTS (
-          SELECT 1 FROM no_intro_archive_clone_links l WHERE l.relationship_id=r.assertion_key))
-          OR (r.source_field='archive_mergeof' AND EXISTS (
-          SELECT 1 FROM no_intro_archive_merge_links l WHERE l.relationship_id=r.assertion_key)))
-)
-BEGIN SELECT RAISE(ABORT,'archive assertions need their native unresolved references'); END;
-
 CREATE TRIGGER no_intro_exports_require_database_format BEFORE INSERT ON no_intro_exports
 WHEN NOT EXISTS (SELECT 1 FROM catalog_snapshots s JOIN parser_interpretations p USING(interpretation_key) WHERE s.snapshot_key=NEW.snapshot_key AND p.format IN ('no-intro-database-xml-compatible','no-intro-database-xml-nul-compatible') AND NOT EXISTS (SELECT 1 FROM snapshot_publications WHERE snapshot_key=NEW.snapshot_key))
 BEGIN SELECT RAISE(ABORT,'No-Intro export requires an unpublished database-export snapshot'); END;
@@ -154,15 +113,59 @@ BEGIN SELECT RAISE(ABORT,'archive clone marker requires an open archive without 
 CREATE TRIGGER no_intro_archive_clone_links_require_exclusive_owner BEFORE INSERT ON no_intro_archive_clone_links
 WHEN NOT EXISTS (SELECT 1 FROM no_intro_archive_descriptions a JOIN catalog_sets s USING(set_id) JOIN catalog_set_groups c USING(set_group_id) JOIN no_intro_exports e USING(snapshot_key) WHERE a.archive_id=NEW.archive_id)
  OR EXISTS (SELECT 1 FROM no_intro_archive_clone_markers WHERE archive_id=NEW.archive_id)
+ OR EXISTS (SELECT 1 FROM reported_catalog_relationship_owner_ids WHERE relationship_id=NEW.relationship_id)
+ OR NOT EXISTS (
+    SELECT 1 FROM no_intro_archive_descriptions AS archive
+    JOIN no_intro_database_games AS native USING(set_id)
+    JOIN catalog_sets AS sets ON sets.set_id=native.set_id
+    JOIN catalog_set_groups AS groups USING(set_group_id)
+    JOIN no_intro_exports AS export USING(snapshot_key)
+    JOIN catalog_snapshots AS snapshot USING(snapshot_key)
+    JOIN parser_interpretations AS interpretation USING(interpretation_key)
+    JOIN no_intro_archive_field_positions AS position
+      ON position.archive_id=archive.archive_id AND position.field_kind=30
+    JOIN catalog_relationships AS identity ON identity.relationship_id=NEW.relationship_id
+    JOIN reported_catalog_relationships AS reported USING(relationship_id)
+    WHERE archive.archive_id=NEW.archive_id
+      AND sets.source_element_kind='no_intro_database_game' AND groups.kind='root'
+      AND interpretation.format IN ('no-intro-database-xml-compatible',
+                                     'no-intro-database-xml-nul-compatible')
+      AND identity.origin='source' AND identity.snapshot_key=groups.snapshot_key
+      AND reported.source_reference_kind='no_intro_database_archive_clone'
+      AND NOT EXISTS (SELECT 1 FROM snapshot_publications WHERE snapshot_key=groups.snapshot_key)
+      AND NOT EXISTS (SELECT 1 FROM no_intro_database_parse_counts WHERE snapshot_key=groups.snapshot_key)
+ )
  OR EXISTS (SELECT 1 FROM snapshot_publications WHERE snapshot_key=(SELECT c.snapshot_key FROM no_intro_archive_descriptions a JOIN catalog_sets s USING(set_id) JOIN catalog_set_groups c USING(set_group_id) WHERE a.archive_id=NEW.archive_id))
  OR EXISTS (SELECT 1 FROM no_intro_database_parse_counts WHERE snapshot_key=(SELECT c.snapshot_key FROM no_intro_archive_descriptions a JOIN catalog_sets s USING(set_id) JOIN catalog_set_groups c USING(set_group_id) WHERE a.archive_id=NEW.archive_id))
-BEGIN SELECT RAISE(ABORT,'archive clone link requires an open archive without a parent marker'); END;
+BEGIN SELECT RAISE(ABORT,'archive clone link requires its unused reported identity and matching open archive field'); END;
 
 CREATE TRIGGER no_intro_archive_merge_links_require_open_owner BEFORE INSERT ON no_intro_archive_merge_links
 WHEN NOT EXISTS (SELECT 1 FROM no_intro_archive_descriptions a JOIN catalog_sets s USING(set_id) JOIN catalog_set_groups c USING(set_group_id) JOIN no_intro_exports e USING(snapshot_key) WHERE a.archive_id=NEW.archive_id)
+ OR EXISTS (SELECT 1 FROM reported_catalog_relationship_owner_ids WHERE relationship_id=NEW.relationship_id)
+ OR NOT EXISTS (
+    SELECT 1 FROM no_intro_archive_descriptions AS archive
+    JOIN no_intro_database_games AS native USING(set_id)
+    JOIN catalog_sets AS sets ON sets.set_id=native.set_id
+    JOIN catalog_set_groups AS groups USING(set_group_id)
+    JOIN no_intro_exports AS export USING(snapshot_key)
+    JOIN catalog_snapshots AS snapshot USING(snapshot_key)
+    JOIN parser_interpretations AS interpretation USING(interpretation_key)
+    JOIN no_intro_archive_field_positions AS position
+      ON position.archive_id=archive.archive_id AND position.field_kind=31
+    JOIN catalog_relationships AS identity ON identity.relationship_id=NEW.relationship_id
+    JOIN reported_catalog_relationships AS reported USING(relationship_id)
+    WHERE archive.archive_id=NEW.archive_id
+      AND sets.source_element_kind='no_intro_database_game' AND groups.kind='root'
+      AND interpretation.format IN ('no-intro-database-xml-compatible',
+                                     'no-intro-database-xml-nul-compatible')
+      AND identity.origin='source' AND identity.snapshot_key=groups.snapshot_key
+      AND reported.source_reference_kind='no_intro_database_archive_mergeof'
+      AND NOT EXISTS (SELECT 1 FROM snapshot_publications WHERE snapshot_key=groups.snapshot_key)
+      AND NOT EXISTS (SELECT 1 FROM no_intro_database_parse_counts WHERE snapshot_key=groups.snapshot_key)
+ )
  OR EXISTS (SELECT 1 FROM snapshot_publications WHERE snapshot_key=(SELECT c.snapshot_key FROM no_intro_archive_descriptions a JOIN catalog_sets s USING(set_id) JOIN catalog_set_groups c USING(set_group_id) WHERE a.archive_id=NEW.archive_id))
  OR EXISTS (SELECT 1 FROM no_intro_database_parse_counts WHERE snapshot_key=(SELECT c.snapshot_key FROM no_intro_archive_descriptions a JOIN catalog_sets s USING(set_id) JOIN catalog_set_groups c USING(set_group_id) WHERE a.archive_id=NEW.archive_id))
-BEGIN SELECT RAISE(ABORT,'archive merge link requires its open unpublished archive'); END;
+BEGIN SELECT RAISE(ABORT,'archive merge link requires its unused reported identity and matching open archive field'); END;
 
 CREATE TRIGGER no_intro_dump_sources_requires_open_native_owner BEFORE INSERT ON no_intro_dump_sources
 WHEN NOT EXISTS (SELECT 1 FROM no_intro_database_games WHERE set_id=NEW.set_id) OR NOT EXISTS (SELECT 1 FROM no_intro_exports WHERE snapshot_key=(SELECT c.snapshot_key FROM catalog_sets s JOIN catalog_set_groups c USING(set_group_id) WHERE s.set_id=NEW.set_id))
@@ -839,40 +842,6 @@ WHEN EXISTS (SELECT 1 FROM catalog_snapshots s JOIN parser_interpretations p USI
     EXCEPT SELECT occurrence_id,digest_id,scope FROM expected
  )
 BEGIN SELECT RAISE(ABORT,'No-Intro snapshot has a source hash assertion without a typed source field'); END;
-
-CREATE TRIGGER no_intro_database_archive_declaration_position_guard BEFORE INSERT ON snapshot_publications
-WHEN EXISTS (SELECT 1 FROM catalog_snapshots s JOIN parser_interpretations p USING(interpretation_key)
-            WHERE s.snapshot_key=NEW.snapshot_key
-              AND p.format IN ('no-intro-database-xml-compatible','no-intro-database-xml-nul-compatible'))
- AND EXISTS (
-    SELECT 1 FROM no_intro_archive_clone_markers d
-    JOIN no_intro_archive_descriptions a USING(archive_id)
-    JOIN catalog_sets s USING(set_id) JOIN catalog_set_groups c USING(set_group_id)
-    LEFT JOIN no_intro_archive_field_positions p
-      ON p.archive_id=d.archive_id AND p.field_kind=30
-    WHERE c.snapshot_key=NEW.snapshot_key
-      AND (p.archive_id IS NULL OR p.source_order<>d.source_order
-        OR p.source_line<>d.source_line OR p.source_column<>d.source_column)
-    UNION ALL
-    SELECT 1 FROM no_intro_archive_clone_links d
-    JOIN no_intro_archive_descriptions a USING(archive_id)
-    JOIN catalog_sets s USING(set_id) JOIN catalog_set_groups c USING(set_group_id)
-    LEFT JOIN no_intro_archive_field_positions p
-      ON p.archive_id=d.archive_id AND p.field_kind=30
-    WHERE c.snapshot_key=NEW.snapshot_key
-      AND (p.archive_id IS NULL OR p.source_order<>d.source_order
-        OR p.source_line<>d.source_line OR p.source_column<>d.source_column)
-    UNION ALL
-    SELECT 1 FROM no_intro_archive_merge_links d
-    JOIN no_intro_archive_descriptions a USING(archive_id)
-    JOIN catalog_sets s USING(set_id) JOIN catalog_set_groups c USING(set_group_id)
-    LEFT JOIN no_intro_archive_field_positions p
-      ON p.archive_id=d.archive_id AND p.field_kind=31
-    WHERE c.snapshot_key=NEW.snapshot_key
-      AND (p.archive_id IS NULL OR p.source_order<>d.source_order
-        OR p.source_line<>d.source_line OR p.source_column<>d.source_column)
- )
-BEGIN SELECT RAISE(ABORT,'Archive declaration locations must match their single typed position'); END;
 
 CREATE TRIGGER no_intro_database_reject_missing_field_orders BEFORE INSERT ON snapshot_publications
 WHEN EXISTS (SELECT 1 FROM catalog_snapshots s JOIN parser_interpretations p USING(interpretation_key)

@@ -156,11 +156,10 @@ fn insert_item(
     insert_item_text_positions(conn, record, &item.text_positions)?;
 
     if let Some(parent) = &item.clone_of {
-        super::reported_relationships::insert_parent(
+        super::reported_relationships::insert_reference(
             conn,
             snapshot_key,
-            record,
-            super::reported_relationships::ParentOwner::Software,
+            super::reported_relationships::ReferenceOwner::Software(record),
             parent.as_str(),
         )?;
     }

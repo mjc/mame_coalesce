@@ -15,6 +15,7 @@ use mame_coalesce::{
         RelationshipEndpoint, RelationshipEvidence, RelationshipOrigin, RelationshipReview,
         RelationshipReviewDecision, RelationshipType, SnapshotKey,
     },
+    no_intro_db_xml::NoIntroDatabaseMode,
     restore_backup,
 };
 
@@ -25,6 +26,7 @@ const CMP: &str = r#"game ( name "child" cloneof "missing-clone" sampleof "" rom
 
 const SOFTWARE: &str = r#"<softwarelists><softwarelist name="first" description="First"><software name="child" cloneof="missing"><description>Child</description><year>2026</year><publisher>Publisher</publisher></software></softwarelist><softwarelist name="second" description="Second"><software name="child" cloneof=""><description>Child</description><year>2026</year><publisher>Publisher</publisher></software></softwarelist></softwarelists>"#;
 const NO_INTRO_DAT: &str = r#"<datafile><header><id>1</id><name>Native parents</name><description>Native parents</description><version>1</version></header><game name="child" cloneof="missing" cloneofid="0007"><description>Child</description><rom name="child.bin"/></game><game name="empty" cloneof="" cloneofid=""><description>Empty</description><rom name="empty.bin"/></game><game name="id-only" cloneofid="7"><description>ID only</description><rom name="id.bin"/></game></datafile>"#;
+const NO_INTRO_DATABASE: &str = r#"<datafile><header><version>native-v1</version></header><game name="same"><archive number="0001" clone="0007" mergeof="7"/><archive number="0001" clone="" mergeof=""/><archive number="0007" clone="P"/></game><game name="same"><archive number="7" clone="0007"/></game></datafile>"#;
 
 #[derive(QueryableByName)]
 struct Count {
@@ -239,6 +241,15 @@ fn dat_name_and_id_parents_have_distinct_native_identities() -> TestResult {
     )
 }
 
+#[test]
+fn database_archive_references_use_once_issued_native_identities() -> TestResult {
+    assert_native_parent_owners(
+        CatalogDocumentFormat::NoIntroDatabase(NoIntroDatabaseMode::ObservedCompatible),
+        NO_INTRO_DATABASE,
+        5,
+    )
+}
+
 fn remove_publication(fixture: &Fixture, connection: &mut SqliteConnection) -> TestResult {
     // Unpublish only this disposable fixture; preserve all original native facts.
     connection.batch_execute("DROP TRIGGER snapshot_publications_are_immutable_delete")?;
@@ -263,24 +274,34 @@ fn assert_generic_copies_are_rejected(
     let mut connection = fixture.connection()?;
     connection.batch_execute("PRAGMA foreign_keys=OFF; PRAGMA recursive_triggers=OFF;")?;
     let declarations = app::explain_relationships(&fixture.database)?;
-    let columns = sql_query("SELECT projection.name FROM pragma_table_info('software_dat_source_relationships') AS projection JOIN pragma_table_xinfo('relationship_assertions') AS stored USING(name) WHERE projection.name<>'assertion_key' AND stored.hidden=0 ORDER BY projection.cid")
+    let columns = sql_query("SELECT projection.name FROM pragma_table_info('relationship_assertion_explanations') AS projection JOIN pragma_table_xinfo('relationship_assertions') AS stored USING(name) WHERE projection.name<>'assertion_key' AND stored.hidden=0 ORDER BY projection.cid")
         .load::<Column>(&mut connection)?
         .into_iter().map(|column| column.name).collect::<Vec<_>>().join(",");
     if pending {
         remove_publication(&fixture, &mut connection)?;
     }
+    let mut copy_queries = vec![format!(
+        "INSERT INTO relationship_assertions(assertion_key,{columns}) SELECT ?,{columns} FROM relationship_assertion_explanations WHERE assertion_key=?"
+    )];
+    if matches!(format, CatalogDocumentFormat::NoIntroDatabase(_)) {
+        // A forbidden native shape is not sufficient: a copied source field
+        // must also be rejected when endpoints are otherwise-valid root sets.
+        copy_queries.push("INSERT INTO relationship_assertions(assertion_key,relation_type,origin,source_snapshot_key,source_field,source_line,source_column,subject_kind,subject_set_id,source_subject_a,target_kind,source_target_a) SELECT ?,explanation.relation_type,explanation.origin,explanation.source_snapshot_key,explanation.source_field,explanation.source_line,explanation.source_column,'catalog_set',archive.set_id,sets.set_name,'catalog_set',explanation.source_target_a FROM relationship_assertion_explanations AS explanation JOIN no_intro_archive_descriptions AS archive ON archive.archive_id=explanation.source_subject_c JOIN catalog_sets AS sets ON sets.set_id=archive.set_id WHERE explanation.assertion_key=?".into());
+    }
     for declaration in &declarations {
-        let copied = sql_query(format!("INSERT INTO relationship_assertions(assertion_key,{columns}) SELECT ?,{columns} FROM software_dat_source_relationships WHERE assertion_key=?"))
-            .bind::<Text,_>(format!("copy:{}", declaration.assertion_key.as_str()))
-            .bind::<Text,_>(declaration.assertion_key.as_str())
-            .execute(&mut connection);
-        let error = copied.expect_err("a native declaration acquired a generic second owner");
-        assert!(
-            error
-                .to_string()
-                .contains("relationship assertions are immutable"),
-            "wrong guard rejected native copy: {error}"
-        );
+        for copy_query in &copy_queries {
+            let copied = sql_query(copy_query)
+                .bind::<Text, _>(format!("copy:{}", declaration.assertion_key.as_str()))
+                .bind::<Text, _>(declaration.assertion_key.as_str())
+                .execute(&mut connection);
+            let error = copied.expect_err("a native declaration acquired a generic second owner");
+            assert!(
+                error
+                    .to_string()
+                    .contains("relationship assertions are immutable"),
+                "wrong guard rejected native copy: {error}"
+            );
+        }
     }
     assert_eq!(
         sql_query("SELECT count(*) AS count FROM relationship_assertions")
@@ -321,6 +342,36 @@ fn pending_dat_declarations_cannot_acquire_generic_copies() -> TestResult {
         NO_INTRO_DAT,
         true,
     )
+}
+
+#[test]
+fn published_database_archive_references_cannot_acquire_generic_copies() -> TestResult {
+    for mode in [
+        NoIntroDatabaseMode::ObservedCompatible,
+        NoIntroDatabaseMode::NullRecoveryCompatible,
+    ] {
+        assert_generic_copies_are_rejected(
+            CatalogDocumentFormat::NoIntroDatabase(mode),
+            NO_INTRO_DATABASE,
+            false,
+        )?;
+    }
+    Ok(())
+}
+
+#[test]
+fn pending_database_archive_references_cannot_acquire_generic_copies() -> TestResult {
+    for mode in [
+        NoIntroDatabaseMode::ObservedCompatible,
+        NoIntroDatabaseMode::NullRecoveryCompatible,
+    ] {
+        assert_generic_copies_are_rejected(
+            CatalogDocumentFormat::NoIntroDatabase(mode),
+            NO_INTRO_DATABASE,
+            true,
+        )?;
+    }
+    Ok(())
 }
 
 fn register_test_identity(
@@ -577,6 +628,124 @@ fn dat_native_keys_survive_reviews_backup_and_late_eof_failure() -> TestResult {
 }
 
 #[test]
+fn database_archive_keys_survive_reviews_backup_and_late_eof_failure() -> TestResult {
+    assert_review_backup_and_rollback(
+        CatalogDocumentFormat::NoIntroDatabase(NoIntroDatabaseMode::ObservedCompatible),
+        NO_INTRO_DATABASE,
+        NO_INTRO_DATABASE.trim_end_matches("</datafile>"),
+        RelationshipType::SourceParentClone,
+    )
+}
+
+#[test]
+fn archive_targets_preserve_empty_leading_zero_and_repeated_numbers_without_resolution()
+-> TestResult {
+    let fixture = Fixture::new(
+        CatalogDocumentFormat::NoIntroDatabase(NoIntroDatabaseMode::ObservedCompatible),
+        NO_INTRO_DATABASE,
+    )?;
+    let mut parents = Vec::new();
+    let mut merges = Vec::new();
+    let mut owner_ids = std::collections::BTreeSet::new();
+    for explanation in app::explain_relationships(&fixture.database)? {
+        let RelationshipEndpoint::NoIntroArchive {
+            snapshot,
+            archive_id,
+        } = explanation.claim.subject
+        else {
+            return Err("archive reference subject lost its native archive owner".into());
+        };
+        assert_eq!(snapshot, fixture.snapshot);
+        owner_ids.insert(archive_id);
+        let RelationshipEndpoint::NoIntroArchiveReference { snapshot, literal } =
+            explanation.claim.target
+        else {
+            return Err("archive literal was resolved or coerced to a set name".into());
+        };
+        assert_eq!(snapshot, fixture.snapshot);
+        let field = explanation.source_field.ok_or("archive field absent")?;
+        assert_eq!(
+            explanation.claim.evidence,
+            RelationshipEvidence::ArchiveReference {
+                declared_archive_reference: literal.clone(),
+                source_field: field.clone(),
+            }
+        );
+        assert!(explanation.source_location.is_some());
+        assert_eq!(
+            explanation
+                .source
+                .ok_or("native provenance absent")?
+                .declared_version
+                .as_deref(),
+            Some("native-v1")
+        );
+        match field.as_str() {
+            "archive_clone" => parents.push(literal),
+            "archive_mergeof" => merges.push(literal),
+            _ => return Err("unexpected archive reference kind".into()),
+        }
+    }
+    parents.sort();
+    merges.sort();
+    assert_eq!(parents, ["", "0007", "0007"]);
+    assert_eq!(merges, ["", "7"]);
+    assert_eq!(
+        owner_ids.len(),
+        3,
+        "repeated numbers/names must not fan out or collapse actual owners; P is not a target"
+    );
+    Ok(())
+}
+
+#[test]
+fn archive_explanations_derive_exact_field_order_and_location_from_positions() -> TestResult {
+    let fixture = Fixture::new(
+        CatalogDocumentFormat::NoIntroDatabase(NoIntroDatabaseMode::ObservedCompatible),
+        NO_INTRO_DATABASE,
+    )?;
+    let mut connection = fixture.connection()?;
+    let positions = sql_query(
+        "SELECT registry.assertion_key, 'archive_clone' AS source_field, position.source_order, \
+                0 AS is_quoted, position.source_line, position.source_column \
+         FROM catalog_relationships registry JOIN no_intro_archive_clone_links link USING(relationship_id) \
+         JOIN no_intro_archive_field_positions position ON position.archive_id=link.archive_id AND position.field_kind=30 \
+         UNION ALL \
+         SELECT registry.assertion_key, 'archive_mergeof', position.source_order, 0, position.source_line, position.source_column \
+         FROM catalog_relationships registry JOIN no_intro_archive_merge_links link USING(relationship_id) \
+         JOIN no_intro_archive_field_positions position ON position.archive_id=link.archive_id AND position.field_kind=31"
+    ).load::<FieldPosition>(&mut connection)?;
+    let explanations = app::explain_relationships(&fixture.database)?;
+    assert_eq!(positions.len(), 5);
+    for position in positions {
+        let explanation = explanations
+            .iter()
+            .find(|row| row.assertion_key.as_str() == position.assertion_key)
+            .ok_or("native archive key missing")?;
+        assert_eq!(
+            explanation.source_field.as_deref(),
+            Some(position.source_field.as_str())
+        );
+        let location = explanation
+            .source_location
+            .ok_or("native position location missing")?;
+        assert_eq!(
+            (location.line, location.column),
+            (position.source_line, position.source_column)
+        );
+        assert_eq!(
+            position.source_order,
+            if position.source_field == "archive_clone" {
+                1
+            } else {
+                2
+            }
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn software_clone_endpoints_keep_list_names_separate_from_item_names() -> TestResult {
     let fixture = Fixture::new(CatalogDocumentFormat::MameSoftwareListXml, SOFTWARE)?;
     let mut literals = std::collections::BTreeMap::new();
@@ -675,6 +844,9 @@ fn native_declarations_have_one_value_and_provenance_owner() -> TestResult {
         "clrmamepro_rom_merges",
         "software_clone_links",
         "no_intro_dat_set_links",
+        "no_intro_archive_clone_markers",
+        "no_intro_archive_clone_links",
+        "no_intro_archive_merge_links",
     ] {
         let count = sql_query(format!("SELECT count(*) AS count FROM pragma_table_info('{table}') WHERE name IN ('source_line','source_column','source_order','is_quoted','source_field')"))
             .get_result::<Count>(&mut connection)?.count;
@@ -780,6 +952,162 @@ fn dat_actual_owners_reject_replacement_and_mutation_without_pragmas() -> TestRe
     )
 }
 
+#[test]
+fn database_archive_owners_reject_replacement_and_mutation_without_pragmas() -> TestResult {
+    assert_published_native_facts_are_sealed(
+        CatalogDocumentFormat::NoIntroDatabase(NoIntroDatabaseMode::ObservedCompatible),
+        NO_INTRO_DATABASE,
+        &[
+            ("no_intro_archive_clone_links", "declared_target_number"),
+            ("no_intro_archive_merge_links", "declared_mergeof"),
+            ("no_intro_archive_clone_markers", "marker"),
+        ],
+    )
+}
+
+#[test]
+fn orphan_database_archive_identity_prevents_publication_without_pragmas() -> TestResult {
+    let fixture = Fixture::new(
+        CatalogDocumentFormat::NoIntroDatabase(NoIntroDatabaseMode::ObservedCompatible),
+        NO_INTRO_DATABASE,
+    )?;
+    let mut connection = fixture.connection()?;
+    connection.batch_execute("PRAGMA foreign_keys=OFF; PRAGMA recursive_triggers=OFF;")?;
+    remove_publication(&fixture, &mut connection)?;
+    connection.batch_execute("SAVEPOINT orphan_archive")?;
+    register_test_identity(
+        &mut connection,
+        &fixture.snapshot,
+        "no_intro_database_archive_clone",
+    )?;
+    assert_native_guard(
+        publish(&fixture, &mut connection),
+        "reported source relationships require complete native identity ownership",
+    );
+    connection.batch_execute("ROLLBACK TO orphan_archive; RELEASE orphan_archive")?;
+    assert_eq!(
+        publish(&fixture, &mut connection)?,
+        1,
+        "rollback restores complete publishable native owners"
+    );
+    Ok(())
+}
+
+#[test]
+fn database_archive_links_independently_reject_fresh_children_after_eof_or_publication()
+-> TestResult {
+    for (table, literal_column, reference_kind) in [
+        (
+            "no_intro_archive_clone_links",
+            "declared_target_number",
+            "no_intro_database_archive_clone",
+        ),
+        (
+            "no_intro_archive_merge_links",
+            "declared_mergeof",
+            "no_intro_database_archive_mergeof",
+        ),
+    ] {
+        for pending in [false, true] {
+            let fixture = Fixture::new(
+                CatalogDocumentFormat::NoIntroDatabase(NoIntroDatabaseMode::ObservedCompatible),
+                NO_INTRO_DATABASE,
+            )?;
+            let original = app::explain_relationships(&fixture.database)?;
+            let mut connection = fixture.connection()?;
+            connection.batch_execute("PRAGMA foreign_keys=OFF; PRAGMA recursive_triggers=OFF;")?;
+            let archive = sql_query(format!(
+                "SELECT archive_id AS count FROM {table} ORDER BY archive_id LIMIT 1"
+            ))
+            .get_result::<Count>(&mut connection)?
+            .count;
+            if pending {
+                remove_publication(&fixture, &mut connection)?;
+            }
+            // Bypass registry insertion and the existing link's delete seal in this
+            // disposable fixture. Keep the actual archive and matching position.
+            connection.batch_execute(&format!("SAVEPOINT late_archive; DROP TRIGGER catalog_relationships_insert_guard; DROP TRIGGER reported_catalog_relationships_insert_guard; DROP TRIGGER {table}_immutable_delete"))?;
+            if !pending {
+                // Publication must reject the fresh child independently of EOF.
+                connection.batch_execute(
+                    "DROP TRIGGER no_intro_database_parse_counts_immutable_delete",
+                )?;
+                assert_eq!(
+                    sql_query("DELETE FROM no_intro_database_parse_counts WHERE snapshot_key=?")
+                        .bind::<Text, _>(fixture.snapshot.as_str())
+                        .execute(&mut connection)?,
+                    1
+                );
+            }
+            assert_eq!(sql_query("SELECT COUNT(*) AS count FROM no_intro_database_parse_counts WHERE snapshot_key=?").bind::<Text,_>(fixture.snapshot.as_str()).get_result::<Count>(&mut connection)?.count, i64::from(pending));
+            assert_eq!(
+                sql_query(
+                    "SELECT COUNT(*) AS count FROM snapshot_publications WHERE snapshot_key=?"
+                )
+                .bind::<Text, _>(fixture.snapshot.as_str())
+                .get_result::<Count>(&mut connection)?
+                .count,
+                i64::from(!pending)
+            );
+            sql_query(format!("DELETE FROM {table} WHERE archive_id=?"))
+                .bind::<BigInt, _>(archive)
+                .execute(&mut connection)?;
+            let identity =
+                register_test_identity(&mut connection, &fixture.snapshot, reference_kind)?;
+            assert_native_guard(sql_query(format!("INSERT INTO {table}(archive_id,relationship_id,{literal_column}) VALUES (?,?,'new-parent')")).bind::<BigInt,_>(archive).bind::<BigInt,_>(identity).execute(&mut connection), "unused reported identity");
+            connection.batch_execute("ROLLBACK TO late_archive; RELEASE late_archive")?;
+            if pending {
+                assert_eq!(publish(&fixture, &mut connection)?, 1);
+            }
+            assert_eq!(app::explain_relationships(&fixture.database)?, original);
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn database_archive_readiness_requires_its_actual_attribute_position() -> TestResult {
+    let fixture = Fixture::new(
+        CatalogDocumentFormat::NoIntroDatabase(NoIntroDatabaseMode::ObservedCompatible),
+        NO_INTRO_DATABASE,
+    )?;
+    let mut connection = fixture.connection()?;
+    connection.batch_execute("PRAGMA foreign_keys=OFF; PRAGMA recursive_triggers=OFF;")?;
+    let keys = app::explain_relationships(&fixture.database)?
+        .into_iter()
+        .map(|row| row.assertion_key)
+        .collect::<Vec<_>>();
+    assert_eq!(keys.len(), 5);
+    let readiness = concat!(
+        "SELECT is_published AS count FROM (WITH requested(assertion_key) AS (VALUES (?)) ",
+        include_str!("../src/storage/db/relationship_readiness.sql"),
+        ")"
+    );
+    for key in &keys {
+        assert_eq!(
+            sql_query(readiness)
+                .bind::<Text, _>(key.as_str())
+                .get_result::<Count>(&mut connection)?
+                .count,
+            1
+        );
+    }
+    // Corrupt only this isolated fixture to exercise readiness independently
+    // of the native position's normal immutability seal.
+    connection.batch_execute("DROP TRIGGER no_intro_archive_field_positions_immutable_delete; DELETE FROM no_intro_archive_field_positions WHERE field_kind IN (30,31)")?;
+    for key in &keys {
+        assert_eq!(
+            sql_query(readiness)
+                .bind::<Text, _>(key.as_str())
+                .get_result::<Count>(&mut connection)?
+                .count,
+            0,
+            "registry identity alone must not publish a positionless declaration"
+        );
+    }
+    Ok(())
+}
+
 fn assert_readiness_checks_native_owner_edition(
     format: CatalogDocumentFormat,
     source: &str,
@@ -788,8 +1116,12 @@ fn assert_readiness_checks_native_owner_edition(
     let fixture = Fixture::new(format, source)?;
     let mut connection = fixture.connection()?;
     connection.batch_execute("PRAGMA foreign_keys=OFF; PRAGMA recursive_triggers=OFF;")?;
-    let owner = sql_query("SELECT set_id AS count FROM catalog_sets JOIN catalog_set_groups USING(set_group_id) WHERE snapshot_key=? AND set_name='child' ORDER BY set_id LIMIT 1")
+    let owner = sql_query("SELECT set_id AS count FROM catalog_sets JOIN catalog_set_groups USING(set_group_id) WHERE snapshot_key=? ORDER BY set_id LIMIT 1")
         .bind::<Text,_>(fixture.snapshot.as_str()).get_result::<Count>(&mut connection)?.count;
+    let archives =
+        sql_query("SELECT archive_id AS count FROM no_intro_archive_descriptions WHERE set_id=?")
+            .bind::<BigInt, _>(owner)
+            .load::<Count>(&mut connection)?;
     let keys = app::explain_relationships(&fixture.database)?
         .into_iter()
         .filter(|row| match &row.claim.subject {
@@ -798,6 +1130,9 @@ fn assert_readiness_checks_native_owner_edition(
             }
             RelationshipEndpoint::CatalogMediaEntry { .. } => matches!(&row.claim.target,
             RelationshipEndpoint::CatalogMergeReference { set_id, .. } if set_id.as_i64()==owner),
+            RelationshipEndpoint::NoIntroArchive { archive_id, .. } => archives
+                .iter()
+                .any(|archive| archive.count == archive_id.as_i64()),
             _ => false,
         })
         .map(|row| row.assertion_key)
@@ -870,6 +1205,15 @@ fn dat_readiness_independently_verifies_native_owner_edition() -> TestResult {
         CatalogDocumentFormat::NoIntroDat(NoIntroDatMode::V4Compatible),
         NO_INTRO_DAT,
         2,
+    )
+}
+
+#[test]
+fn database_archive_readiness_independently_verifies_native_owner_edition() -> TestResult {
+    assert_readiness_checks_native_owner_edition(
+        CatalogDocumentFormat::NoIntroDatabase(NoIntroDatabaseMode::ObservedCompatible),
+        NO_INTRO_DATABASE,
+        4,
     )
 }
 
@@ -947,6 +1291,8 @@ fn assert_readiness_plan_is_keyed(connection: &mut SqliteConnection, key: &str) 
         "clrmamepro_rom_merges",
         "software_clone_links",
         "no_intro_dat_set_links",
+        "no_intro_archive_clone_links",
+        "no_intro_archive_merge_links",
     ] {
         assert!(
             !details.iter().any(|line| line == &format!("SCAN {alias}")
@@ -992,6 +1338,13 @@ fn add_unrelated_native_owners(fixture: &Fixture) -> TestResult {
             "unrelated-dat",
             "<datafile><header><id>1</id><name>Unrelated</name><description>Unrelated</description><version>1</version></header>",
             "<game name='SEEDNAME' cloneof='missing' cloneofid='0007'><description>Unrelated</description><rom name='rom'/></game>",
+            "</datafile>",
+        ),
+        (
+            CatalogDocumentFormat::NoIntroDatabase(NoIntroDatabaseMode::ObservedCompatible),
+            "unrelated-database",
+            "<datafile>",
+            "<game name='SEEDNAME'><archive number='0001' clone='0007' mergeof=''/></game>",
             "</datafile>",
         ),
     ] {
@@ -1067,6 +1420,13 @@ fn assert_native_lookup_plans_are_keyed(
             "logiqx_set_links",
             "software_clone_links",
             "no_intro_dat_set_links",
+            "no_intro_archive_clone_links",
+            "no_intro_archive_merge_links",
+            "archive",
+            "game",
+            "export",
+            "clone",
+            "merge",
         ] {
             assert!(
                 !details.iter().any(|line| line == &format!("SCAN {alias}")
@@ -1094,6 +1454,7 @@ fn assert_native_lookup_plans_are_keyed(
         "link",
         "reference",
         "declaration",
+        "archive",
     ] {
         assert!(
             !details.iter().any(|line| line == &format!("SCAN {alias}")
@@ -1137,6 +1498,15 @@ fn dat_native_queries_seek_actual_identity_and_edition_keys() -> TestResult {
         CatalogDocumentFormat::NoIntroDat(NoIntroDatMode::V4Compatible),
         NO_INTRO_DAT,
         "software_dat_source_relationships",
+    )
+}
+
+#[test]
+fn database_archive_queries_seek_actual_identity_and_edition_keys() -> TestResult {
+    assert_native_lookup_plans_are_keyed(
+        CatalogDocumentFormat::NoIntroDatabase(NoIntroDatabaseMode::ObservedCompatible),
+        NO_INTRO_DATABASE,
+        "no_intro_database_source_relationships",
     )
 }
 

@@ -17,6 +17,8 @@ use crate::{
     xml_reader::DeclaredText,
 };
 
+use super::reported_relationships::{ReferenceOwner, insert_reference};
+
 #[derive(Clone, Copy)]
 struct DumpSourceId(i64);
 #[derive(Clone, Copy)]
@@ -482,7 +484,7 @@ pub(super) fn insert_game(
             ],
             &archive_fields(archive),
         )?)?;
-        insert_archive_links(conn, snapshot, set, id, archive)?;
+        insert_archive_links(conn, snapshot, id, archive)?;
     }
     let mut file_order = 0;
     for child in &game.source_or_release {
@@ -746,49 +748,39 @@ fn insert_file_digest_row(
 fn insert_archive_links(
     conn: &mut SqliteConnection,
     snapshot: &SnapshotKey,
-    set: CatalogSetId,
     id: NoIntroArchiveId,
     archive: &ArchiveDescription,
 ) -> crate::Result<()> {
     if let Some(clone) = &archive.clone {
         match clone {
-            ArchiveClone::ParentMarker(text) => {
-                sql_query("INSERT INTO no_intro_archive_clone_markers(archive_id,marker,source_order,source_line,source_column) VALUES(?,'P',?,?,?)")
-                    .bind::<BigInt,_>(id.as_i64()).bind::<BigInt,_>(ordinal(text.source_order)?)
-                    .bind::<BigInt,_>(text.location.line).bind::<BigInt,_>(text.location.column).execute(conn)?;
+            ArchiveClone::ParentMarker(_) => {
+                sql_query(
+                    "INSERT INTO no_intro_archive_clone_markers(archive_id,marker) VALUES(?,'P')",
+                )
+                .bind::<BigInt, _>(id.as_i64())
+                .execute(conn)?;
             }
-            ArchiveClone::OtherValue(text) => insert_archive_reference(
+            ArchiveClone::OtherValue(text) => insert_reference(
                 conn,
                 snapshot,
-                set,
-                id,
-                NoIntroArchiveReferenceField::Clone,
-                text,
+                ReferenceOwner::NoIntroArchive {
+                    archive: id,
+                    field: NoIntroArchiveReferenceField::Clone,
+                },
+                text.as_str(),
             )?,
         }
     }
     if let Some(text) = &archive.mergeof {
-        insert_archive_reference(
+        insert_reference(
             conn,
             snapshot,
-            set,
-            id,
-            NoIntroArchiveReferenceField::MergeOf,
-            text,
+            ReferenceOwner::NoIntroArchive {
+                archive: id,
+                field: NoIntroArchiveReferenceField::MergeOf,
+            },
+            text.as_str(),
         )?;
     }
     Ok(())
-}
-
-fn insert_archive_reference(
-    conn: &mut SqliteConnection,
-    snapshot: &SnapshotKey,
-    set: CatalogSetId,
-    id: NoIntroArchiveId,
-    field: NoIntroArchiveReferenceField,
-    text: &DeclaredText,
-) -> crate::Result<()> {
-    super::super::relationships::insert_no_intro_archive_reference(
-        conn, snapshot, set, id, field, text,
-    )
 }

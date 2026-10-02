@@ -16,7 +16,7 @@ use crate::{
     xml_reader::DeclaredText,
 };
 
-use super::reported_relationships::{DatParentKind, ParentOwner, insert_parent};
+use super::reported_relationships::{DatParentKind, ReferenceOwner, insert_reference};
 
 const MODES: [&str; 4] = [
     "no-intro-dat-v3-strict",
@@ -385,11 +385,13 @@ pub(super) fn insert_game(
         (DatParentKind::PublisherId, game.cloneofid.as_ref()),
     ] {
         if let Some(field) = field {
-            insert_parent(
+            insert_reference(
                 conn,
                 snapshot_key,
-                CatalogSetId::from_database(set_id.value),
-                ParentOwner::NoIntroDat(kind),
+                ReferenceOwner::NoIntroDat {
+                    set: CatalogSetId::from_database(set_id.value),
+                    kind,
+                },
                 field.as_str(),
             )?;
         }

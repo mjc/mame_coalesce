@@ -86,15 +86,16 @@ fn add_release_file(connection: &mut SqliteConnection, claim_kind: &str) -> Test
     Ok(())
 }
 
-fn add_archive_and_clone_assertion(connection: &mut SqliteConnection) -> TestResult {
+fn add_archive_and_clone_identity(connection: &mut SqliteConnection) -> TestResult {
     connection.batch_execute(
         "INSERT INTO no_intro_archive_descriptions(archive_id,set_id,source_order,source_line,source_column)
              VALUES(30,1,2,7,1);
-         INSERT INTO relationship_assertions(
-             assertion_key,relation_type,origin,source_snapshot_key,source_field,
-             subject_kind,subject_archive_id,target_kind,source_line,source_column)
-         VALUES('clone-assertion','source_parent_clone','source_assertion','snapshot','archive_clone',
-             'no_intro_archive',30,'no_intro_archive_reference',7,2);",
+         INSERT INTO no_intro_archive_field_positions(archive_id,field_kind,source_order,source_line,source_column)
+             VALUES(30,30,0,7,2);
+         INSERT INTO catalog_relationships(relationship_id,assertion_key,origin,snapshot_key)
+             VALUES(40,'clone-assertion','source','snapshot');
+         INSERT INTO reported_catalog_relationships(relationship_id,source_reference_kind)
+             VALUES(40,'no_intro_database_archive_clone');",
     )?;
     Ok(())
 }
@@ -174,16 +175,16 @@ fn direct_sql_rejects_an_unknown_header_field_code() -> TestResult {
 #[test]
 fn empty_clone_target_is_a_scoped_link_not_a_parent_marker() -> TestResult {
     let mut connection = fresh_database(false)?;
-    add_archive_and_clone_assertion(&mut connection)?;
+    add_archive_and_clone_identity(&mut connection)?;
     connection.batch_execute(
         "INSERT INTO no_intro_archive_clone_links(
-             archive_id,declared_target_number,relationship_id,source_order,source_line,source_column)
-         VALUES(30,'','clone-assertion',2,7,2);",
+             archive_id,declared_target_number,relationship_id)
+         VALUES(30,'',40);",
     )?;
 
     let result = connection.batch_execute(
-        "INSERT INTO no_intro_archive_clone_markers(archive_id,marker,source_order,source_line,source_column)
-         VALUES(30,'P',2,7,2);",
+        "INSERT INTO no_intro_archive_clone_markers(archive_id,marker)
+         VALUES(30,'P');",
     );
     assert!(
         result.is_err(),
@@ -196,19 +197,43 @@ fn empty_clone_target_is_a_scoped_link_not_a_parent_marker() -> TestResult {
 fn archive_references_reject_wrong_owner_field_and_snapshot_even_without_foreign_keys() -> TestResult
 {
     let mut connection = fresh_database(false)?;
-    add_archive_and_clone_assertion(&mut connection)?;
-    connection.batch_execute("PRAGMA foreign_keys=OFF;")?;
+    add_archive_and_clone_identity(&mut connection)?;
+    connection.batch_execute("PRAGMA foreign_keys=OFF; PRAGMA recursive_triggers=OFF;")?;
     for sql in [
-        "INSERT INTO relationship_assertions(assertion_key,relation_type,origin,source_snapshot_key,source_field,subject_kind,subject_archive_id,target_kind) VALUES('missing','source_parent_clone','source_assertion','snapshot','archive_clone','no_intro_archive',999,'no_intro_archive_reference')",
-        "INSERT INTO relationship_assertions(assertion_key,relation_type,origin,source_snapshot_key,source_field,subject_kind,subject_archive_id,target_kind) VALUES('wrong-snapshot','source_parent_clone','source_assertion','other','archive_clone','no_intro_archive',30,'no_intro_archive_reference')",
-        "INSERT INTO no_intro_archive_clone_links(archive_id,declared_target_number,relationship_id,source_order,source_line,source_column) VALUES(999,'other','clone-assertion',0,7,2)",
-        "INSERT INTO no_intro_archive_merge_links(archive_id,declared_mergeof,relationship_id,source_order,source_line,source_column) VALUES(30,'other','clone-assertion',0,7,2)",
+        "INSERT INTO relationship_assertions(assertion_key,relation_type,origin,source_snapshot_key,source_field,subject_kind,source_subject_c,target_kind,source_target_a) VALUES('missing','source_parent_clone','source_assertion','snapshot','archive_clone','no_intro_archive',999,'no_intro_archive_reference','0007')",
+        "INSERT INTO relationship_assertions(assertion_key,relation_type,origin,source_snapshot_key,source_field,subject_kind,source_subject_c,target_kind,source_target_a) VALUES('wrong-snapshot','source_parent_clone','source_assertion','other','archive_clone','no_intro_archive',30,'no_intro_archive_reference','0007')",
+        "INSERT INTO no_intro_archive_clone_links(archive_id,declared_target_number,relationship_id) VALUES(999,'other',40)",
+        "INSERT INTO no_intro_archive_merge_links(archive_id,declared_mergeof,relationship_id) VALUES(30,'other',40)",
     ] {
         assert!(
             connection.batch_execute(sql).is_err(),
             "invalid typed archive reference accepted: {sql}"
         );
     }
+    connection.batch_execute("INSERT INTO no_intro_archive_clone_links(archive_id,declared_target_number,relationship_id) VALUES(30,'0007',40)")?;
+    connection.batch_execute(
+        "INSERT INTO no_intro_archive_descriptions(archive_id,set_id,source_order,source_line,source_column)
+             VALUES(31,2,0,8,1);
+         INSERT INTO no_intro_archive_field_positions(archive_id,field_kind,source_order,source_line,source_column)
+             VALUES(31,30,0,8,2),(31,31,1,8,3);
+         INSERT INTO catalog_relationships(relationship_id,assertion_key,origin,snapshot_key)
+             VALUES(41,'merge-assertion','source','snapshot');
+         INSERT INTO reported_catalog_relationships(relationship_id,source_reference_kind)
+             VALUES(41,'no_intro_database_archive_mergeof');",
+    )?;
+    assert!(connection.batch_execute("INSERT INTO no_intro_archive_clone_links(archive_id,declared_target_number,relationship_id) VALUES(31,'0007',40)").is_err(), "an issued native identity cannot be reused on another archive");
+    assert!(connection.batch_execute("INSERT INTO no_intro_archive_clone_links(archive_id,declared_target_number,relationship_id) VALUES(31,'0007',41)").is_err(), "a merge identity cannot own a clone declaration");
+    connection.batch_execute(
+        "INSERT INTO documents(document_key) VALUES('other-document');
+         INSERT INTO catalog_snapshots(snapshot_key,catalog_key,document_key,interpretation_key,coverage_id)
+             VALUES('other-snapshot','catalog','other-document','interpretation',1);
+         INSERT INTO catalog_relationships(relationship_id,assertion_key,origin,snapshot_key)
+             VALUES(42,'other-edition-clone','source','other-snapshot');
+         INSERT INTO reported_catalog_relationships(relationship_id,source_reference_kind)
+             VALUES(42,'no_intro_database_archive_clone');",
+    )?;
+    assert!(connection.batch_execute("INSERT INTO no_intro_archive_clone_links(archive_id,declared_target_number,relationship_id) VALUES(31,'0007',42)").is_err(), "an unused matching-kind identity from another actual edition must not own this archive");
+    connection.batch_execute("INSERT INTO no_intro_archive_merge_links(archive_id,declared_mergeof,relationship_id) VALUES(31,'0007',41)")?;
     Ok(())
 }
 
@@ -323,7 +348,7 @@ fn direct_sql_rejects_replace_on_an_existing_native_file() -> TestResult {
 #[test]
 fn archive_primary_key_collision_cannot_replace_another_games_owner() -> TestResult {
     let mut connection = fresh_database(false)?;
-    add_archive_and_clone_assertion(&mut connection)?;
+    add_archive_and_clone_identity(&mut connection)?;
     connection.batch_execute("PRAGMA foreign_keys=OFF; PRAGMA recursive_triggers=OFF")?;
     let replacement = connection.batch_execute("INSERT OR REPLACE INTO no_intro_archive_descriptions(archive_id,set_id,source_order,source_line,source_column) VALUES(30,2,0,8,1)");
     assert!(
