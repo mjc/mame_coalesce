@@ -1,21 +1,22 @@
 use diesel::{
     QueryableByName, RunQueryDsl, SqliteConnection, sql_query,
-    sql_types::{BigInt, Bool, Nullable, Text},
+    sql_types::{BigInt, Nullable, Text},
 };
 use std::collections::HashMap;
 
 use crate::domain::{
-    CatalogRecordKind, CatalogRecordRef, CatalogSetId, ContentDigestAlgorithm, ContentIdentity,
-    DocumentLocation, ExternalRecordRef, MergeMediaKind, RelationshipAssertionKey,
+    CatalogContentId, CatalogRecordKind, CatalogRecordRef, CatalogSetId, ContentDigestAlgorithm,
+    ContentIdentity, DocumentLocation, ExternalRecordRef, MergeMediaKind, RelationshipAssertionKey,
     RelationshipClaim, RelationshipEndpoint, RelationshipEvidence, RelationshipExplanation,
     RelationshipOrigin, RelationshipReview, RelationshipReviewDecision, RelationshipReviewEvent,
-    RelationshipSourceProvenance, RelationshipType, SnapshotKey,
+    RelationshipRule, RelationshipSourceProvenance, RelationshipType, SnapshotKey,
 };
 
 use super::db::Pool;
 
 mod evidence;
 mod publication;
+mod targets;
 
 #[derive(QueryableByName)]
 struct ExplanationRow {
@@ -78,8 +79,6 @@ struct ExplanationRow {
     #[diesel(sql_type = Nullable<BigInt>)]
     source_asset_size: Option<i64>,
     #[diesel(sql_type = Nullable<Text>)]
-    rule_version: Option<String>,
-    #[diesel(sql_type = Nullable<Text>)]
     source_key: Option<String>,
     #[diesel(sql_type = Nullable<Text>)]
     source_name: Option<String>,
@@ -105,28 +104,6 @@ const SUPPORT_SQL: &str = "SELECT supported_assertion_key \
      FROM relationship_assertion_support WHERE assertion_key=? ORDER BY position";
 
 #[derive(QueryableByName)]
-struct OwnerValidationRow {
-    #[diesel(sql_type = Bool)]
-    is_valid: bool,
-}
-
-type SourceEndpointParts = (
-    &'static str,
-    Option<String>,
-    Option<String>,
-    Option<i64>,
-    Option<CatalogSetId>,
-);
-type EndpointParts = (
-    Option<String>,
-    &'static str,
-    Option<String>,
-    Option<String>,
-    Option<i64>,
-    Option<CatalogSetId>,
-);
-
-#[derive(QueryableByName)]
 struct ReviewRow {
     #[diesel(sql_type = Text)]
     assertion_key: String,
@@ -138,208 +115,6 @@ struct ReviewRow {
     superseded_by_assertion_key: Option<String>,
     #[diesel(sql_type = Text)]
     created_at: String,
-}
-
-pub struct SourceRelationshipDraft {
-    pub relation_type: RelationshipType,
-    pub subject: CatalogRecordRef,
-    pub target: CatalogRecordRef,
-    pub source_field: String,
-    pub source_location: Option<DocumentLocation>,
-    pub evidence: RelationshipEvidence,
-}
-
-pub fn insert_source_assertion(
-    conn: &mut SqliteConnection,
-    draft: SourceRelationshipDraft,
-) -> crate::Result<RelationshipAssertionKey> {
-    let snapshot = draft.subject.snapshot.clone();
-    let claim = RelationshipClaim {
-        relation_type: draft.relation_type,
-        subject: RelationshipEndpoint::CatalogRecord(draft.subject),
-        target: RelationshipEndpoint::CatalogRecord(draft.target),
-        origin: RelationshipOrigin::SourceAssertion {
-            snapshot,
-            field: draft.source_field,
-            location: draft.source_location,
-        },
-        evidence: draft.evidence,
-    };
-    validate_claim(&claim)?;
-    let key = RelationshipAssertionKey::fresh();
-    insert_source_claim(conn, &key, &claim)?;
-    Ok(key)
-}
-
-fn insert_source_claim(
-    conn: &mut SqliteConnection,
-    assertion_key: &RelationshipAssertionKey,
-    claim: &RelationshipClaim,
-) -> crate::Result<()> {
-    let RelationshipOrigin::SourceAssertion {
-        snapshot,
-        field,
-        location,
-    } = &claim.origin
-    else {
-        return Err(crate::Error::InvalidPath(
-            "typed source assertion requires source provenance".to_owned(),
-        ));
-    };
-    validate_endpoint_owner(conn, &claim.subject)?;
-    validate_endpoint_owner(conn, &claim.target)?;
-    let (subject_kind, subject_a, subject_b, subject_c, subject_set_id) =
-        source_endpoint_parts(&claim.subject)?;
-    let (target_kind, target_a, target_b, target_c, target_set_id) =
-        source_endpoint_parts(&claim.target)?;
-    validate_source_evidence(
-        claim,
-        subject_kind,
-        subject_a.as_deref(),
-        target_kind,
-        target_a.as_deref(),
-        target_b.as_deref(),
-    )?;
-    sql_query(
-        "INSERT INTO relationship_assertions \
-         (assertion_key, relation_type, origin, source_snapshot_key, source_field, source_line, \
-          source_column, subject_kind, subject_set_id, source_subject_a, source_subject_b, \
-          source_subject_c, target_kind, target_set_id, source_target_a, source_target_b, \
-          source_target_c) \
-         VALUES (?, ?, 'source_assertion', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind::<Text, _>(assertion_key.as_str())
-    .bind::<Text, _>(claim.relation_type.as_str())
-    .bind::<Text, _>(snapshot.as_str())
-    .bind::<Text, _>(field)
-    .bind::<Nullable<BigInt>, _>(location.map(|value| value.line))
-    .bind::<Nullable<BigInt>, _>(location.map(|value| value.column))
-    .bind::<Text, _>(subject_kind)
-    .bind::<Nullable<BigInt>, _>(subject_set_id.map(CatalogSetId::as_i64))
-    .bind::<Nullable<Text>, _>(subject_a)
-    .bind::<Nullable<Text>, _>(subject_b)
-    .bind::<Nullable<BigInt>, _>(subject_c)
-    .bind::<Text, _>(target_kind)
-    .bind::<Nullable<BigInt>, _>(target_set_id.map(CatalogSetId::as_i64))
-    .bind::<Nullable<Text>, _>(target_a)
-    .bind::<Nullable<Text>, _>(target_b)
-    .bind::<Nullable<BigInt>, _>(target_c)
-    .execute(conn)?;
-    Ok(())
-}
-
-fn source_endpoint_parts(endpoint: &RelationshipEndpoint) -> crate::Result<SourceEndpointParts> {
-    let RelationshipEndpoint::CatalogRecord(record) = endpoint else {
-        return Err(crate::Error::InvalidPath(
-            "source relationship endpoints must be catalog records".to_owned(),
-        ));
-    };
-    let encoded = record.key.as_str();
-    let (first, second, third) = match record.kind {
-        CatalogRecordKind::Set => (encoded.to_owned(), None, None),
-        CatalogRecordKind::SoftwareItem | CatalogRecordKind::AssetRequirement => {
-            let parts: Vec<serde_json::Value> = serde_json::from_str(encoded)?;
-            let expected = if record.kind == CatalogRecordKind::SoftwareItem {
-                2
-            } else {
-                3
-            };
-            if parts.len() != expected {
-                return Err(crate::Error::InvalidPath(
-                    "source relationship endpoint has an invalid composite key".to_owned(),
-                ));
-            }
-            let first = parts[0]
-                .as_str()
-                .ok_or_else(|| crate::Error::InvalidPath("invalid source endpoint key".into()))?
-                .to_owned();
-            let second = parts[1]
-                .as_str()
-                .ok_or_else(|| crate::Error::InvalidPath("invalid source endpoint key".into()))?
-                .to_owned();
-            let third = if expected == 3 {
-                Some(parts[2].as_i64().ok_or_else(|| {
-                    crate::Error::InvalidPath("invalid source endpoint order".into())
-                })?)
-            } else {
-                None
-            };
-            (first, Some(second), third)
-        }
-    };
-    Ok((
-        record.kind.as_str(),
-        Some(first),
-        second,
-        third,
-        record.owner_set_id,
-    ))
-}
-
-fn validate_source_evidence(
-    claim: &RelationshipClaim,
-    subject_kind: &str,
-    subject_a: Option<&str>,
-    target_kind: &str,
-    target_a: Option<&str>,
-    target_b: Option<&str>,
-) -> crate::Result<()> {
-    let RelationshipOrigin::SourceAssertion { field, .. } = &claim.origin else {
-        return Err(crate::Error::InvalidPath(
-            "source evidence requires source provenance".into(),
-        ));
-    };
-    let matches = match (field.as_str(), &claim.evidence) {
-        (
-            "merge",
-            RelationshipEvidence::Merge {
-                declared_merge_name,
-                expected_sha1,
-                expected_crc,
-                ..
-            },
-        ) => {
-            for (encoded, length) in [(expected_sha1, 20), (expected_crc, 4)] {
-                if encoded.as_deref().is_some_and(|value| {
-                    !hex::decode(value).is_ok_and(|bytes| bytes.len() == length)
-                }) {
-                    return Err(crate::Error::InvalidPath(
-                        "source merge evidence has an invalid digest".into(),
-                    ));
-                }
-            }
-            subject_kind == "asset_requirement"
-                && target_kind == "asset_requirement"
-                && declared_merge_name.as_deref() == target_b
-        }
-        (
-            "cloneof",
-            RelationshipEvidence::SoftwareClone {
-                list_name,
-                target_item_name,
-            },
-        ) if subject_kind == "software_item" => {
-            Some(list_name.as_str()) == subject_a && Some(target_item_name.as_str()) == target_b
-        }
-        (
-            "cloneof" | "parent_name" | "device_ref",
-            RelationshipEvidence::SourceReference { target_name },
-        ) => Some(target_name.as_str()) == target_a,
-        (
-            "romof" | "sampleof" | "device_ref",
-            RelationshipEvidence::SourceFieldReference {
-                source_field,
-                target_name,
-            },
-        ) => source_field == field && Some(target_name.as_str()) == target_a,
-        _ => false,
-    };
-    if !matches {
-        return Err(crate::Error::InvalidPath(format!(
-            "source evidence does not match relationship field {field}"
-        )));
-    }
-    Ok(())
 }
 
 pub fn record_claim(
@@ -369,9 +144,8 @@ pub fn record_claim(
                 }
             }
         }
-        insert_claim(conn, &key, claim)
-    })?;
-    Ok(key)
+        insert_claim(conn, key, claim)
+    })
 }
 
 fn validate_claim(claim: &RelationshipClaim) -> crate::Result<()> {
@@ -427,207 +201,100 @@ fn validate_claim(claim: &RelationshipClaim) -> crate::Result<()> {
                 ));
             }
         }
-        RelationshipOrigin::DerivedCandidate { rule_version, .. }
-            if rule_version.trim().is_empty() =>
-        {
-            return Err(crate::Error::InvalidPath(
-                "derived relationship candidate requires a rule version".to_owned(),
-            ));
-        }
         RelationshipOrigin::UserConclusion | RelationshipOrigin::DerivedCandidate { .. } => {}
     }
     Ok(())
 }
 
-fn validate_endpoint_owner(
-    conn: &mut SqliteConnection,
-    endpoint: &RelationshipEndpoint,
-) -> crate::Result<()> {
-    let RelationshipEndpoint::CatalogRecord(record) = endpoint else {
-        return Ok(());
-    };
-    let Some(owner_set_id) = record.owner_set_id else {
-        return Ok(());
-    };
-    if owner_set_id.as_i64() <= 0 {
-        return Err(crate::Error::InvalidPath(
-            "catalog set owner ID must be positive".to_owned(),
-        ));
-    }
-    let (_, first, second, _, _) = source_endpoint_parts(endpoint)?;
-    let first = first.ok_or_else(|| {
-        crate::Error::InvalidPath("catalog record endpoint has no first key part".into())
-    })?;
-    let (set_name, software_list_name) = match record.kind {
-        CatalogRecordKind::Set | CatalogRecordKind::AssetRequirement => (first, None),
-        CatalogRecordKind::SoftwareItem => {
-            let item_name = second.ok_or_else(|| {
-                crate::Error::InvalidPath("software item endpoint has no item key".into())
-            })?;
-            (item_name, Some(first))
-        }
-    };
-    let row = sql_query(
-        "SELECT EXISTS ( \
-             SELECT 1 FROM catalog_sets AS owner \
-             JOIN catalog_set_groups AS groups USING (set_group_id) \
-             LEFT JOIN software_lists AS software_list ON software_list.namespace_id = groups.set_group_id \
-             WHERE owner.set_id = ? AND groups.snapshot_key = ? \
-               AND ( \
-                 (? IN ('catalog_set', 'asset_requirement') AND groups.kind = 'root' \
-                  AND owner.set_name = ?) \
-                 OR (? = 'software_item' AND groups.kind = 'software_list' \
-                     AND software_list.name = ? AND owner.set_name = ?) \
-               ) \
-         ) AS is_valid",
-    )
-    .bind::<BigInt, _>(owner_set_id.as_i64())
-    .bind::<Text, _>(record.snapshot.as_str())
-    .bind::<Text, _>(record.kind.as_str())
-    .bind::<Text, _>(&set_name)
-    .bind::<Text, _>(record.kind.as_str())
-    .bind::<Nullable<Text>, _>(software_list_name.as_deref())
-    .bind::<Text, _>(&set_name)
-    .get_result::<OwnerValidationRow>(conn)?;
-    if !row.is_valid {
-        return Err(crate::Error::InvalidPath(format!(
-            "catalog set owner {} does not match endpoint {:?} in snapshot {}",
-            owner_set_id.as_i64(),
-            record.kind,
-            record.snapshot.as_str()
-        )));
-    }
-    Ok(())
+#[derive(QueryableByName)]
+struct RegisteredRelationship {
+    #[diesel(sql_type = BigInt)]
+    relationship_id: i64,
 }
 
-fn endpoint_parts(endpoint: &RelationshipEndpoint) -> crate::Result<EndpointParts> {
-    match endpoint {
-        RelationshipEndpoint::CatalogRecord(record) => {
-            let (kind, first, second, third, owner_set_id) = source_endpoint_parts(endpoint)?;
-            Ok((
-                Some(record.snapshot.as_str().to_owned()),
-                kind,
-                first,
-                second,
-                third,
-                owner_set_id,
-            ))
+/// An owned decision draft with complete native targets; publication consumes it.
+struct PendingRelationship<'a> {
+    key: RelationshipAssertionKey,
+    claim: &'a RelationshipClaim,
+}
+
+enum DecisionOrigin<'a> {
+    Inferred(&'a RelationshipRule),
+    Manual,
+}
+
+impl DecisionOrigin<'_> {
+    const fn code(&self) -> &'static str {
+        match self {
+            Self::Inferred(_) => "derived",
+            Self::Manual => "user",
         }
-        RelationshipEndpoint::ContentObject(identity) => Ok((
-            None,
-            "content_object",
-            Some(identity.algorithm().as_str().to_owned()),
-            Some(identity.digest().to_owned()),
-            None,
-            None,
-        )),
-        RelationshipEndpoint::ExternalRecord(record) => Ok((
-            None,
-            "external_record",
-            Some(record.namespace.clone()),
-            Some(record.key.as_str().to_owned()),
-            None,
-            None,
-        )),
-        RelationshipEndpoint::NoIntroArchive { .. }
-        | RelationshipEndpoint::NoIntroArchiveReference { .. }
-        | RelationshipEndpoint::NoIntroDatIdReference { .. }
-        | RelationshipEndpoint::CatalogMediaEntry { .. }
-        | RelationshipEndpoint::CatalogMergeReference { .. } => Err(crate::Error::InvalidPath(
-            "native endpoints require a native source assertion".into(),
-        )),
+    }
+}
+
+impl<'a> PendingRelationship<'a> {
+    fn insert(
+        conn: &mut SqliteConnection,
+        key: RelationshipAssertionKey,
+        claim: &'a RelationshipClaim,
+    ) -> crate::Result<Self> {
+        let origin = match &claim.origin {
+            RelationshipOrigin::DerivedCandidate { rule, .. } => DecisionOrigin::Inferred(rule),
+            RelationshipOrigin::UserConclusion => DecisionOrigin::Manual,
+            RelationshipOrigin::SourceAssertion { .. } => {
+                return Err(crate::Error::InvalidPath(
+                    "source declarations require their native owner".into(),
+                ));
+            }
+        };
+        let subject = targets::insert(conn, &claim.subject)?;
+        let target = targets::insert(conn, &claim.target)?;
+        let identity = sql_query("INSERT INTO catalog_relationships(assertion_key,origin) VALUES(?,?) RETURNING relationship_id")
+            .bind::<Text,_>(key.as_str()).bind::<Text,_>(origin.code()).get_result::<RegisteredRelationship>(conn)?.relationship_id;
+        match origin {
+            DecisionOrigin::Inferred(rule) => {
+                let rule = targets::insert_rule(conn, rule)?;
+                sql_query("INSERT INTO inferred_catalog_relationships(relationship_id,relation_type,from_target_id,to_target_id,rule_id) VALUES(?,?,?,?,?)")
+                    .bind::<BigInt,_>(identity).bind::<Text,_>(claim.relation_type.as_str())
+                    .bind::<BigInt,_>(subject.database_value()).bind::<BigInt,_>(target.database_value())
+                    .bind::<BigInt,_>(rule.database_value()).execute(conn)?;
+            }
+            DecisionOrigin::Manual => {
+                sql_query("INSERT INTO manual_catalog_relationships(relationship_id,relation_type,from_target_id,to_target_id) VALUES(?,?,?,?)")
+                    .bind::<BigInt,_>(identity).bind::<Text,_>(claim.relation_type.as_str())
+                    .bind::<BigInt,_>(subject.database_value()).bind::<BigInt,_>(target.database_value()).execute(conn)?;
+            }
+        }
+        Ok(Self { key, claim })
+    }
+
+    fn publish(self, conn: &mut SqliteConnection) -> crate::Result<RelationshipAssertionKey> {
+        let claim = self.claim;
+        evidence::insert(conn, self.key.as_str(), &claim.evidence)?;
+        if let RelationshipOrigin::DerivedCandidate {
+            supporting_assertions,
+            ..
+        } = &claim.origin
+        {
+            for (position, supported) in supporting_assertions.iter().enumerate() {
+                let position = i64::try_from(position).map_err(|_| {
+                    crate::Error::InvalidPath("relationship support position exceeds i64".into())
+                })?;
+                sql_query("INSERT INTO relationship_assertion_support(assertion_key,position,supported_assertion_key) VALUES(?,?,?)")
+                    .bind::<Text,_>(self.key.as_str()).bind::<BigInt,_>(position).bind::<Text,_>(supported.as_str()).execute(conn)?;
+            }
+        }
+        evidence::publish(conn, self.key.as_str(), &claim.evidence)?;
+        Ok(self.key)
     }
 }
 
 fn insert_claim(
     conn: &mut SqliteConnection,
-    assertion_key: &RelationshipAssertionKey,
+    key: RelationshipAssertionKey,
     claim: &RelationshipClaim,
 ) -> crate::Result<RelationshipAssertionKey> {
-    validate_claim(claim)?;
-    validate_endpoint_owner(conn, &claim.subject)?;
-    validate_endpoint_owner(conn, &claim.target)?;
-    let (subject_snapshot, subject_kind, subject_a, subject_b, subject_c, subject_set_id) =
-        endpoint_parts(&claim.subject)?;
-    let (target_snapshot, target_kind, target_a, target_b, target_c, target_set_id) =
-        endpoint_parts(&claim.target)?;
-    let (origin, source_snapshot, source_field, location, rule_version, supporting) =
-        match &claim.origin {
-            RelationshipOrigin::SourceAssertion {
-                snapshot,
-                field,
-                location,
-            } => (
-                "source_assertion",
-                Some(snapshot.as_str().to_owned()),
-                Some(field.clone()),
-                *location,
-                None,
-                Vec::new(),
-            ),
-            RelationshipOrigin::DerivedCandidate {
-                rule_version,
-                supporting_assertions,
-            } => (
-                "derived_candidate",
-                None,
-                None,
-                None,
-                Some(rule_version.clone()),
-                supporting_assertions
-                    .iter()
-                    .map(|key| key.as_str().to_owned())
-                    .collect(),
-            ),
-            RelationshipOrigin::UserConclusion => {
-                ("user_conclusion", None, None, None, None, Vec::new())
-            }
-        };
-    sql_query(
-        "INSERT INTO relationship_assertions \
-         (assertion_key, relation_type, origin, generic_subject_snapshot_key, subject_kind, \
-          subject_set_id, generic_subject_a, generic_subject_b, generic_subject_c, \
-          generic_target_snapshot_key, target_kind, target_set_id, generic_target_a, \
-          generic_target_b, generic_target_c, source_snapshot_key, source_field, source_line, \
-          source_column, rule_version) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind::<Text, _>(assertion_key.as_str())
-    .bind::<Text, _>(claim.relation_type.as_str())
-    .bind::<Text, _>(origin)
-    .bind::<Nullable<Text>, _>(subject_snapshot)
-    .bind::<Text, _>(subject_kind)
-    .bind::<Nullable<BigInt>, _>(subject_set_id.map(CatalogSetId::as_i64))
-    .bind::<Nullable<Text>, _>(subject_a)
-    .bind::<Nullable<Text>, _>(subject_b)
-    .bind::<Nullable<BigInt>, _>(subject_c)
-    .bind::<Nullable<Text>, _>(target_snapshot)
-    .bind::<Text, _>(target_kind)
-    .bind::<Nullable<BigInt>, _>(target_set_id.map(CatalogSetId::as_i64))
-    .bind::<Nullable<Text>, _>(target_a)
-    .bind::<Nullable<Text>, _>(target_b)
-    .bind::<Nullable<BigInt>, _>(target_c)
-    .bind::<Nullable<Text>, _>(source_snapshot)
-    .bind::<Nullable<Text>, _>(source_field)
-    .bind::<Nullable<BigInt>, _>(location.map(|value| value.line))
-    .bind::<Nullable<BigInt>, _>(location.map(|value| value.column))
-    .bind::<Nullable<Text>, _>(rule_version)
-    .execute(conn)?;
-    evidence::insert(conn, assertion_key.as_str(), &claim.evidence)?;
-    for (position, supported_assertion_key) in supporting.iter().enumerate() {
-        sql_query(
-            "INSERT INTO relationship_assertion_support \
-             (assertion_key, position, supported_assertion_key) VALUES (?, ?, ?)",
-        )
-        .bind::<Text, _>(assertion_key.as_str())
-        .bind::<BigInt, _>(i64::try_from(position).map_err(|_| {
-            crate::Error::InvalidPath("relationship support position exceeds i64".into())
-        })?)
-        .bind::<Text, _>(supported_assertion_key)
-        .execute(conn)?;
-    }
-    evidence::publish(conn, assertion_key.as_str(), &claim.evidence)?;
-    Ok(assertion_key.clone())
+    PendingRelationship::insert(conn, key, claim)?.publish(conn)
 }
 
 pub fn review_claim(
@@ -685,54 +352,35 @@ enum ExplanationScope {
 }
 
 impl ExplanationScope {
-    const fn scoped_assertions_cte(self) -> Option<&'static str> {
-        match self {
-            Self::All => None,
-            Self::CatalogSets => Some(
-                "WITH scoped_source_assertions AS NOT MATERIALIZED ( \
-                   SELECT a.* FROM relationship_assertion_explanations a \
-                   WHERE a.origin = 'source_assertion' AND a.source_snapshot_key IN (?, ?) \
-                     AND (a.subject_kind IN ('catalog_set', 'software_item') \
-                          OR a.target_kind IN ('catalog_set', 'software_item')) \
-                 ), scoped_generic_assertions AS NOT MATERIALIZED ( \
-                   SELECT a.* FROM stored_relationship_assertion_explanations a \
-                   WHERE a.origin != 'source_assertion' \
-                     AND a.subject_kind IN ('catalog_set', 'software_item') \
-                     AND a.generic_subject_snapshot_key IN (?, ?) \
-                   UNION \
-                   SELECT a.* FROM stored_relationship_assertion_explanations a \
-                   WHERE a.origin != 'source_assertion' \
-                     AND a.target_kind IN ('catalog_set', 'software_item') \
-                     AND a.generic_target_snapshot_key IN (?, ?) \
-                 ), scoped_assertions AS MATERIALIZED ( \
-                   SELECT * FROM scoped_source_assertions \
-                   UNION ALL \
-                   SELECT * FROM scoped_generic_assertions \
-                 )",
+    fn scoped_assertions_cte(self) -> Option<String> {
+        let (source_filter, kinds) = match self {
+            Self::All => return None,
+            Self::CatalogSets => (
+                "AND (a.subject_kind IN ('catalog_set','software_item') OR a.target_kind IN ('catalog_set','software_item'))",
+                "('catalog_set')",
             ),
-            Self::Snapshots => Some(
-                "WITH scoped_source_assertions AS NOT MATERIALIZED ( \
-                   SELECT a.* FROM relationship_assertion_explanations a \
-                   WHERE a.origin = 'source_assertion' AND a.source_snapshot_key IN (?, ?) \
-                 ), scoped_generic_assertions AS NOT MATERIALIZED ( \
-                   SELECT a.* FROM stored_relationship_assertion_explanations a \
-                   WHERE a.origin != 'source_assertion' \
-                     AND a.generic_subject_snapshot_key IN (?, ?) \
-                   UNION \
-                   SELECT a.* FROM stored_relationship_assertion_explanations a \
-                   WHERE a.origin != 'source_assertion' \
-                     AND a.generic_target_snapshot_key IN (?, ?) \
-                 ), scoped_assertions AS MATERIALIZED ( \
-                   SELECT * FROM scoped_source_assertions \
-                   UNION ALL \
-                   SELECT * FROM scoped_generic_assertions \
-                 )",
+            Self::Snapshots => (
+                "",
+                "('catalog_set'),('catalog_media_entry'),('no_intro_archive')",
             ),
-        }
+        };
+        let native_sources = [
+            "mame_source_relationships", "logiqx_cmp_source_relationships",
+            "software_dat_source_relationships", "no_intro_database_source_relationships",
+        ].map(|view| format!("SELECT a.* FROM {view} a WHERE a.source_snapshot_key IN (SELECT snapshot_key FROM requested_source_snapshots) {source_filter}")).join(" UNION ALL ");
+        Some(format!(
+            "WITH requested_source_snapshots(snapshot_key) AS (VALUES (?),(?)), \
+             requested_decision_snapshots(snapshot_key) AS (VALUES (?),(?),(?),(?)), \
+             requested_relationship_kinds(kind) AS (VALUES {kinds}), \
+             scoped_source_assertions AS NOT MATERIALIZED ({native_sources}), \
+             {}, scoped_assertions AS MATERIALIZED ( \
+               SELECT * FROM scoped_source_assertions UNION ALL SELECT * FROM scoped_generic_assertions)",
+            include_str!("db/relationship_scope.sql")
+        ))
     }
 
     fn query(self) -> String {
-        let cte = self.scoped_assertions_cte().unwrap_or("");
+        let cte = self.scoped_assertions_cte().unwrap_or_default();
         let from = if self.scoped_assertions_cte().is_some() {
             "scoped_assertions a"
         } else {
@@ -932,7 +580,12 @@ fn build_explanations(
             let supports = support_by_assertion
                 .remove(&row.assertion_key)
                 .unwrap_or_default();
-            explanation(row, events, evidence, supports)
+            let rule = if row.origin == "derived_candidate" {
+                Some(targets::load_rule(conn, &row.assertion_key)?)
+            } else {
+                None
+            };
+            explanation(row, events, evidence, supports, rule)
         })
         .collect()
 }
@@ -942,6 +595,7 @@ fn explanation(
     review_history: Vec<RelationshipReviewEvent>,
     generic_evidence: Option<RelationshipEvidence>,
     supporting_assertions: Vec<String>,
+    rule: Option<RelationshipRule>,
 ) -> crate::Result<RelationshipExplanation> {
     let relation_type = parse_relation_type(&row.relation_type)?;
     let is_source = row.origin == "source_assertion";
@@ -952,7 +606,7 @@ fn explanation(
             crate::Error::InvalidPath("relationship assertion has no evidence".into())
         })?
     };
-    let origin = explanation_origin(&row, supporting_assertions)?;
+    let origin = explanation_origin(&row, supporting_assertions, rule)?;
     let latest_review = review_history.last().map(|event| event.review.clone());
     let source = row
         .source_key
@@ -1024,6 +678,7 @@ fn explanation(
 fn explanation_origin(
     row: &ExplanationRow,
     supporting_assertions: Vec<String>,
+    rule: Option<RelationshipRule>,
 ) -> crate::Result<RelationshipOrigin> {
     match row.origin.as_str() {
         "source_assertion" => Ok(RelationshipOrigin::SourceAssertion {
@@ -1039,8 +694,8 @@ fn explanation_origin(
                 .map(|(line, column)| DocumentLocation { line, column }),
         }),
         "derived_candidate" => Ok(RelationshipOrigin::DerivedCandidate {
-            rule_version: row.rule_version.clone().ok_or_else(|| {
-                crate::Error::InvalidPath("candidate has no rule version".to_owned())
+            rule: rule.ok_or_else(|| {
+                crate::Error::DatabaseSchema("candidate has no native rule revision".into())
             })?,
             supporting_assertions: supporting_assertions
                 .into_iter()
@@ -1233,6 +888,37 @@ fn typed_endpoint(
     second: Option<String>,
     third: Option<i64>,
 ) -> crate::Result<RelationshipEndpoint> {
+    match kind {
+        "catalog_media_entry" | "no_intro_archive" => {
+            let snapshot = SnapshotKey::from_persisted(snapshot.ok_or_else(|| {
+                crate::Error::DatabaseSchema("native target has no actual edition".into())
+            })?);
+            let id = third.ok_or_else(|| {
+                crate::Error::DatabaseSchema("native target has no actual owner ID".into())
+            })?;
+            return if kind == "catalog_media_entry" {
+                Ok(RelationshipEndpoint::CatalogMediaEntry {
+                    snapshot,
+                    occurrence_id: id.try_into()?,
+                })
+            } else {
+                Ok(RelationshipEndpoint::NoIntroArchive {
+                    snapshot,
+                    archive_id: id.try_into()?,
+                })
+            };
+        }
+        "shared_file" => {
+            return Ok(RelationshipEndpoint::SharedCatalogFile(
+                first
+                    .ok_or_else(|| {
+                        crate::Error::DatabaseSchema("shared-file target has no UUID".into())
+                    })?
+                    .parse::<CatalogContentId>()?,
+            ));
+        }
+        _ => {}
+    }
     let first = first.ok_or_else(|| {
         crate::Error::InvalidPath("relationship endpoint has no first component".into())
     })?;
@@ -1345,9 +1031,10 @@ mod query_plan_tests {
             scoped_plans.push((name, details));
         }
         let scoped_indexes = [
-            "relationship_assertions_source_snapshot_index",
-            "relationship_assertions_subject_snapshot_kind_index",
-            "relationship_assertions_target_snapshot_kind_index",
+            "inferred_relationship_from_target",
+            "inferred_relationship_to_target",
+            "manual_relationship_from_target",
+            "manual_relationship_to_target",
         ];
         let violations = scoped_plans
             .into_iter()
@@ -1363,11 +1050,12 @@ mod query_plan_tests {
                         || detail == "MATERIALIZE scoped_generic_assertions"
                         || detail.starts_with("SCAN relationship_assertions")
                         || detail.starts_with("SCAN position")
+                        || detail == "SCAN identity"
+                        || detail == "SCAN target"
                 }) || scoped_indexes.iter().any(|index| {
-                    !details.iter().any(|detail| {
-                        detail.starts_with("SEARCH relationship_assertions USING INDEX ")
-                            && detail.contains(index)
-                    })
+                    !details
+                        .iter()
+                        .any(|detail| detail.starts_with("SEARCH ") && detail.contains(index))
                 }) || !details
                     .iter()
                     .any(|detail| detail.starts_with("SEARCH position USING PRIMARY KEY"))
@@ -1464,7 +1152,11 @@ mod query_plan_tests {
             database.pool(),
             &RelationshipClaim {
                 origin: RelationshipOrigin::DerivedCandidate {
-                    rule_version: "support-order-v1".into(),
+                    rule: crate::domain::RelationshipRule::new(
+                        "support-order",
+                        "v1",
+                        "Ordered support witness",
+                    )?,
                     supporting_assertions: declared.clone(),
                 },
                 ..base.clone()
@@ -1474,7 +1166,11 @@ mod query_plan_tests {
             database.pool(),
             &RelationshipClaim {
                 origin: RelationshipOrigin::DerivedCandidate {
-                    rule_version: "unrelated-v1".into(),
+                    rule: crate::domain::RelationshipRule::new(
+                        "unrelated",
+                        "v1",
+                        "Unrelated support witness",
+                    )?,
                     supporting_assertions: vec![unrelated],
                 },
                 ..base

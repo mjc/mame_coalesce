@@ -396,8 +396,41 @@ published evidence; source decisions instead require their catalog snapshot
 publication. Evidence cannot be replaced or extended after publication, even
 with SQLite foreign-key and recursive-trigger enforcement disabled. Integrity
 and backup reject unfinished non-source decisions. There is no upgrade or
-legacy evidence conversion. Typed endpoint subtypes and immutable observed
-file endpoints remain separate unfinished shared-model requirements.
+legacy evidence conversion. Inferred/manual endpoint subtypes now have actual
+native ownership. Immutable observed-file endpoints remain a separate
+unfinished shared-model requirement.
+
+`catalog_relationships` issues every source, inferred and manual key once.
+`inferred_catalog_relationships` and `manual_catalog_relationships` own the
+directed relation and two target FKs; an inferred row also references
+`catalog_relationship_rules`, whose key, revision and description are explicit.
+Reusing a revision with different metadata is rejected atomically.
+`relationship_assertions` is a read-only display projection, not persisted
+nullable endpoint payloads and not an insertion compatibility layer.
+
+Each interned `catalog_relationship_targets` identity has one closed subtype:
+
+| Target table | Stored ownership or declaration |
+| --- | --- |
+| `catalog_set_targets` | Actual set/software-item integer FK; name, list and edition derive from that owner. |
+| `catalog_media_entry_targets` | Actual occurrence FK; no copied name, media order or edition. |
+| `no_intro_archive_targets` | Actual database-export archive FK, independent of repeated publisher numbers. |
+| `shared_file_targets` | Existing issued 16-byte file UUID FK; redirects do not rewrite the issued endpoint. |
+| `declared_digest_targets` | Interned binary digest FK, explicitly unscoped and not an observed-file identity. |
+| `unresolved_catalog_targets` | Snapshot plus a closed set/software/media literal shape; named fields preserve absent versus empty values. Names and ordinals do not resolve an owner. |
+| `external_catalog_targets` | Declared external namespace and key, distinct from catalog owners. |
+
+Installed guards reject orphan owners, replacement through primary or unique
+identity keys, dual subtypes and mutation/late children with foreign keys and
+recursive triggers disabled. Publication additionally requires actual catalog
+edition seals. The shared requested-key readiness fragment also builds the
+integrity view, so an issued identity with no payload cannot disappear from
+backup checks. Scoped queries walk edition owners and then directed target
+indices; single-origin projections avoid materializing all endpoint pairs.
+Reconciliation candidates carry actual media-entry IDs when known. Source
+relationships stay with native declarations; the generic source writer and
+fallback importer have been removed. None of this implements immutable local
+file-scan endpoints or proves complete per-format acceptance.
 
 Use integer primary/foreign keys internally, with distinct Rust newtypes.
 Persist external stable document/snapshot identities once at the relevant

@@ -424,17 +424,19 @@ fn one_source_identity_cannot_be_reused_across_native_relationships_or_owners() 
 }
 
 #[test]
-fn registry_and_general_assertion_keys_cannot_shadow_each_other() -> TestResult {
+fn source_and_manual_assertions_share_one_non_shadowable_identity_registry() -> TestResult {
     let (_directory, database_path, base) = seed_database()?;
     let mut connection = open_connection(&database_path)?;
     let (snapshot, _) = pending_machine(&mut connection, &base, "key-shadow")?;
 
-    sql_query("INSERT INTO relationship_assertions(assertion_key,relation_type,origin,subject_kind,generic_subject_a,generic_subject_b,target_kind,generic_target_a,generic_target_b) VALUES ('assertion-first','runtime_dependency','user_conclusion','external_record','registry-test','left','external_record','registry-test','right')")
-        .execute(&mut connection)?;
+    sql_query(
+        "INSERT INTO catalog_relationships(assertion_key,origin) VALUES ('assertion-first','user')",
+    )
+    .execute(&mut connection)?;
     assert_rejected(
         sql_query("INSERT INTO catalog_relationships(assertion_key,origin,snapshot_key) VALUES ('assertion-first','derived',NULL)")
             .execute(&mut connection),
-        "registry key already owned by a general assertion",
+        "once-issued user identity cannot be reissued as derived",
         "catalog relationship identity",
     )?;
 

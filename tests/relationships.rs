@@ -91,7 +91,11 @@ fn record_candidate(
             subject: RelationshipEndpoint::ContentObject(digest.clone()),
             target: RelationshipEndpoint::ContentObject(digest),
             origin: RelationshipOrigin::DerivedCandidate {
-                rule_version: "sha1-equality-v1".to_owned(),
+                rule: mame_coalesce::domain::RelationshipRule::new(
+                    "sha1-equality",
+                    "v1",
+                    "Declared digest equality witness",
+                )?,
                 supporting_assertions: vec![supporting_assertion],
             },
             evidence: RelationshipEvidence::Rationale {
@@ -158,9 +162,9 @@ fn explanations_preserve_conflicts_candidates_and_reversible_reviews()
     assert!(matches!(
         &candidate_explanation.claim.origin,
         RelationshipOrigin::DerivedCandidate {
-            rule_version,
+            rule,
             supporting_assertions
-        } if rule_version == "sha1-equality-v1" && supporting_assertions.len() == 1
+        } if rule.key() == "sha1-equality" && rule.revision() == "v1" && supporting_assertions.len() == 1
     ));
     assert_eq!(
         candidate_explanation.claim.evidence,

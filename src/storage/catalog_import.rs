@@ -7,9 +7,7 @@ use crate::{
     app::{CatalogDocumentFormat, CatalogImportReport, CatalogImportRequest, CatalogImportStatus},
     clrmamepro::Catalog as ClrMameProCatalog,
     domain::{
-        CatalogRecordKind, CatalogRecordRef, CatalogSetId, DocumentKey, DocumentLocation,
-        ImportRunKey, OccurrenceId, ParserInterpretationKey, RelationshipEvidence,
-        RelationshipType, SnapshotKey,
+        CatalogSetId, DocumentKey, ImportRunKey, OccurrenceId, ParserInterpretationKey, SnapshotKey,
     },
     logiqx::{DataFile, Game, XmlSourceMap},
     mame::{self, MameRecord, ValidatedMame},
@@ -22,7 +20,6 @@ use crate::{
         },
         db::Pool,
         documents::DocumentStore,
-        relationships::{SourceRelationshipDraft, insert_source_assertion},
     },
 };
 
@@ -184,7 +181,6 @@ impl LogiqxSetFacts {
 struct SnapshotSet {
     name: String,
     parent: Option<String>,
-    parent_field: Option<String>,
     runtime_dependencies: Vec<SnapshotDependency>,
     location: crate::logiqx::RecordLocation,
     assets: Vec<SnapshotAsset>,
@@ -358,7 +354,6 @@ impl SnapshotData {
             sets.push(SnapshotSet {
                 name: game.name().into(),
                 parent: game.cloneof().map(str::to_owned),
-                parent_field: game.cloneof().map(|_| "cloneof".to_owned()),
                 runtime_dependencies: game
                     .romof_opt()
                     .map(|name| SnapshotDependency {
@@ -435,7 +430,6 @@ impl SnapshotData {
                 .sets
                 .into_iter()
                 .map(|mut set| {
-                    let parent_field = set.parent.as_ref().map(|_| "cloneof".to_owned());
                     let mut media =
                         set.assets
                             .into_iter()
@@ -477,7 +471,6 @@ impl SnapshotData {
                     SnapshotSet {
                         name: set.name,
                         parent: set.parent,
-                        parent_field,
                         runtime_dependencies: Vec::new(),
                         location: set.location,
                         assets,
@@ -533,7 +526,6 @@ impl SnapshotData {
                 SnapshotSet {
                     name: entry_name,
                     parent: None,
-                    parent_field: None,
                     runtime_dependencies: Vec::new(),
                     location: entry.location,
                     assets,
@@ -678,7 +670,6 @@ fn machine_contents(machine: crate::mame::Machine) -> SnapshotSet {
     }
     assets.sort_by_key(|(order, _)| *order);
     let assets = assets.into_iter().map(|(_, asset)| asset).collect();
-    let parent_field = machine.parent.as_ref().map(|_| "cloneof".to_owned());
     let switches = machine.switches;
     let bios_sets = machine.bios_sets;
     let mame_facts = machine.facts;
@@ -686,7 +677,6 @@ fn machine_contents(machine: crate::mame::Machine) -> SnapshotSet {
     SnapshotSet {
         name: machine.name,
         parent: machine.parent,
-        parent_field,
         runtime_dependencies: Vec::new(),
         location: machine.location,
         assets,
@@ -1536,8 +1526,6 @@ fn insert_snapshot_set(
         cmp_native::insert_set_facts(conn, snapshot_key, owner, facts)?;
     }
 
-    persist_set_relationships(conn, snapshot_key, owner, set)?;
-
     for (order, asset) in set.assets.iter().enumerate() {
         insert_asset_requirement(
             conn,
@@ -1913,63 +1901,6 @@ fn insert_machine_switches(
                 )?;
             }
         }
-    }
-    Ok(())
-}
-
-fn persist_set_relationships(
-    conn: &mut SqliteConnection,
-    snapshot: &SnapshotKey,
-    owner: CatalogSetId,
-    set: &SnapshotSet,
-) -> crate::Result<()> {
-    if set.mame_facts.is_some() || set.logiqx_facts.is_some() || set.cmp_facts.is_some() {
-        // These references have native declaration owners and compact identities.
-        return Ok(());
-    }
-    let subject = CatalogRecordRef::new(snapshot.clone(), CatalogRecordKind::Set, &set.name)
-        .with_owner(owner);
-    let location = Some(DocumentLocation {
-        line: set.location.line,
-        column: set.location.column,
-    });
-    if let Some(parent) = &set.parent {
-        insert_source_assertion(
-            conn,
-            SourceRelationshipDraft {
-                relation_type: RelationshipType::SourceParentClone,
-                subject: subject.clone(),
-                target: CatalogRecordRef::new(snapshot.clone(), CatalogRecordKind::Set, parent),
-                source_field: set.parent_field.as_deref().unwrap_or("parent_name").into(),
-                source_location: location,
-                evidence: RelationshipEvidence::SourceReference {
-                    target_name: parent.clone(),
-                },
-            },
-        )?;
-    }
-    for dependency in &set.runtime_dependencies {
-        insert_source_assertion(
-            conn,
-            SourceRelationshipDraft {
-                relation_type: RelationshipType::RuntimeDependency,
-                subject: subject.clone(),
-                target: CatalogRecordRef::new(
-                    snapshot.clone(),
-                    CatalogRecordKind::Set,
-                    &dependency.target_name,
-                ),
-                source_field: dependency.source_field.clone(),
-                source_location: Some(DocumentLocation {
-                    line: dependency.location.line,
-                    column: dependency.location.column,
-                }),
-                evidence: RelationshipEvidence::SourceFieldReference {
-                    source_field: dependency.source_field.clone(),
-                    target_name: dependency.target_name.clone(),
-                },
-            },
-        )?;
     }
     Ok(())
 }

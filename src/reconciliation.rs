@@ -50,6 +50,8 @@ pub struct RequirementSnapshot {
 pub struct RequirementReconciliation {
     pub left: Option<CatalogRecordRef>,
     pub right: Option<CatalogRecordRef>,
+    pub left_media_entry_id: Option<OccurrenceId>,
+    pub right_media_entry_id: Option<OccurrenceId>,
     pub left_expected: Option<ExpectedEvidence>,
     pub right_expected: Option<ExpectedEvidence>,
     pub status: ReconciliationStatus,
@@ -291,6 +293,8 @@ impl RequirementReconciliation {
         {
             return None;
         }
+        let subject = requirement_endpoint(left, self.left_media_entry_id);
+        let target = requirement_endpoint(right, self.right_media_entry_id);
         let supporting_assertions = self
             .relationship_evidence
             .iter()
@@ -299,7 +303,12 @@ impl RequirementReconciliation {
                     item.claim.origin,
                     RelationshipOrigin::SourceAssertion { .. }
                 ) && item.claim.relation_type == RelationshipType::ExactContentIdentity
-                    && endpoints_connect_pair(&item.claim.subject, &item.claim.target, left, right)
+                    && endpoints_connect_pair(
+                        &item.claim.subject,
+                        &item.claim.target,
+                        &subject,
+                        &target,
+                    )
                     && item.latest_review.as_ref().is_none_or(|review| {
                         !matches!(
                             review.decision,
@@ -313,10 +322,10 @@ impl RequirementReconciliation {
             .collect::<Vec<RelationshipAssertionKey>>();
         Some(RelationshipClaim {
             relation_type: RelationshipType::ExactContentIdentity,
-            subject: RelationshipEndpoint::CatalogRecord(left.clone()),
-            target: RelationshipEndpoint::CatalogRecord(right.clone()),
+            subject,
+            target,
             origin: RelationshipOrigin::DerivedCandidate {
-                rule_version: "catalog-evidence-reconciliation-v1".to_owned(),
+                rule: crate::domain::RelationshipRule::RECONCILIATION.clone(),
                 supporting_assertions,
             },
             evidence: RelationshipEvidence::CatalogComparison {
@@ -331,13 +340,22 @@ impl RequirementReconciliation {
 fn endpoints_connect_pair(
     subject: &RelationshipEndpoint,
     target: &RelationshipEndpoint,
-    left: &CatalogRecordRef,
-    right: &CatalogRecordRef,
+    left: &RelationshipEndpoint,
+    right: &RelationshipEndpoint,
 ) -> bool {
-    matches!(
-        (subject, target),
-        (RelationshipEndpoint::CatalogRecord(a), RelationshipEndpoint::CatalogRecord(b))
-            if (a == left && b == right) || (a == right && b == left)
+    (subject == left && target == right) || (subject == right && target == left)
+}
+
+fn requirement_endpoint(
+    record: &CatalogRecordRef,
+    owner: Option<OccurrenceId>,
+) -> RelationshipEndpoint {
+    owner.map_or_else(
+        || RelationshipEndpoint::CatalogRecord(record.clone()),
+        |occurrence_id| RelationshipEndpoint::CatalogMediaEntry {
+            snapshot: record.snapshot.clone(),
+            occurrence_id,
+        },
     )
 }
 
@@ -399,6 +417,8 @@ fn pair_outcome(
     RequirementReconciliation {
         left: Some(left.record.clone()),
         right: Some(right.record.clone()),
+        left_media_entry_id: left.media_entry_id,
+        right_media_entry_id: right.media_entry_id,
         left_expected: Some(left.expected.clone()),
         right_expected: Some(right.expected.clone()),
         status,
@@ -418,6 +438,8 @@ fn unmatched(
     RequirementReconciliation {
         left: is_left.then(|| requirement.record.clone()),
         right: (!is_left).then(|| requirement.record.clone()),
+        left_media_entry_id: is_left.then_some(requirement.media_entry_id).flatten(),
+        right_media_entry_id: (!is_left).then_some(requirement.media_entry_id).flatten(),
         left_expected: is_left.then(|| requirement.expected.clone()),
         right_expected: (!is_left).then(|| requirement.expected.clone()),
         status: ReconciliationStatus::Unknown,

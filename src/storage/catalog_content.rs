@@ -127,16 +127,7 @@ pub fn record_occurrence_digest_assertions(
     provenance: &str,
 ) -> crate::Result<()> {
     for assertion in assertions.iter() {
-        sql_query("INSERT OR IGNORE INTO digest_values (algorithm, digest) VALUES (?, ?)")
-            .bind::<Text, _>(assertion.algorithm.as_str())
-            .bind::<Binary, _>(assertion.value)
-            .execute(connection)?;
-        let digest_id =
-            sql_query("SELECT digest_id FROM digest_values WHERE algorithm = ? AND digest = ?")
-                .bind::<Text, _>(assertion.algorithm.as_str())
-                .bind::<Binary, _>(assertion.value)
-                .get_result::<DigestIdRow>(connection)?
-                .digest_id;
+        let digest_id = intern_digest(connection, assertion.algorithm.as_str(), assertion.value)?;
         sql_query(
             "INSERT OR IGNORE INTO occurrence_digest_assertions \
              (occurrence_id, digest_id, scope, provenance) VALUES (?, ?, ?, ?)",
@@ -148,6 +139,25 @@ pub fn record_occurrence_digest_assertions(
         .execute(connection)?;
     }
     Ok(())
+}
+
+/// Reuse the binary digest value without inventing evidence scope or ownership.
+pub fn intern_digest(
+    connection: &mut SqliteConnection,
+    algorithm: &str,
+    bytes: &[u8],
+) -> crate::Result<i64> {
+    sql_query("INSERT OR IGNORE INTO digest_values (algorithm, digest) VALUES (?, ?)")
+        .bind::<Text, _>(algorithm)
+        .bind::<Binary, _>(bytes)
+        .execute(connection)?;
+    Ok(
+        sql_query("SELECT digest_id FROM digest_values WHERE algorithm = ? AND digest = ?")
+            .bind::<Text, _>(algorithm)
+            .bind::<Binary, _>(bytes)
+            .get_result::<DigestIdRow>(connection)?
+            .digest_id,
+    )
 }
 
 impl ContentIdentityResolution {

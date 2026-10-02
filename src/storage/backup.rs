@@ -680,10 +680,8 @@ fn check_publication_states(
         );
     }
     let relationships = sql_query(
-        "SELECT assertion_key AS value FROM relationship_assertions AS assertion \
-         WHERE assertion.origin <> 'source_assertion' AND NOT EXISTS ( \
-             SELECT 1 FROM relationship_evidence_publications AS publication \
-             WHERE publication.assertion_key=assertion.assertion_key) \
+        "SELECT assertion_key AS value FROM catalog_relationship_closure \
+         WHERE NOT is_complete OR NOT is_published \
          ORDER BY assertion_key LIMIT 50",
     )
     .load::<TextValue>(conn)
@@ -963,7 +961,11 @@ mod tests {
                 subject: RelationshipEndpoint::ContentObject(identity.clone()),
                 target: RelationshipEndpoint::ContentObject(identity),
                 origin: RelationshipOrigin::DerivedCandidate {
-                    rule_version: "backup-round-trip-v1".to_owned(),
+                    rule: crate::domain::RelationshipRule::new(
+                        "backup-round-trip",
+                        "v1",
+                        "Backup round-trip witness",
+                    )?,
                     supporting_assertions: vec![supporting_assertion],
                 },
                 evidence: crate::domain::RelationshipEvidence::Rationale {
@@ -993,7 +995,7 @@ mod tests {
             ("snapshot_publications", 2),
             ("relationship_assertions", 1),
             ("relationship_assertion_explanations", 3),
-            ("catalog_relationships", 2),
+            ("catalog_relationships", 3),
             ("relationship_reviews", 1),
         ] {
             let count = sql_query(format!("SELECT COUNT(*) AS count FROM {table}"))

@@ -1,6 +1,6 @@
 use diesel::{
     QueryableByName, RunQueryDsl, SqliteConnection, sql_query,
-    sql_types::{BigInt, Binary, Nullable, Text},
+    sql_types::{BigInt, Nullable, Text},
 };
 
 use crate::{
@@ -684,17 +684,9 @@ fn insert_digest(
     let Some(bytes) = digest.value.as_deref() else {
         return Ok(None);
     };
-    sql_query("INSERT OR IGNORE INTO digest_values(algorithm,digest) VALUES(?,?)")
-        .bind::<Text, _>(algorithm)
-        .bind::<Binary, _>(bytes)
-        .execute(conn)?;
-    Ok(Some(
-        sql_query("SELECT digest_id AS value FROM digest_values WHERE algorithm=? AND digest=?")
-            .bind::<Text, _>(algorithm)
-            .bind::<Binary, _>(bytes)
-            .get_result::<Id>(conn)?
-            .value,
-    ))
+    Ok(Some(crate::storage::catalog_content::intern_digest(
+        conn, algorithm, bytes,
+    )?))
 }
 
 fn insert_file_hashes(

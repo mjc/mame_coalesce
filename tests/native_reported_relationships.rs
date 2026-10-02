@@ -534,7 +534,11 @@ fn assert_review_backup_and_rollback(
                 "declaration",
             )),
             origin: RelationshipOrigin::DerivedCandidate {
-                rule_version: "native-review-v1".into(),
+                rule: mame_coalesce::domain::RelationshipRule::new(
+                    "native-review",
+                    "v1",
+                    "Native review witness",
+                )?,
                 supporting_assertions: keys.clone(),
             },
             evidence: RelationshipEvidence::Rationale {

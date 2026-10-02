@@ -186,19 +186,33 @@ fn insert_stored_assertion(
     assertion_key: &str,
     origin: &str,
 ) -> diesel::QueryResult<usize> {
-    sql_query(
-        "INSERT INTO relationship_assertions \
-         (assertion_key, relation_type, origin, subject_kind, generic_subject_a, \
-          generic_subject_b, target_kind, generic_target_a, generic_target_b, rule_version) \
-         VALUES (?, 'catalog_correction', ?, 'external_record', 'guard-test', ?, \
-                 'external_record', 'guard-test', ?, ?)",
-    )
-    .bind::<Text, _>(assertion_key)
-    .bind::<Text, _>(origin)
-    .bind::<Text, _>(format!("{assertion_key}:subject"))
-    .bind::<Text, _>(format!("{assertion_key}:target"))
-    .bind::<Nullable<Text>, _>((origin == "derived_candidate").then_some("guard-v1"))
-    .execute(connection)
+    let derived = origin == "derived_candidate";
+    sql_query("INSERT INTO catalog_relationships(assertion_key,origin) VALUES(?,?)")
+        .bind::<Text, _>(assertion_key)
+        .bind::<Text, _>(if derived { "derived" } else { "user" })
+        .execute(connection)?;
+    for side in ["subject", "target"] {
+        sql_query("INSERT INTO catalog_relationship_targets(kind) VALUES('external_record')")
+            .execute(connection)?;
+        sql_query("INSERT INTO external_catalog_targets(target_id,namespace,declared_key) VALUES(last_insert_rowid(),'guard-test',?)")
+            .bind::<Text,_>(format!("{assertion_key}:{side}"))
+            .execute(connection)?;
+    }
+    let (table, rule_join, rule_column, rule_value) = if derived {
+        sql_query("INSERT INTO catalog_relationship_rules(rule_key,revision,description) SELECT 'guard','v1','Guard-test rule' WHERE NOT EXISTS(SELECT 1 FROM catalog_relationship_rules WHERE rule_key='guard' AND revision='v1')").execute(connection)?;
+        (
+            "inferred_catalog_relationships",
+            "JOIN catalog_relationship_rules rule ON rule.rule_key='guard' AND rule.revision='v1'",
+            ",rule_id",
+            ",rule.rule_id",
+        )
+    } else {
+        ("manual_catalog_relationships", "", "", "")
+    };
+    sql_query(format!("INSERT INTO {table}(relationship_id,relation_type,from_target_id,to_target_id{rule_column}) SELECT identity.relationship_id,'catalog_correction',source.target_id,target.target_id{rule_value} FROM catalog_relationships identity JOIN external_catalog_targets source ON source.namespace='guard-test' AND source.declared_key=? JOIN external_catalog_targets target ON target.namespace='guard-test' AND target.declared_key=? {rule_join} WHERE identity.assertion_key=?"))
+        .bind::<Text,_>(format!("{assertion_key}:subject"))
+        .bind::<Text,_>(format!("{assertion_key}:target"))
+        .bind::<Text,_>(assertion_key).execute(connection)
 }
 
 fn insert_review(
@@ -849,7 +863,11 @@ fn public_relationship_api_accepts_native_cloneof_as_support() -> TestResult {
             "target",
         )),
         origin: RelationshipOrigin::DerivedCandidate {
-            rule_version: "native-cloneof-support-test-v1".to_owned(),
+            rule: mame_coalesce::domain::RelationshipRule::new(
+                "native-cloneof-support-test",
+                "v1",
+                "Native clone support witness",
+            )?,
             supporting_assertions: vec![supporting.clone()],
         },
         evidence: mame_coalesce::domain::RelationshipEvidence::Rationale {
@@ -880,7 +898,7 @@ fn native_cloneof_key_namespace_cannot_be_shadowed_by_stored_assertions() -> Tes
     )?;
     assert_guard_rejects(
         insert_stored_assertion(&mut connection, &fixture.native_key, "user_conclusion"),
-        "relationship assertions are immutable",
+        "catalog relationship identity",
     );
 
     let stored =

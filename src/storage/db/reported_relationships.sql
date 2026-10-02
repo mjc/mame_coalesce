@@ -4,7 +4,7 @@ CREATE TABLE catalog_relationships (
     origin TEXT NOT NULL CHECK (origin IN ('source', 'derived', 'user')),
     snapshot_key TEXT REFERENCES catalog_snapshots(snapshot_key) ON DELETE RESTRICT,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CHECK (origin <> 'source' OR snapshot_key IS NOT NULL)
+    CHECK ((origin = 'source') = (snapshot_key IS NOT NULL))
 );
 
 CREATE TABLE reported_catalog_relationships (
@@ -31,7 +31,6 @@ WHEN EXISTS (
         SELECT 1 FROM catalog_relationships
         WHERE relationship_id = NEW.relationship_id OR assertion_key = NEW.assertion_key
     )
- OR EXISTS (SELECT 1 FROM relationship_assertions WHERE assertion_key = NEW.assertion_key)
  OR (NEW.snapshot_key IS NOT NULL AND NOT EXISTS (
         SELECT 1 FROM catalog_snapshots WHERE snapshot_key = NEW.snapshot_key
     ))

@@ -90,6 +90,17 @@ parser-internal representations the public contract.
   vendor fields remain recoverable from the external original document; there
   is no catch-all table or JSON catalog column. Duplicate-name history groups compare whole-owner fact multisets;
   changed ambiguous groups do not invent row continuity from source positions.
+  Inferred/manual relationships have native subtype owners under the same
+  once-issued relationship registry as source declarations. Interned targets
+  have real FKs to set, media-entry, archive, shared-file or digest owners;
+  unresolved declarations and external references have distinct closed shapes.
+  Rules own explicit key/revision/description metadata, not an encoded version
+  token. Publishing consumes a complete target/evidence draft. Readiness,
+  reviews, support and integrity use one requested-key closure predicate.
+  Edition-scoped readers start from native target owners and seek both directed
+  relationship indices. Reconciliation retains actual media IDs rather than
+  converting them back to a name/order reference. Observed-file endpoints
+  remain a separate unfinished interface.
   Logiqx options and repeated child families have native tables, including
   source order and explicit-versus-default presence. History derives relative
   native-child ranks in memory so vendor-only gaps do not produce false edits;

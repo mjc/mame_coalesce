@@ -955,7 +955,10 @@ impl ExternalRecordRef {
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum RelationshipEndpoint {
     CatalogRecord(CatalogRecordRef),
+    /// An unscoped declared digest, not a verified observation or catalog UUID.
     ContentObject(ContentIdentity),
+    /// An issued expected-file identity; redirects do not rewrite this issued ID.
+    SharedCatalogFile(CatalogContentId),
     ExternalRecord(ExternalRecordRef),
     /// One actual native media owner, not an encoded name/order tuple.
     CatalogMediaEntry {
@@ -1084,6 +1087,77 @@ impl RelationshipReviewDecision {
     }
 }
 
+/// A declared rule revision, without parsing version tokens or guessing boundaries.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct RelationshipRule {
+    key: std::borrow::Cow<'static, str>,
+    revision: std::borrow::Cow<'static, str>,
+    description: std::borrow::Cow<'static, str>,
+}
+
+impl RelationshipRule {
+    pub(crate) const RECONCILIATION: Self = Self {
+        key: std::borrow::Cow::Borrowed("catalog-evidence-reconciliation"),
+        revision: std::borrow::Cow::Borrowed("v1"),
+        description: std::borrow::Cow::Borrowed(
+            "Compare scoped source-declared catalog file evidence",
+        ),
+    };
+
+    pub fn new(
+        key: impl Into<String>,
+        revision: impl Into<String>,
+        description: impl Into<String>,
+    ) -> crate::Result<Self> {
+        let (key, revision, description) = (key.into(), revision.into(), description.into());
+        if [&key, &revision, &description]
+            .into_iter()
+            .any(|value| value.trim().is_empty())
+        {
+            return Err(crate::Error::InvalidPath(
+                "relationship rule key, revision and description must not be empty".into(),
+            ));
+        }
+        Ok(Self {
+            key: key.into(),
+            revision: revision.into(),
+            description: description.into(),
+        })
+    }
+
+    #[must_use]
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    #[must_use]
+    pub fn revision(&self) -> &str {
+        &self.revision
+    }
+
+    #[must_use]
+    pub fn description(&self) -> &str {
+        &self.description
+    }
+}
+
+impl<'de> Deserialize<'de> for RelationshipRule {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct DeclaredRule {
+            key: String,
+            revision: String,
+            description: String,
+        }
+        let rule = DeclaredRule::deserialize(deserializer)?;
+        Self::new(rule.key, rule.revision, rule.description).map_err(serde::de::Error::custom)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "origin", rename_all = "snake_case")]
 pub enum RelationshipOrigin {
@@ -1093,7 +1167,7 @@ pub enum RelationshipOrigin {
         location: Option<DocumentLocation>,
     },
     DerivedCandidate {
-        rule_version: String,
+        rule: RelationshipRule,
         supporting_assertions: Vec<RelationshipAssertionKey>,
     },
     UserConclusion,

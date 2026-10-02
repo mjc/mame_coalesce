@@ -175,7 +175,11 @@ fn record_native_support_and_review(
             subject: subject.clone(),
             target: subject.clone(),
             origin: RelationshipOrigin::DerivedCandidate {
-                rule_version: "native-mame-support-witness-v1".into(),
+                rule: mame_coalesce::domain::RelationshipRule::new(
+                    "native-mame-support-witness",
+                    "v1",
+                    "Native MAME support witness",
+                )?,
                 supporting_assertions: vec![native_key.clone()],
             },
             evidence: RelationshipEvidence::Rationale {

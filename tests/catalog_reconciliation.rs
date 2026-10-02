@@ -602,11 +602,11 @@ fn published_snapshots_reconcile_without_any_local_inventory()
         .ok_or("candidate missing")?;
     assert!(matches!(
         candidate.subject,
-        RelationshipEndpoint::CatalogRecord(_)
+        RelationshipEndpoint::CatalogMediaEntry { .. }
     ));
     assert!(matches!(
         candidate.target,
-        RelationshipEndpoint::CatalogRecord(_)
+        RelationshipEndpoint::CatalogMediaEntry { .. }
     ));
     assert!(matches!(
         candidate.origin,
@@ -999,6 +999,21 @@ fn native_media_evidence_is_snapshot_and_occurrence_qualified()
     let candidate = whole_asset.outcomes[0]
         .relationship_candidate()
         .ok_or("whole-asset positive control lost its candidate")?;
+    assert_eq!(
+        candidate.subject,
+        RelationshipEndpoint::CatalogMediaEntry {
+            snapshot: unique_left.snapshot,
+            occurrence_id: first,
+        },
+        "a persisted media owner must not become a name-shaped endpoint"
+    );
+    assert_eq!(
+        candidate.target,
+        RelationshipEndpoint::CatalogMediaEntry {
+            snapshot: right.snapshot,
+            occurrence_id: first,
+        }
+    );
     assert!(
         matches!(candidate.origin, RelationshipOrigin::DerivedCandidate { supporting_assertions, .. } if supporting_assertions.is_empty()),
         "source merge context cannot support exact identity"

@@ -44,9 +44,15 @@ fn claim(evidence: RelationshipEvidence, origin: RelationshipOrigin) -> Relation
     }
 }
 
+#[allow(clippy::expect_used)]
 fn derived() -> RelationshipOrigin {
     RelationshipOrigin::DerivedCandidate {
-        rule_version: "fixture-v1".into(),
+        rule: mame_coalesce::domain::RelationshipRule::new(
+            "fixture",
+            "v1",
+            "Fixture relationship rule",
+        )
+        .expect("valid declared fixture rule"),
         supporting_assertions: Vec::new(),
     }
 }
@@ -58,7 +64,19 @@ fn rationale(reason: &str) -> RelationshipEvidence {
 }
 
 fn draft(conn: &mut SqliteConnection, key: &str) -> TestResult {
-    sql_query("INSERT INTO relationship_assertions(assertion_key,relation_type,origin,subject_kind,generic_subject_a,generic_subject_b,target_kind,generic_target_a,generic_target_b,rule_version) VALUES(?,'catalog_continuity','derived_candidate','external_record','publisher','left','external_record','publisher','right','fixture-v1')")
+    for side in ["left", "right"] {
+        sql_query("INSERT INTO catalog_relationship_targets(kind) VALUES('external_record')")
+            .execute(conn)?;
+        sql_query("INSERT INTO external_catalog_targets(target_id,namespace,declared_key) VALUES(last_insert_rowid(),'draft-fixture',?)")
+            .bind::<diesel::sql_types::Text,_>(format!("{key}/{side}")).execute(conn)?;
+    }
+    conn.batch_execute("INSERT INTO catalog_relationship_rules(rule_key,revision,description) SELECT 'fixture','v1','Fixture relationship rule' WHERE NOT EXISTS(SELECT 1 FROM catalog_relationship_rules WHERE rule_key='fixture' AND revision='v1')")?;
+    sql_query("INSERT INTO catalog_relationships(assertion_key,origin) VALUES(?,'derived')")
+        .bind::<diesel::sql_types::Text, _>(key)
+        .execute(conn)?;
+    sql_query("INSERT INTO inferred_catalog_relationships(relationship_id,relation_type,from_target_id,to_target_id,rule_id) SELECT identity.relationship_id,'catalog_continuity',source.target_id,target.target_id,rule.rule_id FROM catalog_relationships AS identity JOIN external_catalog_targets AS source ON source.namespace='draft-fixture' AND source.declared_key=? JOIN external_catalog_targets AS target ON target.namespace='draft-fixture' AND target.declared_key=? JOIN catalog_relationship_rules AS rule ON rule.rule_key='fixture' AND rule.revision='v1' WHERE identity.assertion_key=?")
+        .bind::<diesel::sql_types::Text,_>(format!("{key}/left"))
+        .bind::<diesel::sql_types::Text,_>(format!("{key}/right"))
         .bind::<diesel::sql_types::Text,_>(key).execute(conn)?;
     Ok(())
 }
@@ -209,7 +227,11 @@ fn incomplete_relationships_cannot_be_explained_reviewed_supported_or_backed_up(
         .is_err()
     );
     let supporting = RelationshipOrigin::DerivedCandidate {
-        rule_version: "fixture-v1".into(),
+        rule: mame_coalesce::domain::RelationshipRule::new(
+            "fixture",
+            "v1",
+            "Fixture relationship rule",
+        )?,
         supporting_assertions: vec![mame_coalesce::domain::RelationshipAssertionKey::new(
             "draft",
         )],
@@ -289,11 +311,9 @@ fn installed_guards_reject_orphans_replacements_late_children_and_bad_seals_with
     for sql in attempted {
         assert!(catalog.connection.batch_execute(&sql).is_err(), "{sql}");
     }
-    let columns = "assertion_key,relation_type,origin,subject_kind,generic_subject_a,generic_subject_b,target_kind,generic_target_a,generic_target_b,rule_version";
-    let select = "relation_type,origin,subject_kind,generic_subject_a,generic_subject_b,target_kind,generic_target_a,generic_target_b,rule_version";
-    catalog.connection.batch_execute(&format!("INSERT INTO relationship_assertions({columns}) SELECT 'replacement-control',{select} FROM relationship_assertions WHERE assertion_key='{r}'"))?;
+    draft(&mut catalog.connection, "replacement-control")?;
     let replacement = format!(
-        "INSERT OR REPLACE INTO relationship_assertions({columns}) SELECT assertion_key,{select} FROM relationship_assertions WHERE assertion_key='{r}'"
+        "INSERT OR REPLACE INTO inferred_catalog_relationships SELECT native.* FROM inferred_catalog_relationships AS native JOIN catalog_relationships AS identity USING(relationship_id) WHERE identity.assertion_key='{r}'"
     );
     let error = catalog
         .connection
@@ -303,7 +323,7 @@ fn installed_guards_reject_orphans_replacements_late_children_and_bad_seals_with
     assert!(
         error
             .to_string()
-            .contains("relationship assertions are immutable"),
+            .contains("inferred relationship requires an unused identity"),
         "wrong rejection: {error}"
     );
     draft(&mut catalog.connection, "fractional-support")?;
@@ -350,7 +370,11 @@ fn paired_backup_preserves_typed_evidence_support_and_supersession() -> TestResu
                 contradictions: Vec::new(),
             },
             RelationshipOrigin::DerivedCandidate {
-                rule_version: "fixture-v2".into(),
+                rule: mame_coalesce::domain::RelationshipRule::new(
+                    "fixture",
+                    "v2",
+                    "Fixture relationship rule",
+                )?,
                 supporting_assertions: vec![first.clone()],
             },
         ),

@@ -96,7 +96,11 @@ fn record_review_and_support(
                 "source-merge",
             )),
             origin: RelationshipOrigin::DerivedCandidate {
-                rule_version: "native-mame-merge-support-v1".into(),
+                rule: mame_coalesce::domain::RelationshipRule::new(
+                    "native-mame-merge-support",
+                    "v1",
+                    "Native MAME merge support witness",
+                )?,
                 supporting_assertions: vec![native_key.clone()],
             },
             evidence: RelationshipEvidence::Rationale {

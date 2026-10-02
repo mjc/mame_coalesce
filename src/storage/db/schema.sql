@@ -946,11 +946,11 @@ CREATE TABLE catalog_sets (
     UNIQUE (set_id, source_element_kind)
 );
 CREATE TABLE relationship_rationales (
-    assertion_key TEXT PRIMARY KEY NOT NULL REFERENCES relationship_assertions(assertion_key) ON DELETE RESTRICT,
+    assertion_key TEXT PRIMARY KEY NOT NULL REFERENCES catalog_relationships(assertion_key) ON DELETE RESTRICT,
     reason TEXT NOT NULL CHECK (typeof(reason) = 'text' AND length(trim(reason)) > 0)
 ) WITHOUT ROWID;
 CREATE TABLE relationship_comparisons (
-    assertion_key TEXT PRIMARY KEY NOT NULL REFERENCES relationship_assertions(assertion_key) ON DELETE RESTRICT,
+    assertion_key TEXT PRIMARY KEY NOT NULL REFERENCES catalog_relationships(assertion_key) ON DELETE RESTRICT,
     status TEXT NOT NULL CHECK (status IN ('compatible','candidate','contradictory','ambiguous','unknown'))
 ) WITHOUT ROWID;
 CREATE TABLE relationship_comparison_fields (
@@ -962,119 +962,22 @@ CREATE TABLE relationship_comparison_fields (
     UNIQUE (assertion_key, field)
 ) WITHOUT ROWID;
 CREATE TABLE relationship_evidence_publications (
-    assertion_key TEXT PRIMARY KEY NOT NULL REFERENCES relationship_assertions(assertion_key) ON DELETE RESTRICT,
+    assertion_key TEXT PRIMARY KEY NOT NULL REFERENCES catalog_relationships(assertion_key) ON DELETE RESTRICT,
     evidence_kind TEXT NOT NULL CHECK (evidence_kind IN ('rationale','catalog_comparison'))
 ) WITHOUT ROWID;
 CREATE TABLE "relationship_assertion_support" (
-    assertion_key TEXT NOT NULL,
+    assertion_key TEXT NOT NULL REFERENCES catalog_relationships(assertion_key) ON DELETE RESTRICT,
     position INTEGER NOT NULL CHECK (typeof(position)='integer' AND position >= 0),
-    supported_assertion_key TEXT NOT NULL,
+    supported_assertion_key TEXT NOT NULL REFERENCES catalog_relationships(assertion_key) ON DELETE RESTRICT,
     PRIMARY KEY (assertion_key, position)
 ) WITHOUT ROWID;
-CREATE TABLE relationship_assertions (
-    assertion_key TEXT PRIMARY KEY NOT NULL,
-    relation_type TEXT NOT NULL CHECK (relation_type IN (
-        'exact_content_identity', 'revision_of', 'dump_of_intended_release',
-        'alternate_representation_of', 'source_parent_clone', 'runtime_dependency',
-        'catalog_correction', 'catalog_continuity'
-    )),
-    origin TEXT NOT NULL CHECK (origin IN (
-        'source_assertion', 'derived_candidate', 'user_conclusion'
-    )),
-    source_snapshot_key TEXT REFERENCES catalog_snapshots (snapshot_key) ON DELETE RESTRICT,
-    source_field TEXT,
-    source_line BIGINT CHECK (source_line IS NULL OR source_line > 0),
-    source_column BIGINT CHECK (source_column IS NULL OR source_column > 0),
-
-    generic_subject_snapshot_key TEXT REFERENCES catalog_snapshots (snapshot_key) ON DELETE RESTRICT,
-    subject_kind TEXT NOT NULL,
-    subject_set_id INTEGER REFERENCES catalog_sets(set_id) ON DELETE RESTRICT,
-    generic_subject_a TEXT,
-    generic_subject_b TEXT,
-    generic_subject_c BIGINT,
-    source_subject_a TEXT,
-    source_subject_b TEXT,
-    source_subject_c BIGINT,
-    subject_snapshot_key TEXT GENERATED ALWAYS AS (
-        CASE WHEN origin = 'source_assertion' THEN source_snapshot_key
-             ELSE generic_subject_snapshot_key END
-    ) VIRTUAL,
-    generic_target_snapshot_key TEXT REFERENCES catalog_snapshots (snapshot_key) ON DELETE RESTRICT,
-    target_kind TEXT NOT NULL,
-    target_set_id INTEGER REFERENCES catalog_sets(set_id) ON DELETE RESTRICT,
-    generic_target_a TEXT,
-    generic_target_b TEXT,
-    generic_target_c BIGINT,
-    source_target_a TEXT,
-    source_target_b TEXT,
-    source_target_c BIGINT,
-    target_snapshot_key TEXT GENERATED ALWAYS AS (
-        CASE WHEN origin = 'source_assertion' THEN source_snapshot_key
-             ELSE generic_target_snapshot_key END
-    ) VIRTUAL,
-    rule_version TEXT,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CHECK (
-        (origin = 'source_assertion' AND source_snapshot_key IS NOT NULL
-            AND source_field IS NOT NULL AND generic_subject_snapshot_key IS NULL
-            AND generic_target_snapshot_key IS NULL
-            AND source_subject_a IS NOT NULL
-            AND source_target_a IS NOT NULL
-            AND generic_subject_a IS NULL
-            AND generic_subject_b IS NULL AND generic_subject_c IS NULL
-            AND generic_target_a IS NULL AND generic_target_b IS NULL
-            AND generic_target_c IS NULL)
-        OR (origin != 'source_assertion' AND source_snapshot_key IS NULL
-            AND source_field IS NULL AND generic_subject_a IS NOT NULL
-            AND generic_target_a IS NOT NULL AND source_subject_a IS NULL
-            AND source_subject_b IS NULL AND source_subject_c IS NULL
-            AND source_target_a IS NULL AND source_target_b IS NULL
-            AND source_target_c IS NULL)
-    ),
-    CHECK (origin = 'source_assertion' OR
-        ((subject_kind = 'catalog_set' AND generic_subject_b IS NULL AND generic_subject_c IS NULL)
-         OR (subject_kind IN ('software_item', 'asset_requirement', 'content_object', 'external_record')
-             AND generic_subject_b IS NOT NULL
-             AND ((subject_kind = 'asset_requirement') = (generic_subject_c IS NOT NULL))))),
-    CHECK (origin = 'source_assertion' OR
-        ((target_kind = 'catalog_set' AND generic_target_b IS NULL AND generic_target_c IS NULL)
-         OR (target_kind IN ('software_item', 'asset_requirement', 'content_object', 'external_record')
-             AND generic_target_b IS NOT NULL
-             AND ((target_kind = 'asset_requirement') = (generic_target_c IS NOT NULL))))),
-    CHECK ((origin = 'derived_candidate') = (rule_version IS NOT NULL)),
-    CHECK (origin != 'source_assertion' OR
-        (subject_kind IN ('catalog_set', 'software_item', 'asset_requirement')
-         AND target_kind IN ('catalog_set', 'software_item', 'asset_requirement'))),
-    CHECK (origin != 'source_assertion' OR source_field != 'merge' OR
-        (subject_kind = 'asset_requirement' AND target_kind = 'asset_requirement')),
-    CHECK (origin != 'source_assertion' OR
-        source_field NOT IN ('romof', 'sampleof', 'device_ref', 'parent_name') OR
-        (subject_kind = 'catalog_set' AND target_kind = 'catalog_set')),
-    CHECK (origin != 'source_assertion' OR source_field != 'cloneof' OR
-        ((subject_kind = 'software_item' AND target_kind = 'software_item') OR
-         (subject_kind = 'catalog_set' AND target_kind = 'catalog_set'))),
-    CHECK (origin != 'source_assertion' OR (
-        (subject_kind != 'catalog_set' OR
-            (source_subject_b IS NULL AND source_subject_c IS NULL)) AND
-        (target_kind != 'catalog_set' OR
-            (source_target_b IS NULL AND source_target_c IS NULL)) AND
-        (subject_kind != 'software_item' OR
-            (source_subject_b IS NOT NULL AND source_subject_c IS NULL)) AND
-        (target_kind != 'software_item' OR
-            (source_target_b IS NOT NULL AND source_target_c IS NULL)) AND
-        (subject_kind != 'asset_requirement' OR
-            (source_subject_b IS NOT NULL AND source_subject_c IS NOT NULL)) AND
-        (target_kind != 'asset_requirement' OR
-            (source_target_b IS NOT NULL AND source_target_c IS NOT NULL))
-    ))
-);
 CREATE TABLE "relationship_reviews" (
     review_id INTEGER PRIMARY KEY AUTOINCREMENT,
     review_key TEXT NOT NULL UNIQUE,
-    assertion_key TEXT NOT NULL,
+    assertion_key TEXT NOT NULL REFERENCES catalog_relationships(assertion_key) ON DELETE RESTRICT,
     decision TEXT NOT NULL CHECK (decision IN ('accepted', 'rejected', 'withdrawn', 'superseded')),
     note TEXT NOT NULL,
-    superseded_by_assertion_key TEXT,
+    superseded_by_assertion_key TEXT REFERENCES catalog_relationships(assertion_key) ON DELETE RESTRICT,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CHECK ((decision = 'superseded') = (superseded_by_assertion_key IS NOT NULL))
 );
@@ -1575,15 +1478,6 @@ CREATE INDEX occurrence_content_lookup ON asset_occurrences(content_uuid, occurr
     WHERE content_uuid IS NOT NULL;
 CREATE INDEX occurrence_digest_lookup ON occurrence_digest_assertions(digest_id, occurrence_id);
 CREATE INDEX catalog_set_name_lookup ON catalog_sets(set_group_id, set_name);
-CREATE INDEX relationship_assertions_source_snapshot_index
-    ON relationship_assertions (source_snapshot_key)
-    WHERE origin = 'source_assertion';
-CREATE INDEX relationship_assertions_subject_snapshot_kind_index
-    ON relationship_assertions (generic_subject_snapshot_key, subject_kind)
-    WHERE origin != 'source_assertion';
-CREATE INDEX relationship_assertions_target_snapshot_kind_index
-    ON relationship_assertions (generic_target_snapshot_key, target_kind)
-    WHERE origin != 'source_assertion';
 CREATE INDEX relationship_reviews_assertion_index
     ON relationship_reviews (assertion_key, review_id);
 CREATE INDEX rom_file_sha1_index ON rom_files (sha1);
@@ -1952,7 +1846,8 @@ SELECT assertion_key, relation_type, origin, source_snapshot_key, source_field,
        generic_target_snapshot_key, target_kind, target_set_id, generic_target_a, generic_target_b,
        generic_target_c, source_target_a, source_target_b, source_target_c,
        target_snapshot_key, rule_version
-FROM relationship_assertions;
+FROM relationship_assertions
+WHERE origin <> 'source_assertion';
 CREATE VIEW software_components AS
 SELECT occurrences.occurrence_id, namespaces.snapshot_key, namespaces.source_name AS list_name,
        records.source_name AS item_name, parts.part_name, areas.area_order,
@@ -2283,13 +2178,22 @@ WHEN NOT EXISTS (
 )
 BEGIN SELECT RAISE(ABORT, 'set kind does not match its parser format'); END;
 CREATE TRIGGER relationship_rationales_require_owner BEFORE INSERT ON relationship_rationales
-WHEN NOT EXISTS (SELECT 1 FROM relationship_assertions WHERE assertion_key=NEW.assertion_key AND origin<>'source_assertion')
+WHEN NOT EXISTS (
+    SELECT 1 FROM catalog_relationships AS identity
+    WHERE identity.assertion_key=NEW.assertion_key AND identity.origin IN ('derived','user')
+      AND (EXISTS (SELECT 1 FROM inferred_catalog_relationships WHERE relationship_id=identity.relationship_id)
+           OR EXISTS (SELECT 1 FROM manual_catalog_relationships WHERE relationship_id=identity.relationship_id))
+)
  OR EXISTS (SELECT 1 FROM relationship_comparisons WHERE assertion_key=NEW.assertion_key)
  OR EXISTS (SELECT 1 FROM relationship_rationales WHERE assertion_key=NEW.assertion_key)
  OR EXISTS (SELECT 1 FROM relationship_evidence_publications WHERE assertion_key=NEW.assertion_key)
 BEGIN SELECT RAISE(ABORT,'rationale requires an unsealed non-source relationship'); END;
 CREATE TRIGGER relationship_comparisons_require_owner BEFORE INSERT ON relationship_comparisons
-WHEN NOT EXISTS (SELECT 1 FROM relationship_assertions WHERE assertion_key=NEW.assertion_key AND origin='derived_candidate')
+WHEN NOT EXISTS (
+    SELECT 1 FROM catalog_relationships AS identity
+    JOIN inferred_catalog_relationships AS inferred USING(relationship_id)
+    WHERE identity.assertion_key=NEW.assertion_key AND identity.origin='derived'
+)
  OR EXISTS (SELECT 1 FROM relationship_rationales WHERE assertion_key=NEW.assertion_key)
  OR EXISTS (SELECT 1 FROM relationship_comparisons WHERE assertion_key=NEW.assertion_key)
  OR EXISTS (SELECT 1 FROM relationship_evidence_publications WHERE assertion_key=NEW.assertion_key)
@@ -2302,14 +2206,25 @@ WHEN NOT EXISTS (SELECT 1 FROM relationship_comparisons WHERE assertion_key=NEW.
 BEGIN SELECT RAISE(ABORT,'assessment requires an unsealed comparison'); END;
 CREATE TRIGGER relationship_evidence_publications_validate BEFORE INSERT ON relationship_evidence_publications
 WHEN EXISTS (SELECT 1 FROM relationship_evidence_publications WHERE assertion_key=NEW.assertion_key)
- OR NOT EXISTS (SELECT 1 FROM relationship_assertions a WHERE a.assertion_key=NEW.assertion_key AND (
-     (NEW.evidence_kind='rationale' AND a.origin<>'source_assertion'
-      AND EXISTS (SELECT 1 FROM relationship_rationales WHERE assertion_key=a.assertion_key)
-      AND NOT EXISTS (SELECT 1 FROM relationship_comparisons WHERE assertion_key=a.assertion_key))
-     OR (NEW.evidence_kind='catalog_comparison' AND a.origin='derived_candidate'
-      AND EXISTS (SELECT 1 FROM relationship_comparisons WHERE assertion_key=a.assertion_key)
-      AND NOT EXISTS (SELECT 1 FROM relationship_rationales WHERE assertion_key=a.assertion_key))
- ))
+ OR NOT EXISTS (
+     SELECT 1 FROM catalog_relationships AS identity
+     JOIN relationship_assertions AS assertion USING(assertion_key)
+     WHERE identity.assertion_key=NEW.assertion_key
+       AND identity.origin IN ('derived','user')
+       AND assertion.origin IN ('derived_candidate','user_conclusion')
+       AND (assertion.generic_subject_snapshot_key IS NULL OR EXISTS (
+            SELECT 1 FROM snapshot_publications
+            WHERE snapshot_key=assertion.generic_subject_snapshot_key))
+       AND (assertion.generic_target_snapshot_key IS NULL OR EXISTS (
+            SELECT 1 FROM snapshot_publications
+            WHERE snapshot_key=assertion.generic_target_snapshot_key))
+       AND ((NEW.evidence_kind='rationale'
+         AND EXISTS (SELECT 1 FROM relationship_rationales WHERE assertion_key=identity.assertion_key)
+         AND NOT EXISTS (SELECT 1 FROM relationship_comparisons WHERE assertion_key=identity.assertion_key))
+         OR (NEW.evidence_kind='catalog_comparison' AND identity.origin='derived'
+         AND EXISTS (SELECT 1 FROM relationship_comparisons WHERE assertion_key=identity.assertion_key)
+         AND NOT EXISTS (SELECT 1 FROM relationship_rationales WHERE assertion_key=identity.assertion_key)))
+ )
  OR EXISTS (SELECT 1 FROM relationship_comparison_fields WHERE assertion_key=NEW.assertion_key
      GROUP BY disposition HAVING MIN(position)<>0 OR MAX(position)<>COUNT(*)-1)
  OR EXISTS (SELECT COUNT(*) FROM relationship_assertion_support WHERE assertion_key=NEW.assertion_key
@@ -2348,78 +2263,12 @@ END;
 CREATE TRIGGER relationship_assertion_support_origin_insert
 BEFORE INSERT ON relationship_assertion_support
 WHEN NOT EXISTS (
-    SELECT 1 FROM relationship_assertions
-    WHERE assertion_key = NEW.assertion_key AND origin = 'derived_candidate'
+    SELECT 1 FROM catalog_relationships AS identity
+    JOIN inferred_catalog_relationships AS inferred USING(relationship_id)
+    WHERE identity.assertion_key = NEW.assertion_key AND identity.origin = 'derived'
 )
 BEGIN
     SELECT RAISE(ABORT, 'only derived candidates may have supporting assertions');
-END;
-CREATE TRIGGER relationship_subject_owner_matches_endpoint BEFORE INSERT ON relationship_assertions
-WHEN NEW.subject_set_id IS NOT NULL AND NOT EXISTS (
-    SELECT 1 FROM catalog_sets AS sets
-    JOIN catalog_set_groups AS groups USING (set_group_id)
-    LEFT JOIN software_lists AS lists ON lists.namespace_id = groups.set_group_id
-    WHERE sets.set_id = NEW.subject_set_id
-      AND groups.snapshot_key = NEW.subject_snapshot_key
-      AND (
-          (NEW.subject_kind IN ('catalog_set','asset_requirement') AND groups.kind = 'root'
-           AND sets.set_name = CASE WHEN NEW.origin = 'source_assertion' THEN NEW.source_subject_a ELSE NEW.generic_subject_a END)
-          OR
-          (NEW.subject_kind = 'software_item' AND groups.kind = 'software_list'
-           AND lists.name = CASE WHEN NEW.origin = 'source_assertion' THEN NEW.source_subject_a ELSE NEW.generic_subject_a END
-           AND sets.set_name = CASE WHEN NEW.origin = 'source_assertion' THEN NEW.source_subject_b ELSE NEW.generic_subject_b END)
-      )
-)
-BEGIN SELECT RAISE(ABORT, 'relationship owner does not match its catalog endpoint'); END;
-CREATE TRIGGER relationship_target_owner_matches_endpoint BEFORE INSERT ON relationship_assertions
-WHEN NEW.target_set_id IS NOT NULL AND NOT EXISTS (
-    SELECT 1 FROM catalog_sets AS sets
-    JOIN catalog_set_groups AS groups USING (set_group_id)
-    LEFT JOIN software_lists AS lists ON lists.namespace_id = groups.set_group_id
-    WHERE sets.set_id = NEW.target_set_id
-      AND groups.snapshot_key = NEW.target_snapshot_key
-      AND (
-          (NEW.target_kind IN ('catalog_set','asset_requirement') AND groups.kind = 'root'
-           AND sets.set_name = CASE WHEN NEW.origin = 'source_assertion' THEN NEW.source_target_a ELSE NEW.generic_target_a END)
-          OR
-          (NEW.target_kind = 'software_item' AND groups.kind = 'software_list'
-           AND lists.name = CASE WHEN NEW.origin = 'source_assertion' THEN NEW.source_target_a ELSE NEW.generic_target_a END
-           AND sets.set_name = CASE WHEN NEW.origin = 'source_assertion' THEN NEW.source_target_b ELSE NEW.generic_target_b END)
-      )
-)
-BEGIN SELECT RAISE(ABORT, 'relationship owner does not match its catalog endpoint'); END;
-CREATE TRIGGER relationship_assertions_are_immutable_delete
-BEFORE DELETE ON relationship_assertions
-BEGIN
-    SELECT RAISE(ABORT, 'relationship assertions are immutable');
-END;
-CREATE TRIGGER relationship_assertions_are_immutable_insert
-BEFORE INSERT ON relationship_assertions
-WHEN EXISTS (
-    SELECT 1 FROM relationship_assertions WHERE assertion_key = NEW.assertion_key
-) OR EXISTS (SELECT 1 FROM catalog_relationships WHERE assertion_key=NEW.assertion_key)
-  OR (NEW.origin='source_assertion'
-      AND EXISTS (SELECT 1 FROM catalog_snapshots AS snapshot
-          JOIN parser_interpretations AS interpretation USING(interpretation_key)
-          WHERE snapshot.snapshot_key=NEW.source_snapshot_key
-            AND (
-                (interpretation.format IN ('mame-listxml','logiqx','clrmamepro-dat')
-                 AND NEW.source_field IN ('cloneof','romof','sampleof','device_ref','merge'))
-                OR (interpretation.format='mame-softwarelist-xml' AND NEW.source_field='cloneof')
-                OR (interpretation.format IN ('no-intro-database-xml-compatible',
-                                              'no-intro-database-xml-nul-compatible')
-                    AND NEW.source_field IN ('clone', 'mergeof', 'archive_clone', 'archive_mergeof'))
-                OR (interpretation.format IN ('no-intro-dat-v3-strict','no-intro-dat-v3-compatible',
-                                               'no-intro-dat-v4-strict','no-intro-dat-v4-compatible')
-                    AND NEW.source_field IN ('cloneof','cloneofid'))
-            )))
-BEGIN
-    SELECT RAISE(ABORT, 'relationship assertions are immutable');
-END;
-CREATE TRIGGER relationship_assertions_are_immutable_update
-BEFORE UPDATE ON relationship_assertions
-BEGIN
-    SELECT RAISE(ABORT, 'relationship assertions are immutable');
 END;
 CREATE TRIGGER relationship_reviews_are_immutable_delete
 BEFORE DELETE ON relationship_reviews

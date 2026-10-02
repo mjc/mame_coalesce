@@ -256,6 +256,13 @@ assessments have separate typed tables; comparisons do not copy expected
 sizes or digests. Imported source evidence is reconstructed from its native
 facts. Publication atomically seals the evidence and support rows before
 explanation, review or backup; incomplete decisions are integrity failures.
+Inferred and manual relationships share the same once-issued identity registry
+as imported declarations. Their endpoints reference actual set, media-entry,
+archive or issued shared-file IDs through typed foreign keys. An unresolved
+name remains a literal reference, never an automatically resolved owner.
+Rules declare their key, revision and description separately. Unscoped digest
+references reuse the binary digest table; they do not prove observed bytes or
+issue file UUIDs. The former generic assertion payload is a read-only projection.
 
 Import errors can retain an exact byte excerpt with a start-inclusive,
 end-exclusive highlight relative to that saved excerpt, not the whole file.
@@ -499,9 +506,10 @@ family. ROM/disk/sample references identify existing occurrences without copying
 payloads. Repeated machine names remain distinct, and continuations are pinned
 to their snapshot and registry generation. Queries read stored native facts, not
 the source XML. Raw ROM size/offset spelling and qualified compatibility owners
-are retained. The other reported/derived/user/observed relationship endpoint
-cutovers and exhaustive pinned-DTD field/grammar/query coverage remain
-unfinished.
+are retained. Source relationships from six verified parser families and
+inferred/manual relationships now use native owners. Authentic P/C reported
+identity, immutable observed-file endpoints and exhaustive pinned-DTD
+field/grammar/query coverage remain unfinished.
 
 The separate software-list adapter imports list-scoped items, parts,
 data/disk areas, component evidence, and load instructions as source data. It
