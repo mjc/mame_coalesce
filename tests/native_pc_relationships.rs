@@ -195,6 +195,8 @@ fn insert_pc_snapshot_owner(
     .bind::<Nullable<Text>, _>(seed.declared_version)
     .bind::<BigInt, _>(seed.coverage_id)
     .execute(connection)?;
+    sql_query("INSERT INTO no_intro_pc_documents(snapshot_key,header_present,source_line,source_column) VALUES(?,0,1,1)")
+        .bind::<Text, _>(&snapshot).execute(connection)?;
 
     let group_id =
         sql_query("SELECT COALESCE(MAX(set_group_id),0)+1 AS value FROM catalog_set_groups")
@@ -235,8 +237,9 @@ fn insert_pc_game_owner(
     .bind::<BigInt, _>(list_order)
     .bind::<Text, _>(name)
     .execute(connection)?;
-    sql_query("INSERT INTO no_intro_pc_games(set_id,archive_id) VALUES (?,NULL)")
+    sql_query("INSERT INTO no_intro_pc_games(set_id,document_order,archive_id) VALUES (?,?,NULL)")
         .bind::<BigInt, _>(set_id)
+        .bind::<BigInt, _>(list_order)
         .execute(connection)?;
     Ok(set_id)
 }
@@ -1324,6 +1327,10 @@ fn synthetic_pc_storage_failure_after_registry_issuance_rolls_back_import() -> T
     for table in [
         "catalog_relationships",
         "reported_catalog_relationships",
+        "no_intro_pc_header_names",
+        "no_intro_pc_header_descriptions",
+        "no_intro_pc_headers",
+        "no_intro_pc_documents",
         "no_intro_pc_clone_links",
         "no_intro_pc_merge_links",
         "catalog_sets",

@@ -421,12 +421,14 @@ fn composite_key_catalog_tables_cluster_rows_by_their_primary_keys()
              'catalog_relationship_rationales', 'catalog_relationship_comparisons', \
              'catalog_relationship_comparison_fields', 'catalog_relationship_evidence_publications', \
              'catalog_relationship_evidence', 'reported_catalog_relationships', \
-             'inferred_catalog_relationships', 'manual_catalog_relationships' \
+             'inferred_catalog_relationships', 'manual_catalog_relationships', \
+             'no_intro_pc_file_claims', 'no_intro_pc_documents', 'no_intro_pc_headers', \
+             'no_intro_pc_header_names', 'no_intro_pc_header_descriptions' \
          )",
     )
     .get_result::<CountRow>(&mut connection)?;
 
-    assert_eq!(clustered.count, 28);
+    assert_eq!(clustered.count, 33);
 
     let specification_tables = sql_query(
         "SELECT COUNT(*) AS count FROM pragma_table_list \
@@ -451,7 +453,6 @@ fn composite_key_catalog_tables_cluster_rows_by_their_primary_keys()
         ("logiqx_rom_claims", "occurrence_id"),
         ("logiqx_disk_claims", "occurrence_id"),
         ("cmp_rom_claims", "occurrence_id"),
-        ("no_intro_pc_file_claims", "occurrence_id"),
         ("software_lists", "namespace_id"),
         ("software_items", "record_id"),
         ("software_parts", "part_id"),
@@ -1256,11 +1257,18 @@ fn imports_no_intro_pc_xml_metadata_without_inventing_title_relationships()
             "Synthetic Cartridge (World)".to_owned(),
         ]
     );
-    let declared_version =
-        sql_query("SELECT declared_version AS value FROM catalog_snapshots WHERE snapshot_key = ?")
-            .bind::<Text, _>(snapshot.as_str())
-            .get_result::<TextRow>(&mut connection)?;
+    let declared_version = sql_query(
+        "SELECT declared_version AS value FROM catalog_snapshot_versions WHERE snapshot_key = ?",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(&mut connection)?;
     assert_eq!(declared_version.value, "synthetic-2026-09-24");
+    let copied_version = sql_query(
+        "SELECT COUNT(*) AS count FROM catalog_snapshots WHERE snapshot_key=? AND declared_version IS NOT NULL",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<CountRow>(&mut connection)?;
+    assert_eq!(copied_version.count, 0);
 
     let source_lineage =
         sql_query("SELECT source_key AS value FROM catalogs WHERE catalog_key = ?")

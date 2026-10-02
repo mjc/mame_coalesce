@@ -283,6 +283,16 @@ it can coexist with a merge declaration. Clone projects a source-parent relation
 and merge an alternate-representation relation under this synthetic interpretation.
 This does not establish authentic DAT-o-MATIC P/C wire-format support.
 
+The synthetic adapter stores its optional header, repeated names/descriptions,
+version, game description and ordered ROM declarations in native tables.
+Missing and empty fields remain different. Header versions are read from their
+native owner, not copied into snapshot rows. ROM size spelling is retained;
+valid unsigned sizes beyond SQLite's signed range remain queryable without
+inventing a signed size or assigning a shared UUID. Bulk file queries expose
+the native P/C ROM payload. History detects native field/order edits while
+ignoring vendor-only gaps and reindentation. Exact attribute positions/order
+and authentic producer grammar remain separate unfinished work.
+
 Import errors can retain an exact byte excerpt with a start-inclusive,
 end-exclusive highlight relative to that saved excerpt, not the whole file.
 `problem_start_byte` and `problem_end_byte` index the stored `source_excerpt`:

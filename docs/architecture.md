@@ -104,6 +104,14 @@ parser-internal representations the public contract.
   Synthetic P/C clone/merge references use actual set-owned native links and
   the shared reported registry, not copied generic assertions. Archive-number
   targets remain literal and snapshot-local; build resolution is separate.
+  Synthetic P/C document/header owners retain repeated names/descriptions,
+  optional version, native child order and exact text. ROM owners retain size
+  spelling and expose a checked virtual signed-size projection; oversized
+  unsigned declarations remain native query data without content association.
+  The existing requested-occurrence join hydrates typed ROM payloads without
+  reparsing external originals. History compares native relative layouts,
+  distinguishing absent/empty values while ignoring vendor-only ordinal gaps.
+  P/C ROM payloads also use `WITHOUT ROWID` and explicit owner guards.
   FK-owned reported/inferred/manual payloads use `WITHOUT ROWID`, so a NULL or
   omitted ID cannot bypass a guard through SQLite's automatic ID allocation.
   Scoped source readers constrain both requested snapshots and their issued keys,

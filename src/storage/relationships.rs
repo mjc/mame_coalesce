@@ -447,7 +447,7 @@ impl ExplanationScope {
         } else {
             "relationship_assertion_explanations a"
         };
-        let merge_name = "COALESCE(mame_rom_merge.merge_name,mame_disk_merge.merge_name,logiqx_merge.merge_name,cmp_merge.merge_name,pc_file.merge_name)";
+        let merge_name = "COALESCE(mame_rom_merge.merge_name,mame_disk_merge.merge_name,logiqx_merge.merge_name,cmp_merge.merge_name)";
         let occurrence_id =
             "COALESCE(native_source_occurrence.occurrence_id,source_occurrence.occurrence_id)";
         let size = "COALESCE(mame_rom.size,logiqx_rom.size,cmp_rom.size,pc_file.size,dat_rom.size)";

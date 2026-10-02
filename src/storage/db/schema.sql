@@ -813,8 +813,10 @@ CREATE TABLE mame_rom_claims (
 );
 CREATE TABLE no_intro_pc_games (
     set_id INTEGER NOT NULL REFERENCES catalog_sets(set_id) ON DELETE RESTRICT,
+    document_order INTEGER NOT NULL CHECK(typeof(document_order)='integer' AND document_order>=0),
     archive_id TEXT,
     description TEXT,
+    description_order INTEGER CHECK(description_order IS NULL OR (typeof(description_order)='integer' AND description_order>=0)),
     description_line INTEGER,
     description_column INTEGER,
     name_alt TEXT,
@@ -823,6 +825,8 @@ CREATE TABLE no_intro_pc_games (
     bios_text TEXT,
     languages_present INTEGER NOT NULL DEFAULT 0 CHECK (languages_present IN (0,1)),
     PRIMARY KEY (set_id),
+    CHECK ((description IS NULL) = (description_order IS NULL)),
+    CHECK ((description IS NULL) = (description_line IS NULL)),
     CHECK ((description_line IS NULL) = (description_column IS NULL)),
     CHECK (description_line IS NULL OR description_line > 0),
     CHECK (description_column IS NULL OR description_column > 0)
@@ -945,15 +949,23 @@ CREATE TABLE no_intro_pc_file_claims (
     occurrence_id INTEGER PRIMARY KEY NOT NULL,
     claim_kind TEXT NOT NULL DEFAULT 'no_intro_pc_file' CHECK (claim_kind = 'no_intro_pc_file'),
     name TEXT NOT NULL,
-    size INTEGER CHECK (size IS NULL OR size >= 0),
-    evidence_scope TEXT NOT NULL,
-    evidence_provenance TEXT NOT NULL,
-    merge_name TEXT,
-    dump_status TEXT,
+    size_text TEXT,
+    size_digits TEXT GENERATED ALWAYS AS (CASE WHEN substr(size_text,1,1)='+' THEN substr(size_text,2) ELSE size_text END) VIRTUAL,
+    size INTEGER GENERATED ALWAYS AS (CASE
+      WHEN size_digits IS NULL OR size_digits='' OR instr(size_digits,char(0))>0 OR size_digits GLOB '*[^0-9]*' THEN NULL
+      WHEN length(ltrim(size_digits,'0'))>19 THEN NULL
+      WHEN length(ltrim(size_digits,'0'))=19 AND ltrim(size_digits,'0')>'9223372036854775807' THEN NULL
+      ELSE CAST(size_digits AS INTEGER) END) VIRTUAL,
+    source_order INTEGER NOT NULL CHECK(typeof(source_order)='integer' AND source_order>=0),
+    evidence_scope TEXT NOT NULL CHECK(evidence_scope='whole_asset'),
+    evidence_provenance TEXT NOT NULL CHECK(evidence_provenance='source_declared'),
     source_line INTEGER NOT NULL CHECK (source_line > 0),
     source_column INTEGER NOT NULL CHECK (source_column > 0),
-    FOREIGN KEY (occurrence_id,claim_kind) REFERENCES asset_occurrences(occurrence_id,claim_kind) ON DELETE RESTRICT
-);
+    FOREIGN KEY (occurrence_id,claim_kind) REFERENCES asset_occurrences(occurrence_id,claim_kind) ON DELETE RESTRICT,
+    CHECK(size_digits IS NULL OR (typeof(size_digits)='text' AND size_digits<>'' AND instr(size_digits,char(0))=0
+      AND size_digits NOT GLOB '*[^0-9]*' AND (length(ltrim(size_digits,'0'))<20
+      OR (length(ltrim(size_digits,'0'))=20 AND ltrim(size_digits,'0')<='18446744073709551615'))))
+) WITHOUT ROWID;
 CREATE TABLE occurrence_content_conflicts (
     occurrence_id INTEGER NOT NULL REFERENCES asset_occurrences(occurrence_id) ON DELETE RESTRICT,
     candidate_content_uuid BLOB NOT NULL REFERENCES catalog_contents(content_uuid) ON DELETE RESTRICT,
@@ -1821,7 +1833,7 @@ LEFT JOIN clrmamepro_rom_merges AS merge_declaration USING (occurrence_id)
 UNION ALL
 SELECT occurrence.record_id AS set_id,occurrence.occurrence_order AS component_order,
        payload.name AS asset_name,'rom' AS role,
-       payload.size,payload.evidence_scope,payload.evidence_provenance,payload.merge_name,payload.dump_status,payload.source_line,payload.source_column,NULL AS serial,NULL AS date,NULL AS region,NULL AS bios,NULL AS offset,NULL AS optional,NULL AS sound_only,NULL AS dispose,NULL AS load_flag,NULL AS value,NULL AS inverted,NULL AS ovha,NULL AS no_thread,NULL AS disk_index,NULL AS writable,NULL AS writeable,
+       payload.size,payload.evidence_scope,payload.evidence_provenance,NULL AS merge_name,NULL AS dump_status,payload.source_line,payload.source_column,NULL AS serial,NULL AS date,NULL AS region,NULL AS bios,NULL AS offset,NULL AS optional,NULL AS sound_only,NULL AS dispose,NULL AS load_flag,NULL AS value,NULL AS inverted,NULL AS ovha,NULL AS no_thread,NULL AS disk_index,NULL AS writable,NULL AS writeable,
        occurrence.content_uuid
 FROM no_intro_pc_file_claims AS payload JOIN asset_occurrences AS occurrence USING (occurrence_id)
 UNION ALL

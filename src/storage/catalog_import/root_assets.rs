@@ -81,7 +81,6 @@ pub(super) fn insert(
     record: CatalogSetId,
     order: i64,
     asset: &SnapshotAsset,
-    size: Option<i64>,
     content_uuid: Option<Vec<u8>>,
 ) -> crate::Result<OccurrenceId> {
     let record_kind =
@@ -129,18 +128,21 @@ pub(super) fn insert(
             super::cmp_native::insert_sample(conn, id, sample)?;
         }
         RootClaimKind::NoIntroPcFile => {
-            sql_query(format!(
-                "INSERT INTO {} (occurrence_id,name,size,evidence_scope,evidence_provenance, \
-                 merge_name,dump_status,source_line,source_column) \
-                 VALUES (?, ?, ?, ?, 'source_declared', ?, ?, ?, ?)",
-                kind.table()
-            ))
+            let NativeAssetFacts::NoIntroPc {
+                size_text,
+                source_order,
+            } = &asset.native
+            else {
+                return Err(crate::Error::InvalidPath(
+                    "P/C ROM has no native declaration".into(),
+                ));
+            };
+            sql_query("INSERT INTO no_intro_pc_file_claims (occurrence_id,name,size_text,source_order,evidence_scope,evidence_provenance,source_line,source_column) VALUES (?,?,?,?,?,'source_declared',?,?)")
             .bind::<BigInt, _>(id.database_value())
             .bind::<Text, _>(&asset.name)
-            .bind::<Nullable<BigInt>, _>(size)
+            .bind::<Nullable<Text>, _>(size_text.as_deref())
+            .bind::<BigInt, _>(super::checked_order(*source_order, "P/C ROM children")?)
             .bind::<Text, _>(asset.evidence_scope)
-            .bind::<Nullable<Text>, _>(asset.merge.as_deref())
-            .bind::<Nullable<Text>, _>(asset.dump_status.as_deref())
             .bind::<BigInt, _>(asset.location.line)
             .bind::<BigInt, _>(asset.location.column)
             .execute(conn)?;

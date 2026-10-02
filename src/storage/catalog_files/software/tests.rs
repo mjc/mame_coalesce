@@ -155,6 +155,7 @@ fn software_occurrence(kind: OccurrenceKind) -> CatalogFileOccurrence {
         mame_file: None,
         software_file: None,
         no_intro_dat_rom: None,
+        no_intro_pc_rom: None,
         no_intro_database_file: None,
     }
 }

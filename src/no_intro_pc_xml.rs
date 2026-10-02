@@ -3,14 +3,24 @@ use std::collections::HashSet;
 use crate::{
     logiqx::RecordLocation,
     mame::{ExtensionValue, XmlExtension, parse_xml_element},
-    xml_reader::{Element, ElementContent},
+    xml_reader::{DeclaredText, Element, ElementContent},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Catalog {
-    pub version: Option<String>,
+    pub document_location: RecordLocation,
+    pub header: Option<Header>,
     pub entries: Vec<Entry>,
     pub extensions: Vec<XmlExtension>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Header {
+    pub location: RecordLocation,
+    pub source_order: usize,
+    pub version: Option<DeclaredText>,
+    pub names: Vec<DeclaredText>,
+    pub descriptions: Vec<DeclaredText>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -24,9 +34,11 @@ pub struct Entry {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GameFacts {
+    pub source_order: usize,
     pub archive_id: Option<ArchiveId>,
     pub description: Option<String>,
     pub description_location: Option<RecordLocation>,
+    pub description_order: Option<usize>,
     pub name_alt: Option<String>,
     pub region: Option<String>,
     pub languages: Option<Vec<String>>,
@@ -39,7 +51,9 @@ pub struct GameFacts {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Asset {
     pub name: String,
+    pub source_order: usize,
     pub size: Option<u64>,
+    pub size_text: Option<String>,
     pub crc: Option<Vec<u8>>,
     pub md5: Option<Vec<u8>>,
     pub sha1: Option<Vec<u8>>,
@@ -90,7 +104,7 @@ impl Catalog {
         }
         reject_record_text(&root, "document", None)?;
 
-        let mut version = None;
+        let mut header = None;
         let mut entries = Vec::new();
         let mut entry_names = HashSet::new();
         let mut extensions = Vec::new();
@@ -105,7 +119,7 @@ impl Catalog {
         }
 
         let mut saw_header = false;
-        for child in root.children() {
+        for (source_order, child) in root.children().enumerate() {
             match child.name.as_str() {
                 "header" => {
                     if std::mem::replace(&mut saw_header, true) {
@@ -116,10 +130,10 @@ impl Catalog {
                             child.location,
                         ));
                     }
-                    parse_header(child, &mut version, &mut extensions)?;
+                    header = Some(parse_header(child, source_order, &mut extensions)?);
                 }
                 "game" => {
-                    let entry = parse_entry(child)?;
+                    let entry = parse_entry(child, source_order)?;
                     if !entry_names.insert(entry.name.clone()) {
                         return Err(parse_error(
                             "duplicate archive name",
@@ -143,7 +157,8 @@ impl Catalog {
         }
 
         Ok(Self {
-            version,
+            document_location: root.location,
+            header,
             entries,
             extensions,
         })
@@ -152,11 +167,14 @@ impl Catalog {
 
 fn parse_header(
     node: &Element,
-    version: &mut Option<String>,
+    source_order: usize,
     extensions: &mut Vec<XmlExtension>,
-) -> crate::Result<()> {
+) -> crate::Result<Header> {
     reject_record_text(node, "header", None)?;
-    for field in node.children() {
+    let mut version = None;
+    let mut names = Vec::new();
+    let mut descriptions = Vec::new();
+    for (field_order, field) in node.children().enumerate() {
         if matches!(field.name.as_str(), "version" | "name" | "description")
             && (!field.attributes.is_empty() || field.children().next().is_some())
         {
@@ -169,7 +187,7 @@ fn parse_header(
         }
         match field.name.as_str() {
             "version" => {
-                if version.replace(field.direct_text()).is_some() {
+                if version.replace(declared_text(field, field_order)).is_some() {
                     return Err(parse_error(
                         "duplicate header version",
                         "header",
@@ -178,14 +196,8 @@ fn parse_header(
                     ));
                 }
             }
-            "name" | "description" => extensions.push(XmlExtension {
-                record_kind: "header".into(),
-                record_name: None,
-                field_name: field.name.clone(),
-                namespace_uri: None,
-                value: serde_json::json!(field.direct_text()).into(),
-                location: field.location,
-            }),
+            "name" => names.push(declared_text(field, field_order)),
+            "description" => descriptions.push(declared_text(field, field_order)),
             _ => extensions.push(element_extension("header", None, field)?),
         }
     }
@@ -198,13 +210,19 @@ fn parse_header(
             node.location,
         ));
     }
-    Ok(())
+    Ok(Header {
+        location: node.location,
+        source_order,
+        version,
+        names,
+        descriptions,
+    })
 }
 
-fn parse_entry(node: &Element) -> crate::Result<Entry> {
+fn parse_entry(node: &Element, source_order: usize) -> crate::Result<Entry> {
     let name = required(node, "name", "game")?.to_owned();
     reject_record_text(node, "game", Some(&name))?;
-    let mut facts = parse_entry_attributes(node, &name)?;
+    let mut facts = parse_entry_attributes(node, &name, source_order)?;
     let mut extensions = unknown_entry_attributes(node, &name);
     let archive_id = node
         .attributes
@@ -213,7 +231,8 @@ fn parse_entry(node: &Element) -> crate::Result<Entry> {
         .transpose()?;
     let mut description = None;
     let mut description_location = None;
-    for child in node.children() {
+    let mut description_order = None;
+    for (child_order, child) in node.children().enumerate() {
         if child.name == "description" {
             if description.replace(child.direct_text()).is_some() {
                 return Err(parse_error(
@@ -224,6 +243,7 @@ fn parse_entry(node: &Element) -> crate::Result<Entry> {
                 ));
             }
             description_location = Some(child.location);
+            description_order = Some(child_order);
             if !child.attributes.is_empty() || child.children().next().is_some() {
                 return Err(parse_error(
                     "structured game description is unsupported",
@@ -238,6 +258,7 @@ fn parse_entry(node: &Element) -> crate::Result<Entry> {
     facts.archive_id = archive_id;
     facts.description = description;
     facts.description_location = description_location;
+    facts.description_order = description_order;
     Ok(Entry {
         name,
         facts,
@@ -247,11 +268,17 @@ fn parse_entry(node: &Element) -> crate::Result<Entry> {
     })
 }
 
-fn parse_entry_attributes(node: &Element, name: &str) -> crate::Result<GameFacts> {
+fn parse_entry_attributes(
+    node: &Element,
+    name: &str,
+    source_order: usize,
+) -> crate::Result<GameFacts> {
     Ok(GameFacts {
+        source_order,
         archive_id: None,
         description: None,
         description_location: None,
+        description_order: None,
         name_alt: node.attributes.get("namealt").cloned(),
         region: node.attributes.get("region").cloned(),
         languages: node.attributes.get("languages").map(|value| {
@@ -331,7 +358,7 @@ fn parse_assets(
 ) -> crate::Result<Vec<Asset>> {
     let mut assets = Vec::new();
     let mut asset_names = HashSet::new();
-    for child in node.children() {
+    for (source_order, child) in node.children().enumerate() {
         if child.name != "rom" {
             if child.name == "description" {
                 continue;
@@ -339,7 +366,7 @@ fn parse_assets(
             extensions.push(element_extension("game", Some(name), child)?);
             continue;
         }
-        let asset = parse_asset(child)?;
+        let asset = parse_asset(child, source_order)?;
         if !asset_names.insert(asset.name.clone()) {
             return Err(parse_error(
                 "duplicate ROM name",
@@ -353,7 +380,7 @@ fn parse_assets(
     Ok(assets)
 }
 
-fn parse_asset(node: &Element) -> crate::Result<Asset> {
+fn parse_asset(node: &Element, source_order: usize) -> crate::Result<Asset> {
     let name = required(node, "name", "rom")?.to_owned();
     reject_record_text(node, "rom", Some(&name))?;
     let size = node
@@ -365,6 +392,7 @@ fn parse_asset(node: &Element) -> crate::Result<Asset> {
                 .map_err(|_| parse_error("invalid ROM size", "rom", Some(&name), node.location))
         })
         .transpose()?;
+    let size_text = node.attributes.get("size").cloned();
     let crc = node
         .attributes
         .get("crc")
@@ -391,13 +419,23 @@ fn parse_asset(node: &Element) -> crate::Result<Asset> {
     }
     Ok(Asset {
         name,
+        source_order,
         size,
+        size_text,
         crc,
         md5,
         sha1,
         location: node.location,
         extensions,
     })
+}
+
+fn declared_text(element: &Element, source_order: usize) -> DeclaredText {
+    DeclaredText {
+        value: element.direct_text(),
+        source_order,
+        location: element.location,
+    }
 }
 
 fn decode_hex(
@@ -532,6 +570,8 @@ mod tests {
             Some("0640")
         );
         assert_eq!(entry.facts.description.as_deref(), Some("Wake"));
+        assert_eq!(entry.facts.description_order, Some(0));
+        assert_eq!(entry.facts.source_order, 0);
         let asset = entry
             .assets
             .first()
@@ -545,6 +585,70 @@ mod tests {
                 ][..]
             )
         );
+        assert_eq!(asset.source_order, 1);
+        assert_eq!(asset.size_text.as_deref(), Some("64847823"));
+        Ok(())
+    }
+
+    #[test]
+    fn preserves_repeated_header_fields_in_source_order_after_games() -> crate::Result<()> {
+        let catalog = Catalog::parse(
+            br#"<datafile><game name="game"/><vendor/><header><name>  first &amp; <![CDATA[name]]>  </name><description/><name></name><description> second </description></header></datafile>"#,
+        )?;
+        let header = catalog
+            .header
+            .as_ref()
+            .ok_or_else(|| crate::Error::InvalidPath("No-Intro test header missing".into()))?;
+
+        assert_eq!(header.source_order, 2);
+        assert_eq!(header.names.len(), 2);
+        assert_eq!(header.names[0].value, "  first & name  ");
+        assert_eq!(header.names[0].source_order, 0);
+        assert_eq!(header.names[1].value, "");
+        assert_eq!(header.names[1].source_order, 2);
+        assert_eq!(header.descriptions.len(), 2);
+        assert_eq!(header.descriptions[0].value, "");
+        assert_eq!(header.descriptions[0].source_order, 1);
+        assert_eq!(header.descriptions[1].value, " second ");
+        assert_eq!(header.descriptions[1].source_order, 3);
+        assert!(header.location.line > 0);
+        assert!(
+            !catalog
+                .extensions
+                .iter()
+                .any(|extension| matches!(extension.field_name.as_str(), "name" | "description"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn retains_empty_header_and_mixed_game_child_order_and_raw_size() -> crate::Result<()> {
+        let catalog = Catalog::parse(
+            br#"<datafile><game name="game"><vendor/><rom name="first" size="000004"/><description>  text </description><rom name="second"/></game><header/></datafile>"#,
+        )?;
+        let header = catalog
+            .header
+            .as_ref()
+            .ok_or_else(|| crate::Error::InvalidPath("No-Intro test header missing".into()))?;
+        assert_eq!(header.source_order, 1);
+        assert!(header.version.is_none());
+        assert!(header.names.is_empty());
+        assert!(header.descriptions.is_empty());
+
+        let entry = catalog
+            .entries
+            .first()
+            .ok_or_else(|| crate::Error::InvalidPath("No-Intro test entry missing".into()))?;
+        assert_eq!(entry.facts.source_order, 0);
+        assert_eq!(entry.facts.description_order, Some(2));
+        assert_eq!(entry.facts.description.as_deref(), Some("  text "));
+        assert_eq!(entry.assets.len(), 2);
+        assert_eq!(entry.assets[0].source_order, 1);
+        assert_eq!(entry.assets[0].size, Some(4));
+        assert_eq!(entry.assets[0].size_text.as_deref(), Some("000004"));
+        assert_eq!(entry.assets[1].source_order, 3);
+        assert_eq!(entry.assets[1].size, None);
+        assert_eq!(entry.assets[1].size_text, None);
         Ok(())
     }
 }

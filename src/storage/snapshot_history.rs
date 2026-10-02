@@ -16,6 +16,7 @@ use super::catalog_coverage::CoverageId;
 use super::db::Pool;
 
 mod no_intro_database;
+mod no_intro_pc;
 mod software;
 
 struct SnapshotRow {
@@ -69,6 +70,10 @@ struct RequirementRow {
     set_id: i64,
     #[diesel(sql_type = Text)]
     asset_name: String,
+    #[diesel(sql_type = Nullable<Text>)]
+    no_intro_pc_size_text: Option<String>,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    no_intro_pc_source_order: Option<i64>,
     #[diesel(sql_type = Text)]
     role: String,
     #[diesel(sql_type = Nullable<BigInt>)]
@@ -1207,6 +1212,7 @@ struct DocumentMetadata {
     cmp_layout: Vec<serde_json::Value>,
     no_intro_dat: Option<serde_json::Value>,
     no_intro_database: Option<serde_json::Value>,
+    no_intro_pc: Option<no_intro_pc::DocumentMetadata>,
     software: Option<serde_json::Value>,
 }
 
@@ -1373,6 +1379,7 @@ fn document_metadata(
     let cmp_layout = load_cmp_document_layout(conn, snapshot)?;
     let no_intro_dat = load_no_intro_dat_header_metadata(conn, snapshot)?;
     let no_intro_database = no_intro_database::load_document(conn, snapshot)?;
+    let no_intro_pc = no_intro_pc::load_document(conn, snapshot)?;
     let software = software::load_document(conn, snapshot)?;
     Ok(DocumentMetadata {
         mame,
@@ -1386,6 +1393,7 @@ fn document_metadata(
         cmp_layout,
         no_intro_dat,
         no_intro_database,
+        no_intro_pc,
         software,
     })
 }
@@ -2122,6 +2130,7 @@ fn normalize_native_order(
 }
 
 const ROOT_REQUIREMENTS_SQL: &str = "SELECT occurrence.occurrence_id, sets.set_id, asset.asset_name, asset.role, asset.size, \
+         pc_rom.size_text AS no_intro_pc_size_text, pc_rom.source_order AS no_intro_pc_source_order, \
          (SELECT digest.digest FROM asset_requirement_usable_digests AS assertion \
           JOIN digest_values AS digest USING (digest_id) \
           WHERE assertion.set_id = asset.set_id AND assertion.provenance = 'source_declared' \
@@ -2192,6 +2201,7 @@ const ROOT_REQUIREMENTS_SQL: &str = "SELECT occurrence.occurrence_id, sets.set_i
            ON occurrence.record_id = asset.set_id \
          AND occurrence.occurrence_order = asset.component_order \
          LEFT JOIN cmp_rom_claims AS cmp USING (occurrence_id) \
+         LEFT JOIN no_intro_pc_file_claims AS pc_rom USING (occurrence_id) \
          LEFT JOIN no_intro_dat_rom_claims AS dat_rom USING (occurrence_id) \
          LEFT JOIN no_intro_dat_rom_digest_fields AS dat_crc_field \
            ON dat_crc_field.occurrence_id = occurrence.occurrence_id AND dat_crc_field.field_kind = 2 \
@@ -2621,6 +2631,9 @@ fn load_no_intro_game_facts(
         facts.insert(row.set_id, row);
     }
 
+    if facts.is_empty() {
+        return Ok(BTreeMap::new());
+    }
     let mut languages = BTreeMap::<i64, Vec<serde_json::Value>>::new();
     for row in sql_query(
         "SELECT languages.set_id, languages.language_order, languages.language \
@@ -2649,6 +2662,7 @@ fn load_no_intro_game_facts(
 
     let clone_links = load_no_intro_archive_links(conn, key, "no_intro_pc_clone_links")?;
     let merge_links = load_no_intro_archive_links(conn, key, "no_intro_pc_merge_links")?;
+    let mut child_layouts = no_intro_pc::load_game_layouts(conn, key)?;
     Ok(facts
         .into_iter()
         .map(|(set_id, row)| {
@@ -2664,6 +2678,7 @@ fn load_no_intro_game_facts(
                 "clone_marker": clone_markers.contains(&set_id),
                 "clone_links": clone_links.get(&set_id).cloned().unwrap_or_default(),
                 "merge_links": merge_links.get(&set_id).cloned().unwrap_or_default(),
+                "children": child_layouts.remove(&set_id).unwrap_or_default(),
             });
             (set_id, vec![fact])
         })
@@ -3070,6 +3085,10 @@ fn assemble_requirements(
                 "field_positions": cmp_positions.get(&row.occurrence_id),
             },
             "no_intro_dat_attributes": no_intro_dat_attributes,
+            "no_intro_pc_attributes": {
+                "size_text": row.no_intro_pc_size_text,
+                "source_order": row.no_intro_pc_source_order,
+            },
         });
         result
             .requirements
@@ -3080,7 +3099,24 @@ fn assemble_requirements(
             .push(value);
     }
     for assets in result.requirements.values_mut() {
+        // A description crossing ROMs is game structure, not a change to each
+        // ROM's own declaration. Compare ROM order among ROMs only here.
+        let ranks = assets
+            .values()
+            .flatten()
+            .filter_map(|value| value["no_intro_pc_attributes"]["source_order"].as_i64())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .zip(0_i64..)
+            .collect::<BTreeMap<_, _>>();
         for evidence in assets.values_mut() {
+            for value in evidence.iter_mut() {
+                if let Some(order) = value["no_intro_pc_attributes"]["source_order"].as_i64()
+                    && let Some(rank) = ranks.get(&order)
+                {
+                    value["no_intro_pc_attributes"]["source_order"] = (*rank).into();
+                }
+            }
             evidence.sort_by_key(serde_json::Value::to_string);
         }
     }
@@ -3454,6 +3490,7 @@ fn requirement_changes(
                 "extensions",
                 "cmp_declarations",
                 "no_intro_dat_attributes",
+                "no_intro_pc_attributes",
                 "mame_attributes",
             ]
             .into_iter()

@@ -1139,7 +1139,28 @@ Targets remain unresolved archive-number references even when build planning
 finds an archive with the same number. The synthetic interpretation projects
 clone as source-parent and merge as alternate-representation evidence, not
 an exact-content assertion. Element provenance is retained; exact attribute
-positions/order and native header persistence remain unfinished.
+positions/order remain unfinished.
+
+Native `no_intro_pc_documents` and `no_intro_pc_headers` now retain optional
+header presence, root/child order and original element locations. Separate
+`no_intro_pc_header_names` / `no_intro_pc_header_descriptions` rows retain every
+accepted repeated value, including explicit empty text. Version text and its
+position live once on the header; public version provenance derives from it.
+Native games retain document and description child order. ROM claims retain
+`size_text` and original game-child order, with a checked virtual signed-size
+projection; the existing synthetic unsigned parser accepts optional `+`.
+Valid unsigned declarations above signed SQLite range remain stored and
+queryable without UUID association. Normalized hashes remain separate scoped
+source assertions, not inline copied binary columns. Unsupported media merge
+and dump-status columns were removed from this synthetic ROM shape.
+
+P/C ROM payloads are FK-owned `WITHOUT ROWID` rows; native owner/publication
+guards reject orphan, replacement and late-child writes independently of FK
+enforcement. Bulk queries hydrate typed native ROM size/order payloads through
+the existing bounded join. Document, game-child and ROM-relative history use
+native owners and ignore vendor gaps/reindentation without erasing source order.
+This native synthetic cut is not authentic DAT-o-MATIC wire-format acceptance
+or exact attribute lexical-position proof.
 
 Design native No-Intro archive, ordered language, file, and source relations.
 Archive IDs are snapshot/source-scoped identifiers, not global game identity.

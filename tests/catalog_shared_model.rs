@@ -263,7 +263,7 @@ fn native_set_details_and_links_enforce_format_ownership_and_immutability()
         "UPDATE logiqx_set_links SET target_name='changed'",
         "DELETE FROM logiqx_device_references",
         "INSERT INTO mame_machine_links(set_id,link_kind,target_name,source_line,source_column) SELECT set_id,'cloneof','wrong',1,1 FROM catalog_sets",
-        "INSERT INTO no_intro_pc_games(set_id) SELECT set_id FROM catalog_sets",
+        "INSERT INTO no_intro_pc_games(set_id,document_order) SELECT set_id,0 FROM catalog_sets",
         "INSERT INTO logiqx_device_references(set_id,reference_order,target_name,source_line,source_column) SELECT set_id,1,'late',1,1 FROM catalog_sets",
         "INSERT INTO catalog_sets(set_group_id,source_element_kind,list_order,set_name,source_line,source_column) SELECT set_group_id,'logiqx_game',1,'late',1,1 FROM catalog_set_groups",
     ] {

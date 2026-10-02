@@ -158,9 +158,21 @@ pub struct CatalogFileOccurrence {
     /// Native ROM or disk data from a MAME software list, when this occurrence has one.
     pub software_file: Option<SoftwareFilePayload>,
     pub no_intro_dat_rom: Option<NoIntroDatRomPayload>,
+    pub no_intro_pc_rom: Option<NoIntroPcRomPayload>,
     pub no_intro_database_file: Option<NoIntroDatabaseFilePayload>,
     /// Native MAME ROM, disk or filename-only sample data, when this occurrence has one.
     pub mame_file: Option<MameFilePayload>,
+}
+
+/// Native ROM declaration in the application's synthetic P/C dialect.
+///
+/// The name and location are owned once by occurrence provenance; digests
+/// remain the occurrence's normalized, scope-qualified assertions.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NoIntroPcRomPayload {
+    pub size_text: Option<String>,
+    pub size: Option<u64>,
+    pub source_order: i64,
 }
 
 /// Stable row identity for a native No-Intro dump source.
@@ -444,6 +456,10 @@ struct NativePayloadRow {
     occurrence_id: i64,
     #[diesel(sql_type = Nullable<Text>)]
     asset_name: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    no_intro_pc_size_text: Option<String>,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    no_intro_pc_source_order: Option<i64>,
     #[diesel(sql_type = Nullable<BigInt>)]
     native_line: Option<i64>,
     #[diesel(sql_type = Nullable<BigInt>)]
@@ -784,6 +800,8 @@ fn occurrence_select(predicate: &str, from: &str) -> String {
 
 const fn native_payload_select() -> &'static str {
     "SELECT occurrence.occurrence_id, \
+            no_intro_file.size_text AS no_intro_pc_size_text, \
+            no_intro_file.source_order AS no_intro_pc_source_order, \
             CASE \
               WHEN occurrence.claim_kind = 'software_rom_operation' THEN NULL \
               WHEN group_row.kind = 'software_list' \
@@ -876,6 +894,25 @@ fn assemble_occurrences(
             .get_mut(index)
             .ok_or(CatalogFilesError::MissingOccurrenceOwner(row.occurrence_id))?;
         occurrence.provenance.asset_name = row.asset_name;
+        if occurrence.provenance.occurrence_kind == OccurrenceKind::NoIntroPcFile {
+            let size = row
+                .no_intro_pc_size_text
+                .as_ref()
+                .map(|value| {
+                    value
+                        .parse::<u64>()
+                        .map_err(|_| invalid_value("synthetic P/C size", value.clone()))
+                })
+                .transpose()?;
+            occurrence.no_intro_pc_rom = Some(NoIntroPcRomPayload {
+                size_text: row.no_intro_pc_size_text,
+                size,
+                source_order: required_native(
+                    row.no_intro_pc_source_order,
+                    "synthetic P/C ROM source order",
+                )?,
+            });
+        }
         occurrence.provenance.native_occurrence_location = optional_location(
             row.native_line,
             row.native_column,
@@ -1322,6 +1359,7 @@ fn try_occurrence(row: OccurrenceRow) -> Result<CatalogFileOccurrence, CatalogFi
         digests: Vec::new(),
         software_file: None,
         no_intro_dat_rom: None,
+        no_intro_pc_rom: None,
         no_intro_database_file: None,
         mame_file: None,
     })

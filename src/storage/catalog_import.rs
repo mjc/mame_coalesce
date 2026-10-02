@@ -30,6 +30,7 @@ mod mame_relationships;
 mod mame_specification;
 mod no_intro_dat_native;
 mod no_intro_database_native;
+mod no_intro_pc_native;
 mod reported_relationships;
 mod root_assets;
 mod root_sets;
@@ -107,6 +108,7 @@ struct SnapshotData {
     logiqx_document_details: Option<logiqx_native::DocumentDetails>,
     cmp_header_facts: Option<crate::clrmamepro::Header>,
     cmp_comments: Option<Vec<crate::clrmamepro::Comment>>,
+    no_intro_document: Option<no_intro_pc_native::DocumentFacts>,
 }
 
 #[derive(Clone)]
@@ -232,7 +234,10 @@ enum NativeAssetFacts {
     Logiqx(LogiqxAssetAttributes),
     CmpRom(Box<crate::clrmamepro::AssetFacts>),
     CmpSample(crate::clrmamepro::FieldValue),
-    NoIntroPc,
+    NoIntroPc {
+        size_text: Option<String>,
+        source_order: usize,
+    },
 }
 
 struct LogiqxAssetAttributes {
@@ -408,6 +413,7 @@ impl SnapshotData {
             )?),
             cmp_header_facts: None,
             cmp_comments: None,
+            no_intro_document: None,
         })
     }
 
@@ -421,6 +427,7 @@ impl SnapshotData {
             logiqx_document_details: None,
             cmp_header_facts: None,
             cmp_comments: None,
+            no_intro_document: None,
         }
     }
 
@@ -494,6 +501,7 @@ impl SnapshotData {
             logiqx_document_details: None,
             cmp_header_facts: catalog.header,
             cmp_comments: Some(catalog.comments),
+            no_intro_document: None,
         }
     }
 
@@ -519,7 +527,10 @@ impl SnapshotData {
                         dump_status: None,
                         serial: None,
                         date: None,
-                        native: NativeAssetFacts::NoIntroPc,
+                        native: NativeAssetFacts::NoIntroPc {
+                            size_text: asset.size_text,
+                            source_order: asset.source_order,
+                        },
                         location: asset.location,
                     })
                     .collect();
@@ -542,13 +553,17 @@ impl SnapshotData {
             })
             .collect();
         Self {
-            version: catalog.version,
+            version: None,
             sets,
             software_lists: None,
             logiqx_document_facts: None,
             logiqx_document_details: None,
             cmp_header_facts: None,
             cmp_comments: None,
+            no_intro_document: Some(no_intro_pc_native::DocumentFacts {
+                location: catalog.document_location,
+                header: catalog.header,
+            }),
         }
     }
 }
@@ -1471,6 +1486,9 @@ fn insert_snapshot_contents(
     snapshot_key: &SnapshotKey,
     snapshot_data: &SnapshotData,
 ) -> crate::Result<()> {
+    if let Some(document) = &snapshot_data.no_intro_document {
+        no_intro_pc_native::insert_document(conn, snapshot_key, document)?;
+    }
     for set in &snapshot_data.sets {
         insert_snapshot_set(conn, snapshot_key, set)?;
     }
@@ -1547,11 +1565,14 @@ fn insert_asset_requirement(
     component_order: i64,
     asset: &SnapshotAsset,
 ) -> crate::Result<OccurrenceId> {
-    let size = asset
-        .size
-        .map(i64::try_from)
-        .transpose()
-        .map_err(|_| crate::Error::InvalidRomSize(asset.size.unwrap_or_default()))?;
+    let parsed_size = asset.size.map(i64::try_from).transpose();
+    let oversized_pc_size =
+        matches!(&asset.native, NativeAssetFacts::NoIntroPc { .. }) && parsed_size.is_err();
+    let size = if oversized_pc_size {
+        None
+    } else {
+        parsed_size.map_err(|_| crate::Error::InvalidRomSize(asset.size.unwrap_or_default()))?
+    };
     let digests = ContentDigestAssertions::new(
         asset.evidence_scope,
         asset.crc.as_deref(),
@@ -1561,7 +1582,8 @@ fn insert_asset_requirement(
     );
     // MAME listxml emits complete file size (output_rom/rom_file_size),
     // unlike software-list ROM entries, whose size is one load segment.
-    let resolution = if asset.role == "other"
+    let resolution = if oversized_pc_size
+        || asset.role == "other"
         || asset
             .cmp_rom_facts()
             .is_some_and(crate::clrmamepro::AssetFacts::has_conflicting_declarations)
@@ -1587,7 +1609,6 @@ fn insert_asset_requirement(
         CatalogSetId::from_database(set_id),
         component_order,
         asset,
-        size,
         content_uuid,
     )?;
     reported_relationships::insert_asset_merge(conn, snapshot_key, occurrence, asset)?;
@@ -1680,11 +1701,12 @@ fn insert_no_intro_game_facts(
     let set_id = owner.as_i64();
     sql_query(
         "INSERT INTO no_intro_pc_games \
-         (set_id, archive_id, description, description_line, description_column, \
+         (set_id, document_order, archive_id, description, description_order, description_line, description_column, \
           name_alt, region, version, bios_text, languages_present) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind::<BigInt, _>(set_id)
+    .bind::<BigInt, _>(checked_order(facts.source_order, "P/C document fields")?)
     .bind::<Nullable<Text>, _>(
         facts
             .archive_id
@@ -1692,6 +1714,7 @@ fn insert_no_intro_game_facts(
             .map(crate::no_intro_pc_xml::ArchiveId::as_str),
     )
     .bind::<Nullable<Text>, _>(facts.description.as_deref())
+    .bind::<Nullable<BigInt>, _>(facts.description_order.map(|order| checked_order(order, "P/C game fields")).transpose()?)
     .bind::<Nullable<BigInt>, _>(facts.description_location.map(|location| location.line))
     .bind::<Nullable<BigInt>, _>(facts.description_location.map(|location| location.column))
     .bind::<Nullable<Text>, _>(facts.name_alt.as_deref())

@@ -39,6 +39,8 @@ pub const SCHEMA: &str = concat!(
     "\n",
     include_str!("no_intro_database_guards.sql"),
     "\n",
+    include_str!("no_intro_pc.sql"),
+    "\n",
     include_str!("relationship_targets.sql"),
     "\n",
     include_str!("relationship_evidence.sql"),
