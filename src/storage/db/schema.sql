@@ -1265,8 +1265,8 @@ CREATE TABLE software_file_uses (
         REFERENCES software_file_declarations (occurrence_id, record_id) ON DELETE RESTRICT
 );
 CREATE VIEW software_item_dependencies AS
-SELECT record_id, 'clone_of' AS dependency_kind, clone_of AS target_name
-FROM software_items WHERE clone_of IS NOT NULL;
+SELECT set_id AS record_id, 'clone_of' AS dependency_kind, target_name
+FROM software_clone_links;
 CREATE TABLE software_item_info (
     record_id     INTEGER NOT NULL,
     value_order   INTEGER NOT NULL CHECK (value_order >= 0),
@@ -1294,7 +1294,6 @@ CREATE TABLE software_item_shared_features (
 CREATE TABLE software_items (
     record_id   INTEGER PRIMARY KEY NOT NULL,
     source_order INTEGER NOT NULL CHECK (typeof(source_order) = 'integer' AND source_order >= 0),
-    clone_of    TEXT,
     supported   TEXT NOT NULL CHECK (supported IN ('yes', 'partial', 'no')),
     supported_specified INTEGER NOT NULL CHECK (supported_specified IN (0, 1)),
     description TEXT NOT NULL,
@@ -1303,6 +1302,16 @@ CREATE TABLE software_items (
     notes       TEXT,
     FOREIGN KEY (record_id) REFERENCES catalog_sets (set_id) ON DELETE RESTRICT
 );
+CREATE TABLE software_clone_links (
+    set_id INTEGER PRIMARY KEY NOT NULL
+        REFERENCES software_items(record_id) ON DELETE RESTRICT,
+    target_name TEXT NOT NULL,
+    relationship_id INTEGER NOT NULL UNIQUE CHECK (typeof(relationship_id) = 'integer'),
+    source_reference_kind TEXT GENERATED ALWAYS AS ('software_cloneof') VIRTUAL,
+    FOREIGN KEY (relationship_id, source_reference_kind)
+        REFERENCES reported_catalog_relationships(relationship_id, source_reference_kind)
+        ON DELETE RESTRICT
+) WITHOUT ROWID;
 CREATE TABLE software_lists (
     namespace_id  INTEGER PRIMARY KEY NOT NULL,
     source_order INTEGER NOT NULL CHECK (typeof(source_order) = 'integer' AND source_order >= 0),
@@ -1719,6 +1728,36 @@ WHEN NOT EXISTS (SELECT 1 FROM catalog_sets WHERE set_id = NEW.record_id AND sou
  OR EXISTS (SELECT 1 FROM catalog_sets JOIN catalog_set_groups USING (set_group_id)
             JOIN snapshot_publications USING (snapshot_key) WHERE set_id = NEW.record_id)
 BEGIN SELECT RAISE(ABORT, 'native details require an unpublished set of the matching format'); END;
+CREATE TRIGGER software_clone_links_native_owner_insert BEFORE INSERT ON software_clone_links
+WHEN EXISTS (SELECT 1 FROM software_clone_links
+             WHERE set_id = NEW.set_id OR relationship_id = NEW.relationship_id)
+ OR EXISTS (SELECT 1 FROM reported_catalog_relationship_owner_ids
+            WHERE relationship_id = NEW.relationship_id)
+ OR NOT EXISTS (
+    SELECT 1
+    FROM software_items AS native
+    JOIN catalog_sets AS sets ON sets.set_id = native.record_id
+    JOIN catalog_set_groups AS groups ON groups.set_group_id = sets.set_group_id
+    JOIN software_lists AS list ON list.namespace_id = groups.set_group_id
+    JOIN catalog_snapshots AS snapshot ON snapshot.snapshot_key = groups.snapshot_key
+    JOIN parser_interpretations AS interpretation
+      ON interpretation.interpretation_key = snapshot.interpretation_key
+    JOIN catalog_relationships AS identity ON identity.relationship_id = NEW.relationship_id
+    JOIN reported_catalog_relationships AS reported
+      ON reported.relationship_id = identity.relationship_id
+     AND reported.source_reference_kind = 'software_cloneof'
+    WHERE native.record_id = NEW.set_id AND sets.source_element_kind = 'software_item'
+      AND groups.kind = 'software_list'
+      AND interpretation.format = 'mame-softwarelist-xml'
+      AND identity.origin = 'source' AND identity.snapshot_key = groups.snapshot_key
+      AND NOT EXISTS (SELECT 1 FROM snapshot_publications AS publication
+                      WHERE publication.snapshot_key = groups.snapshot_key)
+ )
+BEGIN SELECT RAISE(ABORT, 'software clone link requires an unused source identity on an unpublished software item'); END;
+CREATE TRIGGER software_clone_links_native_immutable_update BEFORE UPDATE ON software_clone_links
+BEGIN SELECT RAISE(ABORT, 'native software clone links are immutable'); END;
+CREATE TRIGGER software_clone_links_native_immutable_delete BEFORE DELETE ON software_clone_links
+BEGIN SELECT RAISE(ABORT, 'native software clone links are immutable'); END;
 CREATE TRIGGER software_items_native_immutable_update BEFORE UPDATE ON software_items
 BEGIN SELECT RAISE(ABORT, 'native set details are immutable'); END;
 CREATE TRIGGER software_items_native_immutable_delete BEFORE DELETE ON software_items
@@ -1776,13 +1815,14 @@ SELECT set_id AS record_id, set_group_id AS namespace_id, source_element_kind AS
 FROM catalog_sets;
 CREATE VIEW snapshot_sets AS
 SELECT sets.set_id, sets.set_group_id, groups.snapshot_key, sets.set_name,
-       COALESCE(mame.target_name, logiqx.target_name, cmp.target_name, no_intro.cloneof_text) AS parent_name,
+       COALESCE(mame.target_name, logiqx.target_name, cmp.target_name, no_intro.target_literal) AS parent_name,
        sets.source_line, sets.source_column
 FROM catalog_sets AS sets JOIN catalog_set_groups AS groups USING (set_group_id)
 LEFT JOIN mame_machine_links AS mame ON mame.set_id = sets.set_id AND mame.link_kind = 'cloneof'
 LEFT JOIN logiqx_set_links AS logiqx ON logiqx.set_id = sets.set_id AND logiqx.link_kind = 'cloneof'
 LEFT JOIN clrmamepro_set_links AS cmp ON cmp.set_id = sets.set_id AND cmp.link_kind = 'cloneof'
-LEFT JOIN no_intro_dat_games AS no_intro ON no_intro.set_id = sets.set_id
+LEFT JOIN no_intro_dat_set_links AS no_intro
+  ON no_intro.set_id = sets.set_id AND no_intro.link_kind = 'cloneof'
 WHERE groups.kind = 'root';
 CREATE VIEW mame_machine_facts AS
 SELECT sets.snapshot_key,sets.set_name,machines.*,
@@ -1931,28 +1971,6 @@ SELECT assertion_key, relation_type, origin, source_snapshot_key, source_field,
            ELSE source_target_a END AS source_target_a, source_target_b, source_target_c,
        target_snapshot_key, rule_version
 FROM relationship_assertions;
-CREATE VIEW no_intro_dat_cloneof_assertions AS
-SELECT 'no-intro-dat-cloneof:' || game.set_id AS assertion_key,
-       'source_parent_clone' AS relation_type, 'source_assertion' AS origin,
-       groups.snapshot_key AS source_snapshot_key, 'cloneof' AS source_field,
-       position.source_line AS source_line, position.source_column AS source_column,
-       NULL AS generic_subject_snapshot_key, 'catalog_set' AS subject_kind,
-       game.set_id AS subject_set_id, NULL AS generic_subject_a, NULL AS generic_subject_b,
-       NULL AS generic_subject_c, sets.set_name AS source_subject_a,
-       NULL AS source_subject_b, NULL AS source_subject_c,
-       groups.snapshot_key AS subject_snapshot_key,
-       NULL AS generic_target_snapshot_key, 'catalog_set' AS target_kind,
-       NULL AS target_set_id, NULL AS generic_target_a, NULL AS generic_target_b,
-       NULL AS generic_target_c, game.cloneof_text AS source_target_a,
-       NULL AS source_target_b, NULL AS source_target_c,
-       groups.snapshot_key AS target_snapshot_key, NULL AS rule_version,
-       game.set_id AS native_set_id, position.field_kind AS native_position_field_kind
-FROM no_intro_dat_games AS game
-JOIN catalog_sets AS sets USING (set_id)
-JOIN catalog_set_groups AS groups USING (set_group_id)
-JOIN no_intro_dat_game_field_positions AS position
-  ON position.set_id = game.set_id AND position.field_kind = 2
-WHERE game.cloneof_text IS NOT NULL;
 CREATE VIEW software_components AS
 SELECT occurrences.occurrence_id, namespaces.snapshot_key, namespaces.source_name AS list_name,
        records.source_name AS item_name, parts.part_name, areas.area_order,
@@ -2398,12 +2416,18 @@ BEFORE INSERT ON relationship_assertions
 WHEN EXISTS (
     SELECT 1 FROM relationship_assertions WHERE assertion_key = NEW.assertion_key
 ) OR EXISTS (SELECT 1 FROM catalog_relationships WHERE assertion_key=NEW.assertion_key)
-  OR NEW.assertion_key GLOB 'no-intro-dat-cloneof:*'
-  OR (NEW.origin='source_assertion' AND NEW.source_field IN ('cloneof','romof','sampleof','device_ref','merge')
+  OR (NEW.origin='source_assertion'
       AND EXISTS (SELECT 1 FROM catalog_snapshots AS snapshot
           JOIN parser_interpretations AS interpretation USING(interpretation_key)
           WHERE snapshot.snapshot_key=NEW.source_snapshot_key
-            AND interpretation.format IN ('mame-listxml','logiqx','clrmamepro-dat')))
+            AND (
+                (interpretation.format IN ('mame-listxml','logiqx','clrmamepro-dat')
+                 AND NEW.source_field IN ('cloneof','romof','sampleof','device_ref','merge'))
+                OR (interpretation.format='mame-softwarelist-xml' AND NEW.source_field='cloneof')
+                OR (interpretation.format IN ('no-intro-dat-v3-strict','no-intro-dat-v3-compatible',
+                                               'no-intro-dat-v4-strict','no-intro-dat-v4-compatible')
+                    AND NEW.source_field IN ('cloneof','cloneofid'))
+            )))
 BEGIN
     SELECT RAISE(ABORT, 'relationship assertions are immutable');
 END;

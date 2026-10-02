@@ -15,7 +15,8 @@ CREATE TABLE reported_catalog_relationships (
         'mame_rom_merge', 'mame_disk_merge',
         'logiqx_cloneof', 'logiqx_romof', 'logiqx_sampleof', 'logiqx_device_ref',
         'logiqx_rom_merge', 'logiqx_disk_merge',
-        'clrmamepro_cloneof', 'clrmamepro_sampleof', 'clrmamepro_rom_merge'
+        'clrmamepro_cloneof', 'clrmamepro_sampleof', 'clrmamepro_rom_merge',
+        'software_cloneof', 'no_intro_dat_cloneof', 'no_intro_dat_cloneofid'
     )),
     UNIQUE (relationship_id, source_reference_kind)
 );
@@ -30,7 +31,6 @@ WHEN EXISTS (
         WHERE relationship_id = NEW.relationship_id OR assertion_key = NEW.assertion_key
     )
  OR EXISTS (SELECT 1 FROM relationship_assertions WHERE assertion_key = NEW.assertion_key)
- OR NEW.assertion_key GLOB 'no-intro-dat-cloneof:*'
  OR (NEW.snapshot_key IS NOT NULL AND NOT EXISTS (
         SELECT 1 FROM catalog_snapshots WHERE snapshot_key = NEW.snapshot_key
     ))

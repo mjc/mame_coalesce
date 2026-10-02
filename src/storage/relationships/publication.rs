@@ -44,7 +44,7 @@ mod tests {
         for key in [
             "generic-key",
             "registered-source-key",
-            "no-intro-dat-cloneof:123",
+            "missing-reported-dat-parent",
         ] {
             let plans = sql_query(format!("EXPLAIN QUERY PLAN {LOOKUP_SQL}"))
                 .bind::<Text, _>(key)

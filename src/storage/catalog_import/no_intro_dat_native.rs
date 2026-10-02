@@ -4,7 +4,7 @@ use diesel::{
 };
 
 use crate::{
-    domain::SnapshotKey,
+    domain::{CatalogSetId, SnapshotKey},
     no_intro_dat_xml::{Document, Game, Release, Rom},
     storage::{
         catalog_content::{
@@ -15,6 +15,8 @@ use crate::{
     },
     xml_reader::DeclaredText,
 };
+
+use super::reported_relationships::{DatParentKind, ParentOwner, insert_parent};
 
 const MODES: [&str; 4] = [
     "no-intro-dat-v3-strict",
@@ -370,16 +372,28 @@ pub(super) fn insert_game(
     .bind::<BigInt, _>(game.location.column)
     .get_result::<Id>(conn)?;
     sql_query(
-        "INSERT INTO no_intro_dat_games(set_id,source_order,id_text,cloneof_text,cloneofid_text,description_text) VALUES (?,?,?,?,?,?)",
+        "INSERT INTO no_intro_dat_games(set_id,source_order,id_text,description_text) VALUES (?,?,?,?)",
     )
     .bind::<BigInt, _>(set_id.value)
     .bind::<BigInt, _>(checked_len(game.source_order, "No-Intro DAT game order")?)
     .bind::<Nullable<Text>, _>(game.id.as_ref().map(DeclaredText::as_str))
-    .bind::<Nullable<Text>, _>(game.cloneof.as_ref().map(DeclaredText::as_str))
-    .bind::<Nullable<Text>, _>(game.cloneofid.as_ref().map(DeclaredText::as_str))
     .bind::<Nullable<Text>, _>(game.description.as_ref().map(DeclaredText::as_str))
     .execute(conn)?;
 
+    for (kind, field) in [
+        (DatParentKind::Name, game.cloneof.as_ref()),
+        (DatParentKind::PublisherId, game.cloneofid.as_ref()),
+    ] {
+        if let Some(field) = field {
+            insert_parent(
+                conn,
+                snapshot_key,
+                CatalogSetId::from_database(set_id.value),
+                ParentOwner::NoIntroDat(kind),
+                field.as_str(),
+            )?;
+        }
+    }
     for (kind, field) in [
         (GameField::Name, Some(&game.name)),
         (GameField::Id, game.id.as_ref()),

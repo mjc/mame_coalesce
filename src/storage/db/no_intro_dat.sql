@@ -58,11 +58,24 @@ CREATE TABLE no_intro_dat_games (
         CHECK (source_element_kind = 'no_intro_dat_game'),
     source_order INTEGER NOT NULL CHECK (typeof(source_order) = 'integer' AND source_order >= 0),
     id_text TEXT,
-    cloneof_text TEXT,
-    cloneofid_text TEXT,
     description_text TEXT,
     FOREIGN KEY (set_id, source_element_kind)
         REFERENCES catalog_sets(set_id, source_element_kind) ON DELETE RESTRICT
+) WITHOUT ROWID;
+
+CREATE TABLE no_intro_dat_set_links (
+    set_id INTEGER NOT NULL REFERENCES no_intro_dat_games(set_id) ON DELETE RESTRICT,
+    link_kind TEXT NOT NULL CHECK (link_kind IN ('cloneof', 'cloneofid')),
+    target_literal TEXT NOT NULL,
+    relationship_id INTEGER NOT NULL UNIQUE CHECK (typeof(relationship_id) = 'integer'),
+    source_reference_kind TEXT GENERATED ALWAYS AS (
+        CASE link_kind WHEN 'cloneof' THEN 'no_intro_dat_cloneof'
+                       ELSE 'no_intro_dat_cloneofid' END
+    ) VIRTUAL,
+    PRIMARY KEY (set_id, link_kind),
+    FOREIGN KEY (relationship_id, source_reference_kind)
+        REFERENCES reported_catalog_relationships(relationship_id, source_reference_kind)
+        ON DELETE RESTRICT
 ) WITHOUT ROWID;
 
 CREATE TABLE no_intro_dat_categories (
@@ -259,8 +272,8 @@ SELECT snapshot_key, 0 AS field_kind FROM no_intro_dat_romcenter_options WHERE p
 CREATE VIEW no_intro_dat_game_declared_field_presence AS
 SELECT set_id, 0 AS field_kind FROM catalog_sets WHERE source_element_kind = 'no_intro_dat_game'
 UNION ALL SELECT set_id, 1 FROM no_intro_dat_games WHERE id_text IS NOT NULL
-UNION ALL SELECT set_id, 2 FROM no_intro_dat_games WHERE cloneof_text IS NOT NULL
-UNION ALL SELECT set_id, 3 FROM no_intro_dat_games WHERE cloneofid_text IS NOT NULL
+UNION ALL SELECT set_id, 2 FROM no_intro_dat_set_links WHERE link_kind = 'cloneof'
+UNION ALL SELECT set_id, 3 FROM no_intro_dat_set_links WHERE link_kind = 'cloneofid'
 UNION ALL SELECT set_id, 4 FROM no_intro_dat_games WHERE description_text IS NOT NULL;
 
 CREATE VIEW no_intro_dat_rom_declared_field_presence AS

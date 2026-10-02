@@ -526,8 +526,10 @@ fn assert_games_categories_releases(
     document: &str,
 ) -> TestResult {
     let games = sql_query(
-        "SELECT sets.set_name,game.id_text,game.cloneof_text,game.cloneofid_text,game.description_text \
+        "SELECT sets.set_name,game.id_text,clone.target_literal AS cloneof_text,parent_id.target_literal AS cloneofid_text,game.description_text \
          FROM no_intro_dat_games AS game JOIN catalog_sets AS sets USING(set_id) \
+         LEFT JOIN no_intro_dat_set_links AS clone ON clone.set_id=game.set_id AND clone.link_kind='cloneof' \
+         LEFT JOIN no_intro_dat_set_links AS parent_id ON parent_id.set_id=game.set_id AND parent_id.link_kind='cloneofid' \
          ORDER BY sets.list_order",
     )
     .load::<GameFields>(connection)?;
@@ -1129,8 +1131,10 @@ fn assert_absent_fields(mode: NoIntroDatMode) -> TestResult {
     assert_eq!(header.url, None);
     assert_eq!(header.subset, None);
     let game = sql_query(
-            "SELECT sets.set_name,game.id_text,game.cloneof_text,game.cloneofid_text,game.description_text \
-             FROM no_intro_dat_games AS game JOIN catalog_sets AS sets USING(set_id)",
+            "SELECT sets.set_name,game.id_text,clone.target_literal AS cloneof_text,parent_id.target_literal AS cloneofid_text,game.description_text \
+             FROM no_intro_dat_games AS game JOIN catalog_sets AS sets USING(set_id) \
+             LEFT JOIN no_intro_dat_set_links AS clone ON clone.set_id=game.set_id AND clone.link_kind='cloneof' \
+             LEFT JOIN no_intro_dat_set_links AS parent_id ON parent_id.set_id=game.set_id AND parent_id.link_kind='cloneofid'",
         )
         .get_result::<GameFields>(&mut absent_connection)?;
     assert_eq!(game.set_name, "minimal-game");

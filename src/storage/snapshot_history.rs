@@ -2720,9 +2720,11 @@ fn load_no_intro_dat_game_facts(
         .collect::<BTreeMap<_, Vec<_>>>();
     let mut facts = BTreeMap::<i64, Vec<serde_json::Value>>::new();
     for row in sql_query(
-        "SELECT games.set_id, games.id_text, games.cloneof_text, games.cloneofid_text, \
+        "SELECT games.set_id, games.id_text, clone.target_literal AS cloneof_text, parent_id.target_literal AS cloneofid_text, \
                 games.description_text \
          FROM no_intro_dat_games AS games JOIN snapshot_sets AS sets USING (set_id) \
+         LEFT JOIN no_intro_dat_set_links AS clone ON clone.set_id = games.set_id AND clone.link_kind = 'cloneof' \
+         LEFT JOIN no_intro_dat_set_links AS parent_id ON parent_id.set_id = games.set_id AND parent_id.link_kind = 'cloneofid' \
          WHERE sets.snapshot_key = ? ORDER BY sets.set_name, sets.set_id",
     )
     .bind::<Text, _>(key.as_str())

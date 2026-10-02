@@ -187,8 +187,8 @@ fn stage_pending_rom(catalog: &mut Imported, tamper: RomTamper) -> TestResult {
     .get_result::<Count>(&mut catalog.connection)?
     .count;
     sql_query(
-        "INSERT INTO no_intro_dat_games(set_id,source_order,id_text,cloneof_text,cloneofid_text,description_text) \
-         SELECT ?,source_order,id_text,cloneof_text,cloneofid_text,description_text FROM no_intro_dat_games",
+        "INSERT INTO no_intro_dat_games(set_id,source_order,id_text,description_text) \
+         SELECT ?,source_order,id_text,description_text FROM no_intro_dat_games",
     )
     .bind::<BigInt, _>(set_id)
     .execute(&mut catalog.connection)?;

@@ -5,7 +5,9 @@ use diesel::{
     sql_types::{BigInt, Text},
 };
 
-use crate::domain::{MergeMediaKind, OccurrenceId, RelationshipAssertionKey, SnapshotKey};
+use crate::domain::{
+    CatalogSetId, MergeMediaKind, OccurrenceId, RelationshipAssertionKey, SnapshotKey,
+};
 
 use super::{NativeAssetFacts, SnapshotAsset};
 
@@ -42,6 +44,23 @@ pub(super) enum ReportedReferenceKind {
     Mame(XmlReferenceKind),
     Logiqx(XmlReferenceKind),
     ClrMamePro(CmpReferenceKind),
+    SoftwareClone,
+    NoIntroDat(DatParentKind),
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum DatParentKind {
+    Name,
+    PublisherId,
+}
+
+impl DatParentKind {
+    const fn field(self) -> &'static str {
+        match self {
+            Self::Name => "cloneof",
+            Self::PublisherId => "cloneofid",
+        }
+    }
 }
 
 impl ReportedReferenceKind {
@@ -63,8 +82,57 @@ impl ReportedReferenceKind {
             Self::ClrMamePro(CmpReferenceKind::CloneOf) => "clrmamepro_cloneof",
             Self::ClrMamePro(CmpReferenceKind::SampleOf) => "clrmamepro_sampleof",
             Self::ClrMamePro(CmpReferenceKind::RomMerge) => "clrmamepro_rom_merge",
+            Self::SoftwareClone => "software_cloneof",
+            Self::NoIntroDat(DatParentKind::Name) => "no_intro_dat_cloneof",
+            Self::NoIntroDat(DatParentKind::PublisherId) => "no_intro_dat_cloneofid",
         }
     }
+}
+
+/// Native parent owners which derive provenance from their existing source rows.
+#[derive(Clone, Copy)]
+pub(super) enum ParentOwner {
+    Software,
+    NoIntroDat(DatParentKind),
+}
+
+impl ParentOwner {
+    const fn reference_kind(self) -> ReportedReferenceKind {
+        match self {
+            Self::Software => ReportedReferenceKind::SoftwareClone,
+            Self::NoIntroDat(kind) => ReportedReferenceKind::NoIntroDat(kind),
+        }
+    }
+
+    const fn insert_query(self) -> &'static str {
+        match self {
+            Self::Software => {
+                "INSERT INTO software_clone_links(set_id,relationship_id,target_name) VALUES (?,?,?)"
+            }
+            Self::NoIntroDat(_) => {
+                "INSERT INTO no_intro_dat_set_links(set_id,relationship_id,target_literal,link_kind) VALUES (?,?,?,?)"
+            }
+        }
+    }
+}
+
+pub(super) fn insert_parent(
+    connection: &mut SqliteConnection,
+    snapshot: &SnapshotKey,
+    set: CatalogSetId,
+    owner: ParentOwner,
+    literal: &str,
+) -> crate::Result<()> {
+    let relationship = register(connection, snapshot, owner.reference_kind())?;
+    let query = sql_query(owner.insert_query())
+        .bind::<BigInt, _>(set.as_i64())
+        .bind::<BigInt, _>(relationship.database_value())
+        .bind::<Text, _>(literal);
+    match owner {
+        ParentOwner::Software => query.execute(connection)?,
+        ParentOwner::NoIntroDat(kind) => query.bind::<Text, _>(kind.field()).execute(connection)?,
+    };
+    Ok(())
 }
 
 /// Cannot be constructed until registry identity and reported subtype both exist.

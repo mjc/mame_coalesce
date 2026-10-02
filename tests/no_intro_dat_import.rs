@@ -322,7 +322,7 @@ fn assert_native_text_fields(catalog: &mut Catalog) -> TestResult {
             Some(""),
         ),
         (
-            "SELECT cloneofid_text AS value FROM no_intro_dat_games",
+            "SELECT target_literal AS value FROM no_intro_dat_set_links WHERE link_kind='cloneofid'",
             Some("0001"),
         ),
         (

@@ -1024,6 +1024,15 @@ supplied uninterpretable size/hash prevents a shared file UUID. Global header
 filters and per-ROM header declarations make evidence scope unknown even when
 the field is empty; filenames and extensions do not prove whole-file scope.
 
+Parent declarations have native owners too. `no_intro_dat_set_links` owns each
+present `cloneof` or `cloneofid` literal once and links it to a once-issued
+reported relationship identity. The game row does not repeat either value.
+Existing game field-position rows retain their attribute order and location.
+A name-based parent stays an unresolved set-name reference; a publisher-ID
+parent stays an unresolved `NoIntroDatIdReference` on its actual declaring set.
+Empty strings and leading zeroes are significant. Both declarations can exist
+on the same game without becoming the same assertion or resolved identity.
+
 ### No-Intro database-export XML
 
 Model each export game, its archive metadata, optional repeated game releases,
@@ -1180,8 +1189,29 @@ three formats and running `ANALYZE`; metadata scaling across many catalog groups
 and complete corpus/performance acceptance are not established by this witness.
 Locked all-feature nextest passes 1,113 tests with three existing optional skips;
 all-feature documentation builds with warnings denied.
-Other native reported families and derived/user/observed endpoint registries
-remain pending cutovers; this does not finish the shared model.
+Software-list and flat No-Intro DAT parents extend that shared registry to
+18 closed reported kinds. One native parent writer selects the actual value
+owner with an enum; one catalog-record endpoint constructor is shared by source
+and generic readers. Software clone values live only in `software_clone_links`,
+with their list namespace derived from the actual item owner. Name-based and
+publisher-ID-based DAT parents live only in `no_intro_dat_set_links`, with
+attribute provenance derived from the existing field positions. Their issued
+keys replace the former synthetic DAT key namespace. Unresolved declarations
+remain distinct from resolved identity; no target-name lookup is performed.
+The shared exclusion guard blocks generic copies both before and after
+publication. This software/flat-DAT milestone passed Sol medium review/fix/
+re-review, the complete devenv gate (1,128 tests, one existing ignore), locked
+all-feature nextest (1,131 tests, three existing optional skips), strict Clippy
+and warning-denied docs. Eighteen added tests share the native regression
+fixture. They cover issued keys, unresolved name/ID literals, source-free
+queries, reimport/reviews/support/backup/rollback, generic-copy exclusion,
+independent ownership/publication seals and wrong-edition readiness. Canonical
+projection, inverse-closure and readiness plans remain native-row-bounded after
+500 unrelated owners across five formats and `ANALYZE`, including checks against
+scanning all 11 physical native relationship-owner tables. This is not metadata
+scaling or full corpus/CPU/heap acceptance. Other No-Intro reported families and
+derived/user/observed endpoint registries remain pending cutovers; this does not
+finish the shared model.
 
 Reconciliation carries the actual occurrence ID in transient root requirements.
 It indexes native evidence by snapshot and occurrence, attaching a declaration
@@ -1246,9 +1276,10 @@ checked before publication, including any optional resolved target.
 |---|---|
 | `mame_machine_links`, `mame_device_references` | cloneof/romof/sampleof or device_ref, including the reference tag |
 | `mame_rom_merges`, `mame_disk_merges` | owning claim FK and declared merge name; no second merge-name copy in the asset payload |
-| `software_clone_links` | item FK and declared cloneof name; optional singleton |
+| `software_clone_links` | actual item FK, once-issued relationship FK and declared cloneof name; optional singleton, scoped to its software list |
 | `logiqx_set_links`, `logiqx_device_references`, `logiqx_file_merges` | actual game/media-entry FKs and distinct cloneof/romof/sampleof/device/merge source declarations |
 | `clrmamepro_set_links`, `clrmamepro_rom_merges` | actual set/media-entry FKs and cloneof/sampleof/compatibility merge literals; provenance is read from existing native field-position rows |
+| `no_intro_dat_set_links` | actual game FK, once-issued relationship FK and distinct cloneof-name/cloneofid-publisher-ID literals; provenance comes from existing game field positions |
 | `no_intro_archive_links`, `no_intro_file_merge_links` | declared archive-ID or merge token with its own known/unknown semantics; a parent marker remains a marker fact, not a fabricated target edge |
 
 The attribute value listed in a native family inventory is stored in this

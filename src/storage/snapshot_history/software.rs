@@ -201,10 +201,11 @@ fn load_lists(conn: &mut SqliteConnection, key: &SnapshotKey) -> crate::Result<V
 
 fn load_items(conn: &mut SqliteConnection, key: &SnapshotKey) -> crate::Result<Vec<ItemRow>> {
     sql_query(format!("SELECT groups.set_group_id AS parent_id, items.source_order, sets.set_id AS record_id, \
-        sets.set_name, lists.name AS list_name, items.clone_of, items.supported, items.supported_specified, \
+        sets.set_name, lists.name AS list_name, clone.target_name AS clone_of, items.supported, items.supported_specified, \
         items.description, items.year, items.publisher, items.notes {SETS} \
         JOIN software_lists AS lists ON lists.namespace_id = groups.set_group_id \
-        JOIN software_items AS items ON items.record_id = sets.set_id {SELECTED} ORDER BY items.source_order"))
+        JOIN software_items AS items ON items.record_id = sets.set_id \
+        LEFT JOIN software_clone_links AS clone ON clone.set_id = items.record_id {SELECTED} ORDER BY items.source_order"))
         .bind::<Text,_>(key.as_str()).load::<ItemRow>(conn).map_err(Into::into)
 }
 

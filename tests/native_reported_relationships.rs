@@ -6,7 +6,7 @@ use diesel::{
     sql_types::{BigInt, Text},
 };
 use mame_coalesce::{
-    RestorePolicy,
+    NoIntroDatMode, RestorePolicy,
     app::{self, CatalogDocumentFormat, CatalogImportRequest, CatalogImportStatus},
     check_integrity, create_backup,
     database::Database,
@@ -22,6 +22,9 @@ type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
 const LOGIQX: &str = r#"<datafile><game name="child" cloneof="missing-clone" romof="missing-rom" sampleof=""><description>Child</description><rom name="first.bin" size="1" merge="missing.bin"/><rom name="empty.bin" size="1" merge=""/><disk name="logical-disk" merge="missing-disk"/></game><game name="orphan"><description>Orphan</description><rom name="orphan.bin" size="1" merge="missing.bin"/></game></datafile>"#;
 const CMP: &str = r#"game ( name "child" cloneof "missing-clone" sampleof "" rom ( name "first.bin" size 1 merge "missing.bin" ) rom ( name "empty.bin" size 1 merge "" ) ) game ( name "orphan" rom ( name "orphan.bin" size 1 merge "missing.bin" ) )"#;
+
+const SOFTWARE: &str = r#"<softwarelists><softwarelist name="first" description="First"><software name="child" cloneof="missing"><description>Child</description><year>2026</year><publisher>Publisher</publisher></software></softwarelist><softwarelist name="second" description="Second"><software name="child" cloneof=""><description>Child</description><year>2026</year><publisher>Publisher</publisher></software></softwarelist></softwarelists>"#;
+const NO_INTRO_DAT: &str = r#"<datafile><header><id>1</id><name>Native parents</name><description>Native parents</description><version>1</version></header><game name="child" cloneof="missing" cloneofid="0007"><description>Child</description><rom name="child.bin"/></game><game name="empty" cloneof="" cloneofid=""><description>Empty</description><rom name="empty.bin"/></game><game name="id-only" cloneofid="7"><description>ID only</description><rom name="id.bin"/></game></datafile>"#;
 
 #[derive(QueryableByName)]
 struct Count {
@@ -82,7 +85,21 @@ impl Fixture {
             scope: CatalogScope::Complete,
         };
         let report = app::import_catalog(&database, &request)?;
-        assert_eq!(report.status, CatalogImportStatus::Succeeded);
+        if report.status != CatalogImportStatus::Succeeded {
+            #[derive(Debug, QueryableByName)]
+            struct Diagnostic {
+                #[diesel(sql_type = Text)]
+                message: String,
+            }
+            let mut connection = SqliteConnection::establish(database_path.as_str())?;
+            let messages = sql_query("SELECT message FROM import_diagnostics WHERE run_key=?")
+                .bind::<Text, _>(report.run_key.to_string())
+                .load::<Diagnostic>(&mut connection)?
+                .into_iter()
+                .map(|row| row.message)
+                .collect::<Vec<_>>();
+            return Err(format!("fixture import failed: {messages:?}").into());
+        }
         let snapshot = report.snapshot_key.ok_or("snapshot missing")?;
         Ok(Self {
             directory,
@@ -176,16 +193,279 @@ fn cmp_parent_and_merge_declarations_have_once_issued_native_owners() -> TestRes
     assert_native_relationships(CatalogDocumentFormat::ClrMamePro, CMP, 3, 5)
 }
 
+fn assert_native_parent_owners(
+    format: CatalogDocumentFormat,
+    source: &str,
+    expected_identities: i64,
+) -> TestResult {
+    let fixture = Fixture::new(format, source)?;
+    let mut connection = fixture.connection()?;
+    let issued = sql_query("SELECT count(*) AS count FROM reported_catalog_relationships AS reported JOIN catalog_relationships AS registry USING(relationship_id) WHERE registry.snapshot_key=?")
+        .bind::<Text, _>(fixture.snapshot.as_str())
+        .get_result::<Count>(&mut connection)?;
+    assert_eq!(
+        issued.count, expected_identities,
+        "each declared parent needs a once-issued native relationship identity"
+    );
+    let copied = sql_query(
+        "SELECT count(*) AS count FROM relationship_assertions WHERE source_snapshot_key=?",
+    )
+    .bind::<Text, _>(fixture.snapshot.as_str())
+    .get_result::<Count>(&mut connection)?;
+    assert_eq!(
+        copied.count, 0,
+        "native declarations must not have generic copies"
+    );
+    let before = app::explain_relationships(&fixture.database)?;
+    assert_eq!(before.len(), usize::try_from(expected_identities)?);
+    let reimport = app::import_catalog(&fixture.database, &fixture.request)?;
+    assert_eq!(reimport.snapshot_key.as_ref(), Some(&fixture.snapshot));
+    std::fs::remove_file(&fixture.request.document_path)?;
+    assert_eq!(app::explain_relationships(&fixture.database)?, before);
+    Ok(())
+}
+
+#[test]
+fn software_clones_use_the_shared_native_identity_registry() -> TestResult {
+    assert_native_parent_owners(CatalogDocumentFormat::MameSoftwareListXml, SOFTWARE, 2)
+}
+
+#[test]
+fn dat_name_and_id_parents_have_distinct_native_identities() -> TestResult {
+    assert_native_parent_owners(
+        CatalogDocumentFormat::NoIntroDat(NoIntroDatMode::V4Compatible),
+        NO_INTRO_DAT,
+        5,
+    )
+}
+
+fn remove_publication(fixture: &Fixture, connection: &mut SqliteConnection) -> TestResult {
+    // Unpublish only this disposable fixture; preserve all original native facts.
+    connection.batch_execute("DROP TRIGGER snapshot_publications_are_immutable_delete")?;
+    sql_query("DELETE FROM snapshot_publications WHERE snapshot_key=?")
+        .bind::<Text, _>(fixture.snapshot.as_str())
+        .execute(connection)?;
+    Ok(())
+}
+
+fn publish(fixture: &Fixture, connection: &mut SqliteConnection) -> diesel::QueryResult<usize> {
+    sql_query("INSERT INTO snapshot_publications(catalog_key,document_key,interpretation_key,snapshot_key) SELECT catalog_key,document_key,interpretation_key,snapshot_key FROM catalog_snapshots WHERE snapshot_key=?")
+        .bind::<Text,_>(fixture.snapshot.as_str()).execute(connection)
+}
+
+#[allow(clippy::expect_used)]
+fn assert_generic_copies_are_rejected(
+    format: CatalogDocumentFormat,
+    source: &str,
+    pending: bool,
+) -> TestResult {
+    let fixture = Fixture::new(format, source)?;
+    let mut connection = fixture.connection()?;
+    connection.batch_execute("PRAGMA foreign_keys=OFF; PRAGMA recursive_triggers=OFF;")?;
+    let declarations = app::explain_relationships(&fixture.database)?;
+    let columns = sql_query("SELECT projection.name FROM pragma_table_info('software_dat_source_relationships') AS projection JOIN pragma_table_xinfo('relationship_assertions') AS stored USING(name) WHERE projection.name<>'assertion_key' AND stored.hidden=0 ORDER BY projection.cid")
+        .load::<Column>(&mut connection)?
+        .into_iter().map(|column| column.name).collect::<Vec<_>>().join(",");
+    if pending {
+        remove_publication(&fixture, &mut connection)?;
+    }
+    for declaration in &declarations {
+        let copied = sql_query(format!("INSERT INTO relationship_assertions(assertion_key,{columns}) SELECT ?,{columns} FROM software_dat_source_relationships WHERE assertion_key=?"))
+            .bind::<Text,_>(format!("copy:{}", declaration.assertion_key.as_str()))
+            .bind::<Text,_>(declaration.assertion_key.as_str())
+            .execute(&mut connection);
+        let error = copied.expect_err("a native declaration acquired a generic second owner");
+        assert!(
+            error
+                .to_string()
+                .contains("relationship assertions are immutable"),
+            "wrong guard rejected native copy: {error}"
+        );
+    }
+    assert_eq!(
+        sql_query("SELECT count(*) AS count FROM relationship_assertions")
+            .get_result::<Count>(&mut connection)?
+            .count,
+        0
+    );
+    if pending {
+        publish(&fixture, &mut connection)?;
+    }
+    assert_eq!(app::explain_relationships(&fixture.database)?, declarations);
+    Ok(())
+}
+
+#[test]
+fn published_software_declarations_cannot_acquire_generic_copies() -> TestResult {
+    assert_generic_copies_are_rejected(CatalogDocumentFormat::MameSoftwareListXml, SOFTWARE, false)
+}
+
+#[test]
+fn pending_software_declarations_cannot_acquire_generic_copies() -> TestResult {
+    assert_generic_copies_are_rejected(CatalogDocumentFormat::MameSoftwareListXml, SOFTWARE, true)
+}
+
+#[test]
+fn published_dat_declarations_cannot_acquire_generic_copies() -> TestResult {
+    assert_generic_copies_are_rejected(
+        CatalogDocumentFormat::NoIntroDat(NoIntroDatMode::V4Compatible),
+        NO_INTRO_DAT,
+        false,
+    )
+}
+
+#[test]
+fn pending_dat_declarations_cannot_acquire_generic_copies() -> TestResult {
+    assert_generic_copies_are_rejected(
+        CatalogDocumentFormat::NoIntroDat(NoIntroDatMode::V4Compatible),
+        NO_INTRO_DAT,
+        true,
+    )
+}
+
+fn register_test_identity(
+    connection: &mut SqliteConnection,
+    snapshot: &SnapshotKey,
+    kind: &str,
+) -> TestResult<i64> {
+    let identity = sql_query("INSERT INTO catalog_relationships(assertion_key,origin,snapshot_key) VALUES (?,'source',?) RETURNING relationship_id AS count")
+        .bind::<Text,_>(uuid::Uuid::new_v4().to_string())
+        .bind::<Text,_>(snapshot.as_str())
+        .get_result::<Count>(connection)?.count;
+    sql_query("INSERT INTO reported_catalog_relationships(relationship_id,source_reference_kind) VALUES (?,?)")
+        .bind::<BigInt,_>(identity).bind::<Text,_>(kind).execute(connection)?;
+    Ok(identity)
+}
+
+fn insert_test_parent(
+    connection: &mut SqliteConnection,
+    table: &str,
+    owner: i64,
+    identity: i64,
+) -> diesel::QueryResult<usize> {
+    let query = match table {
+        "software_clone_links" => {
+            "INSERT INTO software_clone_links(set_id,relationship_id,target_name) VALUES (?,?,'new-parent')"
+        }
+        "no_intro_dat_set_links" => {
+            "INSERT INTO no_intro_dat_set_links(set_id,relationship_id,target_literal,link_kind) VALUES (?,?,'new-parent','cloneof')"
+        }
+        _ => unreachable!("test owner table must be one of the two bounded native families"),
+    };
+    sql_query(query)
+        .bind::<BigInt, _>(owner)
+        .bind::<BigInt, _>(identity)
+        .execute(connection)
+}
+
+#[allow(clippy::expect_used)]
+fn assert_native_guard(result: diesel::QueryResult<usize>, message: &str) {
+    let error = result.expect_err("native ownership guard accepted invalid state");
+    assert!(
+        error.to_string().contains(message),
+        "wrong native guard rejected state: {error}"
+    );
+}
+
+fn assert_new_native_owner_guards(
+    format: CatalogDocumentFormat,
+    source: &str,
+    table: &str,
+    kind: &str,
+) -> TestResult {
+    // The first child has no cloneof link; another actual owner already uses one.
+    let fixture = Fixture::new(format, &source.replace(" cloneof=\"missing\"", ""))?;
+    let original = app::explain_relationships(&fixture.database)?;
+    let mut connection = fixture.connection()?;
+    connection.batch_execute("PRAGMA foreign_keys=OFF; PRAGMA recursive_triggers=OFF;")?;
+    let owner = sql_query(
+        "SELECT set_id AS count FROM catalog_sets WHERE set_name='child' ORDER BY set_id LIMIT 1",
+    )
+    .get_result::<Count>(&mut connection)?
+    .count;
+    let used = sql_query("SELECT reported.relationship_id AS count FROM reported_catalog_relationships AS reported JOIN catalog_relationships AS registry USING(relationship_id) WHERE registry.snapshot_key=? AND reported.source_reference_kind=?")
+        .bind::<Text,_>(fixture.snapshot.as_str()).bind::<Text,_>(kind).get_result::<Count>(&mut connection)?.count;
+    remove_publication(&fixture, &mut connection)?;
+
+    connection.batch_execute("SAVEPOINT native_owner_cases")?;
+    let wrong_kind = register_test_identity(&mut connection, &fixture.snapshot, "mame_cloneof")?;
+    assert_native_guard(
+        insert_test_parent(&mut connection, table, owner, wrong_kind),
+        "unused source identity",
+    );
+    let unused = register_test_identity(&mut connection, &fixture.snapshot, kind)?;
+    assert_native_guard(
+        insert_test_parent(&mut connection, table, 999_999, unused),
+        "unused source identity",
+    );
+    assert_native_guard(
+        insert_test_parent(&mut connection, table, owner, used),
+        "unused source identity",
+    );
+    assert_eq!(
+        insert_test_parent(&mut connection, table, owner, unused)?,
+        1,
+        "the same actual owner must accept an unused matching identity while pending"
+    );
+    connection.batch_execute("ROLLBACK TO native_owner_cases; RELEASE native_owner_cases")?;
+
+    connection.batch_execute("SAVEPOINT native_orphan_case")?;
+    register_test_identity(&mut connection, &fixture.snapshot, kind)?;
+    assert_native_guard(
+        publish(&fixture, &mut connection),
+        "reported source relationships require complete native identity ownership",
+    );
+    connection.batch_execute("ROLLBACK TO native_orphan_case; RELEASE native_orphan_case")?;
+    assert_eq!(
+        publish(&fixture, &mut connection)?,
+        1,
+        "complete native ownership must publish after the orphan is rolled back"
+    );
+
+    // Bypass only identity insertion seals to independently exercise the native
+    // late-child seal with a fresh, matching, otherwise-unused source identity.
+    connection.batch_execute("SAVEPOINT native_late_case; DROP TRIGGER catalog_relationships_insert_guard; DROP TRIGGER reported_catalog_relationships_insert_guard")?;
+    let late = register_test_identity(&mut connection, &fixture.snapshot, kind)?;
+    assert_native_guard(
+        insert_test_parent(&mut connection, table, owner, late),
+        "unused source identity",
+    );
+    connection.batch_execute("ROLLBACK TO native_late_case; RELEASE native_late_case")?;
+    assert_eq!(app::explain_relationships(&fixture.database)?, original);
+    Ok(())
+}
+
+#[test]
+fn software_owner_guards_reject_wrong_kinds_reuse_orphans_and_late_children() -> TestResult {
+    assert_new_native_owner_guards(
+        CatalogDocumentFormat::MameSoftwareListXml,
+        SOFTWARE,
+        "software_clone_links",
+        "software_cloneof",
+    )
+}
+
+#[test]
+fn dat_owner_guards_reject_wrong_kinds_reuse_orphans_and_late_children() -> TestResult {
+    assert_new_native_owner_guards(
+        CatalogDocumentFormat::NoIntroDat(NoIntroDatMode::V4Compatible),
+        NO_INTRO_DAT,
+        "no_intro_dat_set_links",
+        "no_intro_dat_cloneof",
+    )
+}
+
 fn assert_review_backup_and_rollback(
     format: CatalogDocumentFormat,
     source: &str,
     broken: &str,
+    relation_type: RelationshipType,
 ) -> TestResult {
     let fixture = Fixture::new(format, source)?;
     let original = app::explain_relationships(&fixture.database)?;
     let keys = original
         .iter()
-        .filter(|row| row.claim.relation_type == RelationshipType::SourceMerge)
+        .filter(|row| row.claim.relation_type == relation_type)
         .take(2)
         .map(|row| row.assertion_key.clone())
         .collect::<Vec<_>>();
@@ -262,6 +542,7 @@ fn logiqx_native_keys_survive_reviews_backup_and_late_eof_failure() -> TestResul
         CatalogDocumentFormat::Logiqx,
         LOGIQX,
         "<datafile><game name='late' cloneof='missing'><description>Late</description><rom name='late.bin' merge='lost'/></game>",
+        RelationshipType::SourceMerge,
     )
 }
 
@@ -271,11 +552,114 @@ fn cmp_native_keys_survive_reviews_backup_and_late_syntax_failure() -> TestResul
         CatalogDocumentFormat::ClrMamePro,
         CMP,
         "game ( name late cloneof missing rom ( name late.bin merge lost ) ) game (",
+        RelationshipType::SourceMerge,
     )
 }
 
 #[test]
-fn native_merges_have_no_duplicate_claim_columns_or_cmp_position_columns() -> TestResult {
+fn software_native_keys_survive_reviews_backup_and_late_eof_failure() -> TestResult {
+    assert_review_backup_and_rollback(
+        CatalogDocumentFormat::MameSoftwareListXml,
+        SOFTWARE,
+        SOFTWARE.trim_end_matches("</softwarelists>"),
+        RelationshipType::SourceParentClone,
+    )
+}
+
+#[test]
+fn dat_native_keys_survive_reviews_backup_and_late_eof_failure() -> TestResult {
+    assert_review_backup_and_rollback(
+        CatalogDocumentFormat::NoIntroDat(NoIntroDatMode::V4Compatible),
+        NO_INTRO_DAT,
+        NO_INTRO_DAT.trim_end_matches("</datafile>"),
+        RelationshipType::SourceParentClone,
+    )
+}
+
+#[test]
+fn software_clone_endpoints_keep_list_names_separate_from_item_names() -> TestResult {
+    let fixture = Fixture::new(CatalogDocumentFormat::MameSoftwareListXml, SOFTWARE)?;
+    let mut literals = std::collections::BTreeMap::new();
+    for explanation in app::explain_relationships(&fixture.database)? {
+        let RelationshipEndpoint::CatalogRecord(subject) = explanation.claim.subject else {
+            return Err("software subject is not a catalog record".into());
+        };
+        let RelationshipEndpoint::CatalogRecord(target) = explanation.claim.target else {
+            return Err("software target is not a list-local reference".into());
+        };
+        let (list, item): (String, String) = serde_json::from_str(subject.key.as_str())?;
+        let (target_list, parent): (String, String) = serde_json::from_str(target.key.as_str())?;
+        assert_eq!(item, "child");
+        assert_eq!(target_list, list);
+        assert!(subject.owner_set_id.is_some());
+        assert!(target.owner_set_id.is_none());
+        assert_eq!(
+            explanation.claim.evidence,
+            RelationshipEvidence::SoftwareClone {
+                list_name: list.clone(),
+                target_item_name: parent.clone()
+            }
+        );
+        literals.insert(list, parent);
+    }
+    assert_eq!(
+        literals,
+        std::collections::BTreeMap::from([
+            ("first".into(), "missing".into()),
+            ("second".into(), String::new())
+        ])
+    );
+    Ok(())
+}
+
+#[test]
+fn dat_native_parent_endpoints_preserve_empty_and_leading_zero_ids() -> TestResult {
+    let fixture = Fixture::new(
+        CatalogDocumentFormat::NoIntroDat(NoIntroDatMode::V4Compatible),
+        NO_INTRO_DAT,
+    )?;
+    let mut names = Vec::new();
+    let mut ids = Vec::new();
+    for explanation in app::explain_relationships(&fixture.database)? {
+        let RelationshipEndpoint::CatalogRecord(subject) = explanation.claim.subject else {
+            return Err("DAT parent subject has no actual catalog set".into());
+        };
+        match explanation.claim.target {
+            RelationshipEndpoint::CatalogRecord(target) => {
+                assert_eq!(explanation.source_field.as_deref(), Some("cloneof"));
+                assert!(target.owner_set_id.is_none());
+                names.push(target.key.as_str().to_owned());
+            }
+            RelationshipEndpoint::NoIntroDatIdReference {
+                snapshot,
+                declaring_set,
+                declared_id,
+            } => {
+                assert_eq!(snapshot, fixture.snapshot);
+                assert_eq!(Some(declaring_set), subject.owner_set_id);
+                assert_eq!(explanation.source_field.as_deref(), Some("cloneofid"));
+                assert_eq!(
+                    explanation.claim.evidence,
+                    RelationshipEvidence::SourceFieldReference {
+                        source_field: "cloneofid".into(),
+                        target_name: declared_id.clone()
+                    }
+                );
+                ids.push(declared_id);
+            }
+            _ => return Err("DAT parent literal was coerced into another endpoint".into()),
+        }
+        assert!(explanation.source_location.is_some());
+    }
+    names.sort();
+    ids.sort();
+    assert_eq!(names, ["", "missing"]);
+    assert_eq!(ids, ["", "0007", "7"]);
+    Ok(())
+}
+
+#[test]
+fn native_declarations_have_one_value_and_provenance_owner() -> TestResult {
     let fixture = Fixture::new(CatalogDocumentFormat::ClrMamePro, CMP)?;
     let mut connection = fixture.connection()?;
     for table in ["logiqx_rom_claims", "logiqx_disk_claims", "cmp_rom_claims"] {
@@ -286,7 +670,12 @@ fn native_merges_have_no_duplicate_claim_columns_or_cmp_position_columns() -> Te
         .count;
         assert_eq!(count, 0, "{table} duplicates the native merge literal");
     }
-    for table in ["clrmamepro_set_links", "clrmamepro_rom_merges"] {
+    for table in [
+        "clrmamepro_set_links",
+        "clrmamepro_rom_merges",
+        "software_clone_links",
+        "no_intro_dat_set_links",
+    ] {
         let count = sql_query(format!("SELECT count(*) AS count FROM pragma_table_info('{table}') WHERE name IN ('source_line','source_column','source_order','is_quoted','source_field')"))
             .get_result::<Count>(&mut connection)?.count;
         assert_eq!(count, 0, "{table} duplicates CMP field provenance");
@@ -294,6 +683,21 @@ fn native_merges_have_no_duplicate_claim_columns_or_cmp_position_columns() -> Te
     let sample_table = sql_query("SELECT count(*) AS count FROM sqlite_schema WHERE type='table' AND name='cmp_sample_parent_links'")
         .get_result::<Count>(&mut connection)?.count;
     assert_eq!(sample_table, 0, "CMP sampleof has two value owners");
+    for (table, column) in [
+        ("software_items", "clone_of"),
+        ("no_intro_dat_games", "cloneof_text"),
+        ("no_intro_dat_games", "cloneofid_text"),
+    ] {
+        let count = sql_query(format!(
+            "SELECT count(*) AS count FROM pragma_table_info('{table}') WHERE name='{column}'"
+        ))
+        .get_result::<Count>(&mut connection)?
+        .count;
+        assert_eq!(
+            count, 0,
+            "{table}.{column} duplicates a native parent literal"
+        );
+    }
     Ok(())
 }
 
@@ -358,14 +762,33 @@ fn cmp_actual_owners_and_identities_reject_replacement_and_mutation() -> TestRes
     )
 }
 
+#[test]
+fn software_actual_owners_reject_replacement_and_mutation_without_pragmas() -> TestResult {
+    assert_published_native_facts_are_sealed(
+        CatalogDocumentFormat::MameSoftwareListXml,
+        SOFTWARE,
+        &[("software_clone_links", "target_name")],
+    )
+}
+
+#[test]
+fn dat_actual_owners_reject_replacement_and_mutation_without_pragmas() -> TestResult {
+    assert_published_native_facts_are_sealed(
+        CatalogDocumentFormat::NoIntroDat(NoIntroDatMode::V4Compatible),
+        NO_INTRO_DAT,
+        &[("no_intro_dat_set_links", "target_literal")],
+    )
+}
+
 fn assert_readiness_checks_native_owner_edition(
     format: CatalogDocumentFormat,
     source: &str,
+    expected_keys: usize,
 ) -> TestResult {
     let fixture = Fixture::new(format, source)?;
     let mut connection = fixture.connection()?;
     connection.batch_execute("PRAGMA foreign_keys=OFF; PRAGMA recursive_triggers=OFF;")?;
-    let owner = sql_query("SELECT set_id AS count FROM catalog_sets JOIN catalog_set_groups USING(set_group_id) WHERE snapshot_key=? AND set_name='child'")
+    let owner = sql_query("SELECT set_id AS count FROM catalog_sets JOIN catalog_set_groups USING(set_group_id) WHERE snapshot_key=? AND set_name='child' ORDER BY set_id LIMIT 1")
         .bind::<Text,_>(fixture.snapshot.as_str()).get_result::<Count>(&mut connection)?.count;
     let keys = app::explain_relationships(&fixture.database)?
         .into_iter()
@@ -379,9 +802,10 @@ fn assert_readiness_checks_native_owner_edition(
         })
         .map(|row| row.assertion_key)
         .collect::<Vec<_>>();
-    assert!(
-        keys.len() >= 4,
-        "positive controls must cover native parents and media merges"
+    assert_eq!(
+        keys.len(),
+        expected_keys,
+        "every native declaration on the actual owner must be checked"
     );
     let readiness = concat!(
         "SELECT is_published AS count FROM (WITH requested(assertion_key) AS (VALUES (?)) ",
@@ -401,7 +825,8 @@ fn assert_readiness_checks_native_owner_edition(
         .bind::<Text,_>(fixture.request.catalog_key.as_str()).execute(&mut connection)?;
     sql_query("INSERT INTO catalog_snapshots(snapshot_key,catalog_key,document_key,interpretation_key,coverage_id) SELECT 'corrupt-owner-edition','corrupt-owner-edition',document_key,interpretation_key,coverage_id FROM catalog_snapshots WHERE snapshot_key=?")
         .bind::<Text,_>(fixture.snapshot.as_str()).execute(&mut connection)?;
-    sql_query("INSERT INTO catalog_set_groups(snapshot_key,kind,list_order) VALUES ('corrupt-owner-edition','root',0)").execute(&mut connection)?;
+    sql_query("INSERT INTO catalog_set_groups(snapshot_key,kind,list_order) SELECT 'corrupt-owner-edition',groups.kind,0 FROM catalog_sets AS sets JOIN catalog_set_groups AS groups USING(set_group_id) WHERE sets.set_id=?")
+        .bind::<BigInt,_>(owner).execute(&mut connection)?;
     // Bypass this one seal in the isolated fixture. The production readiness
     // query must independently inspect actual owners rather than trust the seal.
     connection.batch_execute("DROP TRIGGER catalog_sets_reject_replacement")?;
@@ -422,12 +847,30 @@ fn assert_readiness_checks_native_owner_edition(
 
 #[test]
 fn logiqx_readiness_independently_verifies_native_owner_edition() -> TestResult {
-    assert_readiness_checks_native_owner_edition(CatalogDocumentFormat::Logiqx, LOGIQX)
+    assert_readiness_checks_native_owner_edition(CatalogDocumentFormat::Logiqx, LOGIQX, 6)
 }
 
 #[test]
 fn cmp_readiness_independently_verifies_native_owner_edition() -> TestResult {
-    assert_readiness_checks_native_owner_edition(CatalogDocumentFormat::ClrMamePro, CMP)
+    assert_readiness_checks_native_owner_edition(CatalogDocumentFormat::ClrMamePro, CMP, 4)
+}
+
+#[test]
+fn software_readiness_independently_verifies_native_owner_edition() -> TestResult {
+    assert_readiness_checks_native_owner_edition(
+        CatalogDocumentFormat::MameSoftwareListXml,
+        SOFTWARE,
+        1,
+    )
+}
+
+#[test]
+fn dat_readiness_independently_verifies_native_owner_edition() -> TestResult {
+    assert_readiness_checks_native_owner_edition(
+        CatalogDocumentFormat::NoIntroDat(NoIntroDatMode::V4Compatible),
+        NO_INTRO_DAT,
+        2,
+    )
 }
 
 #[test]
@@ -502,6 +945,8 @@ fn assert_readiness_plan_is_keyed(connection: &mut SqliteConnection, key: &str) 
         "logiqx_file_merges",
         "clrmamepro_set_links",
         "clrmamepro_rom_merges",
+        "software_clone_links",
+        "no_intro_dat_set_links",
     ] {
         assert!(
             !details.iter().any(|line| line == &format!("SCAN {alias}")
@@ -535,6 +980,20 @@ fn add_unrelated_native_owners(fixture: &Fixture) -> TestResult {
             "game ( name SEEDNAME cloneof missing rom ( name rom size 1 merge missing ) ) ",
             "",
         ),
+        (
+            CatalogDocumentFormat::MameSoftwareListXml,
+            "unrelated-software",
+            "<softwarelist name='unrelated'>",
+            "<software name='SEEDNAME' cloneof='missing'><description>Unrelated</description><year>2026</year><publisher>Test</publisher></software>",
+            "</softwarelist>",
+        ),
+        (
+            CatalogDocumentFormat::NoIntroDat(NoIntroDatMode::V4Compatible),
+            "unrelated-dat",
+            "<datafile><header><id>1</id><name>Unrelated</name><description>Unrelated</description><version>1</version></header>",
+            "<game name='SEEDNAME' cloneof='missing' cloneofid='0007'><description>Unrelated</description><rom name='rom'/></game>",
+            "</datafile>",
+        ),
     ] {
         let mut source = prefix.to_owned();
         for index in 0..100 {
@@ -565,20 +1024,26 @@ fn add_unrelated_native_owners(fixture: &Fixture) -> TestResult {
     Ok(())
 }
 
-fn assert_native_lookup_plans_are_keyed(format: CatalogDocumentFormat, source: &str) -> TestResult {
+fn assert_native_lookup_plans_are_keyed(
+    format: CatalogDocumentFormat,
+    source: &str,
+    projection: &str,
+) -> TestResult {
     let fixture = Fixture::new(format, source)?;
     let mut connection = fixture.connection()?;
     let actual_key = app::explain_relationships(&fixture.database)?
         .into_iter()
-        .find(|row| row.claim.relation_type == RelationshipType::SourceMerge)
+        .find(|row| matches!(row.claim.origin, RelationshipOrigin::SourceAssertion { .. }))
         .ok_or("actual native lookup key missing")?
         .assertion_key;
+    add_unrelated_native_owners(&fixture)?;
+    connection.batch_execute("ANALYZE")?;
     for (column, value) in [
         ("assertion_key", actual_key.as_str()),
         ("source_snapshot_key", fixture.snapshot.as_str()),
     ] {
         let plan = sql_query(format!(
-            "EXPLAIN QUERY PLAN SELECT * FROM logiqx_cmp_source_relationships WHERE {column}=?"
+            "EXPLAIN QUERY PLAN SELECT * FROM {projection} WHERE {column}=?"
         ))
         .bind::<Text, _>(value)
         .load::<QueryPlan>(&mut connection)?;
@@ -600,6 +1065,8 @@ fn assert_native_lookup_plans_are_keyed(format: CatalogDocumentFormat, source: &
             "rom_parent",
             "clone_parent",
             "logiqx_set_links",
+            "software_clone_links",
+            "no_intro_dat_set_links",
         ] {
             assert!(
                 !details.iter().any(|line| line == &format!("SCAN {alias}")
@@ -634,19 +1101,43 @@ fn assert_native_lookup_plans_are_keyed(format: CatalogDocumentFormat, source: &
             "inverse closure must not scan unrelated native catalogs: {details:?}"
         );
     }
-    add_unrelated_native_owners(&fixture)?;
-    connection.batch_execute("ANALYZE")?;
     assert_readiness_plan_is_keyed(&mut connection, actual_key.as_str())
 }
 
 #[test]
 fn logiqx_native_queries_seek_actual_identity_and_edition_keys() -> TestResult {
-    assert_native_lookup_plans_are_keyed(CatalogDocumentFormat::Logiqx, LOGIQX)
+    assert_native_lookup_plans_are_keyed(
+        CatalogDocumentFormat::Logiqx,
+        LOGIQX,
+        "logiqx_cmp_source_relationships",
+    )
 }
 
 #[test]
 fn cmp_native_queries_seek_actual_identity_and_edition_keys() -> TestResult {
-    assert_native_lookup_plans_are_keyed(CatalogDocumentFormat::ClrMamePro, CMP)
+    assert_native_lookup_plans_are_keyed(
+        CatalogDocumentFormat::ClrMamePro,
+        CMP,
+        "logiqx_cmp_source_relationships",
+    )
+}
+
+#[test]
+fn software_native_queries_seek_actual_identity_and_edition_keys() -> TestResult {
+    assert_native_lookup_plans_are_keyed(
+        CatalogDocumentFormat::MameSoftwareListXml,
+        SOFTWARE,
+        "software_dat_source_relationships",
+    )
+}
+
+#[test]
+fn dat_native_queries_seek_actual_identity_and_edition_keys() -> TestResult {
+    assert_native_lookup_plans_are_keyed(
+        CatalogDocumentFormat::NoIntroDat(NoIntroDatMode::V4Compatible),
+        NO_INTRO_DAT,
+        "software_dat_source_relationships",
+    )
 }
 
 #[test]

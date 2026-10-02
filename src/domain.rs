@@ -980,6 +980,12 @@ pub enum RelationshipEndpoint {
         snapshot: SnapshotKey,
         literal: String,
     },
+    /// An unresolved DAT-local publisher ID, distinct from a set-name reference.
+    NoIntroDatIdReference {
+        snapshot: SnapshotKey,
+        declaring_set: CatalogSetId,
+        declared_id: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

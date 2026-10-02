@@ -139,9 +139,9 @@ fn candidate(
     .id;
     sql_query(
         "INSERT INTO software_items \
-         (record_id, source_order, clone_of, supported, supported_specified, \
+         (record_id, source_order, supported, supported_specified, \
           description, year, publisher, notes) \
-         VALUES (?, 0, NULL, 'yes', 0, 'Game', '2000', 'Test', NULL)",
+         VALUES (?, 0, 'yes', 0, 'Game', '2000', 'Test', NULL)",
     )
     .bind::<BigInt, _>(record_id)
     .execute(connection)?;

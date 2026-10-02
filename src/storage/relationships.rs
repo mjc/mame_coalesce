@@ -585,6 +585,7 @@ fn endpoint_parts(endpoint: &RelationshipEndpoint) -> crate::Result<EndpointPart
         )),
         RelationshipEndpoint::NoIntroArchive { .. }
         | RelationshipEndpoint::NoIntroArchiveReference { .. }
+        | RelationshipEndpoint::NoIntroDatIdReference { .. }
         | RelationshipEndpoint::CatalogMediaEntry { .. }
         | RelationshipEndpoint::CatalogMergeReference { .. } => Err(crate::Error::InvalidPath(
             "native endpoints require a native source assertion".into(),
@@ -1138,13 +1139,14 @@ fn source_evidence_value(row: &ExplanationRow) -> crate::Result<RelationshipEvid
                 })?,
             })
         }
-        Some("romof" | "sampleof") => Ok(RelationshipEvidence::SourceFieldReference {
-            source_field: row
-                .source_field
-                .clone()
-                .ok_or_else(|| crate::Error::InvalidPath("source evidence has no field".into()))?,
-            target_name: target_name.clone(),
-        }),
+        Some("romof" | "sampleof" | "cloneofid") => {
+            Ok(RelationshipEvidence::SourceFieldReference {
+                source_field: row.source_field.clone().ok_or_else(|| {
+                    crate::Error::InvalidPath("source evidence has no field".into())
+                })?,
+                target_name: target_name.clone(),
+            })
+        }
         Some("cloneof" | "parent_name" | "device_ref") => {
             Ok(RelationshipEvidence::SourceReference {
                 target_name: target_name.clone(),
@@ -1214,37 +1216,60 @@ fn source_endpoint(
         })?;
         return Ok(RelationshipEndpoint::NoIntroArchiveReference { snapshot, literal });
     }
+    if kind == "no_intro_dat_id_reference" {
+        return Ok(RelationshipEndpoint::NoIntroDatIdReference {
+            snapshot,
+            declaring_set: owner_set_id
+                .ok_or_else(|| {
+                    crate::Error::InvalidPath("DAT ID reference has no declaring set".into())
+                })?
+                .try_into()?,
+            declared_id: first.ok_or_else(|| {
+                crate::Error::InvalidPath("DAT ID reference has no publisher ID".into())
+            })?,
+        });
+    }
     let first = first.ok_or_else(|| {
         crate::Error::InvalidPath("source relationship endpoint has no first key part".into())
     })?;
-    let (kind, key) = match kind {
-        "catalog_set" => (CatalogRecordKind::Set, first),
-        "software_item" => (
-            CatalogRecordKind::SoftwareItem,
-            serde_json::to_string(&(
-                first.as_str(),
-                second.ok_or_else(|| {
-                    crate::Error::InvalidPath("software endpoint has no item key".into())
-                })?,
-            ))?,
-        ),
-        "asset_requirement" => (
-            CatalogRecordKind::AssetRequirement,
-            serde_json::to_string(&(
-                first.as_str(),
-                second.ok_or_else(|| {
-                    crate::Error::InvalidPath("asset endpoint has no asset key".into())
-                })?,
-                third.ok_or_else(|| {
-                    crate::Error::InvalidPath("asset endpoint has no component order".into())
-                })?,
-            ))?,
-        ),
+    let record_kind = match kind {
+        "catalog_set" => CatalogRecordKind::Set,
+        "software_item" => CatalogRecordKind::SoftwareItem,
+        "asset_requirement" => CatalogRecordKind::AssetRequirement,
         other => {
             return Err(crate::Error::InvalidPath(format!(
                 "unknown source relationship endpoint kind {other}"
             )));
         }
+    };
+    catalog_record_endpoint(snapshot, record_kind, owner_set_id, first, second, third)
+}
+
+fn catalog_record_endpoint(
+    snapshot: SnapshotKey,
+    kind: CatalogRecordKind,
+    owner_set_id: Option<i64>,
+    first: String,
+    second: Option<&str>,
+    third: Option<i64>,
+) -> crate::Result<RelationshipEndpoint> {
+    let key = match kind {
+        CatalogRecordKind::Set => first,
+        CatalogRecordKind::SoftwareItem => serde_json::to_string(&(
+            first.as_str(),
+            second.ok_or_else(|| {
+                crate::Error::InvalidPath("software endpoint has no item key".into())
+            })?,
+        ))?,
+        CatalogRecordKind::AssetRequirement => serde_json::to_string(&(
+            first.as_str(),
+            second.ok_or_else(|| {
+                crate::Error::InvalidPath("asset endpoint has no asset key".into())
+            })?,
+            third.ok_or_else(|| {
+                crate::Error::InvalidPath("asset endpoint has no component order".into())
+            })?,
+        ))?,
     };
     let record = CatalogRecordRef::new(snapshot, kind, key);
     let record = match owner_set_id {
@@ -1275,32 +1300,14 @@ fn typed_endpoint(
                 "software_item" => CatalogRecordKind::SoftwareItem,
                 _ => CatalogRecordKind::AssetRequirement,
             };
-            let key = match record_kind {
-                CatalogRecordKind::Set => first,
-                CatalogRecordKind::SoftwareItem => serde_json::to_string(&(
-                    first.as_str(),
-                    second.ok_or_else(|| {
-                        crate::Error::InvalidPath(
-                            "software endpoint has no second component".into(),
-                        )
-                    })?,
-                ))?,
-                CatalogRecordKind::AssetRequirement => serde_json::to_string(&(
-                    first.as_str(),
-                    second.ok_or_else(|| {
-                        crate::Error::InvalidPath("asset endpoint has no second component".into())
-                    })?,
-                    third.ok_or_else(|| {
-                        crate::Error::InvalidPath("asset endpoint has no order".into())
-                    })?,
-                ))?,
-            };
-            let record = CatalogRecordRef::new(snapshot, record_kind, key);
-            let record = match owner_set_id {
-                Some(id) => record.with_owner(CatalogSetId::from_database(id)),
-                None => record,
-            };
-            Ok(RelationshipEndpoint::CatalogRecord(record))
+            catalog_record_endpoint(
+                snapshot,
+                record_kind,
+                owner_set_id,
+                first,
+                second.as_deref(),
+                third,
+            )
         }
         "content_object" => {
             let algorithm = match first.as_str() {

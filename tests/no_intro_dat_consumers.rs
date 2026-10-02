@@ -91,6 +91,8 @@ struct OccurrenceRow {
 struct SetIdRow {
     #[diesel(sql_type = BigInt)]
     set_id: i64,
+    #[diesel(sql_type = Text)]
+    assertion_key: String,
 }
 
 #[derive(QueryableByName)]
@@ -124,29 +126,32 @@ impl NativeCloneofGuardFixture {
         )?;
         let mut connection = SqliteConnection::establish(database_path.as_str())?;
         let native = sql_query(
-            "SELECT game.set_id AS set_id \
+            "SELECT game.set_id AS set_id, registry.assertion_key \
              FROM no_intro_dat_games AS game \
              JOIN catalog_sets AS sets USING (set_id) \
              JOIN catalog_set_groups AS groups USING (set_group_id) \
+             JOIN no_intro_dat_set_links AS link ON link.set_id=game.set_id AND link.link_kind='cloneof' \
+             JOIN catalog_relationships AS registry USING(relationship_id) \
              JOIN no_intro_dat_game_field_positions AS position \
                ON position.set_id = game.set_id AND position.field_kind = 2 \
-             WHERE groups.snapshot_key = ? AND sets.set_name = 'native-child' \
-               AND game.cloneof_text IS NOT NULL",
+             WHERE groups.snapshot_key = ? AND sets.set_name = 'native-child'",
         )
         .bind::<Text, _>(snapshot.as_str())
         .get_result::<SetIdRow>(&mut connection)?;
         let id_only = sql_query(
-            "SELECT game.set_id AS set_id \
+            "SELECT game.set_id AS set_id, registry.assertion_key \
              FROM no_intro_dat_games AS game \
              JOIN catalog_sets AS sets USING (set_id) \
              JOIN catalog_set_groups AS groups USING (set_group_id) \
-             WHERE groups.snapshot_key = ? AND sets.set_name = 'id-only' \
-               AND game.cloneof_text IS NULL",
+             JOIN no_intro_dat_set_links AS link ON link.set_id=game.set_id AND link.link_kind='cloneofid' \
+             JOIN catalog_relationships AS registry USING(relationship_id) \
+             WHERE groups.snapshot_key = ? AND sets.set_name = 'id-only'",
         )
         .bind::<Text, _>(snapshot.as_str())
         .get_result::<SetIdRow>(&mut connection)?;
-        let native_key = format!("no-intro-dat-cloneof:{}", native.set_id);
-        let cloneofid_only_key = format!("no-intro-dat-cloneof:{}", id_only.set_id);
+        assert_ne!(native.set_id, id_only.set_id);
+        let native_key = native.assertion_key;
+        let cloneofid_only_key = id_only.assertion_key;
         let aliases = sql_query(
             "SELECT COUNT(*) AS count FROM no_intro_dat_game_field_positions \
              WHERE set_id = ? AND field_kind = 2",
@@ -165,6 +170,14 @@ impl NativeCloneofGuardFixture {
 
     fn connection(&self) -> TestResult<SqliteConnection> {
         Ok(SqliteConnection::establish(self.database_path.as_str())?)
+    }
+
+    fn invalid_keys(&self) -> [String; 3] {
+        [
+            "missing-native-relationship".to_owned(),
+            format!("{}-suffix", self.native_key),
+            format!("0{}", self.native_key),
+        ]
     }
 }
 
@@ -673,17 +686,29 @@ fn native_cloneof_names_are_not_archive_ids_or_cloneofid_references() -> TestRes
         ),
     )?;
     let relationships = app::explain_relationships(&database)?;
-    assert_eq!(relationships.len(), 2);
+    assert_eq!(relationships.len(), 3);
     let mut names = Vec::new();
     for relationship in relationships {
         let RelationshipEndpoint::CatalogRecord(subject) = relationship.claim.subject else {
             return Err("DAT clone subject must be its actual catalog set".into());
         };
+        assert_eq!(subject.snapshot, snapshot);
+        assert!(subject.owner_set_id.is_some());
+        if let RelationshipEndpoint::NoIntroDatIdReference {
+            snapshot: target_snapshot,
+            declaring_set,
+            declared_id,
+        } = &relationship.claim.target
+        {
+            assert_eq!(target_snapshot, &snapshot);
+            assert_eq!(Some(*declaring_set), subject.owner_set_id);
+            assert_eq!(declared_id, "0007");
+            assert_eq!(relationship.source_field.as_deref(), Some("cloneofid"));
+            continue;
+        }
         let RelationshipEndpoint::CatalogRecord(target) = relationship.claim.target else {
             return Err("DAT cloneof names must remain name-based selectors".into());
         };
-        assert_eq!(subject.snapshot, snapshot);
-        assert!(subject.owner_set_id.is_some());
         assert_eq!(target.snapshot, snapshot);
         assert!(target.owner_set_id.is_none());
         assert_eq!(relationship.source_field.as_deref(), Some("cloneof"));
@@ -706,18 +731,14 @@ fn native_cloneof_assertion_review_guard_checks_owned_positioned_rows() -> TestR
         None,
     )?;
 
-    let suffix = fixture
-        .native_key
-        .strip_prefix("no-intro-dat-cloneof:")
-        .ok_or("native cloneof key prefix is missing")?;
-    for (index, key) in [
-        "no-intro-dat-cloneof:999999".to_owned(),
-        fixture.cloneofid_only_key.clone(),
-        format!("no-intro-dat-cloneof:0{suffix}"),
-    ]
-    .into_iter()
-    .enumerate()
-    {
+    insert_review(
+        &mut connection,
+        "review-native-cloneofid-primary",
+        &fixture.cloneofid_only_key,
+        "accepted",
+        None,
+    )?;
+    for (index, key) in fixture.invalid_keys().into_iter().enumerate() {
         assert_guard_rejects(
             insert_review(
                 &mut connection,
@@ -755,18 +776,14 @@ fn native_cloneof_assertion_supersession_guard_checks_owned_positioned_rows() ->
         Some(&fixture.native_key),
     )?;
 
-    let suffix = fixture
-        .native_key
-        .strip_prefix("no-intro-dat-cloneof:")
-        .ok_or("native cloneof key prefix is missing")?;
-    for (index, key) in [
-        "no-intro-dat-cloneof:999999".to_owned(),
-        fixture.cloneofid_only_key.clone(),
-        format!("no-intro-dat-cloneof:0{suffix}"),
-    ]
-    .into_iter()
-    .enumerate()
-    {
+    insert_review(
+        &mut connection,
+        "review-native-cloneofid-superseding",
+        "guard-test:review-base",
+        "superseded",
+        Some(&fixture.cloneofid_only_key),
+    )?;
+    for (index, key) in fixture.invalid_keys().into_iter().enumerate() {
         assert_guard_rejects(
             insert_review(
                 &mut connection,
@@ -797,23 +814,18 @@ fn native_cloneof_assertion_support_guard_checks_owned_positioned_rows() -> Test
         &fixture.native_key,
     )?;
 
-    let suffix = fixture
-        .native_key
-        .strip_prefix("no-intro-dat-cloneof:")
-        .ok_or("native cloneof key prefix is missing")?;
-    for (index, key) in [
-        "no-intro-dat-cloneof:999999".to_owned(),
-        fixture.cloneofid_only_key.clone(),
-        format!("no-intro-dat-cloneof:0{suffix}"),
-    ]
-    .into_iter()
-    .enumerate()
-    {
+    insert_support(
+        &mut connection,
+        "guard-test:derived-candidate",
+        1,
+        &fixture.cloneofid_only_key,
+    )?;
+    for (index, key) in fixture.invalid_keys().into_iter().enumerate() {
         assert_guard_rejects(
             insert_support(
                 &mut connection,
                 "guard-test:derived-candidate",
-                i64::try_from(index + 1)?,
+                i64::try_from(index + 2)?,
                 &key,
             ),
             "support requires published relationship evidence",

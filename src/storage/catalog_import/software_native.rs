@@ -4,10 +4,7 @@ use diesel::{
 };
 
 use crate::{
-    domain::{
-        CatalogRecordKind, CatalogRecordRef, CatalogSetId, DocumentLocation, RelationshipEvidence,
-        RelationshipType, SnapshotKey,
-    },
+    domain::{CatalogSetId, SnapshotKey},
     mame_softwarelist::{
         AreaKind, LoadInstruction, SoftwareArea, SoftwareComponent, SoftwareDisk, SoftwareItem,
         SoftwareList, SoftwareListCatalog, SoftwarePart, SoftwareRom, SoftwareTextPosition,
@@ -18,7 +15,6 @@ use crate::{
             record_occurrence_digest_assertions, resolve_content_identity,
         },
         catalog_identity::{AllocatedOccurrence, OccurrenceId},
-        relationships::{SourceRelationshipDraft, insert_source_assertion},
         software_rom_evidence::RomEvidence,
     },
 };
@@ -115,7 +111,7 @@ fn insert_list(
     }
 
     for (item_order, item) in list.items.iter().enumerate() {
-        insert_item(conn, snapshot_key, namespace, list, item, item_order)?;
+        insert_item(conn, snapshot_key, namespace, item, item_order)?;
     }
     Ok(())
 }
@@ -124,7 +120,6 @@ fn insert_item(
     conn: &mut SqliteConnection,
     snapshot_key: &SnapshotKey,
     namespace_id: i64,
-    list: &SoftwareList,
     item: &SoftwareItem,
     item_order: usize,
 ) -> crate::Result<()> {
@@ -143,16 +138,11 @@ fn insert_item(
 
     sql_query(
         "INSERT INTO software_items \
-         (record_id, source_order, clone_of, supported, supported_specified, description, year, publisher, notes) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         (record_id, source_order, supported, supported_specified, description, year, publisher, notes) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind::<BigInt, _>(record.as_i64())
     .bind::<BigInt, _>(checked_order(item.source_order, "software items")?)
-    .bind::<Nullable<Text>, _>(
-        item.clone_of
-            .as_ref()
-            .map(crate::mame_softwarelist::SoftwareItemName::as_str),
-    )
     .bind::<Nullable<Text>, _>(
         Some(item.supported.unwrap_or_default().as_str()),
     )
@@ -166,37 +156,12 @@ fn insert_item(
     insert_item_text_positions(conn, record, &item.text_positions)?;
 
     if let Some(parent) = &item.clone_of {
-        insert_source_assertion(
+        super::reported_relationships::insert_parent(
             conn,
-            SourceRelationshipDraft {
-                relation_type: RelationshipType::SourceParentClone,
-                subject: CatalogRecordRef::new(
-                    snapshot_key.clone(),
-                    CatalogRecordKind::SoftwareItem,
-                    super::super::catalog_reconciliation::record_key(&(
-                        list.name.as_str(),
-                        item.name.as_str(),
-                    ))?,
-                )
-                .with_owner(record),
-                target: CatalogRecordRef::new(
-                    snapshot_key.clone(),
-                    CatalogRecordKind::SoftwareItem,
-                    super::super::catalog_reconciliation::record_key(&(
-                        list.name.as_str(),
-                        parent.as_str(),
-                    ))?,
-                ),
-                source_field: "cloneof".to_owned(),
-                source_location: Some(DocumentLocation {
-                    line: item.location.line,
-                    column: item.location.column,
-                }),
-                evidence: RelationshipEvidence::SoftwareClone {
-                    list_name: list.name.as_str().to_owned(),
-                    target_item_name: parent.as_str().to_owned(),
-                },
-            },
+            snapshot_key,
+            record,
+            super::reported_relationships::ParentOwner::Software,
+            parent.as_str(),
         )?;
     }
 

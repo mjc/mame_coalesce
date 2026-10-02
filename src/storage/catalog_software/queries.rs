@@ -8,9 +8,20 @@ pub(super) const NEXT_LIST_PAGE: &str = "SELECT groups.set_group_id AS id, lists
 
 pub(super) const FIRST_LIST_PAGE: &str = "SELECT groups.set_group_id AS id, lists.namespace_id AS native_id, lists.name, lists.description, lists.notes, groups.list_order AS order_value, lists.source_order, lists.source_line AS line, lists.source_column AS column, 1 AS group_snapshot_ok, groups.kind AS group_kind FROM catalog_set_groups AS groups LEFT JOIN software_lists AS lists ON lists.namespace_id = groups.set_group_id WHERE groups.snapshot_key = ? AND groups.kind = 'software_list' ORDER BY groups.list_order, groups.set_group_id LIMIT ?";
 
-pub(super) const NEXT_TITLE_PAGE: &str = "SELECT sets.set_id AS id, sets.set_name AS name, sets.list_order AS order_value, items.record_id AS native_id, items.source_order, sets.source_line AS line, sets.source_column AS column, items.clone_of, items.supported, items.supported_specified, items.description, items.year, items.publisher, items.notes FROM catalog_sets AS sets LEFT JOIN software_items AS items ON items.record_id = sets.set_id JOIN catalog_set_groups AS groups ON groups.set_group_id = sets.set_group_id WHERE groups.snapshot_key = ? AND groups.kind = 'software_list' AND groups.set_group_id = ? AND sets.source_element_kind = 'software_item' AND (sets.list_order, sets.set_id) > (?, ?) ORDER BY sets.list_order, sets.set_id LIMIT ?";
+macro_rules! title_page_query {
+    ($continuation:literal) => {
+        concat!(
+            "SELECT sets.set_id AS id, sets.set_name AS name, sets.list_order AS order_value, items.record_id AS native_id, items.source_order, sets.source_line AS line, sets.source_column AS column, clone.target_name AS clone_of, items.supported, items.supported_specified, items.description, items.year, items.publisher, items.notes FROM catalog_sets AS sets LEFT JOIN software_items AS items ON items.record_id = sets.set_id LEFT JOIN software_clone_links AS clone ON clone.set_id = items.record_id JOIN catalog_set_groups AS groups ON groups.set_group_id = sets.set_group_id WHERE groups.snapshot_key = ? AND groups.kind = 'software_list' AND groups.set_group_id = ? AND sets.source_element_kind = 'software_item'",
+            $continuation,
+            " ORDER BY sets.list_order, sets.set_id LIMIT ?"
+        )
+    };
+}
 
-pub(super) const FIRST_TITLE_PAGE: &str = "SELECT sets.set_id AS id, sets.set_name AS name, sets.list_order AS order_value, items.record_id AS native_id, items.source_order, sets.source_line AS line, sets.source_column AS column, items.clone_of, items.supported, items.supported_specified, items.description, items.year, items.publisher, items.notes FROM catalog_sets AS sets LEFT JOIN software_items AS items ON items.record_id = sets.set_id JOIN catalog_set_groups AS groups ON groups.set_group_id = sets.set_group_id WHERE groups.snapshot_key = ? AND groups.kind = 'software_list' AND groups.set_group_id = ? AND sets.source_element_kind = 'software_item' ORDER BY sets.list_order, sets.set_id LIMIT ?";
+pub(super) const NEXT_TITLE_PAGE: &str =
+    title_page_query!(" AND (sets.list_order, sets.set_id) > (?, ?)");
+
+pub(super) const FIRST_TITLE_PAGE: &str = title_page_query!("");
 
 pub(super) const PUBLISHED_SNAPSHOT: &str = "SELECT registry.registry_uuid, snapshots.snapshot_key, sources.source_key, sources.display_name AS source_name, catalogs.catalog_key, catalogs.display_name AS catalog_name, documents.document_key, snapshots.interpretation_key, interpretations.format, software.envelope_kind, headers.build, CASE WHEN headers.snapshot_key IS NULL THEN 0 ELSE 1 END AS wrapper_header_count FROM catalog_snapshots AS snapshots JOIN snapshot_publications AS publication ON publication.snapshot_key = snapshots.snapshot_key AND publication.catalog_key = snapshots.catalog_key AND publication.document_key = snapshots.document_key AND publication.interpretation_key = snapshots.interpretation_key JOIN catalogs ON catalogs.catalog_key = snapshots.catalog_key JOIN publishing_sources AS sources ON sources.source_key = catalogs.source_key JOIN documents ON documents.document_key = snapshots.document_key JOIN parser_interpretations AS interpretations ON interpretations.interpretation_key = snapshots.interpretation_key JOIN software_documents AS software ON software.snapshot_key = snapshots.snapshot_key CROSS JOIN file_id_registries AS registry LEFT JOIN software_wrapper_headers AS headers ON headers.snapshot_key = software.snapshot_key WHERE snapshots.snapshot_key = ? AND registry.registry_id = 1 AND interpretations.format = 'mame-softwarelist-xml'";
 

@@ -1,4 +1,37 @@
 -- Collection payloads require the native owner even when FK enforcement is off.
+CREATE TRIGGER no_intro_dat_set_links_native_owner_insert
+BEFORE INSERT ON no_intro_dat_set_links
+WHEN EXISTS (SELECT 1 FROM no_intro_dat_set_links
+             WHERE (set_id, link_kind) = (NEW.set_id, NEW.link_kind)
+                OR relationship_id = NEW.relationship_id)
+ OR EXISTS (SELECT 1 FROM reported_catalog_relationship_owner_ids
+            WHERE relationship_id = NEW.relationship_id)
+ OR NOT EXISTS (
+    SELECT 1
+    FROM no_intro_dat_games AS native
+    JOIN catalog_sets AS sets ON sets.set_id = native.set_id
+    JOIN catalog_set_groups AS groups ON groups.set_group_id = sets.set_group_id
+    JOIN catalog_snapshots AS snapshot ON snapshot.snapshot_key = groups.snapshot_key
+    JOIN parser_interpretations AS interpretation
+      ON interpretation.interpretation_key = snapshot.interpretation_key
+    JOIN catalog_relationships AS identity ON identity.relationship_id = NEW.relationship_id
+    JOIN reported_catalog_relationships AS reported
+      ON reported.relationship_id = identity.relationship_id
+     AND reported.source_reference_kind = NEW.source_reference_kind
+    WHERE native.set_id = NEW.set_id AND sets.source_element_kind = 'no_intro_dat_game'
+      AND groups.kind = 'root'
+      AND interpretation.format IN ('no-intro-dat-v3-strict', 'no-intro-dat-v3-compatible',
+                                     'no-intro-dat-v4-strict', 'no-intro-dat-v4-compatible')
+      AND identity.origin = 'source' AND identity.snapshot_key = groups.snapshot_key
+      AND NOT EXISTS (SELECT 1 FROM snapshot_publications AS publication
+                      WHERE publication.snapshot_key = groups.snapshot_key)
+ )
+BEGIN SELECT RAISE(ABORT, 'No-Intro DAT clone link requires an unused source identity on an unpublished game'); END;
+CREATE TRIGGER no_intro_dat_set_links_native_immutable_update BEFORE UPDATE ON no_intro_dat_set_links
+BEGIN SELECT RAISE(ABORT, 'No-Intro DAT clone links are immutable'); END;
+CREATE TRIGGER no_intro_dat_set_links_native_immutable_delete BEFORE DELETE ON no_intro_dat_set_links
+BEGIN SELECT RAISE(ABORT, 'No-Intro DAT clone links are immutable'); END;
+
 CREATE TRIGGER no_intro_dat_categories_unpublished_owner_insert
 BEFORE INSERT ON no_intro_dat_categories
 WHEN NOT EXISTS (

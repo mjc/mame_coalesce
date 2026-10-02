@@ -22,6 +22,7 @@ enum Owner {
     List,
     Set,
     Item,
+    Clone,
     Info,
     SharedFeature,
     Part,
@@ -93,8 +94,8 @@ const FIELDS: &[Field] = &[
     field!(
         "software",
         "cloneof",
-        Item,
-        "clone_of",
+        Clone,
+        "target_name",
         Cell::Text("parent"),
         "unknown parent"
     ),
@@ -424,6 +425,7 @@ impl Owner {
             Self::List => ("software_lists", "namespace_id = ?", imported.list),
             Self::Set => ("catalog_sets", "set_id = ?", imported.record),
             Self::Item => ("software_items", "record_id = ?", imported.record),
+            Self::Clone => ("software_clone_links", "set_id = ?", imported.record),
             Self::Info => (
                 "software_item_info",
                 "record_id = ? AND value_order = 0",

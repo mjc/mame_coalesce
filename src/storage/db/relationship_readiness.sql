@@ -26,12 +26,5 @@ SELECT requested.assertion_key,
                  AND owner.relationship_id IN (
                      SELECT scoped.relationship_id FROM catalog_relationships AS scoped
                      JOIN requested AS source ON scoped.assertion_key=source.assertion_key))=1
-    ) OR EXISTS (
-        SELECT 1 FROM no_intro_dat_cloneof_assertions AS native
-        JOIN snapshot_publications AS publication ON publication.snapshot_key=native.source_snapshot_key
-        WHERE requested.assertion_key GLOB 'no-intro-dat-cloneof:*'
-          AND native.native_set_id=CAST(substr(requested.assertion_key,length('no-intro-dat-cloneof:')+1) AS INTEGER)
-          AND native.native_position_field_kind=2
-          AND native.assertion_key=requested.assertion_key
     ) AS is_published
 FROM requested WHERE requested.assertion_key IS NOT NULL

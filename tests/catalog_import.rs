@@ -3336,7 +3336,7 @@ fn software_item_relationship_keys_do_not_collide_on_slashes()
         return Err(io::Error::other(diagnostic.value).into());
     };
     let keys = sql_query(
-        "SELECT source_subject_a || ':' || source_subject_b AS value FROM relationship_assertions \
+        "SELECT source_subject_a || ':' || source_subject_b AS value FROM relationship_assertion_explanations \
          WHERE source_snapshot_key = ? AND source_field = 'cloneof' \
          ORDER BY source_subject_a, source_subject_b",
     )
