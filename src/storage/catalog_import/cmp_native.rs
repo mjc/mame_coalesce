@@ -5,7 +5,7 @@ use diesel::{
 
 use crate::{
     clrmamepro::{AssetFacts, FieldValue, Header, HeaderDirectives, SetFacts},
-    domain::SnapshotKey,
+    domain::{CatalogSetId, SnapshotKey},
 };
 
 #[derive(Clone, Copy)]
@@ -165,9 +165,11 @@ fn insert_header_position(
 
 pub(super) fn insert_set_facts(
     conn: &mut SqliteConnection,
-    record_id: i64,
+    snapshot: &SnapshotKey,
+    owner: CatalogSetId,
     facts: &SetFacts,
 ) -> crate::Result<()> {
+    let record_id = owner.as_i64();
     sql_query(
         "INSERT INTO cmp_set_facts (
            record_id, source_block, document_order, description, year, manufacturer,
@@ -188,12 +190,7 @@ pub(super) fn insert_set_facts(
     .bind::<Nullable<Text>, _>(facts.serial.as_ref().map(field_text))
     .execute(conn)?;
 
-    if let Some(parent) = &facts.sampleof {
-        sql_query("INSERT INTO cmp_sample_parent_links (record_id, target_name) VALUES (?, ?)")
-            .bind::<BigInt, _>(record_id)
-            .bind::<Text, _>(&parent.value)
-            .execute(conn)?;
-    }
+    super::logiqx_cmp_relationships::insert_cmp_parents(conn, snapshot, owner, facts)?;
 
     for (kind, field) in [
         (SetField::Name, &facts.name),
@@ -285,9 +282,9 @@ pub(super) fn insert_rom_claim(
     sql_query(
         "INSERT INTO cmp_rom_claims (
          occurrence_id,name,size_text,crc_text,crc32_text,md5_text,sha1_text,
-         evidence_scope,evidence_provenance,merge_name,date,serial,status_text,
+         evidence_scope,evidence_provenance,date,serial,status_text,
          nodump_present,baddump_present,source_line,source_column)
-         VALUES (?,?,?,?,?,?,?,?,'source_declared',?,?,?,?,?,?,?,?)",
+         VALUES (?,?,?,?,?,?,?,?,'source_declared',?,?,?,?,?,?,?)",
     )
     .bind::<BigInt, _>(occurrence_id)
     .bind::<Text, _>(&asset.name)
@@ -297,7 +294,6 @@ pub(super) fn insert_rom_claim(
     .bind::<Nullable<Text>, _>(facts.md5.as_ref().map(field_text))
     .bind::<Nullable<Text>, _>(facts.sha1.as_ref().map(field_text))
     .bind::<Text, _>(asset.evidence_scope)
-    .bind::<Nullable<Text>, _>(facts.merge.as_ref().map(field_text))
     .bind::<Nullable<Text>, _>(facts.date.as_ref().map(field_text))
     .bind::<Nullable<Text>, _>(facts.serial.as_ref().map(field_text))
     .bind::<Nullable<Text>, _>(facts.status_field.as_ref().map(field_text))

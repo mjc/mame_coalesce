@@ -47,14 +47,6 @@ impl RootSetKind {
             Self::NoIntroPcGame => "no_intro_pc_game",
         }
     }
-
-    const fn parent_table(&self) -> Option<&'static str> {
-        match self {
-            Self::MameMachine | Self::NoIntroPcGame => None,
-            Self::LogiqxGame => Some("logiqx_set_links"),
-            Self::ClrMameProSet => Some("clrmamepro_set_links"),
-        }
-    }
 }
 
 pub(super) fn insert(
@@ -94,64 +86,5 @@ pub(super) fn insert(
     .bind::<BigInt, _>(set.location.line)
     .bind::<BigInt, _>(set.location.column)
     .get_result::<Id>(conn)?;
-    let record = CatalogSetId::from_database(id.value);
-    if let (Some(parent), Some(table)) = (&set.parent, kind.parent_table()) {
-        let location = set
-            .cmp_facts
-            .as_ref()
-            .and_then(|facts| facts.cloneof.as_ref())
-            .map_or(set.location, |field| field.location);
-        sql_query(format!(
-            "INSERT INTO {table}(set_id,link_kind,target_name,source_line,source_column) \
-             VALUES (?,'cloneof',?,?,?)"
-        ))
-        .bind::<BigInt, _>(record.as_i64())
-        .bind::<Text, _>(parent)
-        .bind::<BigInt, _>(location.line)
-        .bind::<BigInt, _>(location.column)
-        .execute(conn)?;
-    }
-    if matches!(kind, RootSetKind::LogiqxGame) {
-        insert_logiqx_links(conn, record, set)?;
-    }
-    Ok(record)
-}
-
-fn insert_logiqx_links(
-    conn: &mut SqliteConnection,
-    record: CatalogSetId,
-    set: &SnapshotSet,
-) -> crate::Result<()> {
-    for dependency in &set.runtime_dependencies {
-        if matches!(dependency.source_field.as_str(), "romof" | "sampleof") {
-            sql_query(
-                "INSERT INTO logiqx_set_links(set_id,link_kind,target_name,source_line,source_column) \
-                 VALUES (?,?,?,?,?)",
-            )
-            .bind::<BigInt, _>(record.as_i64())
-            .bind::<Text, _>(&dependency.source_field)
-            .bind::<Text, _>(&dependency.target_name)
-            .bind::<BigInt, _>(dependency.location.line)
-            .bind::<BigInt, _>(dependency.location.column)
-            .execute(conn)?;
-        }
-    }
-    for (order, dependency) in set
-        .runtime_dependencies
-        .iter()
-        .filter(|dependency| dependency.source_field == "device_ref")
-        .enumerate()
-    {
-        sql_query(
-            "INSERT INTO logiqx_device_references(set_id,reference_order,target_name,source_line,source_column) \
-             VALUES (?,?,?,?,?)",
-        )
-        .bind::<BigInt, _>(record.as_i64())
-        .bind::<BigInt, _>(super::checked_order(order, "Logiqx device references")?)
-        .bind::<Text, _>(&dependency.target_name)
-        .bind::<BigInt, _>(dependency.location.line)
-        .bind::<BigInt, _>(dependency.location.column)
-        .execute(conn)?;
-    }
-    Ok(())
+    Ok(CatalogSetId::from_database(id.value))
 }

@@ -14,26 +14,18 @@ SELECT requested.assertion_key,
         JOIN reported_catalog_relationships AS reported USING(relationship_id)
         JOIN snapshot_publications AS publication ON publication.snapshot_key=registry.snapshot_key
         WHERE registry.assertion_key=requested.assertion_key AND registry.origin='source'
-          AND (
-              EXISTS (SELECT 1 FROM mame_machine_links AS link
-                  JOIN mame_machines AS machine ON machine.set_id=link.set_id
-                  JOIN catalog_sets AS owner ON owner.set_id=machine.set_id
-                  JOIN catalog_set_groups AS owner_group ON owner_group.set_group_id=owner.set_group_id
-                  WHERE link.relationship_id=registry.relationship_id
-                    AND link.source_reference_kind=reported.source_reference_kind
-                    AND owner_group.snapshot_key=registry.snapshot_key)
-              OR EXISTS (SELECT 1 FROM mame_device_references AS reference
-                  JOIN mame_machines AS machine ON machine.set_id=reference.set_id
-                  JOIN catalog_sets AS owner ON owner.set_id=machine.set_id
-                  JOIN catalog_set_groups AS owner_group ON owner_group.set_group_id=owner.set_group_id
-                  WHERE reference.relationship_id=registry.relationship_id
-                    AND reference.source_reference_kind=reported.source_reference_kind
-                    AND owner_group.snapshot_key=registry.snapshot_key)
-              OR EXISTS (SELECT 1 FROM mame_merge_relationship_owners AS native
-                  WHERE native.relationship_id=registry.relationship_id
-                    AND native.source_reference_kind=reported.source_reference_kind
-                    AND native.snapshot_key=registry.snapshot_key)
-          )
+          AND EXISTS (SELECT 1 FROM reported_catalog_relationship_owners AS owner
+              WHERE owner.relationship_id=registry.relationship_id
+                AND owner.source_reference_kind=reported.source_reference_kind
+                AND owner.snapshot_key=registry.snapshot_key
+                AND owner.relationship_id IN (
+                    SELECT scoped.relationship_id FROM catalog_relationships AS scoped
+                    JOIN requested AS source ON scoped.assertion_key=source.assertion_key))
+          AND (SELECT COUNT(*) FROM reported_catalog_relationship_owner_ids AS owner
+               WHERE owner.relationship_id=registry.relationship_id
+                 AND owner.relationship_id IN (
+                     SELECT scoped.relationship_id FROM catalog_relationships AS scoped
+                     JOIN requested AS source ON scoped.assertion_key=source.assertion_key))=1
     ) OR EXISTS (
         SELECT 1 FROM no_intro_dat_cloneof_assertions AS native
         JOIN snapshot_publications AS publication ON publication.snapshot_key=native.source_snapshot_key

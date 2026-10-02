@@ -90,17 +90,21 @@ UNION ALL SELECT snapshot_key,14 AS field_kind FROM cmp_header_directives WHERE 
 
 CREATE VIEW cmp_set_declared_field_presence AS
 SELECT record_id,0 AS field_kind FROM cmp_set_facts
-UNION ALL SELECT set_id AS record_id,1 FROM clrmamepro_set_links
+UNION ALL SELECT set_id AS record_id,1 FROM clrmamepro_set_links WHERE link_kind='cloneof'
 UNION ALL SELECT record_id,2 FROM cmp_set_facts WHERE description IS NOT NULL
 UNION ALL SELECT record_id,3 FROM cmp_set_facts WHERE year IS NOT NULL
 UNION ALL SELECT record_id,4 FROM cmp_set_facts WHERE manufacturer IS NOT NULL
 UNION ALL SELECT record_id,5 FROM cmp_set_facts WHERE rebuildto IS NOT NULL
-UNION ALL SELECT record_id,6 FROM cmp_sample_parent_links
+UNION ALL SELECT set_id AS record_id,6 FROM clrmamepro_set_links WHERE link_kind='sampleof'
 UNION ALL SELECT record_id,7 FROM cmp_set_facts WHERE region IS NOT NULL
 UNION ALL SELECT record_id,8 FROM cmp_set_facts WHERE release_year_text IS NOT NULL
 UNION ALL SELECT record_id,9 FROM cmp_set_facts WHERE release_month_text IS NOT NULL
 UNION ALL SELECT record_id,10 FROM cmp_set_facts WHERE release_day_text IS NOT NULL
 UNION ALL SELECT record_id,11 FROM cmp_set_facts WHERE serial IS NOT NULL;
+
+CREATE VIEW cmp_sample_parent_links AS
+SELECT set_id AS record_id,target_name
+FROM clrmamepro_set_links WHERE link_kind='sampleof';
 
 CREATE VIEW cmp_set_native_layout AS
 SELECT record_id,source_order,'field' AS kind,field_kind AS child_order FROM cmp_set_field_positions
@@ -128,9 +132,6 @@ WHEN EXISTS (SELECT 1 FROM cmp_set_facts WHERE record_id=NEW.record_id)
 BEGIN SELECT RAISE(ABORT, 'CMP conflicting native inserts are immutable'); END;
 CREATE TRIGGER clrmamepro_set_links_immutable_insert BEFORE INSERT ON clrmamepro_set_links
 WHEN EXISTS (SELECT 1 FROM clrmamepro_set_links WHERE set_id=NEW.set_id AND link_kind=NEW.link_kind)
-BEGIN SELECT RAISE(ABORT, 'CMP conflicting native inserts are immutable'); END;
-CREATE TRIGGER cmp_sample_parent_links_immutable_insert BEFORE INSERT ON cmp_sample_parent_links
-WHEN EXISTS (SELECT 1 FROM cmp_sample_parent_links WHERE record_id=NEW.record_id)
 BEGIN SELECT RAISE(ABORT, 'CMP conflicting native inserts are immutable'); END;
 CREATE TRIGGER cmp_samples_immutable_insert BEFORE INSERT ON cmp_samples
 WHEN EXISTS (SELECT 1 FROM cmp_samples WHERE occurrence_id=NEW.occurrence_id)
@@ -194,16 +195,6 @@ BEGIN SELECT RAISE(ABORT, 'CMP samples require an unpublished matching media ent
 CREATE TRIGGER cmp_samples_immutable_update BEFORE UPDATE ON cmp_samples
 BEGIN SELECT RAISE(ABORT, 'CMP child facts are immutable'); END;
 CREATE TRIGGER cmp_samples_immutable_delete BEFORE DELETE ON cmp_samples
-BEGIN SELECT RAISE(ABORT, 'CMP child facts are immutable'); END;
-
-CREATE TRIGGER cmp_sample_parent_links_native_insert BEFORE INSERT ON cmp_sample_parent_links
-WHEN NOT EXISTS (SELECT 1 FROM catalog_sets JOIN catalog_set_groups USING(set_group_id)
-    WHERE set_id = NEW.record_id AND source_element_kind = 'cmp_set') OR EXISTS (SELECT 1 FROM catalog_sets JOIN catalog_set_groups USING(set_group_id)
-    JOIN snapshot_publications USING(snapshot_key) WHERE set_id = NEW.record_id)
-BEGIN SELECT RAISE(ABORT, 'CMP child facts require an unpublished matching set'); END;
-CREATE TRIGGER cmp_sample_parent_links_immutable_update BEFORE UPDATE ON cmp_sample_parent_links
-BEGIN SELECT RAISE(ABORT, 'CMP child facts are immutable'); END;
-CREATE TRIGGER cmp_sample_parent_links_immutable_delete BEFORE DELETE ON cmp_sample_parent_links
 BEGIN SELECT RAISE(ABORT, 'CMP child facts are immutable'); END;
 
 CREATE TRIGGER cmp_header_field_positions_native_insert BEFORE INSERT ON cmp_header_field_positions
@@ -350,6 +341,17 @@ CREATE TABLE cmp_rom_field_positions (
     CHECK (field_kind < 10 OR is_quoted = 0)
 ) WITHOUT ROWID;
 
+CREATE TABLE clrmamepro_rom_merges (
+    occurrence_id INTEGER PRIMARY KEY NOT NULL,
+    merge_name TEXT NOT NULL,
+    relationship_id INTEGER NOT NULL UNIQUE CHECK (typeof(relationship_id) = 'integer'),
+    source_reference_kind TEXT NOT NULL DEFAULT 'clrmamepro_rom_merge'
+        CHECK (source_reference_kind='clrmamepro_rom_merge'),
+    FOREIGN KEY (occurrence_id) REFERENCES cmp_rom_claims(occurrence_id) ON DELETE RESTRICT,
+    FOREIGN KEY (relationship_id,source_reference_kind)
+        REFERENCES reported_catalog_relationships(relationship_id,source_reference_kind) ON DELETE RESTRICT
+);
+
 CREATE TRIGGER cmp_rom_claims_native_owner_insert
 BEFORE INSERT ON cmp_rom_claims
 WHEN NOT EXISTS (
@@ -372,7 +374,7 @@ UNION ALL SELECT occurrence_id,2 FROM cmp_rom_claims WHERE crc_text IS NOT NULL
 UNION ALL SELECT occurrence_id,3 FROM cmp_rom_claims WHERE crc32_text IS NOT NULL
 UNION ALL SELECT occurrence_id,4 FROM cmp_rom_claims WHERE md5_text IS NOT NULL
 UNION ALL SELECT occurrence_id,5 FROM cmp_rom_claims WHERE sha1_text IS NOT NULL
-UNION ALL SELECT occurrence_id,6 FROM cmp_rom_claims WHERE merge_name IS NOT NULL
+UNION ALL SELECT occurrence_id,6 FROM clrmamepro_rom_merges
 UNION ALL SELECT occurrence_id,7 FROM cmp_rom_claims WHERE date IS NOT NULL
 UNION ALL SELECT occurrence_id,8 FROM cmp_rom_claims WHERE serial IS NOT NULL
 UNION ALL SELECT occurrence_id,9 FROM cmp_rom_claims WHERE status_text IS NOT NULL

@@ -103,6 +103,23 @@ CREATE TABLE logiqx_archive_references (
     PRIMARY KEY (set_id, archive_order)
 ) WITHOUT ROWID;
 
+CREATE TABLE logiqx_file_merges (
+    occurrence_id INTEGER PRIMARY KEY NOT NULL,
+    claim_kind TEXT NOT NULL CHECK (claim_kind IN ('logiqx_rom','logiqx_disk')),
+    merge_name TEXT NOT NULL,
+    relationship_id INTEGER NOT NULL UNIQUE CHECK (typeof(relationship_id) = 'integer'),
+    source_reference_kind TEXT GENERATED ALWAYS AS (
+        CASE claim_kind WHEN 'logiqx_rom' THEN 'logiqx_rom_merge'
+                        WHEN 'logiqx_disk' THEN 'logiqx_disk_merge' END
+    ) VIRTUAL,
+    source_line INTEGER NOT NULL CHECK (typeof(source_line) = 'integer' AND source_line > 0),
+    source_column INTEGER NOT NULL CHECK (typeof(source_column) = 'integer' AND source_column > 0),
+    FOREIGN KEY (occurrence_id,claim_kind)
+        REFERENCES asset_occurrences(occurrence_id,claim_kind) ON DELETE RESTRICT,
+    FOREIGN KEY (relationship_id,source_reference_kind)
+        REFERENCES reported_catalog_relationships(relationship_id,source_reference_kind) ON DELETE RESTRICT
+);
+
 CREATE TRIGGER logiqx_clrmamepro_options_native_owner_insert
 BEFORE INSERT ON logiqx_clrmamepro_options
 WHEN NOT EXISTS (

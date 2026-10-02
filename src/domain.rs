@@ -963,10 +963,10 @@ pub enum RelationshipEndpoint {
         occurrence_id: OccurrenceId,
     },
     /// A source-local merge declaration; it does not assert a resolved target.
-    MameMergeReference {
+    CatalogMergeReference {
         snapshot: SnapshotKey,
-        machine_id: CatalogSetId,
-        media_kind: MameMergeKind,
+        set_id: CatalogSetId,
+        media_kind: MergeMediaKind,
         parent_name: Option<String>,
         merge_name: String,
     },
@@ -984,7 +984,7 @@ pub enum RelationshipEndpoint {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum MameMergeKind {
+pub enum MergeMediaKind {
     Rom,
     Disk,
 }

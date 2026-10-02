@@ -27,12 +27,13 @@ use crate::{
 };
 
 mod cmp_native;
+mod logiqx_cmp_relationships;
 mod logiqx_native;
 mod mame_relationships;
 mod mame_specification;
-mod merges;
 mod no_intro_dat_native;
 mod no_intro_database_native;
+mod reported_relationships;
 mod root_assets;
 mod root_sets;
 mod software_native;
@@ -971,9 +972,6 @@ fn finish_streaming_import(
     document_key: &DocumentKey,
     interpretation: &ParserInterpretationKey,
 ) -> crate::Result<CatalogImportReport> {
-    if let SnapshotPublication::Pending(key) = &sink.publication {
-        merges::persist_snapshot_merges(sink.conn, key)?;
-    }
     let snapshot_key =
         sink.publication
             .publish(sink.conn, request, document_key, interpretation)?;
@@ -1487,8 +1485,6 @@ fn insert_snapshot_contents(
         insert_snapshot_set(conn, snapshot_key, set)?;
     }
 
-    merges::persist_snapshot_merges(conn, snapshot_key)?;
-
     if let Some(catalog) = &snapshot_data.software_lists {
         software_native::insert(conn, snapshot_key, catalog)?;
     }
@@ -1531,20 +1527,25 @@ fn insert_snapshot_set(
     }
     if let Some(facts) = &set.logiqx_facts {
         insert_logiqx_set_facts(conn, set_id, facts)?;
+        logiqx_cmp_relationships::insert_logiqx(conn, snapshot_key, owner, set)?;
     }
     if let Some(details) = &set.logiqx_details {
         details.insert(conn, owner)?;
     }
     if let Some(facts) = &set.cmp_facts {
-        cmp_native::insert_set_facts(conn, set_id, facts)?;
+        cmp_native::insert_set_facts(conn, snapshot_key, owner, facts)?;
     }
 
     persist_set_relationships(conn, snapshot_key, owner, set)?;
 
     for (order, asset) in set.assets.iter().enumerate() {
-        let occurrence =
-            insert_asset_requirement(conn, set_id, checked_order(order, "catalog assets")?, asset)?;
-        mame_relationships::insert_asset_merge(conn, snapshot_key, occurrence, asset)?;
+        insert_asset_requirement(
+            conn,
+            snapshot_key,
+            set_id,
+            checked_order(order, "catalog assets")?,
+            asset,
+        )?;
     }
     insert_machine_switches(conn, set_id, set)?;
     insert_machine_bios_sets(conn, set_id, set)?;
@@ -1553,6 +1554,7 @@ fn insert_snapshot_set(
 
 fn insert_asset_requirement(
     conn: &mut SqliteConnection,
+    snapshot_key: &SnapshotKey,
     set_id: i64,
     component_order: i64,
     asset: &SnapshotAsset,
@@ -1600,6 +1602,7 @@ fn insert_asset_requirement(
         size,
         content_uuid,
     )?;
+    reported_relationships::insert_asset_merge(conn, snapshot_key, occurrence, asset)?;
     if let Some(facts) = asset.cmp_rom_facts() {
         cmp_native::insert_rom_positions(conn, occurrence.database_value(), facts)?;
     }
@@ -1920,8 +1923,8 @@ fn persist_set_relationships(
     owner: CatalogSetId,
     set: &SnapshotSet,
 ) -> crate::Result<()> {
-    if set.mame_facts.is_some() {
-        // MAME references have native declaration owners and compact identities.
+    if set.mame_facts.is_some() || set.logiqx_facts.is_some() || set.cmp_facts.is_some() {
+        // These references have native declaration owners and compact identities.
         return Ok(());
     }
     let subject = CatalogRecordRef::new(snapshot.clone(), CatalogRecordKind::Set, &set.name)

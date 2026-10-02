@@ -944,8 +944,10 @@ mod tests {
 
         let mut conn = connect(&source_path)?;
         let assertion = sql_query(
-            "SELECT assertion_key AS value FROM relationship_assertions \
-             WHERE source_field = 'device_ref' LIMIT 1",
+            "SELECT assertion_key AS value FROM relationship_assertion_explanations \
+             WHERE source_field = 'device_ref' \
+               AND source_snapshot_key=(SELECT snapshot_key FROM catalog_snapshots \
+                                        WHERE catalog_key='logiqx-catalog')",
         )
         .get_result::<TextValue>(&mut conn)?;
         drop(conn);
@@ -978,6 +980,7 @@ mod tests {
                 superseded_by: None,
             },
         )?;
+        let original_explanations = app::explain_relationships(&database)?;
         drop(database);
 
         create_backup(&source_path, &backup_path)?;
@@ -988,7 +991,9 @@ mod tests {
             ("catalogs", 2),
             ("catalog_snapshots", 2),
             ("snapshot_publications", 2),
-            ("relationship_assertions", 3),
+            ("relationship_assertions", 1),
+            ("relationship_assertion_explanations", 3),
+            ("catalog_relationships", 2),
             ("relationship_reviews", 1),
         ] {
             let count = sql_query(format!("SELECT COUNT(*) AS count FROM {table}"))
@@ -1004,6 +1009,11 @@ mod tests {
         }
         drop(restored);
         let restored_database = crate::database::Database::open(&restored_path)?;
+        assert_eq!(
+            app::explain_relationships(&restored_database)?,
+            original_explanations,
+            "paired backup preserves exact native keys, evidence, support and reviews"
+        );
         let restored_source = app::load_snapshot_source(&restored_database, &machine_snapshot)?;
         assert_eq!(restored_source, machine_bytes);
         assert!(

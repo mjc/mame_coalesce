@@ -132,8 +132,8 @@ fn native_merge_explanations_preserve_media_occurrence_parent_and_scoped_evidenc
         .find(|row| {
             matches!(
                 &row.claim.target,
-                RelationshipEndpoint::MameMergeReference {
-                    media_kind: mame_coalesce::domain::MameMergeKind::Rom,
+                RelationshipEndpoint::CatalogMergeReference {
+                    media_kind: mame_coalesce::domain::MergeMediaKind::Rom,
                     merge_name,
                     ..
                 } if merge_name == "shared.bin"
@@ -151,10 +151,10 @@ fn native_merge_explanations_preserve_media_occurrence_parent_and_scoped_evidenc
         _ => return Err("merge subject must be its source media occurrence".into()),
     };
     let machine_id = match &child_rom.claim.target {
-        RelationshipEndpoint::MameMergeReference {
+        RelationshipEndpoint::CatalogMergeReference {
             snapshot: actual,
-            machine_id,
-            media_kind: mame_coalesce::domain::MameMergeKind::Rom,
+            set_id: machine_id,
+            media_kind: mame_coalesce::domain::MergeMediaKind::Rom,
             parent_name: Some(parent),
             merge_name,
         } if actual == &snapshot && parent == "parent" && merge_name == "shared.bin" => {
@@ -191,8 +191,8 @@ fn native_merge_explanations_preserve_media_occurrence_parent_and_scoped_evidenc
         .find(|row| {
             matches!(
                 &row.claim.target,
-                RelationshipEndpoint::MameMergeReference {
-                    media_kind: mame_coalesce::domain::MameMergeKind::Disk,
+                RelationshipEndpoint::CatalogMergeReference {
+                    media_kind: mame_coalesce::domain::MergeMediaKind::Disk,
                     merge_name,
                     ..
                 } if merge_name == "shared.chd"
@@ -201,8 +201,8 @@ fn native_merge_explanations_preserve_media_occurrence_parent_and_scoped_evidenc
         .ok_or("native disk merge explanation missing")?;
     assert!(matches!(
         &child_disk.claim.target,
-        RelationshipEndpoint::MameMergeReference {
-            media_kind: mame_coalesce::domain::MameMergeKind::Disk,
+        RelationshipEndpoint::CatalogMergeReference {
+            media_kind: mame_coalesce::domain::MergeMediaKind::Disk,
             parent_name: Some(parent), ..
         } if parent == "parent"
     ));
@@ -226,7 +226,7 @@ fn assert_unresolved_merge_literals(
         .find(|row| {
             matches!(
                 &row.claim.target,
-                RelationshipEndpoint::MameMergeReference { merge_name, parent_name: None, .. }
+                RelationshipEndpoint::CatalogMergeReference { merge_name, parent_name: None, .. }
                     if merge_name == "missing.bin"
             )
         })
@@ -240,21 +240,21 @@ fn assert_unresolved_merge_literals(
     ));
     assert!(explanations.iter().any(|row| matches!(
         &row.claim.target,
-        RelationshipEndpoint::MameMergeReference { merge_name, parent_name: Some(parent), .. }
+        RelationshipEndpoint::CatalogMergeReference { merge_name, parent_name: Some(parent), .. }
             if merge_name == "missing.bin" && parent == "missing-parent"
     )));
     assert!(explanations.iter().any(|row| matches!(
         &row.claim.target,
-        RelationshipEndpoint::MameMergeReference { merge_name, parent_name: Some(parent), .. }
+        RelationshipEndpoint::CatalogMergeReference { merge_name, parent_name: Some(parent), .. }
             if merge_name == "same-name.bin" && parent == "duplicate"
     )));
     assert!(explanations.iter().any(|row| matches!(
         &row.claim.target,
-        RelationshipEndpoint::MameMergeReference { merge_name, .. } if merge_name.is_empty()
+        RelationshipEndpoint::CatalogMergeReference { merge_name, .. } if merge_name.is_empty()
     )));
     assert!(!explanations.iter().any(|row| matches!(
         &row.claim.target,
-        RelationshipEndpoint::MameMergeReference { merge_name, .. } if merge_name == "no-merge.bin"
+        RelationshipEndpoint::CatalogMergeReference { merge_name, .. } if merge_name == "no-merge.bin"
     )));
 
     Ok(())
@@ -307,7 +307,7 @@ fn exact_native_merge_keys_support_review_reimport_backup_and_eof_rollback() -> 
         .find(|row| {
             matches!(
                 &row.claim.target,
-                RelationshipEndpoint::MameMergeReference { merge_name, .. }
+                RelationshipEndpoint::CatalogMergeReference { merge_name, .. }
                     if merge_name == "shared.bin"
             )
         })

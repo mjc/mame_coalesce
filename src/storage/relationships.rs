@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use crate::domain::{
     CatalogRecordKind, CatalogRecordRef, CatalogSetId, ContentDigestAlgorithm, ContentIdentity,
-    DocumentLocation, ExternalRecordRef, MameMergeKind, RelationshipAssertionKey,
+    DocumentLocation, ExternalRecordRef, MergeMediaKind, RelationshipAssertionKey,
     RelationshipClaim, RelationshipEndpoint, RelationshipEvidence, RelationshipExplanation,
     RelationshipOrigin, RelationshipReview, RelationshipReviewDecision, RelationshipReviewEvent,
     RelationshipSourceProvenance, RelationshipType, SnapshotKey,
@@ -586,7 +586,7 @@ fn endpoint_parts(endpoint: &RelationshipEndpoint) -> crate::Result<EndpointPart
         RelationshipEndpoint::NoIntroArchive { .. }
         | RelationshipEndpoint::NoIntroArchiveReference { .. }
         | RelationshipEndpoint::CatalogMediaEntry { .. }
-        | RelationshipEndpoint::MameMergeReference { .. } => Err(crate::Error::InvalidPath(
+        | RelationshipEndpoint::CatalogMergeReference { .. } => Err(crate::Error::InvalidPath(
             "native endpoints require a native source assertion".into(),
         )),
     }
@@ -791,7 +791,7 @@ impl ExplanationScope {
         } else {
             "relationship_assertion_explanations a"
         };
-        let merge_name = "COALESCE(mame_rom_merge.merge_name,mame_disk_merge.merge_name,logiqx_rom.merge_name,logiqx_disk.merge_name,cmp_rom.merge_name,pc_file.merge_name)";
+        let merge_name = "COALESCE(mame_rom_merge.merge_name,mame_disk_merge.merge_name,logiqx_merge.merge_name,cmp_merge.merge_name,pc_file.merge_name)";
         let occurrence_id =
             "COALESCE(native_source_occurrence.occurrence_id,source_occurrence.occurrence_id)";
         let size = "COALESCE(mame_rom.size,logiqx_rom.size,cmp_rom.size,pc_file.size,dat_rom.size)";
@@ -842,7 +842,9 @@ impl ExplanationScope {
          LEFT JOIN mame_disk_merges mame_disk_merge ON mame_disk_merge.occurrence_id={occurrence_id} \
          LEFT JOIN logiqx_rom_claims logiqx_rom ON logiqx_rom.occurrence_id={occurrence_id} \
          LEFT JOIN logiqx_disk_claims logiqx_disk ON logiqx_disk.occurrence_id={occurrence_id} \
+         LEFT JOIN logiqx_file_merges logiqx_merge ON logiqx_merge.occurrence_id={occurrence_id} \
          LEFT JOIN cmp_rom_claims cmp_rom ON cmp_rom.occurrence_id={occurrence_id} \
+         LEFT JOIN clrmamepro_rom_merges cmp_merge ON cmp_merge.occurrence_id={occurrence_id} \
          LEFT JOIN no_intro_pc_file_claims pc_file ON pc_file.occurrence_id={occurrence_id} \
          LEFT JOIN no_intro_dat_rom_claims dat_rom ON dat_rom.occurrence_id={occurrence_id} \
          LEFT JOIN catalog_snapshots s ON s.snapshot_key = a.source_snapshot_key \
@@ -1176,18 +1178,18 @@ fn source_endpoint(
     }
     if matches!(
         kind,
-        "mame_rom_merge_reference" | "mame_disk_merge_reference"
+        "catalog_rom_merge_reference" | "catalog_disk_merge_reference"
     ) {
-        let machine_id = owner_set_id.ok_or_else(|| {
-            crate::Error::InvalidPath("merge reference has no declaring machine".into())
+        let set_id = owner_set_id.ok_or_else(|| {
+            crate::Error::InvalidPath("merge reference has no declaring set".into())
         })?;
-        return Ok(RelationshipEndpoint::MameMergeReference {
+        return Ok(RelationshipEndpoint::CatalogMergeReference {
             snapshot,
-            machine_id: CatalogSetId::from_database(machine_id),
-            media_kind: if kind == "mame_rom_merge_reference" {
-                MameMergeKind::Rom
+            set_id: CatalogSetId::from_database(set_id),
+            media_kind: if kind == "catalog_rom_merge_reference" {
+                MergeMediaKind::Rom
             } else {
-                MameMergeKind::Disk
+                MergeMediaKind::Disk
             },
             parent_name: first,
             merge_name: second

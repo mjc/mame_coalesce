@@ -5819,7 +5819,7 @@ fn source_relationship_assertions_keep_snapshot_and_field_provenance()
         "SELECT relation_type, origin, source_snapshot_key, source_subject_a AS subject_key, \
                 source_target_a AS target_key, \
                 source_field, source_line, source_column, rule_version \
-         FROM relationship_assertions \
+         FROM relationship_assertion_explanations \
          WHERE source_snapshot_key = ? AND source_field = 'cloneof'",
     )
     .bind::<Text, _>(snapshot_key.as_str())
@@ -5852,15 +5852,16 @@ fn source_relationship_assertions_keep_snapshot_and_field_provenance()
     )
     .bind::<Text, _>(snapshot_key.as_str())
     .get_result::<CountRow>(&mut connection)?;
-    assert_eq!(persisted_runtime_claims.count, 3);
-    let device_claim = sql_query(
-        "SELECT source_target_a AS value FROM relationship_assertion_explanations \
-         WHERE source_snapshot_key = ? AND source_field = 'device_ref'",
+    assert_eq!(persisted_runtime_claims.count, 0);
+    let native_runtime_claims = sql_query(
+        "SELECT COUNT(*) AS count FROM reported_catalog_relationships AS reported \
+         JOIN catalog_relationships AS registry USING(relationship_id) \
+         WHERE registry.snapshot_key=? AND reported.source_reference_kind \
+             IN ('logiqx_romof','logiqx_sampleof','logiqx_device_ref')",
     )
     .bind::<Text, _>(snapshot_key.as_str())
-    .get_result::<TextRow>(&mut connection)?;
-    assert_eq!(device_claim.value, "fixture-sound");
-
+    .get_result::<CountRow>(&mut connection)?;
+    assert_eq!(native_runtime_claims.count, 3);
     let device_claim = sql_query(
         "SELECT relation_type, origin, source_snapshot_key, source_subject_a AS subject_key, \
                 source_target_a AS target_key, \
@@ -5870,6 +5871,7 @@ fn source_relationship_assertions_keep_snapshot_and_field_provenance()
     )
     .bind::<Text, _>(snapshot_key.as_str())
     .get_result::<QueryableAssertion>(&mut connection)?;
+    assert_eq!(device_claim.target_key, "fixture-sound");
     assert_eq!(device_claim.source_line, Some(8));
     assert_eq!(device_claim.source_column, Some(5));
 
@@ -5884,7 +5886,7 @@ fn source_relationship_assertions_keep_snapshot_and_field_provenance()
         )?,
     )?;
     let claims = sql_query(
-        "SELECT COUNT(*) AS count FROM relationship_assertions \
+        "SELECT COUNT(*) AS count FROM relationship_assertion_explanations \
          WHERE source_snapshot_key = ? AND source_field = 'cloneof'",
     )
     .bind::<Text, _>(snapshot_key.as_str())

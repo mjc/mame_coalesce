@@ -8,7 +8,9 @@ use diesel::{
 use mame_coalesce::{
     app::{self, CatalogDocumentFormat, CatalogImportRequest, CatalogImportStatus},
     database::Database,
-    domain::{CatalogKey, CatalogScope, PublishingSourceKey, SnapshotKey},
+    domain::{
+        CatalogKey, CatalogScope, PublishingSourceKey, RelationshipAssertionKey, SnapshotKey,
+    },
 };
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -38,6 +40,14 @@ struct IdValue {
 struct TextValue {
     #[diesel(sql_type = Text)]
     value: String,
+}
+
+#[derive(QueryableByName)]
+struct ParentLink {
+    #[diesel(sql_type = Text)]
+    link_kind: String,
+    #[diesel(sql_type = Text)]
+    target_name: String,
 }
 
 #[derive(Clone, Copy)]
@@ -238,8 +248,8 @@ fn copy_set_owner(
         .execute(connection)?;
     }
 
-    copy_parent_links(connection, source, set_id)?;
     if !matches!(omission, Omission::SetFacts) {
+        copy_parent_links(connection, source, set_id)?;
         let omitted_field = match omission {
             Omission::SetPosition(field) => field,
             _ => -1,
@@ -292,8 +302,8 @@ fn copy_set_owner(
     .value;
     let occurrence_id = copy_occurrence(connection, set_id, source_occurrence)?;
     sql_query(
-        "INSERT INTO cmp_rom_claims(occurrence_id,name,size_text,crc_text,crc32_text,md5_text,sha1_text,evidence_scope,evidence_provenance,merge_name,date,serial,status_text,nodump_present,baddump_present,source_line,source_column) \
-         SELECT ?,name,size_text,crc_text,crc32_text,md5_text,sha1_text,evidence_scope,evidence_provenance,merge_name,date,serial,status_text,nodump_present,baddump_present,source_line,source_column FROM cmp_rom_claims WHERE occurrence_id=?",
+        "INSERT INTO cmp_rom_claims(occurrence_id,name,size_text,crc_text,crc32_text,md5_text,sha1_text,evidence_scope,evidence_provenance,date,serial,status_text,nodump_present,baddump_present,source_line,source_column) \
+         SELECT ?,name,size_text,crc_text,crc32_text,md5_text,sha1_text,evidence_scope,evidence_provenance,date,serial,status_text,nodump_present,baddump_present,source_line,source_column FROM cmp_rom_claims WHERE occurrence_id=?",
     )
     .bind::<BigInt, _>(occurrence_id)
     .bind::<BigInt, _>(source_occurrence)
@@ -323,15 +333,24 @@ fn copy_parent_links(
     source: &SnapshotKey,
     set_id: i64,
 ) -> TestResult {
-    sql_query(
-        "INSERT INTO clrmamepro_set_links(set_id,link_kind,target_name,source_line,source_column) \
-         SELECT ?,link_kind,target_name,source_line,source_column FROM clrmamepro_set_links \
+    let links = sql_query(
+        "SELECT link_kind,target_name FROM clrmamepro_set_links \
          WHERE set_id=(SELECT set_id FROM catalog_sets JOIN catalog_set_groups USING(set_group_id) WHERE snapshot_key=? LIMIT 1)",
-    ).bind::<BigInt, _>(set_id).bind::<Text, _>(source.as_str()).execute(connection)?;
-    sql_query(
-        "INSERT INTO cmp_sample_parent_links(record_id,target_name) \
-         SELECT ?,target_name FROM cmp_sample_parent_links WHERE record_id=(SELECT set_id FROM catalog_sets JOIN catalog_set_groups USING(set_group_id) WHERE snapshot_key=? LIMIT 1)",
-    ).bind::<BigInt, _>(set_id).bind::<Text, _>(source.as_str()).execute(connection)?;
+    ).bind::<Text, _>(source.as_str()).load::<ParentLink>(connection)?;
+    for link in links {
+        let relationship = sql_query(
+            "INSERT INTO catalog_relationships(assertion_key,origin,snapshot_key) \
+             VALUES (?,'source','pending') RETURNING relationship_id AS value",
+        )
+        .bind::<Text, _>(RelationshipAssertionKey::fresh().as_str())
+        .get_result::<IdValue>(connection)?
+        .value;
+        sql_query("INSERT INTO reported_catalog_relationships(relationship_id,source_reference_kind) VALUES (?,?)")
+            .bind::<BigInt,_>(relationship).bind::<Text,_>(format!("clrmamepro_{}",link.link_kind)).execute(connection)?;
+        sql_query("INSERT INTO clrmamepro_set_links(set_id,link_kind,target_name,relationship_id) VALUES (?,?,?,?)")
+            .bind::<BigInt,_>(set_id).bind::<Text,_>(link.link_kind).bind::<Text,_>(link.target_name)
+            .bind::<BigInt,_>(relationship).execute(connection)?;
+    }
     Ok(())
 }
 
@@ -421,7 +440,11 @@ fn publication_requires_each_set_scalar_position_and_accepts_restoration() -> Te
         )?;
         assert_guard(
             publish(&mut connection),
-            "CMP set facts require complete native ownership",
+            if matches!(field_kind, 1 | 6) {
+                "reported source relationships require complete native identity ownership"
+            } else {
+                "CMP set facts require complete native ownership"
+            },
         );
         sql_query(
             "INSERT INTO cmp_set_field_positions(record_id,field_kind,source_field,source_order,is_quoted,source_line,source_column) \
@@ -1036,7 +1059,6 @@ fn draft_cmp_facts_reject_replace_with_recursive_triggers_disabled() -> TestResu
         ),
         ("cmp_set_facts", format!("record_id={set_id}")),
         ("clrmamepro_set_links", format!("set_id={set_id}")),
-        ("cmp_sample_parent_links", format!("record_id={set_id}")),
         (
             "cmp_samples",
             format!("occurrence_id={sample_occurrence_id}"),

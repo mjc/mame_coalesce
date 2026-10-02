@@ -169,10 +169,10 @@ fn insert_logiqx(
         return Ok(());
     }
     let statement = format!(
-        "INSERT INTO {} (occurrence_id,name,evidence_scope,evidence_provenance,merge_name, \
+        "INSERT INTO {} (occurrence_id,name,evidence_scope,evidence_provenance, \
          md5_text,sha1_text, \
          dump_status,status_was_present,source_order,source_line,source_column{}) \
-         VALUES (?,?,?,'source_declared',?,?,?,?,?,?,?,?{})",
+         VALUES (?,?,?,'source_declared',?,?,?,?,?,?,?{})",
         kind.table(),
         if matches!(kind, RootClaimKind::LogiqxRom) {
             ",size_text,crc_text,serial,date"
@@ -189,7 +189,6 @@ fn insert_logiqx(
         .bind::<BigInt, _>(id.database_value())
         .bind::<Text, _>(&asset.name)
         .bind::<Text, _>(asset.evidence_scope)
-        .bind::<Nullable<Text>, _>(asset.merge.as_deref())
         .bind::<Nullable<Text>, _>(facts.md5_text.as_deref())
         .bind::<Nullable<Text>, _>(facts.sha1_text.as_deref())
         .bind::<Text, _>(asset.dump_status.as_deref().unwrap_or("good"))

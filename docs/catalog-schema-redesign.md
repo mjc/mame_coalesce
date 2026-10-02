@@ -140,7 +140,7 @@ remain required for complete format acceptance.
 |---|---|---|
 | MAME machine XML | Machine -> ROM/disk/sample, chips, displays, input/controls, switches/values/conditions, ports, devices, slots, driver/features, software-list references and RAM options. | Native families and numeric owners replace the wide stored union; complete specification presence/default and field witnesses remain open. |
 | MAME software-list XML | List -> item -> part -> data/disk area -> ordered ROM/disk entries. File declarations and load/continue/reload/ignore uses are separate relations; fill has no file claim. | Numeric owners, separate declarations/operations and area-local loading chains exist; complete per-flag loading rules and native field witnesses remain open. |
-| Logiqx XML / TOSEC | Document/header/options -> game -> comments, releases, BIOS sets, ROM/disk/sample claims, archive references and distinct parent declarations. | Partial document/game facts and ROMs exist; native options, releases, BIOS/disk/sample/archive families and specification defaults remain incomplete. |
+| Logiqx XML / TOSEC | Document/header/options -> game -> comments, releases, BIOS sets, ROM/disk/sample claims, archive references and distinct parent declarations. | Native families, explicit defaults, declared size/hash text and scalar positions exist. Parent/device/media-merge declarations use native owners and shared reported identities. Complete pinned-DTD grammar, field/query and corpus acceptance remains open. |
 | ClrMamePro text | Header/directives -> set -> ROM claims and scalar sample claims; native flags and sample-parent declarations. | Native CMP facts/directives and numeric set/occurrence owners exist; remaining specification fields and complete query witnesses remain open. |
 | No-Intro flat DAT v3/v4 | Document/header/directives -> game -> scoped identifiers, categories, releases and ROM declarations; name-based and ID-based parents stay distinct. | Separate v3/v4 strict and observed-compatible interpretations stream into native typed owners. Raw size text, interned valid hashes, typed invalid hash literals, SHA-256 assertions, options, field positions and repeated children are retained. Full corpus/query/performance acceptance remains open; this is not a Logiqx envelope import or database-export coverage. |
 | No-Intro database XML | Game -> archive, source histories and releases. A source or release owns its own details, serials and files; numeric file IDs may repeat under different owners. | The one-pass reader and native writer preserve the observed field ledger, both envelopes, field presence/order and distinct details/serial/file owners. Bulk file queries, scoped interned digests, typed archive references, NUL warning ownership and paired backup regressions exist. Native history compares all observed fields and ordered owners; source versions derive from native headers. All 275 exports pass reader verification; full native SQL corpus and producer-grammar acceptance remain open. |
@@ -889,8 +889,8 @@ Use these native tables with a pinned, explicit supported text grammar:
 | `cmp_header_facts` | name, description, version, author, comment; witnessed homepage and explicitly accepted category/date/email/URL compatibility values; source block, ordinal and location |
 | `cmp_header_directives` | header-definition filename, forcemerging, forcezipping, forcenodump; exact source spelling and explicitness |
 | `cmp_set_facts`, `clrmamepro_set_links` | numeric set owner; catalog-owned name, cloneof literal, description/year/manufacturer/rebuildto; witnessed region/release-date-component/set-serial text; original game/set spelling and document ordinal |
-| `cmp_roms` | claim ID; name, size?, CRC/CRC32 alias, MD5?, SHA-1?, declared nodump/baddump flags; explicitly supported merge/status dialect fields |
-| `cmp_samples`, `cmp_sample_parent_links` | one occurrence-keyed scalar sample declaration with unknown size/digests; separate set-owned sampleof literal |
+| `cmp_rom_claims`, `clrmamepro_rom_merges` | actual media-entry ID; name, size?, CRC/CRC32 alias, MD5?, SHA-1?, declared nodump/baddump flags and status; the named compatibility merge literal has its own native relationship owner |
+| `cmp_samples`, `clrmamepro_set_links` | one occurrence-keyed scalar sample declaration with unknown size/digests; cloneof and sampleof literals remain distinct set-owned relationships |
 
 `forcezipping` in documented text and Logiqx's `forcepacking` are distinct source
 fields. BIOS/disk/resource engine aliases are documented transformation
@@ -902,8 +902,10 @@ zeros and empty date components stay text, without invented calendar validation.
 The published forcenodump default is obsolete; other undocumented defaults and
 multiplicity rules are not inferred.
 The current `clrmamepro-declared-text-compat-v1` implementation stores ROM name,
-size text, both CRC/CRC32 declarations, MD5/SHA-1 text, merge/date/serial/status
-and independent nodump/baddump presence in `cmp_rom_claims`. Numeric size and
+size text, both CRC/CRC32 declarations, MD5/SHA-1 text, date/serial/status
+and independent nodump/baddump presence in `cmp_rom_claims`. The merge literal
+belongs only to `clrmamepro_rom_merges`; its keyword, quote state, order and
+location derive from the existing `cmp_rom_field_positions` row. Numeric size and
 effective dump status are virtual interpretations, not stored copies. Size is
 nonempty ASCII decimal within signed 64-bit range; hashes are exact-width ASCII
 hex. Duplicate singleton fields/flags and missing names are rejected by this
@@ -1161,9 +1163,25 @@ its subject is a typed native `OccurrenceId`, not a serialized name/order tuple;
 its target is an unresolved ROM/disk reference with the actual declaring machine
 and optional parent context. No resolved target or exact-content identity is
 fabricated. Parent context derives from existing native machine links; it is
-not copied into each merge. Other native reported families and derived/user/
-observed endpoint registries remain pending cutovers; this does not finish the
-shared model.
+not copied into each merge. The Logiqx and CMP reported-relationship cutover uses
+one shared typed identity issuer and media-merge writer to replace
+format-specific registry implementations and the former resolved-merge pass.
+`logiqx_set_links`, `logiqx_device_references` and `logiqx_file_merges` own Logiqx
+declarations. `clrmamepro_set_links` and `clrmamepro_rom_merges` own CMP literals
+without copying its existing field positions. The shared registry and readiness
+contract apply to all three formats. GPT-6.1 Sol medium review/fix/re-review is
+clear. The complete devenv gate passes 1,110 tests with one existing ignore,
+strict Clippy, script/format checks and CLI smoke. Fifteen new regressions cover
+native ownership and once-issued keys, empty/parentless references, actual CMP
+field provenance, review/support/reimport/backup/rollback, mutation/replacement
+seals and independent wrong-edition/claim-kind readiness. Canonical requested-key
+plans remain native-row-bounded after importing 300 unrelated sets across all
+three formats and running `ANALYZE`; metadata scaling across many catalog groups
+and complete corpus/performance acceptance are not established by this witness.
+Locked all-feature nextest passes 1,113 tests with three existing optional skips;
+all-feature documentation builds with warnings denied.
+Other native reported families and derived/user/observed endpoint registries
+remain pending cutovers; this does not finish the shared model.
 
 Reconciliation carries the actual occurrence ID in transient root requirements.
 It indexes native evidence by snapshot and occurrence, attaching a declaration
@@ -1214,8 +1232,10 @@ does not require a second copy of its snapshot name, subjects, targets, or raw
 payload merely to explain it. Reviews and supersession point at assertion
 identity, and unresolved/ambiguous source targets remain queryable literals.
 
-Every reviewable source declaration uses `assertion_id UNIQUE NOT NULL` as an
-FK to a source-origin assertion identity. The identity records its closed native
+Every reviewable source declaration uses `relationship_id UNIQUE NOT NULL` as an
+FK to a source-origin `catalog_relationships` identity. Its issued external
+`assertion_key` is retained once for reviews and ordered support. The identity
+records its closed native
 declaration kind and snapshot FK; that kind must agree with exactly one owning
 native row. Owner identity/field/occurrence is unique. Source targets may be
 unresolved literals; resolution is separate from the existence of the source
@@ -1227,8 +1247,8 @@ checked before publication, including any optional resolved target.
 | `mame_machine_links`, `mame_device_references` | cloneof/romof/sampleof or device_ref, including the reference tag |
 | `mame_rom_merges`, `mame_disk_merges` | owning claim FK and declared merge name; no second merge-name copy in the asset payload |
 | `software_clone_links` | item FK and declared cloneof name; optional singleton |
-| `logiqx_record_links`, `logiqx_asset_merges` | native record/claim FK and distinct cloneof/romof/sampleof/device/merge source field |
-| `cmp_record_links`, `cmp_asset_merges` | native record/claim FK and documented parent/runtime/sample/merge declarations |
+| `logiqx_set_links`, `logiqx_device_references`, `logiqx_file_merges` | actual game/media-entry FKs and distinct cloneof/romof/sampleof/device/merge source declarations |
+| `clrmamepro_set_links`, `clrmamepro_rom_merges` | actual set/media-entry FKs and cloneof/sampleof/compatibility merge literals; provenance is read from existing native field-position rows |
 | `no_intro_archive_links`, `no_intro_file_merge_links` | declared archive-ID or merge token with its own known/unknown semantics; a parent marker remains a marker fact, not a fabricated target edge |
 
 The attribute value listed in a native family inventory is stored in this

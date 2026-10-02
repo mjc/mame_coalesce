@@ -136,7 +136,7 @@ fn repeated_logiqx_set_names_retain_separate_ordered_native_owners()
         .get_result::<Count>(&mut connection)?;
     assert_eq!(descriptions.count, 2);
     let relationship_owners = sql_query(
-        "SELECT count(DISTINCT subject_set_id) AS count FROM relationship_assertions WHERE origin = 'source_assertion' AND relation_type = 'source_parent_clone'",
+        "SELECT count(DISTINCT set_id) AS count FROM logiqx_set_links WHERE link_kind='cloneof'",
     )
     .get_result::<Count>(&mut connection)?;
     assert_eq!(relationship_owners.count, 2);

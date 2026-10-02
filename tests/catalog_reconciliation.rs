@@ -896,7 +896,7 @@ fn native_merge_context(
     occurrence_id: mame_coalesce::domain::OccurrenceId,
     assertion_key: &str,
 ) -> Result<RelationshipExplanation, Box<dyn std::error::Error>> {
-    use mame_coalesce::domain::{CatalogSetId, MameMergeKind};
+    use mame_coalesce::domain::{CatalogSetId, MergeMediaKind};
 
     Ok(RelationshipExplanation {
         assertion_key: RelationshipAssertionKey::new(assertion_key),
@@ -906,10 +906,10 @@ fn native_merge_context(
                 snapshot: snapshot.clone(),
                 occurrence_id,
             },
-            target: RelationshipEndpoint::MameMergeReference {
+            target: RelationshipEndpoint::CatalogMergeReference {
                 snapshot: snapshot.clone(),
-                machine_id: CatalogSetId::try_from(1)?,
-                media_kind: MameMergeKind::Rom,
+                set_id: CatalogSetId::try_from(1)?,
+                media_kind: MergeMediaKind::Rom,
                 parent_name: Some("unresolved-parent".into()),
                 merge_name: "unresolved.bin".into(),
             },

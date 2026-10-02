@@ -34,7 +34,7 @@ SELECT registry.assertion_key, 'source_merge', 'source_assertion', registry.snap
        'merge', declaration.source_line, declaration.source_column,
        NULL, 'catalog_media_entry', occurrence.record_id, NULL, NULL, NULL,
        owner.set_name, payload.name, occurrence.occurrence_id, registry.snapshot_key,
-       NULL, 'mame_rom_merge_reference', occurrence.record_id, NULL, NULL, NULL,
+       NULL, 'catalog_rom_merge_reference', occurrence.record_id, NULL, NULL, NULL,
        COALESCE(rom_parent.target_name, clone_parent.target_name), declaration.merge_name, NULL,
        registry.snapshot_key, NULL
 FROM catalog_relationships AS registry
@@ -53,7 +53,7 @@ SELECT registry.assertion_key, 'source_merge', 'source_assertion', registry.snap
        'merge', declaration.source_line, declaration.source_column,
        NULL, 'catalog_media_entry', occurrence.record_id, NULL, NULL, NULL,
        owner.set_name, payload.name, occurrence.occurrence_id, registry.snapshot_key,
-       NULL, 'mame_disk_merge_reference', occurrence.record_id, NULL, NULL, NULL,
+       NULL, 'catalog_disk_merge_reference', occurrence.record_id, NULL, NULL, NULL,
        COALESCE(rom_parent.target_name, clone_parent.target_name), declaration.merge_name, NULL,
        registry.snapshot_key, NULL
 FROM catalog_relationships AS registry

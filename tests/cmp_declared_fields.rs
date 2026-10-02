@@ -6,7 +6,10 @@ use diesel::{
 use mame_coalesce::{
     app::{self, CatalogDocumentFormat, CatalogImportRequest},
     database::Database,
-    domain::{CatalogKey, CatalogScope, PublishingSourceKey, SnapshotKey, SnapshotRecordStatus},
+    domain::{
+        CatalogKey, CatalogScope, PublishingSourceKey, RelationshipAssertionKey, SnapshotKey,
+        SnapshotRecordStatus,
+    },
 };
 
 #[derive(QueryableByName)]
@@ -133,14 +136,34 @@ fn pending_rom(
     identity: IdentityLink,
 ) -> Result<i64, Box<dyn std::error::Error>> {
     let occurrence_id = pending_occurrence(connection, original, identity)?;
-    sql_query("INSERT INTO cmp_rom_claims(occurrence_id,name,size_text,crc_text,crc32_text,md5_text,sha1_text,evidence_scope,evidence_provenance,merge_name,date,serial,status_text,nodump_present,baddump_present,source_line,source_column) SELECT ?1,name,size_text,CASE WHEN ?2=2 THEN 'DEADBEEF' ELSE crc_text END,CASE WHEN ?2=3 THEN 'CAFEBABE' ELSE crc32_text END,CASE WHEN ?2=4 THEN 'cccccccccccccccccccccccccccccccc' ELSE md5_text END,CASE WHEN ?2=5 THEN 'dddddddddddddddddddddddddddddddddddddddd' ELSE sha1_text END,evidence_scope,evidence_provenance,merge_name,date,serial,status_text,nodump_present,baddump_present,source_line,source_column FROM cmp_rom_claims ORDER BY occurrence_id LIMIT 1")
+    sql_query("INSERT INTO cmp_rom_claims(occurrence_id,name,size_text,crc_text,crc32_text,md5_text,sha1_text,evidence_scope,evidence_provenance,date,serial,status_text,nodump_present,baddump_present,source_line,source_column) SELECT ?1,name,size_text,CASE WHEN ?2=2 THEN 'DEADBEEF' ELSE crc_text END,CASE WHEN ?2=3 THEN 'CAFEBABE' ELSE crc32_text END,CASE WHEN ?2=4 THEN 'cccccccccccccccccccccccccccccccc' ELSE md5_text END,CASE WHEN ?2=5 THEN 'dddddddddddddddddddddddddddddddddddddddd' ELSE sha1_text END,evidence_scope,evidence_provenance,date,serial,status_text,nodump_present,baddump_present,source_line,source_column FROM cmp_rom_claims ORDER BY occurrence_id LIMIT 1")
         .bind::<BigInt,_>(occurrence_id).bind::<BigInt,_>(changed_digest_field).execute(connection)?;
+    copy_pending_merge(connection, occurrence_id)?;
     sql_query("INSERT INTO occurrence_digest_assertions(occurrence_id,digest_id,scope,provenance) SELECT ?,digest_id,scope,provenance FROM occurrence_digest_assertions WHERE occurrence_id=(SELECT MIN(occurrence_id) FROM cmp_rom_claims)")
         .bind::<BigInt,_>(occurrence_id).execute(connection)?;
     sql_query("INSERT INTO cmp_set_rom_positions(occurrence_id,source_order) VALUES(?,1)")
         .bind::<BigInt, _>(occurrence_id)
         .execute(connection)?;
     Ok(occurrence_id)
+}
+
+fn copy_pending_merge(
+    connection: &mut SqliteConnection,
+    occurrence: i64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let literal = sql_query("SELECT merge_name AS value FROM clrmamepro_rom_merges WHERE occurrence_id=(SELECT MIN(occurrence_id) FROM cmp_rom_claims)")
+        .load::<TextValue>(connection)?.into_iter().next();
+    let Some(literal) = literal else {
+        return Ok(());
+    };
+    let relationship = sql_query(
+        "INSERT INTO catalog_relationships(assertion_key,origin,snapshot_key) VALUES (?,'source','pending') RETURNING relationship_id AS value",
+    ).bind::<Text,_>(RelationshipAssertionKey::fresh().as_str()).get_result::<IdValue>(connection)?.value;
+    sql_query("INSERT INTO reported_catalog_relationships(relationship_id,source_reference_kind) VALUES (?,'clrmamepro_rom_merge')")
+        .bind::<BigInt,_>(relationship).execute(connection)?;
+    sql_query("INSERT INTO clrmamepro_rom_merges(occurrence_id,relationship_id,merge_name) VALUES (?,?,?)")
+        .bind::<BigInt,_>(occurrence).bind::<BigInt,_>(relationship).bind::<Text,_>(literal.value).execute(connection)?;
+    Ok(())
 }
 
 fn copy_positions(
@@ -269,12 +292,12 @@ fn publication_requires_every_present_cmp_rom_field_position()
         let error = publish_pending(&mut connection)
             .err()
             .ok_or_else(|| format!("field {omitted} published without its position"))?;
-        assert!(
-            error
-                .to_string()
-                .contains("CMP ROM fields require complete position ownership"),
-            "{error}"
-        );
+        let expected = if omitted == 6 {
+            "reported source relationships require complete native identity ownership"
+        } else {
+            "CMP ROM fields require complete position ownership"
+        };
+        assert!(error.to_string().contains(expected), "{error}");
         sql_query("INSERT INTO cmp_rom_field_positions(occurrence_id,field_kind,source_field,source_order,is_quoted,source_line,source_column) SELECT ?,field_kind,source_field,source_order,is_quoted,source_line,source_column FROM cmp_rom_field_positions WHERE occurrence_id=(SELECT MIN(occurrence_id) FROM cmp_rom_claims) AND field_kind=?")
             .bind::<BigInt,_>(pending).bind::<BigInt,_>(omitted).execute(&mut connection)?;
         assert_eq!(publish_pending(&mut connection)?, 1);
@@ -385,6 +408,32 @@ fn import(
         .ok_or_else(|| "successful import lacked snapshot".into())
 }
 
+fn assert_declared_rom_payload(rom: &RomClaims) {
+    assert_eq!(rom.name, "native.bin");
+    assert_eq!(rom.size, Some(16));
+    assert_eq!(rom.size_text.as_deref(), Some("00016"));
+    assert_eq!(rom.crc_text.as_deref(), Some("AABBCCDD"));
+    assert_eq!(rom.crc32_text, None);
+    assert_eq!(
+        rom.md5_text.as_deref(),
+        Some("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB")
+    );
+    assert_eq!(
+        rom.sha1_text.as_deref(),
+        Some("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+    );
+    assert_eq!(rom.merge_name.as_deref(), Some("parent.bin"));
+    assert_eq!(rom.date.as_deref(), Some(""));
+    assert_eq!(rom.serial.as_deref(), Some(""));
+    assert_eq!(rom.status_text.as_deref(), Some("nodump"));
+    assert_eq!(rom.nodump_present, 1);
+    assert_eq!(rom.baddump_present, 0);
+    assert_eq!(
+        rom.dump_status, None,
+        "explicit status plus a dump flag is retained as a conflict"
+    );
+}
+
 #[test]
 fn public_import_retains_cmp_rom_declared_text() -> Result<(), Box<dyn std::error::Error>> {
     let (directory, database) = setup()?;
@@ -413,7 +462,8 @@ fn public_import_retains_cmp_rom_declared_text() -> Result<(), Box<dyn std::erro
     let rom = sql_query(
         "SELECT name, size, size_text, crc_text, crc32_text, md5_text, sha1_text, merge_name, \
                 date, serial, status_text, nodump_present, baddump_present, dump_status \
-         FROM cmp_rom_claims JOIN asset_occurrences USING (occurrence_id) \
+         FROM cmp_rom_claims LEFT JOIN clrmamepro_rom_merges USING (occurrence_id) \
+         JOIN asset_occurrences USING (occurrence_id) \
          JOIN records USING (record_id) JOIN record_namespaces USING (namespace_id) \
          WHERE snapshot_key = ?",
     )
@@ -426,29 +476,7 @@ fn public_import_retains_cmp_rom_declared_text() -> Result<(), Box<dyn std::erro
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<TextValue>(&mut connection)?;
     assert_eq!(interpretation.value, "clrmamepro-declared-text-compat-v1");
-    assert_eq!(rom.name, "native.bin");
-    assert_eq!(rom.size, Some(16));
-    assert_eq!(rom.size_text.as_deref(), Some("00016"));
-    assert_eq!(rom.crc_text.as_deref(), Some("AABBCCDD"));
-    assert_eq!(rom.crc32_text, None);
-    assert_eq!(
-        rom.md5_text.as_deref(),
-        Some("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB")
-    );
-    assert_eq!(
-        rom.sha1_text.as_deref(),
-        Some("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
-    );
-    assert_eq!(rom.merge_name.as_deref(), Some("parent.bin"));
-    assert_eq!(rom.date.as_deref(), Some(""));
-    assert_eq!(rom.serial.as_deref(), Some(""));
-    assert_eq!(rom.status_text.as_deref(), Some("nodump"));
-    assert_eq!(rom.nodump_present, 1);
-    assert_eq!(rom.baddump_present, 0);
-    assert_eq!(
-        rom.dump_status, None,
-        "explicit status plus a dump flag is retained as a conflict"
-    );
+    assert_declared_rom_payload(&rom);
 
     let positions = sql_query(
         "SELECT position.field_kind, position.source_field, position.source_order, position.is_quoted, position.source_line, position.source_column \

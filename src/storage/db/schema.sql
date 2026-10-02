@@ -127,7 +127,6 @@ CREATE TABLE cmp_rom_claims (
     sha1_text TEXT,
     evidence_scope TEXT NOT NULL CHECK (evidence_scope IN ('whole_file','whole_asset')),
     evidence_provenance TEXT NOT NULL CHECK (evidence_provenance = 'source_declared'),
-    merge_name TEXT,
     date TEXT,
     serial TEXT,
     status_text TEXT,
@@ -151,11 +150,6 @@ CREATE TABLE cmp_rom_claims (
     CHECK (md5_text IS NULL OR (length(md5_text) = 32 AND instr(md5_text,char(0)) = 0 AND md5_text NOT GLOB '*[^0-9a-fA-F]*')),
     CHECK (sha1_text IS NULL OR (length(sha1_text) = 40 AND instr(sha1_text,char(0)) = 0 AND sha1_text NOT GLOB '*[^0-9a-fA-F]*'))
 );
-CREATE TABLE cmp_sample_parent_links (
-    record_id INTEGER PRIMARY KEY NOT NULL
-        REFERENCES catalog_sets (set_id) ON DELETE RESTRICT,
-    target_name TEXT NOT NULL
-) WITHOUT ROWID;
 CREATE TABLE cmp_samples (
     occurrence_id INTEGER PRIMARY KEY NOT NULL,
     claim_kind TEXT NOT NULL DEFAULT 'cmp_sample' CHECK (claim_kind = 'cmp_sample'),
@@ -276,7 +270,6 @@ CREATE TABLE logiqx_disk_claims (
     sha1_text TEXT,
     evidence_scope TEXT NOT NULL,
     evidence_provenance TEXT NOT NULL,
-    merge_name TEXT,
     dump_status TEXT NOT NULL DEFAULT 'good' CHECK (dump_status IN ('good','baddump','nodump','verified')),
     status_was_present INTEGER NOT NULL DEFAULT 0 CHECK (status_was_present IN (0,1)),
     source_order INTEGER NOT NULL DEFAULT 0 CHECK (source_order >= 0),
@@ -324,7 +317,6 @@ CREATE TABLE logiqx_rom_claims (
     sha1_text TEXT,
     evidence_scope TEXT NOT NULL,
     evidence_provenance TEXT NOT NULL,
-    merge_name TEXT,
     dump_status TEXT NOT NULL DEFAULT 'good' CHECK (dump_status IN ('good','baddump','nodump','verified')),
     status_was_present INTEGER NOT NULL DEFAULT 0 CHECK (status_was_present IN (0,1)),
     source_order INTEGER NOT NULL DEFAULT 0 CHECK (source_order >= 0),
@@ -1616,26 +1608,39 @@ CREATE TABLE logiqx_set_links (
     set_id INTEGER NOT NULL REFERENCES catalog_sets(set_id) ON DELETE RESTRICT,
     link_kind TEXT NOT NULL CHECK (link_kind IN ('cloneof','romof','sampleof')),
     target_name TEXT NOT NULL,
+    relationship_id INTEGER NOT NULL UNIQUE CHECK (typeof(relationship_id) = 'integer'),
+    source_reference_kind TEXT GENERATED ALWAYS AS ('logiqx_' || link_kind) VIRTUAL,
     source_line INTEGER NOT NULL CHECK (source_line > 0),
     source_column INTEGER NOT NULL CHECK (source_column > 0),
-    PRIMARY KEY (set_id, link_kind)
+    PRIMARY KEY (set_id, link_kind),
+    FOREIGN KEY (relationship_id, source_reference_kind)
+        REFERENCES reported_catalog_relationships(relationship_id, source_reference_kind) ON DELETE RESTRICT
 ) WITHOUT ROWID;
 CREATE TABLE logiqx_device_references (
     set_id INTEGER NOT NULL REFERENCES catalog_sets(set_id) ON DELETE RESTRICT,
     reference_order INTEGER NOT NULL CHECK (reference_order >= 0),
     target_name TEXT NOT NULL,
+    relationship_id INTEGER NOT NULL UNIQUE CHECK (typeof(relationship_id) = 'integer'),
+    source_reference_kind TEXT NOT NULL DEFAULT 'logiqx_device_ref'
+        CHECK (source_reference_kind='logiqx_device_ref'),
     source_line INTEGER NOT NULL CHECK (source_line > 0),
     source_column INTEGER NOT NULL CHECK (source_column > 0),
-    PRIMARY KEY (set_id, reference_order)
+    PRIMARY KEY (set_id, reference_order),
+    FOREIGN KEY (relationship_id, source_reference_kind)
+        REFERENCES reported_catalog_relationships(relationship_id, source_reference_kind) ON DELETE RESTRICT
 ) WITHOUT ROWID;
 CREATE TABLE clrmamepro_set_links (
     set_id INTEGER NOT NULL REFERENCES catalog_sets(set_id) ON DELETE RESTRICT,
-    link_kind TEXT NOT NULL CHECK (link_kind = 'cloneof'),
+    link_kind TEXT NOT NULL CHECK (link_kind IN ('cloneof','sampleof')),
     target_name TEXT NOT NULL,
-    source_line INTEGER NOT NULL CHECK (source_line > 0),
-    source_column INTEGER NOT NULL CHECK (source_column > 0),
-    PRIMARY KEY (set_id, link_kind)
+    relationship_id INTEGER NOT NULL CHECK (typeof(relationship_id) = 'integer'),
+    source_reference_kind TEXT GENERATED ALWAYS AS ('clrmamepro_' || link_kind) VIRTUAL,
+    PRIMARY KEY (set_id, link_kind),
+    FOREIGN KEY (relationship_id, source_reference_kind)
+        REFERENCES reported_catalog_relationships(relationship_id, source_reference_kind) ON DELETE RESTRICT
 ) WITHOUT ROWID;
+CREATE UNIQUE INDEX clrmamepro_set_links_relationship_id_index
+    ON clrmamepro_set_links(relationship_id);
 -- Native payloads are format-qualified, immutable source facts.
 CREATE TRIGGER logiqx_games_native_owner_insert BEFORE INSERT ON logiqx_games
 WHEN NOT EXISTS (SELECT 1 FROM catalog_sets WHERE set_id = NEW.set_id AND source_element_kind = 'logiqx_game')
@@ -1838,15 +1843,17 @@ LEFT JOIN mame_disk_compatibility AS compatibility USING(occurrence_id)
 UNION ALL
 SELECT occurrence.record_id AS set_id,occurrence.occurrence_order AS component_order,
        payload.name AS asset_name,'rom' AS role,
-       payload.size,payload.evidence_scope,payload.evidence_provenance,payload.merge_name,payload.dump_status,payload.source_line,payload.source_column,payload.serial,payload.date,NULL AS region,NULL AS bios,NULL AS offset,NULL AS optional,NULL AS sound_only,NULL AS dispose,NULL AS load_flag,NULL AS value,NULL AS inverted,NULL AS ovha,NULL AS no_thread,NULL AS disk_index,NULL AS writable,NULL AS writeable,
+       payload.size,payload.evidence_scope,payload.evidence_provenance,merge_declaration.merge_name,payload.dump_status,payload.source_line,payload.source_column,payload.serial,payload.date,NULL AS region,NULL AS bios,NULL AS offset,NULL AS optional,NULL AS sound_only,NULL AS dispose,NULL AS load_flag,NULL AS value,NULL AS inverted,NULL AS ovha,NULL AS no_thread,NULL AS disk_index,NULL AS writable,NULL AS writeable,
        occurrence.content_uuid
 FROM logiqx_rom_claims AS payload JOIN asset_occurrences AS occurrence USING (occurrence_id)
+LEFT JOIN logiqx_file_merges AS merge_declaration USING (occurrence_id)
 UNION ALL
 SELECT occurrence.record_id AS set_id,occurrence.occurrence_order AS component_order,
        payload.name AS asset_name,'disk' AS role,
-       NULL AS size,payload.evidence_scope,payload.evidence_provenance,payload.merge_name,payload.dump_status,payload.source_line,payload.source_column,NULL AS serial,NULL AS date,NULL AS region,NULL AS bios,NULL AS offset,NULL AS optional,NULL AS sound_only,NULL AS dispose,NULL AS load_flag,NULL AS value,NULL AS inverted,NULL AS ovha,NULL AS no_thread,NULL AS disk_index,NULL AS writable,NULL AS writeable,
+       NULL AS size,payload.evidence_scope,payload.evidence_provenance,merge_declaration.merge_name,payload.dump_status,payload.source_line,payload.source_column,NULL AS serial,NULL AS date,NULL AS region,NULL AS bios,NULL AS offset,NULL AS optional,NULL AS sound_only,NULL AS dispose,NULL AS load_flag,NULL AS value,NULL AS inverted,NULL AS ovha,NULL AS no_thread,NULL AS disk_index,NULL AS writable,NULL AS writeable,
        occurrence.content_uuid
 FROM logiqx_disk_claims AS payload JOIN asset_occurrences AS occurrence USING (occurrence_id)
+LEFT JOIN logiqx_file_merges AS merge_declaration USING (occurrence_id)
 UNION ALL
 SELECT occurrence.record_id AS set_id,occurrence.occurrence_order AS component_order,
        payload.name AS asset_name,'other' AS role,
@@ -1862,9 +1869,10 @@ FROM mame_samples AS payload JOIN asset_occurrences AS occurrence USING (occurre
 UNION ALL
 SELECT occurrence.record_id AS set_id,occurrence.occurrence_order AS component_order,
        payload.name AS asset_name,'rom' AS role,
-       payload.size,payload.evidence_scope,payload.evidence_provenance,payload.merge_name,payload.dump_status,payload.source_line,payload.source_column,payload.serial,payload.date,NULL AS region,NULL AS bios,NULL AS offset,NULL AS optional,NULL AS sound_only,NULL AS dispose,NULL AS load_flag,NULL AS value,NULL AS inverted,NULL AS ovha,NULL AS no_thread,NULL AS disk_index,NULL AS writable,NULL AS writeable,
+       payload.size,payload.evidence_scope,payload.evidence_provenance,merge_declaration.merge_name,payload.dump_status,payload.source_line,payload.source_column,payload.serial,payload.date,NULL AS region,NULL AS bios,NULL AS offset,NULL AS optional,NULL AS sound_only,NULL AS dispose,NULL AS load_flag,NULL AS value,NULL AS inverted,NULL AS ovha,NULL AS no_thread,NULL AS disk_index,NULL AS writable,NULL AS writeable,
        occurrence.content_uuid
 FROM cmp_rom_claims AS payload JOIN asset_occurrences AS occurrence USING (occurrence_id)
+LEFT JOIN clrmamepro_rom_merges AS merge_declaration USING (occurrence_id)
 UNION ALL
 SELECT occurrence.record_id AS set_id,occurrence.occurrence_order AS component_order,
        payload.name AS asset_name,'rom' AS role,
@@ -1923,19 +1931,6 @@ SELECT assertion_key, relation_type, origin, source_snapshot_key, source_field,
            ELSE source_target_a END AS source_target_a, source_target_b, source_target_c,
        target_snapshot_key, rule_version
 FROM relationship_assertions;
-CREATE VIEW relationship_assertion_explanations AS
-SELECT * FROM stored_relationship_assertion_explanations
-UNION ALL
-SELECT * FROM mame_source_relationships
-UNION ALL
-SELECT assertion_key, relation_type, origin, source_snapshot_key, source_field,
-       source_line, source_column, generic_subject_snapshot_key, subject_kind, subject_set_id,
-       generic_subject_a, generic_subject_b, generic_subject_c, source_subject_a,
-       source_subject_b, source_subject_c, subject_snapshot_key,
-       generic_target_snapshot_key, target_kind, target_set_id, generic_target_a,
-       generic_target_b, generic_target_c, source_target_a, source_target_b,
-       source_target_c, target_snapshot_key, rule_version
-FROM no_intro_dat_cloneof_assertions;
 CREATE VIEW no_intro_dat_cloneof_assertions AS
 SELECT 'no-intro-dat-cloneof:' || game.set_id AS assertion_key,
        'source_parent_clone' AS relation_type, 'source_assertion' AS origin,
@@ -2407,7 +2402,8 @@ WHEN EXISTS (
   OR (NEW.origin='source_assertion' AND NEW.source_field IN ('cloneof','romof','sampleof','device_ref','merge')
       AND EXISTS (SELECT 1 FROM catalog_snapshots AS snapshot
           JOIN parser_interpretations AS interpretation USING(interpretation_key)
-          WHERE snapshot.snapshot_key=NEW.source_snapshot_key AND interpretation.format='mame-listxml'))
+          WHERE snapshot.snapshot_key=NEW.source_snapshot_key
+            AND interpretation.format IN ('mame-listxml','logiqx','clrmamepro-dat')))
 BEGIN
     SELECT RAISE(ABORT, 'relationship assertions are immutable');
 END;

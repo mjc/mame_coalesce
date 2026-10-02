@@ -541,7 +541,7 @@ fn cmp_set_keeps_clone_parent_and_sample_parent_as_distinct_relations() -> TestR
         "SELECT target_name AS value FROM clrmamepro_set_links \
          JOIN records ON records.record_id = clrmamepro_set_links.set_id \
          JOIN record_namespaces USING (namespace_id) \
-         WHERE records.source_name = 'child'",
+         WHERE records.source_name = 'child' AND link_kind='cloneof'",
     )
     .get_result::<NullableTextRow>(&mut connection)?;
     assert_eq!(clone_parent.value.as_deref(), Some("clone-parent"));

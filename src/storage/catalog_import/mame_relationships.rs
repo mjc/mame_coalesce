@@ -1,112 +1,23 @@
 //! Native MAME declarations own literals; the shared registry owns review identity.
 
 use diesel::{
-    QueryableByName, RunQueryDsl, SqliteConnection, sql_query,
+    RunQueryDsl, SqliteConnection, sql_query,
     sql_types::{BigInt, Text},
 };
 
-use crate::domain::{CatalogSetId, OccurrenceId, RelationshipAssertionKey, SnapshotKey};
+use crate::domain::{CatalogSetId, SnapshotKey};
 
-use super::{NativeAssetFacts, SnapshotAsset, SnapshotSet, checked_order};
-
-#[derive(Clone, Copy)]
-enum ReferenceKind {
-    CloneOf,
-    RomOf,
-    SampleOf,
-    DeviceReference,
-    RomMerge,
-    DiskMerge,
-}
-
-impl ReferenceKind {
-    const fn code(self) -> &'static str {
-        match self {
-            Self::CloneOf => "mame_cloneof",
-            Self::RomOf => "mame_romof",
-            Self::SampleOf => "mame_sampleof",
-            Self::DeviceReference => "mame_device_ref",
-            Self::RomMerge => "mame_rom_merge",
-            Self::DiskMerge => "mame_disk_merge",
-        }
-    }
-
-    const fn field(self) -> &'static str {
-        match self {
-            Self::CloneOf => "cloneof",
-            Self::RomOf => "romof",
-            Self::SampleOf => "sampleof",
-            Self::DeviceReference => "device_ref",
-            Self::RomMerge | Self::DiskMerge => "merge",
-        }
-    }
-}
-
-pub(super) fn insert_asset_merge(
-    connection: &mut SqliteConnection,
-    snapshot: &SnapshotKey,
-    occurrence: OccurrenceId,
-    asset: &SnapshotAsset,
-) -> crate::Result<()> {
-    if !matches!(asset.native, NativeAssetFacts::Mame { .. }) {
-        return Ok(());
-    }
-    let Some(literal) = asset.merge.as_deref() else {
-        return Ok(());
-    };
-    let (kind, table) = match asset.role {
-        "rom" => (ReferenceKind::RomMerge, "mame_rom_merges"),
-        "disk" => (ReferenceKind::DiskMerge, "mame_disk_merges"),
-        role => {
-            return Err(crate::Error::DatabaseSchema(format!(
-                "invalid MAME merge media kind {role}"
-            )));
-        }
-    };
-    let relationship = register(connection, snapshot, kind)?;
-    sql_query(format!(
-        "INSERT INTO {table}(occurrence_id,relationship_id,merge_name,source_line,source_column) \
-         VALUES (?,?,?,?,?)",
-    ))
-    .bind::<BigInt, _>(occurrence.database_value())
-    .bind::<BigInt, _>(relationship.0)
-    .bind::<Text, _>(literal)
-    .bind::<BigInt, _>(asset.location.line)
-    .bind::<BigInt, _>(asset.location.column)
-    .execute(connection)?;
-    Ok(())
-}
-
-/// Only issued after both registry identity and its reported subtype are stored.
-struct ReportedRelationshipId(i64);
-
-#[derive(QueryableByName)]
-struct IdRow {
-    #[diesel(sql_type = BigInt)]
-    relationship_id: i64,
-}
+use super::reported_relationships::{
+    self, ReportedReferenceKind, XmlReferenceKind as ReferenceKind,
+};
+use super::{SnapshotSet, checked_order};
 
 fn register(
     connection: &mut SqliteConnection,
     snapshot: &SnapshotKey,
     kind: ReferenceKind,
-) -> crate::Result<ReportedRelationshipId> {
-    let key = RelationshipAssertionKey::fresh();
-    let row = sql_query(
-        "INSERT INTO catalog_relationships(assertion_key,origin,snapshot_key) \
-         VALUES (?,'source',?) RETURNING relationship_id",
-    )
-    .bind::<Text, _>(key.as_str())
-    .bind::<Text, _>(snapshot.as_str())
-    .get_result::<IdRow>(connection)?;
-    sql_query(
-        "INSERT INTO reported_catalog_relationships(relationship_id,source_reference_kind) \
-         VALUES (?,?)",
-    )
-    .bind::<BigInt, _>(row.relationship_id)
-    .bind::<Text, _>(kind.code())
-    .execute(connection)?;
-    Ok(ReportedRelationshipId(row.relationship_id))
+) -> crate::Result<reported_relationships::ReportedRelationshipId> {
+    reported_relationships::register(connection, snapshot, ReportedReferenceKind::Mame(kind))
 }
 
 fn insert_link(
@@ -126,7 +37,7 @@ fn insert_link(
     .bind::<BigInt, _>(owner.as_i64())
     .bind::<Text, _>(kind.field())
     .bind::<Text, _>(target)
-    .bind::<BigInt, _>(relationship.0)
+    .bind::<BigInt, _>(relationship.database_value())
     .bind::<BigInt, _>(location.line)
     .bind::<BigInt, _>(location.column)
     .execute(connection)?;
@@ -187,7 +98,7 @@ pub(super) fn insert(
                 .bind::<Text, _>(&dependency.target_name)
                 .bind::<Text, _>(tag)
                 .bind::<BigInt, _>(source_order)
-                .bind::<BigInt, _>(relationship.0)
+                .bind::<BigInt, _>(relationship.database_value())
                 .bind::<BigInt, _>(dependency.location.line)
                 .bind::<BigInt, _>(dependency.location.column)
                 .execute(connection)?;

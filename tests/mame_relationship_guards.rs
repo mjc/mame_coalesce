@@ -286,7 +286,7 @@ fn publication_requires_registry_reported_kind_and_native_owner() -> TestResult 
     assert_rejected(
         publish(&mut connection, &identity_only),
         "registry identity without a reported kind",
-        "MAME relationship identities and native owners",
+        "reported source relationships require complete native identity ownership",
     )?;
 
     let (reported_only, _) = pending_machine(&mut connection, &base, "reported-only")?;
@@ -295,7 +295,7 @@ fn publication_requires_registry_reported_kind_and_native_owner() -> TestResult 
     assert_rejected(
         publish(&mut connection, &reported_only),
         "reported kind without a native owner",
-        "MAME relationship identities and native owners",
+        "reported source relationships require complete native identity ownership",
     )?;
 
     let (complete, owner) = pending_machine(&mut connection, &base, "complete")?;
@@ -851,7 +851,7 @@ fn publication_rejects_sparse_device_reference_ordinals() -> TestResult {
             assert_rejected(
                 result,
                 "device reference ordinal gap",
-                "MAME relationship identities",
+                "MAME device-reference positions must be dense",
             )?;
         }
     }
