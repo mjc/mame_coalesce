@@ -1513,7 +1513,7 @@ fn insert_snapshot_set(
         mame_specification::insert(conn, set_id, set)?;
     }
     if let Some(facts) = &set.no_intro_facts {
-        insert_no_intro_game_facts(conn, set_id, facts)?;
+        insert_no_intro_game_facts(conn, snapshot_key, owner, facts)?;
     }
     if let Some(facts) = &set.logiqx_facts {
         insert_logiqx_set_facts(conn, set_id, facts)?;
@@ -1673,9 +1673,11 @@ fn insert_logiqx_set_facts(
 
 fn insert_no_intro_game_facts(
     conn: &mut SqliteConnection,
-    set_id: i64,
+    snapshot_key: &SnapshotKey,
+    owner: CatalogSetId,
     facts: &crate::no_intro_pc_xml::GameFacts,
 ) -> crate::Result<()> {
+    let set_id = owner.as_i64();
     sql_query(
         "INSERT INTO no_intro_pc_games \
          (set_id, archive_id, description, description_line, description_column, \
@@ -1716,18 +1718,28 @@ fn insert_no_intro_game_facts(
                 .execute(conn)?;
         }
         Some(crate::no_intro_pc_xml::CloneReference::Archive(target)) => {
-            sql_query("INSERT INTO no_intro_pc_clone_links(set_id,target_archive_id) VALUES (?,?)")
-                .bind::<BigInt, _>(set_id)
-                .bind::<Text, _>(target.as_str())
-                .execute(conn)?;
+            reported_relationships::insert_reference(
+                conn,
+                snapshot_key,
+                reported_relationships::ReferenceOwner::NoIntroPc {
+                    set: owner,
+                    field: crate::domain::NoIntroArchiveReferenceField::Clone,
+                },
+                target.as_str(),
+            )?;
         }
         None => {}
     }
     if let Some(target) = &facts.merge_of {
-        sql_query("INSERT INTO no_intro_pc_merge_links(set_id,target_archive_id) VALUES (?,?)")
-            .bind::<BigInt, _>(set_id)
-            .bind::<Text, _>(target.as_str())
-            .execute(conn)?;
+        reported_relationships::insert_reference(
+            conn,
+            snapshot_key,
+            reported_relationships::ReferenceOwner::NoIntroPc {
+                set: owner,
+                field: crate::domain::NoIntroArchiveReferenceField::MergeOf,
+            },
+            target.as_str(),
+        )?;
     }
     Ok(())
 }

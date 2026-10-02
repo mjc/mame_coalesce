@@ -1,6 +1,6 @@
 CREATE TABLE catalog_relationships (
     relationship_id INTEGER PRIMARY KEY NOT NULL CHECK (typeof(relationship_id) = 'integer'),
-    assertion_key TEXT NOT NULL UNIQUE,
+    assertion_key TEXT NOT NULL,
     origin TEXT NOT NULL CHECK (origin IN ('source', 'derived', 'user')),
     snapshot_key TEXT REFERENCES catalog_snapshots(snapshot_key) ON DELETE RESTRICT,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -17,13 +17,17 @@ CREATE TABLE reported_catalog_relationships (
         'logiqx_rom_merge', 'logiqx_disk_merge',
         'clrmamepro_cloneof', 'clrmamepro_sampleof', 'clrmamepro_rom_merge',
         'software_cloneof', 'no_intro_dat_cloneof', 'no_intro_dat_cloneofid',
-        'no_intro_database_archive_clone', 'no_intro_database_archive_mergeof'
+        'no_intro_database_archive_clone', 'no_intro_database_archive_mergeof',
+        'no_intro_pc_clone', 'no_intro_pc_mergeof'
     )),
     UNIQUE (relationship_id, source_reference_kind)
-);
+) WITHOUT ROWID;
 
 CREATE INDEX catalog_relationships_snapshot_origin_index
     ON catalog_relationships(snapshot_key, origin, relationship_id);
+-- The named index is the sole issued-key uniqueness constraint.
+CREATE UNIQUE INDEX catalog_relationships_assertion_key
+    ON catalog_relationships(assertion_key);
 
 CREATE TRIGGER catalog_relationships_insert_guard
 BEFORE INSERT ON catalog_relationships

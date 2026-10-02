@@ -431,6 +431,10 @@ directed relation and two target FKs; an inferred row also references
 Reusing a revision with different metadata is rejected atomically.
 `relationship_assertions` is a read-only display projection, not persisted
 nullable endpoint payloads and not an insertion compatibility layer.
+Reported, inferred and manual payload tables use `WITHOUT ROWID`: their
+integer primary keys are foreign owners, not additional identity issuers.
+NULL/omitted IDs cannot pass a negative-ID guard and then attach to a different
+automatically allocated relationship. Explicit valid owners remain supported.
 
 Each interned `catalog_relationship_targets` identity has one closed subtype:
 
@@ -1123,6 +1127,19 @@ alternate name, region, ordered languages, version, BIOS and distinct clone
 and merge tokens beyond asset claims. Actual flat DAT
 files use attributes and nested releases/game IDs that do not fit that
 projection, and DB exports use nested archive/source/file records instead.
+
+Numeric `clone` and `mergeof` declarations now own once-issued reported
+relationship IDs on `no_intro_pc_clone_links` and `no_intro_pc_merge_links`.
+Their exact digit-text archive references are stored once, including arbitrarily
+long leading zeros; empty text, NULs, non-ASCII digits and non-text storage are
+rejected. A game's own archive ID is not required to declare a target.
+`clone="P"` remains a separate marker and may coexist with merge text.
+All owner views and explanations follow the actual set, native game and snapshot.
+Targets remain unresolved archive-number references even when build planning
+finds an archive with the same number. The synthetic interpretation projects
+clone as source-parent and merge as alternate-representation evidence, not
+an exact-content assertion. Element provenance is retained; exact attribute
+positions/order and native header persistence remain unfinished.
 
 Design native No-Intro archive, ordered language, file, and source relations.
 Archive IDs are snapshot/source-scoped identifiers, not global game identity.

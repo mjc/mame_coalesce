@@ -272,8 +272,16 @@ Only the latest published review activates a replacement; withdrawal preserves
 history while removing that active edge. Self-replacement and active cycles are
 rejected, including when a newer draft is still unsealed. Publishing an older
 review adds history without changing the latest decision. These FK-owned
-evidence/review children cannot allocate a different owner when an ID is missing
-or NULL.
+reported/inferred/manual payloads and evidence/review children cannot allocate
+a different owner when an ID is missing or NULL.
+
+The synthetic P/C adapter also issues native relationship keys for numeric
+`clone` and `mergeof` declarations. Their literal archive references retain
+leading zeros and remain unresolved in explanations, even when build planning
+finds a matching archive number. `clone="P"` is a marker, not a relationship;
+it can coexist with a merge declaration. Clone projects a source-parent relation
+and merge an alternate-representation relation under this synthetic interpretation.
+This does not establish authentic DAT-o-MATIC P/C wire-format support.
 
 Import errors can retain an exact byte excerpt with a start-inclusive,
 end-exclusive highlight relative to that saved excerpt, not the whole file.

@@ -423,14 +423,15 @@ impl ExplanationScope {
         let native_sources = [
             "mame_source_relationships", "logiqx_cmp_source_relationships",
             "software_dat_source_relationships", "no_intro_database_source_relationships",
-        ].map(|view| format!("SELECT a.* FROM {view} a WHERE a.assertion_key IN (SELECT assertion_key FROM scoped_source_identities) {source_filter}")).join(" UNION ALL ");
+            "no_intro_pc_source_relationships",
+        ].map(|view| format!("SELECT a.* FROM {view} a WHERE a.source_snapshot_key IN ((SELECT previous_key FROM requested_source_snapshots),(SELECT current_key FROM requested_source_snapshots)) AND a.assertion_key IN (SELECT assertion_key FROM scoped_source_identities) {source_filter}")).join(" UNION ALL ");
         Some(format!(
-            "WITH requested_source_snapshots(snapshot_key) AS (VALUES (?),(?)), \
+            "WITH requested_source_snapshots(previous_key,current_key) AS (VALUES (?,?)), \
              requested_decision_snapshots(snapshot_key) AS (VALUES (?),(?),(?),(?)), \
              requested_relationship_kinds(kind) AS (VALUES {kinds}), \
              scoped_source_identities AS MATERIALIZED ( \
-               SELECT identity.assertion_key FROM requested_source_snapshots requested \
-               CROSS JOIN catalog_relationships identity ON identity.snapshot_key=requested.snapshot_key \
+               SELECT DISTINCT identity.assertion_key FROM requested_source_snapshots requested \
+               CROSS JOIN catalog_relationships identity ON identity.snapshot_key IN (requested.previous_key,requested.current_key) \
                WHERE identity.origin='source'), \
              scoped_source_assertions AS NOT MATERIALIZED ({native_sources}), \
              {}, scoped_assertions AS MATERIALIZED ( \
@@ -476,7 +477,7 @@ impl ExplanationScope {
                  WHERE source_version.snapshot_key = a.source_snapshot_key) AS declared_version, \
                 pi.parser_name, pi.parser_version, pi.rules_version \
          FROM {from} \
-         JOIN catalog_relationships registry ON registry.assertion_key=a.assertion_key \
+         CROSS JOIN catalog_relationships registry ON registry.assertion_key=a.assertion_key \
          LEFT JOIN catalog_set_groups source_asset_group \
            ON a.origin = 'source_assertion' AND a.subject_kind = 'asset_requirement' \
           AND source_asset_group.snapshot_key = a.source_snapshot_key \
@@ -802,12 +803,14 @@ fn source_evidence_value(row: &ExplanationRow) -> crate::Result<RelationshipEvid
         .as_ref()
         .ok_or_else(|| crate::Error::InvalidPath("source evidence has no target name".into()))?;
     match row.source_field.as_deref() {
-        Some("archive_clone" | "archive_mergeof") => Ok(RelationshipEvidence::ArchiveReference {
-            declared_archive_reference: target_name.clone(),
-            source_field: row.source_field.clone().ok_or_else(|| {
-                crate::Error::InvalidPath("archive source evidence has no field".into())
-            })?,
-        }),
+        Some("archive_clone" | "archive_mergeof" | "clone" | "mergeof") => {
+            Ok(RelationshipEvidence::ArchiveReference {
+                declared_archive_reference: target_name.clone(),
+                source_field: row.source_field.clone().ok_or_else(|| {
+                    crate::Error::InvalidPath("archive source evidence has no field".into())
+                })?,
+            })
+        }
         Some("cloneof") if row.subject_kind == "software_item" => {
             Ok(RelationshipEvidence::SoftwareClone {
                 list_name: row.source_subject_a.clone().ok_or_else(|| {
@@ -1389,6 +1392,108 @@ mod query_plan_tests {
             violations.is_empty(),
             "scoped queries must seek source, generic, and native assertions and their asset projections: {violations:?}"
         );
+        Ok(())
+    }
+
+    fn import_pc_plan_catalogs(
+        database: &crate::database::Database,
+    ) -> crate::Result<Vec<SnapshotKey>> {
+        let directory = tempfile::tempdir()?;
+        let path = camino::Utf8PathBuf::from_path_buf(directory.path().join("pc-plans.xml"))
+            .map_err(|_| crate::Error::InvalidPath("non-UTF-8 test path".into()))?;
+        std::fs::write(
+            &path,
+            "<datafile><game name='clone' clone='0007'/><game name='merge' clone='P' mergeof='0008'/></datafile>",
+        )?;
+        let mut snapshots = Vec::new();
+        for index in 0..34 {
+            let name = format!("pc-plan-{index}");
+            let report = crate::app::import_catalog(
+                database,
+                &CatalogImportRequest {
+                    document_path: path.clone(),
+                    format: CatalogDocumentFormat::NoIntroPcXml,
+                    source_key: PublishingSourceKey::new(&name),
+                    source_display_name: name.clone(),
+                    catalog_key: CatalogKey::new(&name),
+                    catalog_display_name: name,
+                    scope: CatalogScope::Complete,
+                },
+            )?;
+            assert_eq!(report.status, CatalogImportStatus::Succeeded);
+            snapshots.push(
+                report
+                    .snapshot_key
+                    .ok_or_else(|| crate::Error::InvalidPath("missing P/C plan snapshot".into()))?,
+            );
+        }
+        Ok(snapshots)
+    }
+
+    #[test]
+    fn populated_pc_scoped_explanations_keep_native_sources_and_indexed_owners() -> crate::Result<()>
+    {
+        let database = crate::database::Database::in_memory()?;
+        let snapshots = import_pc_plan_catalogs(&database)?;
+        let mut connection = database.pool().get()?;
+        sql_query("ANALYZE").execute(&mut connection)?;
+        let requested = &snapshots[..2];
+        for scope in [ExplanationScope::CatalogSets, ExplanationScope::Snapshots] {
+            let mut query = sql_query(scope.query()).into_boxed::<diesel::sqlite::Sqlite>();
+            for snapshot in requested.iter().cycle().take(6) {
+                query = query.bind::<Text, _>(snapshot.as_str());
+            }
+            let rows = query.load::<ExplanationRow>(&mut connection)?;
+            assert_eq!(
+                rows.len(),
+                4,
+                "both production scopes must retain P/C sources"
+            );
+            assert!(rows.iter().all(|row| {
+                row.subject_snapshot_key
+                    .as_deref()
+                    .is_some_and(|key| requested.iter().any(|snapshot| snapshot.as_str() == key))
+                    && matches!(row.source_field.as_deref(), Some("clone" | "mergeof"))
+            }));
+
+            let mut same_edition = sql_query(scope.query()).into_boxed::<diesel::sqlite::Sqlite>();
+            for snapshot in std::iter::repeat_n(&snapshots[0], 6) {
+                same_edition = same_edition.bind::<Text, _>(snapshot.as_str());
+            }
+            assert_eq!(
+                same_edition.load::<ExplanationRow>(&mut connection)?.len(),
+                2,
+                "requesting the same edition twice must not duplicate its source declarations"
+            );
+
+            let mut query = sql_query(format!("EXPLAIN QUERY PLAN {}", scope.query()))
+                .into_boxed::<diesel::sqlite::Sqlite>();
+            for snapshot in requested.iter().cycle().take(6) {
+                query = query.bind::<Text, _>(snapshot.as_str());
+            }
+            let details = query
+                .load::<PlanRow>(&mut connection)?
+                .into_iter()
+                .map(|row| row.detail)
+                .collect::<Vec<_>>();
+            for table in ["no_intro_pc_clone_links", "no_intro_pc_merge_links"] {
+                assert!(
+                    details.iter().any(|line| {
+                        line.starts_with("SEARCH link ")
+                            && line.contains(table)
+                            && line.contains("relationship_id=?")
+                    }),
+                    "P/C declarations must be sought by issued ID: {table}: {details:?}"
+                );
+            }
+            for alias in ["registry", "reported", "link", "native", "sets", "groups"] {
+                assert!(
+                    !details.iter().any(|line| line == &format!("SCAN {alias}")
+                        || line.starts_with(&format!("SCAN {alias} "))),
+                    "production explanations scanned unrelated native owners: {alias}: {details:?}"
+                );
+            }
+        }
         Ok(())
     }
 

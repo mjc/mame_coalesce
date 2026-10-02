@@ -838,11 +838,29 @@ CREATE TABLE no_intro_pc_clone_markers (
 ) WITHOUT ROWID;
 CREATE TABLE no_intro_pc_clone_links (
     set_id INTEGER PRIMARY KEY NOT NULL REFERENCES no_intro_pc_games(set_id) ON DELETE RESTRICT,
-    target_archive_id TEXT NOT NULL CHECK (target_archive_id <> '' AND target_archive_id NOT GLOB '*[^0-9]*')
+    target_archive_id TEXT NOT NULL
+        CHECK (typeof(target_archive_id) = 'text'
+           AND length(CAST(target_archive_id AS BLOB)) > 0
+           AND instr(target_archive_id, char(0)) = 0
+           AND target_archive_id NOT GLOB '*[^0-9]*'),
+    relationship_id INTEGER NOT NULL UNIQUE CHECK (typeof(relationship_id) = 'integer'),
+    source_reference_kind TEXT GENERATED ALWAYS AS ('no_intro_pc_clone') VIRTUAL,
+    FOREIGN KEY (relationship_id, source_reference_kind)
+        REFERENCES reported_catalog_relationships(relationship_id, source_reference_kind)
+        ON DELETE RESTRICT
 ) WITHOUT ROWID;
 CREATE TABLE no_intro_pc_merge_links (
     set_id INTEGER PRIMARY KEY NOT NULL REFERENCES no_intro_pc_games(set_id) ON DELETE RESTRICT,
-    target_archive_id TEXT NOT NULL CHECK (target_archive_id <> '' AND target_archive_id NOT GLOB '*[^0-9]*')
+    target_archive_id TEXT NOT NULL
+        CHECK (typeof(target_archive_id) = 'text'
+           AND length(CAST(target_archive_id AS BLOB)) > 0
+           AND instr(target_archive_id, char(0)) = 0
+           AND target_archive_id NOT GLOB '*[^0-9]*'),
+    relationship_id INTEGER NOT NULL UNIQUE CHECK (typeof(relationship_id) = 'integer'),
+    source_reference_kind TEXT GENERATED ALWAYS AS ('no_intro_pc_mergeof') VIRTUAL,
+    FOREIGN KEY (relationship_id, source_reference_kind)
+        REFERENCES reported_catalog_relationships(relationship_id, source_reference_kind)
+        ON DELETE RESTRICT
 ) WITHOUT ROWID;
 CREATE TRIGGER no_intro_pc_languages_unpublished_owner_insert BEFORE INSERT ON no_intro_pc_languages
 WHEN EXISTS (SELECT 1 FROM catalog_sets JOIN catalog_set_groups USING (set_group_id)
@@ -861,16 +879,54 @@ BEGIN SELECT RAISE(ABORT, 'P/C facts are immutable'); END;
 CREATE TRIGGER no_intro_pc_clone_markers_immutable_delete BEFORE DELETE ON no_intro_pc_clone_markers
 BEGIN SELECT RAISE(ABORT, 'P/C facts are immutable'); END;
 CREATE TRIGGER no_intro_pc_clone_links_unpublished_owner_insert BEFORE INSERT ON no_intro_pc_clone_links
-WHEN EXISTS (SELECT 1 FROM catalog_sets JOIN catalog_set_groups USING (set_group_id)
+WHEN EXISTS (SELECT 1 FROM no_intro_pc_clone_links
+             WHERE set_id=NEW.set_id OR relationship_id=NEW.relationship_id)
+ OR EXISTS (SELECT 1 FROM reported_catalog_relationship_owner_ids
+            WHERE relationship_id=NEW.relationship_id)
+ OR EXISTS (SELECT 1 FROM catalog_sets JOIN catalog_set_groups USING (set_group_id)
              JOIN snapshot_publications USING (snapshot_key) WHERE set_id = NEW.set_id)
+ OR NOT EXISTS (
+    SELECT 1 FROM catalog_sets AS sets
+    JOIN no_intro_pc_games AS native ON native.set_id=sets.set_id
+    JOIN catalog_set_groups AS groups USING(set_group_id)
+    JOIN catalog_snapshots AS snapshot USING(snapshot_key)
+    JOIN parser_interpretations AS interpretation USING(interpretation_key)
+    JOIN catalog_relationships AS identity
+      ON identity.relationship_id=NEW.relationship_id
+     AND identity.origin='source' AND identity.snapshot_key=groups.snapshot_key
+    JOIN reported_catalog_relationships AS reported
+      ON reported.relationship_id=identity.relationship_id
+     AND reported.source_reference_kind='no_intro_pc_clone'
+    WHERE sets.set_id=NEW.set_id AND sets.source_element_kind='no_intro_pc_game'
+      AND groups.kind='root' AND interpretation.format='no-intro-pc-xml'
+ )
 BEGIN SELECT RAISE(ABORT, 'published P/C facts are immutable'); END;
 CREATE TRIGGER no_intro_pc_clone_links_immutable_update BEFORE UPDATE ON no_intro_pc_clone_links
 BEGIN SELECT RAISE(ABORT, 'P/C facts are immutable'); END;
 CREATE TRIGGER no_intro_pc_clone_links_immutable_delete BEFORE DELETE ON no_intro_pc_clone_links
 BEGIN SELECT RAISE(ABORT, 'P/C facts are immutable'); END;
 CREATE TRIGGER no_intro_pc_merge_links_unpublished_owner_insert BEFORE INSERT ON no_intro_pc_merge_links
-WHEN EXISTS (SELECT 1 FROM catalog_sets JOIN catalog_set_groups USING (set_group_id)
+WHEN EXISTS (SELECT 1 FROM no_intro_pc_merge_links
+             WHERE set_id=NEW.set_id OR relationship_id=NEW.relationship_id)
+ OR EXISTS (SELECT 1 FROM reported_catalog_relationship_owner_ids
+            WHERE relationship_id=NEW.relationship_id)
+ OR EXISTS (SELECT 1 FROM catalog_sets JOIN catalog_set_groups USING (set_group_id)
              JOIN snapshot_publications USING (snapshot_key) WHERE set_id = NEW.set_id)
+ OR NOT EXISTS (
+    SELECT 1 FROM catalog_sets AS sets
+    JOIN no_intro_pc_games AS native ON native.set_id=sets.set_id
+    JOIN catalog_set_groups AS groups USING(set_group_id)
+    JOIN catalog_snapshots AS snapshot USING(snapshot_key)
+    JOIN parser_interpretations AS interpretation USING(interpretation_key)
+    JOIN catalog_relationships AS identity
+      ON identity.relationship_id=NEW.relationship_id
+     AND identity.origin='source' AND identity.snapshot_key=groups.snapshot_key
+    JOIN reported_catalog_relationships AS reported
+      ON reported.relationship_id=identity.relationship_id
+     AND reported.source_reference_kind='no_intro_pc_mergeof'
+    WHERE sets.set_id=NEW.set_id AND sets.source_element_kind='no_intro_pc_game'
+      AND groups.kind='root' AND interpretation.format='no-intro-pc-xml'
+ )
 BEGIN SELECT RAISE(ABORT, 'published P/C facts are immutable'); END;
 CREATE TRIGGER no_intro_pc_merge_links_immutable_update BEFORE UPDATE ON no_intro_pc_merge_links
 BEGIN SELECT RAISE(ABORT, 'P/C facts are immutable'); END;
@@ -1539,6 +1595,14 @@ CREATE TRIGGER mame_bios_sets_native_immutable_delete BEFORE DELETE ON mame_bios
 BEGIN SELECT RAISE(ABORT, 'native set details are immutable'); END;
 CREATE TRIGGER no_intro_pc_games_native_owner_insert BEFORE INSERT ON no_intro_pc_games
 WHEN NOT EXISTS (SELECT 1 FROM catalog_sets WHERE set_id = NEW.set_id AND source_element_kind = 'no_intro_pc_game')
+ OR NOT EXISTS (
+    SELECT 1 FROM catalog_sets AS sets
+    JOIN catalog_set_groups AS groups USING(set_group_id)
+    JOIN catalog_snapshots AS snapshot USING(snapshot_key)
+    JOIN parser_interpretations AS interpretation USING(interpretation_key)
+    WHERE sets.set_id=NEW.set_id AND sets.source_element_kind='no_intro_pc_game'
+      AND groups.kind='root' AND interpretation.format='no-intro-pc-xml'
+ )
  OR EXISTS (SELECT 1 FROM catalog_sets JOIN catalog_set_groups USING (set_group_id)
             JOIN snapshot_publications USING (snapshot_key) WHERE set_id = NEW.set_id)
 BEGIN SELECT RAISE(ABORT, 'native details require an unpublished set of the matching format'); END;

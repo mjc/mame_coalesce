@@ -101,6 +101,14 @@ parser-internal representations the public contract.
   relationship indices. Reconciliation retains actual media IDs rather than
   converting them back to a name/order reference. Observed-file endpoints
   remain a separate unfinished interface.
+  Synthetic P/C clone/merge references use actual set-owned native links and
+  the shared reported registry, not copied generic assertions. Archive-number
+  targets remain literal and snapshot-local; build resolution is separate.
+  FK-owned reported/inferred/manual payloads use `WITHOUT ROWID`, so a NULL or
+  omitted ID cannot bypass a guard through SQLite's automatic ID allocation.
+  Scoped source readers constrain both requested snapshots and their issued keys,
+  letting native views use either indexed access path. The final registry join
+  follows the bounded results rather than scanning unrelated relationship identities.
   Logiqx options and repeated child families have native tables, including
   source order and explicit-versus-default presence. History derives relative
   native-child ranks in memory so vendor-only gaps do not produce false edits;

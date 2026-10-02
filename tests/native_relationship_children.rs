@@ -654,3 +654,96 @@ fn child_foreign_keys_never_allocate_an_owner_when_the_requested_id_is_null() ->
     }
     Ok(())
 }
+
+fn relationship_payload_fixture(origin: &str) -> TestResult<Catalog> {
+    let mut catalog = Catalog::new()?;
+    let first = catalog.claim("published-manual-owner")?;
+    let first_id = catalog.id(&first)?;
+    assert_eq!(first_id, 1);
+    catalog.connection.batch_execute(&format!(
+        "PRAGMA foreign_keys=ON; PRAGMA recursive_triggers=OFF; \
+         INSERT INTO catalog_relationship_rules(rule_key,revision,description) \
+         VALUES('payload-owner','v1','Payload owner witness'); \
+         INSERT INTO catalog_relationships(relationship_id,assertion_key,origin) \
+         VALUES(-1,'negative-payload-owner','{origin}'),(2,'positive-derived-owner','derived')"
+    ))?;
+    Ok(catalog)
+}
+
+fn payload_insert(table: &str, owner: Option<&str>) -> String {
+    let (owner_column, owner_value) = owner.map_or((String::new(), String::new()), |id| {
+        ("relationship_id,".to_owned(), format!("{id},"))
+    });
+    let (rule_column, rule_value) = if table == "inferred_catalog_relationships" {
+        (",rule_id", ",rule.rule_id")
+    } else {
+        ("", "")
+    };
+    format!(
+        "INSERT INTO {table}({owner_column}relation_type,from_target_id,to_target_id{rule_column}) \
+         SELECT {owner_value}native.relation_type,native.from_target_id,native.to_target_id{rule_value} \
+         FROM manual_catalog_relationships native CROSS JOIN catalog_relationship_rules rule \
+         WHERE native.relationship_id=1 AND rule.rule_key='payload-owner'"
+    )
+}
+
+fn assert_payload_id_is_not_allocated(table: &str, origin: &str) -> TestResult {
+    let mut catalog = relationship_payload_fixture(origin)?;
+    let before = app::explain_relationships(&catalog.database)?;
+    catalog.connection.batch_execute("SAVEPOINT valid_owner")?;
+    assert_eq!(
+        sql_query(payload_insert(table, Some("-1"))).execute(&mut catalog.connection)?,
+        1,
+        "the negative owner must otherwise accept the identical payload"
+    );
+    catalog
+        .connection
+        .batch_execute("ROLLBACK TO valid_owner; RELEASE valid_owner")?;
+    for owner in [Some("NULL"), None] {
+        assert_rejected(&mut catalog.connection, &payload_insert(table, owner))?;
+        assert_eq!(app::explain_relationships(&catalog.database)?, before);
+    }
+    Ok(())
+}
+
+#[test]
+fn inferred_payload_cannot_allocate_a_published_manual_relationship_id() -> TestResult {
+    assert_payload_id_is_not_allocated("inferred_catalog_relationships", "derived")
+}
+
+#[test]
+fn manual_payload_cannot_allocate_a_derived_relationship_id() -> TestResult {
+    assert_payload_id_is_not_allocated("manual_catalog_relationships", "user")
+}
+
+#[test]
+fn reported_payload_cannot_allocate_a_published_manual_relationship_id() -> TestResult {
+    let mut catalog = Catalog::new()?;
+    let first = catalog.claim("published-manual-owner")?;
+    assert_eq!(catalog.id(&first)?, 1);
+    let before = app::explain_relationships(&catalog.database)?;
+    catalog.connection.batch_execute(
+        "PRAGMA foreign_keys=ON; PRAGMA recursive_triggers=OFF; \
+         INSERT INTO publishing_sources(source_key,display_name) VALUES('payload','Payload witness'); \
+         INSERT INTO catalogs(catalog_key,source_key,display_name) VALUES('payload','payload','Payload witness'); \
+         INSERT INTO documents(document_key) VALUES('payload'); \
+         INSERT INTO parser_interpretations(interpretation_key,format) VALUES('payload','no-intro-pc-xml'); \
+         INSERT INTO catalog_coverage(coverage_id,kind) VALUES(1,'complete'); \
+         INSERT INTO catalog_snapshots(snapshot_key,catalog_key,document_key,interpretation_key,coverage_id) \
+         VALUES('payload','payload','payload','payload',1); \
+         INSERT INTO catalog_relationships(relationship_id,assertion_key,origin,snapshot_key) \
+         VALUES(-1,'negative-source-owner','source','payload'); \
+         SAVEPOINT valid_owner; \
+         INSERT INTO reported_catalog_relationships(relationship_id,source_reference_kind) \
+         VALUES(-1,'no_intro_pc_clone'); \
+         ROLLBACK TO valid_owner; RELEASE valid_owner",
+    )?;
+    for sql in [
+        "INSERT INTO reported_catalog_relationships(relationship_id,source_reference_kind) VALUES(NULL,'no_intro_pc_clone')",
+        "INSERT INTO reported_catalog_relationships(source_reference_kind) VALUES('no_intro_pc_clone')",
+    ] {
+        assert_rejected(&mut catalog.connection, sql)?;
+        assert_eq!(app::explain_relationships(&catalog.database)?, before);
+    }
+    Ok(())
+}

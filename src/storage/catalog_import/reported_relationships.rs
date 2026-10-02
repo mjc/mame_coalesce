@@ -48,6 +48,7 @@ pub(super) enum ReportedReferenceKind {
     SoftwareClone,
     NoIntroDat(DatParentKind),
     NoIntroDatabase(NoIntroArchiveReferenceField),
+    NoIntroPc(NoIntroArchiveReferenceField),
 }
 
 #[derive(Clone, Copy)]
@@ -93,6 +94,8 @@ impl ReportedReferenceKind {
             Self::NoIntroDatabase(NoIntroArchiveReferenceField::MergeOf) => {
                 "no_intro_database_archive_mergeof"
             }
+            Self::NoIntroPc(NoIntroArchiveReferenceField::Clone) => "no_intro_pc_clone",
+            Self::NoIntroPc(NoIntroArchiveReferenceField::MergeOf) => "no_intro_pc_mergeof",
         }
     }
 }
@@ -109,6 +112,10 @@ pub(super) enum ReferenceOwner {
         archive: NoIntroArchiveId,
         field: NoIntroArchiveReferenceField,
     },
+    NoIntroPc {
+        set: CatalogSetId,
+        field: NoIntroArchiveReferenceField,
+    },
 }
 
 impl ReferenceOwner {
@@ -117,6 +124,7 @@ impl ReferenceOwner {
             Self::Software(_) => ReportedReferenceKind::SoftwareClone,
             Self::NoIntroDat { kind, .. } => ReportedReferenceKind::NoIntroDat(kind),
             Self::NoIntroArchive { field, .. } => ReportedReferenceKind::NoIntroDatabase(field),
+            Self::NoIntroPc { field, .. } => ReportedReferenceKind::NoIntroPc(field),
         }
     }
 
@@ -140,12 +148,26 @@ impl ReferenceOwner {
             } => {
                 "INSERT INTO no_intro_archive_merge_links(archive_id,relationship_id,declared_mergeof) VALUES (?,?,?)"
             }
+            Self::NoIntroPc {
+                field: NoIntroArchiveReferenceField::Clone,
+                ..
+            } => {
+                "INSERT INTO no_intro_pc_clone_links(set_id,relationship_id,target_archive_id) VALUES (?,?,?)"
+            }
+            Self::NoIntroPc {
+                field: NoIntroArchiveReferenceField::MergeOf,
+                ..
+            } => {
+                "INSERT INTO no_intro_pc_merge_links(set_id,relationship_id,target_archive_id) VALUES (?,?,?)"
+            }
         }
     }
 
     const fn owner_id(self) -> i64 {
         match self {
-            Self::Software(set) | Self::NoIntroDat { set, .. } => set.as_i64(),
+            Self::Software(set) | Self::NoIntroDat { set, .. } | Self::NoIntroPc { set, .. } => {
+                set.as_i64()
+            }
             Self::NoIntroArchive { archive, .. } => archive.as_i64(),
         }
     }
@@ -169,6 +191,7 @@ pub(super) fn insert_reference(
         ReferenceOwner::NoIntroDat { kind, .. } => {
             query.bind::<Text, _>(kind.field()).execute(connection)?
         }
+        ReferenceOwner::NoIntroPc { .. } => query.execute(connection)?,
     };
     Ok(())
 }

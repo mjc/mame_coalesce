@@ -122,7 +122,7 @@ CREATE TABLE inferred_catalog_relationships (
     to_target_id INTEGER NOT NULL
         REFERENCES catalog_relationship_targets(target_id) ON DELETE RESTRICT,
     rule_id INTEGER NOT NULL REFERENCES catalog_relationship_rules(rule_id) ON DELETE RESTRICT
-);
+) WITHOUT ROWID;
 CREATE INDEX inferred_relationship_from_target
     ON inferred_catalog_relationships(from_target_id, relationship_id);
 CREATE INDEX inferred_relationship_to_target
@@ -140,7 +140,7 @@ CREATE TABLE manual_catalog_relationships (
         REFERENCES catalog_relationship_targets(target_id) ON DELETE RESTRICT,
     to_target_id INTEGER NOT NULL
         REFERENCES catalog_relationship_targets(target_id) ON DELETE RESTRICT
-);
+) WITHOUT ROWID;
 CREATE INDEX manual_relationship_from_target
     ON manual_catalog_relationships(from_target_id, relationship_id);
 CREATE INDEX manual_relationship_to_target

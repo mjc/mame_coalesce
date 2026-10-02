@@ -420,12 +420,13 @@ fn composite_key_catalog_tables_cluster_rows_by_their_primary_keys()
              'mame_machine_analogs', 'mame_machine_device_extensions', 'mame_machine_slot_options', \
              'catalog_relationship_rationales', 'catalog_relationship_comparisons', \
              'catalog_relationship_comparison_fields', 'catalog_relationship_evidence_publications', \
-             'catalog_relationship_evidence' \
+             'catalog_relationship_evidence', 'reported_catalog_relationships', \
+             'inferred_catalog_relationships', 'manual_catalog_relationships' \
          )",
     )
     .get_result::<CountRow>(&mut connection)?;
 
-    assert_eq!(clustered.count, 25);
+    assert_eq!(clustered.count, 28);
 
     let specification_tables = sql_query(
         "SELECT COUNT(*) AS count FROM pragma_table_list \
@@ -445,7 +446,6 @@ fn composite_key_catalog_tables_cluster_rows_by_their_primary_keys()
         ("catalog_sets", "set_id"),
         ("asset_occurrences", "occurrence_id"),
         ("catalog_relationships", "relationship_id"),
-        ("reported_catalog_relationships", "relationship_id"),
         ("mame_rom_claims", "occurrence_id"),
         ("mame_disk_claims", "occurrence_id"),
         ("logiqx_rom_claims", "occurrence_id"),
