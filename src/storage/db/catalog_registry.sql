@@ -124,8 +124,15 @@ BEGIN SELECT RAISE(ABORT, 'interned digest identities are immutable'); END;
 CREATE TRIGGER digest_identity_immutable_delete BEFORE DELETE ON digest_values
 BEGIN SELECT RAISE(ABORT, 'interned digest identities are immutable'); END;
 CREATE TRIGGER digest_identity_immutable_insert BEFORE INSERT ON digest_values
-WHEN EXISTS (SELECT 1 FROM digest_values WHERE digest_id = NEW.digest_id)
-BEGIN SELECT RAISE(ABORT, 'interned digest identities are immutable'); END;
+-- Interning an existing value is a no-op, including REPLACE with a fresh ID.
+-- Preserve references even when foreign keys and recursive DELETE triggers are off.
+-- Resolve both cases here: SQLite does not guarantee order between triggers.
+BEGIN
+    SELECT RAISE(ABORT, 'interned digest identities are immutable')
+      WHERE EXISTS (SELECT 1 FROM digest_values WHERE digest_id=NEW.digest_id);
+    SELECT RAISE(IGNORE)
+      WHERE EXISTS (SELECT 1 FROM digest_values WHERE algorithm=NEW.algorithm AND digest=NEW.digest);
+END;
 CREATE TRIGGER published_source_digest_insert BEFORE INSERT ON occurrence_digest_assertions
 WHEN NEW.provenance = 'source_declared' AND EXISTS (
     SELECT 1 FROM asset_occurrences AS occurrence

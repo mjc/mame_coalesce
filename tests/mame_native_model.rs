@@ -121,7 +121,7 @@ fn pending_machine(
     let owner = sql_query("INSERT INTO catalog_sets(set_group_id,source_element_kind,list_order,set_name,source_line,source_column) VALUES (?,'mame_machine',0,'pending',1,1) RETURNING set_id AS count")
         .bind::<BigInt,_>(group).get_result::<Count>(connection)?.count;
     if machine {
-        sql_query("INSERT INTO mame_machines(set_id,description,description_source_order,description_line,description_column,is_device,is_device_specified,runnable,runnable_specified,is_bios,is_bios_specified,is_mechanical,is_mechanical_specified,is_consumable,is_consumable_specified,attributes_line,attributes_column) VALUES (?,'Pending',0,1,1,0,0,1,0,0,0,0,0,0,0,1,1)")
+        sql_query("INSERT INTO mame_machines(set_id,description,description_source_order,description_line,description_column,is_device,is_device_specified,runnable,runnable_specified,is_bios,is_bios_specified,is_mechanical,is_mechanical_specified,attributes_line,attributes_column) VALUES (?,'Pending',0,1,1,0,0,1,0,0,0,0,0,1,1)")
             .bind::<BigInt,_>(owner).execute(connection)?;
     }
     Ok((key, owner))
@@ -130,6 +130,124 @@ fn pending_machine(
 fn publish_pending(connection: &mut SqliteConnection, key: &str) -> QueryResult<usize> {
     sql_query("INSERT INTO snapshot_publications(catalog_key,document_key,interpretation_key,snapshot_key) SELECT catalog_key,document_key,interpretation_key,snapshot_key FROM catalog_snapshots WHERE snapshot_key=?")
         .bind::<Text,_>(key).execute(connection)
+}
+
+#[test]
+fn publication_rejects_a_mame_root_without_any_machine() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let path = Utf8PathBuf::try_from(directory.path().join("catalog.sqlite"))?;
+    let database = Database::open(&path)?;
+    let document = Utf8PathBuf::try_from(directory.path().join("machines.xml"))?;
+    std::fs::write(
+        &document,
+        "<mame mameconfig='10'><machine name='seed'><description>Seed</description></machine></mame>",
+    )?;
+    let base = app::import_catalog(&database, &request(document))?
+        .snapshot_key
+        .ok_or("seed snapshot missing")?;
+    let mut connection = SqliteConnection::establish(path.as_str())?;
+    let key = "empty-native-mame";
+    sql_query("INSERT INTO catalogs(catalog_key,source_key,display_name) SELECT ?,source_key,? FROM catalogs WHERE catalog_key='native-machine-catalog'")
+        .bind::<Text,_>(key).bind::<Text,_>(key).execute(&mut connection)?;
+    sql_query("INSERT INTO catalog_snapshots(snapshot_key,catalog_key,document_key,interpretation_key,coverage_id) SELECT ?,?,document_key,interpretation_key,coverage_id FROM catalog_snapshots WHERE snapshot_key=?")
+        .bind::<Text,_>(key).bind::<Text,_>(key).bind::<Text,_>(base.as_str()).execute(&mut connection)?;
+    sql_query("INSERT INTO mame_document_facts(snapshot_key,build,debug,debug_specified,config_version,source_line,source_column) SELECT ?,build,debug,debug_specified,config_version,source_line,source_column FROM mame_document_facts WHERE snapshot_key=?")
+        .bind::<Text,_>(key).bind::<Text,_>(base.as_str()).execute(&mut connection)?;
+    sql_query("INSERT INTO catalog_set_groups(snapshot_key,kind,list_order) VALUES (?,'root',0)")
+        .bind::<Text, _>(key)
+        .execute(&mut connection)?;
+    let error = publish_pending(&mut connection, key)
+        .err()
+        .ok_or("empty MAME root was published")?;
+    assert!(
+        error.to_string().contains("native MAME publication"),
+        "{error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn publication_rejects_unusable_or_mismatched_native_uuid_declarations() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let path = Utf8PathBuf::try_from(directory.path().join("catalog.sqlite"))?;
+    let database = Database::open(&path)?;
+    let document = Utf8PathBuf::try_from(directory.path().join("machines.xml"))?;
+    std::fs::write(
+        &document,
+        "<mame mameconfig='10'><machine name='seed'><description>Seed</description><rom name='trusted' size='16' sha1='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'/></machine></mame>",
+    )?;
+    let base = app::import_catalog(&database, &request(document))?
+        .snapshot_key
+        .ok_or("seed snapshot missing")?;
+    let mut connection = SqliteConnection::establish(path.as_str())?;
+    connection.batch_execute("PRAGMA foreign_keys=OFF; PRAGMA recursive_triggers=OFF;")?;
+    let seed = sql_query(
+        "SELECT occurrence_id AS count FROM asset_occurrences WHERE content_uuid IS NOT NULL",
+    )
+    .get_result::<Count>(&mut connection)?
+    .count;
+    for (label, size, crc, sha1, md5) in [
+        (
+            "bad-size",
+            "not-number",
+            None,
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            None,
+        ),
+        (
+            "large-size",
+            "9223372036854775808",
+            None,
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            None,
+        ),
+        (
+            "bad-crc",
+            "16",
+            Some("not-hex"),
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            None,
+        ),
+        (
+            "bad-md5",
+            "16",
+            None,
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            Some("not-hex"),
+        ),
+        (
+            "wrong-sha1",
+            "16",
+            None,
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            None,
+        ),
+    ] {
+        let (key, owner) = pending_machine(&mut connection, base.as_str(), label, true, true)?;
+        let occurrence=sql_query("INSERT INTO asset_occurrences(record_id,occurrence_order,claim_kind,content_uuid) SELECT ?,0,'mame_rom',content_uuid FROM asset_occurrences WHERE occurrence_id=? RETURNING occurrence_id AS count")
+            .bind::<BigInt,_>(owner).bind::<BigInt,_>(seed).get_result::<Count>(&mut connection)?.count;
+        sql_query("INSERT INTO mame_rom_claims(occurrence_id,name,size_text,crc_text,sha1_text,evidence_scope,evidence_provenance,dump_status,status_specified,source_order,optional,optional_specified,source_line,source_column) VALUES (?,'bad',?,?,?,'whole_asset','source_declared','good',0,1,0,0,1,1)")
+            .bind::<BigInt,_>(occurrence).bind::<Text,_>(size)
+            .bind::<diesel::sql_types::Nullable<Text>,_>(crc).bind::<Text,_>(sha1).execute(&mut connection)?;
+        if let Some(md5) = md5 {
+            sql_query("INSERT INTO mame_rom_compatibility(occurrence_id,md5_text) VALUES (?,?)")
+                .bind::<BigInt, _>(occurrence)
+                .bind::<Text, _>(md5)
+                .execute(&mut connection)?;
+        }
+        sql_query("INSERT INTO occurrence_digest_assertions(occurrence_id,digest_id,scope,provenance) SELECT ?,digest_id,scope,provenance FROM occurrence_digest_assertions WHERE occurrence_id=?")
+            .bind::<BigInt,_>(occurrence).bind::<BigInt,_>(seed).execute(&mut connection)?;
+        let error = publish_pending(&mut connection, &key)
+            .err()
+            .ok_or_else(|| {
+                format!("{label} published a UUID without usable matching native declarations")
+            })?;
+        assert!(
+            error.to_string().contains("native MAME publication"),
+            "{label}: {error}"
+        );
+    }
+    Ok(())
 }
 
 #[test]
@@ -208,11 +326,11 @@ fn assert_remaining_publication_rules(connection: &mut SqliteConnection, base: &
         );
     }
     let (key, owner) = pending_machine(connection, base, "writable-presence", true, true)?;
-    let occurrence=sql_query("INSERT INTO asset_occurrences(record_id,occurrence_order,claim_kind) VALUES (?,0,'mame_rom') RETURNING occurrence_id AS count")
+    let occurrence=sql_query("INSERT INTO asset_occurrences(record_id,occurrence_order,claim_kind) VALUES (?,0,'mame_disk') RETURNING occurrence_id AS count")
         .bind::<BigInt,_>(owner).get_result::<Count>(connection)?.count;
     for (writable, specified) in [("1", 0), ("NULL", 1)] {
         let statement = format!(
-            "INSERT INTO mame_rom_claims(occurrence_id,name,evidence_scope,evidence_provenance,dump_status,status_specified,source_order,optional,optional_specified,writable,writable_specified,source_line,source_column) VALUES (?,'rom','whole_asset','source','good',0,1,0,0,{writable},{specified},1,1)"
+            "INSERT INTO mame_disk_claims(occurrence_id,name,evidence_scope,evidence_provenance,dump_status,status_specified,source_order,optional,optional_specified,writable,writable_specified,source_line,source_column) VALUES (?,'disk','chd_header_sha1','source_declared','good',0,1,0,0,{writable},{specified},1,1)"
         );
         assert!(
             sql_query(statement)
@@ -221,7 +339,7 @@ fn assert_remaining_publication_rules(connection: &mut SqliteConnection, base: &
                 .is_err()
         );
     }
-    sql_query("INSERT INTO mame_rom_claims(occurrence_id,name,evidence_scope,evidence_provenance,dump_status,status_specified,source_order,optional,optional_specified,writable,writable_specified,source_line,source_column) VALUES (?,'rom','whole_asset','source','good',0,1,0,0,NULL,0,1,1)")
+    sql_query("INSERT INTO mame_disk_claims(occurrence_id,name,evidence_scope,evidence_provenance,dump_status,status_specified,source_order,optional,optional_specified,writable,writable_specified,source_line,source_column) VALUES (?,'disk','chd_header_sha1','source_declared','good',0,1,0,0,0,0,1,1)")
         .bind::<BigInt,_>(occurrence).execute(connection)?;
     assert_eq!(publish_pending(connection, &key)?, 1);
     let (key, owner) = pending_machine(connection, base, "nested-collision", true, true)?;

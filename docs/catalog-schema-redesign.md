@@ -694,9 +694,26 @@ payloads, singleton cardinality and unique cross-family/nested source positions.
 Native insert/immutability guards also operate with SQLite foreign-key and
 recursive-trigger enforcement disabled.
 
-This is not completion of the pinned MAME field contract. Original ROM
-size/offset lexemes and interpretation-specific ownership for historical
-compatibility attributes remain open. The accepted `conflocation` fixture is
+ROM declarations now retain size, CRC, SHA-1 and offset source text. Checked
+numeric size is virtual rather than a stored copy. Native ROM/disk shapes are
+separate, and historical machine/ROM/disk attributes have actual native-parent
+compatibility owners qualified by `mame-observed-compat-declared-text-v1`.
+ROM MD5 text belongs to that compatibility owner. Public file payloads hydrate
+typed native media fields from existing occurrence references; history compares
+raw declaration spelling as well as normalized evidence.
+
+Publication checks both directions of the native-literal/source-assertion
+relationship using requested-owner lookups. Uninterpretable supplied size/hash
+fields cannot assign a UUID. No-dump and unproven historical loading facts retain
+unknown-scope evidence instead of an invented whole-file claim, while CHD header
+hashes never assign a whole-container UUID. MAME offsets are hexadecimal even
+when their source text contains only decimal-looking digits. Referenced parser
+interpretations cannot be replaced or deleted beneath their native facts, and
+reinterning a digest preserves the existing digest owner ID.
+
+This is not completion of the pinned MAME field contract. Expected audio sample
+media identities, dedicated source relationship owners and exhaustive field/query
+and grammar witnesses remain open. The accepted `conflocation` fixture is
 compatibility input, not evidence that it belongs to the pinned 0.289 DTD.
 
 ## MAME software-list native relations

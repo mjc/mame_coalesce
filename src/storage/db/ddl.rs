@@ -6,6 +6,8 @@ pub const SCHEMA: &str = concat!(
     "\n",
     include_str!("schema.sql"),
     "\n",
+    include_str!("mame_compatibility.sql"),
+    "\n",
     include_str!("logiqx.sql"),
     "\n",
     include_str!("cmp.sql"),

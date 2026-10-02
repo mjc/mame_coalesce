@@ -183,6 +183,7 @@ fn assert_fixture_witnesses(
         assert!(declared.facts.flags.is_bios_specified());
         assert!(declared.facts.flags.is_mechanical_specified());
         assert!(declared.facts.flags.is_consumable_specified());
+        assert!(!declared.facts.flags.is_consumable());
         assert_eq!(declared.switches[0].mask, "0x00AF");
         assert_eq!(declared.switches[0].values[0].value, "0x00A0");
         assert!(declared.switches[0].locations[0].inverted_specified);

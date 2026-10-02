@@ -1177,9 +1177,10 @@ fn publishing_completes_a_matching_identity_only_snapshot() -> Result<(), Box<dy
     .bind::<Text, _>(&document_key)
     .execute(&mut connection)?;
     sql_query(
-        "INSERT INTO parser_interpretations (interpretation_key, format) VALUES (?, 'logiqx')",
+        "INSERT INTO parser_interpretations (interpretation_key,format,parser_name,parser_version,rules_version) VALUES (?,'logiqx','mame_coalesce',?,'logiqx-declared-text-compat-v1')",
     )
     .bind::<Text, _>(interpretation.as_str())
+    .bind::<Text, _>(env!("CARGO_PKG_VERSION"))
     .execute(&mut connection)?;
     sql_query(
         "INSERT INTO catalog_snapshots \
@@ -1509,9 +1510,10 @@ fn stale_identity_only_metadata_is_not_published_as_current()
         .bind::<Text, _>(&document_key)
         .execute(&mut connection)?;
     sql_query(
-        "INSERT INTO parser_interpretations (interpretation_key, format) VALUES (?, 'logiqx')",
+        "INSERT INTO parser_interpretations (interpretation_key,format,parser_name,parser_version,rules_version) VALUES (?,'logiqx','mame_coalesce',?,'logiqx-declared-text-compat-v1')",
     )
     .bind::<Text, _>(interpretation.as_str())
+    .bind::<Text, _>(env!("CARGO_PKG_VERSION"))
     .execute(&mut connection)?;
     sql_query(
         "INSERT INTO catalog_snapshots \
@@ -2732,7 +2734,7 @@ fn persists_mame_rom_and_disk_spec_attributes_as_relational_facts()
     .get_result::<TextRow>(&mut connection)?;
     assert_eq!(
         rom.value,
-        "maincpu:rev-a:40960:1:0:1:LOAD16_BYTE:0x42:0:0x80:1"
+        "maincpu:rev-a:a000:1:0:1:LOAD16_BYTE:0x42:0:0x80:1"
     );
 
     let disk = sql_query(

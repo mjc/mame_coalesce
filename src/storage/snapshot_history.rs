@@ -97,8 +97,16 @@ struct RequirementRow {
     mame_region: Option<String>,
     #[diesel(sql_type = Nullable<Text>)]
     mame_bios: Option<String>,
-    #[diesel(sql_type = Nullable<BigInt>)]
-    mame_offset: Option<i64>,
+    #[diesel(sql_type = Nullable<Text>)]
+    mame_size_text: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    mame_crc_text: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    mame_sha1_text: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    mame_md5_text: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    mame_offset_text: Option<String>,
     #[diesel(sql_type = Nullable<BigInt>)]
     mame_source_order: Option<i64>,
     #[diesel(sql_type = Nullable<Bool>)]
@@ -2113,12 +2121,7 @@ fn normalize_native_order(
     }
 }
 
-fn load_requirements(
-    conn: &mut diesel::SqliteConnection,
-    key: &SnapshotKey,
-) -> crate::Result<Vec<RequirementRow>> {
-    Ok(sql_query(
-        "SELECT occurrence.occurrence_id, sets.set_id, asset.asset_name, asset.role, asset.size, \
+const ROOT_REQUIREMENTS_SQL: &str = "SELECT occurrence.occurrence_id, sets.set_id, asset.asset_name, asset.role, asset.size, \
          (SELECT digest.digest FROM asset_requirement_usable_digests AS assertion \
           JOIN digest_values AS digest USING (digest_id) \
           WHERE assertion.set_id = asset.set_id AND assertion.provenance = 'source_declared' \
@@ -2143,16 +2146,21 @@ fn load_requirements(
             AND digest.algorithm = 'sha256') AS sha256, \
          asset.evidence_scope, asset.evidence_provenance, \
          asset.merge_name, asset.dump_status, asset.serial, asset.date, \
-         facts.region AS mame_region, facts.bios AS mame_bios, facts.offset AS mame_offset, \
+         facts.region AS mame_region, facts.bios AS mame_bios, \
+         mame_rom.size_text AS mame_size_text, mame_rom.crc_text AS mame_crc_text, \
+         COALESCE(mame_rom.sha1_text, mame_disk.sha1_text) AS mame_sha1_text, \
+         mame_rom_raw.md5_text AS mame_md5_text, facts.offset AS mame_offset_text, \
          facts.source_order AS mame_source_order, \
          facts.status_specified AS mame_status_specified, \
-         facts.optional AS mame_optional, facts.sound_only AS mame_sound_only, \
+         facts.optional AS mame_optional, mame_rom_compat.sound_only AS mame_sound_only, \
          facts.optional_specified AS mame_optional_specified, \
-         facts.dispose AS mame_dispose, facts.load_flag AS mame_load_flag, facts.value AS mame_value, \
-         facts.inverted AS mame_inverted, facts.ovha AS mame_ovha, facts.no_thread AS mame_no_thread, \
+         mame_rom_compat.dispose AS mame_dispose, mame_rom_compat.load_flag AS mame_load_flag, \
+         mame_rom_compat.value AS mame_value, \
+         mame_rom_compat.inverted AS mame_inverted, mame_rom_compat.ovha AS mame_ovha, \
+         mame_rom_compat.no_thread AS mame_no_thread, \
          facts.disk_index AS mame_disk_index, facts.writable AS mame_writable, \
          facts.writable_specified AS mame_writable_specified, \
-         facts.writeable AS mame_writeable, rom_claim.size_text AS logiqx_size_text, \
+         mame_disk_compat.writeable AS mame_writeable, rom_claim.size_text AS logiqx_size_text, \
          rom_claim.crc_text AS logiqx_crc_text, \
          COALESCE(rom_claim.md5_text, disk_claim.md5_text) AS logiqx_md5_text, \
          COALESCE(rom_claim.sha1_text, disk_claim.sha1_text) AS logiqx_sha1_text, \
@@ -2206,11 +2214,33 @@ fn load_requirements(
          LEFT JOIN mame_asset_facts AS facts \
            ON facts.set_id = asset.set_id \
           AND facts.component_order = asset.component_order \
+         LEFT JOIN mame_rom_claims AS mame_rom \
+           ON mame_rom.occurrence_id = occurrence.occurrence_id AND asset.role = 'rom' \
+         LEFT JOIN mame_rom_compatibility AS mame_rom_raw \
+           ON mame_rom_raw.occurrence_id = occurrence.occurrence_id \
+         LEFT JOIN mame_disk_claims AS mame_disk \
+           ON mame_disk.occurrence_id = occurrence.occurrence_id AND asset.role = 'disk' \
+         LEFT JOIN catalog_snapshots AS mame_snapshot \
+           ON mame_snapshot.snapshot_key = sets.snapshot_key \
+         LEFT JOIN parser_interpretations AS mame_interpretation \
+           ON mame_interpretation.interpretation_key = mame_snapshot.interpretation_key \
+          AND mame_interpretation.rules_version = 'mame-observed-compat-declared-text-v1' \
+         LEFT JOIN mame_rom_compatibility AS mame_rom_compat \
+           ON mame_rom_compat.occurrence_id = occurrence.occurrence_id \
+          AND mame_interpretation.interpretation_key IS NOT NULL \
+         LEFT JOIN mame_disk_compatibility AS mame_disk_compat \
+           ON mame_disk_compat.occurrence_id = occurrence.occurrence_id \
+          AND mame_interpretation.interpretation_key IS NOT NULL \
          WHERE sets.snapshot_key = ? \
-         ORDER BY sets.set_name, asset.asset_name, asset.component_order",
-    )
-    .bind::<Text, _>(key.as_str())
-    .load::<RequirementRow>(conn)?)
+         ORDER BY sets.set_name, asset.asset_name, asset.component_order";
+
+fn load_requirements(
+    conn: &mut diesel::SqliteConnection,
+    key: &SnapshotKey,
+) -> crate::Result<Vec<RequirementRow>> {
+    Ok(sql_query(ROOT_REQUIREMENTS_SQL)
+        .bind::<Text, _>(key.as_str())
+        .load::<RequirementRow>(conn)?)
 }
 
 fn load_mame_machine_dependencies(
@@ -3005,9 +3035,13 @@ fn assemble_requirements(
             "serial": row.serial,
             "date": row.date,
             "mame_attributes": {
+                "size_text": row.mame_size_text,
+                "crc_text": row.mame_crc_text,
+                "sha1_text": row.mame_sha1_text,
+                "md5_text": row.mame_md5_text,
                 "region": row.mame_region,
                 "bios": row.mame_bios,
-                "offset": row.mame_offset,
+                "offset_text": row.mame_offset_text,
                 "source_order": row.mame_source_order,
                 "status_specified": row.mame_status_specified,
                 "optional": row.mame_optional.map(|value| value != 0),
@@ -3417,6 +3451,7 @@ fn requirement_changes(
                 "extensions",
                 "cmp_declarations",
                 "no_intro_dat_attributes",
+                "mame_attributes",
             ]
             .into_iter()
             .any(|field| field_changed(before, after, field))

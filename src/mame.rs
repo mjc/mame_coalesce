@@ -254,6 +254,7 @@ pub struct DeviceReference {
 pub struct MachineAsset {
     pub name: String,
     pub role: AssetRole,
+    pub declarations: MameAssetDeclarations,
     pub size: Option<u64>,
     pub crc: Option<Vec<u8>>,
     pub md5: Option<Vec<u8>>,
@@ -265,6 +266,40 @@ pub struct MachineAsset {
     pub source_order: i64,
     pub attributes: MameAssetAttributes,
     pub extensions: Vec<XmlExtension>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+// Keep explicit source-text names distinct from checked numeric/hash evidence.
+#[allow(clippy::struct_field_names)]
+pub struct MameAssetDeclarations {
+    pub size_text: Option<String>,
+    pub crc_text: Option<String>,
+    pub md5_text: Option<String>,
+    pub sha1_text: Option<String>,
+    pub offset_text: Option<String>,
+}
+
+impl MameAssetDeclarations {
+    /// Whether every supplied size/hash declaration can be interpreted.
+    /// This does not establish whole-file scope or supply a missing strong hash.
+    #[must_use]
+    pub fn declarations_interpretable(&self) -> bool {
+        self.size_text
+            .as_deref()
+            .is_none_or(|value| declared_size_evidence(value).is_some())
+            && self
+                .crc_text
+                .as_deref()
+                .is_none_or(|value| is_hex_text(value, 8))
+            && self
+                .md5_text
+                .as_deref()
+                .is_none_or(|value| is_hex_text(value, 32))
+            && self
+                .sha1_text
+                .as_deref()
+                .is_none_or(|value| is_hex_text(value, 40))
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -321,6 +356,17 @@ pub struct MameAssetAttributes {
     pub writable: Option<MameBoolean>,
     pub writable_specified: bool,
     pub writeable: Option<MameBoolean>,
+}
+
+impl MameAssetAttributes {
+    /// Historical loading fields have no pinned complete-file contract here.
+    pub(crate) const fn has_unproven_loading(&self) -> bool {
+        self.load_flag.is_some()
+            || self.value.is_some()
+            || self.inverted.is_some()
+            || self.ovha.is_some()
+            || self.no_thread.is_some()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1021,18 +1067,13 @@ fn parse_machine_switch(
 }
 
 fn parse_mame_integer(value: &str) -> crate::Result<u64> {
-    let parsed = value
+    let hex = value
         .strip_prefix("0x")
         .or_else(|| value.strip_prefix("0X"))
-        .map_or_else(
-            || {
-                value
-                    .parse::<u64>()
-                    .or_else(|_| u64::from_str_radix(value, 16))
-            },
-            |hex| u64::from_str_radix(hex, 16),
-        );
-    parsed.map_err(|_| crate::Error::XmlValidation(format!("invalid MAME integer {value:?}")))
+        .unwrap_or(value);
+    // MAME 0.289 output_rom writes offsets with %x, even when every digit is numeric.
+    u64::from_str_radix(hex, 16)
+        .map_err(|_| crate::Error::XmlValidation(format!("invalid MAME integer {value:?}")))
 }
 
 fn parse_mame_asset_attributes(node: &Element) -> crate::Result<MameAssetAttributes> {
@@ -1040,15 +1081,15 @@ fn parse_mame_asset_attributes(node: &Element) -> crate::Result<MameAssetAttribu
     let number = |name: &str| {
         node.attributes
             .get(name)
-            .map(|value| parse_mame_integer(value).map(MameOffset))
-            .transpose()
+            .and_then(|value| parse_mame_integer(value).ok())
+            .map(MameOffset)
     };
     let boolean = |name: &str| parse_optional_mame_boolean(node.attributes.get(name), name);
 
     Ok(MameAssetAttributes {
         region: value("region"),
         bios: value("bios"),
-        offset: number("offset")?,
+        offset: number("offset"),
         optional: boolean("optional")?.unwrap_or_default(),
         optional_specified: node.attributes.contains_key("optional"),
         status_specified: node.attributes.contains_key("status"),
@@ -1072,30 +1113,29 @@ fn parse_asset(
     source_order: i64,
 ) -> crate::Result<MachineAsset> {
     let name = required(node, "name")?;
-    let size = node
-        .attributes
-        .get("size")
-        .map(|size| {
-            size.parse::<u64>().map_err(|_| {
-                crate::Error::XmlValidation(format!("invalid MAME asset size {size:?}"))
-            })
-        })
-        .transpose()?;
-    let sha1 = node
-        .attributes
-        .get("sha1")
-        .map(|digest| decode_hex(digest))
-        .transpose()?;
-    let crc = node
-        .attributes
-        .get("crc")
-        .map(|digest| decode_hex_sized(digest, 8))
-        .transpose()?;
-    let md5 = node
-        .attributes
-        .get("md5")
-        .map(|digest| decode_hex_sized(digest, 32))
-        .transpose()?;
+    let declarations = MameAssetDeclarations {
+        size_text: node.attributes.get("size").cloned(),
+        crc_text: node.attributes.get("crc").cloned(),
+        md5_text: node.attributes.get("md5").cloned(),
+        sha1_text: node.attributes.get("sha1").cloned(),
+        offset_text: node.attributes.get("offset").cloned(),
+    };
+    let size = declarations
+        .size_text
+        .as_deref()
+        .and_then(declared_size_evidence);
+    let sha1 = declarations
+        .sha1_text
+        .as_deref()
+        .and_then(|digest| decode_hex(digest).ok());
+    let crc = declarations
+        .crc_text
+        .as_deref()
+        .and_then(|digest| decode_hex_sized(digest, 8).ok());
+    let md5 = declarations
+        .md5_text
+        .as_deref()
+        .and_then(|digest| decode_hex_sized(digest, 32).ok());
     let merge_name = node.attributes.get("merge").cloned();
     let dump_status = match node.attributes.get("status").map(String::as_str) {
         None | Some("good") => MameDumpStatus::Good,
@@ -1135,6 +1175,7 @@ fn parse_asset(
         } else {
             AssetRole::Disk
         },
+        declarations,
         size,
         crc,
         md5,
@@ -1345,6 +1386,18 @@ fn decode_hex_sized(value: &str, length: usize) -> crate::Result<Vec<u8>> {
         .collect()
 }
 
+fn declared_size_evidence(value: &str) -> Option<u64> {
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let size = value.parse::<u64>().ok()?;
+    i64::try_from(size).ok().map(|_| size)
+}
+
+fn is_hex_text(value: &str, length: usize) -> bool {
+    value.len() == length && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used)] // These tests use expect to identify missing fixture witnesses.
 mod tests {
@@ -1503,6 +1556,146 @@ mod tests {
         assert_eq!(defaults.attributes.optional, MameBoolean::No);
         assert_eq!(defaults.attributes.writable, Some(MameBoolean::No));
         assert!(!defaults.attributes.writable_specified);
+        Ok(())
+    }
+
+    #[test]
+    fn asset_declarations_preserve_absence_empty_text_and_usable_evidence() -> crate::Result<()> {
+        let absent = parse_asset(
+            &parse_xml_element(br#"<rom name="absent.bin"/>"#)?,
+            false,
+            0,
+        )?;
+        assert_eq!(absent.declarations.size_text, None);
+        assert_eq!(absent.declarations.crc_text, None);
+        assert_eq!(absent.declarations.md5_text, None);
+        assert_eq!(absent.declarations.sha1_text, None);
+        assert_eq!(absent.declarations.offset_text, None);
+        assert!(absent.declarations.declarations_interpretable());
+
+        let empty = parse_asset(
+            &parse_xml_element(
+                br#"<rom name="empty.bin" size="" crc="" md5="" sha1="" offset=""/>"#,
+            )?,
+            false,
+            0,
+        )?;
+        assert_eq!(empty.declarations.size_text.as_deref(), Some(""));
+        assert_eq!(empty.declarations.crc_text.as_deref(), Some(""));
+        assert_eq!(empty.declarations.md5_text.as_deref(), Some(""));
+        assert_eq!(empty.declarations.sha1_text.as_deref(), Some(""));
+        assert_eq!(empty.declarations.offset_text.as_deref(), Some(""));
+        assert_eq!(empty.size, None);
+        assert_eq!(empty.crc, None);
+        assert_eq!(empty.md5, None);
+        assert_eq!(empty.sha1, None);
+        assert_eq!(empty.attributes.offset, None);
+        assert!(!empty.declarations.declarations_interpretable());
+        Ok(())
+    }
+
+    #[test]
+    fn asset_declarations_retain_original_numeric_and_digest_text() -> crate::Result<()> {
+        let md5_text = "aA".repeat(16);
+        let sha1_text = "Ff".repeat(20);
+        let xml = format!(
+            r#"<rom name="mixed.bin" size="00042" crc="aBcD0123" md5="{md5_text}" sha1="{sha1_text}" offset="0x00aF"/>"#
+        );
+        let asset = parse_asset(&parse_xml_element(xml.as_bytes())?, false, 0)?;
+
+        assert_eq!(asset.declarations.size_text.as_deref(), Some("00042"));
+        assert_eq!(asset.declarations.crc_text.as_deref(), Some("aBcD0123"));
+        assert_eq!(
+            asset.declarations.md5_text.as_deref(),
+            Some(md5_text.as_str())
+        );
+        assert_eq!(
+            asset.declarations.sha1_text.as_deref(),
+            Some(sha1_text.as_str())
+        );
+        assert_eq!(asset.declarations.offset_text.as_deref(), Some("0x00aF"));
+        assert_eq!(asset.size, Some(42));
+        assert_eq!(asset.crc, Some(vec![0xab, 0xcd, 0x01, 0x23]));
+        assert_eq!(asset.md5.as_ref().map(Vec::len), Some(16));
+        assert_eq!(asset.sha1.as_ref().map(Vec::len), Some(20));
+        assert_eq!(asset.attributes.offset, Some(MameOffset(0xaf)));
+        assert!(asset.declarations.declarations_interpretable());
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_and_overflowing_declarations_are_retained_without_usable_evidence()
+    -> crate::Result<()> {
+        let invalid = parse_asset(
+            &parse_xml_element(
+                br#"<rom name="invalid.bin" size="many" crc="" md5="not-hex" sha1="not-hex"/>"#,
+            )?,
+            false,
+            0,
+        )?;
+        assert_eq!(invalid.declarations.size_text.as_deref(), Some("many"));
+        assert_eq!(invalid.declarations.crc_text.as_deref(), Some(""));
+        assert_eq!(invalid.declarations.md5_text.as_deref(), Some("not-hex"));
+        assert_eq!(invalid.declarations.sha1_text.as_deref(), Some("not-hex"));
+        assert_eq!(invalid.size, None);
+        assert_eq!(invalid.crc, None);
+        assert_eq!(invalid.md5, None);
+        assert_eq!(invalid.sha1, None);
+        assert!(!invalid.declarations.declarations_interpretable());
+
+        let overflow = parse_asset(
+            &parse_xml_element(br#"<rom name="overflow.bin" size="9223372036854775808"/>"#)?,
+            false,
+            0,
+        )?;
+        assert_eq!(
+            overflow.declarations.size_text.as_deref(),
+            Some("9223372036854775808")
+        );
+        assert_eq!(overflow.size, None);
+        assert!(!overflow.declarations.declarations_interpretable());
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_offset_is_preserved_without_affecting_whole_file_identity() -> crate::Result<()> {
+        let asset = parse_asset(
+            &parse_xml_element(
+                br#"<rom name="offset.bin" size="12" crc="aBcD0123" offset="not-a-number"/>"#,
+            )?,
+            false,
+            0,
+        )?;
+
+        assert_eq!(
+            asset.declarations.offset_text.as_deref(),
+            Some("not-a-number")
+        );
+        assert_eq!(asset.attributes.offset, None);
+        assert_eq!(asset.size, Some(12));
+        assert_eq!(asset.crc, Some(vec![0xab, 0xcd, 0x01, 0x23]));
+        assert!(asset.declarations.declarations_interpretable());
+        Ok(())
+    }
+
+    #[test]
+    fn asset_closed_enums_and_boolean_values_remain_validated() -> crate::Result<()> {
+        assert!(
+            parse_asset(
+                &parse_xml_element(br#"<rom name="bad-status.bin" status="unknown"/>"#)?,
+                false,
+                0,
+            )
+            .is_err()
+        );
+        assert!(
+            parse_asset(
+                &parse_xml_element(br#"<rom name="bad-boolean.bin" optional="true"/>"#)?,
+                false,
+                0,
+            )
+            .is_err()
+        );
         Ok(())
     }
 
@@ -1731,6 +1924,22 @@ mod tests {
         let catalog = MameCatalog::parse(br#"<mame mameconfig="10" debug="no"><machine name="system"><description>System</description></machine></mame>"#)?;
         assert!(!catalog.debug);
         assert!(catalog.debug_specified);
+        Ok(())
+    }
+    #[test]
+    fn numeric_offset_queries_use_mame_hexadecimal_source_text() -> crate::Result<()> {
+        let catalog=MameCatalog::parse(b"<mame mameconfig='10'><machine name='system'><description>System</description><rom name='rom' size='1' offset='8000'/></machine></mame>")?;
+        assert_eq!(
+            catalog.machines[0].assets[0]
+                .declarations
+                .offset_text
+                .as_deref(),
+            Some("8000")
+        );
+        assert_eq!(
+            catalog.machines[0].assets[0].attributes.offset,
+            Some(MameOffset(0x8000))
+        );
         Ok(())
     }
 }

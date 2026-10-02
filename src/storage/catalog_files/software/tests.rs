@@ -152,6 +152,7 @@ fn software_occurrence(kind: OccurrenceKind) -> CatalogFileOccurrence {
             }),
         },
         digests: Vec::new(),
+        mame_file: None,
         software_file: None,
         no_intro_dat_rom: None,
         no_intro_database_file: None,

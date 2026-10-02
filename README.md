@@ -137,6 +137,21 @@ provenance; size and declared digests remain unknown and it cannot receive a
 file UUID. Samples are not ROM build requirements. The full format witness
 matrix remains unfinished.
 
+MAME machine XML stores ROM size/hash/offset declaration text without losing
+missing, empty, leading-zero or uninterpretable values. Numeric size is a checked
+virtual decimal projection; offset queries follow MAME's hexadecimal spelling.
+ROM and CHD disk rows have separate native shapes, and historical attributes
+belong to separately qualified compatibility owners. The default interpretation
+is `mame-observed-compat-declared-text-v1`, not strict DTD validation.
+Uninterpretable supplied declarations prevent shared UUID association. No-dump
+claims and historical loading fields without a pinned whole-file contract retain
+their literals and unknown-scope hash evidence without receiving a UUID. CHD
+header hashes never identify whole-container bytes. Publication requires native
+source literals and normalized source assertions to agree in both directions.
+The `catalog_files` API hydrates typed MAME ROM/disk payloads from existing
+machine media references without reparsing originals. History includes their raw
+declarations, explicit defaults and compatibility fields.
+
 No-Intro flat DAT XML has four explicit import interpretations:
 `no-intro-dat-v3-strict`, `no-intro-dat-v3-compatible`,
 `no-intro-dat-v4-strict`, and `no-intro-dat-v4-compatible`.

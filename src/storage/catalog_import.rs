@@ -224,6 +224,7 @@ struct SnapshotAsset {
 enum NativeAssetFacts {
     Mame {
         attributes: mame::MameAssetAttributes,
+        declarations: mame::MameAssetDeclarations,
         source_order: i64,
     },
     Logiqx(LogiqxAssetAttributes),
@@ -689,12 +690,18 @@ fn machine_assets(assets: Vec<crate::mame::MachineAsset>) -> Vec<SnapshotAsset> 
     assets
         .into_iter()
         .map(|asset| {
-            let evidence_scope = asset
-                .disk_requirement
-                .as_ref()
-                .map_or("whole_asset", |requirement| {
-                    requirement.digest_scope().as_str()
-                });
+            let evidence_scope = if asset.dump_status == mame::MameDumpStatus::NoDump
+                || asset.attributes.has_unproven_loading()
+            {
+                "unknown"
+            } else {
+                asset
+                    .disk_requirement
+                    .as_ref()
+                    .map_or("whole_asset", |requirement| {
+                        requirement.digest_scope().as_str()
+                    })
+            };
             let sha1 = asset
                 .disk_requirement
                 .as_ref()
@@ -724,6 +731,7 @@ fn machine_assets(assets: Vec<crate::mame::MachineAsset>) -> Vec<SnapshotAsset> 
                 date: None,
                 native: NativeAssetFacts::Mame {
                     attributes: asset.attributes,
+                    declarations: asset.declarations,
                     source_order: asset.source_order,
                 },
                 location: asset.location,
@@ -1553,7 +1561,10 @@ fn insert_asset_requirement(
                 identity_eligibility: SourceIdentityEligibility::UninterpretedDeclaration,
                 ..
             })
-        ) {
+        )
+        || matches!(&asset.native, NativeAssetFacts::Mame { declarations, .. }
+            if !declarations.declarations_interpretable())
+    {
         ContentIdentityResolution::NoEligibleEvidence
     } else {
         resolve_content_identity(conn, size, digests)?
@@ -1588,16 +1599,6 @@ fn insert_asset_requirement(
     }
     record_content_identity_conflict(conn, occurrence, &resolution)?;
     Ok(())
-}
-
-fn sqlite_mame_offset(
-    attributes: Option<&mame::MameAssetAttributes>,
-) -> crate::Result<Option<i64>> {
-    attributes
-        .and_then(|attributes| attributes.offset)
-        .map(|value| i64::try_from(value.0))
-        .transpose()
-        .map_err(|_| crate::Error::InvalidPath("MAME asset offset exceeds SQLite range".into()))
 }
 
 fn sqlite_mame_boolean(value: mame::MameBoolean) -> i64 {
@@ -1754,8 +1755,8 @@ fn insert_mame_machine_facts(
          (set_id, source_file, description, description_source_order, description_line, description_column, \
           year, year_source_order, year_line, year_column, manufacturer, manufacturer_source_order, manufacturer_line, manufacturer_column, \
           is_device, is_device_specified, runnable, runnable_specified, is_bios, is_bios_specified, \
-          is_mechanical, is_mechanical_specified, is_consumable, is_consumable_specified, attributes_line, attributes_column) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          is_mechanical, is_mechanical_specified, attributes_line, attributes_column) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind::<BigInt, _>(set_id)
     .bind::<Nullable<Text>, _>(facts.source_file.as_deref())
@@ -1783,11 +1784,15 @@ fn insert_mame_machine_facts(
     .bind::<diesel::sql_types::Bool, _>(facts.flags.is_bios_specified())
     .bind::<diesel::sql_types::Bool, _>(facts.flags.is_mechanical())
     .bind::<diesel::sql_types::Bool, _>(facts.flags.is_mechanical_specified())
-    .bind::<diesel::sql_types::Bool, _>(facts.flags.is_consumable())
-    .bind::<diesel::sql_types::Bool, _>(facts.flags.is_consumable_specified())
     .bind::<BigInt, _>(facts.attributes_location.line)
     .bind::<BigInt, _>(facts.attributes_location.column)
     .execute(conn)?;
+    if facts.flags.is_consumable_specified() {
+        sql_query("INSERT INTO mame_machine_compatibility(set_id,is_consumable,is_consumable_specified) VALUES (?,?,1)")
+            .bind::<BigInt, _>(set_id)
+            .bind::<diesel::sql_types::Bool, _>(facts.flags.is_consumable())
+            .execute(conn)?;
+    }
     Ok(())
 }
 

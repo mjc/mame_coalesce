@@ -34,13 +34,16 @@ SELECT sets.set_id AS id, sets.set_name AS name, sets.list_order,
        native.is_device, native.is_device_specified, native.runnable,
        native.runnable_specified, native.is_bios, native.is_bios_specified,
        native.is_mechanical, native.is_mechanical_specified,
-       native.is_consumable, native.is_consumable_specified,
+       COALESCE(compatibility.is_consumable, 0) AS is_consumable,
+       COALESCE(compatibility.is_consumable_specified, 0) AS is_consumable_specified,
        native.attributes_line, native.attributes_column,
        groups.snapshot_key = ? AS group_snapshot_ok, groups.kind AS group_kind,
        sets.source_element_kind
 FROM catalog_set_groups AS groups
 JOIN catalog_sets AS sets ON sets.set_group_id = groups.set_group_id
 LEFT JOIN mame_machines AS native ON native.set_id = sets.set_id
+LEFT JOIN mame_machine_compatibility AS compatibility
+  ON compatibility.set_id = native.set_id
 WHERE groups.snapshot_key = ? AND groups.kind = 'root'
   AND sets.source_element_kind = 'mame_machine'
 ";

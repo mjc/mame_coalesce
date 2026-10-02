@@ -481,7 +481,7 @@ CREATE TABLE mame_disk_claims (
     occurrence_id INTEGER PRIMARY KEY NOT NULL,
     claim_kind TEXT NOT NULL DEFAULT 'mame_disk' CHECK (claim_kind = 'mame_disk'),
     name TEXT NOT NULL,
-    size INTEGER CHECK (size IS NULL OR size >= 0),
+    sha1_text TEXT,
     evidence_scope TEXT NOT NULL,
     evidence_provenance TEXT NOT NULL,
     merge_name TEXT,
@@ -491,21 +491,11 @@ CREATE TABLE mame_disk_claims (
     source_line INTEGER NOT NULL CHECK (source_line > 0),
     source_column INTEGER NOT NULL CHECK (source_column > 0),
     region TEXT,
-    bios TEXT,
-    offset INTEGER CHECK (offset IS NULL OR offset >= 0),
-    optional INTEGER CHECK (optional IS NULL OR optional IN (0,1)),
+    optional INTEGER NOT NULL CHECK (optional IN (0,1)),
     optional_specified INTEGER NOT NULL CHECK (optional_specified IN (0,1)),
-    sound_only INTEGER CHECK (sound_only IS NULL OR sound_only IN (0,1)),
-    dispose INTEGER CHECK (dispose IS NULL OR dispose IN (0,1)),
-    load_flag TEXT,
-    value TEXT,
-    inverted INTEGER CHECK (inverted IS NULL OR inverted IN (0,1)),
-    ovha TEXT,
-    no_thread INTEGER CHECK (no_thread IS NULL OR no_thread IN (0,1)),
     disk_index TEXT,
-    writable INTEGER CHECK (writable IS NULL OR writable IN (0,1)),
+    writable INTEGER NOT NULL CHECK (writable IN (0,1)),
     writable_specified INTEGER NOT NULL CHECK (writable_specified IN (0,1)),
-    writeable INTEGER CHECK (writeable IS NULL OR writeable IN (0,1)),
     FOREIGN KEY (occurrence_id,claim_kind) REFERENCES asset_occurrences(occurrence_id,claim_kind) ON DELETE RESTRICT
 );
 CREATE TABLE mame_document_facts (
@@ -680,8 +670,6 @@ CREATE TABLE mame_machines (
     is_bios_specified INTEGER NOT NULL CHECK (is_bios_specified IN (0, 1)),
     is_mechanical INTEGER NOT NULL CHECK (is_mechanical IN (0, 1)),
     is_mechanical_specified INTEGER NOT NULL CHECK (is_mechanical_specified IN (0, 1)),
-    is_consumable INTEGER NOT NULL CHECK (is_consumable IN (0, 1)),
-    is_consumable_specified INTEGER NOT NULL CHECK (is_consumable_specified IN (0, 1)),
     attributes_line INTEGER NOT NULL CHECK (attributes_line > 0),
     attributes_column INTEGER NOT NULL CHECK (attributes_column > 0),
     CHECK ((year_line IS NULL) = (year_column IS NULL)),
@@ -820,7 +808,17 @@ CREATE TABLE mame_rom_claims (
     occurrence_id INTEGER PRIMARY KEY NOT NULL,
     claim_kind TEXT NOT NULL DEFAULT 'mame_rom' CHECK (claim_kind = 'mame_rom'),
     name TEXT NOT NULL,
-    size INTEGER CHECK (size IS NULL OR size >= 0),
+    size_text TEXT,
+    size INTEGER GENERATED ALWAYS AS (
+        CASE WHEN length(size_text)>0 AND instr(size_text,char(0))=0
+            AND size_text NOT GLOB '*[^0-9]*'
+            AND (length(ltrim(size_text,'0'))<19
+                OR (length(ltrim(size_text,'0'))=19
+                    AND ltrim(size_text,'0')<='9223372036854775807'))
+        THEN CAST(size_text AS INTEGER) END
+    ) VIRTUAL,
+    crc_text TEXT,
+    sha1_text TEXT,
     evidence_scope TEXT NOT NULL,
     evidence_provenance TEXT NOT NULL,
     merge_name TEXT,
@@ -831,20 +829,9 @@ CREATE TABLE mame_rom_claims (
     source_column INTEGER NOT NULL CHECK (source_column > 0),
     region TEXT,
     bios TEXT,
-    offset INTEGER CHECK (offset IS NULL OR offset >= 0),
-    optional INTEGER CHECK (optional IS NULL OR optional IN (0,1)),
+    offset_text TEXT,
+    optional INTEGER NOT NULL CHECK (optional IN (0,1)),
     optional_specified INTEGER NOT NULL CHECK (optional_specified IN (0,1)),
-    sound_only INTEGER CHECK (sound_only IS NULL OR sound_only IN (0,1)),
-    dispose INTEGER CHECK (dispose IS NULL OR dispose IN (0,1)),
-    load_flag TEXT,
-    value TEXT,
-    inverted INTEGER CHECK (inverted IS NULL OR inverted IN (0,1)),
-    ovha TEXT,
-    no_thread INTEGER CHECK (no_thread IS NULL OR no_thread IN (0,1)),
-    disk_index TEXT,
-    writable INTEGER CHECK (writable IS NULL OR writable IN (0,1)),
-    writable_specified INTEGER NOT NULL CHECK (writable_specified IN (0,1)),
-    writeable INTEGER CHECK (writeable IS NULL OR writeable IN (0,1)),
     FOREIGN KEY (occurrence_id,claim_kind) REFERENCES asset_occurrences(occurrence_id,claim_kind) ON DELETE RESTRICT
 );
 CREATE TABLE no_intro_pc_games (
@@ -1815,8 +1802,11 @@ LEFT JOIN clrmamepro_set_links AS cmp ON cmp.set_id = sets.set_id AND cmp.link_k
 LEFT JOIN no_intro_dat_games AS no_intro ON no_intro.set_id = sets.set_id
 WHERE groups.kind = 'root';
 CREATE VIEW mame_machine_facts AS
-SELECT sets.snapshot_key, sets.set_name, machines.*
-FROM mame_machines AS machines JOIN snapshot_sets AS sets USING (set_id);
+SELECT sets.snapshot_key,sets.set_name,machines.*,
+       COALESCE(compatibility.is_consumable,0) AS is_consumable,
+       COALESCE(compatibility.is_consumable_specified,0) AS is_consumable_specified
+FROM mame_machines AS machines JOIN snapshot_sets AS sets USING(set_id)
+LEFT JOIN mame_machine_compatibility AS compatibility USING(set_id);
 CREATE VIEW logiqx_set_facts AS
 SELECT sets.snapshot_key, sets.set_name, games.*
 FROM logiqx_games AS games JOIN snapshot_sets AS sets USING (set_id);
@@ -1854,15 +1844,17 @@ JOIN records ON records.record_id = occurrence.record_id WHERE records.kind <> '
 CREATE VIEW asset_requirement_rows AS
 SELECT occurrence.record_id AS set_id,occurrence.occurrence_order AS component_order,
        payload.name AS asset_name,'rom' AS role,
-       payload.size,payload.evidence_scope,payload.evidence_provenance,payload.merge_name,payload.dump_status,payload.source_line,payload.source_column,NULL AS serial,NULL AS date,payload.region,payload.bios,payload.offset,payload.optional,payload.sound_only,payload.dispose,payload.load_flag,payload.value,payload.inverted,payload.ovha,payload.no_thread,payload.disk_index,payload.writable,payload.writeable,
+       payload.size,payload.evidence_scope,payload.evidence_provenance,payload.merge_name,payload.dump_status,payload.source_line,payload.source_column,NULL AS serial,NULL AS date,payload.region,payload.bios,payload.offset_text AS offset,payload.optional,compatibility.sound_only,compatibility.dispose,compatibility.load_flag,compatibility.value,compatibility.inverted,compatibility.ovha,compatibility.no_thread,NULL AS disk_index,NULL AS writable,NULL AS writeable,
        occurrence.content_uuid
 FROM mame_rom_claims AS payload JOIN asset_occurrences AS occurrence USING (occurrence_id)
+LEFT JOIN mame_rom_compatibility AS compatibility USING(occurrence_id)
 UNION ALL
 SELECT occurrence.record_id AS set_id,occurrence.occurrence_order AS component_order,
        payload.name AS asset_name,'disk' AS role,
-       payload.size,payload.evidence_scope,payload.evidence_provenance,payload.merge_name,payload.dump_status,payload.source_line,payload.source_column,NULL AS serial,NULL AS date,payload.region,payload.bios,payload.offset,payload.optional,payload.sound_only,payload.dispose,payload.load_flag,payload.value,payload.inverted,payload.ovha,payload.no_thread,payload.disk_index,payload.writable,payload.writeable,
+       NULL AS size,payload.evidence_scope,payload.evidence_provenance,payload.merge_name,payload.dump_status,payload.source_line,payload.source_column,NULL AS serial,NULL AS date,payload.region,NULL AS bios,NULL AS offset,payload.optional,NULL AS sound_only,NULL AS dispose,NULL AS load_flag,NULL AS value,NULL AS inverted,NULL AS ovha,NULL AS no_thread,payload.disk_index,payload.writable,compatibility.writeable,
        occurrence.content_uuid
 FROM mame_disk_claims AS payload JOIN asset_occurrences AS occurrence USING (occurrence_id)
+LEFT JOIN mame_disk_compatibility AS compatibility USING(occurrence_id)
 UNION ALL
 SELECT occurrence.record_id AS set_id,occurrence.occurrence_order AS component_order,
        payload.name AS asset_name,'rom' AS role,
@@ -1916,7 +1908,7 @@ SELECT sets.set_id,sets.snapshot_key,sets.set_name,rows.component_order,rows.reg
 FROM asset_requirement_rows AS rows JOIN snapshot_sets AS sets USING (set_id) JOIN records ON records.record_id = rows.set_id
 JOIN asset_occurrences AS occurrence ON occurrence.record_id=rows.set_id AND occurrence.occurrence_order=rows.component_order
 JOIN (
-    SELECT occurrence_id,source_order,status_specified,optional_specified,writable_specified FROM mame_rom_claims
+    SELECT occurrence_id,source_order,status_specified,optional_specified,0 AS writable_specified FROM mame_rom_claims
     UNION ALL SELECT occurrence_id,source_order,status_specified,optional_specified,writable_specified FROM mame_disk_claims
 ) AS native USING(occurrence_id)
 WHERE records.kind = 'mame_machine';
@@ -2313,6 +2305,24 @@ WHEN EXISTS (
 BEGIN
     SELECT RAISE(ABORT, 'published catalog occurrences are immutable');
 END;
+CREATE TRIGGER parser_interpretations_are_immutable_insert
+BEFORE INSERT ON parser_interpretations
+WHEN EXISTS (
+    SELECT 1 FROM parser_interpretations AS prior
+    WHERE prior.interpretation_key=NEW.interpretation_key AND (
+        prior.format IS NOT NEW.format OR prior.parser_name IS NOT NEW.parser_name
+        OR prior.parser_version IS NOT NEW.parser_version OR prior.rules_version IS NOT NEW.rules_version
+    )
+) AND (
+    EXISTS (SELECT 1 FROM catalog_snapshots WHERE interpretation_key=NEW.interpretation_key)
+    OR EXISTS (SELECT 1 FROM import_runs WHERE interpretation_key=NEW.interpretation_key)
+)
+BEGIN SELECT RAISE(ABORT,'referenced parser interpretations are immutable'); END;
+CREATE TRIGGER parser_interpretations_are_immutable_delete
+BEFORE DELETE ON parser_interpretations
+WHEN EXISTS (SELECT 1 FROM catalog_snapshots WHERE interpretation_key=OLD.interpretation_key)
+    OR EXISTS (SELECT 1 FROM import_runs WHERE interpretation_key=OLD.interpretation_key)
+BEGIN SELECT RAISE(ABORT,'referenced parser interpretations are immutable'); END;
 CREATE TRIGGER parser_interpretations_are_immutable_update
 BEFORE UPDATE ON parser_interpretations
 WHEN (

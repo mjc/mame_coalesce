@@ -1,4 +1,4 @@
-use super::{NativeAssetFacts, SnapshotAsset, sqlite_mame_boolean, sqlite_mame_offset};
+use super::{NativeAssetFacts, SnapshotAsset, sqlite_mame_boolean};
 use crate::{
     domain::CatalogSetId,
     storage::catalog_identity::{AllocatedOccurrence, OccurrenceId},
@@ -97,7 +97,7 @@ pub(super) fn insert(
     let id = OccurrenceId::from_database(occurrence.occurrence_id);
     match kind {
         RootClaimKind::MameRom | RootClaimKind::MameDisk => {
-            insert_mame(conn, id, kind, asset, size)?;
+            insert_mame(conn, id, kind, asset)?;
         }
         RootClaimKind::LogiqxRom | RootClaimKind::LogiqxDisk | RootClaimKind::LogiqxSample => {
             insert_logiqx(conn, id, kind, asset)?;
@@ -200,10 +200,10 @@ fn insert_mame(
     id: OccurrenceId,
     kind: RootClaimKind,
     asset: &SnapshotAsset,
-    size: Option<i64>,
 ) -> crate::Result<()> {
     let NativeAssetFacts::Mame {
         attributes,
+        declarations,
         source_order,
     } = &asset.native
     else {
@@ -211,27 +211,100 @@ fn insert_mame(
             "MAME media entry has no native attributes".into(),
         ));
     };
-    let offset = sqlite_mame_offset(Some(attributes))?;
-    sql_query(format!(
-        "INSERT INTO {} (occurrence_id,name,size,evidence_scope,evidence_provenance,merge_name, \
-         dump_status,source_line,source_column,region,bios,offset,optional,sound_only,dispose, \
-         load_flag,value,inverted,ovha,no_thread,disk_index,writable,writeable, \
-         source_order,status_specified,optional_specified,writable_specified) \
-         VALUES (?, ?, ?, ?, 'source_declared', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        kind.table()
-    ))
+    match kind {
+        RootClaimKind::MameRom => {
+            sql_query(
+                "INSERT INTO mame_rom_claims
+                (occurrence_id,name,size_text,crc_text,sha1_text,evidence_scope,evidence_provenance,
+                 merge_name,dump_status,source_line,source_column,region,bios,offset_text,optional,
+                 source_order,status_specified,optional_specified)
+                 VALUES (?,?,?,?,?,?,'source_declared',?,?,?,?,?,?,?,?,?,?,?)",
+            )
+            .bind::<BigInt, _>(id.database_value())
+            .bind::<Text, _>(&asset.name)
+            .bind::<Nullable<Text>, _>(declarations.size_text.as_deref())
+            .bind::<Nullable<Text>, _>(declarations.crc_text.as_deref())
+            .bind::<Nullable<Text>, _>(declarations.sha1_text.as_deref())
+            .bind::<Text, _>(asset.evidence_scope)
+            .bind::<Nullable<Text>, _>(asset.merge.as_deref())
+            .bind::<Nullable<Text>, _>(asset.dump_status.as_deref())
+            .bind::<BigInt, _>(asset.location.line)
+            .bind::<BigInt, _>(asset.location.column)
+            .bind::<Nullable<Text>, _>(attributes.region.as_deref())
+            .bind::<Nullable<Text>, _>(attributes.bios.as_deref())
+            .bind::<Nullable<Text>, _>(declarations.offset_text.as_deref())
+            .bind::<diesel::sql_types::Bool, _>(attributes.optional.as_bool())
+            .bind::<BigInt, _>(*source_order)
+            .bind::<diesel::sql_types::Bool, _>(attributes.status_specified)
+            .bind::<diesel::sql_types::Bool, _>(attributes.optional_specified)
+            .execute(conn)?;
+            insert_rom_compatibility(conn, id, attributes, declarations)?;
+        }
+        RootClaimKind::MameDisk => {
+            sql_query("INSERT INTO mame_disk_claims
+                (occurrence_id,name,sha1_text,evidence_scope,evidence_provenance,merge_name,dump_status,
+                 source_line,source_column,region,disk_index,writable,optional,source_order,
+                 status_specified,optional_specified,writable_specified)
+                 VALUES (?,?,?,?,'source_declared',?,?,?,?,?,?,?,?,?,?,?,?)")
+                .bind::<BigInt,_>(id.database_value())
+                .bind::<Text,_>(&asset.name)
+                .bind::<Nullable<Text>,_>(declarations.sha1_text.as_deref())
+                .bind::<Text,_>(asset.evidence_scope)
+                .bind::<Nullable<Text>,_>(asset.merge.as_deref())
+                .bind::<Nullable<Text>,_>(asset.dump_status.as_deref())
+                .bind::<BigInt,_>(asset.location.line)
+                .bind::<BigInt,_>(asset.location.column)
+                .bind::<Nullable<Text>,_>(attributes.region.as_deref())
+                .bind::<Nullable<Text>,_>(attributes.disk_index.as_deref())
+                .bind::<diesel::sql_types::Bool,_>(attributes.writable.unwrap_or_default().as_bool())
+                .bind::<diesel::sql_types::Bool,_>(attributes.optional.as_bool())
+                .bind::<BigInt,_>(*source_order)
+                .bind::<diesel::sql_types::Bool,_>(attributes.status_specified)
+                .bind::<diesel::sql_types::Bool,_>(attributes.optional_specified)
+                .bind::<diesel::sql_types::Bool,_>(attributes.writable_specified)
+                .execute(conn)?;
+            if let Some(writeable) = attributes.writeable {
+                sql_query(
+                    "INSERT INTO mame_disk_compatibility(occurrence_id,writeable) VALUES (?,?)",
+                )
+                .bind::<BigInt, _>(id.database_value())
+                .bind::<diesel::sql_types::Bool, _>(writeable.as_bool())
+                .execute(conn)?;
+            }
+        }
+        _ => {
+            return Err(crate::Error::InvalidPath(
+                "non-MAME native media owner".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn insert_rom_compatibility(
+    conn: &mut SqliteConnection,
+    id: OccurrenceId,
+    attributes: &crate::mame::MameAssetAttributes,
+    declarations: &crate::mame::MameAssetDeclarations,
+) -> crate::Result<()> {
+    if declarations.md5_text.is_none()
+        && attributes.sound_only.is_none()
+        && attributes.dispose.is_none()
+        && attributes.load_flag.is_none()
+        && attributes.value.is_none()
+        && attributes.inverted.is_none()
+        && attributes.ovha.is_none()
+        && attributes.no_thread.is_none()
+    {
+        return Ok(());
+    }
+    sql_query(
+        "INSERT INTO mame_rom_compatibility
+        (occurrence_id,md5_text,sound_only,dispose,load_flag,value,inverted,ovha,no_thread)
+        VALUES (?,?,?,?,?,?,?,?,?)",
+    )
     .bind::<BigInt, _>(id.database_value())
-    .bind::<Text, _>(&asset.name)
-    .bind::<Nullable<BigInt>, _>(size)
-    .bind::<Text, _>(asset.evidence_scope)
-    .bind::<Nullable<Text>, _>(asset.merge.as_deref())
-    .bind::<Nullable<Text>, _>(asset.dump_status.as_deref())
-    .bind::<BigInt, _>(asset.location.line)
-    .bind::<BigInt, _>(asset.location.column)
-    .bind::<Nullable<Text>, _>(attributes.region.as_deref())
-    .bind::<Nullable<Text>, _>(attributes.bios.as_deref())
-    .bind::<Nullable<BigInt>, _>(offset)
-    .bind::<BigInt, _>(i64::from(attributes.optional.as_bool()))
+    .bind::<Nullable<Text>, _>(declarations.md5_text.as_deref())
     .bind::<Nullable<BigInt>, _>(attributes.sound_only.map(sqlite_mame_boolean))
     .bind::<Nullable<BigInt>, _>(attributes.dispose.map(sqlite_mame_boolean))
     .bind::<Nullable<Text>, _>(attributes.load_flag.as_deref())
@@ -239,13 +312,6 @@ fn insert_mame(
     .bind::<Nullable<BigInt>, _>(attributes.inverted.map(sqlite_mame_boolean))
     .bind::<Nullable<Text>, _>(attributes.ovha.as_deref())
     .bind::<Nullable<BigInt>, _>(attributes.no_thread.map(sqlite_mame_boolean))
-    .bind::<Nullable<Text>, _>(attributes.disk_index.as_deref())
-    .bind::<Nullable<BigInt>, _>(attributes.writable.map(sqlite_mame_boolean))
-    .bind::<Nullable<BigInt>, _>(attributes.writeable.map(sqlite_mame_boolean))
-    .bind::<BigInt, _>(*source_order)
-    .bind::<diesel::sql_types::Bool, _>(attributes.status_specified)
-    .bind::<diesel::sql_types::Bool, _>(attributes.optional_specified)
-    .bind::<diesel::sql_types::Bool, _>(attributes.writable_specified)
     .execute(conn)?;
     Ok(())
 }
