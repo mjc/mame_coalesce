@@ -282,6 +282,10 @@ impl std::fmt::Display for CatalogKey {
 }
 
 impl ParserInterpretationKey {
+    pub(crate) const fn from_persisted(value: String) -> Self {
+        Self(value)
+    }
+
     #[must_use]
     pub fn logiqx_v1(scope: &CatalogScope) -> Self {
         Self::for_format("logiqx", scope)

@@ -193,7 +193,16 @@ source order/location and area-local file-declaration links. Empty or invalid
 declarations remain queryable without inventing usable matching evidence.
 Disk payloads keep CHD-header hashes separate from whole-container identity.
 These payloads describe source facts, not validated executable loading recipes;
-complete software-title metadata query interfaces remain unfinished.
+the `catalog_software` API separately pages the lists in an exact published
+software-list snapshot and the titles in one numeric list owner. Title pages
+include native scalar positions, info/shared features, parts, switches and
+data/disk areas. Area entries reference the existing `catalog_files` occurrence
+IDs rather than copy ROM/disk fields. Repeated names remain distinct owners,
+absent/empty values and explicit defaults remain distinct, and source order
+includes gaps from vendor elements. Cursors pin the registry generation,
+snapshot and (for title pages) list; older published editions stay queryable.
+Each page reads one SQLite snapshot and carries document/catalog provenance
+once. Full lexical witnesses and executable loading interpretation remain open.
 Results distinguish the immutable source-issued UUID from its current canonical
 UUID. Published reviews also version cursors: after another review, restart
 pagination rather than silently skip newly merged members.

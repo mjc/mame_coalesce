@@ -188,6 +188,15 @@ parser-internal representations the public contract.
   old UUID queries include the whole canonical component through indexed reverse
   redirect traversal. A review invalidates existing cursors rather than silently
   omitting newly merged lower-ID members.
+- `catalog_software` exposes native list and title metadata independently of
+  file claims, so metadata-only titles are not lost. Numeric owners preserve
+  repeated names. Exact snapshot/list keyset pages carry provenance once and
+  load selected owners' info, shared features, parts, switches, scalar positions
+  and data/disk areas in one read transaction. Area entry IDs reuse the native
+  ROM/disk occurrence API; there is no second stored payload. Cursors reject
+  another snapshot, registry generation or title-list owner. Page limits do not
+  truncate a title's child metadata, and historical published editions remain
+  queryable. Full lexical witnesses and executable software loading remain open.
 - There are no mutable `data_files`, `games`, `roms` or `archive_files`
   catalog tables. Scanned-file inventory has no foreign key assigning observed
   bytes to one expected ROM. Whole-file hash candidate counts are derived from

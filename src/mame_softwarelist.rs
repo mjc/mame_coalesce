@@ -40,6 +40,7 @@ pub enum SupportedStatus {
 }
 
 impl SupportedStatus {
+    #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Yes => "yes",
@@ -92,6 +93,7 @@ impl SoftwareTextField {
         }
     }
 
+    #[must_use]
     pub const fn as_code(self) -> u8 {
         self as u8
     }
@@ -194,6 +196,7 @@ pub enum Endianness {
 }
 
 impl Endianness {
+    #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Little => "little",

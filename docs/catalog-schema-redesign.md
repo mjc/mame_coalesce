@@ -111,6 +111,31 @@ Each row below describes a different source structure, with its own typed
 columns and child relations. They meet at record/occurrence identity and digest
 assertions; they are not reduced to a shared game name and ROM tuple.
 
+### Native software metadata queries
+
+`catalog_software::lists_for_snapshot` pages an exact published software
+document's native lists. `titles_for_list` pages that snapshot's numeric list
+owner and returns each selected title's scalar facts and positions, info,
+shared features, parts, part features, DIP switches/values and data/disk areas.
+Source names are values, not identities; repeated lists, titles, parts and
+areas remain separate rows. Metadata-only titles and empty plural envelopes
+are queryable without any file occurrence. `SoftwareEnvelope` distinguishes
+single lists from plural envelopes with absent or empty build text, and
+`SoftwareAreaFields` prevents invented data-area fields on disk areas.
+
+These transient Rust results read existing authoritative tables, not catalog
+JSON or another persisted projection. Each area carries occurrence IDs that
+the native ROM/disk `catalog_files` reader resolves; it does not copy those
+payloads into another table. Page-scoped provenance owns source/catalog,
+original document, parser interpretation, registry generation and snapshot
+keys once. Cursors pin the exact snapshot/generation and title-list owner;
+historical published editions stay visible. Queries batch the selected owners
+inside one read transaction. Page size bounds lists/titles, not the retained
+children of each title; no silent child truncation is permitted. Source-order
+gaps from vendor elements are preserved separately from each family's order.
+Lexical attribute positions and approved executable loader interpretation
+remain required for complete format acceptance.
+
 | Input | Native structure and facts | Current implementation gap |
 |---|---|---|
 | MAME machine XML | Machine -> ROM/disk/sample, chips, displays, input/controls, switches/values/conditions, ports, devices, slots, driver/features, software-list references and RAM options. | Native families and numeric owners replace the wide stored union; complete specification presence/default and field witnesses remain open. |
