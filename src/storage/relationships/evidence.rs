@@ -5,6 +5,7 @@ use diesel::{
     sql_types::{BigInt, Text},
 };
 
+use super::RelationshipId;
 use crate::{
     domain::RelationshipEvidence, reconciliation::ReconciliationStatus, resolution::EvidenceField,
 };
@@ -26,7 +27,7 @@ struct FieldAssessment {
     #[diesel(sql_type = Text)]
     disposition: String,
     #[diesel(sql_type = BigInt)]
-    position: i64,
+    list_order: i64,
     #[diesel(sql_type = Text)]
     field: String,
 }
@@ -37,31 +38,35 @@ fn invalid(message: impl Into<String>) -> crate::Error {
 
 pub(super) fn insert(
     conn: &mut SqliteConnection,
-    assertion: &str,
+    relationship: RelationshipId,
     evidence: &RelationshipEvidence,
 ) -> crate::Result<()> {
     match evidence {
         RelationshipEvidence::Rationale { reason } => {
-            sql_query("INSERT INTO relationship_rationales(assertion_key,reason) VALUES(?,?)")
-                .bind::<Text, _>(assertion)
-                .bind::<Text, _>(reason)
-                .execute(conn)?;
+            sql_query(
+                "INSERT INTO catalog_relationship_rationales(relationship_id,reason) VALUES(?,?)",
+            )
+            .bind::<BigInt, _>(relationship.0)
+            .bind::<Text, _>(reason)
+            .execute(conn)?;
         }
         RelationshipEvidence::CatalogComparison {
             status,
             agreements,
             contradictions,
         } => {
-            sql_query("INSERT INTO relationship_comparisons(assertion_key,status) VALUES(?,?)")
-                .bind::<Text, _>(assertion)
-                .bind::<Text, _>(status_code(*status))
-                .execute(conn)?;
+            sql_query(
+                "INSERT INTO catalog_relationship_comparisons(relationship_id,status) VALUES(?,?)",
+            )
+            .bind::<BigInt, _>(relationship.0)
+            .bind::<Text, _>(status_code(*status))
+            .execute(conn)?;
             for (disposition, fields) in
                 [("agreement", agreements), ("contradiction", contradictions)]
             {
                 for (position, field) in fields.iter().enumerate() {
-                    sql_query("INSERT INTO relationship_comparison_fields(assertion_key,disposition,position,field) VALUES(?,?,?,?)")
-                        .bind::<Text,_>(assertion)
+                    sql_query("INSERT INTO catalog_relationship_comparison_fields(relationship_id,disposition,list_order,field) VALUES(?,?,?,?)")
+                        .bind::<BigInt,_>(relationship.0)
                         .bind::<Text,_>(disposition)
                         .bind::<BigInt,_>(i64::try_from(position).map_err(|_| invalid("relationship field position exceeds SQLite range"))?)
                         .bind::<Text,_>(field_code(*field))
@@ -80,7 +85,7 @@ pub(super) fn insert(
 
 pub(super) fn publish(
     conn: &mut SqliteConnection,
-    assertion: &str,
+    relationship: RelationshipId,
     evidence: &RelationshipEvidence,
 ) -> crate::Result<()> {
     let kind = match evidence {
@@ -93,9 +98,9 @@ pub(super) fn publish(
         }
     };
     sql_query(
-        "INSERT INTO relationship_evidence_publications(assertion_key,evidence_kind) VALUES(?,?)",
+        "INSERT INTO catalog_relationship_evidence_publications(relationship_id,evidence_kind) VALUES(?,?)",
     )
-    .bind::<Text, _>(assertion)
+    .bind::<BigInt, _>(relationship.0)
     .bind::<Text, _>(kind)
     .execute(conn)?;
     Ok(())
@@ -103,31 +108,31 @@ pub(super) fn publish(
 
 pub(super) fn load(
     conn: &mut SqliteConnection,
-    assertion: &str,
+    relationship: RelationshipId,
 ) -> crate::Result<RelationshipEvidence> {
     let publication = sql_query(
-        "SELECT evidence_kind FROM relationship_evidence_publications WHERE assertion_key=?",
+        "SELECT evidence_kind FROM catalog_relationship_evidence_publications WHERE relationship_id=?",
     )
-    .bind::<Text, _>(assertion)
+    .bind::<BigInt, _>(relationship.0)
     .get_result::<Publication>(conn)?;
     match publication.evidence_kind.as_str() {
         "rationale" => {
             let row = sql_query(
-                "SELECT reason AS value FROM relationship_rationales WHERE assertion_key=?",
+                "SELECT reason AS value FROM catalog_relationship_rationales WHERE relationship_id=?",
             )
-            .bind::<Text, _>(assertion)
+            .bind::<BigInt, _>(relationship.0)
             .get_result::<TextValue>(conn)?;
             Ok(RelationshipEvidence::Rationale { reason: row.value })
         }
         "catalog_comparison" => {
             let row = sql_query(
-                "SELECT status AS value FROM relationship_comparisons WHERE assertion_key=?",
+                "SELECT status AS value FROM catalog_relationship_comparisons WHERE relationship_id=?",
             )
-            .bind::<Text, _>(assertion)
+            .bind::<BigInt, _>(relationship.0)
             .get_result::<TextValue>(conn)?;
             let status = parse_status(&row.value)?;
-            let fields = sql_query("SELECT disposition,position,field FROM relationship_comparison_fields WHERE assertion_key=? ORDER BY disposition,position")
-                .bind::<Text,_>(assertion).load::<FieldAssessment>(conn)?;
+            let fields = sql_query("SELECT disposition,list_order,field FROM catalog_relationship_comparison_fields WHERE relationship_id=? ORDER BY disposition,list_order")
+                .bind::<BigInt,_>(relationship.0).load::<FieldAssessment>(conn)?;
             let mut agreements = Vec::new();
             let mut contradictions = Vec::new();
             for assessment in fields {
@@ -136,7 +141,7 @@ pub(super) fn load(
                     "contradiction" => &mut contradictions,
                     _ => return Err(invalid("unknown relationship field disposition")),
                 };
-                if usize::try_from(assessment.position).ok() != Some(output.len()) {
+                if usize::try_from(assessment.list_order).ok() != Some(output.len()) {
                     return Err(invalid("relationship assessment order is not contiguous"));
                 }
                 output.push(parse_field(&assessment.field)?);

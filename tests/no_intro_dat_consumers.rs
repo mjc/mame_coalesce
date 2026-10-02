@@ -1,7 +1,7 @@
 use camino::Utf8PathBuf;
 use diesel::{
     Connection, QueryableByName, RunQueryDsl, SqliteConnection, sql_query,
-    sql_types::{BigInt, Nullable, Text},
+    sql_types::{BigInt, Text},
 };
 use mame_coalesce::{
     NoIntroDatMode,
@@ -222,16 +222,16 @@ fn insert_review(
     decision: &str,
     superseded_by: Option<&str>,
 ) -> diesel::QueryResult<usize> {
-    sql_query(
-        "INSERT INTO relationship_reviews \
-         (review_key, assertion_key, decision, note, superseded_by_assertion_key) \
-         VALUES (?, ?, ?, 'native cloneof guard test', ?)",
-    )
-    .bind::<Text, _>(review_key)
-    .bind::<Text, _>(assertion_key)
-    .bind::<Text, _>(decision)
-    .bind::<Nullable<Text>, _>(superseded_by)
-    .execute(connection)
+    connection.transaction(|connection| {
+        sql_query("INSERT INTO catalog_relationship_reviews(review_key,relationship_id,decision,note) VALUES (?,(SELECT relationship_id FROM catalog_relationships WHERE assertion_key=?),?,'native cloneof guard test')")
+            .bind::<Text,_>(review_key).bind::<Text,_>(assertion_key).bind::<Text,_>(decision).execute(connection)?;
+        if let Some(successor) = superseded_by {
+            sql_query("INSERT INTO replaced_catalog_relationships(review_id,replacement_relationship_id) VALUES((SELECT review_id FROM catalog_relationship_reviews WHERE review_key=?),(SELECT relationship_id FROM catalog_relationships WHERE assertion_key=?))")
+                .bind::<Text,_>(review_key).bind::<Text,_>(successor).execute(connection)?;
+        }
+        sql_query("INSERT INTO catalog_relationship_review_publications(review_id) SELECT review_id FROM catalog_relationship_reviews WHERE review_key=?")
+            .bind::<Text,_>(review_key).execute(connection)
+    })
 }
 
 fn insert_support(
@@ -241,8 +241,10 @@ fn insert_support(
     supported_assertion_key: &str,
 ) -> diesel::QueryResult<usize> {
     sql_query(
-        "INSERT INTO relationship_assertion_support \
-         (assertion_key, position, supported_assertion_key) VALUES (?, ?, ?)",
+        "INSERT INTO catalog_relationship_evidence \
+         (relationship_id,list_order,supporting_relationship_id) \
+         VALUES ((SELECT relationship_id FROM catalog_relationships WHERE assertion_key=?), ?, \
+                 (SELECT relationship_id FROM catalog_relationships WHERE assertion_key=?))",
     )
     .bind::<Text, _>(assertion_key)
     .bind::<BigInt, _>(position)
@@ -761,7 +763,7 @@ fn native_cloneof_assertion_review_guard_checks_owned_positioned_rows() -> TestR
                 "accepted",
                 None,
             ),
-            "review requires published relationship evidence",
+            "relationship review references an unknown or unpublished assertion",
         );
     }
     Ok(())
@@ -773,13 +775,13 @@ fn native_cloneof_assertion_supersession_guard_checks_owned_positioned_rows() ->
     let mut connection = fixture.connection()?;
     insert_stored_assertion(&mut connection, "guard-test:review-base", "user_conclusion")?;
     sql_query(
-        "INSERT INTO relationship_rationales (assertion_key, reason) \
-         VALUES ('guard-test:review-base', 'Published guard-test conclusion')",
+        "INSERT INTO catalog_relationship_rationales (relationship_id, reason) \
+         SELECT relationship_id,'Published guard-test conclusion' FROM catalog_relationships WHERE assertion_key='guard-test:review-base'",
     )
     .execute(&mut connection)?;
     sql_query(
-        "INSERT INTO relationship_evidence_publications (assertion_key, evidence_kind) \
-         VALUES ('guard-test:review-base', 'rationale')",
+        "INSERT INTO catalog_relationship_evidence_publications (relationship_id, evidence_kind) \
+         SELECT relationship_id,'rationale' FROM catalog_relationships WHERE assertion_key='guard-test:review-base'",
     )
     .execute(&mut connection)?;
     insert_review(
@@ -806,7 +808,7 @@ fn native_cloneof_assertion_supersession_guard_checks_owned_positioned_rows() ->
                 "superseded",
                 Some(&key),
             ),
-            "review requires published relationship evidence",
+            "relationship review references an unknown or unpublished assertion",
         );
     }
     Ok(())
@@ -877,8 +879,9 @@ fn public_relationship_api_accepts_native_cloneof_as_support() -> TestResult {
     let candidate = app::record_relationship(&fixture.database, &claim)?;
     let mut connection = fixture.connection()?;
     let found = sql_query(
-        "SELECT COUNT(*) AS count FROM relationship_assertion_support \
-         WHERE assertion_key = ? AND supported_assertion_key = ?",
+        "SELECT COUNT(*) AS count FROM catalog_relationship_evidence \
+         WHERE relationship_id=(SELECT relationship_id FROM catalog_relationships WHERE assertion_key=?) \
+           AND supporting_relationship_id=(SELECT relationship_id FROM catalog_relationships WHERE assertion_key=?)",
     )
     .bind::<Text, _>(candidate.as_str())
     .bind::<Text, _>(supporting.as_str())

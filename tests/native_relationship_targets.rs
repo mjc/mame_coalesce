@@ -320,7 +320,7 @@ fn complete_targets_and_claims_are_immutable_even_without_sqlite_enforcement() -
     }
     catalog.connection.batch_execute("INSERT INTO catalog_relationship_targets(kind) VALUES('external_record'); INSERT INTO catalog_relationships(assertion_key,origin) VALUES('incomplete-target','user')")?;
     assert!(catalog.connection.batch_execute("INSERT INTO manual_catalog_relationships(relationship_id,relation_type,from_target_id,to_target_id) SELECT registry.relationship_id,'catalog_continuity',empty.target_id,full.target_id FROM catalog_relationships registry JOIN catalog_relationship_targets empty ON empty.target_id=(SELECT max(target_id) FROM catalog_relationship_targets) JOIN external_catalog_targets full ON full.declared_key='left' WHERE registry.assertion_key='incomplete-target'").is_err());
-    assert!(catalog.connection.batch_execute("INSERT INTO relationship_rationales VALUES('incomplete-target','otherwise valid rationale')").is_err());
+    assert!(catalog.connection.batch_execute("INSERT INTO catalog_relationship_rationales SELECT relationship_id,'otherwise valid rationale' FROM catalog_relationships WHERE assertion_key='incomplete-target'").is_err());
     assert_eq!(app::explain_relationships(&catalog.database)?.len(), 1);
     Ok(())
 }

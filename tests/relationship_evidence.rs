@@ -1,5 +1,10 @@
 use camino::Utf8PathBuf;
-use diesel::{Connection, RunQueryDsl, SqliteConnection, connection::SimpleConnection, sql_query};
+use diesel::{
+    Connection, QueryableByName, RunQueryDsl, SqliteConnection,
+    connection::SimpleConnection,
+    sql_query,
+    sql_types::{BigInt, Text},
+};
 use mame_coalesce::{
     app,
     database::Database,
@@ -61,6 +66,21 @@ fn rationale(reason: &str) -> RelationshipEvidence {
     RelationshipEvidence::Rationale {
         reason: reason.into(),
     }
+}
+
+#[derive(QueryableByName)]
+struct Identity {
+    #[diesel(sql_type = BigInt)]
+    relationship_id: i64,
+}
+
+fn relationship_id(conn: &mut SqliteConnection, key: &str) -> TestResult<i64> {
+    Ok(
+        sql_query("SELECT relationship_id FROM catalog_relationships WHERE assertion_key=?")
+            .bind::<Text, _>(key)
+            .get_result::<Identity>(conn)?
+            .relationship_id,
+    )
 }
 
 fn draft(conn: &mut SqliteConnection, key: &str) -> TestResult {
@@ -178,13 +198,13 @@ fn typed_comparison_decisions_preserve_assessment_order_without_expected_value_c
         "invalid comparisons must roll back"
     );
     let names = sql_query(
-        "SELECT name AS value FROM pragma_table_info('relationship_comparisons') ORDER BY cid",
+        "SELECT name AS value FROM pragma_table_info('catalog_relationship_comparisons') ORDER BY cid",
     )
     .load::<TextValue>(&mut catalog.connection)?
     .into_iter()
     .map(|row| row.value)
     .collect::<Vec<_>>();
-    assert_eq!(names, ["assertion_key", "status"]);
+    assert_eq!(names, ["relationship_id", "status"]);
     assert_eq!(
         sql_query(
             "SELECT count(*) AS value FROM relationship_assertions WHERE origin='derived_candidate'"
@@ -253,7 +273,8 @@ fn incomplete_relationships_cannot_be_explained_reviewed_supported_or_backed_up(
     );
     let backup_path = catalog.path.with_file_name("incomplete.backup");
     assert!(mame_coalesce::create_backup(&catalog.path, &backup_path).is_err());
-    catalog.connection.batch_execute("INSERT INTO relationship_rationales VALUES('draft','complete rationale'); INSERT INTO relationship_evidence_publications VALUES('draft','rationale')")?;
+    let id = relationship_id(&mut catalog.connection, "draft")?;
+    catalog.connection.batch_execute(&format!("INSERT INTO catalog_relationship_rationales VALUES({id},'complete rationale'); INSERT INTO catalog_relationship_evidence_publications VALUES({id},'rationale')"))?;
     let database = Database::open(&catalog.path)?;
     assert_eq!(app::explain_relationships(&database)?.len(), 1);
     drop(database);
@@ -281,39 +302,42 @@ fn installed_guards_reject_orphans_replacements_late_children_and_bad_seals_with
     catalog
         .connection
         .batch_execute("PRAGMA foreign_keys=OFF; PRAGMA recursive_triggers=OFF")?;
-    let r = rationale_key.as_str();
-    let c = comparison_key.as_str();
+    let r = relationship_id(&mut catalog.connection, rationale_key.as_str())?;
+    let c = relationship_id(&mut catalog.connection, comparison_key.as_str())?;
     let attempted = [
-        "INSERT INTO relationship_rationales VALUES('missing','orphan')".to_owned(),
-        "INSERT INTO relationship_comparisons VALUES('missing','compatible')".to_owned(),
-        "INSERT INTO relationship_comparison_fields VALUES('missing','agreement',0,'sha1')"
+        "INSERT INTO catalog_relationship_rationales VALUES(-999999,'orphan')".to_owned(),
+        "INSERT INTO catalog_relationship_comparisons VALUES(-999999,'compatible')".to_owned(),
+        "INSERT INTO catalog_relationship_comparison_fields VALUES(-999999,'agreement',0,'sha1')"
             .to_owned(),
-        "INSERT INTO relationship_evidence_publications VALUES('missing','rationale')".to_owned(),
-        format!("INSERT OR REPLACE INTO relationship_rationales VALUES('{r}','replacement')"),
-        format!("INSERT OR REPLACE INTO relationship_comparisons VALUES('{c}','unknown')"),
+        "INSERT INTO catalog_relationship_evidence_publications VALUES(-999999,'rationale')"
+            .to_owned(),
+        format!("INSERT OR REPLACE INTO catalog_relationship_rationales VALUES({r},'replacement')"),
+        format!("INSERT OR REPLACE INTO catalog_relationship_comparisons VALUES({c},'unknown')"),
         format!(
-            "INSERT OR REPLACE INTO relationship_comparison_fields VALUES('{c}','agreement',0,'md5')"
+            "INSERT OR REPLACE INTO catalog_relationship_comparison_fields VALUES({c},'agreement',0,'md5')"
         ),
         format!(
-            "INSERT OR REPLACE INTO relationship_evidence_publications VALUES('{r}','rationale')"
+            "INSERT OR REPLACE INTO catalog_relationship_evidence_publications VALUES({r},'rationale')"
         ),
-        format!("INSERT INTO relationship_comparisons VALUES('{r}','unknown')"),
-        format!("INSERT INTO relationship_rationales VALUES('{c}','dual subtype')"),
+        format!("INSERT INTO catalog_relationship_comparisons VALUES({r},'unknown')"),
+        format!("INSERT INTO catalog_relationship_rationales VALUES({c},'dual subtype')"),
         format!(
-            "INSERT INTO relationship_comparison_fields VALUES('{c}','contradiction',0,'size')"
+            "INSERT INTO catalog_relationship_comparison_fields VALUES({c},'contradiction',0,'size')"
         ),
-        format!("INSERT INTO relationship_assertion_support VALUES('{r}',0,'{c}')"),
-        format!("UPDATE relationship_rationales SET reason='changed' WHERE assertion_key='{r}'"),
-        format!("DELETE FROM relationship_comparisons WHERE assertion_key='{c}'"),
-        format!("DELETE FROM relationship_comparison_fields WHERE assertion_key='{c}'"),
-        format!("DELETE FROM relationship_evidence_publications WHERE assertion_key='{r}'"),
+        format!("INSERT INTO catalog_relationship_evidence VALUES({r},0,{c})"),
+        format!(
+            "UPDATE catalog_relationship_rationales SET reason='changed' WHERE relationship_id={r}"
+        ),
+        format!("DELETE FROM catalog_relationship_comparisons WHERE relationship_id={c}"),
+        format!("DELETE FROM catalog_relationship_comparison_fields WHERE relationship_id={c}"),
+        format!("DELETE FROM catalog_relationship_evidence_publications WHERE relationship_id={r}"),
     ];
     for sql in attempted {
         assert!(catalog.connection.batch_execute(&sql).is_err(), "{sql}");
     }
     draft(&mut catalog.connection, "replacement-control")?;
     let replacement = format!(
-        "INSERT OR REPLACE INTO inferred_catalog_relationships SELECT native.* FROM inferred_catalog_relationships AS native JOIN catalog_relationships AS identity USING(relationship_id) WHERE identity.assertion_key='{r}'"
+        "INSERT OR REPLACE INTO inferred_catalog_relationships SELECT native.* FROM inferred_catalog_relationships AS native WHERE native.relationship_id={r}"
     );
     let error = catalog
         .connection
@@ -327,30 +351,61 @@ fn installed_guards_reject_orphans_replacements_late_children_and_bad_seals_with
         "wrong rejection: {error}"
     );
     draft(&mut catalog.connection, "fractional-support")?;
+    let fractional = relationship_id(&mut catalog.connection, "fractional-support")?;
     assert!(
         catalog
             .connection
             .batch_execute(&format!(
-                "INSERT INTO relationship_assertion_support VALUES('fractional-support',0.5,'{r}')"
+                "INSERT INTO catalog_relationship_evidence VALUES({fractional},0.5,{r})"
             ))
             .is_err(),
         "support positions must be integers"
     );
-    draft(&mut catalog.connection, "gap")?;
-    catalog.connection.batch_execute("INSERT INTO relationship_comparisons VALUES('gap','candidate'); INSERT INTO relationship_comparison_fields VALUES('gap','agreement',1,'sha1')")?;
-    for sql in [
-        "INSERT INTO relationship_evidence_publications VALUES('gap','catalog_comparison')",
-        "INSERT INTO relationship_evidence_publications VALUES('gap','rationale')",
-        "INSERT INTO relationship_rationales VALUES('gap','dual subtype')",
-        "INSERT OR REPLACE INTO relationship_comparison_fields VALUES('gap','agreement',1,'md5')",
-        "INSERT INTO relationship_comparison_fields VALUES('gap','contradiction',0,'sha1')",
-        "INSERT INTO relationship_comparison_fields VALUES('gap','agreement',0.5,'crc')",
-        "INSERT INTO relationship_comparison_fields VALUES('gap','agreement',-1,'size')",
-        "INSERT INTO relationship_comparison_fields VALUES('gap','agreement',0,'unknown')",
-    ] {
-        assert!(catalog.connection.batch_execute(sql).is_err(), "{sql}");
-    }
+    assert_corrupt_comparison_draft(&mut catalog.connection)?;
     assert_eq!(app::explain_relationships(&catalog.database)?.len(), 2);
+    Ok(())
+}
+
+fn assert_corrupt_comparison_draft(connection: &mut SqliteConnection) -> TestResult {
+    draft(connection, "gap")?;
+    let gap = relationship_id(connection, "gap")?;
+    connection.batch_execute(&format!(
+        "INSERT INTO catalog_relationship_comparisons VALUES({gap},'candidate')"
+    ))?;
+    assert!(connection.batch_execute(&format!("INSERT INTO catalog_relationship_comparison_fields VALUES({gap},'agreement',1,'sha1')")).is_err());
+    // Bypass only the child guard to independently exercise the publication
+    // guard on a damaged draft; restore the exact installed trigger first.
+    let guard = sql_query("SELECT sql AS value FROM sqlite_schema WHERE type='trigger' AND name='catalog_relationship_comparison_fields_insert_guard'")
+        .get_result::<TextValue>(connection)?.value;
+    connection.batch_execute("DROP TRIGGER catalog_relationship_comparison_fields_insert_guard")?;
+    connection.batch_execute(&format!(
+        "INSERT INTO catalog_relationship_comparison_fields VALUES({gap},'agreement',1,'sha1')"
+    ))?;
+    connection.batch_execute(&guard)?;
+    for sql in [
+        format!(
+            "INSERT INTO catalog_relationship_evidence_publications VALUES({gap},'catalog_comparison')"
+        ),
+        format!("INSERT INTO catalog_relationship_evidence_publications VALUES({gap},'rationale')"),
+        format!("INSERT INTO catalog_relationship_rationales VALUES({gap},'dual subtype')"),
+        format!(
+            "INSERT OR REPLACE INTO catalog_relationship_comparison_fields VALUES({gap},'agreement',1,'md5')"
+        ),
+        format!(
+            "INSERT INTO catalog_relationship_comparison_fields VALUES({gap},'contradiction',0,'sha1')"
+        ),
+        format!(
+            "INSERT INTO catalog_relationship_comparison_fields VALUES({gap},'agreement',0.5,'crc')"
+        ),
+        format!(
+            "INSERT INTO catalog_relationship_comparison_fields VALUES({gap},'agreement',-1,'size')"
+        ),
+        format!(
+            "INSERT INTO catalog_relationship_comparison_fields VALUES({gap},'agreement',0,'unknown')"
+        ),
+    ] {
+        assert!(connection.batch_execute(&sql).is_err(), "{sql}");
+    }
     Ok(())
 }
 
@@ -430,22 +485,25 @@ fn source_evidence_stays_with_native_owners_and_cannot_acquire_decision_copies()
             target_name: "parent".into()
         }
     );
-    let key = explanations[0].assertion_key.as_str();
+    let id = relationship_id(
+        &mut catalog.connection,
+        explanations[0].assertion_key.as_str(),
+    )?;
     catalog
         .connection
         .batch_execute("PRAGMA foreign_keys=OFF; PRAGMA recursive_triggers=OFF")?;
     for sql in [
-        format!("INSERT INTO relationship_rationales VALUES('{key}','copied source')"),
-        format!("INSERT INTO relationship_comparisons VALUES('{key}','compatible')"),
-        format!("INSERT INTO relationship_evidence_publications VALUES('{key}','rationale')"),
+        format!("INSERT INTO catalog_relationship_rationales VALUES({id},'copied source')"),
+        format!("INSERT INTO catalog_relationship_comparisons VALUES({id},'compatible')"),
+        format!("INSERT INTO catalog_relationship_evidence_publications VALUES({id},'rationale')"),
     ] {
         assert!(catalog.connection.batch_execute(&sql).is_err(), "{sql}");
     }
     for table in [
-        "relationship_rationales",
-        "relationship_comparisons",
-        "relationship_comparison_fields",
-        "relationship_evidence_publications",
+        "catalog_relationship_rationales",
+        "catalog_relationship_comparisons",
+        "catalog_relationship_comparison_fields",
+        "catalog_relationship_evidence_publications",
     ] {
         assert_eq!(
             sql_query(format!("SELECT count(*) AS value FROM {table}"))

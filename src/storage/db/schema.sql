@@ -945,42 +945,6 @@ CREATE TABLE catalog_sets (
     UNIQUE (set_group_id, list_order),
     UNIQUE (set_id, source_element_kind)
 );
-CREATE TABLE relationship_rationales (
-    assertion_key TEXT PRIMARY KEY NOT NULL REFERENCES catalog_relationships(assertion_key) ON DELETE RESTRICT,
-    reason TEXT NOT NULL CHECK (typeof(reason) = 'text' AND length(trim(reason)) > 0)
-) WITHOUT ROWID;
-CREATE TABLE relationship_comparisons (
-    assertion_key TEXT PRIMARY KEY NOT NULL REFERENCES catalog_relationships(assertion_key) ON DELETE RESTRICT,
-    status TEXT NOT NULL CHECK (status IN ('compatible','candidate','contradictory','ambiguous','unknown'))
-) WITHOUT ROWID;
-CREATE TABLE relationship_comparison_fields (
-    assertion_key TEXT NOT NULL REFERENCES relationship_comparisons(assertion_key) ON DELETE RESTRICT,
-    disposition TEXT NOT NULL CHECK (disposition IN ('agreement','contradiction')),
-    position INTEGER NOT NULL CHECK (typeof(position) = 'integer' AND position >= 0),
-    field TEXT NOT NULL CHECK (field IN ('sha1','md5','crc','size')),
-    PRIMARY KEY (assertion_key, disposition, position),
-    UNIQUE (assertion_key, field)
-) WITHOUT ROWID;
-CREATE TABLE relationship_evidence_publications (
-    assertion_key TEXT PRIMARY KEY NOT NULL REFERENCES catalog_relationships(assertion_key) ON DELETE RESTRICT,
-    evidence_kind TEXT NOT NULL CHECK (evidence_kind IN ('rationale','catalog_comparison'))
-) WITHOUT ROWID;
-CREATE TABLE "relationship_assertion_support" (
-    assertion_key TEXT NOT NULL REFERENCES catalog_relationships(assertion_key) ON DELETE RESTRICT,
-    position INTEGER NOT NULL CHECK (typeof(position)='integer' AND position >= 0),
-    supported_assertion_key TEXT NOT NULL REFERENCES catalog_relationships(assertion_key) ON DELETE RESTRICT,
-    PRIMARY KEY (assertion_key, position)
-) WITHOUT ROWID;
-CREATE TABLE "relationship_reviews" (
-    review_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    review_key TEXT NOT NULL UNIQUE,
-    assertion_key TEXT NOT NULL REFERENCES catalog_relationships(assertion_key) ON DELETE RESTRICT,
-    decision TEXT NOT NULL CHECK (decision IN ('accepted', 'rejected', 'withdrawn', 'superseded')),
-    note TEXT NOT NULL,
-    superseded_by_assertion_key TEXT REFERENCES catalog_relationships(assertion_key) ON DELETE RESTRICT,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CHECK ((decision = 'superseded') = (superseded_by_assertion_key IS NOT NULL))
-);
 CREATE TABLE rom_files (
     id              INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
     parent_path     TEXT    NOT NULL,
@@ -1478,8 +1442,6 @@ CREATE INDEX occurrence_content_lookup ON asset_occurrences(content_uuid, occurr
     WHERE content_uuid IS NOT NULL;
 CREATE INDEX occurrence_digest_lookup ON occurrence_digest_assertions(digest_id, occurrence_id);
 CREATE INDEX catalog_set_name_lookup ON catalog_sets(set_group_id, set_name);
-CREATE INDEX relationship_reviews_assertion_index
-    ON relationship_reviews (assertion_key, review_id);
 CREATE INDEX rom_file_sha1_index ON rom_files (sha1);
 CREATE INDEX rom_file_xxhash3_index ON rom_files (xxhash3);
 CREATE INDEX rom_files_scan_root_index ON rom_files (scan_root);
@@ -2177,118 +2139,6 @@ WHEN NOT EXISTS (
     )
 )
 BEGIN SELECT RAISE(ABORT, 'set kind does not match its parser format'); END;
-CREATE TRIGGER relationship_rationales_require_owner BEFORE INSERT ON relationship_rationales
-WHEN NOT EXISTS (
-    SELECT 1 FROM catalog_relationships AS identity
-    WHERE identity.assertion_key=NEW.assertion_key AND identity.origin IN ('derived','user')
-      AND (EXISTS (SELECT 1 FROM inferred_catalog_relationships WHERE relationship_id=identity.relationship_id)
-           OR EXISTS (SELECT 1 FROM manual_catalog_relationships WHERE relationship_id=identity.relationship_id))
-)
- OR EXISTS (SELECT 1 FROM relationship_comparisons WHERE assertion_key=NEW.assertion_key)
- OR EXISTS (SELECT 1 FROM relationship_rationales WHERE assertion_key=NEW.assertion_key)
- OR EXISTS (SELECT 1 FROM relationship_evidence_publications WHERE assertion_key=NEW.assertion_key)
-BEGIN SELECT RAISE(ABORT,'rationale requires an unsealed non-source relationship'); END;
-CREATE TRIGGER relationship_comparisons_require_owner BEFORE INSERT ON relationship_comparisons
-WHEN NOT EXISTS (
-    SELECT 1 FROM catalog_relationships AS identity
-    JOIN inferred_catalog_relationships AS inferred USING(relationship_id)
-    WHERE identity.assertion_key=NEW.assertion_key AND identity.origin='derived'
-)
- OR EXISTS (SELECT 1 FROM relationship_rationales WHERE assertion_key=NEW.assertion_key)
- OR EXISTS (SELECT 1 FROM relationship_comparisons WHERE assertion_key=NEW.assertion_key)
- OR EXISTS (SELECT 1 FROM relationship_evidence_publications WHERE assertion_key=NEW.assertion_key)
-BEGIN SELECT RAISE(ABORT,'comparison requires an unsealed derived relationship'); END;
-CREATE TRIGGER relationship_comparison_fields_require_owner BEFORE INSERT ON relationship_comparison_fields
-WHEN NOT EXISTS (SELECT 1 FROM relationship_comparisons WHERE assertion_key=NEW.assertion_key)
- OR EXISTS (SELECT 1 FROM relationship_evidence_publications WHERE assertion_key=NEW.assertion_key)
- OR EXISTS (SELECT 1 FROM relationship_comparison_fields WHERE assertion_key=NEW.assertion_key
-            AND (field=NEW.field OR (disposition=NEW.disposition AND position=NEW.position)))
-BEGIN SELECT RAISE(ABORT,'assessment requires an unsealed comparison'); END;
-CREATE TRIGGER relationship_evidence_publications_validate BEFORE INSERT ON relationship_evidence_publications
-WHEN EXISTS (SELECT 1 FROM relationship_evidence_publications WHERE assertion_key=NEW.assertion_key)
- OR NOT EXISTS (
-     SELECT 1 FROM catalog_relationships AS identity
-     JOIN relationship_assertions AS assertion USING(assertion_key)
-     WHERE identity.assertion_key=NEW.assertion_key
-       AND identity.origin IN ('derived','user')
-       AND assertion.origin IN ('derived_candidate','user_conclusion')
-       AND (assertion.generic_subject_snapshot_key IS NULL OR EXISTS (
-            SELECT 1 FROM snapshot_publications
-            WHERE snapshot_key=assertion.generic_subject_snapshot_key))
-       AND (assertion.generic_target_snapshot_key IS NULL OR EXISTS (
-            SELECT 1 FROM snapshot_publications
-            WHERE snapshot_key=assertion.generic_target_snapshot_key))
-       AND ((NEW.evidence_kind='rationale'
-         AND EXISTS (SELECT 1 FROM relationship_rationales WHERE assertion_key=identity.assertion_key)
-         AND NOT EXISTS (SELECT 1 FROM relationship_comparisons WHERE assertion_key=identity.assertion_key))
-         OR (NEW.evidence_kind='catalog_comparison' AND identity.origin='derived'
-         AND EXISTS (SELECT 1 FROM relationship_comparisons WHERE assertion_key=identity.assertion_key)
-         AND NOT EXISTS (SELECT 1 FROM relationship_rationales WHERE assertion_key=identity.assertion_key)))
- )
- OR EXISTS (SELECT 1 FROM relationship_comparison_fields WHERE assertion_key=NEW.assertion_key
-     GROUP BY disposition HAVING MIN(position)<>0 OR MAX(position)<>COUNT(*)-1)
- OR EXISTS (SELECT COUNT(*) FROM relationship_assertion_support WHERE assertion_key=NEW.assertion_key
-     HAVING COUNT(*)>0 AND (MIN(position)<>0 OR MAX(position)<>COUNT(*)-1))
-BEGIN SELECT RAISE(ABORT,'relationship evidence is incomplete or has a mismatching owner'); END;
-CREATE TRIGGER relationship_rationales_immutable_update BEFORE UPDATE ON relationship_rationales
-BEGIN SELECT RAISE(ABORT,'relationship rationale is immutable'); END;
-CREATE TRIGGER relationship_rationales_immutable_delete BEFORE DELETE ON relationship_rationales
-BEGIN SELECT RAISE(ABORT,'relationship rationale is immutable'); END;
-CREATE TRIGGER relationship_comparisons_immutable_update BEFORE UPDATE ON relationship_comparisons
-BEGIN SELECT RAISE(ABORT,'relationship comparison is immutable'); END;
-CREATE TRIGGER relationship_comparisons_immutable_delete BEFORE DELETE ON relationship_comparisons
-BEGIN SELECT RAISE(ABORT,'relationship comparison is immutable'); END;
-CREATE TRIGGER relationship_comparison_fields_immutable_update BEFORE UPDATE ON relationship_comparison_fields
-BEGIN SELECT RAISE(ABORT,'relationship assessment is immutable'); END;
-CREATE TRIGGER relationship_comparison_fields_immutable_delete BEFORE DELETE ON relationship_comparison_fields
-BEGIN SELECT RAISE(ABORT,'relationship assessment is immutable'); END;
-CREATE TRIGGER relationship_evidence_publications_immutable_update BEFORE UPDATE ON relationship_evidence_publications
-BEGIN SELECT RAISE(ABORT,'relationship evidence publication is immutable'); END;
-CREATE TRIGGER relationship_evidence_publications_immutable_delete BEFORE DELETE ON relationship_evidence_publications
-BEGIN SELECT RAISE(ABORT,'relationship evidence publication is immutable'); END;
-CREATE TRIGGER relationship_assertion_support_sealed_insert BEFORE INSERT ON relationship_assertion_support
-WHEN EXISTS (SELECT 1 FROM relationship_evidence_publications WHERE assertion_key=NEW.assertion_key)
- OR EXISTS (SELECT 1 FROM relationship_assertion_support WHERE assertion_key=NEW.assertion_key AND position=NEW.position)
-BEGIN SELECT RAISE(ABORT,'published relationship support is immutable'); END;
-CREATE TRIGGER relationship_assertion_support_immutable_delete
-BEFORE DELETE ON relationship_assertion_support
-BEGIN
-    SELECT RAISE(ABORT, 'relationship assertion support is immutable');
-END;
-CREATE TRIGGER relationship_assertion_support_immutable_update
-BEFORE UPDATE ON relationship_assertion_support
-BEGIN
-    SELECT RAISE(ABORT, 'relationship assertion support is immutable');
-END;
-CREATE TRIGGER relationship_assertion_support_origin_insert
-BEFORE INSERT ON relationship_assertion_support
-WHEN NOT EXISTS (
-    SELECT 1 FROM catalog_relationships AS identity
-    JOIN inferred_catalog_relationships AS inferred USING(relationship_id)
-    WHERE identity.assertion_key = NEW.assertion_key AND identity.origin = 'derived'
-)
-BEGIN
-    SELECT RAISE(ABORT, 'only derived candidates may have supporting assertions');
-END;
-CREATE TRIGGER relationship_reviews_are_immutable_delete
-BEFORE DELETE ON relationship_reviews
-BEGIN
-    SELECT RAISE(ABORT, 'relationship reviews are append-only');
-END;
-CREATE TRIGGER relationship_reviews_are_immutable_insert
-BEFORE INSERT ON relationship_reviews
-WHEN EXISTS (
-    SELECT 1 FROM relationship_reviews
-    WHERE review_key = NEW.review_key OR review_id = NEW.review_id
-)
-BEGIN
-    SELECT RAISE(ABORT, 'relationship reviews are append-only');
-END;
-CREATE TRIGGER relationship_reviews_are_immutable_update
-BEFORE UPDATE ON relationship_reviews
-BEGIN
-    SELECT RAISE(ABORT, 'relationship reviews are append-only');
-END;
 CREATE TRIGGER retained_documents_require_object_insert
 BEFORE INSERT ON documents
 WHEN NEW.retention_status = 'retained'

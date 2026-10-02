@@ -418,9 +418,9 @@ fn composite_key_catalog_tables_cluster_rows_by_their_primary_keys()
              'software_part_dipswitches', 'software_part_dip_values', 'no_intro_pc_games', \
              'logiqx_games', 'mame_machine_input_controls', \
              'mame_machine_analogs', 'mame_machine_device_extensions', 'mame_machine_slot_options', \
-             'relationship_rationales', 'relationship_comparisons', \
-             'relationship_comparison_fields', 'relationship_evidence_publications', \
-             'relationship_assertion_support' \
+             'catalog_relationship_rationales', 'catalog_relationship_comparisons', \
+             'catalog_relationship_comparison_fields', 'catalog_relationship_evidence_publications', \
+             'catalog_relationship_evidence' \
          )",
     )
     .get_result::<CountRow>(&mut connection)?;

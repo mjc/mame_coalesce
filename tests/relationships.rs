@@ -260,11 +260,11 @@ fn generic_endpoint_components_round_trip_without_encoded_keys()
     let legacy_columns = sql_query(
         "SELECT COUNT(*) AS found FROM ( \
              SELECT name FROM pragma_table_info('relationship_assertions') \
-             UNION ALL SELECT name FROM pragma_table_info('relationship_rationales') \
-             UNION ALL SELECT name FROM pragma_table_info('relationship_comparisons') \
-             UNION ALL SELECT name FROM pragma_table_info('relationship_comparison_fields') \
-             UNION ALL SELECT name FROM pragma_table_info('relationship_evidence_publications') \
-             UNION ALL SELECT name FROM pragma_table_info('relationship_assertion_support') \
+             UNION ALL SELECT name FROM pragma_table_info('catalog_relationship_rationales') \
+             UNION ALL SELECT name FROM pragma_table_info('catalog_relationship_comparisons') \
+             UNION ALL SELECT name FROM pragma_table_info('catalog_relationship_comparison_fields') \
+             UNION ALL SELECT name FROM pragma_table_info('catalog_relationship_evidence_publications') \
+             UNION ALL SELECT name FROM pragma_table_info('catalog_relationship_evidence') \
          ) WHERE lower(name) LIKE '%json%' \
              OR name IN ('subject_key', 'target_key', 'generic_subject_key', 'generic_target_key')",
     )

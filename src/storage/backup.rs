@@ -699,6 +699,25 @@ fn check_publication_states(
             ),
         );
     }
+    let reviews = sql_query(
+        "SELECT review_key AS value FROM catalog_relationship_review_closure \
+         WHERE NOT is_complete OR NOT is_published ORDER BY review_id LIMIT 50",
+    )
+    .load::<TextValue>(conn)
+    .map_err(|error| {
+        backup_error(format!(
+            "could not inspect relationship review publication states: {error}"
+        ))
+    })?;
+    for row in reviews {
+        push_issue(
+            &mut report.durable_issues,
+            format!(
+                "relationship review {} has an incomplete publication state",
+                row.value
+            ),
+        );
+    }
     Ok(())
 }
 
@@ -996,7 +1015,7 @@ mod tests {
             ("relationship_assertions", 1),
             ("relationship_assertion_explanations", 3),
             ("catalog_relationships", 3),
-            ("relationship_reviews", 1),
+            ("catalog_relationship_reviews", 1),
         ] {
             let count = sql_query(format!("SELECT COUNT(*) AS count FROM {table}"))
                 .get_result::<CountRow>(&mut restored)?

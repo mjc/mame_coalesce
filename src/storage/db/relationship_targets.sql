@@ -285,11 +285,8 @@ WHEN EXISTS (
         SELECT NEW.rule_key AS value
         UNION ALL SELECT NEW.revision
         UNION ALL SELECT NEW.description
-    ) WHERE length(CAST(trim(value,char(
-        9,10,11,12,13,32,133,160,5760,
-        8192,8193,8194,8195,8196,8197,8198,8199,8200,8201,8202,
-        8232,8233,8239,8287,12288
-    )) AS BLOB)) = 0
+    ) WHERE typeof(value)<>'text'
+         OR length(CAST(trim(value,(SELECT characters FROM relationship_unicode_whitespace)) AS BLOB)) = 0
 )
 BEGIN SELECT RAISE(ABORT, 'relationship rule metadata must not be whitespace-only'); END;
 CREATE TRIGGER catalog_relationship_rules_reject_conflicting_description

@@ -383,13 +383,13 @@ names would be a separate, evidence-backed TOSEC rule, not part of XML parsing.
 
 Relationship decision evidence has no generic JSON/EAV tree. The public
 `RelationshipEvidence` enum distinguishes a rationale, a catalog comparison
-and native source-reference/merge facts. `relationship_rationales` owns only a
-reason; `relationship_comparisons` owns the recorded comparison status, with
-ordered closed-field assessments in `relationship_comparison_fields`. It
+and native source-reference/merge facts. `catalog_relationship_rationales` owns only a
+reason; `catalog_relationship_comparisons` owns the recorded comparison status, with
+ordered closed-field assessments in `catalog_relationship_comparison_fields`. It
 copies no expected source size/hash payload. Source variants are produced from
 the existing native owners, never persisted as another evidence projection.
 
-`relationship_evidence_publications` is the atomic completion boundary for
+`catalog_relationship_evidence_publications` is the atomic completion boundary for
 non-source decisions. It requires exactly one matching evidence subtype and
 contiguous field/support orders. Explanations, support and reviews require
 published evidence; source decisions instead require their catalog snapshot
@@ -399,6 +399,30 @@ and backup reject unfinished non-source decisions. There is no upgrade or
 legacy evidence conversion. Inferred/manual endpoint subtypes now have actual
 native ownership. Immutable observed-file endpoints remain a separate
 unfinished shared-model requirement.
+
+Evidence, rationale, comparison and review children reference integer
+`relationship_id` owners, not repeated external assertion keys. Comparison
+fields reference their actual comparison; ordered supports reference existing
+published relationships and retain repeated support at distinct positions.
+The external relationship key occurs once in `catalog_relationships`.
+
+`catalog_relationship_reviews` stores the issued review key, predecessor FK,
+decision, note and time once. `replaced_catalog_relationships` stores only its
+review FK and replacement relationship FK. A consumed draft publishes review,
+optional replacement and `catalog_relationship_review_publications` seal in
+one immediate transaction. Unsealed reviews are invisible to explanations,
+but integrity and backup enumerate them as unfinished durable work. Both
+relationships must already be complete and published; cross-catalog reviews
+retain each endpoint's actual edition rather than imposing equal editions.
+
+The active replacement graph selects the greatest published review ID for each
+relationship before inspecting its decision. Withdrawal, acceptance and
+rejection deactivate an older replacement without deleting history. Newer
+unsealed reviews do not change the active graph; sealing an older review adds
+history without activating its historical edge. Self-replacement and active
+cycles are rejected. Traversal seeks the latest sealed review by owner index
+for each visited relationship, not a materialized global graph. Scoped review
+readers, publication and integrity share the same canonical readiness rules.
 
 `catalog_relationships` issues every source, inferred and manual key once.
 `inferred_catalog_relationships` and `manual_catalog_relationships` own the

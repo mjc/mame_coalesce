@@ -349,10 +349,10 @@ pub(super) fn insert_rule(
 
 pub(super) fn load_rule(
     conn: &mut SqliteConnection,
-    assertion: &str,
+    relationship: super::RelationshipId,
 ) -> crate::Result<RelationshipRule> {
-    let row = sql_query("SELECT rule.rule_id,rule.rule_key,rule.revision,rule.description FROM catalog_relationships registry JOIN inferred_catalog_relationships inferred USING(relationship_id) JOIN catalog_relationship_rules rule USING(rule_id) WHERE registry.assertion_key=?")
-        .bind::<Text, _>(assertion)
+    let row = sql_query("SELECT rule.rule_id,rule.rule_key,rule.revision,rule.description FROM inferred_catalog_relationships inferred JOIN catalog_relationship_rules rule USING(rule_id) WHERE inferred.relationship_id=?")
+        .bind::<BigInt, _>(relationship.0)
         .get_result::<RuleRow>(conn)?;
     RelationshipRule::new(row.rule_key, row.revision, row.description)
 }

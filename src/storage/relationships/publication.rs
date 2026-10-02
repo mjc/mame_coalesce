@@ -1,8 +1,9 @@
 use diesel::{
     QueryableByName, RunQueryDsl, SqliteConnection, sql_query,
-    sql_types::{BigInt, Text},
+    sql_types::{BigInt, Nullable, Text},
 };
 
+use super::RelationshipId;
 use crate::domain::RelationshipAssertionKey;
 
 const LOOKUP_SQL: &str = concat!(
@@ -12,19 +13,23 @@ const LOOKUP_SQL: &str = concat!(
 
 #[derive(QueryableByName)]
 struct Found {
+    #[diesel(sql_type = Nullable<BigInt>)]
+    relationship_id: Option<i64>,
     #[diesel(sql_type = BigInt, column_name = is_published)]
     found: i64,
 }
 
-pub(super) fn is_published(
+pub(super) fn published_id(
     conn: &mut SqliteConnection,
     key: &RelationshipAssertionKey,
-) -> crate::Result<bool> {
-    Ok(sql_query(LOOKUP_SQL)
+) -> crate::Result<Option<RelationshipId>> {
+    let row = sql_query(LOOKUP_SQL)
         .bind::<Text, _>(key.as_str())
-        .get_result::<Found>(conn)?
-        .found
-        == 1)
+        .get_result::<Found>(conn)?;
+    Ok(row
+        .relationship_id
+        .filter(|_| row.found == 1)
+        .map(RelationshipId))
 }
 
 #[cfg(test)]

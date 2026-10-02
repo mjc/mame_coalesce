@@ -264,6 +264,17 @@ Rules declare their key, revision and description separately. Unscoped digest
 references reuse the binary digest table; they do not prove observed bytes or
 issue file UUIDs. The former generic assertion payload is a read-only projection.
 
+Relationship evidence, ordered supports and reviews use integer owner FKs;
+issued external keys remain stored once. A review stores its note and time once,
+with an optional replacement edge and an atomic publication seal. Unsealed
+reviews remain invisible to explanations but fail integrity and backup checks.
+Only the latest published review activates a replacement; withdrawal preserves
+history while removing that active edge. Self-replacement and active cycles are
+rejected, including when a newer draft is still unsealed. Publishing an older
+review adds history without changing the latest decision. These FK-owned
+evidence/review children cannot allocate a different owner when an ID is missing
+or NULL.
+
 Import errors can retain an exact byte excerpt with a start-inclusive,
 end-exclusive highlight relative to that saved excerpt, not the whole file.
 `problem_start_byte` and `problem_end_byte` index the stored `source_excerpt`:

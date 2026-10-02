@@ -18,8 +18,17 @@ mod evidence;
 mod publication;
 mod targets;
 
+/// Local registry owner; external relationship keys are interchange identities.
+#[derive(Clone, Copy)]
+struct RelationshipId(i64);
+
+#[derive(Clone, Copy)]
+struct RelationshipReviewId(i64);
+
 #[derive(QueryableByName)]
 struct ExplanationRow {
+    #[diesel(sql_type = BigInt)]
+    relationship_id: i64,
     #[diesel(sql_type = Text)]
     assertion_key: String,
     #[diesel(sql_type = Text)]
@@ -100,8 +109,21 @@ struct SupportRow {
     supported_assertion_key: String,
 }
 
-const SUPPORT_SQL: &str = "SELECT supported_assertion_key \
-     FROM relationship_assertion_support WHERE assertion_key=? ORDER BY position";
+const SUPPORT_SQL: &str = "SELECT supporting.assertion_key AS supported_assertion_key \
+     FROM catalog_relationship_evidence AS evidence \
+     JOIN catalog_relationships AS supporting \
+       ON supporting.relationship_id=evidence.supporting_relationship_id \
+     WHERE evidence.relationship_id=? ORDER BY evidence.list_order";
+
+// Callers supply requested_reviews(review_id); publication and integrity use
+// these same canonical predicates rather than a second owner validator.
+const REVIEW_READINESS_SQL: &str = concat!(
+    "WITH ",
+    include_str!("db/relationship_review_readiness_scope.sql"),
+    include_str!("db/relationship_readiness.sql"),
+    "), ",
+    include_str!("db/relationship_review_readiness.sql"),
+);
 
 #[derive(QueryableByName)]
 struct ReviewRow {
@@ -129,23 +151,7 @@ pub fn record_claim(
     }
     let key = RelationshipAssertionKey::fresh();
     let mut conn = pool.get()?;
-    conn.immediate_transaction::<_, crate::Error, _>(|conn| {
-        if let RelationshipOrigin::DerivedCandidate {
-            supporting_assertions,
-            ..
-        } = &claim.origin
-        {
-            for supported in supporting_assertions {
-                if !publication::is_published(conn, supported)? {
-                    return Err(crate::Error::InvalidPath(format!(
-                        "supporting relationship assertion {} does not exist",
-                        supported.as_str()
-                    )));
-                }
-            }
-        }
-        insert_claim(conn, key, claim)
-    })
+    conn.immediate_transaction::<_, crate::Error, _>(|conn| insert_claim(conn, key, claim))
 }
 
 fn validate_claim(claim: &RelationshipClaim) -> crate::Result<()> {
@@ -214,6 +220,7 @@ struct RegisteredRelationship {
 
 /// An owned decision draft with complete native targets; publication consumes it.
 struct PendingRelationship<'a> {
+    id: RelationshipId,
     key: RelationshipAssertionKey,
     claim: &'a RelationshipClaim,
 }
@@ -265,12 +272,16 @@ impl<'a> PendingRelationship<'a> {
                     .bind::<BigInt,_>(subject.database_value()).bind::<BigInt,_>(target.database_value()).execute(conn)?;
             }
         }
-        Ok(Self { key, claim })
+        Ok(Self {
+            id: RelationshipId(identity),
+            key,
+            claim,
+        })
     }
 
     fn publish(self, conn: &mut SqliteConnection) -> crate::Result<RelationshipAssertionKey> {
         let claim = self.claim;
-        evidence::insert(conn, self.key.as_str(), &claim.evidence)?;
+        evidence::insert(conn, self.id, &claim.evidence)?;
         if let RelationshipOrigin::DerivedCandidate {
             supporting_assertions,
             ..
@@ -280,11 +291,12 @@ impl<'a> PendingRelationship<'a> {
                 let position = i64::try_from(position).map_err(|_| {
                     crate::Error::InvalidPath("relationship support position exceeds i64".into())
                 })?;
-                sql_query("INSERT INTO relationship_assertion_support(assertion_key,position,supported_assertion_key) VALUES(?,?,?)")
-                    .bind::<Text,_>(self.key.as_str()).bind::<BigInt,_>(position).bind::<Text,_>(supported.as_str()).execute(conn)?;
+                let supporting = require_published_relationship(conn, supported)?;
+                sql_query("INSERT INTO catalog_relationship_evidence(relationship_id,list_order,supporting_relationship_id) VALUES(?,?,?)")
+                    .bind::<BigInt,_>(self.id.0).bind::<BigInt,_>(position).bind::<BigInt,_>(supporting.0).execute(conn)?;
             }
         }
-        evidence::publish(conn, self.key.as_str(), &claim.evidence)?;
+        evidence::publish(conn, self.id, &claim.evidence)?;
         Ok(self.key)
     }
 }
@@ -295,6 +307,60 @@ fn insert_claim(
     claim: &RelationshipClaim,
 ) -> crate::Result<RelationshipAssertionKey> {
     PendingRelationship::insert(conn, key, claim)?.publish(conn)
+}
+
+fn require_published_relationship(
+    conn: &mut SqliteConnection,
+    key: &RelationshipAssertionKey,
+) -> crate::Result<RelationshipId> {
+    publication::published_id(conn, key)?.ok_or_else(|| {
+        crate::Error::InvalidPath(format!(
+            "relationship assertion {} is missing or unpublished",
+            key.as_str()
+        ))
+    })
+}
+
+#[derive(QueryableByName)]
+struct RegisteredReview {
+    #[diesel(sql_type = BigInt)]
+    review_id: i64,
+}
+
+/// Review facts and any successor are invisible until this draft is consumed.
+struct PendingReview(RelationshipReviewId);
+
+impl PendingReview {
+    fn insert(
+        conn: &mut SqliteConnection,
+        predecessor: RelationshipId,
+        successor: Option<RelationshipId>,
+        review: &RelationshipReview,
+    ) -> crate::Result<Self> {
+        let row = sql_query(
+            "INSERT INTO catalog_relationship_reviews \
+             (review_key, relationship_id, decision, note) VALUES (?, ?, ?, ?) \
+             RETURNING review_id",
+        )
+        .bind::<Text, _>(uuid::Uuid::new_v4().simple().to_string())
+        .bind::<BigInt, _>(predecessor.0)
+        .bind::<Text, _>(review.decision.as_str())
+        .bind::<Text, _>(&review.note)
+        .get_result::<RegisteredReview>(conn)?;
+        let id = RelationshipReviewId(row.review_id);
+        if let Some(successor) = successor {
+            sql_query("INSERT INTO replaced_catalog_relationships(review_id,replacement_relationship_id) VALUES(?,?)")
+                .bind::<BigInt,_>(id.0).bind::<BigInt,_>(successor.0).execute(conn)?;
+        }
+        Ok(Self(id))
+    }
+
+    fn publish(self, conn: &mut SqliteConnection) -> crate::Result<()> {
+        sql_query("INSERT INTO catalog_relationship_review_publications(review_id) VALUES(?)")
+            .bind::<BigInt, _>(self.0.0)
+            .execute(conn)?;
+        Ok(())
+    }
 }
 
 pub fn review_claim(
@@ -324,23 +390,13 @@ pub fn review_claim(
     }
     let mut conn = pool.get()?;
     conn.immediate_transaction::<_, crate::Error, _>(|conn| {
-        sql_query(
-            "INSERT INTO relationship_reviews \
-             (review_key, assertion_key, decision, note, superseded_by_assertion_key) \
-             VALUES (?, ?, ?, ?, ?)",
-        )
-        .bind::<Text, _>(uuid::Uuid::new_v4().to_string())
-        .bind::<Text, _>(assertion_key.as_str())
-        .bind::<Text, _>(review.decision.as_str())
-        .bind::<Text, _>(&review.note)
-        .bind::<Nullable<Text>, _>(
-            review
-                .superseded_by
-                .as_ref()
-                .map(|key| key.as_str().to_owned()),
-        )
-        .execute(conn)?;
-        Ok(())
+        let predecessor = require_published_relationship(conn, assertion_key)?;
+        let successor = review
+            .superseded_by
+            .as_ref()
+            .map(|key| require_published_relationship(conn, key))
+            .transpose()?;
+        PendingReview::insert(conn, predecessor, successor, review)?.publish(conn)
     })
 }
 
@@ -367,11 +423,15 @@ impl ExplanationScope {
         let native_sources = [
             "mame_source_relationships", "logiqx_cmp_source_relationships",
             "software_dat_source_relationships", "no_intro_database_source_relationships",
-        ].map(|view| format!("SELECT a.* FROM {view} a WHERE a.source_snapshot_key IN (SELECT snapshot_key FROM requested_source_snapshots) {source_filter}")).join(" UNION ALL ");
+        ].map(|view| format!("SELECT a.* FROM {view} a WHERE a.assertion_key IN (SELECT assertion_key FROM scoped_source_identities) {source_filter}")).join(" UNION ALL ");
         Some(format!(
             "WITH requested_source_snapshots(snapshot_key) AS (VALUES (?),(?)), \
              requested_decision_snapshots(snapshot_key) AS (VALUES (?),(?),(?),(?)), \
              requested_relationship_kinds(kind) AS (VALUES {kinds}), \
+             scoped_source_identities AS MATERIALIZED ( \
+               SELECT identity.assertion_key FROM requested_source_snapshots requested \
+               CROSS JOIN catalog_relationships identity ON identity.snapshot_key=requested.snapshot_key \
+               WHERE identity.origin='source'), \
              scoped_source_assertions AS NOT MATERIALIZED ({native_sources}), \
              {}, scoped_assertions AS MATERIALIZED ( \
                SELECT * FROM scoped_source_assertions UNION ALL SELECT * FROM scoped_generic_assertions)",
@@ -392,7 +452,7 @@ impl ExplanationScope {
         let size = "COALESCE(mame_rom.size,logiqx_rom.size,cmp_rom.size,pc_file.size,dat_rom.size)";
         let scope = "COALESCE(mame_rom.evidence_scope,mame_disk.evidence_scope,logiqx_rom.evidence_scope,logiqx_disk.evidence_scope,cmp_rom.evidence_scope,pc_file.evidence_scope,dat_rom.evidence_scope)";
         format!(
-            "{cte} SELECT a.assertion_key, a.relation_type, a.origin, \
+            "{cte} SELECT registry.relationship_id, a.assertion_key, a.relation_type, a.origin, \
                 a.subject_snapshot_key, a.subject_kind, a.subject_set_id, \
                 a.generic_subject_a, a.generic_subject_b, \
                 a.generic_subject_c, a.source_subject_a, a.source_subject_b, a.source_subject_c, \
@@ -416,6 +476,7 @@ impl ExplanationScope {
                  WHERE source_version.snapshot_key = a.source_snapshot_key) AS declared_version, \
                 pi.parser_name, pi.parser_version, pi.rules_version \
          FROM {from} \
+         JOIN catalog_relationships registry ON registry.assertion_key=a.assertion_key \
          LEFT JOIN catalog_set_groups source_asset_group \
            ON a.origin = 'source_assertion' AND a.subject_kind = 'asset_requirement' \
           AND source_asset_group.snapshot_key = a.source_snapshot_key \
@@ -449,7 +510,7 @@ impl ExplanationScope {
          WHERE (a.origin='source_assertion' AND EXISTS ( \
                     SELECT 1 FROM snapshot_publications AS ready WHERE ready.snapshot_key=a.source_snapshot_key)) \
             OR (a.origin<>'source_assertion' AND EXISTS ( \
-                    SELECT 1 FROM relationship_evidence_publications AS ready WHERE ready.assertion_key=a.assertion_key)) \
+                    SELECT 1 FROM catalog_relationship_evidence_publications AS ready WHERE ready.relationship_id=registry.relationship_id)) \
          ORDER BY a.relation_type, a.source_snapshot_key, a.subject_kind, \
                   a.source_subject_a, a.source_subject_b, a.source_subject_c, \
                   a.generic_subject_a, a.generic_subject_b, a.generic_subject_c, \
@@ -459,21 +520,35 @@ impl ExplanationScope {
     }
 
     fn review_query(self) -> String {
-        self.scoped_assertions_cte().map_or_else(
+        let (cte, requested) = self.scoped_assertions_cte().map_or_else(
             || {
-                "SELECT assertion_key, decision, note, superseded_by_assertion_key, created_at \
-                 FROM relationship_reviews ORDER BY review_id"
-                    .to_owned()
-            },
-            |cte| {
-                format!(
-                    "{cte} SELECT r.assertion_key, r.decision, r.note, \
-                        r.superseded_by_assertion_key, r.created_at \
-                 FROM scoped_assertions scoped \
-                 JOIN relationship_reviews r USING (assertion_key) \
-                 ORDER BY r.review_id"
+                (
+                    "WITH ".to_owned(),
+                    "SELECT review_id FROM catalog_relationship_reviews",
                 )
             },
+            |cte| {
+                (
+                    format!("{cte}, "),
+                    "SELECT review.review_id FROM scoped_assertions scoped \
+                CROSS JOIN catalog_relationships owner USING(assertion_key) \
+                CROSS JOIN catalog_relationship_reviews review USING(relationship_id)",
+                )
+            },
+        );
+        format!(
+            "{cte} requested_reviews(review_id) AS MATERIALIZED ({requested}), \
+             review_readiness AS ({REVIEW_READINESS_SQL}) \
+             SELECT owner.assertion_key, review.decision, review.note, \
+                    successor.assertion_key AS superseded_by_assertion_key, \
+                    review.reviewed_at AS created_at \
+             FROM requested_reviews request \
+             CROSS JOIN catalog_relationship_reviews review USING(review_id) \
+             JOIN catalog_relationships owner USING(relationship_id) \
+             JOIN review_readiness ready ON ready.review_id=review.review_id \
+             LEFT JOIN replaced_catalog_relationships replacement ON replacement.review_id=review.review_id \
+             LEFT JOIN catalog_relationships successor ON successor.relationship_id=replacement.replacement_relationship_id \
+             WHERE ready.is_complete AND ready.is_published ORDER BY review.review_id"
         )
     }
 }
@@ -546,7 +621,7 @@ fn build_explanations(
             continue;
         }
         let supports = sql_query(SUPPORT_SQL)
-            .bind::<Text, _>(&row.assertion_key)
+            .bind::<BigInt, _>(row.relationship_id)
             .load::<SupportRow>(conn)?
             .into_iter()
             .map(|support| support.supported_assertion_key)
@@ -575,13 +650,16 @@ fn build_explanations(
             let evidence = if row.origin == "source_assertion" {
                 None
             } else {
-                Some(evidence::load(conn, &row.assertion_key)?)
+                Some(evidence::load(conn, RelationshipId(row.relationship_id))?)
             };
             let supports = support_by_assertion
                 .remove(&row.assertion_key)
                 .unwrap_or_default();
             let rule = if row.origin == "derived_candidate" {
-                Some(targets::load_rule(conn, &row.assertion_key)?)
+                Some(targets::load_rule(
+                    conn,
+                    RelationshipId(row.relationship_id),
+                )?)
             } else {
                 None
             };
@@ -1001,11 +1079,218 @@ fn parse_review_decision(value: &str) -> crate::Result<RelationshipReviewDecisio
 #[cfg(test)]
 mod query_plan_tests {
     use super::*;
+    use crate::app::{CatalogDocumentFormat, CatalogImportRequest, CatalogImportStatus};
+    use crate::domain::{CatalogKey, CatalogScope, PublishingSourceKey};
+    use std::fmt::Write as _;
 
     #[derive(QueryableByName)]
     struct PlanRow {
         #[diesel(sql_type = Text)]
         detail: String,
+    }
+
+    fn import_review_plan_catalogs(
+        database: &crate::database::Database,
+    ) -> crate::Result<Vec<SnapshotKey>> {
+        let path = camino::Utf8PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures/catalog/logiqx/catalog-a-v1.dat");
+        let mut snapshots = Vec::new();
+        for name in ["left", "right", "unrelated"] {
+            let report = crate::app::import_catalog(
+                database,
+                &CatalogImportRequest {
+                    document_path: path.clone(),
+                    format: CatalogDocumentFormat::Logiqx,
+                    source_key: PublishingSourceKey::new(name),
+                    source_display_name: name.into(),
+                    catalog_key: CatalogKey::new(name),
+                    catalog_display_name: name.into(),
+                    scope: CatalogScope::Complete,
+                },
+            )?;
+            assert_eq!(report.status, CatalogImportStatus::Succeeded);
+            snapshots.push(
+                report
+                    .snapshot_key
+                    .ok_or_else(|| crate::Error::InvalidPath("missing fixture snapshot".into()))?,
+            );
+        }
+        let unrelated_directory = tempfile::tempdir()?;
+        let unrelated_path =
+            camino::Utf8PathBuf::from_path_buf(unrelated_directory.path().join("unrelated.dat"))
+                .map_err(|_| crate::Error::InvalidPath("non-UTF-8 test path".into()))?;
+        let mut games = String::new();
+        for index in 0..512 {
+            write!(games, "<game name='unrelated-{index}' cloneof='unknown-{index}'><description>Unrelated</description></game>")
+                .map_err(|error| crate::Error::InvalidPath(error.to_string()))?;
+        }
+        std::fs::write(&unrelated_path, format!("<datafile>{games}</datafile>"))?;
+        let report = crate::app::import_catalog(
+            database,
+            &CatalogImportRequest {
+                document_path: unrelated_path,
+                format: CatalogDocumentFormat::Logiqx,
+                source_key: PublishingSourceKey::new("populated-unrelated"),
+                source_display_name: "Populated unrelated".into(),
+                catalog_key: CatalogKey::new("populated-unrelated"),
+                catalog_display_name: "Populated unrelated".into(),
+                scope: CatalogScope::Complete,
+            },
+        )?;
+        assert_eq!(report.status, CatalogImportStatus::Succeeded);
+        Ok(snapshots)
+    }
+
+    fn populate_review_plan_relationships(
+        conn: &mut SqliteConnection,
+    ) -> crate::Result<(Vec<RelationshipId>, PendingReview)> {
+        let base = RelationshipClaim {
+            relation_type: RelationshipType::CatalogCorrection,
+            subject: RelationshipEndpoint::ExternalRecord(ExternalRecordRef::new("plans", "left")),
+            target: RelationshipEndpoint::ExternalRecord(ExternalRecordRef::new("plans", "right")),
+            origin: RelationshipOrigin::UserConclusion,
+            evidence: RelationshipEvidence::Rationale {
+                reason: "populated query witness".into(),
+            },
+        };
+        let identities = conn.immediate_transaction::<_, crate::Error, _>(|conn| {
+            let mut identities = Vec::new();
+            for index in 0..128 {
+                let key = insert_claim(conn, RelationshipAssertionKey::fresh(), &base)?;
+                let id = require_published_relationship(conn, &key)?;
+                let accepted = RelationshipReview {
+                    decision: RelationshipReviewDecision::Accepted,
+                    note: "published plan witness".into(),
+                    superseded_by: None,
+                };
+                for _ in 0..3 {
+                    PendingReview::insert(conn, id, None, &accepted)?.publish(conn)?;
+                }
+                if let Some(previous) = identities.last().copied() {
+                    let superseded = RelationshipReview {
+                        decision: RelationshipReviewDecision::Superseded,
+                        note: "historical edge plan witness".into(),
+                        superseded_by: None,
+                    };
+                    PendingReview::insert(conn, id, Some(previous), &superseded)?.publish(conn)?;
+                    PendingReview::insert(conn, id, None, &accepted)?.publish(conn)?;
+                }
+                let withdrawn = RelationshipReview {
+                    decision: RelationshipReviewDecision::Withdrawn,
+                    note: "unsealed plan witness".into(),
+                    superseded_by: None,
+                };
+                let _draft = PendingReview::insert(conn, id, None, &withdrawn)?;
+                if index < 32 {
+                    let candidate = RelationshipClaim {
+                        origin: RelationshipOrigin::DerivedCandidate {
+                            rule: RelationshipRule::new(
+                                "populated-support",
+                                "v1",
+                                "Populated support witness",
+                            )?,
+                            supporting_assertions: vec![key.clone(), key],
+                        },
+                        ..base.clone()
+                    };
+                    insert_claim(conn, RelationshipAssertionKey::fresh(), &candidate)?;
+                }
+                identities.push(id);
+            }
+            Ok(identities)
+        })?;
+        let superseded = RelationshipReview {
+            decision: RelationshipReviewDecision::Superseded,
+            note: "bounded active chain witness".into(),
+            superseded_by: None,
+        };
+        for pair in identities[..4].windows(2) {
+            PendingReview::insert(conn, pair[0], Some(pair[1]), &superseded)?.publish(conn)?;
+        }
+        let cycle_draft =
+            PendingReview::insert(conn, identities[3], Some(identities[0]), &superseded)?;
+        Ok((identities, cycle_draft))
+    }
+
+    #[test]
+    fn populated_scoped_review_and_support_plans_stay_owner_bounded() -> crate::Result<()> {
+        let database = crate::database::Database::in_memory()?;
+        let snapshots = import_review_plan_catalogs(&database)?;
+        let mut conn = database.pool().get()?;
+        let (identities, cycle_draft) = populate_review_plan_relationships(&mut conn)?;
+        sql_query("ANALYZE").execute(&mut conn)?;
+        let cycle_sql = concat!(
+            "WITH RECURSIVE requested_reviews(review_id) AS (VALUES (?)), ",
+            include_str!("db/relationship_review_active_edges.sql"),
+            "SELECT * FROM cycle_results"
+        );
+        let cycle_details = sql_query(format!("EXPLAIN QUERY PLAN {cycle_sql}"))
+            .bind::<BigInt, _>(cycle_draft.0.0)
+            .load::<PlanRow>(&mut conn)?
+            .into_iter()
+            .map(|row| row.detail)
+            .collect::<Vec<_>>();
+        assert!(
+            cycle_details.iter().any(|detail| detail.starts_with(
+                "SEARCH candidate USING COVERING INDEX catalog_relationship_reviews_owner_latest"
+            )) && !cycle_details.iter().any(|detail| [
+                "SCAN candidate",
+                "SCAN latest",
+                "SCAN replacement",
+                "SCAN catalog_relationship_reviews"
+            ]
+            .iter()
+            .any(|prefix| detail.starts_with(prefix))),
+            "cycle traversal must seek latest published reviews per visited owner: {cycle_details:?}"
+        );
+        let support = sql_query(format!("EXPLAIN QUERY PLAN {SUPPORT_SQL}"))
+            .bind::<BigInt, _>(identities[0].0)
+            .load::<PlanRow>(&mut conn)?;
+        assert!(
+            support
+                .iter()
+                .any(|row| row.detail.starts_with("SEARCH evidence USING PRIMARY KEY")),
+            "support owner seek missing"
+        );
+        for scope in [ExplanationScope::CatalogSets, ExplanationScope::Snapshots] {
+            let details = sql_query(format!("EXPLAIN QUERY PLAN {}", scope.review_query()))
+                .bind::<Text, _>(snapshots[0].as_str())
+                .bind::<Text, _>(snapshots[1].as_str())
+                .bind::<Text, _>(snapshots[0].as_str())
+                .bind::<Text, _>(snapshots[1].as_str())
+                .bind::<Text, _>(snapshots[0].as_str())
+                .bind::<Text, _>(snapshots[1].as_str())
+                .load::<PlanRow>(&mut conn)?
+                .into_iter()
+                .map(|row| row.detail)
+                .collect::<Vec<_>>();
+            let scans = details.iter().any(|detail| {
+                [
+                    "SCAN review",
+                    "SCAN identity",
+                    "SCAN registry",
+                    "SCAN inferred",
+                    "SCAN manual",
+                    "SCAN owner",
+                    "SCAN replacement",
+                    "SCAN predecessor_identity",
+                    "SCAN successor_identity",
+                ]
+                .iter()
+                .any(|prefix| detail.starts_with(prefix))
+            });
+            assert!(
+                !scans,
+                "scoped review hydration scans unrelated owners: {details:?}"
+            );
+            assert!(
+                details.iter().any(|detail| detail.starts_with(
+                    "SEARCH review USING COVERING INDEX catalog_relationship_reviews_owner_latest"
+                )),
+                "review history must start from indexed selected owners: {details:?}"
+            );
+        }
+        Ok(())
     }
 
     #[test]
@@ -1108,22 +1393,19 @@ mod query_plan_tests {
     }
 
     #[test]
-    fn production_support_query_seeks_only_selected_assertion_keys() -> crate::Result<()> {
+    fn production_support_query_seeks_only_selected_relationship_ids() -> crate::Result<()> {
         let database = crate::database::Database::in_memory()?;
         let mut conn = database.pool().get()?;
         let plan = sql_query(format!("EXPLAIN QUERY PLAN {SUPPORT_SQL}"))
-            .bind::<Text, _>("selected-assertion")
+            .bind::<BigInt, _>(17)
             .load::<PlanRow>(&mut conn)?
             .into_iter()
             .map(|row| row.detail)
             .collect::<Vec<_>>();
         assert!(
             plan.iter()
-                .any(|row| row
-                    .starts_with("SEARCH relationship_assertion_support USING PRIMARY KEY"))
-                && !plan
-                    .iter()
-                    .any(|row| row.starts_with("SCAN relationship_assertion_support")),
+                .any(|row| row.starts_with("SEARCH evidence USING PRIMARY KEY"))
+                && !plan.iter().any(|row| row.starts_with("SCAN evidence")),
             "support hydration must seek only the requested assertion: {plan:?}"
         );
         Ok(())
@@ -1178,8 +1460,9 @@ mod query_plan_tests {
         )?;
         assert_ne!(selected, other);
         let mut conn = database.pool().get()?;
+        let selected_id = require_published_relationship(&mut conn, &selected)?;
         let actual = sql_query(SUPPORT_SQL)
-            .bind::<Text, _>(selected.as_str())
+            .bind::<BigInt, _>(selected_id.0)
             .load::<SupportRow>(&mut conn)?
             .into_iter()
             .map(|row| RelationshipAssertionKey::new(row.supported_assertion_key))

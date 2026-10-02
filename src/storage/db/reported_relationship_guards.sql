@@ -16,8 +16,8 @@ CROSS JOIN catalog_snapshots AS snapshot USING(snapshot_key)
 CROSS JOIN parser_interpretations AS interpretation USING(interpretation_key)
 WHERE sets.source_element_kind='mame_machine' AND interpretation.format='mame-listxml'
 UNION ALL
-SELECT owner.relationship_id,owner.source_reference_kind,owner.set_id,owner.occurrence_id,owner.snapshot_key
-FROM mame_merge_relationship_owners AS owner CROSS JOIN catalog_snapshots AS snapshot USING(snapshot_key)
+SELECT merge_owners.relationship_id,merge_owners.source_reference_kind,merge_owners.set_id,merge_owners.occurrence_id,merge_owners.snapshot_key
+FROM mame_merge_relationship_owners AS merge_owners CROSS JOIN catalog_snapshots AS snapshot USING(snapshot_key)
 CROSS JOIN parser_interpretations AS interpretation USING(interpretation_key)
 WHERE interpretation.format='mame-listxml'
 UNION ALL
