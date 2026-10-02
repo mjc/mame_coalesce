@@ -676,6 +676,29 @@ is queried, a `UNION ALL` view joins those ordinals; avoid a redundant, globally
 registered node row for each element. Conditions use typed owner tables so
 foreign keys cannot point a switch condition at an unrelated display.
 
+The native machine implementation stores the header in `mame_document_facts`;
+its build is not copied to `catalog_snapshots.declared_version`.
+`catalog_snapshot_versions` joins the native owner instead. Required
+`config_version` represents source `mameconfig`, and required BIOS descriptions
+are checked while streaming. Defaulted header, machine, BIOS, media, display,
+input/control, driver and slot attributes retain explicit-presence facts.
+Switch masks and setting values are source text, not coerced integers.
+
+The bounded `catalog_machines` reader returns the native hierarchy from an exact
+published snapshot, using numeric owners rather than machine names. Media are
+occurrence references, not copied payloads. The same requested-owner child-order
+query serves publication, native history and the public reader. Each union branch
+seeks its requested machine before reading native rows; no globally materialized
+child projection is stored. Publication checks required owners, matching media
+payloads, singleton cardinality and unique cross-family/nested source positions.
+Native insert/immutability guards also operate with SQLite foreign-key and
+recursive-trigger enforcement disabled.
+
+This is not completion of the pinned MAME field contract. Original ROM
+size/offset lexemes and interpretation-specific ownership for historical
+compatibility attributes remain open. The accepted `conflocation` fixture is
+compatibility input, not evidence that it belongs to the pinned 0.289 DTD.
+
 ## MAME software-list native relations
 
 The source-fidelity cutover adds native `software_documents` and plural-only

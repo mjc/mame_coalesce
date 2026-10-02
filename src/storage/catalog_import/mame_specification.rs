@@ -54,6 +54,7 @@ pub(super) fn insert(
                 "kind": Text = value.kind.as_str(),
                 "rotation": Nullable<Text> = value.rotation.map(crate::mame::DisplayRotation::as_str),
                 "flip_x": diesel::sql_types::Bool = value.flip_x.as_bool(),
+                "flip_x_specified": diesel::sql_types::Bool = value.flip_x_specified,
                 "width": Nullable<Text> = value.width.as_deref(),
                 "height": Nullable<Text> = value.height.as_deref(),
                 "refresh": Text = &value.refresh,
@@ -69,15 +70,17 @@ pub(super) fn insert(
             Spec::Input(value) => {
                 insert_record!("mame_machine_inputs", order, value.location;
                     "service": diesel::sql_types::Bool = value.service.as_bool(),
+                    "service_specified": diesel::sql_types::Bool = value.service_specified,
                     "tilt": diesel::sql_types::Bool = value.tilt.as_bool(),
+                    "tilt_specified": diesel::sql_types::Bool = value.tilt_specified,
                     "players": Text = &value.players,
                     "coins": Nullable<Text> = value.coins.as_deref());
                 for (control_order, control) in value.controls.iter().enumerate() {
                     sql_query(
                         "INSERT INTO mame_machine_input_controls \
                          (set_id, element_order, control_order, control_type, player, buttons, \
-                          minimum, maximum, sensitivity, keydelta, reverse, ways, ways2, ways3, source_line, source_column) \
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                          minimum, maximum, sensitivity, keydelta, reverse, reverse_specified, ways, ways2, ways3, source_line, source_column) \
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     )
                     .bind::<BigInt, _>(set_id)
                     .bind::<BigInt, _>(order)
@@ -90,6 +93,7 @@ pub(super) fn insert(
                     .bind::<Nullable<Text>, _>(control.sensitivity.as_deref())
                     .bind::<Nullable<Text>, _>(control.key_delta.as_deref())
                     .bind::<diesel::sql_types::Bool, _>(control.reverse.as_bool())
+                    .bind::<diesel::sql_types::Bool, _>(control.reverse_specified)
                     .bind::<Nullable<Text>, _>(control.ways.as_deref())
                     .bind::<Nullable<Text>, _>(control.ways2.as_deref())
                     .bind::<Nullable<Text>, _>(control.ways3.as_deref())
@@ -135,9 +139,13 @@ pub(super) fn insert(
                 "cocktail": Nullable<Text> = value.cocktail.map(crate::mame::DriverQuality::as_str),
                 "savestate": Text = value.savestate.as_str(),
                 "requires_artwork": diesel::sql_types::Bool = value.requires_artwork.as_bool(),
+                "requires_artwork_specified": diesel::sql_types::Bool = value.requires_artwork_specified,
                 "unofficial": diesel::sql_types::Bool = value.unofficial.as_bool(),
+                "unofficial_specified": diesel::sql_types::Bool = value.unofficial_specified,
                 "no_sound_hardware": diesel::sql_types::Bool = value.no_sound_hardware.as_bool(),
-                "incomplete": diesel::sql_types::Bool = value.incomplete.as_bool()),
+                "no_sound_hardware_specified": diesel::sql_types::Bool = value.no_sound_hardware_specified,
+                "incomplete": diesel::sql_types::Bool = value.incomplete.as_bool(),
+                "incomplete_specified": diesel::sql_types::Bool = value.incomplete_specified),
             Spec::Feature(value) => insert_record!("mame_machine_features", order, value.location;
                 "kind": Text = value.kind.as_str(),
                 "status": Nullable<Text> = value.status.map(crate::mame::FeatureStatus::as_str),
@@ -184,8 +192,8 @@ pub(super) fn insert(
                 for (option_order, option) in value.options.iter().enumerate() {
                     sql_query(
                         "INSERT INTO mame_machine_slot_options \
-                         (set_id, element_order, option_order, name, devname, is_default, source_line, source_column) \
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                         (set_id, element_order, option_order, name, devname, is_default, default_specified, source_line, source_column) \
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     )
                     .bind::<BigInt, _>(set_id)
                     .bind::<BigInt, _>(order)
@@ -193,6 +201,7 @@ pub(super) fn insert(
                     .bind::<Text, _>(&option.name)
                     .bind::<Text, _>(&option.device_name)
                     .bind::<diesel::sql_types::Bool, _>(option.is_default.as_bool())
+                    .bind::<diesel::sql_types::Bool, _>(option.default_specified)
                     .bind::<BigInt, _>(option.location.line)
                     .bind::<BigInt, _>(option.location.column)
                     .execute(conn)?;

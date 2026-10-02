@@ -202,7 +202,11 @@ fn insert_mame(
     asset: &SnapshotAsset,
     size: Option<i64>,
 ) -> crate::Result<()> {
-    let NativeAssetFacts::Mame(attributes) = &asset.native else {
+    let NativeAssetFacts::Mame {
+        attributes,
+        source_order,
+    } = &asset.native
+    else {
         return Err(crate::Error::InvalidPath(
             "MAME media entry has no native attributes".into(),
         ));
@@ -211,8 +215,9 @@ fn insert_mame(
     sql_query(format!(
         "INSERT INTO {} (occurrence_id,name,size,evidence_scope,evidence_provenance,merge_name, \
          dump_status,source_line,source_column,region,bios,offset,optional,sound_only,dispose, \
-         load_flag,value,inverted,ovha,no_thread,disk_index,writable,writeable) \
-         VALUES (?, ?, ?, ?, 'source_declared', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         load_flag,value,inverted,ovha,no_thread,disk_index,writable,writeable, \
+         source_order,status_specified,optional_specified,writable_specified) \
+         VALUES (?, ?, ?, ?, 'source_declared', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         kind.table()
     ))
     .bind::<BigInt, _>(id.database_value())
@@ -237,6 +242,10 @@ fn insert_mame(
     .bind::<Nullable<Text>, _>(attributes.disk_index.as_deref())
     .bind::<Nullable<BigInt>, _>(attributes.writable.map(sqlite_mame_boolean))
     .bind::<Nullable<BigInt>, _>(attributes.writeable.map(sqlite_mame_boolean))
+    .bind::<BigInt, _>(*source_order)
+    .bind::<diesel::sql_types::Bool, _>(attributes.status_specified)
+    .bind::<diesel::sql_types::Bool, _>(attributes.optional_specified)
+    .bind::<diesel::sql_types::Bool, _>(attributes.writable_specified)
     .execute(conn)?;
     Ok(())
 }

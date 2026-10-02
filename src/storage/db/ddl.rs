@@ -1,3 +1,5 @@
+include!("mame_guards.rs");
+
 /// Complete bundled schema for direct creation, never an upgrade script.
 pub const SCHEMA: &str = concat!(
     include_str!("coverage.sql"),
@@ -21,6 +23,16 @@ pub const SCHEMA: &str = concat!(
     include_str!("no_intro_database_guards.sql"),
     "\n",
     include_str!("software_guards.sql"),
+    "\n",
+    "CREATE VIEW mame_machine_child_positions AS WITH requested_mame_machines(set_id) AS (SELECT set_id FROM mame_machines) ",
+    include_str!("mame_positions.sql"),
+    ";",
+    "\n",
+    mame_guards!(),
+    "\nCREATE TRIGGER mame_native_publication_guard BEFORE INSERT ON snapshot_publications ",
+    "WHEN EXISTS (WITH requested(snapshot_key) AS (VALUES (NEW.snapshot_key)), ",
+    mame_publication_readiness!(),
+    ") BEGIN SELECT RAISE(ABORT,'native MAME publication requires complete facts and unique source positions'); END;\n",
     "\nCREATE TRIGGER relationship_support_requires_published_target BEFORE INSERT ON relationship_assertion_support ",
     "WHEN EXISTS (WITH requested(assertion_key) AS (VALUES (NEW.supported_assertion_key)) SELECT 1 FROM (",
     include_str!("relationship_readiness.sql"),

@@ -57,8 +57,8 @@ struct MachineSwitchRow {
     name: String,
     #[diesel(sql_type = Text)]
     tag: String,
-    #[diesel(sql_type = BigInt)]
-    mask: i64,
+    #[diesel(sql_type = Text)]
+    mask: String,
 }
 
 #[derive(QueryableByName)]
@@ -79,8 +79,8 @@ struct MachineSwitchValueRow {
     value_order: i64,
     #[diesel(sql_type = Text)]
     name: String,
-    #[diesel(sql_type = BigInt)]
-    value: i64,
+    #[diesel(sql_type = Text)]
+    value: String,
     #[diesel(sql_type = BigInt)]
     is_default: i64,
 }
@@ -1845,11 +1845,17 @@ fn imports_mame_machine_rom_disk_bios_and_device_semantics_loss_aware()
     let parent_disk = sql_query("SELECT merge_name AS value FROM asset_requirements WHERE snapshot_key = ? AND asset_name = 'demo_disk'")
         .bind::<Text, _>(snapshot.as_str()).get_result::<TextRow>(&mut connection)?;
     assert_eq!(parent_disk.value, "parent_disk");
-    let version =
+    let version = sql_query(
+        "SELECT declared_version AS value FROM catalog_snapshot_versions WHERE snapshot_key = ?",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<NullableTextRow>(&mut connection)?;
+    assert_eq!(version.value.as_deref(), Some("0.216-synthetic"));
+    let copied_version =
         sql_query("SELECT declared_version AS value FROM catalog_snapshots WHERE snapshot_key = ?")
             .bind::<Text, _>(snapshot.as_str())
-            .get_result::<TextRow>(&mut connection)?;
-    assert_eq!(version.value, "0.216-synthetic");
+            .get_result::<NullableTextRow>(&mut connection)?;
+    assert_eq!(copied_version.value, None);
     let source = app::load_snapshot_source(&database, &snapshot)?;
     assert!(
         source
@@ -1871,7 +1877,7 @@ fn imports_mame_switch_specification_fields_as_ordered_query_facts()
     let path = directory.path().join("machine-switches.xml");
     std::fs::write(
         &path,
-        br#"<mame build="0.289"><machine name="switches"><description>Switch machine</description><dipswitch name="Difficulty" tag=":DSW" mask="0x03"><diplocation name="SW1" number="1A" inverted="yes"/><dipvalue name="Easy" value="0x02"/><dipvalue name="Hard" value="0x01" default="yes"/></dipswitch><configuration name="Video" tag=":CFG" mask="4"><conflocation name="JP1" number="2"/><confsetting name="Raster" value="4" default="yes"/></configuration></machine></mame>"#,
+        br#"<mame build="0.289" mameconfig="10"><machine name="switches"><description>Switch machine</description><dipswitch name="Difficulty" tag=":DSW" mask="0x03"><diplocation name="SW1" number="1A" inverted="yes"/><dipvalue name="Easy" value="0x02"/><dipvalue name="Hard" value="0x01" default="yes"/></dipswitch><configuration name="Video" tag=":CFG" mask="4"><conflocation name="JP1" number="2"/><confsetting name="Raster" value="4" default="yes"/></configuration></machine></mame>"#,
     )?;
     let mut import = request(path, "mame-switches-source", "mame-switches", "Switches")?;
     import.format = CatalogDocumentFormat::MameListXml;
@@ -1893,9 +1899,9 @@ fn imports_mame_switch_specification_fields_as_ordered_query_facts()
             switches[0].kind.as_str(),
             switches[0].name.as_str(),
             switches[0].tag.as_str(),
-            switches[0].mask
+            switches[0].mask.as_str()
         ),
-        (0, "dipswitch", "Difficulty", ":DSW", 3)
+        (0, "dipswitch", "Difficulty", ":DSW", "0x03")
     );
     assert_eq!(
         (
@@ -1903,9 +1909,9 @@ fn imports_mame_switch_specification_fields_as_ordered_query_facts()
             switches[1].kind.as_str(),
             switches[1].name.as_str(),
             switches[1].tag.as_str(),
-            switches[1].mask
+            switches[1].mask.as_str()
         ),
-        (1, "configuration", "Video", ":CFG", 4)
+        (1, "configuration", "Video", ":CFG", "4")
     );
 
     let locations = sql_query(
@@ -1941,19 +1947,19 @@ fn imports_mame_switch_specification_fields_as_ordered_query_facts()
         (
             values[0].value_order,
             values[0].name.as_str(),
-            values[0].value,
+            values[0].value.as_str(),
             values[0].is_default
         ),
-        (0, "Easy", 2, 0)
+        (0, "Easy", "0x02", 0)
     );
     assert_eq!(
         (
             values[1].value_order,
             values[1].name.as_str(),
-            values[1].value,
+            values[1].value.as_str(),
             values[1].is_default
         ),
-        (1, "Hard", 1, 1)
+        (1, "Hard", "0x01", 1)
     );
 
     Ok(())
@@ -1969,7 +1975,7 @@ fn imports_every_mame_machine_dtd_family_as_typed_query_facts()
     let path = directory.path().join("all-machine-dtd-fields.xml");
     std::fs::write(
         &path,
-        br#"<mame build="0.289"><machine name="complete"><description>Complete spec</description>
+        br#"<mame build="0.289" mameconfig="10"><machine name="complete"><description>Complete spec</description>
           <device_ref tag=":cpu" name="cpu_device"/>
           <sample name="sample-set"/><chip name="CPU" tag=":maincpu" type="cpu" clock="4000000"/>
           <chip name="Speaker" type="audio"/><display tag=":screen" type="svg" rotate="90" width="320" height="240" refresh="60.0" pixclock="12000000" htotal="400" hbend="10" hbstart="330" vtotal="260" vbend="5" vbstart="245" flipx="yes"/>
@@ -2166,7 +2172,7 @@ fn snapshot_diff_detects_mame_machine_specification_and_nested_fact_changes()
     let current_path = directory.path().join("specification-v2.xml");
     let xml = |refresh: &str, control_reverse: &str, reference_tag: &str| {
         format!(
-            "<mame><machine name=\"spec\"><description>Spec</description><device_ref tag=\"{reference_tag}\" name=\"sound\"/><display type=\"raster\" refresh=\"{refresh}\"/><input players=\"2\"><control type=\"joy\" reverse=\"{control_reverse}\"/></input></machine></mame>"
+            "<mame mameconfig=\"10\"><machine name=\"spec\"><description>Spec</description><device_ref tag=\"{reference_tag}\" name=\"sound\"/><display type=\"raster\" refresh=\"{refresh}\"/><input players=\"2\"><control type=\"joy\" reverse=\"{control_reverse}\"/></input></machine></mame>"
         )
     };
     std::fs::write(&previous_path, xml("60", "no", ":sound"))?;
@@ -2249,7 +2255,7 @@ fn mame_rejects_values_outside_the_dtd_and_duplicate_singletons()
         let path = directory.path().join(format!("invalid-spec-{index}.xml"));
         std::fs::write(
             &path,
-            format!("<mame><machine name=\"invalid\"><description>Invalid</description>{machine_fields}</machine></mame>"),
+            format!("<mame mameconfig=\"10\"><machine name=\"invalid\"><description>Invalid</description>{machine_fields}</machine></mame>"),
         )?;
         let mut import = request(
             path,
@@ -2274,7 +2280,7 @@ fn snapshot_diff_detects_mame_switch_fact_changes() -> Result<(), Box<dyn std::e
     let current_path = directory.path().join("switches-v2.xml");
     let xml = |mask: &str| {
         format!(
-            "<mame build=\"0.289\"><machine name=\"switches\"><description>Switch machine</description><dipswitch name=\"Difficulty\" tag=\":DSW\" mask=\"{mask}\"><dipvalue name=\"Easy\" value=\"1\"/></dipswitch></machine></mame>"
+            "<mame build=\"0.289\" mameconfig=\"10\"><machine name=\"switches\"><description>Switch machine</description><dipswitch name=\"Difficulty\" tag=\":DSW\" mask=\"{mask}\"><dipvalue name=\"Easy\" value=\"1\"/></dipswitch></machine></mame>"
         )
     };
     std::fs::write(&previous_path, xml("1"))?;
@@ -2314,7 +2320,7 @@ fn snapshot_diff_detects_mame_bios_set_fact_changes() -> Result<(), Box<dyn std:
     let current_path = directory.path().join("bios-v2.xml");
     let xml = |description: &str| {
         format!(
-            "<mame build=\"0.289\"><machine name=\"bios-machine\"><description>BIOS machine</description><biosset name=\"base\" description=\"{description}\" default=\"yes\"/></machine></mame>"
+            "<mame build=\"0.289\" mameconfig=\"10\"><machine name=\"bios-machine\"><description>BIOS machine</description><biosset name=\"base\" description=\"{description}\" default=\"yes\"/></machine></mame>"
         )
     };
     std::fs::write(&previous_path, xml("Original"))?;
@@ -2379,6 +2385,254 @@ fn snapshot_diff_detects_mame_document_fact_changes() -> Result<(), Box<dyn std:
     let diff = app::diff_catalog_snapshots(&database, &previous, &current)?;
     assert!(diff.document_metadata_changed);
     assert_eq!(diff.records[0].status, SnapshotRecordStatus::Unchanged);
+    Ok(())
+}
+
+#[test]
+fn snapshot_diff_tracks_mame_build_and_explicit_default_declarations()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, _) = setup()?;
+    let baseline_path = directory.path().join("native-defaults.xml");
+    let specified_path = directory.path().join("explicit-defaults.xml");
+    let next_build_path = directory.path().join("next-build.xml");
+    let explicit_debug_path = directory.path().join("explicit-debug-default.xml");
+    let xml = |build: &str,
+               debug: &str,
+               machine: &str,
+               bios: &str,
+               assets: &str,
+               specification: &str| {
+        format!(
+            "<mame build=\"{build}\"{debug} mameconfig=\"10\"><machine name=\"system\"{machine}><description>System</description><biosset name=\"base\" description=\"Base BIOS\"{bios}/>{assets}{specification}</machine></mame>"
+        )
+    };
+    let baseline = xml(
+        "0.289",
+        "",
+        "",
+        "",
+        "<rom name=\"system.rom\" size=\"1\"/>",
+        "<dipswitch name=\"Mode\" tag=\":DSW\" mask=\"0x01\"><diplocation name=\"SW1\" number=\"1\"/><dipvalue name=\"On\" value=\"0x01\"/></dipswitch>",
+    );
+    let declared_defaults = xml(
+        "0.289",
+        "",
+        " isdevice=\"no\" runnable=\"yes\" isbios=\"no\" ismechanical=\"no\" isconsumable=\"no\"",
+        " default=\"no\"",
+        "<rom name=\"system.rom\" size=\"1\" status=\"good\" optional=\"no\" writable=\"no\"/>",
+        "<dipswitch name=\"Mode\" tag=\":DSW\" mask=\"0x01\"><diplocation name=\"SW1\" number=\"1\" inverted=\"no\"/><dipvalue name=\"On\" value=\"0x01\" default=\"no\"/></dipswitch><display type=\"raster\" refresh=\"60\" flipx=\"no\"/><input players=\"1\" service=\"no\" tilt=\"no\"><control type=\"button\" reverse=\"no\"/></input><driver status=\"good\" emulation=\"good\" savestate=\"supported\" requiresartwork=\"no\" unofficial=\"no\" nosoundhardware=\"no\" incomplete=\"no\"/><slot name=\"cart\"><slotoption name=\"empty\" devname=\"device\" default=\"no\"/></slot>",
+    );
+    let next_build = declared_defaults.replace("build=\"0.289\"", "build=\"0.290\"");
+    let explicit_debug = declared_defaults.replace("<mame build=", "<mame debug=\"no\" build=");
+    std::fs::write(&baseline_path, baseline)?;
+    std::fs::write(&specified_path, declared_defaults)?;
+    std::fs::write(&next_build_path, next_build)?;
+    std::fs::write(&explicit_debug_path, explicit_debug)?;
+
+    let mut baseline_request = request(
+        baseline_path,
+        "mame-presence-history",
+        "mame-presence-history",
+        "MAME presence history",
+    )?;
+    baseline_request.format = CatalogDocumentFormat::MameListXml;
+    let baseline_snapshot = app::import_catalog(&database, &baseline_request)?
+        .snapshot_key
+        .ok_or("baseline MAME snapshot missing")?;
+
+    let mut specified_request = baseline_request.clone();
+    specified_request.document_path =
+        Utf8PathBuf::from_path_buf(specified_path).map_err(|_| "non-UTF8 fixture path")?;
+    let specified_snapshot = app::import_catalog(&database, &specified_request)?
+        .snapshot_key
+        .ok_or("explicit-default MAME snapshot missing")?;
+    let defaults_diff =
+        app::diff_catalog_snapshots(&database, &baseline_snapshot, &specified_snapshot)?;
+    assert!(!defaults_diff.document_metadata_changed);
+    let machine = defaults_diff
+        .records
+        .iter()
+        .find(|record| record.set_name == "system")
+        .ok_or("explicit-default machine diff missing")?;
+    assert_eq!(machine.status, SnapshotRecordStatus::Changed);
+    assert!(machine.metadata_changed);
+
+    let mut explicit_debug_request = baseline_request;
+    explicit_debug_request.document_path = Utf8PathBuf::from_path_buf(explicit_debug_path)
+        .map_err(|_| "non-UTF8 explicit-debug fixture path")?;
+    let explicit_debug_snapshot = app::import_catalog(&database, &explicit_debug_request)?
+        .snapshot_key
+        .ok_or("explicit-debug MAME snapshot missing")?;
+    let debug_diff =
+        app::diff_catalog_snapshots(&database, &specified_snapshot, &explicit_debug_snapshot)?;
+    assert!(debug_diff.document_metadata_changed);
+    let machine = debug_diff
+        .records
+        .iter()
+        .find(|record| record.set_name == "system")
+        .ok_or("explicit-debug machine diff missing")?;
+    assert_eq!(machine.status, SnapshotRecordStatus::Unchanged);
+    assert!(!machine.metadata_changed);
+
+    let mut next_build_request = specified_request;
+    next_build_request.document_path =
+        Utf8PathBuf::from_path_buf(next_build_path).map_err(|_| "non-UTF8 fixture path")?;
+    let next_build_snapshot = app::import_catalog(&database, &next_build_request)?
+        .snapshot_key
+        .ok_or("new-build MAME snapshot missing")?;
+    let build_diff =
+        app::diff_catalog_snapshots(&database, &specified_snapshot, &next_build_snapshot)?;
+    assert!(build_diff.document_metadata_changed);
+    let machine = build_diff
+        .records
+        .iter()
+        .find(|record| record.set_name == "system")
+        .ok_or("new-build machine diff missing")?;
+    assert_eq!(machine.status, SnapshotRecordStatus::Unchanged);
+    assert!(!machine.metadata_changed);
+    Ok(())
+}
+
+#[test]
+fn snapshot_diff_tracks_mame_cross_family_order_but_ignores_vendor_gaps()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, _) = setup()?;
+    let original_path = directory.path().join("native-order.xml");
+    let reordered_path = directory.path().join("reordered-native-families.xml");
+    let vendor_gap_path = directory.path().join("vendor-gap.xml");
+    let machine_children = "<description>System</description><biosset name=\"base\" description=\"Base BIOS\"/><rom name=\"system.rom\" size=\"1\"/><dipswitch name=\"Mode\" tag=\":DSW\" mask=\"0x01\"><dipvalue name=\"On\" value=\"0x01\"/></dipswitch><display type=\"raster\" refresh=\"60\"/>";
+    let reordered_children = "<description>System</description><display type=\"raster\" refresh=\"60\"/><biosset name=\"base\" description=\"Base BIOS\"/><dipswitch name=\"Mode\" tag=\":DSW\" mask=\"0x01\"><dipvalue name=\"On\" value=\"0x01\"/></dipswitch><rom name=\"system.rom\" size=\"1\"/>";
+    std::fs::write(
+        &original_path,
+        format!(
+            "<mame mameconfig=\"10\"><machine name=\"system\">{machine_children}</machine></mame>"
+        ),
+    )?;
+    std::fs::write(
+        &reordered_path,
+        format!(
+            "<mame mameconfig=\"10\"><machine name=\"system\">{reordered_children}</machine></mame>"
+        ),
+    )?;
+    std::fs::write(
+        &vendor_gap_path,
+        "<mame xmlns:v=\"urn:vendor\" mameconfig=\"10\"><machine name=\"system\"><description>System</description><v:extra/><biosset name=\"base\" description=\"Base BIOS\"/><rom name=\"system.rom\" size=\"1\"/><v:extra/><dipswitch name=\"Mode\" tag=\":DSW\" mask=\"0x01\"><dipvalue name=\"On\" value=\"0x01\"/></dipswitch><display type=\"raster\" refresh=\"60\"/></machine></mame>",
+    )?;
+
+    let mut original_request = request(
+        original_path,
+        "mame-native-order-history",
+        "mame-native-order-history",
+        "MAME native order history",
+    )?;
+    original_request.format = CatalogDocumentFormat::MameListXml;
+    let original_snapshot = app::import_catalog(&database, &original_request)?
+        .snapshot_key
+        .ok_or("original native-order snapshot missing")?;
+
+    let mut reordered_request = original_request.clone();
+    reordered_request.document_path =
+        Utf8PathBuf::from_path_buf(reordered_path).map_err(|_| "non-UTF8 fixture path")?;
+    let reordered_snapshot = app::import_catalog(&database, &reordered_request)?
+        .snapshot_key
+        .ok_or("reordered native-order snapshot missing")?;
+    let reordered_diff =
+        app::diff_catalog_snapshots(&database, &original_snapshot, &reordered_snapshot)?;
+    let machine = reordered_diff
+        .records
+        .iter()
+        .find(|record| record.set_name == "system")
+        .ok_or("cross-family machine diff missing")?;
+    assert_eq!(machine.status, SnapshotRecordStatus::Changed);
+    assert!(machine.metadata_changed);
+
+    let mut vendor_request = original_request;
+    vendor_request.document_path =
+        Utf8PathBuf::from_path_buf(vendor_gap_path).map_err(|_| "non-UTF8 fixture path")?;
+    let vendor_snapshot = app::import_catalog(&database, &vendor_request)?
+        .snapshot_key
+        .ok_or("vendor-gap snapshot missing")?;
+    let vendor_diff = app::diff_catalog_snapshots(&database, &original_snapshot, &vendor_snapshot)?;
+    let machine = vendor_diff
+        .records
+        .iter()
+        .find(|record| record.set_name == "system")
+        .ok_or("vendor-gap machine diff missing")?;
+    assert_eq!(machine.status, SnapshotRecordStatus::Unchanged);
+    assert!(!machine.metadata_changed);
+    Ok(())
+}
+
+#[test]
+fn snapshot_diff_tracks_mame_switch_nested_order_but_ignores_vendor_gaps()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, database, _) = setup()?;
+    let original_path = directory.path().join("switch-nested-order.xml");
+    let reordered_path = directory.path().join("switch-nested-reordered.xml");
+    let vendor_gap_path = directory.path().join("switch-nested-vendor-gaps.xml");
+    let switch = "<dipswitch name=\"Mode\" tag=\":DSW\" mask=\"0x03\"><diplocation name=\"SW1\" number=\"1\"/><dipvalue name=\"On\" value=\"0x01\"/><diplocation name=\"SW2\" number=\"2\"/><dipvalue name=\"Off\" value=\"0x02\"/></dipswitch>";
+    let reordered_switch = "<dipswitch name=\"Mode\" tag=\":DSW\" mask=\"0x03\"><dipvalue name=\"On\" value=\"0x01\"/><diplocation name=\"SW1\" number=\"1\"/><dipvalue name=\"Off\" value=\"0x02\"/><diplocation name=\"SW2\" number=\"2\"/></dipswitch>";
+    let vendor_switch = "<dipswitch name=\"Mode\" tag=\":DSW\" mask=\"0x03\"><v:extra/><diplocation name=\"SW1\" number=\"1\"/><v:extra/><dipvalue name=\"On\" value=\"0x01\"/><v:extra/><diplocation name=\"SW2\" number=\"2\"/><v:extra/><dipvalue name=\"Off\" value=\"0x02\"/></dipswitch>";
+    std::fs::write(
+        &original_path,
+        format!(
+            "<mame mameconfig=\"10\"><machine name=\"switches\"><description>Switches</description>{switch}</machine></mame>"
+        ),
+    )?;
+    std::fs::write(
+        &reordered_path,
+        format!(
+            "<mame mameconfig=\"10\"><machine name=\"switches\"><description>Switches</description>{reordered_switch}</machine></mame>"
+        ),
+    )?;
+    std::fs::write(
+        &vendor_gap_path,
+        format!(
+            "<mame xmlns:v=\"urn:vendor\" mameconfig=\"10\"><machine name=\"switches\"><description>Switches</description>{vendor_switch}</machine></mame>"
+        ),
+    )?;
+
+    let mut original_request = request(
+        original_path,
+        "mame-switch-nested-order",
+        "mame-switch-nested-order",
+        "MAME switch nested order",
+    )?;
+    original_request.format = CatalogDocumentFormat::MameListXml;
+    let original_snapshot = app::import_catalog(&database, &original_request)?
+        .snapshot_key
+        .ok_or("original switch snapshot missing")?;
+
+    let mut reordered_request = original_request.clone();
+    reordered_request.document_path =
+        Utf8PathBuf::from_path_buf(reordered_path).map_err(|_| "non-UTF8 reordered path")?;
+    let reordered_snapshot = app::import_catalog(&database, &reordered_request)?
+        .snapshot_key
+        .ok_or("reordered switch snapshot missing")?;
+    let reordered_diff =
+        app::diff_catalog_snapshots(&database, &original_snapshot, &reordered_snapshot)?;
+    let machine = reordered_diff
+        .records
+        .iter()
+        .find(|record| record.set_name == "switches")
+        .ok_or("reordered switch diff missing")?;
+    assert_eq!(machine.status, SnapshotRecordStatus::Changed);
+    assert!(machine.metadata_changed);
+
+    let mut vendor_request = original_request;
+    vendor_request.document_path =
+        Utf8PathBuf::from_path_buf(vendor_gap_path).map_err(|_| "non-UTF8 vendor-gap path")?;
+    let vendor_snapshot = app::import_catalog(&database, &vendor_request)?
+        .snapshot_key
+        .ok_or("vendor-gap switch snapshot missing")?;
+    let vendor_diff = app::diff_catalog_snapshots(&database, &original_snapshot, &vendor_snapshot)?;
+    let machine = vendor_diff
+        .records
+        .iter()
+        .find(|record| record.set_name == "switches")
+        .ok_or("vendor-gap switch diff missing")?;
+    assert_eq!(machine.status, SnapshotRecordStatus::Unchanged);
+    assert!(!machine.metadata_changed);
     Ok(())
 }
 
@@ -2456,7 +2710,7 @@ fn persists_mame_rom_and_disk_spec_attributes_as_relational_facts()
     let path = directory.path().join("mame-asset-facts.xml");
     std::fs::write(
         &path,
-        br#"<mame><machine name="facts"><description>Facts</description><rom name="boot.bin" region="maincpu" bios="rev-a" offset="a000" optional="yes" soundonly="no" dispose="yes" loadflag="LOAD16_BYTE" value="0x42" inverted="no" ovha="0x80" nothread="yes"/><disk name="media.chd" region="cdrom" index="2" writeable="yes"/></machine></mame>"#,
+        br#"<mame mameconfig="10"><machine name="facts"><description>Facts</description><rom name="boot.bin" region="maincpu" bios="rev-a" offset="a000" optional="yes" soundonly="no" dispose="yes" loadflag="LOAD16_BYTE" value="0x42" inverted="no" ovha="0x80" nothread="yes"/><disk name="media.chd" region="cdrom" index="2" writeable="yes"/></machine></mame>"#,
     )?;
     let mut request = request(
         path.clone(),
@@ -2497,7 +2751,7 @@ fn persists_mame_rom_and_disk_spec_attributes_as_relational_facts()
 
     std::fs::write(
         &path,
-        br#"<mame><machine name="facts"><description>Facts</description><rom name="boot.bin" region="graphics" bios="rev-a" offset="a000" optional="yes" soundonly="no" dispose="yes" loadflag="LOAD16_BYTE" value="0x42" inverted="no" ovha="0x80" nothread="yes"/><disk name="media.chd" region="cdrom" index="2" writeable="yes"/></machine></mame>"#,
+        br#"<mame mameconfig="10"><machine name="facts"><description>Facts</description><rom name="boot.bin" region="graphics" bios="rev-a" offset="a000" optional="yes" soundonly="no" dispose="yes" loadflag="LOAD16_BYTE" value="0x42" inverted="no" ovha="0x80" nothread="yes"/><disk name="media.chd" region="cdrom" index="2" writeable="yes"/></machine></mame>"#,
     )?;
     let changed_snapshot = app::import_catalog(&database, &request)?
         .snapshot_key
@@ -2522,7 +2776,7 @@ fn failed_late_mame_duplicate_does_not_publish_streamed_records()
 -> Result<(), Box<dyn std::error::Error>> {
     let (directory, database, mut connection) = setup()?;
     let path = directory.path().join("late-duplicate-machine.xml");
-    let document = br#"<mame xmlns:vendor="urn:vendor">
+    let document = br#"<mame mameconfig="10" xmlns:vendor="urn:vendor">
       <machine name="alpha" cloneof="parent"><description>Alpha</description>
         <rom name="alpha.rom" size="4" crc="12345678"/>
         <vendor:extra mode="preserve">unknown</vendor:extra>
@@ -2585,7 +2839,7 @@ fn mame_merge_rom_resolves_when_parent_machine_follows_child()
         ),
     ] {
         let path = directory.path().join(file);
-        std::fs::write(&path, format!("<mame>{machines}</mame>"))?;
+        std::fs::write(&path, format!("<mame mameconfig=\"10\">{machines}</mame>"))?;
         let mut import = request(
             path,
             "mame-merge-order",
@@ -2633,7 +2887,7 @@ fn mame_forward_merges_resolve_across_asset_pagination() -> Result<(), Box<dyn s
     let (directory, database, mut connection) = setup()?;
     let path = directory.path().join("forward-merges-across-pages.xml");
     let mut document = String::from(
-        "<mame><machine name=\"child\" romof=\"parent\"><description>Child</description>",
+        "<mame mameconfig=\"10\"><machine name=\"child\" romof=\"parent\"><description>Child</description>",
     );
     for index in 0..ASSET_COUNT {
         write!(
@@ -2689,7 +2943,7 @@ fn mame_asset_storage_error_rolls_back_staged_import_and_keeps_document()
          BEGIN SELECT RAISE(ABORT, 'injected asset insert failure'); END;",
     )?;
     let path = directory.path().join("asset-insert-storage-error.xml");
-    let document = br#"<mame xmlns:vendor="urn:rollback" vendor:flag="staged"><machine name="set"><description>Set</description><rom name="set.rom" size="4" crc="12345678"/></machine></mame>"#;
+    let document = br#"<mame mameconfig="10" xmlns:vendor="urn:rollback" vendor:flag="staged"><machine name="set"><description>Set</description><rom name="set.rom" size="4" crc="12345678"/></machine></mame>"#;
     std::fs::write(&path, document)?;
     let mut import = request(
         path,
@@ -2753,7 +3007,7 @@ fn mame_nested_unknown_extension_and_reimport_keep_semantics_and_diagnostics()
     let path = directory.path().join("nested-extension.xml");
     std::fs::write(
         &path,
-        br#"<mame xmlns:v="urn:vendor"><machine name="alpha"><description>Alpha</description><v:payload code="A &amp; B">left &lt;middle&gt;<v:part code="x">inside &amp; out</v:part> right</v:payload></machine></mame>"#,
+        br#"<mame mameconfig="10" xmlns:v="urn:vendor"><machine name="alpha"><description>Alpha</description><v:payload code="A &amp; B">left &lt;middle&gt;<v:part code="x">inside &amp; out</v:part> right</v:payload></machine></mame>"#,
     )?;
     let mut import = request(
         path,
@@ -2814,7 +3068,7 @@ fn mame_relationships_resolve_component_keys_and_keep_device_locations()
     let path = directory.path().join("mame-relationship-identity.xml");
     std::fs::write(
         &path,
-        "<mame>\n<machine name=\"clone-parent\"><description>Clone parent</description></machine>\n<machine name=\"rom-parent\">\n<description>ROM parent</description><rom name=\"shared.bin\" size=\"1\" crc=\"12345678\"/>\n</machine>\n<machine name=\"clone\" cloneof=\"clone-parent\" romof=\"rom-parent\">\n<description>Clone</description><device_ref tag=\":sound\" name=\"sound\"/>\n<rom name=\"shared.bin\" merge=\"shared.bin\" size=\"1\" crc=\"12345678\"/>\n</machine>\n<machine name=\"sound\"><description>Sound</description></machine>\n</mame>",
+        "<mame mameconfig=\"10\">\n<machine name=\"clone-parent\"><description>Clone parent</description></machine>\n<machine name=\"rom-parent\">\n<description>ROM parent</description><rom name=\"shared.bin\" size=\"1\" crc=\"12345678\"/>\n</machine>\n<machine name=\"clone\" cloneof=\"clone-parent\" romof=\"rom-parent\">\n<description>Clone</description><device_ref tag=\":sound\" name=\"sound\"/>\n<rom name=\"shared.bin\" merge=\"shared.bin\" size=\"1\" crc=\"12345678\"/>\n</machine>\n<machine name=\"sound\"><description>Sound</description></machine>\n</mame>",
     )?;
     let mut request = request(
         path,
@@ -2968,7 +3222,7 @@ fn resolves_machine_runtime_closure_without_traversing_clone_ancestry()
     let document = directory.path().join("machine-dependencies.xml");
     std::fs::write(
         &document,
-        br#"<mame build="fixture">
+        br#"<mame build="fixture" mameconfig="10">
           <machine name="game" cloneof="parent" romof="bios" sampleof="samples">
             <description>Game</description>
             <device_ref tag=":sound" name="sound"/>
@@ -3135,7 +3389,7 @@ fn dependency_absence_respects_filtered_snapshot_scope() -> Result<(), Box<dyn s
     let document = directory.path().join("filtered-machine.xml");
     std::fs::write(
         &document,
-        br#"<mame build="fixture"><machine name="root" romof="outside"><description>Root</description></machine></mame>"#,
+        br#"<mame build="fixture" mameconfig="10"><machine name="root" romof="outside"><description>Root</description></machine></mame>"#,
     )?;
     let mut import = request(
         document,
@@ -4762,11 +5016,11 @@ fn snapshot_diff_tracks_unknown_extensions_and_does_not_call_missing_hashes_chan
     let second_path = directory.path().join("machine-v2.xml");
     std::fs::write(
         &first_path,
-        br#"<mame><machine name="thing"><description>Thing</description><future value="one"/></machine></mame>"#,
+        br#"<mame mameconfig="10"><machine name="thing"><description>Thing</description><future value="one"/></machine></mame>"#,
     )?;
     std::fs::write(
         &second_path,
-        br#"<mame><machine name="thing"><description>Thing</description><future value="two"/><rom name="undumped.bin"/></machine></mame>"#,
+        br#"<mame mameconfig="10"><machine name="thing"><description>Thing</description><future value="two"/><rom name="undumped.bin"/></machine></mame>"#,
     )?;
     let mut first_request = request(first_path, "publisher-machines", "machines", "Machines")?;
     first_request.format = CatalogDocumentFormat::MameListXml;
@@ -4973,7 +5227,7 @@ fn snapshot_diff_ignores_device_ref_vendor_fields_and_retains_source()
         std::fs::write(
             path,
             format!(
-                "<mame><machine name=\"owner\"><description>Owner</description><device_ref tag=\":target\" name=\"target\" future=\"{value}\"/></machine><machine name=\"target\"><description>Target</description></machine></mame>"
+                "<mame mameconfig=\"10\"><machine name=\"owner\"><description>Owner</description><device_ref tag=\":target\" name=\"target\" future=\"{value}\"/></machine><machine name=\"target\"><description>Target</description></machine></mame>"
             ),
         )?;
     }
@@ -5052,7 +5306,7 @@ fn snapshot_diff_ignores_asset_vendor_fields_and_retains_source()
         std::fs::write(
             path,
             format!(
-                "<mame><machine name=\"alpha\"><description>Alpha</description><rom name=\"shared.rom\" future=\"{changed_value}\"/></machine><machine name=\"beta\"><description>Beta</description><rom name=\"shared.rom\"/></machine></mame>"
+                "<mame mameconfig=\"10\"><machine name=\"alpha\"><description>Alpha</description><rom name=\"shared.rom\" future=\"{changed_value}\"/></machine><machine name=\"beta\"><description>Beta</description><rom name=\"shared.rom\"/></machine></mame>"
             ),
         )?;
     }
@@ -5320,7 +5574,7 @@ fn snapshot_diff_ignores_duplicate_vendor_children_and_retains_source()
         std::fs::write(
             path,
             format!(
-                "<mame><machine name=\"alpha\"><description>Alpha</description><rom name=\"shared.rom\">{children}</rom></machine></mame>"
+                "<mame mameconfig=\"10\"><machine name=\"alpha\"><description>Alpha</description><rom name=\"shared.rom\">{children}</rom></machine></mame>"
             ),
         )?;
     }

@@ -821,7 +821,7 @@ fn merge_assertion_targets_the_unique_asset_requirement_record()
         .map_err(|path| std::io::Error::other(format!("non-UTF-8 path: {}", path.display())))?;
     std::fs::write(
         &document,
-        r#"<mame><machine name="parent"><description>Parent</description><disk name="parent_disk" sha1="1123456789abcdef0123456789abcdef01234567" /></machine><machine name="clone" cloneof="parent"><description>Clone</description><disk name="clone_disk" sha1="1123456789abcdef0123456789abcdef01234567" merge="parent_disk" /></machine></mame>"#,
+        r#"<mame mameconfig="10"><machine name="parent"><description>Parent</description><disk name="parent_disk" sha1="1123456789abcdef0123456789abcdef01234567" /></machine><machine name="clone" cloneof="parent"><description>Clone</description><disk name="clone_disk" sha1="1123456789abcdef0123456789abcdef01234567" merge="parent_disk" /></machine></mame>"#,
     )?;
     let import = |catalog: &str| CatalogImportRequest {
         document_path: document.clone(),

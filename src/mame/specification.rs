@@ -47,6 +47,7 @@ pub enum ChipKind {
 }
 
 impl ChipKind {
+    #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Cpu => "cpu",
@@ -61,6 +62,7 @@ pub struct Display {
     pub kind: DisplayKind,
     pub rotation: Option<DisplayRotation>,
     pub flip_x: MameBoolean,
+    pub flip_x_specified: bool,
     pub width: Option<String>,
     pub height: Option<String>,
     pub refresh: String,
@@ -84,6 +86,7 @@ pub enum DisplayKind {
 }
 
 impl DisplayKind {
+    #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Raster => "raster",
@@ -104,6 +107,7 @@ pub enum DisplayRotation {
 }
 
 impl DisplayRotation {
+    #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Deg0 => "0",
@@ -123,7 +127,9 @@ pub struct Sound {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Input {
     pub service: MameBoolean,
+    pub service_specified: bool,
     pub tilt: MameBoolean,
+    pub tilt_specified: bool,
     pub players: String,
     pub coins: Option<String>,
     pub controls: Vec<InputControl>,
@@ -140,6 +146,7 @@ pub struct InputControl {
     pub sensitivity: Option<String>,
     pub key_delta: Option<String>,
     pub reverse: MameBoolean,
+    pub reverse_specified: bool,
     pub ways: Option<String>,
     pub ways2: Option<String>,
     pub ways3: Option<String>,
@@ -187,6 +194,7 @@ pub enum ConditionRelation {
 }
 
 impl ConditionRelation {
+    #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Eq => "eq",
@@ -200,15 +208,20 @@ impl ConditionRelation {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)] // Independent MAME source-presence facts.
 pub struct Driver {
     pub status: DriverQuality,
     pub emulation: DriverQuality,
     pub cocktail: Option<DriverQuality>,
     pub savestate: SaveState,
     pub requires_artwork: MameBoolean,
+    pub requires_artwork_specified: bool,
     pub unofficial: MameBoolean,
+    pub unofficial_specified: bool,
     pub no_sound_hardware: MameBoolean,
+    pub no_sound_hardware_specified: bool,
     pub incomplete: MameBoolean,
+    pub incomplete_specified: bool,
     pub location: RecordLocation,
 }
 
@@ -220,6 +233,7 @@ pub enum DriverQuality {
 }
 
 impl DriverQuality {
+    #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Good => "good",
@@ -236,6 +250,7 @@ pub enum SaveState {
 }
 
 impl SaveState {
+    #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Supported => "supported",
@@ -259,6 +274,7 @@ pub enum FeatureStatus {
 }
 
 impl FeatureStatus {
+    #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Unemulated => "unemulated",
@@ -293,6 +309,7 @@ pub enum FeatureKind {
 }
 
 impl FeatureKind {
+    #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Protection => "protection",
@@ -357,6 +374,7 @@ pub struct SlotOption {
     pub name: String,
     pub device_name: String,
     pub is_default: MameBoolean,
+    pub default_specified: bool,
     pub location: RecordLocation,
 }
 
@@ -376,6 +394,7 @@ pub enum SoftwareListStatus {
 }
 
 impl SoftwareListStatus {
+    #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Original => "original",
@@ -449,11 +468,16 @@ pub(super) fn parse_condition(node: &Element) -> crate::Result<MachineCondition>
     })
 }
 
-fn optional_condition(node: &Element) -> crate::Result<Option<MachineCondition>> {
-    node.children()
-        .find(|child| child.name == "condition")
-        .map(parse_condition)
-        .transpose()
+pub(super) fn parse_optional_condition(node: &Element) -> crate::Result<Option<MachineCondition>> {
+    let mut conditions = node.children().filter(|child| child.name == "condition");
+    let condition = conditions.next().map(parse_condition).transpose()?;
+    if conditions.next().is_some() {
+        return Err(crate::Error::XmlValidation(format!(
+            "MAME <{}> has multiple conditions",
+            node.name
+        )));
+    }
+    Ok(condition)
 }
 
 // Keep the exhaustive schema-to-domain mapping together: every DTD field is
@@ -507,6 +531,7 @@ pub(super) fn parse_element(node: &Element) -> crate::Result<MachineSpecificatio
                 })
                 .transpose()?,
             flip_x: boolean(node, "flipx", false)?,
+            flip_x_specified: node.attributes.contains_key("flipx"),
             width: attribute(node, "width"),
             height: attribute(node, "height"),
             refresh: required(node, "refresh")?,
@@ -525,7 +550,9 @@ pub(super) fn parse_element(node: &Element) -> crate::Result<MachineSpecificatio
         }),
         "input" => MachineSpecification::Input(Input {
             service: boolean(node, "service", false)?,
+            service_specified: node.attributes.contains_key("service"),
             tilt: boolean(node, "tilt", false)?,
+            tilt_specified: node.attributes.contains_key("tilt"),
             players: required(node, "players")?,
             coins: attribute(node, "coins"),
             controls: node
@@ -541,6 +568,7 @@ pub(super) fn parse_element(node: &Element) -> crate::Result<MachineSpecificatio
                         sensitivity: attribute(child, "sensitivity"),
                         key_delta: attribute(child, "keydelta"),
                         reverse: boolean(child, "reverse", false)?,
+                        reverse_specified: child.attributes.contains_key("reverse"),
                         ways: attribute(child, "ways"),
                         ways2: attribute(child, "ways2"),
                         ways3: attribute(child, "ways3"),
@@ -567,7 +595,7 @@ pub(super) fn parse_element(node: &Element) -> crate::Result<MachineSpecificatio
         "adjuster" => MachineSpecification::Adjuster(Adjuster {
             name: required(node, "name")?,
             default: required(node, "default")?,
-            condition: optional_condition(node)?,
+            condition: parse_optional_condition(node)?,
             location,
         }),
         "driver" => MachineSpecification::Driver(Driver {
@@ -613,9 +641,13 @@ pub(super) fn parse_element(node: &Element) -> crate::Result<MachineSpecificatio
                 ],
             )?,
             requires_artwork: boolean(node, "requiresartwork", false)?,
+            requires_artwork_specified: node.attributes.contains_key("requiresartwork"),
             unofficial: boolean(node, "unofficial", false)?,
+            unofficial_specified: node.attributes.contains_key("unofficial"),
             no_sound_hardware: boolean(node, "nosoundhardware", false)?,
+            no_sound_hardware_specified: node.attributes.contains_key("nosoundhardware"),
             incomplete: boolean(node, "incomplete", false)?,
+            incomplete_specified: node.attributes.contains_key("incomplete"),
             location,
         }),
         "feature" => MachineSpecification::Feature(Feature {
@@ -715,6 +747,7 @@ pub(super) fn parse_element(node: &Element) -> crate::Result<MachineSpecificatio
                         name: required(child, "name")?,
                         device_name: required(child, "devname")?,
                         is_default: boolean(child, "default", false)?,
+                        default_specified: child.attributes.contains_key("default"),
                         location: child.location,
                     })
                 })

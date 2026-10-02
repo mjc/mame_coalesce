@@ -131,19 +131,7 @@ fn machine_specification_is_stored_in_native_families_with_typed_owners()
          ORDER BY family, owner_order",
     )
     .load::<ConditionOwnerRow>(&mut connection)?;
-    assert_eq!(condition_owners.len(), 5);
-    assert_eq!(condition_owners[0].family, "adjuster");
-    assert_eq!(condition_owners[0].relation, "lt");
-    assert_eq!(condition_owners[0].mask, "1");
-    assert_eq!(condition_owners[0].value, "2");
-    assert!(condition_owners.iter().any(|condition| {
-        condition.family == "switch" && condition.owner_order == 0 && condition.relation == "eq"
-    }));
-    assert!(condition_owners.iter().any(|condition| {
-        condition.family == "switch_value"
-            && condition.owner_order == 0
-            && condition.relation == "ne"
-    }));
+    assert_condition_owners(&condition_owners);
 
     for (table, parent) in [
         ("mame_machine_input_controls", "mame_machine_inputs"),
@@ -173,4 +161,26 @@ fn machine_specification_is_stored_in_native_families_with_typed_owners()
         .get_result::<IntegerRow>(&mut connection)?;
     assert_eq!(checks.value, 0);
     Ok(())
+}
+
+fn assert_condition_owners(condition_owners: &[ConditionOwnerRow]) {
+    assert_eq!(condition_owners.len(), 5);
+    assert_eq!(condition_owners[0].family, "adjuster");
+    assert_eq!(condition_owners[0].relation, "lt");
+    assert_eq!(condition_owners[0].mask, "0x01");
+    assert_eq!(condition_owners[0].value, "0x02");
+    assert!(condition_owners.iter().any(|condition| {
+        condition.family == "switch"
+            && condition.owner_order == 0
+            && condition.relation == "eq"
+            && condition.mask == "0x01"
+            && condition.value == "0x02"
+    }));
+    assert!(condition_owners.iter().any(|condition| {
+        condition.family == "switch_value"
+            && condition.owner_order == 0
+            && condition.relation == "ne"
+            && condition.mask == "0x01"
+            && condition.value == "0x00"
+    }));
 }

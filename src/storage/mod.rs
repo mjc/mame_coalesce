@@ -5,6 +5,7 @@ pub mod catalog_coverage;
 pub mod catalog_files;
 pub mod catalog_identity;
 pub mod catalog_import;
+pub mod catalog_machines;
 pub mod catalog_reconciliation;
 pub mod catalog_software;
 pub mod db;

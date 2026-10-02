@@ -96,9 +96,11 @@ fn native_sets_have_scoped_integer_identity_and_typed_detail_owners() {
                 (3,3,'software_item',0,'same',4,1),
                 (4,2,'software_item',1,'same',5,1);
          INSERT INTO mame_machines(
-             set_id,description,description_line,description_column,
-             is_device,runnable,is_bios,is_mechanical,is_consumable,attributes_line,attributes_column
-         ) VALUES (1,'Machine',2,1,0,1,0,0,0,2,1);
+             set_id,description,description_source_order,description_line,description_column,
+             is_device,is_device_specified,runnable,runnable_specified,
+             is_bios,is_bios_specified,is_mechanical,is_mechanical_specified,
+             is_consumable,is_consumable_specified,attributes_line,attributes_column
+         ) VALUES (1,'Machine',0,2,1,0,0,1,0,0,0,0,0,0,0,2,1);
          INSERT INTO software_items(record_id,source_order,supported,supported_specified,description,year,publisher)
          VALUES (2,0,'yes',0,'First game','1980','Publisher'),
                 (3,0,'yes',0,'Second game','1980','Publisher'),
@@ -191,9 +193,11 @@ fn native_occurrences_and_details_cannot_cross_set_or_format_ownership() {
          INSERT INTO catalog_sets(set_id,set_group_id,source_element_kind,list_order,set_name,source_line,source_column)
          VALUES (1,1,'mame_machine',0,'machine',2,1),(2,2,'software_item',0,'game',3,1);
          INSERT INTO mame_machines(
-             set_id,description,description_line,description_column,
-             is_device,runnable,is_bios,is_mechanical,is_consumable,attributes_line,attributes_column
-         ) VALUES (1,'Machine',2,1,0,1,0,0,0,2,1);
+             set_id,description,description_source_order,description_line,description_column,
+             is_device,is_device_specified,runnable,runnable_specified,
+             is_bios,is_bios_specified,is_mechanical,is_mechanical_specified,
+             is_consumable,is_consumable_specified,attributes_line,attributes_column
+         ) VALUES (1,'Machine',0,2,1,0,0,1,0,0,0,0,0,0,0,2,1);
          INSERT INTO software_items(record_id,source_order,supported,supported_specified,description,year,publisher)
          VALUES (2,0,'yes',0,'Game','1980','Publisher');
          INSERT INTO software_parts(part_id,record_id,part_name,part_order,source_order,interface,source_line,source_column)
@@ -208,8 +212,9 @@ fn native_occurrences_and_details_cannot_cross_set_or_format_ownership() {
          INSERT INTO asset_occurrences(occurrence_id,record_id,occurrence_order,claim_kind)
          VALUES (1,1,0,'mame_rom'),(2,2,0,'software_rom_entry'),(3,2,1,'software_rom_operation');
          INSERT INTO mame_rom_claims(
-             occurrence_id,name,evidence_scope,evidence_provenance,source_line,source_column
-         ) VALUES (1,'machine.rom','whole_asset','source_declared',6,1);
+             occurrence_id,name,evidence_scope,evidence_provenance,dump_status,status_specified,
+             source_order,source_line,source_column,optional,optional_specified,writable_specified
+         ) VALUES (1,'machine.rom','whole_asset','source_declared','good',0,1,6,1,0,0,0);
          INSERT INTO software_rom_entries(
              occurrence_id,record_id,area_id,component_order,source_order,name,evidence_scope,
              dump_status,status_specified,source_line,source_column
@@ -237,8 +242,9 @@ fn native_occurrences_and_details_cannot_cross_set_or_format_ownership() {
     assert!(
         conn.batch_execute(
             "INSERT INTO mame_rom_claims(
-                 occurrence_id,name,evidence_scope,evidence_provenance,source_line,source_column
-             ) VALUES (2,'wrong-format.rom','whole_asset','source_declared',8,1)",
+                 occurrence_id,name,evidence_scope,evidence_provenance,dump_status,status_specified,
+                 source_order,source_line,source_column,optional,optional_specified,writable_specified
+             ) VALUES (2,'wrong-format.rom','whole_asset','source_declared','good',0,1,8,1,0,0,0)",
         )
         .is_err()
     );

@@ -389,6 +389,10 @@ CREATE TABLE no_intro_release_details_diagnostics (
 CREATE VIEW catalog_snapshot_versions AS
 SELECT snapshot.snapshot_key,
        CASE
+         WHEN parser.format = 'mame-listxml' THEN (
+             SELECT header.build FROM mame_document_facts AS header
+             WHERE header.snapshot_key = snapshot.snapshot_key
+         )
          WHEN parser.format = 'mame-softwarelist-xml' THEN (
              SELECT wrapper.build FROM software_wrapper_headers AS wrapper
              WHERE wrapper.snapshot_key = snapshot.snapshot_key

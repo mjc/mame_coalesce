@@ -536,7 +536,7 @@ fn disputed_sha1_does_not_gain_a_late_sparse_alias() -> Result<(), Box<dyn Error
     std::fs::write(
         &conflicting_path,
         format!(
-            "<mame build=\"synthetic\" debug=\"no\"><machine name=\"conflicting\" sourcefile=\"machine.cpp\" isbios=\"yes\"><description>Conflicting machine</description><year>1991</year><manufacturer>MAME maker</manufacturer><device_ref tag=\":sound\" name=\"sound\"/><rom name=\"conflicting.bin\" size=\"17\" md5=\"{MD5_B}\" sha1=\"{SHA1}\"/><disk name=\"media.chd\" sha1=\"{}\"/><sample name=\"sample.wav\"/></machine><machine name=\"sound\"><description>Sound device</description></machine></mame>",
+            "<mame build=\"synthetic\" debug=\"no\" mameconfig=\"10\"><machine name=\"conflicting\" sourcefile=\"machine.cpp\" isbios=\"yes\"><description>Conflicting machine</description><year>1991</year><manufacturer>MAME maker</manufacturer><device_ref tag=\":sound\" name=\"sound\"/><rom name=\"conflicting.bin\" size=\"17\" md5=\"{MD5_B}\" sha1=\"{SHA1}\"/><disk name=\"media.chd\" sha1=\"{}\"/><sample name=\"sample.wav\"/></machine><machine name=\"sound\"><description>Sound device</description></machine></mame>",
             "d".repeat(40)
         ),
     )?;
@@ -758,7 +758,7 @@ fn published_digest_assertions_and_disputes_are_immutable() -> Result<(), Box<dy
     std::fs::write(
         &conflicting_path,
         format!(
-            "<mame build=\"synthetic\" debug=\"no\"><machine name=\"conflicting\"><description>Conflicting</description><device_ref tag=\":sound\" name=\"sound\"/><rom name=\"conflicting.bin\" size=\"17\" md5=\"{MD5_B}\" sha1=\"{SHA1}\"/></machine><machine name=\"sound\"><description>Sound device</description></machine></mame>"
+            "<mame build=\"synthetic\" debug=\"no\" mameconfig=\"10\"><machine name=\"conflicting\"><description>Conflicting</description><device_ref tag=\":sound\" name=\"sound\"/><rom name=\"conflicting.bin\" size=\"17\" md5=\"{MD5_B}\" sha1=\"{SHA1}\"/></machine><machine name=\"sound\"><description>Sound device</description></machine></mame>"
         ),
     )?;
     import(
@@ -833,7 +833,7 @@ fn matching_cross_format_claims_share_identity() -> Result<(), Box<dyn Error>> {
     std::fs::write(
         &mame_path,
         format!(
-            "<mame build=\"synthetic\" debug=\"no\"><machine name=\"mame\"><description>MAME machine</description><device_ref tag=\":sound\" name=\"sound\"/><rom name=\"mame.bin\" size=\"16\" md5=\"{MD5_A}\" sha1=\"{SHA1}\"/></machine><machine name=\"sound\"><description>Sound device</description></machine></mame>"
+            "<mame build=\"synthetic\" debug=\"no\" mameconfig=\"10\"><machine name=\"mame\"><description>MAME machine</description><device_ref tag=\":sound\" name=\"sound\"/><rom name=\"mame.bin\" size=\"16\" md5=\"{MD5_A}\" sha1=\"{SHA1}\"/></machine><machine name=\"sound\"><description>Sound device</description></machine></mame>"
         ),
     )?;
     import(

@@ -200,6 +200,7 @@ struct SnapshotDependency {
     source_field: String,
     target_name: String,
     reference_tag: Option<String>,
+    source_order: Option<i64>,
     location: crate::logiqx::RecordLocation,
 }
 
@@ -221,7 +222,10 @@ struct SnapshotAsset {
 
 /// A media entry has exactly one format-specific source owner.
 enum NativeAssetFacts {
-    Mame(mame::MameAssetAttributes),
+    Mame {
+        attributes: mame::MameAssetAttributes,
+        source_order: i64,
+    },
     Logiqx(LogiqxAssetAttributes),
     CmpRom(Box<crate::clrmamepro::AssetFacts>),
     CmpSample(crate::clrmamepro::FieldValue),
@@ -354,6 +358,7 @@ impl SnapshotData {
                         source_field: "romof".to_owned(),
                         target_name: name.to_owned(),
                         reference_tag: None,
+                        source_order: None,
                         location,
                     })
                     .into_iter()
@@ -361,6 +366,7 @@ impl SnapshotData {
                         source_field: "sampleof".to_owned(),
                         target_name: name.to_owned(),
                         reference_tag: None,
+                        source_order: None,
                         location,
                     }))
                     .chain(
@@ -370,6 +376,7 @@ impl SnapshotData {
                                 source_field: "device_ref".to_owned(),
                                 target_name: name.to_owned(),
                                 reference_tag: None,
+                                source_order: None,
                                 location: *location,
                             }),
                     )
@@ -621,12 +628,14 @@ fn machine_contents(machine: crate::mame::Machine) -> SnapshotSet {
             source_field: "device_ref".to_owned(),
             target_name: reference.name,
             reference_tag: Some(reference.tag),
+            source_order: Some(reference.source_order),
             location: reference.location,
         })
         .chain(machine.rom_of.into_iter().map(|name| SnapshotDependency {
             source_field: "romof".to_owned(),
             target_name: name,
             reference_tag: None,
+            source_order: None,
             location: machine.location,
         }))
         .chain(
@@ -637,6 +646,7 @@ fn machine_contents(machine: crate::mame::Machine) -> SnapshotSet {
                     source_field: "sampleof".to_owned(),
                     target_name: name,
                     reference_tag: None,
+                    source_order: None,
                     location: machine.location,
                 }),
         )
@@ -652,6 +662,7 @@ fn machine_contents(machine: crate::mame::Machine) -> SnapshotSet {
             source_field: dependency.source_field.clone(),
             target_name: dependency.target_name.clone(),
             reference_tag: dependency.reference_tag.clone(),
+            source_order: dependency.source_order,
             location: dependency.location,
         })
         .collect();
@@ -711,7 +722,10 @@ fn machine_assets(assets: Vec<crate::mame::MachineAsset>) -> Vec<SnapshotAsset> 
                 dump_status: Some(asset.dump_status.as_str().to_owned()),
                 serial: None,
                 date: None,
-                native: NativeAssetFacts::Mame(asset.attributes),
+                native: NativeAssetFacts::Mame {
+                    attributes: asset.attributes,
+                    source_order: asset.source_order,
+                },
                 location: asset.location,
             }
         })
@@ -862,26 +876,20 @@ fn import_mame(
         let validated = mame::read_with::<_, StreamingImportError>(
             bytes,
             |header| {
-                drop(header.extensions);
                 let publication = prepare_snapshot(
                     conn,
                     request,
                     &document_key,
                     acquisition_key,
                     &interpretation,
-                    header.build.as_deref(),
+                    None,
                 )
                 .map_err(StreamingImportError::Storage)?;
                 if let SnapshotPublication::Pending(key) = &publication {
-                    insert_mame_document_facts(
-                        conn,
-                        key,
-                        header.debug,
-                        header.config_version.as_deref(),
-                        header.location,
-                    )
-                    .map_err(StreamingImportError::Storage)?;
+                    insert_mame_document_facts(conn, key, &header)
+                        .map_err(StreamingImportError::Storage)?;
                 }
+                drop(header.extensions);
                 let run_key = ImportRunKey::fresh();
                 insert_import_run(
                     conn,
@@ -1720,14 +1728,15 @@ fn insert_mame_machine_dependencies(
     for (order, dependency) in set.machine_dependencies.iter().enumerate() {
         sql_query(
             "INSERT INTO mame_machine_dependencies \
-             (set_id, dependency_order, dependency_kind, target_name, reference_tag, source_line, source_column) \
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+             (set_id, dependency_order, dependency_kind, target_name, reference_tag, source_order, source_line, source_column) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind::<BigInt, _>(set_id)
         .bind::<BigInt, _>(checked_order(order, "MAME machine dependencies")?)
         .bind::<Text, _>(&dependency.source_field)
         .bind::<Text, _>(&dependency.target_name)
         .bind::<Nullable<Text>, _>(dependency.reference_tag.as_deref())
+        .bind::<Nullable<BigInt>, _>(dependency.source_order)
         .bind::<BigInt, _>(dependency.location.line)
         .bind::<BigInt, _>(dependency.location.column)
         .execute(conn)?;
@@ -1742,20 +1751,24 @@ fn insert_mame_machine_facts(
 ) -> crate::Result<()> {
     sql_query(
         "INSERT INTO mame_machines \
-         (set_id, source_file, description, description_line, description_column, \
-          year, year_line, year_column, manufacturer, manufacturer_line, manufacturer_column, \
-          is_device, runnable, is_bios, is_mechanical, is_consumable, attributes_line, attributes_column) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         (set_id, source_file, description, description_source_order, description_line, description_column, \
+          year, year_source_order, year_line, year_column, manufacturer, manufacturer_source_order, manufacturer_line, manufacturer_column, \
+          is_device, is_device_specified, runnable, runnable_specified, is_bios, is_bios_specified, \
+          is_mechanical, is_mechanical_specified, is_consumable, is_consumable_specified, attributes_line, attributes_column) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind::<BigInt, _>(set_id)
     .bind::<Nullable<Text>, _>(facts.source_file.as_deref())
     .bind::<Text, _>(&facts.description)
+    .bind::<BigInt, _>(facts.description_source_order)
     .bind::<BigInt, _>(facts.description_location.line)
     .bind::<BigInt, _>(facts.description_location.column)
     .bind::<Nullable<Text>, _>(facts.year.as_deref())
+    .bind::<Nullable<BigInt>, _>(facts.year_source_order)
     .bind::<Nullable<BigInt>, _>(facts.year_location.map(|location| location.line))
     .bind::<Nullable<BigInt>, _>(facts.year_location.map(|location| location.column))
     .bind::<Nullable<Text>, _>(facts.manufacturer.as_deref())
+    .bind::<Nullable<BigInt>, _>(facts.manufacturer_source_order)
     .bind::<Nullable<BigInt>, _>(
         facts.manufacturer_location.map(|location| location.line),
     )
@@ -1763,10 +1776,15 @@ fn insert_mame_machine_facts(
         facts.manufacturer_location.map(|location| location.column),
     )
     .bind::<diesel::sql_types::Bool, _>(facts.flags.is_device())
+    .bind::<diesel::sql_types::Bool, _>(facts.flags.is_device_specified())
     .bind::<diesel::sql_types::Bool, _>(facts.flags.is_runnable())
+    .bind::<diesel::sql_types::Bool, _>(facts.flags.is_runnable_specified())
     .bind::<diesel::sql_types::Bool, _>(facts.flags.is_bios())
+    .bind::<diesel::sql_types::Bool, _>(facts.flags.is_bios_specified())
     .bind::<diesel::sql_types::Bool, _>(facts.flags.is_mechanical())
+    .bind::<diesel::sql_types::Bool, _>(facts.flags.is_mechanical_specified())
     .bind::<diesel::sql_types::Bool, _>(facts.flags.is_consumable())
+    .bind::<diesel::sql_types::Bool, _>(facts.flags.is_consumable_specified())
     .bind::<BigInt, _>(facts.attributes_location.line)
     .bind::<BigInt, _>(facts.attributes_location.column)
     .execute(conn)?;
@@ -1776,20 +1794,20 @@ fn insert_mame_machine_facts(
 fn insert_mame_document_facts(
     conn: &mut SqliteConnection,
     snapshot_key: &SnapshotKey,
-    debug: bool,
-    config_version: Option<&str>,
-    location: crate::logiqx::RecordLocation,
+    header: &mame::MameHeader,
 ) -> crate::Result<()> {
     sql_query(
         "INSERT INTO mame_document_facts \
-         (snapshot_key, debug, config_version, source_line, source_column) \
-         VALUES (?, ?, ?, ?, ?)",
+         (snapshot_key, build, debug, debug_specified, config_version, source_line, source_column) \
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
     .bind::<Text, _>(snapshot_key.as_str())
-    .bind::<diesel::sql_types::Bool, _>(debug)
-    .bind::<Nullable<Text>, _>(config_version)
-    .bind::<BigInt, _>(location.line)
-    .bind::<BigInt, _>(location.column)
+    .bind::<Nullable<Text>, _>(header.build.as_deref())
+    .bind::<diesel::sql_types::Bool, _>(header.debug)
+    .bind::<diesel::sql_types::Bool, _>(header.debug_specified)
+    .bind::<Text, _>(&header.config_version)
+    .bind::<BigInt, _>(header.location.line)
+    .bind::<BigInt, _>(header.location.column)
     .execute(conn)?;
     Ok(())
 }
@@ -1802,14 +1820,16 @@ fn insert_machine_bios_sets(
     for (bios_order, bios_set) in set.bios_sets.iter().enumerate() {
         sql_query(
             "INSERT INTO mame_bios_sets \
-             (set_id, bios_order, name, description, is_default, source_line, source_column) \
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+             (set_id, bios_order, name, description, is_default, default_specified, source_order, source_line, source_column) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind::<BigInt, _>(set_id)
         .bind::<BigInt, _>(checked_order(bios_order, "MAME BIOS sets")?)
         .bind::<Text, _>(&bios_set.name)
-        .bind::<Nullable<Text>, _>(bios_set.description.as_deref())
+        .bind::<Text, _>(&bios_set.description)
         .bind::<diesel::sql_types::Bool, _>(bios_set.is_default)
+        .bind::<diesel::sql_types::Bool, _>(bios_set.default_specified)
+        .bind::<BigInt, _>(bios_set.source_order)
         .bind::<BigInt, _>(bios_set.location.line)
         .bind::<BigInt, _>(bios_set.location.column)
         .execute(conn)?;
@@ -1824,20 +1844,18 @@ fn insert_machine_switches(
 ) -> crate::Result<()> {
     for (switch_order, switch) in set.switches.iter().enumerate() {
         let switch_order = checked_order(switch_order, "machine switches")?;
-        let mask = i64::try_from(switch.mask).map_err(|_| {
-            crate::Error::InvalidPath("MAME switch mask exceeds SQLite INTEGER".into())
-        })?;
         sql_query(
             "INSERT INTO machine_switches \
-             (set_id, switch_order, kind, name, tag, mask, source_line, source_column) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+             (set_id, switch_order, kind, name, tag, mask, source_order, source_line, source_column) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind::<BigInt, _>(set_id)
         .bind::<BigInt, _>(switch_order)
         .bind::<Text, _>(switch.kind.as_str())
         .bind::<Text, _>(&switch.name)
         .bind::<Text, _>(&switch.tag)
-        .bind::<BigInt, _>(mask)
+        .bind::<Text, _>(&switch.mask)
+        .bind::<BigInt, _>(switch.source_order)
         .bind::<BigInt, _>(switch.location.line)
         .bind::<BigInt, _>(switch.location.column)
         .execute(conn)?;
@@ -1848,35 +1866,36 @@ fn insert_machine_switches(
         for (location_order, location) in switch.locations.iter().enumerate() {
             sql_query(
                 "INSERT INTO machine_switch_locations \
-                 (set_id, switch_order, location_order, name, number, inverted, source_line, source_column) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                 (set_id, switch_order, location_order, source_order, name, number, inverted, inverted_specified, source_line, source_column) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind::<BigInt, _>(set_id)
             .bind::<BigInt, _>(switch_order)
             .bind::<BigInt, _>(checked_order(location_order, "machine switch locations")?)
+            .bind::<BigInt, _>(location.source_order)
             .bind::<Text, _>(&location.name)
             .bind::<Text, _>(&location.number)
             .bind::<diesel::sql_types::Bool, _>(location.inverted)
+            .bind::<diesel::sql_types::Bool, _>(location.inverted_specified)
             .bind::<BigInt, _>(location.location.line)
             .bind::<BigInt, _>(location.location.column)
             .execute(conn)?;
         }
 
         for (value_order, switch_value) in switch.values.iter().enumerate() {
-            let value = i64::try_from(switch_value.value).map_err(|_| {
-                crate::Error::InvalidPath("MAME switch value exceeds SQLite INTEGER".into())
-            })?;
             sql_query(
                 "INSERT INTO machine_switch_values \
-                 (set_id, switch_order, value_order, name, value, is_default, source_line, source_column) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                 (set_id, switch_order, value_order, source_order, name, value, is_default, default_specified, source_line, source_column) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind::<BigInt, _>(set_id)
             .bind::<BigInt, _>(switch_order)
             .bind::<BigInt, _>(checked_order(value_order, "machine switch values")?)
+            .bind::<BigInt, _>(switch_value.source_order)
             .bind::<Text, _>(&switch_value.name)
-            .bind::<BigInt, _>(value)
+            .bind::<Text, _>(&switch_value.value)
             .bind::<diesel::sql_types::Bool, _>(switch_value.default)
+            .bind::<diesel::sql_types::Bool, _>(switch_value.default_specified)
             .bind::<BigInt, _>(switch_value.location.line)
             .bind::<BigInt, _>(switch_value.location.column)
             .execute(conn)?;

@@ -450,7 +450,23 @@ and disk declarations, BIOS sets, and every machine-child family declared by the
 MAME 0.289 DTD, including displays, input controls, switch conditions, drivers,
 features, devices, slots, software-list references, and RAM options. DTD defaults
 and required device-reference tags are stored as typed facts, with ordered nested
-rows and snapshot-diff coverage. The separate software-list adapter imports list-scoped items, parts,
+rows and snapshot-diff coverage. Required `mameconfig` and BIOS descriptions are
+checked before publication. The native header owns build text once; snapshots do
+not copy it. Effective default values retain separate declared-presence facts.
+Machine-child ordinals preserve source order across families; snapshot history
+compares known-child order without treating vendor-only gaps as edits. Switch
+masks and settings keep their declared text, including hexadecimal spelling.
+
+The `catalog_machines::machines_for_snapshot` Rust API returns bounded pages from
+an exact published edition, with numeric machine identities, native flags and
+scalar locations, BIOS sets, dependencies, switches and every specification
+family. ROM/disk references identify existing occurrences without copying their
+payloads. Repeated machine names remain distinct, and continuations are pinned
+to their snapshot and registry generation. Queries read stored native facts, not
+the source XML. Original ROM size/offset spelling and separate compatibility
+attribute ownership remain unfinished.
+
+The separate software-list adapter imports list-scoped items, parts,
 data/disk areas, component evidence, and load instructions as source data. It
 retains omitted versus explicit defaults, empty values, original size/offset/hash
 text, native child order and scalar locations. Checked numeric values are virtual

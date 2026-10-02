@@ -19,7 +19,8 @@ pub use specification::*;
 pub struct MameCatalog {
     pub build: Option<String>,
     pub debug: bool,
-    pub config_version: Option<String>,
+    pub debug_specified: bool,
+    pub config_version: String,
     pub machines: Vec<Machine>,
     pub extensions: Vec<XmlExtension>,
 }
@@ -45,33 +46,93 @@ pub struct MachineFacts {
     pub source_file: Option<String>,
     pub description: String,
     pub description_location: RecordLocation,
+    pub description_source_order: i64,
     pub year: Option<String>,
     pub year_location: Option<RecordLocation>,
+    pub year_source_order: Option<i64>,
     pub manufacturer: Option<String>,
     pub manufacturer_location: Option<RecordLocation>,
+    pub manufacturer_source_order: Option<i64>,
     pub flags: MachineFlags,
     pub attributes_location: RecordLocation,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct MachineFlags(u8);
+pub struct MachineFlags(u16);
 
 impl MachineFlags {
-    const DEVICE: u8 = 1 << 0;
-    const RUNNABLE: u8 = 1 << 1;
-    const BIOS: u8 = 1 << 2;
-    const MECHANICAL: u8 = 1 << 3;
-    const CONSUMABLE: u8 = 1 << 4;
+    const DEVICE: u16 = 1 << 0;
+    const RUNNABLE: u16 = 1 << 1;
+    const BIOS: u16 = 1 << 2;
+    const MECHANICAL: u16 = 1 << 3;
+    const CONSUMABLE: u16 = 1 << 4;
+    const DEVICE_SPECIFIED: u16 = 1 << 5;
+    const RUNNABLE_SPECIFIED: u16 = 1 << 6;
+    const BIOS_SPECIFIED: u16 = 1 << 7;
+    const MECHANICAL_SPECIFIED: u16 = 1 << 8;
+    const CONSUMABLE_SPECIFIED: u16 = 1 << 9;
+
+    /// Rebuild flags from native stored value/presence pairs without XML parsing.
+    ///
+    /// Pair order is device, runnable, BIOS, mechanical, consumable.
+    pub(crate) fn from_stored(values: [(bool, bool); 5]) -> crate::Result<Self> {
+        let mut flags = 0;
+        for ((effective, specified), (value_bit, specified_bit, default, name)) in
+            values.into_iter().zip([
+                (Self::DEVICE, Self::DEVICE_SPECIFIED, false, "isdevice"),
+                (Self::RUNNABLE, Self::RUNNABLE_SPECIFIED, true, "runnable"),
+                (Self::BIOS, Self::BIOS_SPECIFIED, false, "isbios"),
+                (
+                    Self::MECHANICAL,
+                    Self::MECHANICAL_SPECIFIED,
+                    false,
+                    "ismechanical",
+                ),
+                (
+                    Self::CONSUMABLE,
+                    Self::CONSUMABLE_SPECIFIED,
+                    false,
+                    "isconsumable",
+                ),
+            ])
+        {
+            if !specified && effective != default {
+                return Err(crate::Error::XmlValidation(format!(
+                    "stored MAME {name} is not specified but differs from its default"
+                )));
+            }
+            if effective {
+                flags |= value_bit;
+            }
+            if specified {
+                flags |= specified_bit;
+            }
+        }
+        Ok(Self(flags))
+    }
 
     fn parse(attributes: &BTreeMap<String, String>) -> crate::Result<Self> {
         let mut flags = 0;
-        for (attribute, flag, default) in [
-            ("isdevice", Self::DEVICE, false),
-            ("runnable", Self::RUNNABLE, true),
-            ("isbios", Self::BIOS, false),
-            ("ismechanical", Self::MECHANICAL, false),
-            ("isconsumable", Self::CONSUMABLE, false),
+        for (attribute, flag, specified, default) in [
+            ("isdevice", Self::DEVICE, Self::DEVICE_SPECIFIED, false),
+            ("runnable", Self::RUNNABLE, Self::RUNNABLE_SPECIFIED, true),
+            ("isbios", Self::BIOS, Self::BIOS_SPECIFIED, false),
+            (
+                "ismechanical",
+                Self::MECHANICAL,
+                Self::MECHANICAL_SPECIFIED,
+                false,
+            ),
+            (
+                "isconsumable",
+                Self::CONSUMABLE,
+                Self::CONSUMABLE_SPECIFIED,
+                false,
+            ),
         ] {
+            if attributes.contains_key(attribute) {
+                flags |= specified;
+            }
             if parse_mame_boolean_with_default(attributes.get(attribute), default, attribute)? {
                 flags |= flag;
             }
@@ -99,13 +160,35 @@ impl MachineFlags {
     pub const fn is_consumable(self) -> bool {
         self.0 & Self::CONSUMABLE != 0
     }
+    #[must_use]
+    pub const fn is_device_specified(self) -> bool {
+        self.0 & Self::DEVICE_SPECIFIED != 0
+    }
+    #[must_use]
+    pub const fn is_runnable_specified(self) -> bool {
+        self.0 & Self::RUNNABLE_SPECIFIED != 0
+    }
+    #[must_use]
+    pub const fn is_bios_specified(self) -> bool {
+        self.0 & Self::BIOS_SPECIFIED != 0
+    }
+    #[must_use]
+    pub const fn is_mechanical_specified(self) -> bool {
+        self.0 & Self::MECHANICAL_SPECIFIED != 0
+    }
+    #[must_use]
+    pub const fn is_consumable_specified(self) -> bool {
+        self.0 & Self::CONSUMABLE_SPECIFIED != 0
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MachineBiosSet {
     pub name: String,
-    pub description: Option<String>,
+    pub description: String,
     pub is_default: bool,
+    pub default_specified: bool,
+    pub source_order: i64,
     pub location: RecordLocation,
 }
 
@@ -116,6 +199,7 @@ pub enum MachineSwitchKind {
 }
 
 impl MachineSwitchKind {
+    #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::DipSwitch => "dipswitch",
@@ -129,7 +213,8 @@ pub struct MachineSwitch {
     pub kind: MachineSwitchKind,
     pub name: String,
     pub tag: String,
-    pub mask: u64,
+    pub mask: String,
+    pub source_order: i64,
     pub location: RecordLocation,
     pub condition: Option<MachineCondition>,
     pub locations: Vec<MachineSwitchLocation>,
@@ -141,15 +226,19 @@ pub struct MachineSwitchLocation {
     pub name: String,
     pub number: String,
     pub inverted: bool,
+    pub inverted_specified: bool,
+    pub source_order: i64,
     pub location: RecordLocation,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MachineSwitchValue {
     pub name: String,
-    pub value: u64,
+    pub value: String,
     pub default: bool,
+    pub default_specified: bool,
     pub condition: Option<MachineCondition>,
+    pub source_order: i64,
     pub location: RecordLocation,
 }
 
@@ -157,6 +246,7 @@ pub struct MachineSwitchValue {
 pub struct DeviceReference {
     pub tag: String,
     pub name: String,
+    pub source_order: i64,
     pub location: RecordLocation,
 }
 
@@ -172,6 +262,7 @@ pub struct MachineAsset {
     pub dump_status: MameDumpStatus,
     pub disk_requirement: Option<DiskRequirement>,
     pub location: RecordLocation,
+    pub source_order: i64,
     pub attributes: MameAssetAttributes,
     pub extensions: Vec<XmlExtension>,
 }
@@ -184,6 +275,7 @@ pub enum MameDumpStatus {
 }
 
 impl MameDumpStatus {
+    #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Good => "good",
@@ -204,6 +296,7 @@ pub enum MameBoolean {
 }
 
 impl MameBoolean {
+    #[must_use]
     pub(crate) const fn as_bool(self) -> bool {
         matches!(self, Self::Yes)
     }
@@ -215,6 +308,8 @@ pub struct MameAssetAttributes {
     pub bios: Option<String>,
     pub offset: Option<MameOffset>,
     pub optional: MameBoolean,
+    pub optional_specified: bool,
+    pub status_specified: bool,
     pub sound_only: Option<MameBoolean>,
     pub dispose: Option<MameBoolean>,
     pub load_flag: Option<String>,
@@ -224,6 +319,7 @@ pub struct MameAssetAttributes {
     pub no_thread: Option<MameBoolean>,
     pub disk_index: Option<String>,
     pub writable: Option<MameBoolean>,
+    pub writable_specified: bool,
     pub writeable: Option<MameBoolean>,
 }
 
@@ -262,7 +358,8 @@ impl From<serde_json::Value> for ExtensionValue {
 pub struct MameHeader {
     pub build: Option<String>,
     pub debug: bool,
-    pub config_version: Option<String>,
+    pub debug_specified: bool,
+    pub config_version: String,
     pub location: RecordLocation,
     pub extensions: Vec<XmlExtension>,
 }
@@ -330,7 +427,7 @@ pub fn read_with<S, E: From<crate::Error>>(
         }
         let build = root.attributes.get("build").cloned();
         let debug = parse_mame_boolean(root.attributes.get("debug"), "debug")?;
-        let config_version = root.attributes.get("mameconfig").cloned();
+        let config_version = required(&root, "mameconfig")?.to_owned();
         let extensions = root
             .attributes
             .iter()
@@ -350,6 +447,7 @@ pub fn read_with<S, E: From<crate::Error>>(
         let mut sink = start(MameHeader {
             build,
             debug,
+            debug_specified: root.attributes.contains_key("debug"),
             config_version,
             location: root.location,
             extensions,
@@ -370,6 +468,7 @@ impl MameCatalog {
                 Ok(Self {
                     build: header.build,
                     debug: header.debug,
+                    debug_specified: header.debug_specified,
                     config_version: header.config_version,
                     machines: Vec::new(),
                     extensions: header.extensions,
@@ -516,10 +615,11 @@ pub fn parse_xml_element(bytes: &[u8]) -> crate::Result<Element> {
     })
 }
 
-fn parse_device_reference(node: &Element) -> crate::Result<DeviceReference> {
+fn parse_device_reference(node: &Element, source_order: i64) -> crate::Result<DeviceReference> {
     Ok(DeviceReference {
         tag: required(node, "tag")?.to_owned(),
         name: required(node, "name")?.to_owned(),
+        source_order,
         location: node.location,
     })
 }
@@ -559,10 +659,13 @@ fn machine_attribute_extensions(name: &str, node: &Element) -> Vec<XmlExtension>
 struct MachineChildren {
     description: String,
     description_location: RecordLocation,
+    description_source_order: i64,
     year: Option<String>,
     year_location: Option<RecordLocation>,
+    year_source_order: Option<i64>,
     manufacturer: Option<String>,
     manufacturer_location: Option<RecordLocation>,
+    manufacturer_source_order: Option<i64>,
     bios_sets: Vec<MachineBiosSet>,
     specification: Vec<MachineSpecificationElement>,
     device_refs: Vec<DeviceReference>,
@@ -590,10 +693,13 @@ fn parse_machine(node: &Element, retain_extensions: bool) -> crate::Result<Machi
             source_file: node.attributes.get("sourcefile").cloned(),
             description: children.description,
             description_location: children.description_location,
+            description_source_order: children.description_source_order,
             year: children.year,
             year_location: children.year_location,
+            year_source_order: children.year_source_order,
             manufacturer: children.manufacturer,
             manufacturer_location: children.manufacturer_location,
+            manufacturer_source_order: children.manufacturer_source_order,
             flags,
             attributes_location: node.location,
         },
@@ -606,6 +712,9 @@ fn parse_machine(node: &Element, retain_extensions: bool) -> crate::Result<Machi
     })
 }
 
+// Keep the exhaustive source-element dispatch in one place so every known family
+// receives the same original child ordinal.
+#[allow(clippy::too_many_lines)]
 fn parse_machine_children(
     node: &Element,
     machine_name: &str,
@@ -613,10 +722,13 @@ fn parse_machine_children(
 ) -> crate::Result<MachineChildren> {
     let mut description = None;
     let mut description_location = None;
+    let mut description_source_order = None;
     let mut year = None;
     let mut year_location = None;
+    let mut year_source_order = None;
     let mut manufacturer = None;
     let mut manufacturer_location = None;
+    let mut manufacturer_source_order = None;
     let mut bios_sets = Vec::new();
     let mut specification = Vec::new();
     let mut device_refs = Vec::new();
@@ -626,6 +738,7 @@ fn parse_machine_children(
     let mut singleton_specification_elements = std::collections::BTreeSet::new();
     let mut machine_text_fields = std::collections::HashSet::new();
     for (element_order, child) in node.children().enumerate() {
+        let source_order = to_source_order(element_order)?;
         match child.name.as_str() {
             "description" | "year" | "manufacturer" => {
                 if !machine_text_fields.insert(child.name.as_str()) {
@@ -639,14 +752,17 @@ fn parse_machine_children(
                     "description" => {
                         description = Some(text);
                         description_location = Some(child.location);
+                        description_source_order = Some(source_order);
                     }
                     "year" => {
                         year = Some(text);
                         year_location = Some(child.location);
+                        year_source_order = Some(source_order);
                     }
                     "manufacturer" => {
                         manufacturer = Some(text);
                         manufacturer_location = Some(child.location);
+                        manufacturer_source_order = Some(source_order);
                     }
                     _ => {}
                 }
@@ -654,16 +770,23 @@ fn parse_machine_children(
                     extensions.push(extension("machine", Some(machine_name), child)?);
                 }
             }
-            "biosset" => bios_sets.push(parse_machine_bios_set(child)?),
-            "device_ref" => device_refs.push(parse_device_reference(child)?),
+            "biosset" => bios_sets.push(parse_machine_bios_set(child, source_order)?),
+            "device_ref" => {
+                device_refs.push(parse_device_reference(child, source_order)?);
+            }
             "dipswitch" => {
-                switches.push(parse_machine_switch(child, MachineSwitchKind::DipSwitch)?);
+                switches.push(parse_machine_switch(
+                    child,
+                    MachineSwitchKind::DipSwitch,
+                    source_order,
+                )?);
             }
             "configuration" => switches.push(parse_machine_switch(
                 child,
                 MachineSwitchKind::Configuration,
+                source_order,
             )?),
-            "rom" | "disk" => assets.push(parse_asset(child, retain_extensions)?),
+            "rom" | "disk" => assets.push(parse_asset(child, retain_extensions, source_order)?),
             "sound" | "input" | "driver" => {
                 if !singleton_specification_elements.insert(child.name.as_str()) {
                     return Err(crate::Error::XmlValidation(format!(
@@ -697,10 +820,17 @@ fn parse_machine_children(
     Ok(MachineChildren {
         description,
         description_location,
+        description_source_order: description_source_order.ok_or_else(|| {
+            crate::Error::XmlValidation(format!(
+                "MAME machine {machine_name:?} is missing description"
+            ))
+        })?,
         year,
         year_location,
+        year_source_order,
         manufacturer,
         manufacturer_location,
+        manufacturer_source_order,
         bios_sets,
         specification,
         device_refs,
@@ -739,18 +869,23 @@ fn parse_machine_specification(
     element_order: usize,
 ) -> crate::Result<MachineSpecificationElement> {
     Ok(MachineSpecificationElement {
-        element_order: i64::try_from(element_order).map_err(|_| {
-            crate::Error::InvalidPath("MAME element order exceeds SQLite INTEGER".into())
-        })?,
+        element_order: to_source_order(element_order)?,
         value: specification::parse_element(child)?,
     })
 }
 
-fn parse_machine_bios_set(node: &Element) -> crate::Result<MachineBiosSet> {
+fn to_source_order(order: usize) -> crate::Result<i64> {
+    i64::try_from(order)
+        .map_err(|_| crate::Error::InvalidPath("MAME source order exceeds SQLite INTEGER".into()))
+}
+
+fn parse_machine_bios_set(node: &Element, source_order: i64) -> crate::Result<MachineBiosSet> {
     Ok(MachineBiosSet {
         name: required(node, "name")?.to_owned(),
-        description: node.attributes.get("description").cloned(),
+        description: required(node, "description")?.to_owned(),
         is_default: parse_mame_boolean(node.attributes.get("default"), "biosset default")?,
+        default_specified: node.attributes.contains_key("default"),
+        source_order,
         location: node.location,
     })
 }
@@ -789,39 +924,86 @@ fn parse_mame_boolean_with_default(
     }
 }
 
-fn parse_machine_switch(node: &Element, kind: MachineSwitchKind) -> crate::Result<MachineSwitch> {
+fn parse_machine_switch(
+    node: &Element,
+    kind: MachineSwitchKind,
+    source_order: i64,
+) -> crate::Result<MachineSwitch> {
     let name = required(node, "name")?.to_owned();
     let tag = required(node, "tag")?.to_owned();
-    let mask = parse_mame_integer(required(node, "mask")?)?;
+    let mask = required(node, "mask")?.to_owned();
     let mut locations = Vec::new();
     let mut values = Vec::new();
     let mut condition = None;
-    for child in node.children() {
+    for (child_order, child) in node.children().enumerate() {
+        let child_source_order = to_source_order(child_order)?;
         match child.name.as_str() {
-            "condition" => condition = Some(specification::parse_condition(child)?),
-            "diplocation" | "conflocation" => locations.push(MachineSwitchLocation {
-                name: required(child, "name")?.to_owned(),
-                number: required(child, "number")?.to_owned(),
-                inverted: parse_mame_boolean(
-                    child.attributes.get("inverted"),
-                    "switch location inverted",
-                )?,
-                location: child.location,
-            }),
-            "dipvalue" | "confsetting" => values.push(MachineSwitchValue {
-                name: required(child, "name")?.to_owned(),
-                value: parse_mame_integer(required(child, "value")?)?,
-                default: parse_mame_boolean(
-                    child.attributes.get("default"),
-                    "switch value default",
-                )?,
-                condition: child
-                    .children()
-                    .find(|nested| nested.name == "condition")
-                    .map(specification::parse_condition)
-                    .transpose()?,
-                location: child.location,
-            }),
+            "condition" => {
+                if condition.is_some() {
+                    return Err(crate::Error::XmlValidation(format!(
+                        "MAME <{}> {name:?} has multiple conditions",
+                        node.name
+                    )));
+                }
+                condition = Some(specification::parse_condition(child)?);
+            }
+            "diplocation" if kind == MachineSwitchKind::DipSwitch => {
+                locations.push(MachineSwitchLocation {
+                    name: required(child, "name")?.to_owned(),
+                    number: required(child, "number")?.to_owned(),
+                    inverted: parse_mame_boolean(
+                        child.attributes.get("inverted"),
+                        "switch location inverted",
+                    )?,
+                    inverted_specified: child.attributes.contains_key("inverted"),
+                    source_order: child_source_order,
+                    location: child.location,
+                });
+            }
+            "conflocation" if kind == MachineSwitchKind::Configuration => {
+                locations.push(MachineSwitchLocation {
+                    name: required(child, "name")?.to_owned(),
+                    number: required(child, "number")?.to_owned(),
+                    inverted: parse_mame_boolean(
+                        child.attributes.get("inverted"),
+                        "switch location inverted",
+                    )?,
+                    inverted_specified: child.attributes.contains_key("inverted"),
+                    source_order: child_source_order,
+                    location: child.location,
+                });
+            }
+            "diplocation" | "conflocation" => {
+                return Err(crate::Error::XmlValidation(format!(
+                    "<{}> is not valid under <{}>",
+                    child.name, node.name
+                )));
+            }
+            "dipvalue" | "confsetting" => {
+                let valid_owner = matches!(
+                    (kind, child.name.as_str()),
+                    (MachineSwitchKind::DipSwitch, "dipvalue")
+                        | (MachineSwitchKind::Configuration, "confsetting")
+                );
+                if !valid_owner {
+                    return Err(crate::Error::XmlValidation(format!(
+                        "<{}> is not valid under <{}>",
+                        child.name, node.name
+                    )));
+                }
+                values.push(MachineSwitchValue {
+                    name: required(child, "name")?.to_owned(),
+                    value: required(child, "value")?.to_owned(),
+                    default: parse_mame_boolean(
+                        child.attributes.get("default"),
+                        "switch value default",
+                    )?,
+                    default_specified: child.attributes.contains_key("default"),
+                    condition: specification::parse_optional_condition(child)?,
+                    source_order: child_source_order,
+                    location: child.location,
+                });
+            }
             _ => {}
         }
     }
@@ -830,6 +1012,7 @@ fn parse_machine_switch(node: &Element, kind: MachineSwitchKind) -> crate::Resul
         name,
         tag,
         mask,
+        source_order,
         location: node.location,
         condition,
         locations,
@@ -867,6 +1050,8 @@ fn parse_mame_asset_attributes(node: &Element) -> crate::Result<MameAssetAttribu
         bios: value("bios"),
         offset: number("offset")?,
         optional: boolean("optional")?.unwrap_or_default(),
+        optional_specified: node.attributes.contains_key("optional"),
+        status_specified: node.attributes.contains_key("status"),
         sound_only: boolean("soundonly")?,
         dispose: boolean("dispose")?,
         load_flag: value("loadflag"),
@@ -876,11 +1061,16 @@ fn parse_mame_asset_attributes(node: &Element) -> crate::Result<MameAssetAttribu
         no_thread: boolean("nothread")?,
         disk_index: value("index"),
         writable: boolean("writable")?.or_else(|| (node.name == "disk").then_some(MameBoolean::No)),
+        writable_specified: node.attributes.contains_key("writable"),
         writeable: boolean("writeable")?,
     })
 }
 
-fn parse_asset(node: &Element, retain_extensions: bool) -> crate::Result<MachineAsset> {
+fn parse_asset(
+    node: &Element,
+    retain_extensions: bool,
+    source_order: i64,
+) -> crate::Result<MachineAsset> {
     let name = required(node, "name")?;
     let size = node
         .attributes
@@ -953,6 +1143,7 @@ fn parse_asset(node: &Element, retain_extensions: bool) -> crate::Result<Machine
         dump_status,
         disk_requirement,
         location: node.location,
+        source_order,
         attributes,
         extensions,
     })
@@ -1155,6 +1346,7 @@ fn decode_hex_sized(value: &str, length: usize) -> crate::Result<Vec<u8>> {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)] // These tests use expect to identify missing fixture witnesses.
 mod tests {
     use crate::xml_reader::{MAX_XML_DEPTH, MAX_XML_NODES};
 
@@ -1164,7 +1356,7 @@ mod tests {
     fn streaming_delivers_records_before_a_late_parse_error() {
         let mut names = Vec::new();
         let result = read_with::<_, crate::Error>(
-            br#"<mame><machine name="first"><description>First</description></machine><machine name="broken">"#,
+            br#"<mame mameconfig="10"><machine name="first"><description>First</description></machine><machine name="broken">"#,
             |_| Ok(()),
             |(), record| {
                 if let MameRecord::Machine(machine) = record {
@@ -1181,7 +1373,7 @@ mod tests {
     fn content_before_the_root_never_starts_publication() {
         for prefix in ["junk", "<![CDATA[junk]]>", "&amp;", "\u{a0}"] {
             let xml = format!(
-                "{prefix}<mame><machine name='x'><description>X</description></machine></mame>"
+                "{prefix}<mame mameconfig='10'><machine name='x'><description>X</description></machine></mame>"
             );
             let mut started = false;
             let result = read_with::<_, crate::Error>(
@@ -1201,13 +1393,13 @@ mod tests {
     fn only_xml_whitespace_is_allowed_outside_the_root() {
         for whitespace in [" ", "\t", "\r", "\n", " \t\r\n"] {
             let xml = format!(
-                "{whitespace}<mame><machine name='x'><description>X</description></machine></mame>{whitespace}"
+                "{whitespace}<mame mameconfig='10'><machine name='x'><description>X</description></machine></mame>{whitespace}"
             );
             assert!(MameCatalog::parse(xml.as_bytes()).is_ok());
         }
         for suffix in ["\u{a0}", "\u{2003}", "\u{85}"] {
             let xml = format!(
-                "<mame><machine name='x'><description>X</description></machine></mame>{suffix}"
+                "<mame mameconfig='10'><machine name='x'><description>X</description></machine></mame>{suffix}"
             );
             assert!(
                 MameCatalog::parse(xml.as_bytes()).is_err(),
@@ -1277,21 +1469,23 @@ mod tests {
 
     #[test]
     fn duplicate_machine_text_fields_are_rejected() {
-        let xml = br#"<mame><machine name="duplicate"><description>one</description><description>two</description></machine></mame>"#;
+        let xml = br#"<mame mameconfig="10"><machine name="duplicate"><description>one</description><description>two</description></machine></mame>"#;
         assert!(MameCatalog::parse(xml).is_err());
     }
 
     #[test]
     fn mame_asset_spec_attributes_are_parsed_as_typed_facts() -> crate::Result<()> {
         let rom = parse_xml_element(
-            br#"<rom name="boot.bin" region="maincpu" bios="rev-a" offset="0x100" optional="yes" soundonly="no" dispose="yes" loadflag="LOAD16_BYTE" value="0x42" inverted="no" ovha="0x80" nothread="yes"/>"#,
+            br#"<rom name="boot.bin" region="maincpu" bios="rev-a" offset="0x100" status="good" optional="yes" soundonly="no" dispose="yes" loadflag="LOAD16_BYTE" value="0x42" inverted="no" ovha="0x80" nothread="yes"/>"#,
         )?;
-        let rom = parse_asset(&rom, false)?;
+        let rom = parse_asset(&rom, false, 0)?;
 
         assert_eq!(rom.attributes.region.as_deref(), Some("maincpu"));
         assert_eq!(rom.attributes.bios.as_deref(), Some("rev-a"));
         assert_eq!(rom.attributes.offset, Some(MameOffset(0x100)));
         assert_eq!(rom.attributes.optional, MameBoolean::Yes);
+        assert!(rom.attributes.optional_specified);
+        assert!(rom.attributes.status_specified);
         assert_eq!(rom.dump_status, MameDumpStatus::Good);
         assert_eq!(rom.attributes.sound_only, Some(MameBoolean::No));
         assert_eq!(rom.attributes.dispose, Some(MameBoolean::Yes));
@@ -1303,17 +1497,19 @@ mod tests {
         let defaults = parse_asset(
             &parse_xml_element(br#"<disk name="default.chd" size="0"/>"#)?,
             false,
+            0,
         )?;
         assert_eq!(defaults.dump_status, MameDumpStatus::Good);
         assert_eq!(defaults.attributes.optional, MameBoolean::No);
         assert_eq!(defaults.attributes.writable, Some(MameBoolean::No));
+        assert!(!defaults.attributes.writable_specified);
         Ok(())
     }
 
     #[test]
     fn nested_machine_text_fields_are_retained_as_extensions()
     -> Result<(), Box<dyn std::error::Error>> {
-        let catalog = MameCatalog::parse(br#"<mame><machine name="nested"><description>before<x/>after</description></machine></mame>"#)?;
+        let catalog = MameCatalog::parse(br#"<mame mameconfig="10"><machine name="nested"><description>before<x/>after</description></machine></mame>"#)?;
         let machine = catalog
             .machines
             .first()
@@ -1324,6 +1520,217 @@ mod tests {
                 .iter()
                 .any(|extension| extension.field_name == "element:description")
         );
+        Ok(())
+    }
+
+    #[test]
+    // This single fixture is an intentionally exhaustive presence/order witness across families.
+    #[allow(clippy::too_many_lines)]
+    fn native_presence_defaults_and_owner_orders_are_retained() -> crate::Result<()> {
+        let catalog = MameCatalog::parse(
+            br#"<mame mameconfig="10">
+                <machine name="ordered" isdevice="no" runnable="yes" isbios="yes" ismechanical="no" isconsumable="yes">
+                    <description>Ordered</description><vendor/><year>1990</year><manufacturer>Maker</manufacturer>
+                    <biosset name="default" description="Default"/>
+                    <biosset name="alternate" description="Alternate" default="no"/>
+                    <device_ref tag=":slot" name="cart"/>
+                    <rom name="program.bin"/>
+                    <disk name="media.chd" writable="yes" optional="no" status="baddump"/>
+                    <dipswitch name="service" tag=":io" mask="0xff">
+                        <vendor/><diplocation name="SW1" number="1" inverted="no"/>
+                        <dipvalue name="On" value="not-numeric" default="no"/>
+                    </dipswitch>
+                    <configuration name="mode" tag=":io" mask="mode">
+                        <conflocation name="CN1" number="2" inverted="yes"/>
+                        <confsetting name="Automatic" value="automatic" default="yes"/>
+                    </configuration>
+                    <display type="raster" refresh="60"/>
+                    <display type="vector" refresh="60" flipx="yes"/>
+                    <input service="no" players="2"><control type="joy"/><control type="stick" reverse="no"/></input>
+                    <driver status="good" emulation="good" savestate="supported" requiresartwork="no" unofficial="yes" nosoundhardware="no" incomplete="yes"/>
+                    <slot name="cart"><slotoption name="empty" devname="" default="no"/></slot>
+                </machine>
+            </mame>"#,
+        )?;
+        assert!(!catalog.debug);
+        assert!(!catalog.debug_specified);
+        assert_eq!(catalog.config_version, "10");
+        let machine = catalog.machines.first().expect("machine parsed");
+        assert_eq!(machine.facts.description_source_order, 0);
+        assert_eq!(machine.facts.year_source_order, Some(2));
+        assert_eq!(machine.facts.manufacturer_source_order, Some(3));
+        assert!(!machine.facts.flags.is_device());
+        assert!(machine.facts.flags.is_device_specified());
+        assert!(machine.facts.flags.is_runnable());
+        assert!(machine.facts.flags.is_runnable_specified());
+        assert!(machine.facts.flags.is_bios());
+        assert!(machine.facts.flags.is_bios_specified());
+        assert!(!machine.facts.flags.is_mechanical());
+        assert!(machine.facts.flags.is_mechanical_specified());
+        assert!(machine.facts.flags.is_consumable());
+        assert!(machine.facts.flags.is_consumable_specified());
+
+        assert_eq!(machine.bios_sets[0].description, "Default");
+        assert!(!machine.bios_sets[0].is_default);
+        assert!(!machine.bios_sets[0].default_specified);
+        assert_eq!(machine.bios_sets[0].source_order, 4);
+        assert!(machine.bios_sets[1].default_specified);
+        assert_eq!(machine.bios_sets[1].source_order, 5);
+        assert_eq!(machine.device_refs[0].source_order, 6);
+        assert_eq!(machine.assets[0].source_order, 7);
+        assert!(!machine.assets[0].attributes.optional_specified);
+        assert!(!machine.assets[0].attributes.status_specified);
+        assert!(!machine.assets[0].attributes.writable_specified);
+        assert_eq!(machine.assets[1].source_order, 8);
+        assert!(machine.assets[1].attributes.optional_specified);
+        assert!(machine.assets[1].attributes.status_specified);
+        assert!(machine.assets[1].attributes.writable_specified);
+        assert_eq!(machine.switches[0].source_order, 9);
+        assert_eq!(machine.switches[0].mask, "0xff");
+        assert_eq!(machine.switches[0].locations[0].source_order, 1);
+        assert!(machine.switches[0].locations[0].inverted_specified);
+        assert_eq!(machine.switches[0].values[0].source_order, 2);
+        assert_eq!(machine.switches[0].values[0].value, "not-numeric");
+        assert!(machine.switches[0].values[0].default_specified);
+        assert_eq!(machine.switches[1].source_order, 10);
+        assert_eq!(machine.switches[1].mask, "mode");
+        assert!(machine.switches[1].locations[0].inverted);
+        assert!(machine.switches[1].locations[0].inverted_specified);
+        assert_eq!(machine.switches[1].values[0].value, "automatic");
+
+        let displays = machine
+            .specification
+            .iter()
+            .filter_map(|item| match &item.value {
+                MachineSpecification::Display(value) => Some((item.element_order, value)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(!displays[0].1.flip_x_specified);
+        assert!(displays[1].1.flip_x_specified);
+        assert_eq!(displays[1].1.flip_x, MameBoolean::Yes);
+        assert_eq!(displays[0].0, 11);
+        let input = machine
+            .specification
+            .iter()
+            .find_map(|item| match &item.value {
+                MachineSpecification::Input(value) => Some(value),
+                _ => None,
+            })
+            .expect("input parsed");
+        assert!(input.service_specified);
+        assert_eq!(input.service, MameBoolean::No);
+        assert!(!input.tilt_specified);
+        assert_eq!(input.tilt, MameBoolean::No);
+        assert!(!input.controls[0].reverse_specified);
+        assert!(input.controls[1].reverse_specified);
+        let driver = machine
+            .specification
+            .iter()
+            .find_map(|item| match &item.value {
+                MachineSpecification::Driver(value) => Some(value),
+                _ => None,
+            })
+            .expect("driver parsed");
+        assert!(driver.requires_artwork_specified);
+        assert!(driver.unofficial_specified);
+        assert!(driver.no_sound_hardware_specified);
+        assert!(driver.incomplete_specified);
+        let slot = machine
+            .specification
+            .iter()
+            .find_map(|item| match &item.value {
+                MachineSpecification::Slot(value) => Some(value),
+                _ => None,
+            })
+            .expect("slot parsed");
+        assert!(slot.options[0].default_specified);
+        assert_eq!(slot.options[0].is_default, MameBoolean::No);
+        Ok(())
+    }
+
+    #[test]
+    fn machine_flag_storage_rejects_unspecified_non_defaults() -> crate::Result<()> {
+        let defaults = MachineFlags::from_stored([
+            (false, false),
+            (true, false),
+            (false, false),
+            (false, false),
+            (false, false),
+        ])?;
+        assert!(defaults.is_runnable());
+        assert!(!defaults.is_runnable_specified());
+        assert!(
+            MachineFlags::from_stored([
+                (true, false),
+                (true, false),
+                (false, false),
+                (false, false),
+                (false, false),
+            ])
+            .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn switch_children_require_their_declared_owner_and_unique_conditions() {
+        for child in [
+            "<confsetting name='x' value='1'/>",
+            "<conflocation name='x' number='1'/>",
+            "<condition tag=':x' mask='1' relation='eq' value='1'/><condition tag=':x' mask='1' relation='eq' value='1'/>",
+        ] {
+            let xml = format!(
+                "<mame mameconfig='10'><machine name='x'><description>X</description><dipswitch name='s' tag=':x' mask='1'>{child}</dipswitch></machine></mame>"
+            );
+            assert!(
+                MameCatalog::parse(xml.as_bytes()).is_err(),
+                "accepted {child}"
+            );
+        }
+        let valid_dip_location = MameCatalog::parse(
+            br#"<mame mameconfig="10"><machine name="x"><description>X</description><dipswitch name="s" tag=":x" mask="1"><diplocation name="SW1" number="1"/></dipswitch></machine></mame>"#,
+        )
+        .expect("diplocation is valid under dipswitch");
+        assert_eq!(
+            valid_dip_location.machines[0].switches[0].locations[0].name,
+            "SW1"
+        );
+        for child in [
+            "<dipvalue name='x' value='1'/>",
+            "<diplocation name='x' number='1'/>",
+        ] {
+            let xml = format!(
+                "<mame mameconfig='10'><machine name='x'><description>X</description><configuration name='s' tag=':x' mask='1'>{child}</configuration></machine></mame>"
+            );
+            assert!(
+                MameCatalog::parse(xml.as_bytes()).is_err(),
+                "accepted {child}"
+            );
+        }
+        let duplicate_value_condition = br#"<mame mameconfig="10"><machine name="x"><description>X</description><configuration name="s" tag=":x" mask="1"><confsetting name="x" value="1"><condition tag=":x" mask="1" relation="eq" value="1"/><condition tag=":x" mask="1" relation="eq" value="1"/></confsetting></configuration></machine></mame>"#;
+        assert!(MameCatalog::parse(duplicate_value_condition).is_err());
+    }
+
+    #[test]
+    fn required_mame_header_and_bios_description_are_enforced() {
+        assert!(
+            MameCatalog::parse(
+                br#"<mame><machine name="x"><description>X</description></machine></mame>"#
+            )
+            .is_err()
+        );
+        assert!(MameCatalog::parse(
+            br#"<mame mameconfig="10"><machine name="x"><description>X</description><biosset name="main"/></machine></mame>"#
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn explicit_mame_debug_default_retains_presence() -> crate::Result<()> {
+        let catalog = MameCatalog::parse(br#"<mame mameconfig="10" debug="no"><machine name="system"><description>System</description></machine></mame>"#)?;
+        assert!(!catalog.debug);
+        assert!(catalog.debug_specified);
         Ok(())
     }
 }

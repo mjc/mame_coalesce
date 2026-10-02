@@ -12,7 +12,7 @@ logiqx="$corpus_root/logiqx.dat"
 machine="$corpus_root/machine.xml"
 software_list="$corpus_root/software-list.xml"
 printf '<datafile><header><name>XML import benchmark</name><description>Generated version 1</description><version>1</version><author>mame_coalesce</author></header>\n' >"$logiqx"
-printf '<mame build="xml-import-benchmark-v1">\n' >"$machine"
+printf '<mame build="xml-import-benchmark-v1" mameconfig="10">\n' >"$machine"
 printf '<softwarelist name="benchmark" description="Generated version 1">\n' >"$software_list"
 
 for ((index = 1; index <= 1000; index++)); do

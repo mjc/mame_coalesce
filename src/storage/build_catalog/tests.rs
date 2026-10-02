@@ -147,7 +147,7 @@ fn mame_root_metadata_and_rom_only_requirements_survive_loading() {
     let path = fixture.directory.path().join("mame.xml");
     std::fs::write(
         &path,
-        r#"<mame build="synthetic" debug="no"><machine name="machine" sourcefile="machine.cpp" isbios="yes" romof="bios" sampleof="samples"><description>Machine description</description><year>1991</year><manufacturer>MAME maker</manufacturer><device_ref tag=":sound" name="sound"/><rom name="game.bin" size="1" crc="12345678"/><disk name="disk" sha1="0123456789abcdef0123456789abcdef01234567"/><sample name="effect.wav"/></machine></mame>"#,
+        r#"<mame build="synthetic" debug="no" mameconfig="10"><machine name="machine" sourcefile="machine.cpp" isbios="yes" romof="bios" sampleof="samples"><description>Machine description</description><year>1991</year><manufacturer>MAME maker</manufacturer><device_ref tag=":sound" name="sound"/><rom name="game.bin" size="1" crc="12345678"/><disk name="disk" sha1="0123456789abcdef0123456789abcdef01234567"/><sample name="effect.wav"/></machine></mame>"#,
     )
     .expect("write MAME XML");
     import(

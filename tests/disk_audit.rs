@@ -360,7 +360,7 @@ fn disk_audit_follows_explicit_machine_clone_parent_layout() -> mame_coalesce::R
         .map_err(|path| mame_coalesce::Error::InvalidPath(path.display().to_string()))?;
     std::fs::write(
         &document_path,
-        br#"<mame><machine name="parent"><description>Parent</description><disk name="parent-media" sha1="1123456789abcdef0123456789abcdef01234567"/></machine><machine name="clone" cloneof="parent"><description>Clone</description><disk name="clone-media" merge="parent-media" sha1="2123456789abcdef0123456789abcdef01234567"/></machine></mame>"#,
+        br#"<mame mameconfig="10"><machine name="parent"><description>Parent</description><disk name="parent-media" sha1="1123456789abcdef0123456789abcdef01234567"/></machine><machine name="clone" cloneof="parent"><description>Clone</description><disk name="clone-media" merge="parent-media" sha1="2123456789abcdef0123456789abcdef01234567"/></machine></mame>"#,
     )?;
     let mut request = mame_request()?;
     request.document_path = document_path;
@@ -415,7 +415,7 @@ fn disk_audit_uses_last_publication_by_insertion_order() -> mame_coalesce::Resul
         .map_err(|path| mame_coalesce::Error::InvalidPath(path.display().to_string()))?;
     std::fs::write(
         &document_path,
-        b"<mame><machine name=\"new_machine\"><description>New machine</description><year>2001</year><manufacturer>Example</manufacturer></machine></mame>",
+        b"<mame mameconfig=\"10\"><machine name=\"new_machine\"><description>New machine</description><year>2001</year><manufacturer>Example</manufacturer></machine></mame>",
     )?;
     let mut newer_request = mame_request()?;
     newer_request.document_path = document_path;
