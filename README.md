@@ -215,6 +215,13 @@ Results distinguish the immutable source-issued UUID from its current canonical
 UUID. Published reviews also version cursors: after another review, restart
 pagination rather than silently skip newly merged members.
 
+Relationship evidence uses a closed Rust enum and native relational owners,
+not a generic JSON tree. User/rule rationales and ordered comparison-field
+assessments have separate typed tables; comparisons do not copy expected
+sizes or digests. Imported source evidence is reconstructed from its native
+facts. Publication atomically seals the evidence and support rows before
+explanation, review or backup; incomplete decisions are integrity failures.
+
 Import errors can retain an exact byte excerpt with a start-inclusive,
 end-exclusive highlight relative to that saved excerpt, not the whole file.
 `problem_start_byte` and `problem_end_byte` index the stored `source_excerpt`:

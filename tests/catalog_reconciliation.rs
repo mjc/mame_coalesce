@@ -4,8 +4,8 @@ use mame_coalesce::{
     domain::{
         AssetRole, CatalogKey, CatalogRecordKind, CatalogRecordRef, CatalogScope, Crc32Digest,
         EvidenceScope, ExpectedEvidence, Md5Digest, PublishingSourceKey, RelationshipAssertionKey,
-        RelationshipClaim, RelationshipEndpoint, RelationshipExplanation, RelationshipOrigin,
-        RelationshipType, SnapshotKey,
+        RelationshipClaim, RelationshipEndpoint, RelationshipEvidence, RelationshipExplanation,
+        RelationshipOrigin, RelationshipType, SnapshotKey,
     },
     reconciliation::{
         ExpectedAssetRequirement, ReconciliationStatus, RequirementSnapshot,
@@ -450,7 +450,9 @@ fn owner_assertions_are_context_only_and_never_support_asset_identity()
                 field: "cloneof".to_owned(),
                 location: None,
             },
-            evidence: serde_json::json!({"source": "fixture"}),
+            evidence: RelationshipEvidence::Rationale {
+                reason: "fixture".to_owned(),
+            },
         },
         source_field: Some("cloneof".to_owned()),
         source_location: None,
@@ -610,11 +612,11 @@ fn published_snapshots_reconcile_without_any_local_inventory()
         RelationshipOrigin::DerivedCandidate { .. }
     ));
     let recorded = app::record_relationship(&database, &candidate)?;
-    assert!(
-        app::explain_relationships(&database)?
-            .iter()
-            .any(|item| item.assertion_key == recorded)
-    );
+    let explanation = app::explain_relationships(&database)?
+        .into_iter()
+        .find(|item| item.assertion_key == recorded)
+        .ok_or("recorded comparison is not explainable")?;
+    assert_eq!(explanation.claim, candidate);
     Ok(())
 }
 

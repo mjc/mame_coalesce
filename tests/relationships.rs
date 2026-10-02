@@ -11,7 +11,8 @@ use mame_coalesce::{
     domain::{
         CatalogKey, CatalogScope, ContentDigestAlgorithm, ContentIdentity, ExternalRecordRef,
         PublishingSourceKey, RelationshipAssertionKey, RelationshipClaim, RelationshipEndpoint,
-        RelationshipOrigin, RelationshipReview, RelationshipReviewDecision, RelationshipType,
+        RelationshipEvidence, RelationshipOrigin, RelationshipReview, RelationshipReviewDecision,
+        RelationshipType,
     },
 };
 
@@ -93,11 +94,9 @@ fn record_candidate(
                 rule_version: "sha1-equality-v1".to_owned(),
                 supporting_assertions: vec![supporting_assertion],
             },
-            evidence: serde_json::json!({
-                "algorithm": "sha1",
-                "comparison": "equal",
-                "details": ["typed", 3, 1.25, true, null, {"nested": "value"}]
-            }),
+            evidence: RelationshipEvidence::Rationale {
+                reason: "SHA-1 digests are equal".to_owned(),
+            },
         },
     )?)
 }
@@ -165,11 +164,9 @@ fn explanations_preserve_conflicts_candidates_and_reversible_reviews()
     ));
     assert_eq!(
         candidate_explanation.claim.evidence,
-        serde_json::json!({
-            "algorithm": "sha1",
-            "comparison": "equal",
-            "details": ["typed", 3, 1.25, true, null, {"nested": "value"}]
-        })
+        RelationshipEvidence::Rationale {
+            reason: "SHA-1 digests are equal".to_owned(),
+        }
     );
 
     review_candidate(&database, &candidate)?;
@@ -244,7 +241,9 @@ fn generic_endpoint_components_round_trip_without_encoded_keys()
             "{\"not\":\"a persisted composite key\"}",
         )),
         origin: RelationshipOrigin::UserConclusion,
-        evidence: serde_json::json!({"reason": "manual reconciliation"}),
+        evidence: RelationshipEvidence::Rationale {
+            reason: "manual reconciliation".to_owned(),
+        },
     };
     let key = app::record_relationship(&database, &claim)?;
     let explanation = app::explain_relationships(&database)?
@@ -257,7 +256,10 @@ fn generic_endpoint_components_round_trip_without_encoded_keys()
     let legacy_columns = sql_query(
         "SELECT COUNT(*) AS found FROM ( \
              SELECT name FROM pragma_table_info('relationship_assertions') \
-             UNION ALL SELECT name FROM pragma_table_info('relationship_assertion_evidence') \
+             UNION ALL SELECT name FROM pragma_table_info('relationship_rationales') \
+             UNION ALL SELECT name FROM pragma_table_info('relationship_comparisons') \
+             UNION ALL SELECT name FROM pragma_table_info('relationship_comparison_fields') \
+             UNION ALL SELECT name FROM pragma_table_info('relationship_evidence_publications') \
              UNION ALL SELECT name FROM pragma_table_info('relationship_assertion_support') \
          ) WHERE lower(name) LIKE '%json%' \
              OR name IN ('subject_key', 'target_key', 'generic_subject_key', 'generic_target_key')",

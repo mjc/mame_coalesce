@@ -5,8 +5,8 @@ use diesel::{
 
 use crate::{
     domain::{
-        CatalogRecordKind, CatalogRecordRef, CatalogSetId, DocumentLocation, RelationshipType,
-        SnapshotKey,
+        CatalogRecordKind, CatalogRecordRef, CatalogSetId, DocumentLocation, RelationshipEvidence,
+        RelationshipType, SnapshotKey,
     },
     logiqx::RecordLocation,
     storage::relationships::{SourceRelationshipDraft, insert_source_assertion},
@@ -119,13 +119,21 @@ pub(super) fn persist_merge_relationship(
                 line: declaration.location.line,
                 column: declaration.location.column,
             }),
-            evidence: serde_json::json!({
-                "declared_merge_name": declaration.merged_name,
-                "parent_set_name": declaration.parent,
-                "expected_sha1": declaration.sha1.map(hex::encode),
-                "expected_crc": declaration.crc.map(hex::encode),
-                "size": declaration.size,
-            }),
+            evidence: RelationshipEvidence::Merge {
+                declared_merge_name: Some(declaration.merged_name.to_owned()),
+                parent_set_name: declaration.parent.to_owned(),
+                expected_sha1: declaration.sha1.map(hex::encode),
+                expected_crc: declaration.crc.map(hex::encode),
+                size: declaration
+                    .size
+                    .map(i64::try_from)
+                    .transpose()
+                    .map_err(|_| {
+                        crate::Error::InvalidPath(
+                            "merge size exceeds the supported integer range".to_owned(),
+                        )
+                    })?,
+            },
         },
     )?;
     Ok(())

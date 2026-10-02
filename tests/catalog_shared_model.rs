@@ -52,6 +52,26 @@ fn catalog_storage_has_no_json_columns_or_catch_all_vendor_fields()
         catch_all.count, 0,
         "vendor-only fields belong in external source documents"
     );
+    let evidence_tree = sql_query(
+        "SELECT count(*) AS count FROM sqlite_schema \
+         WHERE type = 'table' AND name = 'relationship_assertion_evidence'",
+    )
+    .get_result::<Count>(&mut connection)?;
+    assert_eq!(
+        evidence_tree.count, 0,
+        "relationship evidence must not persist a JSON tree as generic typed-value nodes"
+    );
+    let renamed_tree = sql_query(
+        "SELECT count(*) AS count FROM (SELECT schema.name \
+         FROM sqlite_schema AS schema JOIN pragma_table_info(schema.name) AS columns \
+         WHERE schema.type='table' AND columns.name IN ('parent_node_id','object_key','value_type') \
+         GROUP BY schema.name HAVING count(DISTINCT columns.name)=3)",
+    )
+    .get_result::<Count>(&mut connection)?;
+    assert_eq!(
+        renamed_tree.count, 0,
+        "renaming the generic evidence tree is not a relational model"
+    );
     Ok(())
 }
 

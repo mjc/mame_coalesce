@@ -726,7 +726,7 @@ fn native_cloneof_assertion_review_guard_checks_owned_positioned_rows() -> TestR
                 "accepted",
                 None,
             ),
-            "relationship review assertion does not exist",
+            "review requires published relationship evidence",
         );
     }
     Ok(())
@@ -737,6 +737,16 @@ fn native_cloneof_assertion_supersession_guard_checks_owned_positioned_rows() ->
     let fixture = NativeCloneofGuardFixture::new()?;
     let mut connection = fixture.connection()?;
     insert_stored_assertion(&mut connection, "guard-test:review-base", "user_conclusion")?;
+    sql_query(
+        "INSERT INTO relationship_rationales (assertion_key, reason) \
+         VALUES ('guard-test:review-base', 'Published guard-test conclusion')",
+    )
+    .execute(&mut connection)?;
+    sql_query(
+        "INSERT INTO relationship_evidence_publications (assertion_key, evidence_kind) \
+         VALUES ('guard-test:review-base', 'rationale')",
+    )
+    .execute(&mut connection)?;
     insert_review(
         &mut connection,
         "review-native-cloneof-superseding",
@@ -765,7 +775,7 @@ fn native_cloneof_assertion_supersession_guard_checks_owned_positioned_rows() ->
                 "superseded",
                 Some(&key),
             ),
-            "superseding relationship assertion does not exist",
+            "review requires published relationship evidence",
         );
     }
     Ok(())
@@ -806,7 +816,7 @@ fn native_cloneof_assertion_support_guard_checks_owned_positioned_rows() -> Test
                 i64::try_from(index + 1)?,
                 &key,
             ),
-            "supported relationship assertion does not exist",
+            "support requires published relationship evidence",
         );
     }
     Ok(())
@@ -830,7 +840,9 @@ fn public_relationship_api_accepts_native_cloneof_as_support() -> TestResult {
             rule_version: "native-cloneof-support-test-v1".to_owned(),
             supporting_assertions: vec![supporting.clone()],
         },
-        evidence: serde_json::json!({"reason": "native cloneof source evidence"}),
+        evidence: mame_coalesce::domain::RelationshipEvidence::Rationale {
+            reason: "native cloneof source evidence".to_owned(),
+        },
     };
     let candidate = app::record_relationship(&fixture.database, &claim)?;
     let mut connection = fixture.connection()?;

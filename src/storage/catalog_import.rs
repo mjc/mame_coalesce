@@ -8,7 +8,7 @@ use crate::{
     clrmamepro::Catalog as ClrMameProCatalog,
     domain::{
         CatalogRecordKind, CatalogRecordRef, CatalogSetId, DocumentKey, DocumentLocation,
-        ImportRunKey, ParserInterpretationKey, RelationshipType, SnapshotKey,
+        ImportRunKey, ParserInterpretationKey, RelationshipEvidence, RelationshipType, SnapshotKey,
     },
     logiqx::{DataFile, Game, XmlSourceMap},
     mame::{self, MameRecord, ValidatedMame},
@@ -1915,7 +1915,9 @@ fn persist_set_relationships(
                 target: CatalogRecordRef::new(snapshot.clone(), CatalogRecordKind::Set, parent),
                 source_field: set.parent_field.as_deref().unwrap_or("parent_name").into(),
                 source_location: location,
-                evidence: serde_json::json!({"target_name": parent}),
+                evidence: RelationshipEvidence::SourceReference {
+                    target_name: parent.clone(),
+                },
             },
         )?;
     }
@@ -1938,10 +1940,10 @@ fn persist_set_relationships(
                     line: dependency.location.line,
                     column: dependency.location.column,
                 }),
-                evidence: serde_json::json!({
-                    "source_field": dependency.source_field,
-                    "target_name": dependency.target_name
-                }),
+                evidence: RelationshipEvidence::SourceFieldReference {
+                    source_field: dependency.source_field.clone(),
+                    target_name: dependency.target_name.clone(),
+                },
             },
         )?;
     }

@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::domain::{
     AssetRole, CatalogKey, CatalogRecordRef, ExpectedEvidence, RelationshipAssertionKey,
-    RelationshipClaim, RelationshipEndpoint, RelationshipExplanation, RelationshipOrigin,
-    RelationshipReviewDecision, RelationshipType, SnapshotKey,
+    RelationshipClaim, RelationshipEndpoint, RelationshipEvidence, RelationshipExplanation,
+    RelationshipOrigin, RelationshipReviewDecision, RelationshipType, SnapshotKey,
 };
 use crate::resolution::{EvidenceField, compare_expected_fields};
 use serde::{Deserialize, Serialize};
@@ -298,14 +298,11 @@ impl RequirementReconciliation {
                 rule_version: "catalog-evidence-reconciliation-v1".to_owned(),
                 supporting_assertions,
             },
-            evidence: serde_json::json!({
-                "status": self.status,
-                "left_expected": self.left_expected,
-                "right_expected": self.right_expected,
-                "agreements": self.evidence.agreements,
-                "contradictions": self.evidence.contradictions,
-                "scope": "matching requirement evidence scopes",
-            }),
+            evidence: RelationshipEvidence::CatalogComparison {
+                status: self.status,
+                agreements: self.evidence.agreements.clone(),
+                contradictions: self.evidence.contradictions.clone(),
+            },
         })
     }
 }

@@ -1,18 +1,21 @@
 use diesel::{
     QueryableByName, RunQueryDsl, SqliteConnection, sql_query,
-    sql_types::{BigInt, Bool, Double, Nullable, Text},
+    sql_types::{BigInt, Bool, Nullable, Text},
 };
 use std::collections::HashMap;
 
 use crate::domain::{
     CatalogRecordKind, CatalogRecordRef, CatalogSetId, ContentDigestAlgorithm, ContentIdentity,
     DocumentLocation, ExternalRecordRef, RelationshipAssertionKey, RelationshipClaim,
-    RelationshipEndpoint, RelationshipExplanation, RelationshipOrigin, RelationshipReview,
-    RelationshipReviewDecision, RelationshipReviewEvent, RelationshipSourceProvenance,
-    RelationshipType, SnapshotKey,
+    RelationshipEndpoint, RelationshipEvidence, RelationshipExplanation, RelationshipOrigin,
+    RelationshipReview, RelationshipReviewDecision, RelationshipReviewEvent,
+    RelationshipSourceProvenance, RelationshipType, SnapshotKey,
 };
 
 use super::db::Pool;
+
+mod evidence;
+mod publication;
 
 #[derive(QueryableByName)]
 struct ExplanationRow {
@@ -93,30 +96,6 @@ struct ExplanationRow {
 }
 
 #[derive(QueryableByName)]
-struct EvidenceNodeRow {
-    #[diesel(sql_type = Text)]
-    assertion_key: String,
-    #[diesel(sql_type = BigInt)]
-    node_id: i64,
-    #[diesel(sql_type = Nullable<BigInt>)]
-    parent_node_id: Option<i64>,
-    #[diesel(sql_type = Nullable<Text>)]
-    object_key: Option<String>,
-    #[diesel(sql_type = Nullable<BigInt>)]
-    array_index: Option<i64>,
-    #[diesel(sql_type = Text)]
-    value_type: String,
-    #[diesel(sql_type = Nullable<Text>)]
-    text_value: Option<String>,
-    #[diesel(sql_type = Nullable<BigInt>)]
-    integer_value: Option<i64>,
-    #[diesel(sql_type = Nullable<Text>)]
-    unsigned_integer_value: Option<String>,
-    #[diesel(sql_type = Nullable<Double>)]
-    real_value: Option<f64>,
-}
-
-#[derive(QueryableByName)]
 struct SupportRow {
     #[diesel(sql_type = Text)]
     assertion_key: String,
@@ -166,7 +145,7 @@ pub struct SourceRelationshipDraft {
     pub target: CatalogRecordRef,
     pub source_field: String,
     pub source_location: Option<DocumentLocation>,
-    pub evidence: serde_json::Value,
+    pub evidence: RelationshipEvidence,
 }
 
 pub fn insert_source_assertion(
@@ -352,53 +331,60 @@ fn validate_source_evidence(
     target_a: Option<&str>,
     target_b: Option<&str>,
 ) -> crate::Result<()> {
-    let (field, evidence) = match &claim.origin {
-        RelationshipOrigin::SourceAssertion { field, .. } => (field.as_str(), &claim.evidence),
-        _ => unreachable!("source evidence is only validated for source claims"),
+    let RelationshipOrigin::SourceAssertion { field, .. } = &claim.origin else {
+        return Err(crate::Error::InvalidPath(
+            "source evidence requires source provenance".into(),
+        ));
     };
-    let matches = match field {
-        "merge" => {
+    let matches = match (field.as_str(), &claim.evidence) {
+        (
+            "merge",
+            RelationshipEvidence::Merge {
+                declared_merge_name,
+                expected_sha1,
+                expected_crc,
+                ..
+            },
+        ) => {
+            for (encoded, length) in [(expected_sha1, 20), (expected_crc, 4)] {
+                if encoded.as_deref().is_some_and(|value| {
+                    !hex::decode(value).is_ok_and(|bytes| bytes.len() == length)
+                }) {
+                    return Err(crate::Error::InvalidPath(
+                        "source merge evidence has an invalid digest".into(),
+                    ));
+                }
+            }
             subject_kind == "asset_requirement"
                 && target_kind == "asset_requirement"
-                && evidence
-                    .get("declared_merge_name")
-                    .and_then(serde_json::Value::as_str)
-                    == target_b
+                && declared_merge_name.as_deref() == target_b
         }
-        "cloneof" if subject_kind == "software_item" => {
-            evidence
-                .get("list_name")
-                .and_then(serde_json::Value::as_str)
-                == subject_a
-                && evidence
-                    .get("target_item_name")
-                    .and_then(serde_json::Value::as_str)
-                    == target_b
+        (
+            "cloneof",
+            RelationshipEvidence::SoftwareClone {
+                list_name,
+                target_item_name,
+            },
+        ) if subject_kind == "software_item" => {
+            Some(list_name.as_str()) == subject_a && Some(target_item_name.as_str()) == target_b
         }
-        "cloneof" | "parent_name" | "device_ref" | "romof" | "sampleof" => {
-            evidence
-                .get("target_name")
-                .and_then(serde_json::Value::as_str)
-                == target_a
-        }
+        (
+            "cloneof" | "parent_name" | "device_ref",
+            RelationshipEvidence::SourceReference { target_name },
+        ) => Some(target_name.as_str()) == target_a,
+        (
+            "romof" | "sampleof" | "device_ref",
+            RelationshipEvidence::SourceFieldReference {
+                source_field,
+                target_name,
+            },
+        ) => source_field == field && Some(target_name.as_str()) == target_a,
         _ => false,
     };
     if !matches {
         return Err(crate::Error::InvalidPath(format!(
             "source evidence does not match relationship field {field}"
         )));
-    }
-    if field == "merge" {
-        for (name, length) in [("expected_sha1", 20), ("expected_crc", 4)] {
-            if let Some(encoded) = evidence.get(name).and_then(serde_json::Value::as_str) {
-                let valid = hex::decode(encoded).is_ok_and(|digest| digest.len() == length);
-                if !valid {
-                    return Err(crate::Error::InvalidPath(format!(
-                        "source evidence {name} has an invalid digest"
-                    )));
-                }
-            }
-        }
     }
     Ok(())
 }
@@ -422,12 +408,7 @@ pub fn record_claim(
         } = &claim.origin
         {
             for supported in supporting_assertions {
-                let found = sql_query(
-                    "SELECT COUNT(*) AS found FROM relationship_assertion_explanations WHERE assertion_key = ?",
-                )
-                .bind::<Text, _>(supported.as_str())
-                .get_result::<AssertionKeyRow>(conn)?;
-                if found.found == 0 {
+                if !publication::is_published(conn, supported)? {
                     return Err(crate::Error::InvalidPath(format!(
                         "supporting relationship assertion {} does not exist",
                         supported.as_str()
@@ -447,10 +428,31 @@ struct AssertionKeyRow {
 }
 
 fn validate_claim(claim: &RelationshipClaim) -> crate::Result<()> {
-    if !claim.evidence.is_object() {
-        return Err(crate::Error::InvalidPath(
-            "relationship evidence must be a JSON object".to_owned(),
-        ));
+    match (&claim.origin, &claim.evidence) {
+        (
+            RelationshipOrigin::SourceAssertion { .. },
+            RelationshipEvidence::Rationale { .. } | RelationshipEvidence::CatalogComparison { .. },
+        ) => {
+            return Err(crate::Error::InvalidPath(
+                "source evidence must come from native catalog facts".into(),
+            ));
+        }
+        (_, RelationshipEvidence::Rationale { reason }) if reason.trim().is_empty() => {
+            return Err(crate::Error::InvalidPath(
+                "relationship rationale must not be empty".into(),
+            ));
+        }
+        (
+            RelationshipOrigin::DerivedCandidate { .. },
+            RelationshipEvidence::CatalogComparison { .. },
+        )
+        | (_, RelationshipEvidence::Rationale { .. })
+        | (RelationshipOrigin::SourceAssertion { .. }, _) => {}
+        _ => {
+            return Err(crate::Error::InvalidPath(
+                "evidence subtype does not match relationship origin".into(),
+            ));
+        }
     }
     match &claim.origin {
         RelationshipOrigin::SourceAssertion {
@@ -661,16 +663,7 @@ fn insert_claim(
     .bind::<Nullable<BigInt>, _>(location.map(|value| value.column))
     .bind::<Nullable<Text>, _>(rule_version)
     .execute(conn)?;
-    let mut next_node_id = 0;
-    insert_evidence_node(
-        conn,
-        assertion_key.as_str(),
-        None,
-        None,
-        None,
-        &claim.evidence,
-        &mut next_node_id,
-    )?;
+    evidence::insert(conn, assertion_key.as_str(), &claim.evidence)?;
     for (position, supported_assertion_key) in supporting.iter().enumerate() {
         sql_query(
             "INSERT INTO relationship_assertion_support \
@@ -683,94 +676,8 @@ fn insert_claim(
         .bind::<Text, _>(supported_assertion_key)
         .execute(conn)?;
     }
+    evidence::publish(conn, assertion_key.as_str(), &claim.evidence)?;
     Ok(assertion_key.clone())
-}
-
-fn insert_evidence_node(
-    conn: &mut SqliteConnection,
-    assertion_key: &str,
-    parent_node_id: Option<i64>,
-    object_key: Option<&str>,
-    array_index: Option<i64>,
-    value: &serde_json::Value,
-    next_node_id: &mut i64,
-) -> crate::Result<()> {
-    let node_id = *next_node_id;
-    *next_node_id += 1;
-    let (value_type, text_value, integer_value, unsigned_integer_value, real_value) = match value {
-        serde_json::Value::Object(_) => ("object", None, None, None, None),
-        serde_json::Value::Array(_) => ("array", None, None, None, None),
-        serde_json::Value::String(value) => ("string", Some(value.clone()), None, None, None),
-        serde_json::Value::Number(value) if value.as_i64().is_some() => {
-            ("integer", None, value.as_i64(), None, None)
-        }
-        serde_json::Value::Number(value) if value.as_u64().is_some() => (
-            "unsigned_integer",
-            None,
-            None,
-            value.as_u64().map(|number| number.to_string()),
-            None,
-        ),
-        serde_json::Value::Number(value) => (
-            "real",
-            None,
-            None,
-            None,
-            Some(value.as_f64().ok_or_else(|| {
-                crate::Error::InvalidPath(
-                    "relationship evidence number is not representable".into(),
-                )
-            })?),
-        ),
-        serde_json::Value::Bool(true) => ("true", None, None, None, None),
-        serde_json::Value::Bool(false) => ("false", None, None, None, None),
-        serde_json::Value::Null => ("null", None, None, None, None),
-    };
-    sql_query(
-        "INSERT INTO relationship_assertion_evidence \
-         (assertion_key, node_id, parent_node_id, object_key, array_index, value_type, \
-          text_value, integer_value, unsigned_integer_value, real_value) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind::<Text, _>(assertion_key)
-    .bind::<BigInt, _>(node_id)
-    .bind::<Nullable<BigInt>, _>(parent_node_id)
-    .bind::<Nullable<Text>, _>(object_key)
-    .bind::<Nullable<BigInt>, _>(array_index)
-    .bind::<Text, _>(value_type)
-    .bind::<Nullable<Text>, _>(text_value)
-    .bind::<Nullable<BigInt>, _>(integer_value)
-    .bind::<Nullable<Text>, _>(unsigned_integer_value)
-    .bind::<Nullable<Double>, _>(real_value)
-    .execute(conn)?;
-    if let Some(object) = value.as_object() {
-        for (key, child) in object {
-            insert_evidence_node(
-                conn,
-                assertion_key,
-                Some(node_id),
-                Some(key),
-                None,
-                child,
-                next_node_id,
-            )?;
-        }
-    } else if let Some(array) = value.as_array() {
-        for (index, child) in array.iter().enumerate() {
-            insert_evidence_node(
-                conn,
-                assertion_key,
-                Some(node_id),
-                None,
-                Some(i64::try_from(index).map_err(|_| {
-                    crate::Error::InvalidPath("relationship evidence array exceeds i64".into())
-                })?),
-                child,
-                next_node_id,
-            )?;
-        }
-    }
-    Ok(())
 }
 
 pub fn review_claim(
@@ -922,6 +829,10 @@ impl ExplanationScope {
          LEFT JOIN catalogs c ON c.catalog_key = s.catalog_key \
          LEFT JOIN publishing_sources ps ON ps.source_key = c.source_key \
          LEFT JOIN parser_interpretations pi ON pi.interpretation_key = s.interpretation_key \
+         WHERE (a.origin='source_assertion' AND EXISTS ( \
+                    SELECT 1 FROM snapshot_publications AS ready WHERE ready.snapshot_key=a.source_snapshot_key)) \
+            OR (a.origin<>'source_assertion' AND EXISTS ( \
+                    SELECT 1 FROM relationship_evidence_publications AS ready WHERE ready.assertion_key=a.assertion_key)) \
          ORDER BY a.relation_type, a.source_snapshot_key, a.subject_kind, \
                   a.source_subject_a, a.source_subject_b, a.source_subject_c, \
                   a.generic_subject_a, a.generic_subject_b, a.generic_subject_c, \
@@ -1010,24 +921,11 @@ fn build_explanations(
     rows: Vec<ExplanationRow>,
     reviews: Vec<ReviewRow>,
 ) -> crate::Result<Vec<RelationshipExplanation>> {
-    let evidence_rows = sql_query(
-        "SELECT assertion_key, node_id, parent_node_id, object_key, array_index, value_type, \
-                text_value, integer_value, unsigned_integer_value, real_value \
-         FROM relationship_assertion_evidence ORDER BY assertion_key, node_id",
-    )
-    .load::<EvidenceNodeRow>(conn)?;
     let support_rows = sql_query(
         "SELECT assertion_key, supported_assertion_key \
          FROM relationship_assertion_support ORDER BY assertion_key, position",
     )
     .load::<SupportRow>(conn)?;
-    let mut evidence_by_assertion = HashMap::<String, Vec<EvidenceNodeRow>>::new();
-    for node in evidence_rows {
-        evidence_by_assertion
-            .entry(node.assertion_key.clone())
-            .or_default()
-            .push(node);
-    }
     let mut support_by_assertion = HashMap::<String, Vec<String>>::new();
     for support in support_rows {
         support_by_assertion
@@ -1057,15 +955,7 @@ fn build_explanations(
             let evidence = if row.origin == "source_assertion" {
                 None
             } else {
-                Some(rebuild_evidence(
-                    evidence_by_assertion
-                        .remove(&row.assertion_key)
-                        .ok_or_else(|| {
-                            crate::Error::InvalidPath(
-                                "relationship assertion has no typed evidence".into(),
-                            )
-                        })?,
-                )?)
+                Some(evidence::load(conn, &row.assertion_key)?)
             };
             let supports = support_by_assertion
                 .remove(&row.assertion_key)
@@ -1075,115 +965,10 @@ fn build_explanations(
         .collect()
 }
 
-fn rebuild_evidence(rows: Vec<EvidenceNodeRow>) -> crate::Result<serde_json::Value> {
-    let mut nodes = HashMap::<i64, EvidenceNodeRow>::new();
-    let mut children = HashMap::<i64, Vec<i64>>::new();
-    let mut root = None;
-    for row in rows {
-        if let Some(parent) = row.parent_node_id {
-            children.entry(parent).or_default().push(row.node_id);
-        } else {
-            root = Some(row.node_id);
-        }
-        nodes.insert(row.node_id, row);
-    }
-    let root =
-        root.ok_or_else(|| crate::Error::InvalidPath("relationship evidence has no root".into()))?;
-    let value = evidence_value(root, &nodes, &children)?;
-    if !value.is_object() {
-        return Err(crate::Error::InvalidPath(
-            "relationship evidence root is not an object".into(),
-        ));
-    }
-    Ok(value)
-}
-
-fn evidence_value(
-    node_id: i64,
-    nodes: &HashMap<i64, EvidenceNodeRow>,
-    children: &HashMap<i64, Vec<i64>>,
-) -> crate::Result<serde_json::Value> {
-    let node = nodes
-        .get(&node_id)
-        .ok_or_else(|| crate::Error::InvalidPath("missing relationship evidence node".into()))?;
-    let child_ids = children.get(&node_id).cloned().unwrap_or_default();
-    match node.value_type.as_str() {
-        "object" => {
-            let mut object = serde_json::Map::new();
-            for child_id in child_ids {
-                let child = nodes.get(&child_id).ok_or_else(|| {
-                    crate::Error::InvalidPath("missing relationship evidence child".into())
-                })?;
-                let key = child.object_key.clone().ok_or_else(|| {
-                    crate::Error::InvalidPath("object evidence child has no key".into())
-                })?;
-                object.insert(key, evidence_value(child_id, nodes, children)?);
-            }
-            Ok(serde_json::Value::Object(object))
-        }
-        "array" => {
-            let mut indexed = child_ids
-                .into_iter()
-                .map(|id| {
-                    let index = nodes
-                        .get(&id)
-                        .and_then(|child| child.array_index)
-                        .ok_or_else(|| {
-                            crate::Error::InvalidPath("array evidence child has no position".into())
-                        })?;
-                    Ok((index, id))
-                })
-                .collect::<crate::Result<Vec<_>>>()?;
-            indexed.sort_by_key(|(index, _)| *index);
-            indexed
-                .into_iter()
-                .map(|(_, id)| evidence_value(id, nodes, children))
-                .collect::<crate::Result<Vec<_>>>()
-                .map(serde_json::Value::Array)
-        }
-        "string" => Ok(serde_json::Value::String(
-            node.text_value
-                .clone()
-                .ok_or_else(|| crate::Error::InvalidPath("string evidence has no value".into()))?,
-        )),
-        "integer" => {
-            let number = node
-                .integer_value
-                .ok_or_else(|| crate::Error::InvalidPath("integer evidence has no value".into()))?;
-            Ok(serde_json::Value::Number(serde_json::Number::from(number)))
-        }
-        "unsigned_integer" => {
-            let number = node
-                .unsigned_integer_value
-                .as_deref()
-                .ok_or_else(|| {
-                    crate::Error::InvalidPath("unsigned integer evidence has no value".into())
-                })?
-                .parse::<serde_json::Number>()
-                .map_err(|error| {
-                    crate::Error::InvalidPath(format!("invalid unsigned integer evidence: {error}"))
-                })?;
-            Ok(serde_json::Value::Number(number))
-        }
-        "real" => serde_json::Number::from_f64(
-            node.real_value
-                .ok_or_else(|| crate::Error::InvalidPath("real evidence has no value".into()))?,
-        )
-        .map(serde_json::Value::Number)
-        .ok_or_else(|| crate::Error::InvalidPath("invalid real evidence".into())),
-        "true" => Ok(serde_json::Value::Bool(true)),
-        "false" => Ok(serde_json::Value::Bool(false)),
-        "null" => Ok(serde_json::Value::Null),
-        other => Err(crate::Error::InvalidPath(format!(
-            "unknown relationship evidence type {other}"
-        ))),
-    }
-}
-
 fn explanation(
     row: ExplanationRow,
     review_history: Vec<RelationshipReviewEvent>,
-    generic_evidence: Option<serde_json::Value>,
+    generic_evidence: Option<RelationshipEvidence>,
     supporting_assertions: Vec<String>,
 ) -> crate::Result<RelationshipExplanation> {
     let relation_type = parse_relation_type(&row.relation_type)?;
@@ -1297,33 +1082,46 @@ fn explanation_origin(
     }
 }
 
-fn source_evidence_value(row: &ExplanationRow) -> crate::Result<serde_json::Value> {
+fn source_evidence_value(row: &ExplanationRow) -> crate::Result<RelationshipEvidence> {
     let target_name = row
         .source_target_a
-        .as_deref()
+        .as_ref()
         .ok_or_else(|| crate::Error::InvalidPath("source evidence has no target name".into()))?;
     match row.source_field.as_deref() {
-        Some("archive_clone" | "archive_mergeof") => Ok(serde_json::json!({
-            "declared_archive_reference": target_name,
-            "source_field": row.source_field,
-        })),
-        Some("merge") => Ok(serde_json::json!({
-            "declared_merge_name": row.source_asset_merge_name,
-            "parent_set_name": target_name,
-            "expected_sha1": row.source_asset_sha1.as_deref().map(hex::encode),
-            "expected_crc": row.source_asset_crc.as_deref().map(hex::encode),
-            "size": row.source_asset_size,
-        })),
-        Some("cloneof") if row.subject_kind == "software_item" => Ok(serde_json::json!({
-            "list_name": row.source_subject_a,
-            "target_item_name": row.source_target_b,
-        })),
-        Some("romof" | "sampleof") => Ok(serde_json::json!({
-            "source_field": row.source_field.as_deref(),
-            "target_name": target_name,
-        })),
+        Some("archive_clone" | "archive_mergeof") => Ok(RelationshipEvidence::ArchiveReference {
+            declared_archive_reference: target_name.clone(),
+            source_field: row.source_field.clone().ok_or_else(|| {
+                crate::Error::InvalidPath("archive source evidence has no field".into())
+            })?,
+        }),
+        Some("merge") => Ok(RelationshipEvidence::Merge {
+            declared_merge_name: row.source_asset_merge_name.clone(),
+            parent_set_name: target_name.clone(),
+            expected_sha1: row.source_asset_sha1.as_deref().map(hex::encode),
+            expected_crc: row.source_asset_crc.as_deref().map(hex::encode),
+            size: row.source_asset_size,
+        }),
+        Some("cloneof") if row.subject_kind == "software_item" => {
+            Ok(RelationshipEvidence::SoftwareClone {
+                list_name: row.source_subject_a.clone().ok_or_else(|| {
+                    crate::Error::InvalidPath("software clone has no list".into())
+                })?,
+                target_item_name: row.source_target_b.clone().ok_or_else(|| {
+                    crate::Error::InvalidPath("software clone has no target".into())
+                })?,
+            })
+        }
+        Some("romof" | "sampleof") => Ok(RelationshipEvidence::SourceFieldReference {
+            source_field: row
+                .source_field
+                .clone()
+                .ok_or_else(|| crate::Error::InvalidPath("source evidence has no field".into()))?,
+            target_name: target_name.clone(),
+        }),
         Some("cloneof" | "parent_name" | "device_ref") => {
-            Ok(serde_json::json!({"target_name": target_name}))
+            Ok(RelationshipEvidence::SourceReference {
+                target_name: target_name.clone(),
+            })
         }
         other => Err(crate::Error::InvalidPath(format!(
             "unsupported typed source evidence for field {other:?}"

@@ -5,8 +5,8 @@ use diesel::{
 
 use crate::{
     domain::{
-        CatalogRecordKind, CatalogRecordRef, CatalogSetId, DocumentLocation, RelationshipType,
-        SnapshotKey,
+        CatalogRecordKind, CatalogRecordRef, CatalogSetId, DocumentLocation, RelationshipEvidence,
+        RelationshipType, SnapshotKey,
     },
     mame_softwarelist::{
         AreaKind, LoadInstruction, SoftwareArea, SoftwareComponent, SoftwareDisk, SoftwareItem,
@@ -192,10 +192,10 @@ fn insert_item(
                     line: item.location.line,
                     column: item.location.column,
                 }),
-                evidence: serde_json::json!({
-                    "list_name": list.name.as_str(),
-                    "target_item_name": parent.as_str()
-                }),
+                evidence: RelationshipEvidence::SoftwareClone {
+                    list_name: list.name.as_str().to_owned(),
+                    target_item_name: parent.as_str().to_owned(),
+                },
             },
         )?;
     }

@@ -16,8 +16,8 @@ use mame_coalesce::{
     domain::{
         CatalogKey, CatalogRecordKind, CatalogRecordRef, CatalogScope, DocumentKey,
         ExternalRecordRef, ParserInterpretationKey, PublishingSourceKey, QualifiedCatalogSet,
-        RelationshipClaim, RelationshipEndpoint, RelationshipOrigin, RelationshipType, SetName,
-        SnapshotKey, SnapshotRecordStatus,
+        RelationshipClaim, RelationshipEndpoint, RelationshipEvidence, RelationshipOrigin,
+        RelationshipType, SetName, SnapshotKey, SnapshotRecordStatus,
     },
 };
 
@@ -418,12 +418,14 @@ fn composite_key_catalog_tables_cluster_rows_by_their_primary_keys()
              'software_part_dipswitches', 'software_part_dip_values', 'no_intro_pc_games', \
              'logiqx_games', 'mame_machine_input_controls', \
              'mame_machine_analogs', 'mame_machine_device_extensions', 'mame_machine_slot_options', \
-             'relationship_assertion_evidence', 'relationship_assertion_support' \
+             'relationship_rationales', 'relationship_comparisons', \
+             'relationship_comparison_fields', 'relationship_evidence_publications', \
+             'relationship_assertion_support' \
          )",
     )
     .get_result::<CountRow>(&mut connection)?;
 
-    assert_eq!(clustered.count, 21);
+    assert_eq!(clustered.count, 24);
 
     let specification_tables = sql_query(
         "SELECT COUNT(*) AS count FROM pragma_table_list \
@@ -2866,15 +2868,15 @@ fn assert_mame_merge_relationships(
         .find(|explanation| explanation.source_field.as_deref() == Some("merge"))
         .ok_or("typed merge assertion was not explainable")?;
     assert_eq!(
-        merge_explanation.claim.evidence["declared_merge_name"],
-        "shared.bin"
+        merge_explanation.claim.evidence,
+        RelationshipEvidence::Merge {
+            declared_merge_name: Some("shared.bin".to_owned()),
+            parent_set_name: "rom-parent".to_owned(),
+            expected_sha1: None,
+            expected_crc: Some("12345678".to_owned()),
+            size: Some(1),
+        }
     );
-    assert_eq!(
-        merge_explanation.claim.evidence["parent_set_name"],
-        "rom-parent"
-    );
-    assert_eq!(merge_explanation.claim.evidence["expected_crc"], "12345678");
-    assert_eq!(merge_explanation.claim.evidence["size"], 1);
     Ok(())
 }
 
@@ -4426,7 +4428,9 @@ fn snapshot_diff_separates_hash_changes_from_metadata_and_regrouping()
                 "alpha",
             )),
             origin: RelationshipOrigin::UserConclusion,
-            evidence: serde_json::json!({"reason": "explicitly linked"}),
+            evidence: RelationshipEvidence::Rationale {
+                reason: "explicitly linked".to_owned(),
+            },
         },
     )?;
 

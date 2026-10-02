@@ -679,6 +679,28 @@ fn check_publication_states(
             ),
         );
     }
+    let relationships = sql_query(
+        "SELECT assertion_key AS value FROM relationship_assertions AS assertion \
+         WHERE assertion.origin <> 'source_assertion' AND NOT EXISTS ( \
+             SELECT 1 FROM relationship_evidence_publications AS publication \
+             WHERE publication.assertion_key=assertion.assertion_key) \
+         ORDER BY assertion_key LIMIT 50",
+    )
+    .load::<TextValue>(conn)
+    .map_err(|error| {
+        backup_error(format!(
+            "could not inspect relationship publication states: {error}"
+        ))
+    })?;
+    for row in relationships {
+        push_issue(
+            &mut report.durable_issues,
+            format!(
+                "relationship {} has an incomplete evidence publication state",
+                row.value
+            ),
+        );
+    }
     Ok(())
 }
 
@@ -942,7 +964,9 @@ mod tests {
                     rule_version: "backup-round-trip-v1".to_owned(),
                     supporting_assertions: vec![supporting_assertion],
                 },
-                evidence: serde_json::json!({"test": "preserve adjudication"}),
+                evidence: crate::domain::RelationshipEvidence::Rationale {
+                    reason: "preserve adjudication".to_owned(),
+                },
             },
         )?;
         app::review_relationship(

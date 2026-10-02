@@ -381,6 +381,24 @@ names would be a separate, evidence-backed TOSEC rule, not part of XML parsing.
 
 ## Shared identity and provenance
 
+Relationship decision evidence has no generic JSON/EAV tree. The public
+`RelationshipEvidence` enum distinguishes a rationale, a catalog comparison
+and native source-reference/merge facts. `relationship_rationales` owns only a
+reason; `relationship_comparisons` owns the recorded comparison status, with
+ordered closed-field assessments in `relationship_comparison_fields`. It
+copies no expected source size/hash payload. Source variants are produced from
+the existing native owners, never persisted as another evidence projection.
+
+`relationship_evidence_publications` is the atomic completion boundary for
+non-source decisions. It requires exactly one matching evidence subtype and
+contiguous field/support orders. Explanations, support and reviews require
+published evidence; source decisions instead require their catalog snapshot
+publication. Evidence cannot be replaced or extended after publication, even
+with SQLite foreign-key and recursive-trigger enforcement disabled. Integrity
+and backup reject unfinished non-source decisions. There is no upgrade or
+legacy evidence conversion. Typed endpoint subtypes and immutable observed
+file endpoints remain separate unfinished shared-model requirements.
+
 Use integer primary/foreign keys internally, with distinct Rust newtypes.
 Persist external stable document/snapshot identities once at the relevant
 parent. Never make names, declared versions, or local integer row IDs global

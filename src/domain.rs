@@ -1068,12 +1068,47 @@ impl RelationshipAssertionKey {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RelationshipEvidence {
+    Rationale {
+        reason: String,
+    },
+    CatalogComparison {
+        status: crate::reconciliation::ReconciliationStatus,
+        agreements: Vec<crate::resolution::EvidenceField>,
+        contradictions: Vec<crate::resolution::EvidenceField>,
+    },
+    SourceReference {
+        target_name: String,
+    },
+    SourceFieldReference {
+        source_field: String,
+        target_name: String,
+    },
+    SoftwareClone {
+        list_name: String,
+        target_item_name: String,
+    },
+    Merge {
+        declared_merge_name: Option<String>,
+        parent_set_name: String,
+        expected_sha1: Option<String>,
+        expected_crc: Option<String>,
+        size: Option<i64>,
+    },
+    ArchiveReference {
+        declared_archive_reference: String,
+        source_field: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelationshipClaim {
     pub relation_type: RelationshipType,
     pub subject: RelationshipEndpoint,
     pub target: RelationshipEndpoint,
     pub origin: RelationshipOrigin,
-    pub evidence: serde_json::Value,
+    pub evidence: RelationshipEvidence,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

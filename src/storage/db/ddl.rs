@@ -20,5 +20,13 @@ pub const SCHEMA: &str = concat!(
     "\n",
     include_str!("no_intro_database_guards.sql"),
     "\n",
-    include_str!("software_guards.sql")
+    include_str!("software_guards.sql"),
+    "\nCREATE TRIGGER relationship_support_requires_published_target BEFORE INSERT ON relationship_assertion_support ",
+    "WHEN EXISTS (WITH requested(assertion_key) AS (VALUES (NEW.supported_assertion_key)) SELECT 1 FROM (",
+    include_str!("relationship_readiness.sql"),
+    ") WHERE NOT is_published) BEGIN SELECT RAISE(ABORT,'support requires published relationship evidence'); END;\n",
+    "CREATE TRIGGER relationship_reviews_require_published_evidence BEFORE INSERT ON relationship_reviews ",
+    "WHEN EXISTS (WITH requested(assertion_key) AS (VALUES (NEW.assertion_key),(NEW.superseded_by_assertion_key)) SELECT 1 FROM (",
+    include_str!("relationship_readiness.sql"),
+    ") WHERE NOT is_published) BEGIN SELECT RAISE(ABORT,'review requires published relationship evidence'); END;\n"
 );
