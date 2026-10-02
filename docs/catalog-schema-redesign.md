@@ -1132,6 +1132,18 @@ expose their weak/unknown evidence instead of omitting samples or declaring
 exact content identity. Archive names remain typed container-reference facts,
 not fabricated size/hash claims for their contents.
 
+Native MAME samples now use actual `asset_occurrences` IDs plus `mame_samples`
+payload rows: name, full machine-child source order and original location. The
+machine owner derives from the occurrence FK path; no second set/order sample
+table is stored. Duplicate and explicitly empty names remain separate media
+entries. Typed machine and bulk-file APIs project that same native owner,
+including the existing machine-specification sample view. Publication rejects
+missing payloads, declared sample hashes, mismatched owners, duplicate child
+positions and late/replaced facts; independently computed metadata is distinct.
+History sample hydration uses the actual occurrence key rather than materializing
+sample rows from unrelated snapshots. Dedicated MAME source relationship owners
+and exhaustive pinned-DTD field/grammar/query witnesses remain unfinished.
+
 Common APIs cover record enumeration/selection, expected file/media claims,
 source dependencies/merges, relationship explanations and adjudication, scoped
 snapshot diffs, catalog reconciliation, and pinned manifests. Namespaces and

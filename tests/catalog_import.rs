@@ -434,7 +434,7 @@ fn composite_key_catalog_tables_cluster_rows_by_their_primary_keys()
              'mame_machine_ports', 'mame_machine_sounds', 'mame_machine_adjusters', \
              'mame_machine_drivers', 'mame_machine_features', 'mame_machine_devices', \
              'mame_machine_device_instances', 'mame_machine_slots', \
-             'mame_machine_software_lists', 'mame_machine_ram_options', 'mame_machine_samples' \
+             'mame_machine_software_lists', 'mame_machine_ram_options', 'mame_samples' \
          )",
     )
     .get_result::<CountRow>(&mut connection)?;

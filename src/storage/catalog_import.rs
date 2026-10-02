@@ -227,6 +227,9 @@ enum NativeAssetFacts {
         declarations: mame::MameAssetDeclarations,
         source_order: i64,
     },
+    MameSample {
+        source_order: i64,
+    },
     Logiqx(LogiqxAssetAttributes),
     CmpRom(Box<crate::clrmamepro::AssetFacts>),
     CmpSample(crate::clrmamepro::FieldValue),
@@ -652,7 +655,26 @@ fn machine_contents(machine: crate::mame::Machine) -> SnapshotSet {
                 }),
         )
         .collect();
-    let assets = machine_assets(machine.assets);
+    let mut assets = machine_assets(machine.assets);
+    let mut specification = Vec::with_capacity(machine.specification.len());
+    for element in machine.specification {
+        if let mame::MachineSpecification::Sample(sample) = element.value {
+            assets.push((
+                element.element_order,
+                SnapshotAsset::filename_only(
+                    sample.name,
+                    sample.location,
+                    NativeAssetFacts::MameSample {
+                        source_order: element.element_order,
+                    },
+                ),
+            ));
+        } else {
+            specification.push(element);
+        }
+    }
+    assets.sort_by_key(|(order, _)| *order);
+    let assets = assets.into_iter().map(|(_, asset)| asset).collect();
     let parent_field = machine.parent.as_ref().map(|_| "cloneof".to_owned());
     let switches = machine.switches;
     let bios_sets = machine.bios_sets;
@@ -676,7 +698,7 @@ fn machine_contents(machine: crate::mame::Machine) -> SnapshotSet {
         assets,
         switches,
         bios_sets,
-        specification: machine.specification,
+        specification,
         machine_dependencies,
         mame_facts: Some(mame_facts),
         no_intro_facts: None,
@@ -686,7 +708,7 @@ fn machine_contents(machine: crate::mame::Machine) -> SnapshotSet {
     }
 }
 
-fn machine_assets(assets: Vec<crate::mame::MachineAsset>) -> Vec<SnapshotAsset> {
+fn machine_assets(assets: Vec<crate::mame::MachineAsset>) -> Vec<(i64, SnapshotAsset)> {
     assets
         .into_iter()
         .map(|asset| {
@@ -713,29 +735,32 @@ fn machine_assets(assets: Vec<crate::mame::MachineAsset>) -> Vec<SnapshotAsset> 
                 .as_ref()
                 .and_then(crate::disk::DiskRequirement::parent)
                 .map(|name| name.as_str().to_owned());
-            SnapshotAsset {
-                name: asset.name,
-                role: match asset.role {
-                    crate::domain::AssetRole::Rom => "rom",
-                    crate::domain::AssetRole::Disk => "disk",
-                    crate::domain::AssetRole::Other => "other",
+            (
+                asset.source_order,
+                SnapshotAsset {
+                    name: asset.name,
+                    role: match asset.role {
+                        crate::domain::AssetRole::Rom => "rom",
+                        crate::domain::AssetRole::Disk => "disk",
+                        crate::domain::AssetRole::Other => "other",
+                    },
+                    size: asset.size,
+                    crc: asset.crc,
+                    md5: asset.md5,
+                    sha1,
+                    evidence_scope,
+                    merge: asset.merge_name.or(merge),
+                    dump_status: Some(asset.dump_status.as_str().to_owned()),
+                    serial: None,
+                    date: None,
+                    native: NativeAssetFacts::Mame {
+                        attributes: asset.attributes,
+                        declarations: asset.declarations,
+                        source_order: asset.source_order,
+                    },
+                    location: asset.location,
                 },
-                size: asset.size,
-                crc: asset.crc,
-                md5: asset.md5,
-                sha1,
-                evidence_scope,
-                merge: asset.merge_name.or(merge),
-                dump_status: Some(asset.dump_status.as_str().to_owned()),
-                serial: None,
-                date: None,
-                native: NativeAssetFacts::Mame {
-                    attributes: asset.attributes,
-                    declarations: asset.declarations,
-                    source_order: asset.source_order,
-                },
-                location: asset.location,
-            }
+            )
         })
         .collect()
 }

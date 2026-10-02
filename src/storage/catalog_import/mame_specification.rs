@@ -42,8 +42,11 @@ pub(super) fn insert(
         use crate::mame::MachineSpecification as Spec;
         let order = element.element_order;
         match &element.value {
-            Spec::Sample(value) => insert_record!("mame_machine_samples", order, value.location;
-                "name": Text = &value.name),
+            Spec::Sample(_) => {
+                return Err(crate::Error::InvalidPath(
+                    "MAME samples require actual media owners".into(),
+                ));
+            }
             Spec::Chip(value) => insert_record!("mame_machine_chips", order, value.location;
                 "name": Text = &value.name,
                 "tag": Nullable<Text> = value.tag.as_deref(),

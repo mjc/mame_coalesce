@@ -36,8 +36,8 @@ macro_rules! mame_immutable_guard {
 macro_rules! mame_guards {
     () => {
         concat!(
-            mame_insert_guard!("mame_machine_samples","set_id=NEW.set_id AND element_order=NEW.element_order","SELECT 1 FROM mame_machines WHERE set_id=NEW.set_id","SELECT 1 FROM catalog_sets JOIN catalog_set_groups USING(set_group_id) JOIN snapshot_publications USING(snapshot_key) WHERE set_id=NEW.set_id","typeof(NEW.element_order)<>'integer' OR NEW.element_order<0"),
-            mame_immutable_guard!("mame_machine_samples"),
+            mame_insert_guard!("mame_samples","occurrence_id=NEW.occurrence_id","SELECT 1 FROM asset_occurrences JOIN mame_machines ON mame_machines.set_id=asset_occurrences.record_id WHERE occurrence_id=NEW.occurrence_id AND claim_kind='mame_sample'","SELECT 1 FROM asset_occurrences JOIN catalog_sets ON set_id=record_id JOIN catalog_set_groups USING(set_group_id) JOIN snapshot_publications USING(snapshot_key) WHERE occurrence_id=NEW.occurrence_id","NEW.claim_kind<>'mame_sample' OR typeof(NEW.source_order)<>'integer' OR NEW.source_order<0"),
+            mame_immutable_guard!("mame_samples"),
             mame_insert_guard!("mame_machine_chips","set_id=NEW.set_id AND element_order=NEW.element_order","SELECT 1 FROM mame_machines WHERE set_id=NEW.set_id","SELECT 1 FROM catalog_sets JOIN catalog_set_groups USING(set_group_id) JOIN snapshot_publications USING(snapshot_key) WHERE set_id=NEW.set_id","typeof(NEW.element_order)<>'integer' OR NEW.element_order<0"),
             mame_immutable_guard!("mame_machine_chips"),
             mame_insert_guard!("mame_machine_displays","set_id=NEW.set_id AND element_order=NEW.element_order","SELECT 1 FROM mame_machines WHERE set_id=NEW.set_id","SELECT 1 FROM catalog_sets JOIN catalog_set_groups USING(set_group_id) JOIN snapshot_publications USING(snapshot_key) WHERE set_id=NEW.set_id","typeof(NEW.element_order)<>'integer' OR NEW.element_order<0 OR (NEW.flip_x_specified=0 AND NEW.flip_x<>0)"),

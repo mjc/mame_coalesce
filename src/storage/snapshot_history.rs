@@ -3257,17 +3257,24 @@ fn load_mame_machine_facts(
     Ok(grouped)
 }
 
+const MAME_SPECIFICATION_SQL: &str = concat!(
+    "WITH requested_mame_specification_owners(set_id) AS (",
+    "SELECT sets.set_id FROM catalog_set_groups AS groups JOIN catalog_sets AS sets USING(set_group_id) ",
+    "WHERE groups.snapshot_key=? AND sets.source_element_kind='mame_machine'), ",
+    include_str!("db/mame_specification.sql"),
+    " ORDER BY e.set_id, e.element_order"
+);
+
+#[cfg(test)]
+mod tests;
+
 fn load_mame_machine_specification_facts(
     conn: &mut diesel::SqliteConnection,
     key: &SnapshotKey,
 ) -> crate::Result<BTreeMap<i64, Vec<serde_json::Value>>> {
-    let rows = sql_query(
-        "SELECT elements.* FROM mame_machine_spec_elements AS elements \
-         JOIN snapshot_sets AS sets USING (set_id) \
-         WHERE sets.snapshot_key = ? ORDER BY sets.set_name, elements.element_order",
-    )
-    .bind::<Text, _>(key.as_str())
-    .load::<MachineSpecificationRow>(conn)?;
+    let rows = sql_query(MAME_SPECIFICATION_SQL)
+        .bind::<Text, _>(key.as_str())
+        .load::<MachineSpecificationRow>(conn)?;
     let mut elements = BTreeMap::<(i64, i64), serde_json::Value>::new();
     for row in rows {
         let identity = (row.set_id, row.element_order);

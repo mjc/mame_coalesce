@@ -821,6 +821,12 @@ fn load_assets(
             "mame_disk",
             "disk",
         ),
+        (
+            super::queries::SAMPLE_ASSETS,
+            MachineAssetKind::Sample,
+            "mame_sample",
+            "sample",
+        ),
     ] {
         for row in sql_query(query).load::<AssetRow>(connection)? {
             let machine = machine_for_owner(machines, owners, row.owner_id)?;
@@ -835,7 +841,12 @@ fn load_assets(
             if !found.insert(row.occurrence_id) {
                 return Err(MachineQueryError::MismatchedOwner(row.occurrence_id));
             }
-            positions.insert((row.owner_id, source_order, child_kind, child_order));
+            let position_order = if expected_kind == MachineAssetKind::Sample {
+                source_order
+            } else {
+                child_order
+            };
+            positions.insert((row.owner_id, source_order, child_kind, position_order));
             machine.assets.push(MachineAssetReference {
                 occurrence_id,
                 kind: expected_kind,

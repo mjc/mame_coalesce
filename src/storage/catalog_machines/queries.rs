@@ -186,12 +186,24 @@ ORDER BY native.set_id, native.switch_order, native.value_order,
 ";
 
 pub(super) const SPEC_SAMPLES: &str = "
-SELECT native.set_id AS owner_id, native.element_order, native.name,
+SELECT occurrences.record_id AS owner_id, native.source_order AS element_order, native.name,
        native.source_line AS line, native.source_column AS column
 FROM temp.catalog_machine_requested_owners AS requested
-CROSS JOIN mame_machine_samples AS native
-WHERE native.set_id = requested.owner_id
-ORDER BY native.set_id, native.element_order
+CROSS JOIN asset_occurrences AS occurrences
+JOIN mame_samples AS native USING(occurrence_id)
+WHERE occurrences.record_id = requested.owner_id AND occurrences.claim_kind='mame_sample'
+ORDER BY occurrences.record_id, native.source_order
+";
+
+pub(super) const SAMPLE_ASSETS: &str = "
+SELECT occurrences.record_id AS owner_id, occurrences.occurrence_id,
+       occurrences.occurrence_order AS child_order, claims.source_order,
+       claims.source_line AS line, claims.source_column AS column, occurrences.claim_kind
+FROM temp.catalog_machine_requested_owners AS requested
+CROSS JOIN asset_occurrences AS occurrences
+LEFT JOIN mame_samples AS claims USING(occurrence_id)
+WHERE occurrences.record_id = requested.owner_id AND occurrences.claim_kind='mame_sample'
+ORDER BY occurrences.record_id, occurrences.occurrence_order
 ";
 pub(super) const SPEC_CHIPS: &str = "
 SELECT native.set_id AS owner_id, native.element_order, native.name, native.tag,

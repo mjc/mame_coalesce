@@ -98,7 +98,9 @@ fn assert_rom_identity(database: &Database, by_name: &FilesByName<'_>) -> TestRe
         .ok_or("standard ROM payload missing")?
     {
         MameFilePayload::Rom(rom) => rom,
-        MameFilePayload::Disk(_) => return Err("ROM owner returned disk payload".into()),
+        MameFilePayload::Disk(_) | MameFilePayload::Sample(_) => {
+            return Err("ROM owner returned disk payload".into());
+        }
     };
     assert_eq!(standard.evidence_scope, MameRomEvidenceScope::WholeFile);
     assert!(by_name["standard.bin"].content_id.is_some());
@@ -109,7 +111,9 @@ fn assert_rom_identity(database: &Database, by_name: &FilesByName<'_>) -> TestRe
         .ok_or("valid ROM payload missing")?
     {
         MameFilePayload::Rom(rom) => rom,
-        MameFilePayload::Disk(_) => return Err("ROM owner returned disk payload".into()),
+        MameFilePayload::Disk(_) | MameFilePayload::Sample(_) => {
+            return Err("ROM owner returned disk payload".into());
+        }
     };
     assert_eq!(valid.declarations.size_text.as_deref(), Some("0007"));
     assert_eq!(valid.size, Some(7));
@@ -144,7 +148,9 @@ fn assert_raw_rom_declarations(by_name: &FilesByName<'_>) -> TestResult {
         .ok_or("invalid ROM payload missing")?
     {
         MameFilePayload::Rom(rom) => rom,
-        MameFilePayload::Disk(_) => return Err("ROM owner returned disk payload".into()),
+        MameFilePayload::Disk(_) | MameFilePayload::Sample(_) => {
+            return Err("ROM owner returned disk payload".into());
+        }
     };
     assert_eq!(invalid.declarations.size_text.as_deref(), Some("many"));
     assert_eq!(invalid.declarations.crc_text.as_deref(), Some("bad"));
@@ -156,7 +162,9 @@ fn assert_raw_rom_declarations(by_name: &FilesByName<'_>) -> TestResult {
         .ok_or("empty ROM payload missing")?
     {
         MameFilePayload::Rom(rom) => rom,
-        MameFilePayload::Disk(_) => return Err("ROM owner returned disk payload".into()),
+        MameFilePayload::Disk(_) | MameFilePayload::Sample(_) => {
+            return Err("ROM owner returned disk payload".into());
+        }
     };
     assert_eq!(empty.declarations.size_text.as_deref(), Some(""));
     assert_eq!(empty.declarations.crc_text.as_deref(), Some(""));
@@ -170,7 +178,9 @@ fn assert_raw_rom_declarations(by_name: &FilesByName<'_>) -> TestResult {
         .ok_or("raw-only ROM payload missing")?
     {
         MameFilePayload::Rom(rom) => rom,
-        MameFilePayload::Disk(_) => return Err("ROM owner returned disk payload".into()),
+        MameFilePayload::Disk(_) | MameFilePayload::Sample(_) => {
+            return Err("ROM owner returned disk payload".into());
+        }
     };
     assert_eq!(
         raw_only.declarations.md5_text.as_deref(),
@@ -190,7 +200,9 @@ fn assert_legacy_and_dump_evidence(by_name: &FilesByName<'_>) -> TestResult {
         .ok_or("legacy ROM payload missing")?
     {
         MameFilePayload::Rom(rom) => rom,
-        MameFilePayload::Disk(_) => return Err("ROM owner returned disk payload".into()),
+        MameFilePayload::Disk(_) | MameFilePayload::Sample(_) => {
+            return Err("ROM owner returned disk payload".into());
+        }
     };
     assert_eq!(legacy.evidence_scope, MameRomEvidenceScope::Unknown);
     assert!(by_name["legacy.bin"].content_id.is_none());
@@ -212,7 +224,9 @@ fn assert_legacy_and_dump_evidence(by_name: &FilesByName<'_>) -> TestResult {
         .ok_or("baddump payload missing")?
     {
         MameFilePayload::Rom(rom) => rom,
-        MameFilePayload::Disk(_) => return Err("ROM owner returned disk payload".into()),
+        MameFilePayload::Disk(_) | MameFilePayload::Sample(_) => {
+            return Err("ROM owner returned disk payload".into());
+        }
     };
     assert_eq!(bad_dump.dump_status, MameDumpStatus::BadDump);
     let no_dump = match by_name["nodump.bin"]
@@ -221,7 +235,9 @@ fn assert_legacy_and_dump_evidence(by_name: &FilesByName<'_>) -> TestResult {
         .ok_or("nodump payload missing")?
     {
         MameFilePayload::Rom(rom) => rom,
-        MameFilePayload::Disk(_) => return Err("ROM owner returned disk payload".into()),
+        MameFilePayload::Disk(_) | MameFilePayload::Sample(_) => {
+            return Err("ROM owner returned disk payload".into());
+        }
     };
     assert_eq!(no_dump.dump_status, MameDumpStatus::NoDump);
     assert_eq!(no_dump.evidence_scope, MameRomEvidenceScope::Unknown);
@@ -235,7 +251,9 @@ fn assert_disk_evidence(by_name: &FilesByName<'_>) -> TestResult {
         .ok_or("disk payload missing")?
     {
         MameFilePayload::Disk(disk) => disk,
-        MameFilePayload::Rom(_) => return Err("disk owner returned ROM payload".into()),
+        MameFilePayload::Rom(_) | MameFilePayload::Sample(_) => {
+            return Err("disk owner returned ROM payload".into());
+        }
     };
     assert_eq!(
         disk.declarations.sha1_text.as_deref(),

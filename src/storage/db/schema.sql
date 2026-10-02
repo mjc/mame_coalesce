@@ -751,14 +751,14 @@ CREATE TABLE mame_machine_ram_options (
     PRIMARY KEY (set_id, element_order),
     FOREIGN KEY (set_id) REFERENCES catalog_sets (set_id) ON DELETE RESTRICT
 ) WITHOUT ROWID;
-CREATE TABLE mame_machine_samples (
-    set_id INTEGER NOT NULL,
-    element_order INTEGER NOT NULL CHECK (element_order >= 0),
+CREATE TABLE mame_samples (
+    occurrence_id INTEGER PRIMARY KEY NOT NULL,
+    claim_kind TEXT NOT NULL DEFAULT 'mame_sample' CHECK (claim_kind = 'mame_sample'),
     name TEXT NOT NULL,
+    source_order INTEGER NOT NULL CHECK (typeof(source_order) = 'integer' AND source_order >= 0),
     source_line INTEGER NOT NULL CHECK (source_line > 0),
     source_column INTEGER NOT NULL CHECK (source_column > 0),
-    PRIMARY KEY (set_id, element_order),
-    FOREIGN KEY (set_id) REFERENCES catalog_sets (set_id) ON DELETE RESTRICT
+    FOREIGN KEY (occurrence_id, claim_kind) REFERENCES asset_occurrences (occurrence_id, claim_kind) ON DELETE RESTRICT
 ) WITHOUT ROWID;
 CREATE TABLE mame_machine_slot_options (
     set_id INTEGER NOT NULL,
@@ -1598,7 +1598,7 @@ CREATE INDEX machine_switches_tag_index ON machine_switches (tag, name, set_id);
 CREATE INDEX mame_machine_chips_name_index ON mame_machine_chips (name, set_id);
 CREATE INDEX mame_machine_devices_tag_index ON mame_machine_devices (tag, set_id);
 CREATE INDEX mame_machines_source_file_index ON mame_machines (source_file);
-CREATE INDEX mame_machine_samples_name_index ON mame_machine_samples (name, set_id);
+CREATE INDEX mame_samples_name_index ON mame_samples (name, occurrence_id);
 CREATE INDEX mame_machine_software_lists_name_index ON mame_machine_software_lists (name, set_id);
 CREATE INDEX occurrence_content_lookup ON asset_occurrences(content_uuid, occurrence_id)
     WHERE content_uuid IS NOT NULL;
@@ -1875,6 +1875,12 @@ SELECT occurrence.record_id AS set_id,occurrence.occurrence_order AS component_o
 FROM logiqx_sample_claims AS payload JOIN asset_occurrences AS occurrence USING (occurrence_id)
 UNION ALL
 SELECT occurrence.record_id AS set_id,occurrence.occurrence_order AS component_order,
+       payload.name AS asset_name,'other' AS role,
+       NULL AS size,'unknown' AS evidence_scope,'source_declared' AS evidence_provenance,NULL AS merge_name,NULL AS dump_status,payload.source_line,payload.source_column,NULL AS serial,NULL AS date,NULL AS region,NULL AS bios,NULL AS offset,NULL AS optional,NULL AS sound_only,NULL AS dispose,NULL AS load_flag,NULL AS value,NULL AS inverted,NULL AS ovha,NULL AS no_thread,NULL AS disk_index,NULL AS writable,NULL AS writeable,
+       occurrence.content_uuid
+FROM mame_samples AS payload JOIN asset_occurrences AS occurrence USING (occurrence_id)
+UNION ALL
+SELECT occurrence.record_id AS set_id,occurrence.occurrence_order AS component_order,
        payload.name AS asset_name,'rom' AS role,
        payload.size,payload.evidence_scope,payload.evidence_provenance,payload.merge_name,payload.dump_status,payload.source_line,payload.source_column,payload.serial,payload.date,NULL AS region,NULL AS bios,NULL AS offset,NULL AS optional,NULL AS sound_only,NULL AS dispose,NULL AS load_flag,NULL AS value,NULL AS inverted,NULL AS ovha,NULL AS no_thread,NULL AS disk_index,NULL AS writable,NULL AS writeable,
        occurrence.content_uuid
@@ -1925,67 +1931,6 @@ UNION ALL
 SELECT set_id, 'switch_value', NULL, switch_order, value_order, condition_order,
        tag, mask, relation, value, source_line, source_column
 FROM machine_switch_value_conditions;
-CREATE VIEW mame_machine_spec_elements AS
-WITH element_keys AS (
-    SELECT set_id, element_order, 'sample' AS element_type, source_line, source_column FROM mame_machine_samples
-    UNION ALL SELECT set_id, element_order, 'chip', source_line, source_column FROM mame_machine_chips
-    UNION ALL SELECT set_id, element_order, 'display', source_line, source_column FROM mame_machine_displays
-    UNION ALL SELECT set_id, element_order, 'sound', source_line, source_column FROM mame_machine_sounds
-    UNION ALL SELECT set_id, element_order, 'input', source_line, source_column FROM mame_machine_inputs
-    UNION ALL SELECT set_id, element_order, 'port', source_line, source_column FROM mame_machine_ports
-    UNION ALL SELECT set_id, element_order, 'adjuster', source_line, source_column FROM mame_machine_adjusters
-    UNION ALL SELECT set_id, element_order, 'driver', source_line, source_column FROM mame_machine_drivers
-    UNION ALL SELECT set_id, element_order, 'feature', source_line, source_column FROM mame_machine_features
-    UNION ALL SELECT set_id, element_order, 'device', source_line, source_column FROM mame_machine_devices
-    UNION ALL SELECT set_id, element_order, 'slot', source_line, source_column FROM mame_machine_slots
-    UNION ALL SELECT set_id, element_order, 'softwarelist', source_line, source_column FROM mame_machine_software_lists
-    UNION ALL SELECT set_id, element_order, 'ramoption', source_line, source_column FROM mame_machine_ram_options
-)
-SELECT e.set_id, e.element_order, e.element_type,
-       sample.name AS sample_name,
-       chip.name AS chip_name, chip.tag AS chip_tag, chip.kind AS chip_type, chip.clock AS chip_clock,
-       display.tag AS display_tag, display.kind AS display_type, display.rotation AS display_rotate,
-       display.flip_x AS flipx,display.flip_x_specified AS flipx_specified, display.width AS display_width, display.height AS display_height,
-       display.refresh AS display_refresh, display.pixel_clock AS display_pixclock,
-       display.horizontal_total AS display_htotal, display.horizontal_blank_end AS display_hbend,
-       display.horizontal_blank_start AS display_hbstart, display.vertical_total AS display_vtotal,
-       display.vertical_blank_end AS display_vbend, display.vertical_blank_start AS display_vbstart,
-       sound.channels AS sound_channels,
-       input.service AS input_service,input.service_specified AS input_service_specified,
-       input.tilt AS input_tilt,input.tilt_specified AS input_tilt_specified,input.players AS input_players,
-       input.coins AS input_coins, port.tag AS port_tag,
-       adjuster.name AS adjuster_name, adjuster.default_value AS adjuster_default,
-       driver.status AS driver_status, driver.emulation AS driver_emulation,
-       driver.cocktail AS driver_cocktail, driver.savestate AS driver_savestate,
-       driver.requires_artwork AS driver_requiresartwork,driver.requires_artwork_specified AS driver_requiresartwork_specified,
-       driver.unofficial AS driver_unofficial,driver.unofficial_specified AS driver_unofficial_specified,
-       driver.no_sound_hardware AS driver_nosoundhardware,driver.no_sound_hardware_specified AS driver_nosoundhardware_specified,
-       driver.incomplete AS driver_incomplete,driver.incomplete_specified AS driver_incomplete_specified,
-       feature.kind AS feature_type, feature.status AS feature_status, feature.overall AS feature_overall,
-       device.kind AS device_type, device.tag AS device_tag, device.fixed_image AS device_fixed_image,
-       device.mandatory AS device_mandatory, device.interface AS device_interface,
-       instance.name AS device_instance_name, instance.brief_name AS device_instance_briefname,
-       instance.source_line AS device_instance_line, instance.source_column AS device_instance_column,
-       slot.name AS slot_name, software_list.tag AS softwarelist_tag,
-       software_list.name AS softwarelist_name, software_list.status AS softwarelist_status,
-       software_list.filter AS softwarelist_filter, ram.name AS ramoption_name,
-       ram.default_value AS ramoption_default, ram.text AS ramoption_text,
-       e.source_line, e.source_column
-FROM element_keys AS e
-LEFT JOIN mame_machine_samples AS sample USING (set_id, element_order)
-LEFT JOIN mame_machine_chips AS chip USING (set_id, element_order)
-LEFT JOIN mame_machine_displays AS display USING (set_id, element_order)
-LEFT JOIN mame_machine_sounds AS sound USING (set_id, element_order)
-LEFT JOIN mame_machine_inputs AS input USING (set_id, element_order)
-LEFT JOIN mame_machine_ports AS port USING (set_id, element_order)
-LEFT JOIN mame_machine_adjusters AS adjuster USING (set_id, element_order)
-LEFT JOIN mame_machine_drivers AS driver USING (set_id, element_order)
-LEFT JOIN mame_machine_features AS feature USING (set_id, element_order)
-LEFT JOIN mame_machine_devices AS device USING (set_id, element_order)
-LEFT JOIN mame_machine_device_instances AS instance USING (set_id, element_order)
-LEFT JOIN mame_machine_slots AS slot USING (set_id, element_order)
-LEFT JOIN mame_machine_software_lists AS software_list USING (set_id, element_order)
-LEFT JOIN mame_machine_ram_options AS ram USING (set_id, element_order);
 CREATE VIEW stored_relationship_assertion_explanations AS
 SELECT assertion_key, relation_type, origin, source_snapshot_key, source_field,
        source_line, source_column, generic_subject_snapshot_key, subject_kind, subject_set_id,

@@ -1,4 +1,4 @@
-//! Published native MAME ROM and disk occurrence payloads.
+//! Published native MAME ROM, disk and sample occurrence payloads.
 
 use std::collections::BTreeMap;
 
@@ -71,7 +71,45 @@ pub struct MameDiskPayload {
 pub enum MameFilePayload {
     Rom(MameRomPayload),
     Disk(MameDiskPayload),
+    Sample(MameSamplePayload),
 }
+
+/// A filename-only expected audio sample, with no inferred size or digest.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MameSamplePayload {
+    pub name: String,
+    pub source_order: i64,
+    pub location: SourceLocation,
+}
+
+#[derive(QueryableByName)]
+struct SamplePayloadRow {
+    #[diesel(sql_type = BigInt)]
+    occurrence_id: i64,
+    #[diesel(sql_type = Text)]
+    claim_kind: String,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    native_owner: Option<i64>,
+    #[diesel(sql_type = Nullable<Text>)]
+    name: Option<String>,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    source_order: Option<i64>,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    source_line: Option<i64>,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    source_column: Option<i64>,
+}
+
+const SAMPLE_SELECT: &str = "
+SELECT occurrence.occurrence_id, occurrence.claim_kind, sample.occurrence_id AS native_owner,
+       sample.name, sample.source_order, sample.source_line, sample.source_column
+FROM temp.catalog_files_requested_occurrences AS requested
+CROSS JOIN asset_occurrences AS occurrence
+LEFT JOIN mame_samples AS sample USING(occurrence_id)
+WHERE occurrence.occurrence_id=requested.occurrence_id
+  AND (occurrence.claim_kind='mame_sample' OR sample.occurrence_id IS NOT NULL)
+ORDER BY occurrence.occurrence_id
+";
 
 /// MAME-specific historical disk attributes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -250,11 +288,35 @@ pub(super) fn attach_payloads(
         .map(|row| Ok((row.occurrence_id, payload(row)?)))
         .collect::<Result<BTreeMap<_, _>, CatalogFilesError>>()?;
 
+    for row in sql_query(SAMPLE_SELECT).load::<SamplePayloadRow>(connection)? {
+        let id = row.occurrence_id;
+        if row.claim_kind != "mame_sample" {
+            return Err(CatalogFilesError::MismatchedMameFileOwner(id));
+        }
+        if row.native_owner != Some(id) {
+            return Err(CatalogFilesError::MissingMameFilePayload(id));
+        }
+        let sample = MameSamplePayload {
+            name: required(row.name, "sample name", id)?,
+            source_order: required(row.source_order, "sample source order", id)?,
+            location: SourceLocation {
+                line: required(row.source_line, "sample source line", id)?,
+                column: required(row.source_column, "sample source column", id)?,
+            },
+        };
+        if payloads
+            .insert(id, MameFilePayload::Sample(sample))
+            .is_some()
+        {
+            return Err(CatalogFilesError::MismatchedMameFileOwner(id));
+        }
+    }
+
     for occurrence in occurrences {
         let id = occurrence.occurrence_id.database_value();
         let is_mame = matches!(
             occurrence.provenance.occurrence_kind,
-            OccurrenceKind::MameRom | OccurrenceKind::MameDisk
+            OccurrenceKind::MameRom | OccurrenceKind::MameDisk | OccurrenceKind::MameSample
         );
         let Some(payload) = payloads.remove(&id) else {
             if is_mame {
@@ -266,6 +328,7 @@ pub(super) fn attach_payloads(
             (&occurrence.provenance.occurrence_kind, &payload),
             (OccurrenceKind::MameRom, MameFilePayload::Rom(_))
                 | (OccurrenceKind::MameDisk, MameFilePayload::Disk(_))
+                | (OccurrenceKind::MameSample, MameFilePayload::Sample(_))
         );
         if !is_mame
             || !expected
@@ -278,6 +341,7 @@ pub(super) fn attach_payloads(
         let (name, location) = match &payload {
             MameFilePayload::Rom(rom) => (&rom.name, rom.location),
             MameFilePayload::Disk(disk) => (&disk.name, disk.location),
+            MameFilePayload::Sample(sample) => (&sample.name, sample.location),
         };
         occurrence.provenance.asset_name = Some(name.clone());
         occurrence.provenance.native_occurrence_location = Some(location);
@@ -528,6 +592,32 @@ mod tests {
                     .iter()
                     .any(|step| step.detail.starts_with(&format!("SCAN {owner} "))),
                 "unrelated native rows scanned for {owner}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn sample_payload_select_seeks_requested_occurrence_keys()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let pool = crate::storage::db::create_db_pool(":memory:")?;
+        let mut connection = pool.get()?;
+        super::super::create_request_table(&mut connection)?;
+        let plan = sql_query(format!("EXPLAIN QUERY PLAN {SAMPLE_SELECT}"))
+            .load::<PlanRow>(&mut connection)?;
+        for owner in ["occurrence", "sample"] {
+            assert!(
+                plan.iter().any(
+                    |step| step.detail.starts_with(&format!("SEARCH {owner} USING "))
+                        && step.detail.contains("PRIMARY KEY")
+                ),
+                "no occurrence key lookup for {owner}"
+            );
+            assert!(
+                !plan
+                    .iter()
+                    .any(|step| step.detail.starts_with(&format!("SCAN {owner} "))),
+                "unrelated rows scanned for {owner}"
             );
         }
         Ok(())

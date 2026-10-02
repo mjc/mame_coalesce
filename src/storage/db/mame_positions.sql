@@ -22,9 +22,10 @@ SELECT machine_switches.set_id, machine_switches.source_order AS source_order, m
 FROM requested_mame_machines AS requested CROSS JOIN machine_switches
 WHERE machine_switches.set_id=requested.set_id
 UNION ALL
-SELECT mame_machine_samples.set_id, mame_machine_samples.element_order AS source_order, 'sample' AS child_kind, mame_machine_samples.element_order AS child_order
-FROM requested_mame_machines AS requested CROSS JOIN mame_machine_samples
-WHERE mame_machine_samples.set_id=requested.set_id
+SELECT occurrence.record_id AS set_id, mame_samples.source_order, 'sample' AS child_kind, mame_samples.source_order AS child_order
+FROM requested_mame_machines AS requested CROSS JOIN asset_occurrences AS occurrence
+JOIN mame_samples USING(occurrence_id)
+WHERE occurrence.record_id=requested.set_id AND occurrence.claim_kind='mame_sample'
 UNION ALL
 SELECT mame_machine_chips.set_id, mame_machine_chips.element_order AS source_order, 'chip' AS child_kind, mame_machine_chips.element_order AS child_order
 FROM requested_mame_machines AS requested CROSS JOIN mame_machine_chips

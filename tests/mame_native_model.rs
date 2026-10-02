@@ -393,7 +393,7 @@ fn publication_child_checks_seek_requested_machine_owners() -> TestResult {
         "mame_bios_sets",
         "mame_rom_claims",
         "mame_disk_claims",
-        "mame_machine_samples",
+        "mame_samples",
         "mame_machine_chips",
         "mame_machine_displays",
         "mame_machine_inputs",

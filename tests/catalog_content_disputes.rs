@@ -473,7 +473,7 @@ fn assert_native_claim_sizes_and_scope(
             .is_none(),
         "a scoped disk claim does not receive whole-file identity"
     );
-    let sample = sql_query("SELECT set_id FROM mame_machine_samples WHERE name = 'sample.wav'")
+    let sample = sql_query("SELECT record_id AS set_id FROM mame_samples JOIN asset_occurrences USING(occurrence_id) WHERE name = 'sample.wav'")
         .get_result::<NativeSample>(connection)?;
     let sample_occurrences = sql_query(
         "SELECT COUNT(*) AS count FROM asset_occurrences \
@@ -482,8 +482,8 @@ fn assert_native_claim_sizes_and_scope(
     .bind::<BigInt, _>(sample.set_id)
     .get_result::<Count>(connection)?;
     assert_eq!(
-        sample_occurrences.count, 0,
-        "the native MAME sample fact does not create an asset occurrence or file identity"
+        sample_occurrences.count, 1,
+        "the native MAME sample has its own media occurrence without a whole-file identity"
     );
     Ok(())
 }

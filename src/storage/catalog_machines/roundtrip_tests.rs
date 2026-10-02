@@ -305,8 +305,8 @@ fn assert_switches(actual: &[super::MachineSwitch], expected: &[mame::MachineSwi
 }
 
 fn assert_asset_references(actual: &super::Machine, expected: &Machine) -> TestResult {
-    assert_eq!(actual.assets.len(), expected.assets.len());
-    for (reference, asset) in actual.assets.iter().zip(&expected.assets) {
+    let mut entries = Vec::new();
+    for asset in &expected.assets {
         let expected_kind = match asset.role {
             crate::domain::AssetRole::Rom => MachineAssetKind::Rom,
             crate::domain::AssetRole::Disk => MachineAssetKind::Disk,
@@ -314,9 +314,23 @@ fn assert_asset_references(actual: &super::Machine, expected: &Machine) -> TestR
                 return Err("unexpected non-ROM/disk MAME asset".into());
             }
         };
-        assert_eq!(reference.kind, expected_kind);
-        assert_eq!(reference.source_order, asset.source_order);
-        assert_eq!(reference.location, asset.location);
+        entries.push((asset.source_order, asset.location, expected_kind));
+    }
+    for element in &expected.specification {
+        if let mame::MachineSpecification::Sample(sample) = &element.value {
+            entries.push((
+                element.element_order,
+                sample.location,
+                MachineAssetKind::Sample,
+            ));
+        }
+    }
+    entries.sort_by_key(|(order, _, _)| *order);
+    assert_eq!(actual.assets.len(), entries.len());
+    for (reference, (order, location, kind)) in actual.assets.iter().zip(entries) {
+        assert_eq!(reference.kind, kind);
+        assert_eq!(reference.source_order, order);
+        assert_eq!(reference.location, location);
     }
     Ok(())
 }

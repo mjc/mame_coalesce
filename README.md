@@ -148,9 +148,14 @@ claims and historical loading fields without a pinned whole-file contract retain
 their literals and unknown-scope hash evidence without receiving a UUID. CHD
 header hashes never identify whole-container bytes. Publication requires native
 source literals and normalized source assertions to agree in both directions.
-The `catalog_files` API hydrates typed MAME ROM/disk payloads from existing
+The `catalog_files` API hydrates typed MAME ROM/disk/sample payloads from existing
 machine media references without reparsing originals. History includes their raw
 declarations, explicit defaults and compatibility fields.
+Each filename-only sample owns a distinct occurrence, including repeated and
+empty names, in mixed ROM/disk/sample source order. `mame_samples` stores its
+name and position once; its machine is reached through the occurrence owner.
+Samples have no inferred size, hash, extension or UUID and are not ROM build
+requirements. Independently computed metadata does not become a declared hash.
 
 No-Intro flat DAT XML has four explicit import interpretations:
 `no-intro-dat-v3-strict`, `no-intro-dat-v3-compatible`,
@@ -475,11 +480,12 @@ masks and settings keep their declared text, including hexadecimal spelling.
 The `catalog_machines::machines_for_snapshot` Rust API returns bounded pages from
 an exact published edition, with numeric machine identities, native flags and
 scalar locations, BIOS sets, dependencies, switches and every specification
-family. ROM/disk references identify existing occurrences without copying their
+family. ROM/disk/sample references identify existing occurrences without copying their
 payloads. Repeated machine names remain distinct, and continuations are pinned
 to their snapshot and registry generation. Queries read stored native facts, not
-the source XML. Original ROM size/offset spelling and separate compatibility
-attribute ownership remain unfinished.
+the source XML. Raw ROM size/offset spelling and qualified compatibility owners
+are retained. Dedicated MAME source relationship owners and exhaustive pinned-DTD
+field/grammar/query coverage remain unfinished.
 
 The separate software-list adapter imports list-scoped items, parts,
 data/disk areas, component evidence, and load instructions as source data. It

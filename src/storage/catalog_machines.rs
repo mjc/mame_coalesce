@@ -103,7 +103,7 @@ pub enum MachineDependency {
     DeviceReference(DeviceReference),
 }
 
-/// Reference to a persisted ROM or disk occurrence, without copying its payload.
+/// Reference to a persisted ROM, disk or sample occurrence, without copying its payload.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MachineAssetReference {
     pub occurrence_id: OccurrenceId,
@@ -117,6 +117,7 @@ pub struct MachineAssetReference {
 pub enum MachineAssetKind {
     Rom,
     Disk,
+    Sample,
 }
 
 /// A native DIP or configuration switch and its ordered child facts.

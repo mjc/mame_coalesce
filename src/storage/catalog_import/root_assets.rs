@@ -18,6 +18,7 @@ struct NativeRecordKind {
 enum RootClaimKind {
     MameRom,
     MameDisk,
+    MameSample,
     LogiqxRom,
     LogiqxDisk,
     LogiqxSample,
@@ -31,6 +32,7 @@ impl RootClaimKind {
         match (kind, role) {
             ("mame_machine", "rom") => Ok(Self::MameRom),
             ("mame_machine", "disk") => Ok(Self::MameDisk),
+            ("mame_machine", "other") => Ok(Self::MameSample),
             ("logiqx_game", "rom") => Ok(Self::LogiqxRom),
             ("logiqx_game", "disk") => Ok(Self::LogiqxDisk),
             ("logiqx_game", "other") => Ok(Self::LogiqxSample),
@@ -47,6 +49,7 @@ impl RootClaimKind {
         match self {
             Self::MameRom => "mame_rom",
             Self::MameDisk => "mame_disk",
+            Self::MameSample => "mame_sample",
             Self::LogiqxRom => "logiqx_rom",
             Self::LogiqxDisk => "logiqx_disk",
             Self::LogiqxSample => "logiqx_sample",
@@ -60,6 +63,7 @@ impl RootClaimKind {
         match self {
             Self::MameRom => "mame_rom_claims",
             Self::MameDisk => "mame_disk_claims",
+            Self::MameSample => "mame_samples",
             Self::LogiqxRom => "logiqx_rom_claims",
             Self::LogiqxDisk => "logiqx_disk_claims",
             Self::LogiqxSample => "logiqx_sample_claims",
@@ -98,6 +102,17 @@ pub(super) fn insert(
     match kind {
         RootClaimKind::MameRom | RootClaimKind::MameDisk => {
             insert_mame(conn, id, kind, asset)?;
+        }
+        RootClaimKind::MameSample => {
+            let NativeAssetFacts::MameSample { source_order } = &asset.native else {
+                return Err(crate::Error::InvalidPath(
+                    "MAME sample has no native declaration".into(),
+                ));
+            };
+            sql_query("INSERT INTO mame_samples(occurrence_id,name,source_order,source_line,source_column) VALUES (?,?,?,?,?)")
+                .bind::<BigInt, _>(id.database_value()).bind::<Text, _>(&asset.name)
+                .bind::<BigInt, _>(*source_order).bind::<BigInt, _>(asset.location.line)
+                .bind::<BigInt, _>(asset.location.column).execute(conn)?;
         }
         RootClaimKind::LogiqxRom | RootClaimKind::LogiqxDisk | RootClaimKind::LogiqxSample => {
             insert_logiqx(conn, id, kind, asset)?;

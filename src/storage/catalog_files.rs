@@ -23,7 +23,7 @@ mod mame;
 mod software;
 pub use mame::{
     MameAssetDeclarations, MameBoolean, MameDiskCompatibility, MameDiskPayload, MameDumpStatus,
-    MameFilePayload, MameRomCompatibility, MameRomEvidenceScope, MameRomPayload,
+    MameFilePayload, MameRomCompatibility, MameRomEvidenceScope, MameRomPayload, MameSamplePayload,
 };
 pub use software::{
     SoftwareDiskPayload, SoftwareFileOperation, SoftwareFilePayload, SoftwareRomPayload,
@@ -159,7 +159,7 @@ pub struct CatalogFileOccurrence {
     pub software_file: Option<SoftwareFilePayload>,
     pub no_intro_dat_rom: Option<NoIntroDatRomPayload>,
     pub no_intro_database_file: Option<NoIntroDatabaseFilePayload>,
-    /// Native MAME ROM or disk data, when this occurrence has one.
+    /// Native MAME ROM, disk or filename-only sample data, when this occurrence has one.
     pub mame_file: Option<MameFilePayload>,
 }
 
@@ -819,10 +819,7 @@ const fn native_payload_select() -> &'static str {
      LEFT JOIN cmp_rom_claims AS cmp_rom ON cmp_rom.occurrence_id = occurrence.occurrence_id \
      LEFT JOIN cmp_samples AS cmp_sample ON cmp_sample.occurrence_id = occurrence.occurrence_id \
      LEFT JOIN no_intro_pc_file_claims AS no_intro_file ON no_intro_file.occurrence_id = occurrence.occurrence_id \
-     LEFT JOIN mame_machine_samples AS mame_sample \
-       ON mame_sample.set_id = catalog_set.set_id \
-      AND mame_sample.element_order = occurrence.occurrence_order \
-      AND occurrence.claim_kind = 'mame_sample' \
+     LEFT JOIN mame_samples AS mame_sample ON mame_sample.occurrence_id = occurrence.occurrence_id \
      LEFT JOIN software_rom_entries AS software_rom \
        ON software_rom.occurrence_id = occurrence.occurrence_id \
       AND software_rom.record_id = catalog_set.set_id \

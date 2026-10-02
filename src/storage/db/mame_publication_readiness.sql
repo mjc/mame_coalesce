@@ -17,7 +17,13 @@ WHERE format='mame-listxml' AND (
             OR NOT EXISTS (SELECT 1 FROM mame_machines WHERE set_id=sets.set_id)
             OR EXISTS (
                 SELECT 1 FROM asset_occurrences AS occurrence WHERE record_id=sets.set_id AND (
-                    claim_kind NOT IN ('mame_rom','mame_disk')
+                    claim_kind NOT IN ('mame_rom','mame_disk','mame_sample')
+                    OR (claim_kind='mame_sample' AND (
+                        occurrence.content_uuid IS NOT NULL
+                        OR NOT EXISTS (SELECT 1 FROM mame_samples WHERE occurrence_id=occurrence.occurrence_id)
+                        OR EXISTS (SELECT 1 FROM occurrence_digest_assertions
+                            WHERE occurrence_id=occurrence.occurrence_id AND provenance='source_declared')
+                    ))
                     OR (claim_kind='mame_rom' AND NOT EXISTS (
                         SELECT 1 FROM mame_rom_claims WHERE occurrence_id=occurrence.occurrence_id
                     ))

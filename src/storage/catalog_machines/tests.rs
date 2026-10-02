@@ -18,7 +18,7 @@ const CHILD_POSITION_TABLES: &[&str] = &[
     "mame_bios_sets",
     "mame_machine_dependencies",
     "machine_switches",
-    "mame_machine_samples",
+    "mame_samples",
     "mame_machine_chips",
     "mame_machine_displays",
     "mame_machine_sounds",
@@ -69,6 +69,7 @@ const PLAN_QUERIES: &[PlanQuery] = &[
     ("dependencies", queries::DEPENDENCIES, NATIVE_ALIAS),
     ("ROM assets", queries::ROM_ASSETS, ASSET_ALIASES),
     ("disk assets", queries::DISK_ASSETS, ASSET_ALIASES),
+    ("sample assets", queries::SAMPLE_ASSETS, ASSET_ALIASES),
     ("switches", queries::SWITCHES, NATIVE_ALIAS),
     (
         "switch conditions",
@@ -82,7 +83,7 @@ const PLAN_QUERIES: &[PlanQuery] = &[
         queries::SWITCH_VALUE_CONDITIONS,
         NATIVE_ALIAS,
     ),
-    ("samples", queries::SPEC_SAMPLES, NATIVE_ALIAS),
+    ("samples", queries::SPEC_SAMPLES, &["occurrences", "native"]),
     ("chips", queries::SPEC_CHIPS, NATIVE_ALIAS),
     ("displays", queries::SPEC_DISPLAYS, NATIVE_ALIAS),
     ("sounds", queries::SPEC_SOUNDS, NATIVE_ALIAS),
@@ -146,6 +147,8 @@ fn assert_query_uses_owner_keys(
                 std::io::Error::other(format!("{label} does not seek {alias}: {details:?}"))
             })?;
         let expected_key = match *alias {
+            // Samples deliberately have a compact WITHOUT ROWID native owner.
+            "claims" if query == queries::SAMPLE_ASSETS => "PRIMARY KEY",
             "claims" | "mame_rom_claims" | "mame_disk_claims" => "INTEGER PRIMARY KEY",
             "occurrences" | "asset_occurrences" => "INDEX",
             _ => "PRIMARY KEY",
