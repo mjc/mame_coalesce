@@ -103,11 +103,12 @@ fn fixture() -> TestResult<Fixture> {
           WHERE part_id = parts.part_id LIMIT 1) AS switch_order \
          FROM software_parts AS parts \
          JOIN software_areas AS areas ON areas.part_id = parts.part_id \
+           AND areas.area_kind = 'data' \
          JOIN software_rom_entries AS rom ON rom.area_id = areas.area_id \
          JOIN software_areas AS disk_areas ON disk_areas.part_id = parts.part_id \
            AND disk_areas.area_kind = 'disk' \
          JOIN software_disk_entries AS disk ON disk.area_id = disk_areas.area_id \
-         WHERE parts.record_id = ? AND areas.area_kind = 'data' LIMIT 1",
+         WHERE parts.record_id = ? LIMIT 1",
     )
     .bind::<BigInt, _>(title.as_i64())
     .get_result::<FixtureOwners>(&mut connection)?;
@@ -245,12 +246,12 @@ fn invalid_supported_boolean_and_area_values_are_rejected() -> TestResult {
             "software_areas_immutable_update",
         ),
         (
-            "UPDATE software_areas SET width = 7 WHERE area_id = {area};",
-            "software_areas_immutable_update",
+            "UPDATE software_data_areas SET width = 7 WHERE area_id = {area};",
+            "software_data_areas_immutable_update",
         ),
         (
-            "UPDATE software_areas SET endianness = 'middle' WHERE area_id = {area};",
-            "software_areas_immutable_update",
+            "UPDATE software_data_areas SET endianness = 'middle' WHERE area_id = {area};",
+            "software_data_areas_immutable_update",
         ),
     ] {
         let fixture = fixture()?;

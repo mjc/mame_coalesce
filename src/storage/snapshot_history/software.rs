@@ -66,6 +66,8 @@ native_row!(PartRow {
 });
 native_row!(AreaRow {
     #[serde(skip)] area_id: BigInt => i64,
+    #[serde(skip)] data_area_id: Nullable<BigInt> => Option<i64>,
+    #[serde(skip)] disk_area_id: Nullable<BigInt> => Option<i64>,
     area_name: Text => String,
     area_kind: Text => String,
     declared_size_text: Nullable<Text> => Option<String>,
@@ -127,6 +129,8 @@ const SETS: &str = " FROM catalog_set_groups AS groups \
     CROSS JOIN catalog_sets AS sets ON sets.set_group_id = groups.set_group_id ";
 const PARTS: &str = " CROSS JOIN software_parts AS parts ON parts.record_id = sets.set_id ";
 const AREAS: &str = " CROSS JOIN software_areas AS areas ON areas.part_id = parts.part_id ";
+const AREA_DETAILS: &str = " LEFT JOIN software_data_areas AS data_area ON data_area.area_id = areas.area_id \
+    LEFT JOIN software_disk_areas AS disk_area ON disk_area.area_id = areas.area_id ";
 const SELECTED: &str = " WHERE groups.snapshot_key = ? AND groups.kind = 'software_list' ";
 
 pub(super) fn load_document(
@@ -514,12 +518,28 @@ fn load_part_children(
             &feature,
         )?;
     }
-    let areas = sql_query(format!("SELECT areas.part_id AS parent_id, areas.source_order, areas.area_id, areas.area_name, areas.area_kind, \
-        areas.declared_size_text, areas.width, areas.width_specified, areas.endianness, areas.endianness_specified \
-        {SETS} {PARTS} {AREAS} {SELECTED} ORDER BY areas.area_order"))
+    let areas = sql_query(format!("SELECT areas.part_id AS parent_id, COALESCE(data_area.source_order, disk_area.source_order) AS source_order, \
+        areas.area_id, COALESCE(data_area.area_name, disk_area.area_name) AS area_name, areas.area_kind, \
+        data_area.area_id AS data_area_id, disk_area.area_id AS disk_area_id, \
+        data_area.declared_size_text, data_area.width, COALESCE(data_area.width_specified, 0) AS width_specified, \
+        data_area.endianness, COALESCE(data_area.endianness_specified, 0) AS endianness_specified \
+        {SETS} {PARTS} {AREAS} {AREA_DETAILS} {SELECTED} ORDER BY areas.area_order"))
         .bind::<Text,_>(key.as_str()).load::<AreaRow>(conn)?;
     let mut entries = load_entries(conn, key)?;
     for area in areas {
+        if super::super::software_area::native_kind(
+            area.area_id,
+            area.data_area_id,
+            area.disk_area_id,
+        )
+        .map(crate::mame_softwarelist::AreaKind::as_str)
+            != Some(area.area_kind.as_str())
+        {
+            return Err(crate::Error::InvalidPath(format!(
+                "software area {} lacks exactly one matching native detail",
+                area.area_id
+            )));
+        }
         let mut value = serde_json::to_value(&area)?;
         value["entries"] = ordered(entries.remove(&area.area_id).unwrap_or_default());
         push(
@@ -684,9 +704,9 @@ fn load_requirements(
         ("software_disk_entries", "software_disk", "NULL", ""),
     ] {
         let rows = sql_query(format!(
-            "SELECT sets.set_id AS record_id, parts.part_name, areas.area_name, entry.name, \
+            "SELECT sets.set_id AS record_id, parts.part_name, COALESCE(data_area.area_name, disk_area.area_name) AS area_name, entry.name, \
             '{role}' AS role, entry.evidence_scope, {crc} AS crc_text, entry.sha1_text \
-            {SETS} {PARTS} {AREAS} CROSS JOIN {table} AS entry ON entry.area_id = areas.area_id \
+            {SETS} {PARTS} {AREAS} {AREA_DETAILS} CROSS JOIN {table} AS entry ON entry.area_id = areas.area_id \
             {declaration} {SELECTED} AND entry.name IS NOT NULL ORDER BY entry.component_order"
         ))
         .bind::<Text, _>(key.as_str())

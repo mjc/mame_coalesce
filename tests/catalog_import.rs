@@ -269,10 +269,10 @@ struct SoftwareNamedValueRow {
 struct SoftwareAreaRow {
     #[diesel(sql_type = Nullable<BigInt>)]
     declared_size: Option<i64>,
-    #[diesel(sql_type = Nullable<BigInt>)]
-    width: Option<i64>,
-    #[diesel(sql_type = Nullable<Text>)]
-    endianness: Option<String>,
+    #[diesel(sql_type = BigInt)]
+    width: i64,
+    #[diesel(sql_type = Text)]
+    endianness: String,
     #[diesel(sql_type = BigInt)]
     source_line: i64,
 }
@@ -3402,11 +3402,12 @@ fn persists_softwarelist_dtd_notes_dipswitches_and_defaults_relationally()
     .get_result::<TextRow>(&mut connection)?;
     assert_eq!(notes.value, "list notes");
     let defaults = sql_query(
-        "SELECT software_items.supported || ':' || software_areas.width || ':' || software_areas.endianness AS value \
+        "SELECT software_items.supported || ':' || data_area.width || ':' || data_area.endianness AS value \
          FROM software_items \
          JOIN records USING (record_id) \
          JOIN record_namespaces USING (namespace_id) \
          JOIN software_areas USING (record_id) \
+         JOIN software_data_areas AS data_area USING (area_id) \
          WHERE record_namespaces.snapshot_key = ? AND record_namespaces.source_name = 'list' \
          AND records.source_name = 'game' AND software_areas.area_order = 0",
     )
@@ -3531,7 +3532,8 @@ fn imports_mame_numeric_bases_and_empty_nodump_hashes() -> Result<(), Box<dyn st
     let report = app::import_catalog(&database, &request)?;
     assert_eq!(report.status, app::CatalogImportStatus::Succeeded);
     let area_size = sql_query(
-        "SELECT software_areas.declared_size AS value FROM software_areas \
+        "SELECT data_area.declared_size AS value FROM software_areas \
+         JOIN software_data_areas AS data_area USING (area_id) \
          JOIN records USING (record_id) JOIN record_namespaces USING (namespace_id) \
          WHERE record_namespaces.snapshot_key = ? AND record_namespaces.source_name = 'one' \
          AND records.source_name = 'game' AND software_areas.area_kind = 'data'",
@@ -3774,7 +3776,10 @@ fn assert_software_list_parts(
 
     let area_order = sql_query(
         "SELECT GROUP_CONCAT(area_kind || ':' || area_name, ',') AS value FROM ( \
-         SELECT areas.area_kind, areas.area_name FROM software_areas AS areas \
+         SELECT areas.area_kind, COALESCE(data_area.area_name, disk_area.area_name) AS area_name \
+         FROM software_areas AS areas \
+         LEFT JOIN software_data_areas AS data_area USING (area_id) \
+         LEFT JOIN software_disk_areas AS disk_area USING (area_id) \
          JOIN software_parts AS parts ON parts.part_id = areas.part_id \
          JOIN records USING (record_id) \
          JOIN record_namespaces AS namespaces USING (namespace_id) \
@@ -3787,37 +3792,39 @@ fn assert_software_list_parts(
     assert_eq!(area_order.value, "data:program,disk:media");
 
     let area = sql_query(
-        "SELECT areas.declared_size, areas.width, areas.endianness, areas.source_line \
+        "SELECT data_area.declared_size, data_area.width, data_area.endianness, data_area.source_line \
          FROM software_areas AS areas \
+         JOIN software_data_areas AS data_area USING (area_id) \
          JOIN software_parts AS parts ON parts.part_id = areas.part_id \
          JOIN records USING (record_id) \
          JOIN record_namespaces AS namespaces USING (namespace_id) \
          WHERE namespaces.snapshot_key = ? AND namespaces.source_name = 'demo_cart' \
          AND records.source_name = 'demo_game' AND parts.part_name = 'cart' \
-         AND areas.area_name = 'program' AND areas.area_kind = 'data'",
+         AND data_area.area_name = 'program' AND areas.area_kind = 'data'",
     )
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<SoftwareAreaRow>(connection)?;
     assert_eq!(area.declared_size, Some(32));
-    assert_eq!(area.width, Some(16));
-    assert_eq!(area.endianness.as_deref(), Some("big"));
+    assert_eq!(area.width, 16);
+    assert_eq!(area.endianness, "big");
     assert!(item_line < area.source_line);
 
     let sparse_area = sql_query(
-        "SELECT areas.declared_size, areas.width, areas.endianness, areas.source_line \
+        "SELECT data_area.declared_size, data_area.width, data_area.endianness, data_area.source_line \
          FROM software_areas AS areas \
+         JOIN software_data_areas AS data_area USING (area_id) \
          JOIN software_parts AS parts ON parts.part_id = areas.part_id \
          JOIN records USING (record_id) \
          JOIN record_namespaces AS namespaces USING (namespace_id) \
          WHERE namespaces.snapshot_key = ? AND namespaces.source_name = 'demo_cart' \
          AND records.source_name = 'demo_game' AND parts.part_name = 'manual' \
-         AND areas.area_name = 'text' AND areas.area_kind = 'data'",
+         AND data_area.area_name = 'text' AND areas.area_kind = 'data'",
     )
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<SoftwareAreaRow>(connection)?;
     assert_eq!(sparse_area.declared_size, Some(16));
-    assert_eq!(sparse_area.width, Some(8));
-    assert_eq!(sparse_area.endianness.as_deref(), Some("little"));
+    assert_eq!(sparse_area.width, 8);
+    assert_eq!(sparse_area.endianness, "little");
     Ok(())
 }
 
@@ -3865,13 +3872,14 @@ fn assert_software_list_components(
     assert!(no_dump.sha1.is_none());
     assert_eq!(no_dump.load_instruction.as_deref(), Some("continue"));
     let parent_area_line = sql_query(
-        "SELECT areas.source_line AS value FROM software_areas AS areas \
+        "SELECT data_area.source_line AS value FROM software_areas AS areas \
+         JOIN software_data_areas AS data_area USING (area_id) \
          JOIN software_parts AS parts ON parts.part_id = areas.part_id \
          JOIN records USING (record_id) \
          JOIN record_namespaces AS namespaces USING (namespace_id) \
          WHERE namespaces.snapshot_key = ? AND namespaces.source_name = 'demo_cart' \
          AND records.source_name = 'demo_game' AND parts.part_name = 'cart' \
-         AND areas.area_name = 'program' AND areas.area_kind = 'data'",
+         AND data_area.area_name = 'program' AND areas.area_kind = 'data'",
     )
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<IntegerRow>(connection)?;
@@ -4008,18 +4016,20 @@ fn software_cdata_keeps_uninterpretable_source_values_queryable()
             "size=\"0x20\"",
             "size=\"unknown\"",
             "SELECT COUNT(*) AS count FROM software_areas AS area \
+          JOIN software_data_areas AS data_area USING (area_id) \
           JOIN catalog_sets AS sets ON sets.set_id = area.record_id \
           JOIN catalog_set_groups AS groups USING(set_group_id) WHERE groups.snapshot_key = ? \
-          AND area.declared_size_text = 'unknown' AND area.declared_size IS NULL",
+          AND data_area.declared_size_text = 'unknown' AND data_area.declared_size IS NULL",
         ),
         (
             "overflow-size",
             "size=\"0x20\"",
             "size=\"9223372036854775808\"",
             "SELECT COUNT(*) AS count FROM software_areas AS area \
+          JOIN software_data_areas AS data_area USING (area_id) \
           JOIN catalog_sets AS sets ON sets.set_id = area.record_id \
           JOIN catalog_set_groups AS groups USING(set_group_id) WHERE groups.snapshot_key = ? \
-          AND area.declared_size_text = '9223372036854775808' AND area.declared_size IS NULL",
+          AND data_area.declared_size_text = '9223372036854775808' AND data_area.declared_size IS NULL",
         ),
         (
             "unknown-crc",

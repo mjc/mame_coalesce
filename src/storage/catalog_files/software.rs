@@ -83,6 +83,10 @@ struct RomRow {
     record_id: i64,
     #[diesel(sql_type = BigInt)]
     area_id: i64,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    data_area_id: Option<i64>,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    disk_area_id: Option<i64>,
     #[diesel(sql_type = BigInt)]
     area_record_id: i64,
     #[diesel(sql_type = BigInt)]
@@ -91,8 +95,8 @@ struct RomRow {
     part_record_id: i64,
     #[diesel(sql_type = Text)]
     area_kind: String,
-    #[diesel(sql_type = Text)]
-    area_name: String,
+    #[diesel(sql_type = Nullable<Text>)]
+    area_name: Option<String>,
     #[diesel(sql_type = BigInt)]
     area_order: i64,
     #[diesel(sql_type = Text)]
@@ -161,6 +165,10 @@ struct DiskRow {
     record_id: i64,
     #[diesel(sql_type = BigInt)]
     area_id: i64,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    data_area_id: Option<i64>,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    disk_area_id: Option<i64>,
     #[diesel(sql_type = BigInt)]
     area_record_id: i64,
     #[diesel(sql_type = BigInt)]
@@ -169,8 +177,8 @@ struct DiskRow {
     part_record_id: i64,
     #[diesel(sql_type = Text)]
     area_kind: String,
-    #[diesel(sql_type = Text)]
-    area_name: String,
+    #[diesel(sql_type = Nullable<Text>)]
+    area_name: Option<String>,
     #[diesel(sql_type = BigInt)]
     area_order: i64,
     #[diesel(sql_type = Text)]
@@ -231,7 +239,7 @@ pub(super) fn attach_payloads(
             let row_owner = software_owner(
                 row.area_id,
                 row.area_kind.as_str(),
-                row.area_name.clone(),
+                super::required_native(row.area_name.clone(), "software data area name")?,
                 row.area_order,
                 row.part_id,
                 row.part_name.clone(),
@@ -255,7 +263,7 @@ pub(super) fn attach_payloads(
             let row_owner = software_owner(
                 row.area_id,
                 row.area_kind.as_str(),
-                row.area_name.clone(),
+                super::required_native(row.area_name.clone(), "software disk area name")?,
                 row.area_order,
                 row.part_id,
                 row.part_name.clone(),
@@ -307,8 +315,9 @@ pub(super) fn attach_payloads(
 
 fn rom_select() -> String {
     "SELECT rom.occurrence_id, occurrence.record_id AS occurrence_record_id, occurrence.claim_kind, \
-            rom.record_id, rom.area_id, area.record_id AS area_record_id, area.part_id, \
-            part.record_id AS part_record_id, area.area_kind, area.area_name, area.area_order, \
+            rom.record_id, rom.area_id, data_area.area_id AS data_area_id, disk_area.area_id AS disk_area_id, \
+            area.record_id AS area_record_id, area.part_id, \
+            part.record_id AS part_record_id, area.area_kind, data_area.area_name, area.area_order, \
             part.part_name, part.part_order, rom.name, rom.size_text, rom.size, \
             rom.offset_text, rom.offset, rom.value, rom.crc_text, rom.sha1_text, rom.dump_status, \
             rom.status_specified, rom.load_instruction, rom.evidence_scope, rom.component_order, \
@@ -321,6 +330,8 @@ fn rom_select() -> String {
      CROSS JOIN asset_occurrences AS occurrence \
      JOIN software_rom_entries AS rom ON rom.occurrence_id = requested.occurrence_id \
      JOIN software_areas AS area ON area.area_id = rom.area_id \
+     LEFT JOIN software_data_areas AS data_area ON data_area.area_id = area.area_id \
+     LEFT JOIN software_disk_areas AS disk_area ON disk_area.area_id = area.area_id \
      JOIN software_parts AS part ON part.part_id = area.part_id \
      LEFT JOIN software_file_uses AS file_use ON file_use.occurrence_id = rom.occurrence_id \
      LEFT JOIN software_file_declarations AS declaration \
@@ -337,8 +348,9 @@ fn rom_select() -> String {
 
 fn disk_select() -> String {
     "SELECT disk.occurrence_id, occurrence.record_id AS occurrence_record_id, occurrence.claim_kind, \
-            disk.record_id, disk.area_id, area.record_id AS area_record_id, area.part_id, \
-            part.record_id AS part_record_id, area.area_kind, area.area_name, area.area_order, \
+            disk.record_id, disk.area_id, data_area.area_id AS data_area_id, disk_area.area_id AS disk_area_id, \
+            area.record_id AS area_record_id, area.part_id, \
+            part.record_id AS part_record_id, area.area_kind, disk_area.area_name, area.area_order, \
             part.part_name, part.part_order, disk.name, disk.sha1_text, \
             disk.dump_status, disk.status_specified, disk.writeable, disk.writeable_specified, \
             disk.evidence_scope, disk.component_order, disk.source_order, disk.source_line, \
@@ -348,6 +360,8 @@ fn disk_select() -> String {
      CROSS JOIN asset_occurrences AS occurrence \
      JOIN software_disk_entries AS disk ON disk.occurrence_id = requested.occurrence_id \
      JOIN software_areas AS area ON area.area_id = disk.area_id \
+     LEFT JOIN software_disk_areas AS disk_area ON disk_area.area_id = area.area_id \
+     LEFT JOIN software_data_areas AS data_area ON data_area.area_id = area.area_id \
      JOIN software_parts AS part ON part.part_id = area.part_id \
      LEFT JOIN software_file_uses AS file_use ON file_use.occurrence_id = disk.occurrence_id \
      WHERE occurrence.occurrence_id = requested.occurrence_id \
@@ -366,7 +380,10 @@ fn rom_payload(row: RomRow) -> Result<SoftwareRomPayload, CatalogFilesError> {
         row.claim_kind.as_str(),
         SoftwareAreaKind::Data,
     )?;
-    if row.area_kind != "data" {
+    if row.area_kind != "data"
+        || super::super::software_area::native_kind(row.area_id, row.data_area_id, row.disk_area_id)
+            != Some(crate::mame_softwarelist::AreaKind::Data)
+    {
         return Err(CatalogFilesError::MismatchedSoftwareFileOwner(
             row.occurrence_id,
         ));
@@ -502,6 +519,8 @@ fn disk_payload(row: DiskRow) -> Result<SoftwareDiskPayload, CatalogFilesError> 
         SoftwareAreaKind::Disk,
     )?;
     if row.area_kind != "disk"
+        || super::super::software_area::native_kind(row.area_id, row.data_area_id, row.disk_area_id)
+            != Some(crate::mame_softwarelist::AreaKind::Disk)
         || row.operation.as_deref() != Some("disk")
         || row.use_record_id != Some(row.record_id)
         || row.declaration_occurrence_id.is_some()

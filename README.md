@@ -202,7 +202,11 @@ absent/empty values and explicit defaults remain distinct, and source order
 includes gaps from vendor elements. Cursors pin the registry generation,
 snapshot and (for title pages) list; older published editions stay queryable.
 Each page reads one SQLite snapshot and carries document/catalog provenance
-once. Full lexical witnesses and executable loading interpretation remain open.
+once. Software areas have compact owners and separate data-area/disk-area
+detail tables: disk areas store no size, width or endianness placeholders.
+Publication requires exactly one matching detail row; source order stays with
+that detail and remains unique across data/disk areas in the same part.
+Full lexical witnesses and executable loading interpretation remain open.
 Results distinguish the immutable source-issued UUID from its current canonical
 UUID. Published reviews also version cursors: after another review, restart
 pagination rather than silently skip newly merged members.

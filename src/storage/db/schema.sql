@@ -1131,11 +1131,18 @@ CREATE TABLE software_areas (
     area_id       INTEGER PRIMARY KEY,
     part_id       INTEGER NOT NULL,
     record_id     INTEGER NOT NULL,
-    area_name     TEXT NOT NULL,
     area_kind     TEXT NOT NULL CHECK (area_kind IN ('data', 'disk')),
     area_order    INTEGER NOT NULL CHECK (area_order >= 0),
+    UNIQUE (area_id, record_id),
+    UNIQUE (part_id, area_order),
+    FOREIGN KEY (part_id, record_id)
+        REFERENCES software_parts (part_id, record_id) ON DELETE RESTRICT
+);
+CREATE TABLE software_data_areas (
+    area_id       INTEGER PRIMARY KEY REFERENCES software_areas (area_id) ON DELETE RESTRICT,
+    area_name     TEXT NOT NULL,
     source_order  INTEGER NOT NULL CHECK (typeof(source_order) = 'integer' AND source_order >= 0),
-    declared_size_text TEXT,
+    declared_size_text TEXT NOT NULL,
     declared_size INTEGER GENERATED ALWAYS AS (
 CASE
         WHEN declared_size_text IS NULL OR declared_size_text = '' THEN NULL
@@ -1199,21 +1206,21 @@ CASE
         ELSE NULL
     END
     ) VIRTUAL CHECK (declared_size IS NULL OR (typeof(declared_size) = 'integer' AND declared_size >= 0)),
-    width         INTEGER CHECK (width IS NULL OR width IN (8, 16, 32, 64)),
+    width         INTEGER NOT NULL CHECK (width IN (8, 16, 32, 64)),
     width_specified INTEGER NOT NULL CHECK (width_specified IN (0, 1)),
-    endianness    TEXT CHECK (endianness IS NULL OR endianness IN ('little', 'big')),
+    endianness    TEXT NOT NULL CHECK (endianness IN ('little', 'big')),
     endianness_specified INTEGER NOT NULL CHECK (endianness_specified IN (0, 1)),
     source_line   INTEGER NOT NULL CHECK (source_line > 0),
     source_column INTEGER NOT NULL CHECK (source_column > 0),
-    CHECK (area_kind <> 'data' OR declared_size_text IS NOT NULL),
-    CHECK (area_kind <> 'disk' OR (declared_size_text IS NULL AND width IS NULL
-          AND width_specified = 0 AND endianness IS NULL AND endianness_specified = 0)),
-    CHECK (area_kind <> 'data' OR (width IS NOT NULL AND endianness IS NOT NULL)),
-    UNIQUE (area_id, record_id),
-    UNIQUE (part_id, area_order),
-    UNIQUE (part_id, source_order),
-    FOREIGN KEY (part_id, record_id)
-        REFERENCES software_parts (part_id, record_id) ON DELETE RESTRICT
+    CHECK (width_specified = 1 OR width = 8),
+    CHECK (endianness_specified = 1 OR endianness = 'little')
+);
+CREATE TABLE software_disk_areas (
+    area_id       INTEGER PRIMARY KEY REFERENCES software_areas (area_id) ON DELETE RESTRICT,
+    area_name     TEXT NOT NULL,
+    source_order  INTEGER NOT NULL CHECK (typeof(source_order) = 'integer' AND source_order >= 0),
+    source_line   INTEGER NOT NULL CHECK (source_line > 0),
+    source_column INTEGER NOT NULL CHECK (source_column > 0)
 );
 CREATE TABLE software_disk_entries (
     occurrence_id INTEGER PRIMARY KEY NOT NULL,
@@ -1236,7 +1243,8 @@ CREATE TABLE software_disk_entries (
     FOREIGN KEY (occurrence_id, record_id)
         REFERENCES asset_occurrences (occurrence_id, record_id) ON DELETE RESTRICT,
     FOREIGN KEY (area_id, record_id)
-        REFERENCES software_areas (area_id, record_id) ON DELETE RESTRICT
+        REFERENCES software_areas (area_id, record_id) ON DELETE RESTRICT,
+    FOREIGN KEY (area_id) REFERENCES software_disk_areas (area_id) ON DELETE RESTRICT
 );
 CREATE TABLE software_file_declarations (
     occurrence_id INTEGER PRIMARY KEY NOT NULL,
@@ -1544,7 +1552,8 @@ CASE
     FOREIGN KEY (occurrence_id, record_id)
         REFERENCES asset_occurrences (occurrence_id, record_id) ON DELETE RESTRICT,
     FOREIGN KEY (area_id, record_id)
-        REFERENCES software_areas (area_id, record_id) ON DELETE RESTRICT
+        REFERENCES software_areas (area_id, record_id) ON DELETE RESTRICT,
+    FOREIGN KEY (area_id) REFERENCES software_data_areas (area_id) ON DELETE RESTRICT
 );
 CREATE INDEX acquisition_attempts_acquisition_key_index ON acquisition_attempts (acquisition_key);
 CREATE INDEX acquisition_attempts_document_key_index ON acquisition_attempts (document_key);
@@ -2001,7 +2010,8 @@ WHERE game.cloneof_text IS NOT NULL;
 CREATE VIEW software_components AS
 SELECT occurrences.occurrence_id, namespaces.snapshot_key, namespaces.source_name AS list_name,
        records.source_name AS item_name, parts.part_name, areas.area_order,
-       areas.area_kind, areas.area_name, COALESCE(rom.component_order, disk.component_order) AS component_order,
+       areas.area_kind, COALESCE(data_area.area_name, disk_area.area_name) AS area_name,
+       COALESCE(rom.component_order, disk.component_order) AS component_order,
        CASE WHEN occurrences.claim_kind = 'software_disk_entry' THEN 'disk' ELSE 'rom' END AS component_kind,
        COALESCE(rom.name, disk.name) AS component_name,
        rom.size,
@@ -2030,6 +2040,8 @@ JOIN record_namespaces AS namespaces USING (namespace_id)
 LEFT JOIN software_rom_entries AS rom USING (occurrence_id, record_id)
 LEFT JOIN software_disk_entries AS disk USING (occurrence_id, record_id)
 LEFT JOIN software_areas AS areas ON areas.area_id = COALESCE(rom.area_id, disk.area_id)
+LEFT JOIN software_data_areas AS data_area ON data_area.area_id = areas.area_id AND areas.area_kind = 'data'
+LEFT JOIN software_disk_areas AS disk_area ON disk_area.area_id = areas.area_id AND areas.area_kind = 'disk'
 LEFT JOIN software_parts AS parts USING (part_id)
 WHERE occurrences.claim_kind IN ('software_rom_entry', 'software_rom_operation', 'software_disk_entry');
 CREATE TRIGGER acquisition_attempt_transport_headers_are_immutable_delete

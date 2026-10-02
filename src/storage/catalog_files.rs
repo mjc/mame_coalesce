@@ -790,7 +790,7 @@ const fn native_payload_select() -> &'static str {
                      cmp_sample.source_column, no_intro_file.source_column, mame_sample.source_column, \
                      software_rom.source_column, software_disk.source_column) AS native_column, \
             software_part.part_name AS software_part_name, \
-            software_area.area_name AS software_area_name, \
+            COALESCE(software_data_area.area_name, software_disk_area.area_name) AS software_area_name, \
             software_area.area_order AS software_area_order, \
             software_area.area_kind AS software_area_kind, \
             software_part.part_id AS software_part_id, \
@@ -824,6 +824,10 @@ const fn native_payload_select() -> &'static str {
      LEFT JOIN software_areas AS software_area \
        ON software_area.area_id = COALESCE(software_rom.area_id, software_disk.area_id) \
       AND software_area.record_id = catalog_set.set_id \
+     LEFT JOIN software_data_areas AS software_data_area \
+       ON software_data_area.area_id = software_area.area_id AND software_area.area_kind = 'data' \
+     LEFT JOIN software_disk_areas AS software_disk_area \
+       ON software_disk_area.area_id = software_area.area_id AND software_area.area_kind = 'disk' \
      LEFT JOIN software_parts AS software_part \
        ON software_part.part_id = software_area.part_id \
       AND software_part.record_id = software_area.record_id \

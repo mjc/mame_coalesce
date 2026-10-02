@@ -510,30 +510,34 @@ struct AreaRow {
     part_id: i64,
     #[diesel(sql_type = BigInt)]
     record_id: i64,
-    #[diesel(sql_type = Text)]
-    name: String,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    data_id: Option<i64>,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    disk_id: Option<i64>,
+    #[diesel(sql_type = Nullable<Text>)]
+    name: Option<String>,
     #[diesel(sql_type = Text)]
     kind: String,
     #[diesel(sql_type = BigInt)]
     order_value: i64,
-    #[diesel(sql_type = BigInt)]
-    source_order: i64,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    source_order: Option<i64>,
     #[diesel(sql_type = Nullable<Text>)]
     size_text: Option<String>,
     #[diesel(sql_type = Nullable<BigInt>)]
     size: Option<i64>,
     #[diesel(sql_type = Nullable<BigInt>)]
     width: Option<i64>,
-    #[diesel(sql_type = BigInt)]
-    width_specified: i64,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    width_specified: Option<i64>,
     #[diesel(sql_type = Nullable<Text>)]
     endianness: Option<String>,
-    #[diesel(sql_type = BigInt)]
-    endianness_specified: i64,
-    #[diesel(sql_type = BigInt)]
-    line: i64,
-    #[diesel(sql_type = BigInt)]
-    column: i64,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    endianness_specified: Option<i64>,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    line: Option<i64>,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    column: Option<i64>,
     #[diesel(sql_type = BigInt)]
     part_record_id: i64,
     #[diesel(sql_type = BigInt)]
@@ -1287,28 +1291,46 @@ fn load_areas(
 
 fn parse_area_row(row: AreaRow) -> QueryResult<SoftwareArea> {
     let fields = match row.kind.as_str() {
-        "data" => SoftwareAreaFields::Data {
-            size_text: required_value(row.size_text, "data area declared_size_text", row.id)?,
-            size: row.size,
-            width: parse_width(required_value(row.width, "data area width", row.id)?)?,
-            width_specified: stored_bool(row.width_specified, "software area width_specified")?,
-            endianness: parse_endianness(required_value(
-                row.endianness,
-                "data area endianness",
-                row.id,
-            )?)?,
-            endianness_specified: stored_bool(
-                row.endianness_specified,
-                "software area endianness_specified",
-            )?,
-        },
+        "data" => {
+            require_native_owner(row.data_id, row.id, "software data area")?;
+            if super::software_area::native_kind(row.id, row.data_id, row.disk_id)
+                != Some(crate::mame_softwarelist::AreaKind::Data)
+            {
+                return Err(SoftwareQueryError::MismatchedOwner(row.id));
+            }
+            SoftwareAreaFields::Data {
+                size_text: required_value(row.size_text, "data area declared_size_text", row.id)?,
+                size: row.size,
+                width: parse_width(required_value(row.width, "data area width", row.id)?)?,
+                width_specified: stored_bool(
+                    required_value(row.width_specified, "data area width_specified", row.id)?,
+                    "software area width_specified",
+                )?,
+                endianness: parse_endianness(required_value(
+                    row.endianness,
+                    "data area endianness",
+                    row.id,
+                )?)?,
+                endianness_specified: stored_bool(
+                    required_value(
+                        row.endianness_specified,
+                        "data area endianness_specified",
+                        row.id,
+                    )?,
+                    "software area endianness_specified",
+                )?,
+            }
+        }
         "disk" => {
-            if row.size_text.is_some()
+            require_native_owner(row.disk_id, row.id, "software disk area")?;
+            if super::software_area::native_kind(row.id, row.data_id, row.disk_id)
+                != Some(crate::mame_softwarelist::AreaKind::Disk)
+                || row.size_text.is_some()
                 || row.size.is_some()
                 || row.width.is_some()
-                || row.width_specified != 0
+                || row.width_specified.is_some()
                 || row.endianness.is_some()
-                || row.endianness_specified != 0
+                || row.endianness_specified.is_some()
             {
                 return Err(SoftwareQueryError::MismatchedOwner(row.id));
             }
@@ -1318,12 +1340,12 @@ fn parse_area_row(row: AreaRow) -> QueryResult<SoftwareArea> {
     };
     Ok(SoftwareArea {
         id: SoftwareAreaId::from_database(row.id),
-        name: row.name,
+        name: required_value(row.name, "software area name", row.id)?,
         order: row.order_value,
-        source_order: row.source_order,
+        source_order: required_value(row.source_order, "software area source order", row.id)?,
         location: SourceLocation {
-            line: row.line,
-            column: row.column,
+            line: required_value(row.line, "software area source line", row.id)?,
+            column: required_value(row.column, "software area source column", row.id)?,
         },
         fields,
         entry_ids: Vec::new(),

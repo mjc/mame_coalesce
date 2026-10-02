@@ -30,12 +30,42 @@ WHEN NOT EXISTS (SELECT 1 FROM software_parts WHERE part_id = NEW.part_id AND re
  OR EXISTS (SELECT 1 FROM catalog_sets JOIN catalog_set_groups USING (set_group_id)
             JOIN snapshot_publications USING (snapshot_key) WHERE set_id = NEW.record_id)
  OR EXISTS (SELECT 1 FROM software_areas WHERE area_id = NEW.area_id
-            OR (part_id = NEW.part_id AND area_order = NEW.area_order)
-            OR (part_id = NEW.part_id AND source_order = NEW.source_order))
+            OR (part_id = NEW.part_id AND area_order = NEW.area_order))
 BEGIN SELECT RAISE(ABORT, 'software area requires a new unpublished software part'); END;
+CREATE TRIGGER software_data_areas_native_owner_insert BEFORE INSERT ON software_data_areas
+WHEN NOT EXISTS (SELECT 1 FROM software_areas WHERE area_id = NEW.area_id AND area_kind = 'data')
+ OR EXISTS (SELECT 1 FROM snapshot_publications WHERE snapshot_key = (
+            SELECT snapshot_key FROM catalog_set_groups WHERE set_group_id = (
+                SELECT set_group_id FROM catalog_sets WHERE set_id = (
+                    SELECT record_id FROM software_areas WHERE area_id = NEW.area_id))))
+ OR EXISTS (SELECT 1 FROM software_data_areas WHERE area_id = NEW.area_id)
+ OR EXISTS (SELECT 1 FROM software_disk_areas WHERE area_id = NEW.area_id)
+ OR EXISTS (SELECT 1 FROM software_areas AS area JOIN software_data_areas AS detail USING (area_id)
+            WHERE area.part_id = (SELECT part_id FROM software_areas WHERE area_id = NEW.area_id)
+              AND detail.source_order = NEW.source_order)
+ OR EXISTS (SELECT 1 FROM software_areas AS area JOIN software_disk_areas AS detail USING (area_id)
+            WHERE area.part_id = (SELECT part_id FROM software_areas WHERE area_id = NEW.area_id)
+              AND detail.source_order = NEW.source_order)
+BEGIN SELECT RAISE(ABORT, 'data area details require a new unpublished data area and unique source order'); END;
+CREATE TRIGGER software_disk_areas_native_owner_insert BEFORE INSERT ON software_disk_areas
+WHEN NOT EXISTS (SELECT 1 FROM software_areas WHERE area_id = NEW.area_id AND area_kind = 'disk')
+ OR EXISTS (SELECT 1 FROM snapshot_publications WHERE snapshot_key = (
+            SELECT snapshot_key FROM catalog_set_groups WHERE set_group_id = (
+                SELECT set_group_id FROM catalog_sets WHERE set_id = (
+                    SELECT record_id FROM software_areas WHERE area_id = NEW.area_id))))
+ OR EXISTS (SELECT 1 FROM software_disk_areas WHERE area_id = NEW.area_id)
+ OR EXISTS (SELECT 1 FROM software_data_areas WHERE area_id = NEW.area_id)
+ OR EXISTS (SELECT 1 FROM software_areas AS area JOIN software_data_areas AS detail USING (area_id)
+            WHERE area.part_id = (SELECT part_id FROM software_areas WHERE area_id = NEW.area_id)
+              AND detail.source_order = NEW.source_order)
+ OR EXISTS (SELECT 1 FROM software_areas AS area JOIN software_disk_areas AS detail USING (area_id)
+            WHERE area.part_id = (SELECT part_id FROM software_areas WHERE area_id = NEW.area_id)
+              AND detail.source_order = NEW.source_order)
+BEGIN SELECT RAISE(ABORT, 'disk area details require a new unpublished disk area and unique source order'); END;
 CREATE TRIGGER software_rom_entries_native_owner_insert BEFORE INSERT ON software_rom_entries
 WHEN NOT EXISTS (SELECT 1 FROM software_areas WHERE area_id = NEW.area_id AND record_id = NEW.record_id
                 AND area_kind = 'data')
+ OR NOT EXISTS (SELECT 1 FROM software_data_areas WHERE area_id = NEW.area_id)
  OR NOT EXISTS (SELECT 1 FROM asset_occurrences WHERE occurrence_id = NEW.occurrence_id
                 AND record_id = NEW.record_id AND claim_kind IN ('software_rom_entry', 'software_rom_operation'))
  OR EXISTS (SELECT 1 FROM catalog_sets JOIN catalog_set_groups USING (set_group_id)
@@ -47,6 +77,7 @@ BEGIN SELECT RAISE(ABORT, 'software ROM requires a new unpublished software area
 CREATE TRIGGER software_disk_entries_native_owner_insert BEFORE INSERT ON software_disk_entries
 WHEN NOT EXISTS (SELECT 1 FROM software_areas WHERE area_id = NEW.area_id AND record_id = NEW.record_id
                 AND area_kind = 'disk')
+ OR NOT EXISTS (SELECT 1 FROM software_disk_areas WHERE area_id = NEW.area_id)
  OR NOT EXISTS (SELECT 1 FROM asset_occurrences WHERE occurrence_id = NEW.occurrence_id
                 AND record_id = NEW.record_id AND claim_kind = 'software_disk_entry')
  OR EXISTS (SELECT 1 FROM catalog_sets JOIN catalog_set_groups USING (set_group_id)
@@ -224,8 +255,12 @@ WHEN EXISTS (
         JOIN software_parts AS parts ON parts.part_id = areas.part_id
         JOIN catalog_sets AS sets ON sets.set_id = parts.record_id
         JOIN catalog_set_groups AS groups ON groups.set_group_id = sets.set_group_id
+        LEFT JOIN software_data_areas AS data_area ON data_area.area_id = areas.area_id
+        LEFT JOIN software_disk_areas AS disk_area ON disk_area.area_id = areas.area_id
         WHERE groups.snapshot_key = NEW.snapshot_key AND groups.kind = 'software_list'
-          AND areas.record_id <> sets.set_id
+          AND (areas.record_id <> sets.set_id
+               OR (areas.area_kind = 'data' AND (data_area.area_id IS NULL OR disk_area.area_id IS NOT NULL))
+               OR (areas.area_kind = 'disk' AND (disk_area.area_id IS NULL OR data_area.area_id IS NOT NULL)))
     )
     OR EXISTS (
         SELECT 1 FROM software_rom_entries AS rom
@@ -290,14 +325,12 @@ WHEN EXISTS (
                WHERE record_id IN (SELECT set_id FROM catalog_sets JOIN catalog_set_groups USING (set_group_id)
                                    WHERE snapshot_key = NEW.snapshot_key)
                  AND (supported IS NULL OR (supported_specified = 0 AND supported <> 'yes')))
-    OR EXISTS (SELECT 1 FROM software_areas
-               WHERE area_kind = 'data'
-                 AND record_id IN (SELECT set_id FROM catalog_sets JOIN catalog_set_groups USING (set_group_id)
+    OR EXISTS (SELECT 1 FROM software_areas AS area JOIN software_data_areas AS detail USING (area_id)
+               WHERE area.record_id IN (SELECT set_id FROM catalog_sets JOIN catalog_set_groups USING (set_group_id)
                                    WHERE snapshot_key = NEW.snapshot_key)
                  AND (width IS NULL OR (width_specified = 0 AND width <> 8)))
-    OR EXISTS (SELECT 1 FROM software_areas
-               WHERE area_kind = 'data'
-                 AND record_id IN (SELECT set_id FROM catalog_sets JOIN catalog_set_groups USING (set_group_id)
+    OR EXISTS (SELECT 1 FROM software_areas AS area JOIN software_data_areas AS detail USING (area_id)
+               WHERE area.record_id IN (SELECT set_id FROM catalog_sets JOIN catalog_set_groups USING (set_group_id)
                                    WHERE snapshot_key = NEW.snapshot_key)
                  AND (endianness IS NULL OR (endianness_specified = 0 AND endianness <> 'little')))
     OR EXISTS (SELECT 1 FROM software_rom_entries
@@ -411,11 +444,20 @@ WHEN EXISTS (
             JOIN software_part_dipswitches AS switches ON switches.part_id = parts.part_id
             WHERE groups.snapshot_key = NEW.snapshot_key AND groups.kind = 'software_list'
             UNION ALL
-            SELECT parts.part_id, areas.source_order
+            SELECT parts.part_id, data_area.source_order
             FROM catalog_set_groups AS groups
             JOIN catalog_sets AS sets ON sets.set_group_id = groups.set_group_id
             JOIN software_parts AS parts ON parts.record_id = sets.set_id
             JOIN software_areas AS areas ON areas.part_id = parts.part_id
+            JOIN software_data_areas AS data_area ON data_area.area_id = areas.area_id
+            WHERE groups.snapshot_key = NEW.snapshot_key AND groups.kind = 'software_list'
+            UNION ALL
+            SELECT parts.part_id, disk_area.source_order
+            FROM catalog_set_groups AS groups
+            JOIN catalog_sets AS sets ON sets.set_group_id = groups.set_group_id
+            JOIN software_parts AS parts ON parts.record_id = sets.set_id
+            JOIN software_areas AS areas ON areas.part_id = parts.part_id
+            JOIN software_disk_areas AS disk_area ON disk_area.area_id = areas.area_id
             WHERE groups.snapshot_key = NEW.snapshot_key AND groups.kind = 'software_list'
         ) AS children
         GROUP BY children.owner_id, children.source_order HAVING COUNT(*) > 1
@@ -542,6 +584,14 @@ CREATE TRIGGER software_areas_immutable_update BEFORE UPDATE ON software_areas
 BEGIN SELECT RAISE(ABORT, 'native software areas are immutable'); END;
 CREATE TRIGGER software_areas_immutable_delete BEFORE DELETE ON software_areas
 BEGIN SELECT RAISE(ABORT, 'native software areas are immutable'); END;
+CREATE TRIGGER software_data_areas_immutable_update BEFORE UPDATE ON software_data_areas
+BEGIN SELECT RAISE(ABORT, 'native software data areas are immutable'); END;
+CREATE TRIGGER software_data_areas_immutable_delete BEFORE DELETE ON software_data_areas
+BEGIN SELECT RAISE(ABORT, 'native software data areas are immutable'); END;
+CREATE TRIGGER software_disk_areas_immutable_update BEFORE UPDATE ON software_disk_areas
+BEGIN SELECT RAISE(ABORT, 'native software disk areas are immutable'); END;
+CREATE TRIGGER software_disk_areas_immutable_delete BEFORE DELETE ON software_disk_areas
+BEGIN SELECT RAISE(ABORT, 'native software disk areas are immutable'); END;
 CREATE TRIGGER software_disk_entries_immutable_update BEFORE UPDATE ON software_disk_entries
 BEGIN SELECT RAISE(ABORT, 'native software disk entries are immutable'); END;
 CREATE TRIGGER software_disk_entries_immutable_delete BEFORE DELETE ON software_disk_entries

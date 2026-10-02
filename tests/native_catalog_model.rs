@@ -198,9 +198,12 @@ fn native_occurrences_and_details_cannot_cross_set_or_format_ownership() {
          VALUES (2,0,'yes',0,'Game','1980','Publisher');
          INSERT INTO software_parts(part_id,record_id,part_name,part_order,source_order,interface,source_line,source_column)
          VALUES (1,2,'cart',0,3,'cart',4,1);
-         INSERT INTO software_areas(area_id,part_id,record_id,area_name,area_kind,area_order,source_order,
-             declared_size_text,width,width_specified,endianness,endianness_specified,source_line,source_column)
-         VALUES (1,1,2,'rom','data',0,0,'8',8,0,'little',0,5,1);
+         INSERT INTO software_areas(area_id,part_id,record_id,area_kind,area_order)
+         VALUES (1,1,2,'data',0);
+         INSERT INTO software_data_areas(
+             area_id,area_name,source_order,declared_size_text,width,width_specified,
+             endianness,endianness_specified,source_line,source_column
+         ) VALUES (1,'rom',0,'8',8,0,'little',0,5,1);
          INSERT INTO catalog_contents(content_uuid) VALUES (zeroblob(16));
          INSERT INTO asset_occurrences(occurrence_id,record_id,occurrence_order,claim_kind)
          VALUES (1,1,0,'mame_rom'),(2,2,0,'software_rom_entry'),(3,2,1,'software_rom_operation');

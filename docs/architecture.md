@@ -196,7 +196,12 @@ parser-internal representations the public contract.
   ROM/disk occurrence API; there is no second stored payload. Cursors reject
   another snapshot, registry generation or title-list owner. Page limits do not
   truncate a title's child metadata, and historical published editions remain
-  queryable. Full lexical witnesses and executable software loading remain open.
+  queryable. Compact software-area owners have one matching data/disk detail
+  row. Names and source coordinates belong to that detail only; disk areas
+  have no data-size/width/endianness columns. Native entry FKs and insertion
+  guards require the appropriate area subtype, and publication checks complete
+  one-to-one ownership and cross-family source order. Full lexical witnesses
+  and executable software loading remain open.
 - There are no mutable `data_files`, `games`, `roms` or `archive_files`
   catalog tables. Scanned-file inventory has no foreign key assigning observed
   bytes to one expected ROM. Whole-file hash candidate counts are derived from

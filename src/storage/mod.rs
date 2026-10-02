@@ -17,6 +17,7 @@ pub mod relationships;
 pub mod repositories;
 pub mod schema;
 pub mod snapshot_history;
+mod software_area;
 
 #[cfg(test)]
 mod managed_storage_prototype;

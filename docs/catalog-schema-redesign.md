@@ -671,9 +671,10 @@ numeric/hash spelling and empty/invalid distinctions survive alongside checked
 segment interpretations, explicit default presence, component/source order,
 source locations and the actual file-declaration owner. Requested IDs bound
 both native payload branches; no catalog-wide software union is materialized.
-The existing provenance retains list/title/part/area ownership. Full title,
-info/feature/switch metadata interfaces and executable loading recipes remain
-separate unfinished work.
+The existing provenance retains list/title/part/area ownership. The public
+`catalog_software` pages include complete native title/part scalar, info,
+feature, switch and area metadata. Executable loading recipes and complete
+lexical field witnesses remain separate unfinished work.
 The [pinned loader decision table](software-list-loading.md) separates observed
 MAME 0.289 behavior from the proposed checked Rust interpretation. Approval and
 the executable interpretation remain separate gates; retaining source facts
@@ -683,9 +684,10 @@ Pin the upstream 0.289 `hash/softwarelist.dtd`, independently from machine XML.
 The accepted plural `<softwarelists>` wrapper is an application compatibility
 dialect, not the canonical DTD root.
 
-The following table describes the current physical relations, not the proposed
-separate data-area/disk-area detail tables in MAMEC-DOC-12. That document remains
-the design and acceptance checklist; current implementation is not full approval.
+The following table describes the current physical relations, including the
+separate data-area/disk-area detail tables proposed in MAMEC-DOC-12. That document
+remains the design and acceptance checklist; this alignment is not full format
+or executable-loader acceptance.
 
 | Current native relation | Fields and nesting |
 |---|---|
@@ -694,7 +696,9 @@ the design and acceptance checklist; current implementation is not full approval
 | `software_item_info`, `software_item_shared_features` | item FK, occurrence order, declared name, optional value |
 | `software_parts` | item FK, order, name, interface |
 | `software_part_features` | part FK, order, declared name, optional value |
-| `software_areas` | part/item FKs, kind=data/disk, order and name; data areas have source size text and width/endianness; disk areas have no fabricated data-area fields |
+| `software_areas` | compact part/item owner FKs, kind=data/disk and area order; exactly one matching kind-specific detail row is required at publication |
+| `software_data_areas` | area PK/FK, name, source order/location, required raw size text and virtual checked size, width/endianness and explicit-default presence |
+| `software_disk_areas` | area PK/FK, name and source order/location only; no nullable size, width or endianness placeholders |
 | `software_rom_entries` | area FK, operation order, optional name/size/CRC/SHA-1/offset/value/loadflag, status |
 | `software_file_declarations` | claim FK, unique declaring-entry FK; identifies the native entry that declares a file without copying its name/hashes |
 | `software_file_uses` | entry FK, file-declaration FK, load/continue/reload/ignore/fill/disk use kind; several ordered entries may refer to one file |

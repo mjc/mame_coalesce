@@ -271,14 +271,16 @@ fn native_software_source_text_remains_the_single_numeric_source()
 
     let mut connection = SqliteConnection::establish(database_path.as_str())?;
     let source = sql_query(
-        "SELECT document.envelope_kind, header.build, area.declared_size_text, \
-                area.declared_size, rom.size_text, rom.size, rom.offset_text, rom.offset \
+        "SELECT document.envelope_kind, header.build, data_area.declared_size_text, \
+                data_area.declared_size, rom.size_text, rom.size, rom.offset_text, rom.offset \
          FROM software_documents AS document \
          LEFT JOIN software_wrapper_headers AS header USING (snapshot_key) \
          JOIN catalog_snapshots USING (snapshot_key) \
          JOIN catalog_sets ON catalog_sets.set_group_id = ( \
            SELECT namespace_id FROM software_lists WHERE namespace_id = catalog_sets.set_group_id) \
-         JOIN software_areas AS area ON area.record_id = catalog_sets.set_id \
+         JOIN software_parts AS part ON part.record_id = catalog_sets.set_id \
+         JOIN software_areas AS area ON area.part_id = part.part_id AND area.area_kind = 'data' \
+         JOIN software_data_areas AS data_area USING (area_id) \
          JOIN software_rom_entries AS rom USING (area_id, record_id) \
          LIMIT 1",
     )
@@ -326,14 +328,15 @@ fn raw_numeric_hash_text_survives_unresolved_and_empty_interpretations()
         .ok_or("successful import did not return a snapshot")?;
     let mut connection = SqliteConnection::establish(database_path.as_str())?;
     let rows = sql_query(
-        "SELECT area.declared_size_text, area.declared_size, rom.name, rom.size_text, rom.size, \
+        "SELECT data_area.declared_size_text, data_area.declared_size, rom.name, rom.size_text, rom.size, \
                 rom.offset_text, rom.offset, rom.crc_text, rom.sha1_text, occurrence.content_uuid \
          FROM snapshot_publications AS publication \
          JOIN catalog_set_groups AS groups ON groups.snapshot_key = publication.snapshot_key \
          JOIN catalog_sets AS sets ON sets.set_group_id = groups.set_group_id \
          JOIN software_items AS items ON items.record_id = sets.set_id \
          JOIN software_parts AS parts ON parts.record_id = items.record_id \
-         JOIN software_areas AS area ON area.part_id = parts.part_id \
+         JOIN software_areas AS area ON area.part_id = parts.part_id AND area.area_kind = 'data' \
+         JOIN software_data_areas AS data_area USING (area_id) \
          JOIN software_rom_entries AS rom ON rom.area_id = area.area_id \
          JOIN asset_occurrences AS occurrence ON occurrence.occurrence_id = rom.occurrence_id \
          WHERE publication.snapshot_key = ? ORDER BY rom.component_order",

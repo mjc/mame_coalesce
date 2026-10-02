@@ -9,8 +9,8 @@ use crate::{
         SnapshotKey,
     },
     mame_softwarelist::{
-        LoadInstruction, SoftwareArea, SoftwareComponent, SoftwareDisk, SoftwareItem, SoftwareList,
-        SoftwareListCatalog, SoftwarePart, SoftwareRom, SoftwareTextPosition,
+        AreaKind, LoadInstruction, SoftwareArea, SoftwareComponent, SoftwareDisk, SoftwareItem,
+        SoftwareList, SoftwareListCatalog, SoftwarePart, SoftwareRom, SoftwareTextPosition,
     },
     storage::{
         catalog_content::{
@@ -352,28 +352,55 @@ fn insert_area(
 ) -> crate::Result<()> {
     let area_id = sql_query(
         "INSERT INTO software_areas \
-         (part_id, record_id, area_name, area_kind, area_order, source_order, declared_size_text, \
-          width, width_specified, endianness, endianness_specified, source_line, source_column) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING area_id",
+         (part_id, record_id, area_kind, area_order) VALUES (?, ?, ?, ?) RETURNING area_id",
     )
     .bind::<BigInt, _>(part_id)
     .bind::<BigInt, _>(record.as_i64())
-    .bind::<Text, _>(area.name.as_str())
     .bind::<Text, _>(area.kind.as_str())
     .bind::<BigInt, _>(checked_order(area_order, "software areas")?)
-    .bind::<BigInt, _>(checked_order(area.source_order, "software areas")?)
-    .bind::<Nullable<Text>, _>(area.declared_size_text.as_deref())
-    .bind::<Nullable<BigInt>, _>(area.width.map(i64::from))
-    .bind::<BigInt, _>(i64::from(area.width_specified))
-    .bind::<Nullable<Text>, _>(
-        area.endianness
-            .map(crate::mame_softwarelist::Endianness::as_str),
-    )
-    .bind::<BigInt, _>(i64::from(area.endianness_specified))
-    .bind::<BigInt, _>(area.location.line)
-    .bind::<BigInt, _>(area.location.column)
     .get_result::<AreaIdRow>(conn)?
     .area_id;
+
+    match area.kind {
+        AreaKind::Data => {
+            let size = area.declared_size_text.as_deref().ok_or_else(|| {
+                crate::Error::InvalidPath("data area lacks its declared size".into())
+            })?;
+            let width = area.width.ok_or_else(|| {
+                crate::Error::InvalidPath("data area lacks its effective width".into())
+            })?;
+            let endianness = area.endianness.ok_or_else(|| {
+                crate::Error::InvalidPath("data area lacks its effective endianness".into())
+            })?;
+            sql_query(
+                "INSERT INTO software_data_areas \
+                (area_id, area_name, source_order, declared_size_text, width, width_specified, \
+                 endianness, endianness_specified, source_line, source_column) \
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind::<BigInt, _>(area_id)
+            .bind::<Text, _>(area.name.as_str())
+            .bind::<BigInt, _>(checked_order(area.source_order, "software areas")?)
+            .bind::<Text, _>(size)
+            .bind::<BigInt, _>(i64::from(width))
+            .bind::<BigInt, _>(i64::from(area.width_specified))
+            .bind::<Text, _>(endianness.as_str())
+            .bind::<BigInt, _>(i64::from(area.endianness_specified))
+            .bind::<BigInt, _>(area.location.line)
+            .bind::<BigInt, _>(area.location.column)
+            .execute(conn)?;
+        }
+        AreaKind::Disk => {
+            sql_query("INSERT INTO software_disk_areas \
+                (area_id, area_name, source_order, source_line, source_column) VALUES (?, ?, ?, ?, ?)")
+                .bind::<BigInt, _>(area_id)
+                .bind::<Text, _>(area.name.as_str())
+                .bind::<BigInt, _>(checked_order(area.source_order, "software areas")?)
+                .bind::<BigInt, _>(area.location.line)
+                .bind::<BigInt, _>(area.location.column)
+                .execute(conn)?;
+        }
+    }
 
     let mut declaration = None;
     for (component_order, component) in area.components.iter().enumerate() {

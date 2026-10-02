@@ -207,28 +207,40 @@ fn add_area(
     area_order: i64,
     source_order: i64,
 ) -> TestResult<i64> {
-    let (size, width, endianness) = if kind == "data" {
-        (Some("1"), Some(8_i64), Some("little"))
-    } else {
-        (None, None, None)
-    };
-    Ok(sql_query(
+    let area_id = sql_query(
         "INSERT INTO software_areas \
-         (part_id, record_id, area_name, area_kind, area_order, source_order, declared_size_text, \
-          width, width_specified, endianness, endianness_specified, source_line, source_column) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 0, 1, 1) RETURNING area_id AS id",
+         (part_id, record_id, area_kind, area_order) \
+         VALUES (?, ?, ?, ?) RETURNING area_id AS id",
     )
     .bind::<BigInt, _>(candidate.part_id.ok_or("candidate has no part")?)
     .bind::<BigInt, _>(candidate.record_id)
-    .bind::<Text, _>(name)
     .bind::<Text, _>(kind)
     .bind::<BigInt, _>(area_order)
-    .bind::<BigInt, _>(source_order)
-    .bind::<Nullable<Text>, _>(size)
-    .bind::<Nullable<BigInt>, _>(width)
-    .bind::<Nullable<Text>, _>(endianness)
     .get_result::<IdRow>(connection)?
-    .id)
+    .id;
+    if kind == "data" {
+        sql_query(
+            "INSERT INTO software_data_areas \
+             (area_id, area_name, source_order, declared_size_text, width, width_specified, \
+              endianness, endianness_specified, source_line, source_column) \
+             VALUES (?, ?, ?, '1', 8, 0, 'little', 0, 1, 1)",
+        )
+        .bind::<BigInt, _>(area_id)
+        .bind::<Text, _>(name)
+        .bind::<BigInt, _>(source_order)
+        .execute(connection)?;
+    } else {
+        sql_query(
+            "INSERT INTO software_disk_areas \
+             (area_id, area_name, source_order, source_line, source_column) \
+             VALUES (?, ?, ?, 1, 1)",
+        )
+        .bind::<BigInt, _>(area_id)
+        .bind::<Text, _>(name)
+        .bind::<BigInt, _>(source_order)
+        .execute(connection)?;
+    }
+    Ok(area_id)
 }
 
 fn add_rom(
