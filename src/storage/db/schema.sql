@@ -484,7 +484,6 @@ CREATE TABLE mame_disk_claims (
     sha1_text TEXT,
     evidence_scope TEXT NOT NULL,
     evidence_provenance TEXT NOT NULL,
-    merge_name TEXT,
     dump_status TEXT,
     status_specified INTEGER NOT NULL CHECK (status_specified IN (0,1)),
     source_order INTEGER NOT NULL CHECK (typeof(source_order)='integer' AND source_order>=0),
@@ -808,7 +807,6 @@ CREATE TABLE mame_rom_claims (
     sha1_text TEXT,
     evidence_scope TEXT NOT NULL,
     evidence_provenance TEXT NOT NULL,
-    merge_name TEXT,
     dump_status TEXT,
     status_specified INTEGER NOT NULL CHECK (status_specified IN (0,1)),
     source_order INTEGER NOT NULL CHECK (typeof(source_order)='integer' AND source_order>=0),
@@ -1824,16 +1822,18 @@ JOIN records ON records.record_id = occurrence.record_id WHERE records.kind <> '
 CREATE VIEW asset_requirement_rows AS
 SELECT occurrence.record_id AS set_id,occurrence.occurrence_order AS component_order,
        payload.name AS asset_name,'rom' AS role,
-       payload.size,payload.evidence_scope,payload.evidence_provenance,payload.merge_name,payload.dump_status,payload.source_line,payload.source_column,NULL AS serial,NULL AS date,payload.region,payload.bios,payload.offset_text AS offset,payload.optional,compatibility.sound_only,compatibility.dispose,compatibility.load_flag,compatibility.value,compatibility.inverted,compatibility.ovha,compatibility.no_thread,NULL AS disk_index,NULL AS writable,NULL AS writeable,
+       payload.size,payload.evidence_scope,payload.evidence_provenance,merge_declaration.merge_name,payload.dump_status,payload.source_line,payload.source_column,NULL AS serial,NULL AS date,payload.region,payload.bios,payload.offset_text AS offset,payload.optional,compatibility.sound_only,compatibility.dispose,compatibility.load_flag,compatibility.value,compatibility.inverted,compatibility.ovha,compatibility.no_thread,NULL AS disk_index,NULL AS writable,NULL AS writeable,
        occurrence.content_uuid
 FROM mame_rom_claims AS payload JOIN asset_occurrences AS occurrence USING (occurrence_id)
+LEFT JOIN mame_rom_merges AS merge_declaration USING(occurrence_id)
 LEFT JOIN mame_rom_compatibility AS compatibility USING(occurrence_id)
 UNION ALL
 SELECT occurrence.record_id AS set_id,occurrence.occurrence_order AS component_order,
        payload.name AS asset_name,'disk' AS role,
-       NULL AS size,payload.evidence_scope,payload.evidence_provenance,payload.merge_name,payload.dump_status,payload.source_line,payload.source_column,NULL AS serial,NULL AS date,payload.region,NULL AS bios,NULL AS offset,payload.optional,NULL AS sound_only,NULL AS dispose,NULL AS load_flag,NULL AS value,NULL AS inverted,NULL AS ovha,NULL AS no_thread,payload.disk_index,payload.writable,compatibility.writeable,
+       NULL AS size,payload.evidence_scope,payload.evidence_provenance,merge_declaration.merge_name,payload.dump_status,payload.source_line,payload.source_column,NULL AS serial,NULL AS date,payload.region,NULL AS bios,NULL AS offset,payload.optional,NULL AS sound_only,NULL AS dispose,NULL AS load_flag,NULL AS value,NULL AS inverted,NULL AS ovha,NULL AS no_thread,payload.disk_index,payload.writable,compatibility.writeable,
        occurrence.content_uuid
 FROM mame_disk_claims AS payload JOIN asset_occurrences AS occurrence USING (occurrence_id)
+LEFT JOIN mame_disk_merges AS merge_declaration USING(occurrence_id)
 LEFT JOIN mame_disk_compatibility AS compatibility USING(occurrence_id)
 UNION ALL
 SELECT occurrence.record_id AS set_id,occurrence.occurrence_order AS component_order,
@@ -2050,6 +2050,13 @@ END;
 CREATE TRIGGER asset_occurrences_are_immutable_delete BEFORE DELETE ON asset_occurrences
 BEGIN SELECT RAISE(ABORT, 'asset occurrences are immutable'); END;
 CREATE TRIGGER asset_occurrences_are_immutable_update BEFORE UPDATE ON asset_occurrences
+BEGIN SELECT RAISE(ABORT, 'asset occurrences are immutable'); END;
+CREATE TRIGGER asset_occurrences_reject_replacement BEFORE INSERT ON asset_occurrences
+WHEN EXISTS (
+    SELECT 1 FROM asset_occurrences
+    WHERE occurrence_id=NEW.occurrence_id
+       OR (record_id=NEW.record_id AND occurrence_order=NEW.occurrence_order)
+)
 BEGIN SELECT RAISE(ABORT, 'asset occurrences are immutable'); END;
 CREATE TRIGGER asset_requirement_digest_assertions_insert INSTEAD OF INSERT ON asset_requirement_digest_assertions
 BEGIN
@@ -2397,7 +2404,7 @@ WHEN EXISTS (
     SELECT 1 FROM relationship_assertions WHERE assertion_key = NEW.assertion_key
 ) OR EXISTS (SELECT 1 FROM catalog_relationships WHERE assertion_key=NEW.assertion_key)
   OR NEW.assertion_key GLOB 'no-intro-dat-cloneof:*'
-  OR (NEW.origin='source_assertion' AND NEW.source_field IN ('cloneof','romof','sampleof','device_ref')
+  OR (NEW.origin='source_assertion' AND NEW.source_field IN ('cloneof','romof','sampleof','device_ref','merge')
       AND EXISTS (SELECT 1 FROM catalog_snapshots AS snapshot
           JOIN parser_interpretations AS interpretation USING(interpretation_key)
           WHERE snapshot.snapshot_key=NEW.source_snapshot_key AND interpretation.format='mame-listxml'))

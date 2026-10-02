@@ -1,9 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::domain::{
-    AssetRole, CatalogKey, CatalogRecordRef, ExpectedEvidence, RelationshipAssertionKey,
-    RelationshipClaim, RelationshipEndpoint, RelationshipEvidence, RelationshipExplanation,
-    RelationshipOrigin, RelationshipReviewDecision, RelationshipType, SnapshotKey,
+    AssetRole, CatalogKey, CatalogRecordRef, ExpectedEvidence, OccurrenceId,
+    RelationshipAssertionKey, RelationshipClaim, RelationshipEndpoint, RelationshipEvidence,
+    RelationshipExplanation, RelationshipOrigin, RelationshipReviewDecision, RelationshipType,
+    SnapshotKey,
 };
 use crate::resolution::{EvidenceField, compare_expected_fields};
 use serde::{Deserialize, Serialize};
@@ -32,6 +33,8 @@ pub struct ExpectedEvidenceReconciliation {
 pub struct ExpectedAssetRequirement {
     pub record: CatalogRecordRef,
     pub owner: CatalogRecordRef,
+    /// Actual root-media owner when loaded from a catalog registry.
+    pub media_entry_id: Option<OccurrenceId>,
     pub role: AssetRole,
     pub expected: ExpectedEvidence,
 }
@@ -108,10 +111,28 @@ pub fn reconcile_requirements(
     right: &RequirementSnapshot,
     relationships: &[RelationshipExplanation],
 ) -> CatalogReconciliation {
+    let native_records = left
+        .requirements
+        .iter()
+        .chain(&right.requirements)
+        .filter_map(|requirement| {
+            requirement
+                .media_entry_id
+                .map(|id| ((&requirement.record.snapshot, id), &requirement.record))
+        })
+        .collect::<BTreeMap<_, _>>();
     let mut relationship_index = BTreeMap::<CatalogRecordRef, Vec<&RelationshipExplanation>>::new();
     for explanation in relationships {
         for endpoint in [&explanation.claim.subject, &explanation.claim.target] {
-            if let RelationshipEndpoint::CatalogRecord(record) = endpoint {
+            let record = match endpoint {
+                RelationshipEndpoint::CatalogRecord(record) => Some(record),
+                RelationshipEndpoint::CatalogMediaEntry {
+                    snapshot,
+                    occurrence_id,
+                } => native_records.get(&(snapshot, *occurrence_id)).copied(),
+                _ => None,
+            };
+            if let Some(record) = record {
                 relationship_index
                     .entry(record.clone())
                     .or_default()

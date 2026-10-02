@@ -714,6 +714,7 @@ pub enum RelationshipType {
     DumpOfIntendedRelease,
     AlternateRepresentationOf,
     SourceParentClone,
+    SourceMerge,
     RuntimeDependency,
     CatalogCorrection,
     CatalogContinuity,
@@ -728,6 +729,7 @@ impl RelationshipType {
             Self::DumpOfIntendedRelease => "dump_of_intended_release",
             Self::AlternateRepresentationOf => "alternate_representation_of",
             Self::SourceParentClone => "source_parent_clone",
+            Self::SourceMerge => "source_merge",
             Self::RuntimeDependency => "runtime_dependency",
             Self::CatalogCorrection => "catalog_correction",
             Self::CatalogContinuity => "catalog_continuity",
@@ -955,6 +957,19 @@ pub enum RelationshipEndpoint {
     CatalogRecord(CatalogRecordRef),
     ContentObject(ContentIdentity),
     ExternalRecord(ExternalRecordRef),
+    /// One actual native media owner, not an encoded name/order tuple.
+    CatalogMediaEntry {
+        snapshot: SnapshotKey,
+        occurrence_id: OccurrenceId,
+    },
+    /// A source-local merge declaration; it does not assert a resolved target.
+    MameMergeReference {
+        snapshot: SnapshotKey,
+        machine_id: CatalogSetId,
+        media_kind: MameMergeKind,
+        parent_name: Option<String>,
+        merge_name: String,
+    },
     /// One concrete archive declaration, not a publisher number or game name.
     NoIntroArchive {
         snapshot: SnapshotKey,
@@ -965,6 +980,51 @@ pub enum RelationshipEndpoint {
         snapshot: SnapshotKey,
         literal: String,
     },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MameMergeKind {
+    Rom,
+    Disk,
+}
+
+/// A registry-local source occurrence, distinct from its set and shared file UUID.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "i64", into = "i64")]
+pub struct OccurrenceId(i64);
+
+impl OccurrenceId {
+    /// Query IDs are local to a registry generation, not durable interchange IDs.
+    #[must_use]
+    pub const fn from_database(value: i64) -> Self {
+        Self(value)
+    }
+
+    #[must_use]
+    pub const fn database_value(self) -> i64 {
+        self.0
+    }
+}
+
+impl TryFrom<i64> for OccurrenceId {
+    type Error = crate::Error;
+
+    fn try_from(value: i64) -> crate::Result<Self> {
+        if value > 0 {
+            Ok(Self(value))
+        } else {
+            Err(crate::Error::InvalidPath(
+                "media owner ID must be positive".into(),
+            ))
+        }
+    }
+}
+
+impl From<OccurrenceId> for i64 {
+    fn from(value: OccurrenceId) -> Self {
+        value.0
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -1092,7 +1152,7 @@ pub enum RelationshipEvidence {
     },
     Merge {
         declared_merge_name: Option<String>,
-        parent_set_name: String,
+        parent_set_name: Option<String>,
         expected_sha1: Option<String>,
         expected_crc: Option<String>,
         size: Option<i64>,

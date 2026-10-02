@@ -8,6 +8,8 @@ pub const SCHEMA: &str = concat!(
     "\n",
     include_str!("mame_relationships.sql"),
     "\n",
+    include_str!("mame_merge_guards.sql"),
+    "\n",
     include_str!("mame_relationship_projections.sql"),
     "\nCREATE VIEW mame_machine_dependency_rows AS WITH requested_mame_machines(set_id) AS (SELECT set_id FROM mame_machines) ",
     include_str!("mame_dependencies.sql"),

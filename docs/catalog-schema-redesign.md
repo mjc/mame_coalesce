@@ -711,9 +711,8 @@ when their source text contains only decimal-looking digits. Referenced parser
 interpretations cannot be replaced or deleted beneath their native facts, and
 reinterning a digest preserves the existing digest owner ID.
 
-This is not completion of the pinned MAME field contract. Native MAME merge
-relationship identities and exhaustive field/query and grammar witnesses remain
-open. The accepted `conflocation` fixture is
+This is not completion of the pinned MAME field contract. Exhaustive field/query
+and grammar witnesses remain open. The accepted `conflocation` fixture is
 compatibility input, not evidence that it belongs to the pinned 0.289 DTD.
 
 ## MAME software-list native relations
@@ -1141,8 +1140,8 @@ including the existing machine-specification sample view. Publication rejects
 missing payloads, declared sample hashes, mismatched owners, duplicate child
 positions and late/replaced facts; independently computed metadata is distinct.
 History sample hydration uses the actual occurrence key rather than materializing
-sample rows from unrelated snapshots. Native MAME merge relationship identities
-and exhaustive pinned-DTD field/grammar/query witnesses remain unfinished.
+sample rows from unrelated snapshots. Exhaustive pinned-DTD field/grammar/query
+witnesses remain unfinished.
 
 Machine link attributes (`cloneof`, `romof`, `sampleof`) and device references
 now own compact reported relationship IDs with actual kind-qualified FKs and
@@ -1152,12 +1151,28 @@ The former generic dependency table and copied MAME clone assertions are gone;
 common dependency/explanation shapes are read-only query projections. Reimport,
 source-free queries, history, support/reviews and paired backups use the issued
 identities. Repeated machine names and empty source references remain distinct,
-not assumed unique by a parser-wide name set. A resolved merge first requires
-one actual parent owner; one matching media entry cannot resolve parent ambiguity.
-MAME merge identities, other native reported families and derived/user endpoint
-registries remain pending cutovers; this does not finish the shared model.
+not assumed unique by a parser-wide name set. `mame_rom_merges` and
+`mame_disk_merges` now own their merge literal/location once, keyed to the actual
+matching native media occurrence and one compact reported relationship ID.
+The ROM/disk payloads no longer copy merge text. Even parentless, empty or
+ambiguous references receive an identity and remain explainable, reviewable and
+usable as ordered support. `SourceMerge` describes the source declaration:
+its subject is a typed native `OccurrenceId`, not a serialized name/order tuple;
+its target is an unresolved ROM/disk reference with the actual declaring machine
+and optional parent context. No resolved target or exact-content identity is
+fabricated. Parent context derives from existing native machine links; it is
+not copied into each merge. Other native reported families and derived/user/
+observed endpoint registries remain pending cutovers; this does not finish the
+shared model.
 
-Replacement seals cover the set and group identities as well as their native
+Reconciliation carries the actual occurrence ID in transient root requirements.
+It indexes native evidence by snapshot and occurrence, attaching a declaration
+only to its full source record. Unresolved references do not attach evidence to
+parent records or same-owner siblings. Source-merge context changes neither
+matching status nor exact-identity candidate support; CHD-header evidence remains
+separate from whole-container identity. No stored logical-name projection is added.
+
+Replacement seals cover occurrence IDs and owner positions, set and group identities, and their native
 children, even when foreign keys and recursive triggers are disabled. Readiness
 independently checks each declaration's actual owner edition. Published device
 reference ordinals are dense, so projected attribute dependencies cannot collide

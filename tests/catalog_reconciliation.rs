@@ -323,6 +323,7 @@ fn asset(
     sha1: Option<[u8; 20]>,
 ) -> ExpectedAssetRequirement {
     ExpectedAssetRequirement {
+        media_entry_id: None,
         record: CatalogRecordRef::new(
             snapshot.clone(),
             CatalogRecordKind::AssetRequirement,
@@ -810,7 +811,7 @@ fn software_reconciliation_provenance_uses_only_reported_digest_scope()
 }
 
 #[test]
-fn merge_assertion_targets_the_unique_asset_requirement_record()
+fn native_merge_evidence_attaches_only_to_the_declaring_media_record()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let database_path =
@@ -821,7 +822,7 @@ fn merge_assertion_targets_the_unique_asset_requirement_record()
         .map_err(|path| std::io::Error::other(format!("non-UTF-8 path: {}", path.display())))?;
     std::fs::write(
         &document,
-        r#"<mame mameconfig="10"><machine name="parent"><description>Parent</description><disk name="parent_disk" sha1="1123456789abcdef0123456789abcdef01234567" /></machine><machine name="clone" cloneof="parent"><description>Clone</description><disk name="clone_disk" sha1="1123456789abcdef0123456789abcdef01234567" merge="parent_disk" /></machine></mame>"#,
+        r#"<mame mameconfig="10"><machine name="parent"><description>Parent</description><disk name="parent_disk" sha1="2123456789abcdef0123456789abcdef01234567" /></machine><machine name="clone" cloneof="parent"><description>Clone</description><disk name="clone_disk" sha1="1123456789abcdef0123456789abcdef01234567" merge="parent_disk" /></machine></mame>"#,
     )?;
     let import = |catalog: &str| CatalogImportRequest {
         document_path: document.clone(),
@@ -845,15 +846,162 @@ fn merge_assertion_targets_the_unique_asset_requirement_record()
             .ok_or("right machine import produced no snapshot")?,
     )?;
     let parent_match = report.outcomes.iter().find(|outcome| {
-        outcome
-            .left
-            .as_ref()
-            .is_some_and(|record| record.key.as_str() == r#"["parent","parent_disk",0]"#)
+        [&outcome.left, &outcome.right].iter().all(|record| {
+            record
+                .as_ref()
+                .is_some_and(|record| record.key.as_str() == r#"["parent","parent_disk",0]"#)
+        })
     });
     let outcome = parent_match.ok_or("parent asset requirement pair missing")?;
-    assert!(outcome.relationship_evidence.iter().any(|explanation| {
-        explanation.claim.relation_type == RelationshipType::ExactContentIdentity
+    assert!(!outcome.relationship_evidence.iter().any(|explanation| {
+        explanation.claim.relation_type == RelationshipType::SourceMerge
             && explanation.source_field.as_deref() == Some("merge")
     }));
+    let child = report
+        .outcomes
+        .iter()
+        .find(|outcome| {
+            [&outcome.left, &outcome.right].iter().all(|record| {
+                record
+                    .as_ref()
+                    .is_some_and(|record| record.key.as_str() == r#"["clone","clone_disk",0]"#)
+            })
+        })
+        .ok_or("declaring child media pair missing")?;
+    let mut attached = child
+        .relationship_evidence
+        .iter()
+        .filter(|explanation| explanation.claim.relation_type == RelationshipType::SourceMerge)
+        .map(|explanation| explanation.assertion_key.clone())
+        .collect::<Vec<_>>();
+    let mut issued = app::explain_relationships(&database)?
+        .into_iter()
+        .filter(|explanation| explanation.claim.relation_type == RelationshipType::SourceMerge)
+        .map(|explanation| explanation.assertion_key)
+        .collect::<Vec<_>>();
+    attached.sort();
+    issued.sort();
+    assert_eq!(issued.len(), 2);
+    assert_eq!(attached, issued);
+    assert_eq!(child.status, ReconciliationStatus::Compatible);
+    assert!(
+        child.relationship_candidate().is_none(),
+        "CHD-header evidence and a merge literal do not prove whole-container identity"
+    );
+    Ok(())
+}
+
+fn native_merge_context(
+    snapshot: SnapshotKey,
+    occurrence_id: mame_coalesce::domain::OccurrenceId,
+    assertion_key: &str,
+) -> Result<RelationshipExplanation, Box<dyn std::error::Error>> {
+    use mame_coalesce::domain::{CatalogSetId, MameMergeKind};
+
+    Ok(RelationshipExplanation {
+        assertion_key: RelationshipAssertionKey::new(assertion_key),
+        claim: RelationshipClaim {
+            relation_type: RelationshipType::SourceMerge,
+            subject: RelationshipEndpoint::CatalogMediaEntry {
+                snapshot: snapshot.clone(),
+                occurrence_id,
+            },
+            target: RelationshipEndpoint::MameMergeReference {
+                snapshot: snapshot.clone(),
+                machine_id: CatalogSetId::try_from(1)?,
+                media_kind: MameMergeKind::Rom,
+                parent_name: Some("unresolved-parent".into()),
+                merge_name: "unresolved.bin".into(),
+            },
+            origin: RelationshipOrigin::SourceAssertion {
+                snapshot,
+                field: "merge".into(),
+                location: None,
+            },
+            evidence: RelationshipEvidence::Merge {
+                declared_merge_name: Some("unresolved.bin".into()),
+                parent_set_name: Some("unresolved-parent".into()),
+                expected_sha1: None,
+                expected_crc: None,
+                size: None,
+            },
+        },
+        source_field: Some("merge".into()),
+        source_location: None,
+        source: None,
+        latest_review: None,
+        review_history: vec![],
+    })
+}
+
+#[test]
+fn native_media_evidence_is_snapshot_and_occurrence_qualified()
+-> Result<(), Box<dyn std::error::Error>> {
+    use mame_coalesce::domain::OccurrenceId;
+
+    let left_catalog = CatalogKey::new("native-left");
+    let right_catalog = CatalogKey::new("native-right");
+    let left_key = snapshot_key(&left_catalog, b"left");
+    let right_key = snapshot_key(&right_catalog, b"right");
+    let third_key = snapshot_key(&CatalogKey::new("native-third"), b"third");
+    let first = OccurrenceId::try_from(1)?;
+    let second = OccurrenceId::try_from(2)?;
+    let mut declaring = asset(&left_key, "same-owner", "declared.bin", None, Some([8; 20]));
+    declaring.media_entry_id = Some(first);
+    let mut sibling = asset(&left_key, "same-owner", "sibling.bin", None, Some([8; 20]));
+    sibling.media_entry_id = Some(second);
+    let mut opposite = asset(
+        &right_key,
+        "same-owner",
+        "opposite.bin",
+        None,
+        Some([8; 20]),
+    );
+    opposite.media_entry_id = Some(first);
+    let left = RequirementSnapshot {
+        catalog: left_catalog,
+        snapshot: left_key.clone(),
+        requirements: vec![declaring, sibling],
+    };
+    let right = RequirementSnapshot {
+        catalog: right_catalog,
+        snapshot: right_key,
+        requirements: vec![opposite],
+    };
+    let declaration = native_merge_context(left_key, first, "native-merge-context")?;
+    let unrelated = native_merge_context(third_key, first, "wrong-snapshot")?;
+    let baseline = reconcile_requirements(&left, &right, &[]);
+    let context = [declaration, unrelated];
+    let report = reconcile_requirements(&left, &right, &context);
+    assert_eq!(report.outcomes.len(), 2);
+    for (outcome, original) in report.outcomes.iter().zip(&baseline.outcomes) {
+        assert_eq!(outcome.status, original.status);
+        assert_eq!(outcome.evidence, original.evidence);
+        let belongs = outcome
+            .left
+            .as_ref()
+            .is_some_and(|record| record.key.as_str().contains("declared.bin"));
+        assert_eq!(outcome.relationship_evidence.len(), usize::from(belongs));
+        for explanation in &outcome.relationship_evidence {
+            assert_eq!(explanation.assertion_key.as_str(), "native-merge-context");
+        }
+    }
+    let unique_left = RequirementSnapshot {
+        requirements: vec![left.requirements[0].clone()],
+        ..left
+    };
+    let whole_asset = reconcile_requirements(&unique_left, &right, &context);
+    assert_eq!(whole_asset.outcomes.len(), 1);
+    assert_eq!(
+        whole_asset.outcomes[0].status,
+        ReconciliationStatus::Compatible
+    );
+    let candidate = whole_asset.outcomes[0]
+        .relationship_candidate()
+        .ok_or("whole-asset positive control lost its candidate")?;
+    assert!(
+        matches!(candidate.origin, RelationshipOrigin::DerivedCandidate { supporting_assertions, .. } if supporting_assertions.is_empty()),
+        "source merge context cannot support exact identity"
+    );
     Ok(())
 }

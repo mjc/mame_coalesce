@@ -160,8 +160,17 @@ Machine `cloneof`, `romof`, `sampleof` and ordered device references own their
 declared text once, with real FKs to compact reported relationship identities.
 Issued review keys survive reimport and paired backup; source references do not
 copy endpoints into generic assertion rows. Empty targets and repeated machine
-names retain distinct native owners. Merge resolution requires one parent owner
-before matching its media; a matching filename cannot resolve an ambiguous name.
+names retain distinct native owners. ROM/disk merges likewise own one native
+declaration and issued review key, even without a parent or resolvable filename.
+Absent and explicitly empty merge text remain different. `SourceMerge`
+explanations identify the actual media occurrence and retain an unresolved
+reference to its declaring machine, ROM/disk kind, optional parent and merge name.
+They do not fabricate a resolved target or an exact-content identity assertion.
+Resolution remains a separate assertion; matching a filename cannot resolve
+an ambiguous parent name. Media IDs and owner positions cannot be replaced.
+Reconciliation attaches merge context through the actual snapshot/media ID;
+neither a same-named sibling nor an unresolved parent receives that evidence.
+Merge context does not change hash/size matching or support exact identity.
 
 No-Intro flat DAT XML has four explicit import interpretations:
 `no-intro-dat-v3-strict`, `no-intro-dat-v3-compatible`,
@@ -490,8 +499,8 @@ family. ROM/disk/sample references identify existing occurrences without copying
 payloads. Repeated machine names remain distinct, and continuations are pinned
 to their snapshot and registry generation. Queries read stored native facts, not
 the source XML. Raw ROM size/offset spelling and qualified compatibility owners
-are retained. Native MAME merge relationship identities, the other relationship
-endpoint cutovers and exhaustive pinned-DTD field/grammar/query coverage remain
+are retained. The other reported/derived/user/observed relationship endpoint
+cutovers and exhaustive pinned-DTD field/grammar/query coverage remain
 unfinished.
 
 The separate software-list adapter imports list-scoped items, parts,

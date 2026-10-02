@@ -151,7 +151,7 @@ fn empty_references_and_repeated_machine_names_keep_distinct_native_owners() -> 
 }
 
 #[test]
-fn merge_resolution_requires_one_parent_owner_not_just_one_matching_file() -> TestResult {
+fn merge_declarations_never_invent_resolutions_for_unique_or_ambiguous_parents() -> TestResult {
     use mame_coalesce::domain::RelationshipType;
     for ambiguous in [false, true] {
         let extra_parent = if ambiguous {
@@ -176,9 +176,16 @@ fn merge_resolution_requires_one_parent_owner_not_just_one_matching_file() -> Te
             })
             .count();
         assert_eq!(
-            merges,
-            usize::from(!ambiguous),
-            "ambiguous parent ownership cannot become an exact-content claim"
+            merges, 0,
+            "reported merges are not resolved identity assertions"
+        );
+        assert_eq!(
+            explanations
+                .iter()
+                .filter(|row| row.claim.relation_type == RelationshipType::SourceMerge)
+                .count(),
+            1,
+            "declared merge remains visible even with ambiguous parent ownership"
         );
     }
     Ok(())

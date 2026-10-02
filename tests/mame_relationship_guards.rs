@@ -189,6 +189,72 @@ fn insert_device_reference(
     .execute(connection)
 }
 
+fn insert_media_claim(
+    connection: &mut SqliteConnection,
+    owner: i64,
+    order: i64,
+    kind: &str,
+) -> TestResult<i64> {
+    insert_media_claim_at_source_order(connection, owner, order, kind, order + 1)
+}
+
+fn insert_media_claim_at_source_order(
+    connection: &mut SqliteConnection,
+    owner: i64,
+    order: i64,
+    kind: &str,
+    source_order: i64,
+) -> TestResult<i64> {
+    let claim_kind = format!("mame_{kind}");
+    let occurrence = sql_query(
+        "INSERT INTO asset_occurrences(record_id,occurrence_order,claim_kind) \
+         VALUES (?,?,?) RETURNING occurrence_id AS value",
+    )
+    .bind::<BigInt, _>(owner)
+    .bind::<BigInt, _>(order)
+    .bind::<Text, _>(&claim_kind)
+    .get_result::<IdRow>(connection)?
+    .value;
+    match kind {
+        "rom" => {
+            sql_query("INSERT INTO mame_rom_claims(occurrence_id,name,evidence_scope,evidence_provenance,dump_status,status_specified,source_order,source_line,source_column,optional,optional_specified) VALUES (?,'rom.bin','whole_asset','source_declared','good',0,?,1,1,0,0)")
+                .bind::<BigInt, _>(occurrence)
+                .bind::<BigInt, _>(source_order)
+                .execute(connection)?;
+        }
+        "disk" => {
+            sql_query("INSERT INTO mame_disk_claims(occurrence_id,name,evidence_scope,evidence_provenance,dump_status,status_specified,source_order,source_line,source_column,optional,optional_specified,writable,writable_specified) VALUES (?,'disk.chd','chd_header_sha1','source_declared','good',0,?,1,1,0,0,0,0)")
+                .bind::<BigInt, _>(occurrence)
+                .bind::<BigInt, _>(source_order)
+                .execute(connection)?;
+        }
+        _ => return Err(format!("unsupported media kind: {kind}").into()),
+    }
+    Ok(occurrence)
+}
+
+fn insert_native_merge(
+    connection: &mut SqliteConnection,
+    kind: &str,
+    occurrence: i64,
+    identity: i64,
+    name: &str,
+) -> diesel::QueryResult<usize> {
+    let table = match kind {
+        "rom" => "mame_rom_merges",
+        "disk" => "mame_disk_merges",
+        _ => return Err(diesel::result::Error::NotFound),
+    };
+    sql_query(format!(
+        "INSERT INTO {table}(occurrence_id,relationship_id,merge_name,source_line,source_column) \
+         VALUES (?,?,?,1,1)"
+    ))
+    .bind::<BigInt, _>(occurrence)
+    .bind::<BigInt, _>(identity)
+    .bind::<Text, _>(name)
+    .execute(connection)
+}
+
 fn publish(connection: &mut SqliteConnection, snapshot: &str) -> diesel::QueryResult<usize> {
     sql_query("INSERT INTO snapshot_publications(catalog_key,document_key,interpretation_key,snapshot_key) SELECT catalog_key,document_key,interpretation_key,snapshot_key FROM catalog_snapshots WHERE snapshot_key=?")
         .bind::<Text, _>(snapshot)
@@ -522,6 +588,140 @@ fn assert_published_device_immutable(
 }
 
 #[test]
+fn native_merge_owners_require_exact_issued_kind_edition_and_media_claim() -> TestResult {
+    let (_directory, database_path, base) = seed_database()?;
+    let mut connection = open_connection(&database_path)?;
+    let (snapshot, owner) = pending_machine(&mut connection, &base, "merge-owner")?;
+    let (other_snapshot, other_owner) =
+        pending_machine(&mut connection, &base, "merge-other-edition")?;
+    let rom = insert_media_claim(&mut connection, owner, 0, "rom")?;
+    let disk = insert_media_claim(&mut connection, owner, 1, "disk")?;
+    let foreign_rom = insert_media_claim(&mut connection, other_owner, 0, "rom")?;
+
+    assert!(insert_native_merge(&mut connection, "rom", rom, i64::MAX, "missing.bin").is_err());
+
+    let wrong_kind = insert_identity(&mut connection, &snapshot, "merge-wrong-kind")?;
+    insert_reported(&mut connection, wrong_kind, "mame_disk_merge")?;
+    assert!(insert_native_merge(&mut connection, "rom", rom, wrong_kind, "wrong.bin").is_err());
+
+    let foreign = insert_identity(&mut connection, &snapshot, "merge-cross-edition")?;
+    insert_reported(&mut connection, foreign, "mame_rom_merge")?;
+    assert!(
+        insert_native_merge(&mut connection, "rom", foreign_rom, foreign, "foreign.bin").is_err()
+    );
+
+    let wrong_payload = insert_identity(&mut connection, &snapshot, "merge-wrong-payload")?;
+    insert_reported(&mut connection, wrong_payload, "mame_rom_merge")?;
+    assert!(
+        insert_native_merge(&mut connection, "rom", disk, wrong_payload, "disk-as-rom").is_err()
+    );
+
+    let rom_identity = insert_identity(&mut connection, &snapshot, "merge-valid-rom")?;
+    insert_reported(&mut connection, rom_identity, "mame_rom_merge")?;
+    insert_native_merge(&mut connection, "rom", rom, rom_identity, "")?;
+    assert!(insert_native_merge(&mut connection, "disk", disk, rom_identity, "reuse.chd").is_err());
+
+    let disk_identity = insert_identity(&mut connection, &snapshot, "merge-valid-disk")?;
+    insert_reported(&mut connection, disk_identity, "mame_disk_merge")?;
+    insert_native_merge(&mut connection, "disk", disk, disk_identity, "")?;
+
+    let (unclosed_snapshot, _) =
+        pending_machine(&mut connection, &base, "merge-publication-unclosed")?;
+    let unclosed_identity = insert_identity(&mut connection, &unclosed_snapshot, "unclosed-merge")?;
+    insert_reported(&mut connection, unclosed_identity, "mame_rom_merge")?;
+    assert!(publish(&mut connection, &unclosed_snapshot).is_err());
+
+    let (closed_snapshot, closed_owner) =
+        pending_machine(&mut connection, &base, "merge-publication-closure")?;
+    let closed_rom = insert_media_claim(&mut connection, closed_owner, 0, "rom")?;
+    let closed_identity = insert_identity(&mut connection, &closed_snapshot, "merge-closed")?;
+    insert_reported(&mut connection, closed_identity, "mame_rom_merge")?;
+    insert_native_merge(
+        &mut connection,
+        "rom",
+        closed_rom,
+        closed_identity,
+        "closed.bin",
+    )?;
+    assert_eq!(publish(&mut connection, &closed_snapshot)?, 1);
+    assert!(publish(&mut connection, &other_snapshot).is_ok());
+    Ok(())
+}
+
+#[test]
+fn published_native_merges_reject_late_facts_mutations_deletes_and_replacements() -> TestResult {
+    let (_directory, database_path, base) = seed_database()?;
+    let mut connection = open_connection(&database_path)?;
+    let (snapshot, owner) = pending_machine(&mut connection, &base, "merge-immutable")?;
+    let rom = insert_media_claim(&mut connection, owner, 0, "rom")?;
+    let rom_identity = insert_identity(&mut connection, &snapshot, "published-rom-merge")?;
+    insert_reported(&mut connection, rom_identity, "mame_rom_merge")?;
+    insert_native_merge(&mut connection, "rom", rom, rom_identity, "parent.bin")?;
+    let disk = insert_media_claim(&mut connection, owner, 1, "disk")?;
+    let disk_identity = insert_identity(&mut connection, &snapshot, "published-disk-merge")?;
+    insert_reported(&mut connection, disk_identity, "mame_disk_merge")?;
+    insert_native_merge(&mut connection, "disk", disk, disk_identity, "parent.chd")?;
+    assert_eq!(publish(&mut connection, &snapshot)?, 1);
+    connection.batch_execute("PRAGMA foreign_keys=OFF; PRAGMA recursive_triggers=OFF;")?;
+
+    assert!(insert_identity(&mut connection, &snapshot, "late-merge-identity").is_err());
+    assert!(insert_native_merge(&mut connection, "rom", rom, i64::MAX, "late.bin").is_err());
+    assert!(insert_native_merge(&mut connection, "disk", disk, i64::MAX, "late.chd").is_err());
+    assert!(
+        sql_query("UPDATE mame_rom_merges SET merge_name='changed.bin' WHERE relationship_id=?")
+            .bind::<BigInt, _>(rom_identity)
+            .execute(&mut connection)
+            .is_err()
+    );
+    assert!(
+        sql_query("DELETE FROM mame_rom_merges WHERE relationship_id=?")
+            .bind::<BigInt, _>(rom_identity)
+            .execute(&mut connection)
+            .is_err()
+    );
+    assert_rejected(
+        sql_query("INSERT OR REPLACE INTO mame_rom_merges(occurrence_id,relationship_id,merge_name,source_line,source_column) VALUES (?,?,'replacement.bin',1,1)")
+            .bind::<BigInt, _>(rom)
+            .bind::<BigInt, _>(rom_identity)
+            .execute(&mut connection),
+        "native ROM merge replacement",
+        "MAME ROM merge requires an unused source identity",
+    )?;
+    assert!(
+        sql_query("UPDATE mame_disk_merges SET merge_name='changed.chd' WHERE relationship_id=?")
+            .bind::<BigInt, _>(disk_identity)
+            .execute(&mut connection)
+            .is_err()
+    );
+    assert!(
+        sql_query("DELETE FROM mame_disk_merges WHERE relationship_id=?")
+            .bind::<BigInt, _>(disk_identity)
+            .execute(&mut connection)
+            .is_err()
+    );
+    assert_rejected(
+        sql_query("INSERT OR REPLACE INTO mame_disk_merges(occurrence_id,relationship_id,merge_name,source_line,source_column) VALUES (?,?,'replacement.chd',1,1)")
+            .bind::<BigInt, _>(disk)
+            .bind::<BigInt, _>(disk_identity)
+            .execute(&mut connection),
+        "native disk merge replacement",
+        "MAME disk merge requires an unused source identity",
+    )?;
+    let originals = sql_query("SELECT count(*) AS value FROM (SELECT occurrence_id FROM mame_rom_merges WHERE occurrence_id=? AND relationship_id=? AND merge_name='parent.bin' UNION ALL SELECT occurrence_id FROM mame_disk_merges WHERE occurrence_id=? AND relationship_id=? AND merge_name='parent.chd')")
+        .bind::<BigInt, _>(rom)
+        .bind::<BigInt, _>(rom_identity)
+        .bind::<BigInt, _>(disk)
+        .bind::<BigInt, _>(disk_identity)
+        .get_result::<IdRow>(&mut connection)?;
+    assert_eq!(originals.value, 2);
+    assert!(sql_query("UPDATE reported_catalog_relationships SET source_reference_kind='mame_disk_merge' WHERE relationship_id=?")
+        .bind::<BigInt, _>(rom_identity)
+        .execute(&mut connection)
+        .is_err());
+    Ok(())
+}
+
+#[test]
 fn empty_native_text_is_preserved_while_null_text_is_rejected() -> TestResult {
     let (_directory, database_path, base) = seed_database()?;
     let mut connection = open_connection(&database_path)?;
@@ -669,13 +869,28 @@ fn readiness_checks_actual_owner_edition_even_if_parent_rows_are_corrupt() -> Te
     let device = insert_identity(&mut connection, &snapshot, "ready-device")?;
     insert_reported(&mut connection, device, "mame_device_ref")?;
     insert_device_reference(&mut connection, owner, 0, "chip", "@chip", device)?;
+    for (order, kind, key) in [
+        (0, "rom", "ready-rom-merge"),
+        (1, "disk", "ready-disk-merge"),
+    ] {
+        let occurrence =
+            insert_media_claim_at_source_order(&mut connection, owner, order, kind, order + 2)?;
+        let identity = insert_identity(&mut connection, &snapshot, key)?;
+        insert_reported(&mut connection, identity, &format!("mame_{kind}_merge"))?;
+        insert_native_merge(&mut connection, kind, occurrence, identity, "parent")?;
+    }
     assert_eq!(publish(&mut connection, &snapshot)?, 1);
     let lookup = concat!(
         "SELECT is_published AS value FROM (WITH requested(assertion_key) AS (VALUES (?)) ",
         include_str!("../src/storage/db/relationship_readiness.sql"),
         ")"
     );
-    for key in ["ready-link", "ready-device"] {
+    for key in [
+        "ready-link",
+        "ready-device",
+        "ready-rom-merge",
+        "ready-disk-merge",
+    ] {
         assert_eq!(
             sql_query(lookup)
                 .bind::<Text, _>(key)
@@ -692,7 +907,12 @@ fn readiness_checks_actual_owner_edition_even_if_parent_rows_are_corrupt() -> Te
         .bind::<BigInt, _>(owner)
         .bind::<BigInt, _>(pending_owner)
         .execute(&mut connection)?;
-    for key in ["ready-link", "ready-device"] {
+    for key in [
+        "ready-link",
+        "ready-device",
+        "ready-rom-merge",
+        "ready-disk-merge",
+    ] {
         assert_eq!(
             sql_query(lookup)
                 .bind::<Text, _>(key)
@@ -708,4 +928,46 @@ fn readiness_checks_actual_owner_edition_even_if_parent_rows_are_corrupt() -> Te
 struct TextRow {
     #[diesel(sql_type = Text)]
     value: String,
+}
+
+#[test]
+fn native_merge_occurrences_cannot_be_retargeted_to_another_edition() -> TestResult {
+    let (_directory, path, base) = seed_database()?;
+    let mut connection = open_connection(&path)?;
+    let (snapshot, owner) = pending_machine(&mut connection, &base, "merge-occurrence-seal")?;
+    let occurrence = insert_media_claim(&mut connection, owner, 0, "rom")?;
+    let identity = insert_identity(&mut connection, &snapshot, "merge-occurrence-seal")?;
+    insert_reported(&mut connection, identity, "mame_rom_merge")?;
+    insert_native_merge(&mut connection, "rom", occurrence, identity, "parent.bin")?;
+    assert_eq!(publish(&mut connection, &snapshot)?, 1);
+    let (_pending, pending_owner) = pending_machine(&mut connection, &base, "merge-retarget")?;
+    assert!(
+        sql_query("INSERT OR REPLACE INTO asset_occurrences(occurrence_id,record_id,occurrence_order,claim_kind) VALUES (?,?,0,'mame_rom')")
+            .bind::<BigInt, _>(occurrence)
+            .bind::<BigInt, _>(pending_owner)
+            .execute(&mut connection)
+            .is_err(),
+        "a merge's actual media ID cannot move to another machine/edition"
+    );
+    let pending_occurrence = insert_media_claim(&mut connection, pending_owner, 0, "rom")?;
+    assert_ne!(occurrence, pending_occurrence);
+    Ok(())
+}
+
+#[test]
+fn native_merge_occurrence_positions_cannot_be_replaced() -> TestResult {
+    let (_directory, path, base) = seed_database()?;
+    let mut connection = open_connection(&path)?;
+    let (_snapshot, owner) = pending_machine(&mut connection, &base, "merge-position-seal")?;
+    let occurrence = insert_media_claim(&mut connection, owner, 0, "rom")?;
+    assert!(
+        sql_query("INSERT OR REPLACE INTO asset_occurrences(record_id,occurrence_order,claim_kind) VALUES (?,0,'mame_rom')")
+            .bind::<BigInt, _>(owner)
+            .execute(&mut connection)
+            .is_err(),
+        "an existing owner/position cannot silently acquire another media ID"
+    );
+    let control = insert_media_claim(&mut connection, owner, 1, "rom")?;
+    assert_ne!(occurrence, control);
+    Ok(())
 }

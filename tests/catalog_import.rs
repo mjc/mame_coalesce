@@ -2827,7 +2827,7 @@ fn failed_late_mame_eof_does_not_publish_streamed_records() -> Result<(), Box<dy
 }
 
 #[test]
-fn mame_merge_rom_resolves_when_parent_machine_follows_child()
+fn mame_merge_declarations_preserve_parent_literal_in_either_machine_order()
 -> Result<(), Box<dyn std::error::Error>> {
     let (directory, database, mut connection) = setup()?;
     let mut snapshots = Vec::new();
@@ -2855,7 +2855,7 @@ fn mame_merge_rom_resolves_when_parent_machine_follows_child()
     }
     assert_eq!(count(&mut connection, "catalog_snapshots")?, 2);
 
-    let mut resolved = Vec::new();
+    let mut declarations = Vec::new();
     for snapshot in &snapshots {
         let asset = sql_query(
             "SELECT asset_name || ':' || merge_name || ':' || hex(crc) AS value \
@@ -2865,24 +2865,28 @@ fn mame_merge_rom_resolves_when_parent_machine_follows_child()
         .get_result::<TextRow>(&mut connection)
         .map_err(|error| format!("merged asset lookup failed: {error}"))?;
         let relation = sql_query(
-            "SELECT source_target_a AS value FROM relationship_assertions \
-             WHERE source_snapshot_key = ? AND source_field = 'merge'",
+            "SELECT source_target_a AS value FROM relationship_assertion_explanations \
+             WHERE source_snapshot_key = ? AND source_field = 'merge' \
+               AND relation_type='source_merge' AND subject_kind='catalog_media_entry'",
         )
         .bind::<Text, _>(snapshot.as_str())
         .get_result::<TextRow>(&mut connection)
         .map_err(|error| format!("merge relationship lookup failed: {error}"))?;
-        resolved.push((asset.value, relation.value));
+        declarations.push((asset.value, relation.value));
     }
     assert_eq!(
-        resolved[0],
+        declarations[0],
         ("child.rom:shared.rom:12345678".into(), "parent".into())
     );
-    assert_eq!(resolved[1], resolved[0]);
+    assert_eq!(declarations[1], declarations[0]);
+    assert_eq!(count(&mut connection, "mame_rom_merges")?, 2);
+    assert_eq!(count(&mut connection, "relationship_assertions")?, 0);
     Ok(())
 }
 
 #[test]
-fn mame_forward_merges_resolve_across_asset_pagination() -> Result<(), Box<dyn std::error::Error>> {
+fn mame_forward_merge_declarations_keep_all_native_owners() -> Result<(), Box<dyn std::error::Error>>
+{
     use std::fmt::Write as _;
 
     const ASSET_COUNT: usize = 300;
@@ -2920,11 +2924,12 @@ fn mame_forward_merges_resolve_across_asset_pagination() -> Result<(), Box<dyn s
 
     let assertion_counts = sql_query(
         "SELECT COUNT(*) || ':' || \
-                COUNT(DISTINCT source_subject_a || ':' || source_subject_b || ':' || source_subject_c) || ':' || \
-                COUNT(DISTINCT source_target_a || ':' || source_target_b || ':' || source_target_c) AS value \
-         FROM relationship_assertions \
-         WHERE source_snapshot_key = ? AND relation_type = 'exact_content_identity' \
-           AND source_field = 'merge'",
+                COUNT(DISTINCT source_subject_c) || ':' || \
+                COUNT(DISTINCT source_target_b) AS value \
+         FROM relationship_assertion_explanations \
+         WHERE source_snapshot_key = ? AND relation_type = 'source_merge' \
+           AND source_field = 'merge' AND subject_kind='catalog_media_entry' \
+           AND source_target_a='parent' AND source_target_c IS NULL",
     )
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<TextRow>(&mut connection)?;
@@ -2932,6 +2937,11 @@ fn mame_forward_merges_resolve_across_asset_pagination() -> Result<(), Box<dyn s
         assertion_counts.value,
         format!("{ASSET_COUNT}:{ASSET_COUNT}:{ASSET_COUNT}")
     );
+    let native_owners = sql_query("SELECT count(*) AS count FROM mame_rom_merges AS declaration JOIN asset_occurrences AS occurrence USING(occurrence_id) JOIN catalog_sets AS owner ON owner.set_id=occurrence.record_id JOIN catalog_set_groups AS owner_group USING(set_group_id) JOIN catalog_relationships AS identity USING(relationship_id) WHERE owner_group.snapshot_key=? AND identity.snapshot_key=owner_group.snapshot_key AND owner.set_name='child'")
+        .bind::<Text, _>(snapshot.as_str())
+        .get_result::<CountRow>(&mut connection)?;
+    assert_eq!(native_owners.count, i64::try_from(ASSET_COUNT)?);
+    assert_eq!(count(&mut connection, "relationship_assertions")?, 0);
     Ok(())
 }
 
@@ -3065,7 +3075,7 @@ fn mame_nested_unknown_extension_and_reimport_keep_semantics_and_diagnostics()
 }
 
 #[test]
-fn mame_relationships_resolve_component_keys_and_keep_device_locations()
+fn mame_relationships_keep_native_media_keys_and_device_locations()
 -> Result<(), Box<dyn std::error::Error>> {
     let (directory, database, mut connection) = setup()?;
     let path = directory.path().join("mame-relationship-identity.xml");
@@ -3096,7 +3106,7 @@ fn assert_mame_merge_relationships(
     snapshot: &SnapshotKey,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let merge = sql_query(
-        "SELECT source_subject_a AS subject_key, source_target_a AS target_key, source_line FROM relationship_assertions \
+        "SELECT source_subject_a AS subject_key, source_target_a AS target_key, source_line FROM relationship_assertion_explanations \
          WHERE source_snapshot_key = ? AND source_field = 'merge'",
     )
     .bind::<Text, _>(snapshot.as_str())
@@ -3108,17 +3118,20 @@ fn assert_mame_merge_relationships(
     let stored_merge = sql_query(
         "SELECT source_subject_a, source_subject_b, source_subject_c, \
                 source_target_a, source_target_b, source_target_c \
-         FROM relationship_assertions \
+         FROM relationship_assertion_explanations \
          WHERE source_snapshot_key = ? AND source_field = 'merge'",
     )
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<TypedSourceAssertionRow>(connection)?;
     assert_eq!(stored_merge.subject_a.as_deref(), Some("clone"));
     assert_eq!(stored_merge.subject_b.as_deref(), Some("shared.bin"));
-    assert_eq!(stored_merge.subject_c, Some(0));
+    assert!(stored_merge.subject_c.is_some_and(|id| id > 0));
     assert_eq!(stored_merge.target_a.as_deref(), Some("rom-parent"));
     assert_eq!(stored_merge.target_b.as_deref(), Some("shared.bin"));
-    assert_eq!(stored_merge.target_c, Some(0));
+    assert_eq!(
+        stored_merge.target_c, None,
+        "a declaration cannot invent a resolved component"
+    );
 
     let merge_explanation = app::explain_relationships(database)?
         .into_iter()
@@ -3128,7 +3141,7 @@ fn assert_mame_merge_relationships(
         merge_explanation.claim.evidence,
         RelationshipEvidence::Merge {
             declared_merge_name: Some("shared.bin".to_owned()),
-            parent_set_name: "rom-parent".to_owned(),
+            parent_set_name: Some("rom-parent".to_owned()),
             expected_sha1: None,
             expected_crc: Some("12345678".to_owned()),
             size: Some(1),

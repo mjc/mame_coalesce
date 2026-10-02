@@ -28,4 +28,42 @@ FROM catalog_relationships AS registry
 CROSS JOIN reported_catalog_relationships AS reported
 CROSS JOIN mame_device_references AS reference CROSS JOIN catalog_sets AS owner
 WHERE registry.origin='source' AND reported.relationship_id=registry.relationship_id
-  AND reference.relationship_id=reported.relationship_id AND owner.set_id=reference.set_id;
+  AND reference.relationship_id=reported.relationship_id AND owner.set_id=reference.set_id
+UNION ALL
+SELECT registry.assertion_key, 'source_merge', 'source_assertion', registry.snapshot_key,
+       'merge', declaration.source_line, declaration.source_column,
+       NULL, 'catalog_media_entry', occurrence.record_id, NULL, NULL, NULL,
+       owner.set_name, payload.name, occurrence.occurrence_id, registry.snapshot_key,
+       NULL, 'mame_rom_merge_reference', occurrence.record_id, NULL, NULL, NULL,
+       COALESCE(rom_parent.target_name, clone_parent.target_name), declaration.merge_name, NULL,
+       registry.snapshot_key, NULL
+FROM catalog_relationships AS registry
+CROSS JOIN reported_catalog_relationships AS reported
+CROSS JOIN mame_rom_merges AS declaration CROSS JOIN asset_occurrences AS occurrence
+CROSS JOIN mame_rom_claims AS payload CROSS JOIN catalog_sets AS owner
+LEFT JOIN mame_machine_links AS rom_parent ON rom_parent.set_id=owner.set_id AND rom_parent.link_kind='romof'
+LEFT JOIN mame_machine_links AS clone_parent ON clone_parent.set_id=owner.set_id AND clone_parent.link_kind='cloneof'
+WHERE registry.origin='source' AND reported.relationship_id=registry.relationship_id
+  AND reported.source_reference_kind='mame_rom_merge'
+  AND declaration.relationship_id=reported.relationship_id
+  AND occurrence.occurrence_id=declaration.occurrence_id
+  AND payload.occurrence_id=occurrence.occurrence_id AND owner.set_id=occurrence.record_id
+UNION ALL
+SELECT registry.assertion_key, 'source_merge', 'source_assertion', registry.snapshot_key,
+       'merge', declaration.source_line, declaration.source_column,
+       NULL, 'catalog_media_entry', occurrence.record_id, NULL, NULL, NULL,
+       owner.set_name, payload.name, occurrence.occurrence_id, registry.snapshot_key,
+       NULL, 'mame_disk_merge_reference', occurrence.record_id, NULL, NULL, NULL,
+       COALESCE(rom_parent.target_name, clone_parent.target_name), declaration.merge_name, NULL,
+       registry.snapshot_key, NULL
+FROM catalog_relationships AS registry
+CROSS JOIN reported_catalog_relationships AS reported
+CROSS JOIN mame_disk_merges AS declaration CROSS JOIN asset_occurrences AS occurrence
+CROSS JOIN mame_disk_claims AS payload CROSS JOIN catalog_sets AS owner
+LEFT JOIN mame_machine_links AS rom_parent ON rom_parent.set_id=owner.set_id AND rom_parent.link_kind='romof'
+LEFT JOIN mame_machine_links AS clone_parent ON clone_parent.set_id=owner.set_id AND clone_parent.link_kind='cloneof'
+WHERE registry.origin='source' AND reported.relationship_id=registry.relationship_id
+  AND reported.source_reference_kind='mame_disk_merge'
+  AND declaration.relationship_id=reported.relationship_id
+  AND occurrence.occurrence_id=declaration.occurrence_id
+  AND payload.occurrence_id=occurrence.occurrence_id AND owner.set_id=occurrence.record_id;

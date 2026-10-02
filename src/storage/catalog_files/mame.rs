@@ -239,7 +239,7 @@ const SELECT: &str = "SELECT occurrence.occurrence_id, occurrence.claim_kind, \
     rom.size AS rom_size, rom.crc_text AS rom_crc_text, rom.sha1_text AS rom_sha1_text, \
     rom.offset_text AS rom_offset_text, \
     rom.evidence_scope AS rom_evidence_scope, rom.evidence_provenance AS rom_evidence_provenance, \
-    rom.merge_name AS rom_merge_name, rom.dump_status AS rom_dump_status, \
+    rom_merge.merge_name AS rom_merge_name, rom.dump_status AS rom_dump_status, \
     rom.status_specified AS rom_status_specified, rom.source_order AS rom_source_order, \
     rom.source_line AS rom_line, rom.source_column AS rom_column, rom.region AS rom_region, \
     rom.bios AS rom_bios, rom.optional AS rom_optional, rom.optional_specified AS rom_optional_specified, \
@@ -250,7 +250,7 @@ const SELECT: &str = "SELECT occurrence.occurrence_id, occurrence.claim_kind, \
     rom_compat.ovha AS rom_ovha, rom_compat.no_thread AS rom_no_thread, \
     disk.occurrence_id AS disk_owner, disk.name AS disk_name, disk.sha1_text AS disk_sha1_text, \
     disk.evidence_scope AS disk_evidence_scope, disk.evidence_provenance AS disk_evidence_provenance, \
-    disk.merge_name AS disk_merge_name, disk.dump_status AS disk_dump_status, \
+    disk_merge.merge_name AS disk_merge_name, disk.dump_status AS disk_dump_status, \
     disk.status_specified AS disk_status_specified, disk.source_order AS disk_source_order, \
     disk.source_line AS disk_line, disk.source_column AS disk_column, disk.region AS disk_region, \
     disk.optional AS disk_optional, disk.optional_specified AS disk_optional_specified, \
@@ -266,6 +266,8 @@ JOIN parser_interpretations AS interpretation \
   ON interpretation.interpretation_key = snapshots.interpretation_key \
 LEFT JOIN mame_rom_claims AS rom ON rom.occurrence_id = occurrence.occurrence_id \
 LEFT JOIN mame_disk_claims AS disk ON disk.occurrence_id = occurrence.occurrence_id \
+LEFT JOIN mame_rom_merges AS rom_merge ON rom_merge.occurrence_id = occurrence.occurrence_id \
+LEFT JOIN mame_disk_merges AS disk_merge ON disk_merge.occurrence_id = occurrence.occurrence_id \
 LEFT JOIN mame_rom_compatibility AS rom_compat_raw \
   ON rom_compat_raw.occurrence_id = occurrence.occurrence_id \
 LEFT JOIN mame_rom_compatibility AS rom_compat \

@@ -11,7 +11,8 @@ CREATE TABLE reported_catalog_relationships (
     relationship_id INTEGER PRIMARY KEY NOT NULL
         REFERENCES catalog_relationships(relationship_id) ON DELETE RESTRICT,
     source_reference_kind TEXT NOT NULL CHECK (source_reference_kind IN (
-        'mame_cloneof', 'mame_romof', 'mame_sampleof', 'mame_device_ref'
+        'mame_cloneof', 'mame_romof', 'mame_sampleof', 'mame_device_ref',
+        'mame_rom_merge', 'mame_disk_merge'
     )),
     UNIQUE (relationship_id, source_reference_kind)
 );
@@ -50,6 +51,41 @@ CREATE TABLE mame_device_references (
 
 CREATE INDEX catalog_relationships_snapshot_origin_index
     ON catalog_relationships(snapshot_key, origin, relationship_id);
+
+CREATE TABLE mame_rom_merges (
+    occurrence_id INTEGER PRIMARY KEY NOT NULL
+        REFERENCES mame_rom_claims(occurrence_id) ON DELETE RESTRICT,
+    relationship_id INTEGER NOT NULL UNIQUE CHECK (typeof(relationship_id) = 'integer'),
+    source_reference_kind TEXT NOT NULL DEFAULT 'mame_rom_merge'
+        CHECK (source_reference_kind = 'mame_rom_merge'),
+    merge_name TEXT NOT NULL,
+    source_line INTEGER NOT NULL CHECK (typeof(source_line) = 'integer' AND source_line > 0),
+    source_column INTEGER NOT NULL CHECK (typeof(source_column) = 'integer' AND source_column > 0),
+    FOREIGN KEY (relationship_id, source_reference_kind)
+        REFERENCES reported_catalog_relationships(relationship_id, source_reference_kind)
+        ON DELETE RESTRICT
+);
+
+CREATE TABLE mame_disk_merges (
+    occurrence_id INTEGER PRIMARY KEY NOT NULL
+        REFERENCES mame_disk_claims(occurrence_id) ON DELETE RESTRICT,
+    relationship_id INTEGER NOT NULL UNIQUE CHECK (typeof(relationship_id) = 'integer'),
+    source_reference_kind TEXT NOT NULL DEFAULT 'mame_disk_merge'
+        CHECK (source_reference_kind = 'mame_disk_merge'),
+    merge_name TEXT NOT NULL,
+    source_line INTEGER NOT NULL CHECK (typeof(source_line) = 'integer' AND source_line > 0),
+    source_column INTEGER NOT NULL CHECK (typeof(source_column) = 'integer' AND source_column > 0),
+    FOREIGN KEY (relationship_id, source_reference_kind)
+        REFERENCES reported_catalog_relationships(relationship_id, source_reference_kind)
+        ON DELETE RESTRICT
+);
+
+-- A read-only identity projection, never another persisted declaration owner.
+CREATE VIEW mame_relationship_declaration_ids AS
+SELECT relationship_id FROM mame_machine_links
+UNION ALL SELECT relationship_id FROM mame_device_references
+UNION ALL SELECT relationship_id FROM mame_rom_merges
+UNION ALL SELECT relationship_id FROM mame_disk_merges;
 
 CREATE TRIGGER catalog_relationships_insert_guard
 BEFORE INSERT ON catalog_relationships
@@ -113,7 +149,7 @@ WHEN EXISTS (
         WHERE (set_id, link_kind) = (NEW.set_id, NEW.link_kind)
            OR relationship_id = NEW.relationship_id
     )
- OR EXISTS (SELECT 1 FROM mame_device_references WHERE relationship_id = NEW.relationship_id)
+ OR EXISTS (SELECT 1 FROM mame_relationship_declaration_ids WHERE relationship_id = NEW.relationship_id)
  OR NOT EXISTS (
         SELECT 1
         FROM mame_machines AS machine
@@ -151,7 +187,7 @@ WHEN EXISTS (
         WHERE (set_id, reference_order) = (NEW.set_id, NEW.reference_order)
            OR relationship_id = NEW.relationship_id
     )
- OR EXISTS (SELECT 1 FROM mame_machine_links WHERE relationship_id = NEW.relationship_id)
+ OR EXISTS (SELECT 1 FROM mame_relationship_declaration_ids WHERE relationship_id = NEW.relationship_id)
  OR NOT EXISTS (
         SELECT 1
         FROM mame_machines AS machine
@@ -209,10 +245,8 @@ WHEN EXISTS (
               (SELECT COUNT(*) FROM mame_machine_links AS link
                WHERE link.relationship_id = identity.relationship_id
                  AND link.source_reference_kind = reported.source_reference_kind) <> 1
-              OR (SELECT COUNT(*) FROM mame_machine_links
-                  WHERE relationship_id = identity.relationship_id)
-                 + (SELECT COUNT(*) FROM mame_device_references
-                    WHERE relationship_id = identity.relationship_id) <> 1
+              OR (SELECT COUNT(*) FROM mame_relationship_declaration_ids
+                  WHERE relationship_id = identity.relationship_id) <> 1
               OR NOT EXISTS (
                   SELECT 1 FROM mame_machine_links AS link
                   JOIN mame_machines AS machine ON machine.set_id = link.set_id
@@ -228,10 +262,8 @@ WHEN EXISTS (
               (SELECT COUNT(*) FROM mame_device_references AS reference
                WHERE reference.relationship_id = identity.relationship_id
                  AND reference.source_reference_kind = reported.source_reference_kind) <> 1
-              OR (SELECT COUNT(*) FROM mame_machine_links
-                  WHERE relationship_id = identity.relationship_id)
-                 + (SELECT COUNT(*) FROM mame_device_references
-                    WHERE relationship_id = identity.relationship_id) <> 1
+              OR (SELECT COUNT(*) FROM mame_relationship_declaration_ids
+                  WHERE relationship_id = identity.relationship_id) <> 1
               OR NOT EXISTS (
                   SELECT 1 FROM mame_device_references AS reference
                   JOIN mame_machines AS machine ON machine.set_id = reference.set_id
@@ -241,6 +273,16 @@ WHEN EXISTS (
                   WHERE reference.relationship_id = identity.relationship_id
                     AND reference.source_reference_kind = reported.source_reference_kind
                     AND group_row.snapshot_key = identity.snapshot_key
+              )
+          ))
+          OR (reported.source_reference_kind IN ('mame_rom_merge','mame_disk_merge') AND (
+              (SELECT COUNT(*) FROM mame_relationship_declaration_ids
+               WHERE relationship_id=identity.relationship_id) <> 1
+              OR NOT EXISTS (
+                  SELECT 1 FROM mame_merge_relationship_owners AS native
+                  WHERE native.relationship_id=identity.relationship_id
+                    AND native.source_reference_kind=reported.source_reference_kind
+                    AND native.snapshot_key=identity.snapshot_key
               )
           ))
       )

@@ -138,7 +138,7 @@ pub(super) fn persist_merge_relationship(
             }),
             evidence: RelationshipEvidence::Merge {
                 declared_merge_name: Some(declaration.merged_name.to_owned()),
-                parent_set_name: declaration.parent.to_owned(),
+                parent_set_name: Some(declaration.parent.to_owned()),
                 expected_sha1: declaration.sha1.map(hex::encode),
                 expected_crc: declaration.crc.map(hex::encode),
                 size: declaration
@@ -197,6 +197,7 @@ pub(super) fn persist_snapshot_merges(
              FROM asset_requirement_rows AS a \
              JOIN sets_with_parent AS s USING (set_id) \
              WHERE s.snapshot_key = ? AND a.merge_name IS NOT NULL \
+               AND NOT EXISTS (SELECT 1 FROM mame_machines WHERE set_id=s.set_id) \
                AND s.parent IS NOT NULL \
                AND (s.set_name, s.set_id, a.component_order) > (?, ?, ?) \
              ORDER BY s.set_name, s.set_id, a.component_order LIMIT ?",

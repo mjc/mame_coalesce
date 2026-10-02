@@ -6,9 +6,9 @@ use std::collections::HashMap;
 
 use crate::domain::{
     CatalogRecordKind, CatalogRecordRef, CatalogSetId, ContentDigestAlgorithm, ContentIdentity,
-    DocumentLocation, ExternalRecordRef, RelationshipAssertionKey, RelationshipClaim,
-    RelationshipEndpoint, RelationshipEvidence, RelationshipExplanation, RelationshipOrigin,
-    RelationshipReview, RelationshipReviewDecision, RelationshipReviewEvent,
+    DocumentLocation, ExternalRecordRef, MameMergeKind, RelationshipAssertionKey,
+    RelationshipClaim, RelationshipEndpoint, RelationshipEvidence, RelationshipExplanation,
+    RelationshipOrigin, RelationshipReview, RelationshipReviewDecision, RelationshipReviewEvent,
     RelationshipSourceProvenance, RelationshipType, SnapshotKey,
 };
 
@@ -584,8 +584,10 @@ fn endpoint_parts(endpoint: &RelationshipEndpoint) -> crate::Result<EndpointPart
             None,
         )),
         RelationshipEndpoint::NoIntroArchive { .. }
-        | RelationshipEndpoint::NoIntroArchiveReference { .. } => Err(crate::Error::InvalidPath(
-            "native archive endpoints require a native source assertion".into(),
+        | RelationshipEndpoint::NoIntroArchiveReference { .. }
+        | RelationshipEndpoint::CatalogMediaEntry { .. }
+        | RelationshipEndpoint::MameMergeReference { .. } => Err(crate::Error::InvalidPath(
+            "native endpoints require a native source assertion".into(),
         )),
     }
 }
@@ -789,7 +791,9 @@ impl ExplanationScope {
         } else {
             "relationship_assertion_explanations a"
         };
-        let merge_name = "COALESCE(mame_rom.merge_name,mame_disk.merge_name,logiqx_rom.merge_name,logiqx_disk.merge_name,cmp_rom.merge_name,pc_file.merge_name)";
+        let merge_name = "COALESCE(mame_rom_merge.merge_name,mame_disk_merge.merge_name,logiqx_rom.merge_name,logiqx_disk.merge_name,cmp_rom.merge_name,pc_file.merge_name)";
+        let occurrence_id =
+            "COALESCE(native_source_occurrence.occurrence_id,source_occurrence.occurrence_id)";
         let size = "COALESCE(mame_rom.size,logiqx_rom.size,cmp_rom.size,pc_file.size,dat_rom.size)";
         let scope = "COALESCE(mame_rom.evidence_scope,mame_disk.evidence_scope,logiqx_rom.evidence_scope,logiqx_disk.evidence_scope,cmp_rom.evidence_scope,pc_file.evidence_scope,dat_rom.evidence_scope)";
         format!(
@@ -803,11 +807,11 @@ impl ExplanationScope {
                 a.source_snapshot_key, a.source_field, a.source_line, a.source_column, \
                 {merge_name} AS source_asset_merge_name, \
                 (SELECT assertion.digest FROM usable_occurrence_digest_assertions AS assertion \
-                 WHERE assertion.occurrence_id = source_occurrence.occurrence_id \
+                 WHERE assertion.occurrence_id = {occurrence_id} \
                    AND assertion.provenance = 'source_declared' AND assertion.scope = {scope} \
                    AND assertion.algorithm = 'sha1') AS source_asset_sha1, \
                 (SELECT assertion.digest FROM usable_occurrence_digest_assertions AS assertion \
-                 WHERE assertion.occurrence_id = source_occurrence.occurrence_id \
+                 WHERE assertion.occurrence_id = {occurrence_id} \
                    AND assertion.provenance = 'source_declared' AND assertion.scope = {scope} \
                    AND assertion.algorithm = 'crc32') AS source_asset_crc, \
                 {size} AS source_asset_size, a.rule_version, \
@@ -828,13 +832,19 @@ impl ExplanationScope {
          LEFT JOIN asset_occurrences source_occurrence \
            ON source_occurrence.record_id = source_asset_set.set_id \
           AND source_occurrence.occurrence_order = a.source_subject_c \
-         LEFT JOIN mame_rom_claims mame_rom ON mame_rom.occurrence_id=source_occurrence.occurrence_id \
-         LEFT JOIN mame_disk_claims mame_disk ON mame_disk.occurrence_id=source_occurrence.occurrence_id \
-         LEFT JOIN logiqx_rom_claims logiqx_rom ON logiqx_rom.occurrence_id=source_occurrence.occurrence_id \
-         LEFT JOIN logiqx_disk_claims logiqx_disk ON logiqx_disk.occurrence_id=source_occurrence.occurrence_id \
-         LEFT JOIN cmp_rom_claims cmp_rom ON cmp_rom.occurrence_id=source_occurrence.occurrence_id \
-         LEFT JOIN no_intro_pc_file_claims pc_file ON pc_file.occurrence_id=source_occurrence.occurrence_id \
-         LEFT JOIN no_intro_dat_rom_claims dat_rom ON dat_rom.occurrence_id=source_occurrence.occurrence_id \
+         LEFT JOIN asset_occurrences native_source_occurrence \
+           ON a.origin='source_assertion' AND a.subject_kind='catalog_media_entry' \
+          AND native_source_occurrence.occurrence_id=a.source_subject_c \
+          AND native_source_occurrence.record_id=a.subject_set_id \
+         LEFT JOIN mame_rom_claims mame_rom ON mame_rom.occurrence_id={occurrence_id} \
+         LEFT JOIN mame_disk_claims mame_disk ON mame_disk.occurrence_id={occurrence_id} \
+         LEFT JOIN mame_rom_merges mame_rom_merge ON mame_rom_merge.occurrence_id={occurrence_id} \
+         LEFT JOIN mame_disk_merges mame_disk_merge ON mame_disk_merge.occurrence_id={occurrence_id} \
+         LEFT JOIN logiqx_rom_claims logiqx_rom ON logiqx_rom.occurrence_id={occurrence_id} \
+         LEFT JOIN logiqx_disk_claims logiqx_disk ON logiqx_disk.occurrence_id={occurrence_id} \
+         LEFT JOIN cmp_rom_claims cmp_rom ON cmp_rom.occurrence_id={occurrence_id} \
+         LEFT JOIN no_intro_pc_file_claims pc_file ON pc_file.occurrence_id={occurrence_id} \
+         LEFT JOIN no_intro_dat_rom_claims dat_rom ON dat_rom.occurrence_id={occurrence_id} \
          LEFT JOIN catalog_snapshots s ON s.snapshot_key = a.source_snapshot_key \
          LEFT JOIN catalogs c ON c.catalog_key = s.catalog_key \
          LEFT JOIN publishing_sources ps ON ps.source_key = c.source_key \
@@ -1096,6 +1106,15 @@ fn explanation_origin(
 }
 
 fn source_evidence_value(row: &ExplanationRow) -> crate::Result<RelationshipEvidence> {
+    if row.source_field.as_deref() == Some("merge") {
+        return Ok(RelationshipEvidence::Merge {
+            declared_merge_name: row.source_asset_merge_name.clone(),
+            parent_set_name: row.source_target_a.clone(),
+            expected_sha1: row.source_asset_sha1.as_deref().map(hex::encode),
+            expected_crc: row.source_asset_crc.as_deref().map(hex::encode),
+            size: row.source_asset_size,
+        });
+    }
     let target_name = row
         .source_target_a
         .as_ref()
@@ -1106,13 +1125,6 @@ fn source_evidence_value(row: &ExplanationRow) -> crate::Result<RelationshipEvid
             source_field: row.source_field.clone().ok_or_else(|| {
                 crate::Error::InvalidPath("archive source evidence has no field".into())
             })?,
-        }),
-        Some("merge") => Ok(RelationshipEvidence::Merge {
-            declared_merge_name: row.source_asset_merge_name.clone(),
-            parent_set_name: target_name.clone(),
-            expected_sha1: row.source_asset_sha1.as_deref().map(hex::encode),
-            expected_crc: row.source_asset_crc.as_deref().map(hex::encode),
-            size: row.source_asset_size,
         }),
         Some("cloneof") if row.subject_kind == "software_item" => {
             Ok(RelationshipEvidence::SoftwareClone {
@@ -1153,6 +1165,38 @@ fn source_endpoint(
     let snapshot = SnapshotKey::from_persisted(snapshot.ok_or_else(|| {
         crate::Error::InvalidPath("source relationship endpoint has no snapshot".into())
     })?);
+    if kind == "catalog_media_entry" {
+        let id = third.ok_or_else(|| {
+            crate::Error::InvalidPath("media endpoint has no native owner".into())
+        })?;
+        return Ok(RelationshipEndpoint::CatalogMediaEntry {
+            snapshot,
+            occurrence_id: id.try_into()?,
+        });
+    }
+    if matches!(
+        kind,
+        "mame_rom_merge_reference" | "mame_disk_merge_reference"
+    ) {
+        let machine_id = owner_set_id.ok_or_else(|| {
+            crate::Error::InvalidPath("merge reference has no declaring machine".into())
+        })?;
+        return Ok(RelationshipEndpoint::MameMergeReference {
+            snapshot,
+            machine_id: CatalogSetId::from_database(machine_id),
+            media_kind: if kind == "mame_rom_merge_reference" {
+                MameMergeKind::Rom
+            } else {
+                MameMergeKind::Disk
+            },
+            parent_name: first,
+            merge_name: second
+                .ok_or_else(|| {
+                    crate::Error::InvalidPath("merge reference has no declared literal".into())
+                })?
+                .to_owned(),
+        });
+    }
     if kind == "no_intro_archive" {
         let id = third.ok_or_else(|| {
             crate::Error::InvalidPath("archive endpoint has no native owner".into())
@@ -1291,6 +1335,7 @@ fn parse_relation_type(value: &str) -> crate::Result<RelationshipType> {
         "dump_of_intended_release" => Ok(RelationshipType::DumpOfIntendedRelease),
         "alternate_representation_of" => Ok(RelationshipType::AlternateRepresentationOf),
         "source_parent_clone" => Ok(RelationshipType::SourceParentClone),
+        "source_merge" => Ok(RelationshipType::SourceMerge),
         "runtime_dependency" => Ok(RelationshipType::RuntimeDependency),
         "catalog_correction" => Ok(RelationshipType::CatalogCorrection),
         "catalog_continuity" => Ok(RelationshipType::CatalogContinuity),
@@ -1374,9 +1419,20 @@ mod query_plan_tests {
                     || !details
                         .iter()
                         .any(|detail| detail.starts_with("SEARCH source_asset_set"))
+                    || details
+                        .iter()
+                        .any(|detail| detail.starts_with("SCAN native_source_occurrence"))
+                    || !details.iter().any(|detail| {
+                        detail.starts_with("SEARCH native_source_occurrence USING")
+                            && (detail.contains("PRIMARY KEY")
+                                || (detail.contains("occurrence_id=?")
+                                    && detail.contains("record_id=?")))
+                    })
                     || [
                         "mame_rom",
                         "mame_disk",
+                        "mame_rom_merge",
+                        "mame_disk_merge",
                         "logiqx_rom",
                         "logiqx_disk",
                         "cmp_rom",

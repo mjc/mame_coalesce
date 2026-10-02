@@ -5,9 +5,9 @@ use diesel::{
     sql_types::{BigInt, Text},
 };
 
-use crate::domain::{CatalogSetId, RelationshipAssertionKey, SnapshotKey};
+use crate::domain::{CatalogSetId, OccurrenceId, RelationshipAssertionKey, SnapshotKey};
 
-use super::{SnapshotSet, checked_order};
+use super::{NativeAssetFacts, SnapshotAsset, SnapshotSet, checked_order};
 
 #[derive(Clone, Copy)]
 enum ReferenceKind {
@@ -15,6 +15,8 @@ enum ReferenceKind {
     RomOf,
     SampleOf,
     DeviceReference,
+    RomMerge,
+    DiskMerge,
 }
 
 impl ReferenceKind {
@@ -24,6 +26,8 @@ impl ReferenceKind {
             Self::RomOf => "mame_romof",
             Self::SampleOf => "mame_sampleof",
             Self::DeviceReference => "mame_device_ref",
+            Self::RomMerge => "mame_rom_merge",
+            Self::DiskMerge => "mame_disk_merge",
         }
     }
 
@@ -33,8 +37,44 @@ impl ReferenceKind {
             Self::RomOf => "romof",
             Self::SampleOf => "sampleof",
             Self::DeviceReference => "device_ref",
+            Self::RomMerge | Self::DiskMerge => "merge",
         }
     }
+}
+
+pub(super) fn insert_asset_merge(
+    connection: &mut SqliteConnection,
+    snapshot: &SnapshotKey,
+    occurrence: OccurrenceId,
+    asset: &SnapshotAsset,
+) -> crate::Result<()> {
+    if !matches!(asset.native, NativeAssetFacts::Mame { .. }) {
+        return Ok(());
+    }
+    let Some(literal) = asset.merge.as_deref() else {
+        return Ok(());
+    };
+    let (kind, table) = match asset.role {
+        "rom" => (ReferenceKind::RomMerge, "mame_rom_merges"),
+        "disk" => (ReferenceKind::DiskMerge, "mame_disk_merges"),
+        role => {
+            return Err(crate::Error::DatabaseSchema(format!(
+                "invalid MAME merge media kind {role}"
+            )));
+        }
+    };
+    let relationship = register(connection, snapshot, kind)?;
+    sql_query(format!(
+        "INSERT INTO {table}(occurrence_id,relationship_id,merge_name,source_line,source_column) \
+         VALUES (?,?,?,?,?)",
+    ))
+    .bind::<BigInt, _>(occurrence.database_value())
+    .bind::<BigInt, _>(relationship.0)
+    .bind::<Text, _>(literal)
+    .bind::<BigInt, _>(asset.location.line)
+    .bind::<BigInt, _>(asset.location.column)
+    .execute(connection)?;
+    Ok(())
 }
 
 /// Only issued after both registry identity and its reported subtype are stored.

@@ -231,9 +231,9 @@ fn insert_mame(
             sql_query(
                 "INSERT INTO mame_rom_claims
                 (occurrence_id,name,size_text,crc_text,sha1_text,evidence_scope,evidence_provenance,
-                 merge_name,dump_status,source_line,source_column,region,bios,offset_text,optional,
+                 dump_status,source_line,source_column,region,bios,offset_text,optional,
                  source_order,status_specified,optional_specified)
-                 VALUES (?,?,?,?,?,?,'source_declared',?,?,?,?,?,?,?,?,?,?,?)",
+                 VALUES (?,?,?,?,?,?,'source_declared',?,?,?,?,?,?,?,?,?,?)",
             )
             .bind::<BigInt, _>(id.database_value())
             .bind::<Text, _>(&asset.name)
@@ -241,7 +241,6 @@ fn insert_mame(
             .bind::<Nullable<Text>, _>(declarations.crc_text.as_deref())
             .bind::<Nullable<Text>, _>(declarations.sha1_text.as_deref())
             .bind::<Text, _>(asset.evidence_scope)
-            .bind::<Nullable<Text>, _>(asset.merge.as_deref())
             .bind::<Nullable<Text>, _>(asset.dump_status.as_deref())
             .bind::<BigInt, _>(asset.location.line)
             .bind::<BigInt, _>(asset.location.column)
@@ -256,28 +255,29 @@ fn insert_mame(
             insert_rom_compatibility(conn, id, attributes, declarations)?;
         }
         RootClaimKind::MameDisk => {
-            sql_query("INSERT INTO mame_disk_claims
-                (occurrence_id,name,sha1_text,evidence_scope,evidence_provenance,merge_name,dump_status,
+            sql_query(
+                "INSERT INTO mame_disk_claims
+                (occurrence_id,name,sha1_text,evidence_scope,evidence_provenance,dump_status,
                  source_line,source_column,region,disk_index,writable,optional,source_order,
                  status_specified,optional_specified,writable_specified)
-                 VALUES (?,?,?,?,'source_declared',?,?,?,?,?,?,?,?,?,?,?,?)")
-                .bind::<BigInt,_>(id.database_value())
-                .bind::<Text,_>(&asset.name)
-                .bind::<Nullable<Text>,_>(declarations.sha1_text.as_deref())
-                .bind::<Text,_>(asset.evidence_scope)
-                .bind::<Nullable<Text>,_>(asset.merge.as_deref())
-                .bind::<Nullable<Text>,_>(asset.dump_status.as_deref())
-                .bind::<BigInt,_>(asset.location.line)
-                .bind::<BigInt,_>(asset.location.column)
-                .bind::<Nullable<Text>,_>(attributes.region.as_deref())
-                .bind::<Nullable<Text>,_>(attributes.disk_index.as_deref())
-                .bind::<diesel::sql_types::Bool,_>(attributes.writable.unwrap_or_default().as_bool())
-                .bind::<diesel::sql_types::Bool,_>(attributes.optional.as_bool())
-                .bind::<BigInt,_>(*source_order)
-                .bind::<diesel::sql_types::Bool,_>(attributes.status_specified)
-                .bind::<diesel::sql_types::Bool,_>(attributes.optional_specified)
-                .bind::<diesel::sql_types::Bool,_>(attributes.writable_specified)
-                .execute(conn)?;
+                 VALUES (?,?,?,?,'source_declared',?,?,?,?,?,?,?,?,?,?,?)",
+            )
+            .bind::<BigInt, _>(id.database_value())
+            .bind::<Text, _>(&asset.name)
+            .bind::<Nullable<Text>, _>(declarations.sha1_text.as_deref())
+            .bind::<Text, _>(asset.evidence_scope)
+            .bind::<Nullable<Text>, _>(asset.dump_status.as_deref())
+            .bind::<BigInt, _>(asset.location.line)
+            .bind::<BigInt, _>(asset.location.column)
+            .bind::<Nullable<Text>, _>(attributes.region.as_deref())
+            .bind::<Nullable<Text>, _>(attributes.disk_index.as_deref())
+            .bind::<diesel::sql_types::Bool, _>(attributes.writable.unwrap_or_default().as_bool())
+            .bind::<diesel::sql_types::Bool, _>(attributes.optional.as_bool())
+            .bind::<BigInt, _>(*source_order)
+            .bind::<diesel::sql_types::Bool, _>(attributes.status_specified)
+            .bind::<diesel::sql_types::Bool, _>(attributes.optional_specified)
+            .bind::<diesel::sql_types::Bool, _>(attributes.writable_specified)
+            .execute(conn)?;
             if let Some(writeable) = attributes.writeable {
                 sql_query(
                     "INSERT INTO mame_disk_compatibility(occurrence_id,writeable) VALUES (?,?)",

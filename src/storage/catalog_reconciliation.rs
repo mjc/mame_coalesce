@@ -7,7 +7,7 @@ use serde::Serialize;
 use crate::{
     domain::{
         AssetRole, CatalogKey, CatalogRecordKind, CatalogRecordRef, CatalogSetId, Crc32Digest,
-        EvidenceProvenance, EvidenceScope, ExpectedEvidence, Md5Digest, SnapshotKey,
+        EvidenceProvenance, EvidenceScope, ExpectedEvidence, Md5Digest, OccurrenceId, SnapshotKey,
     },
     reconciliation::{
         CatalogReconciliation, ExpectedAssetRequirement, RequirementSnapshot,
@@ -25,6 +25,8 @@ struct SnapshotIdentityRow {
 
 #[derive(QueryableByName)]
 struct RequirementRow {
+    #[diesel(sql_type = BigInt)]
+    occurrence_id: i64,
     #[diesel(sql_type = BigInt)]
     set_id: i64,
     #[diesel(sql_type = Text)]
@@ -63,6 +65,7 @@ pub(super) struct SnapshotRequirementLoad {
 }
 
 pub(super) struct NativeRootRequirement {
+    pub(super) occurrence_id: OccurrenceId,
     pub(super) set_id: CatalogSetId,
     pub(super) set_name: String,
     pub(super) asset_name: String,
@@ -147,7 +150,7 @@ pub(super) fn snapshot_requirements(
         error => error.into(),
     })?;
     let rows = sql_query(
-        "SELECT sets.set_id, sets.set_name, rows.component_order, rows.asset_name, rows.role, rows.size, \
+        "SELECT occurrence.occurrence_id, sets.set_id, sets.set_name, rows.component_order, rows.asset_name, rows.role, rows.size, \
          (SELECT digest.digest FROM asset_requirement_usable_digests AS assertion \
           JOIN digest_values AS digest USING (digest_id) \
           WHERE assertion.set_id = rows.set_id AND assertion.provenance = 'source_declared' \
@@ -166,6 +169,8 @@ pub(super) fn snapshot_requirements(
          rows.evidence_scope, rows.evidence_provenance, rows.merge_name, rows.dump_status, \
          rows.serial, rows.date \
          FROM asset_requirement_rows AS rows JOIN snapshot_sets AS sets USING (set_id) \
+         JOIN asset_occurrences AS occurrence ON occurrence.record_id=rows.set_id \
+          AND occurrence.occurrence_order=rows.component_order \
          WHERE sets.snapshot_key = ?",
     )
     .bind::<Text, _>(snapshot.as_str())
@@ -190,6 +195,7 @@ fn reconciliation_snapshot(
         .into_iter()
         .map(|row| {
             Ok(ExpectedAssetRequirement {
+                media_entry_id: Some(row.occurrence_id),
                 record: CatalogRecordRef::new(
                     snapshot.clone(),
                     CatalogRecordKind::AssetRequirement,
@@ -236,6 +242,7 @@ fn native_requirement(row: RequirementRow) -> crate::Result<NativeRootRequiremen
         date: row.date,
     };
     Ok(NativeRootRequirement {
+        occurrence_id: row.occurrence_id.try_into()?,
         set_id: CatalogSetId::from_database(row.set_id),
         set_name: row.set_name,
         asset_name: row.asset_name,
@@ -281,6 +288,7 @@ fn software_requirements(
     rows.into_iter()
         .map(|row| {
             Ok(ExpectedAssetRequirement {
+                media_entry_id: None,
                 record: CatalogRecordRef::new(
                     snapshot.clone(),
                     CatalogRecordKind::AssetRequirement,

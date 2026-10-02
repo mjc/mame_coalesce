@@ -1,24 +1,6 @@
 use diesel::{QueryableByName, sql_types::BigInt};
 
-/// An internal source occurrence identity, distinct from its owning catalog set
-/// and from the expected shared file UUID.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct OccurrenceId(i64);
-
-impl OccurrenceId {
-    /// Construct a query key from a database occurrence ID.
-    ///
-    /// Occurrence IDs are local to a registry generation and are not durable identifiers.
-    #[must_use]
-    pub const fn from_database(value: i64) -> Self {
-        Self(value)
-    }
-
-    #[must_use]
-    pub const fn database_value(self) -> i64 {
-        self.0
-    }
-}
+pub use crate::domain::OccurrenceId;
 
 #[derive(QueryableByName)]
 pub struct AllocatedOccurrence {

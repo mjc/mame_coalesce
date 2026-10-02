@@ -29,6 +29,10 @@ SELECT requested.assertion_key,
                   WHERE reference.relationship_id=registry.relationship_id
                     AND reference.source_reference_kind=reported.source_reference_kind
                     AND owner_group.snapshot_key=registry.snapshot_key)
+              OR EXISTS (SELECT 1 FROM mame_merge_relationship_owners AS native
+                  WHERE native.relationship_id=registry.relationship_id
+                    AND native.source_reference_kind=reported.source_reference_kind
+                    AND native.snapshot_key=registry.snapshot_key)
           )
     ) OR EXISTS (
         SELECT 1 FROM no_intro_dat_cloneof_assertions AS native

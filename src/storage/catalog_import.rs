@@ -8,7 +8,8 @@ use crate::{
     clrmamepro::Catalog as ClrMameProCatalog,
     domain::{
         CatalogRecordKind, CatalogRecordRef, CatalogSetId, DocumentKey, DocumentLocation,
-        ImportRunKey, ParserInterpretationKey, RelationshipEvidence, RelationshipType, SnapshotKey,
+        ImportRunKey, OccurrenceId, ParserInterpretationKey, RelationshipEvidence,
+        RelationshipType, SnapshotKey,
     },
     logiqx::{DataFile, Game, XmlSourceMap},
     mame::{self, MameRecord, ValidatedMame},
@@ -1541,7 +1542,9 @@ fn insert_snapshot_set(
     persist_set_relationships(conn, snapshot_key, owner, set)?;
 
     for (order, asset) in set.assets.iter().enumerate() {
-        insert_asset_requirement(conn, set_id, checked_order(order, "catalog assets")?, asset)?;
+        let occurrence =
+            insert_asset_requirement(conn, set_id, checked_order(order, "catalog assets")?, asset)?;
+        mame_relationships::insert_asset_merge(conn, snapshot_key, occurrence, asset)?;
     }
     insert_machine_switches(conn, set_id, set)?;
     insert_machine_bios_sets(conn, set_id, set)?;
@@ -1553,7 +1556,7 @@ fn insert_asset_requirement(
     set_id: i64,
     component_order: i64,
     asset: &SnapshotAsset,
-) -> crate::Result<()> {
+) -> crate::Result<OccurrenceId> {
     let size = asset
         .size
         .map(i64::try_from)
@@ -1615,7 +1618,7 @@ fn insert_asset_requirement(
         }
     }
     record_content_identity_conflict(conn, occurrence, &resolution)?;
-    Ok(())
+    Ok(occurrence)
 }
 
 fn sqlite_mame_boolean(value: mame::MameBoolean) -> i64 {
