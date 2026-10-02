@@ -156,6 +156,12 @@ empty names, in mixed ROM/disk/sample source order. `mame_samples` stores its
 name and position once; its machine is reached through the occurrence owner.
 Samples have no inferred size, hash, extension or UUID and are not ROM build
 requirements. Independently computed metadata does not become a declared hash.
+Machine `cloneof`, `romof`, `sampleof` and ordered device references own their
+declared text once, with real FKs to compact reported relationship identities.
+Issued review keys survive reimport and paired backup; source references do not
+copy endpoints into generic assertion rows. Empty targets and repeated machine
+names retain distinct native owners. Merge resolution requires one parent owner
+before matching its media; a matching filename cannot resolve an ambiguous name.
 
 No-Intro flat DAT XML has four explicit import interpretations:
 `no-intro-dat-v3-strict`, `no-intro-dat-v3-compatible`,
@@ -484,8 +490,9 @@ family. ROM/disk/sample references identify existing occurrences without copying
 payloads. Repeated machine names remain distinct, and continuations are pinned
 to their snapshot and registry generation. Queries read stored native facts, not
 the source XML. Raw ROM size/offset spelling and qualified compatibility owners
-are retained. Dedicated MAME source relationship owners and exhaustive pinned-DTD
-field/grammar/query coverage remain unfinished.
+are retained. Native MAME merge relationship identities, the other relationship
+endpoint cutovers and exhaustive pinned-DTD field/grammar/query coverage remain
+unfinished.
 
 The separate software-list adapter imports list-scoped items, parts,
 data/disk areas, component evidence, and load instructions as source data. It

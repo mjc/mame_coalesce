@@ -16,7 +16,7 @@ type PlanQuery = (&'static str, &'static str, &'static [&'static str]);
 const CHILD_POSITION_TABLES: &[&str] = &[
     "mame_machines",
     "mame_bios_sets",
-    "mame_machine_dependencies",
+    "mame_device_references",
     "machine_switches",
     "mame_samples",
     "mame_machine_chips",

@@ -68,21 +68,38 @@ struct ParentComponentRow {
     component_order: i64,
 }
 
+#[derive(QueryableByName)]
+struct ParentOwnerRow {
+    #[diesel(sql_type = BigInt)]
+    set_id: i64,
+}
+
 pub(super) fn persist_merge_relationship(
     conn: &mut SqliteConnection,
     snapshot: &SnapshotKey,
     declaration: MergeDeclaration<'_>,
 ) -> crate::Result<()> {
-    let parent_components = sql_query(
-        "SELECT asset.set_id, asset.component_order FROM asset_requirement_rows AS asset \
-         JOIN snapshot_sets AS sets USING (set_id) \
-         WHERE sets.snapshot_key = ? AND sets.set_group_id = ? AND sets.set_name = ? \
-           AND asset.asset_name = ? AND asset.role = ? \
-         ORDER BY asset.component_order LIMIT 2",
+    // Resolve the source's parent name before looking at its media. A single
+    // matching filename cannot disambiguate two distinct same-named owners.
+    let parents = sql_query(
+        "SELECT parent.set_id FROM catalog_sets AS parent \
+         JOIN catalog_set_groups AS groups USING(set_group_id) \
+         WHERE groups.snapshot_key=? AND parent.set_group_id=? AND parent.set_name=? \
+         ORDER BY parent.set_id LIMIT 2",
     )
     .bind::<Text, _>(snapshot.as_str())
     .bind::<BigInt, _>(declaration.set_group_id)
     .bind::<Text, _>(declaration.parent)
+    .load::<ParentOwnerRow>(conn)?;
+    let [parent] = parents.as_slice() else {
+        return Ok(());
+    };
+    let parent_components = sql_query(
+        "SELECT asset.set_id, asset.component_order FROM asset_requirement_rows AS asset \
+         WHERE asset.set_id = ? AND asset.asset_name = ? AND asset.role = ? \
+         ORDER BY asset.component_order LIMIT 2",
+    )
+    .bind::<BigInt, _>(parent.set_id)
     .bind::<Text, _>(declaration.merged_name)
     .bind::<Text, _>(declaration.role)
     .load::<ParentComponentRow>(conn)?;
@@ -148,8 +165,8 @@ pub(super) fn persist_snapshot_merges(
         let rows = sql_query(
             "WITH sets_with_parent AS (\
                  SELECT s.set_id, s.set_group_id, s.snapshot_key, s.set_name, COALESCE( \
-                     (SELECT dependency.target_name FROM mame_machine_dependencies AS dependency \
-                      WHERE dependency.set_id = s.set_id AND dependency.dependency_kind = 'romof'), \
+                     (SELECT link.target_name FROM mame_machine_links AS link \
+                      WHERE link.set_id = s.set_id AND link.link_kind = 'romof'), \
                      (SELECT link.target_name FROM logiqx_set_links AS link \
                       WHERE link.set_id = s.set_id AND link.link_kind = 'romof'), \
                      (SELECT link.target_name FROM mame_machine_links AS link \

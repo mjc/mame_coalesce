@@ -711,9 +711,9 @@ when their source text contains only decimal-looking digits. Referenced parser
 interpretations cannot be replaced or deleted beneath their native facts, and
 reinterning a digest preserves the existing digest owner ID.
 
-This is not completion of the pinned MAME field contract. Expected audio sample
-media identities, dedicated source relationship owners and exhaustive field/query
-and grammar witnesses remain open. The accepted `conflocation` fixture is
+This is not completion of the pinned MAME field contract. Native MAME merge
+relationship identities and exhaustive field/query and grammar witnesses remain
+open. The accepted `conflocation` fixture is
 compatibility input, not evidence that it belongs to the pinned 0.289 DTD.
 
 ## MAME software-list native relations
@@ -1141,8 +1141,33 @@ including the existing machine-specification sample view. Publication rejects
 missing payloads, declared sample hashes, mismatched owners, duplicate child
 positions and late/replaced facts; independently computed metadata is distinct.
 History sample hydration uses the actual occurrence key rather than materializing
-sample rows from unrelated snapshots. Dedicated MAME source relationship owners
+sample rows from unrelated snapshots. Native MAME merge relationship identities
 and exhaustive pinned-DTD field/grammar/query witnesses remain unfinished.
+
+Machine link attributes (`cloneof`, `romof`, `sampleof`) and device references
+now own compact reported relationship IDs with actual kind-qualified FKs and
+same-edition publication closure. The registry retains each issued external
+review key once; native owners retain the literals and source positions once.
+The former generic dependency table and copied MAME clone assertions are gone;
+common dependency/explanation shapes are read-only query projections. Reimport,
+source-free queries, history, support/reviews and paired backups use the issued
+identities. Repeated machine names and empty source references remain distinct,
+not assumed unique by a parser-wide name set. A resolved merge first requires
+one actual parent owner; one matching media entry cannot resolve parent ambiguity.
+MAME merge identities, other native reported families and derived/user endpoint
+registries remain pending cutovers; this does not finish the shared model.
+
+Replacement seals cover the set and group identities as well as their native
+children, even when foreign keys and recursive triggers are disabled. Readiness
+independently checks each declaration's actual owner edition. Published device
+reference ordinals are dense, so projected attribute dependencies cannot collide
+with device-reference order. Machine pages, snapshot dependency/history queries
+and build device-reference queries start from requested owners before seeking
+their native rows; the read-only union is not materialized across other editions.
+Relationship explanation payloads likewise seek the selected source group, set,
+occurrence and native media keys. Support hydration reads only returned derived
+candidate keys, preserving declared support order; source-only catalogs issue no
+support lookups.
 
 Common APIs cover record enumeration/selection, expected file/media claims,
 source dependencies/merges, relationship explanations and adjudication, scoped

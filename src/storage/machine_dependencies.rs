@@ -111,16 +111,23 @@ pub fn load_catalog(
     ))
 }
 
+pub(super) const MAME_DEPENDENCIES: &str = concat!(
+    "WITH requested_mame_machines(set_id) AS (\
+       SELECT set_id FROM snapshot_sets WHERE snapshot_key = ?\
+     ), dependencies AS (",
+    include_str!("db/mame_dependencies.sql"),
+    ") SELECT dependency.* FROM dependencies AS dependency \
+       JOIN catalog_sets AS sets USING (set_id) \
+       ORDER BY sets.set_name, dependency.dependency_order"
+);
+
 fn load_dependencies(
     conn: &mut diesel::SqliteConnection,
     snapshot: &SnapshotKey,
     is_mame: bool,
 ) -> crate::Result<BTreeMap<i64, Vec<MameDependencyRow>>> {
     let query = if is_mame {
-        "SELECT dependency.set_id, dependency.dependency_kind, dependency.target_name \
-         FROM mame_machine_dependencies AS dependency \
-         JOIN snapshot_sets AS sets USING (set_id) \
-         WHERE sets.snapshot_key = ? ORDER BY sets.set_name, dependency.dependency_order"
+        MAME_DEPENDENCIES
     } else {
         "SELECT links.set_id, links.link_kind AS dependency_kind, links.target_name \
          FROM (SELECT sets.set_id, sets.set_name, link.link_kind, link.target_name, link.source_line, link.source_column, 0 AS reference_order \
@@ -190,4 +197,49 @@ struct SnapshotExists {
 
 fn is_true(value: &str) -> bool {
     matches!(value.to_ascii_lowercase().as_str(), "yes" | "true" | "1")
+}
+
+#[cfg(test)]
+mod tests {
+    use camino::Utf8PathBuf;
+    use diesel::{connection::SimpleConnection, sql_types::Text};
+
+    use super::*;
+    use crate::database::Database;
+
+    #[derive(QueryableByName)]
+    struct PlanRow {
+        #[diesel(sql_type = Text)]
+        detail: String,
+    }
+
+    #[test]
+    fn mame_snapshot_dependencies_seek_native_owner_keys() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let directory = tempfile::tempdir()?;
+        let path = Utf8PathBuf::try_from(directory.path().join("catalog.sqlite"))?;
+        let database = Database::open(&path)?;
+        let mut connection = database.pool().get()?;
+        connection.batch_execute("ANALYZE")?;
+        let plan = sql_query(format!("EXPLAIN QUERY PLAN {MAME_DEPENDENCIES}"))
+            .bind::<Text, _>("requested-snapshot")
+            .load::<PlanRow>(&mut connection)?
+            .into_iter()
+            .map(|row| row.detail)
+            .collect::<Vec<_>>();
+        for alias in ["native", "reference", "rom"] {
+            assert!(
+                !plan
+                    .iter()
+                    .any(|row| row.starts_with(&format!("SCAN {alias}"))),
+                "snapshot dependencies scan {alias}: {plan:?}"
+            );
+            assert!(
+                plan.iter()
+                    .any(|row| row.starts_with(&format!("SEARCH {alias} USING PRIMARY KEY"))),
+                "snapshot dependencies do not seek {alias}: {plan:?}"
+            );
+        }
+        Ok(())
+    }
 }

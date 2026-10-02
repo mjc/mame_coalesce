@@ -50,10 +50,9 @@ impl RootSetKind {
 
     const fn parent_table(&self) -> Option<&'static str> {
         match self {
-            Self::MameMachine => Some("mame_machine_links"),
+            Self::MameMachine | Self::NoIntroPcGame => None,
             Self::LogiqxGame => Some("logiqx_set_links"),
             Self::ClrMameProSet => Some("clrmamepro_set_links"),
-            Self::NoIntroPcGame => None,
         }
     }
 }
@@ -71,9 +70,11 @@ pub(super) fn insert(
     .get_result::<Format>(conn)?;
     let kind = RootSetKind::from_format(&format.format)?;
     sql_query(
-        "INSERT INTO catalog_set_groups(snapshot_key,kind,list_order) VALUES (?,'root',0) \
-         ON CONFLICT(snapshot_key,kind,list_order) DO NOTHING",
+        "INSERT INTO catalog_set_groups(snapshot_key,kind,list_order) \
+         SELECT ?,'root',0 WHERE NOT EXISTS (SELECT 1 FROM catalog_set_groups \
+             WHERE snapshot_key=? AND kind='root')",
     )
+    .bind::<Text, _>(snapshot.as_str())
     .bind::<Text, _>(snapshot.as_str())
     .execute(conn)?;
     let group = sql_query(

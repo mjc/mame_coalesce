@@ -14,9 +14,9 @@ SELECT mame_bios_sets.set_id, mame_bios_sets.source_order AS source_order, 'bios
 FROM requested_mame_machines AS requested CROSS JOIN mame_bios_sets
 WHERE mame_bios_sets.set_id=requested.set_id
 UNION ALL
-SELECT mame_machine_dependencies.set_id, mame_machine_dependencies.source_order AS source_order, 'device_ref' AS child_kind, mame_machine_dependencies.dependency_order AS child_order
-FROM requested_mame_machines AS requested CROSS JOIN mame_machine_dependencies
-WHERE mame_machine_dependencies.set_id=requested.set_id AND mame_machine_dependencies.dependency_kind='device_ref'
+SELECT mame_device_references.set_id, mame_device_references.source_order, 'device_ref' AS child_kind, mame_device_references.reference_order AS child_order
+FROM requested_mame_machines AS requested CROSS JOIN mame_device_references
+WHERE mame_device_references.set_id=requested.set_id
 UNION ALL
 SELECT machine_switches.set_id, machine_switches.source_order AS source_order, machine_switches.kind AS child_kind, machine_switches.switch_order AS child_order
 FROM requested_mame_machines AS requested CROSS JOIN machine_switches

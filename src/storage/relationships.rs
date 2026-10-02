@@ -98,10 +98,11 @@ struct ExplanationRow {
 #[derive(QueryableByName)]
 struct SupportRow {
     #[diesel(sql_type = Text)]
-    assertion_key: String,
-    #[diesel(sql_type = Text)]
     supported_assertion_key: String,
 }
+
+const SUPPORT_SQL: &str = "SELECT supported_assertion_key \
+     FROM relationship_assertion_support WHERE assertion_key=? ORDER BY position";
 
 #[derive(QueryableByName)]
 struct OwnerValidationRow {
@@ -788,6 +789,9 @@ impl ExplanationScope {
         } else {
             "relationship_assertion_explanations a"
         };
+        let merge_name = "COALESCE(mame_rom.merge_name,mame_disk.merge_name,logiqx_rom.merge_name,logiqx_disk.merge_name,cmp_rom.merge_name,pc_file.merge_name)";
+        let size = "COALESCE(mame_rom.size,logiqx_rom.size,cmp_rom.size,pc_file.size,dat_rom.size)";
+        let scope = "COALESCE(mame_rom.evidence_scope,mame_disk.evidence_scope,logiqx_rom.evidence_scope,logiqx_disk.evidence_scope,cmp_rom.evidence_scope,pc_file.evidence_scope,dat_rom.evidence_scope)";
         format!(
             "{cte} SELECT a.assertion_key, a.relation_type, a.origin, \
                 a.subject_snapshot_key, a.subject_kind, a.subject_set_id, \
@@ -797,34 +801,40 @@ impl ExplanationScope {
                 a.generic_target_a, a.generic_target_b, \
                 a.generic_target_c, a.source_target_a, a.source_target_b, a.source_target_c, \
                 a.source_snapshot_key, a.source_field, a.source_line, a.source_column, \
-                source_asset.merge_name AS source_asset_merge_name, \
-                (SELECT digest.digest FROM asset_requirement_usable_digests AS assertion \
-                 JOIN digest_values AS digest USING (digest_id) \
-                 WHERE assertion.set_id = source_asset.set_id AND assertion.provenance = 'source_declared' \
-                   AND assertion.component_order = source_asset.component_order \
-                   AND assertion.scope = source_asset.evidence_scope \
-                   AND digest.algorithm = 'sha1') AS source_asset_sha1, \
-                (SELECT digest.digest FROM asset_requirement_usable_digests AS assertion \
-                 JOIN digest_values AS digest USING (digest_id) \
-                 WHERE assertion.set_id = source_asset.set_id AND assertion.provenance = 'source_declared' \
-                   AND assertion.component_order = source_asset.component_order \
-                   AND assertion.scope = source_asset.evidence_scope \
-                   AND digest.algorithm = 'crc32') AS source_asset_crc, \
-                source_asset.size AS source_asset_size, a.rule_version, \
+                {merge_name} AS source_asset_merge_name, \
+                (SELECT assertion.digest FROM usable_occurrence_digest_assertions AS assertion \
+                 WHERE assertion.occurrence_id = source_occurrence.occurrence_id \
+                   AND assertion.provenance = 'source_declared' AND assertion.scope = {scope} \
+                   AND assertion.algorithm = 'sha1') AS source_asset_sha1, \
+                (SELECT assertion.digest FROM usable_occurrence_digest_assertions AS assertion \
+                 WHERE assertion.occurrence_id = source_occurrence.occurrence_id \
+                   AND assertion.provenance = 'source_declared' AND assertion.scope = {scope} \
+                   AND assertion.algorithm = 'crc32') AS source_asset_crc, \
+                {size} AS source_asset_size, a.rule_version, \
                 ps.source_key, ps.display_name AS source_name, \
                 s.document_key, \
                 (SELECT source_version.declared_version FROM catalog_snapshot_versions source_version \
                  WHERE source_version.snapshot_key = a.source_snapshot_key) AS declared_version, \
                 pi.parser_name, pi.parser_version, pi.rules_version \
          FROM {from} \
-         LEFT JOIN snapshot_sets source_asset_set \
+         LEFT JOIN catalog_set_groups source_asset_group \
            ON a.origin = 'source_assertion' AND a.subject_kind = 'asset_requirement' \
-          AND source_asset_set.snapshot_key = a.source_snapshot_key \
+          AND source_asset_group.snapshot_key = a.source_snapshot_key \
+          AND source_asset_group.kind = 'root' \
+         LEFT JOIN catalog_sets source_asset_set \
+           ON source_asset_set.set_group_id = source_asset_group.set_group_id \
           AND source_asset_set.set_name = a.source_subject_a \
           AND (a.subject_set_id IS NULL OR source_asset_set.set_id = a.subject_set_id) \
-         LEFT JOIN asset_requirement_rows source_asset \
-           ON source_asset.set_id = source_asset_set.set_id \
-          AND source_asset.component_order = a.source_subject_c \
+         LEFT JOIN asset_occurrences source_occurrence \
+           ON source_occurrence.record_id = source_asset_set.set_id \
+          AND source_occurrence.occurrence_order = a.source_subject_c \
+         LEFT JOIN mame_rom_claims mame_rom ON mame_rom.occurrence_id=source_occurrence.occurrence_id \
+         LEFT JOIN mame_disk_claims mame_disk ON mame_disk.occurrence_id=source_occurrence.occurrence_id \
+         LEFT JOIN logiqx_rom_claims logiqx_rom ON logiqx_rom.occurrence_id=source_occurrence.occurrence_id \
+         LEFT JOIN logiqx_disk_claims logiqx_disk ON logiqx_disk.occurrence_id=source_occurrence.occurrence_id \
+         LEFT JOIN cmp_rom_claims cmp_rom ON cmp_rom.occurrence_id=source_occurrence.occurrence_id \
+         LEFT JOIN no_intro_pc_file_claims pc_file ON pc_file.occurrence_id=source_occurrence.occurrence_id \
+         LEFT JOIN no_intro_dat_rom_claims dat_rom ON dat_rom.occurrence_id=source_occurrence.occurrence_id \
          LEFT JOIN catalog_snapshots s ON s.snapshot_key = a.source_snapshot_key \
          LEFT JOIN catalogs c ON c.catalog_key = s.catalog_key \
          LEFT JOIN publishing_sources ps ON ps.source_key = c.source_key \
@@ -921,17 +931,20 @@ fn build_explanations(
     rows: Vec<ExplanationRow>,
     reviews: Vec<ReviewRow>,
 ) -> crate::Result<Vec<RelationshipExplanation>> {
-    let support_rows = sql_query(
-        "SELECT assertion_key, supported_assertion_key \
-         FROM relationship_assertion_support ORDER BY assertion_key, position",
-    )
-    .load::<SupportRow>(conn)?;
     let mut support_by_assertion = HashMap::<String, Vec<String>>::new();
-    for support in support_rows {
-        support_by_assertion
-            .entry(support.assertion_key)
-            .or_default()
-            .push(support.supported_assertion_key);
+    // Only derived candidates may own support edges; source-only catalogs need
+    // no per-declaration support lookup at all.
+    for row in rows.iter().filter(|row| row.origin == "derived_candidate") {
+        if support_by_assertion.contains_key(&row.assertion_key) {
+            continue;
+        }
+        let supports = sql_query(SUPPORT_SQL)
+            .bind::<Text, _>(&row.assertion_key)
+            .load::<SupportRow>(conn)?
+            .into_iter()
+            .map(|support| support.supported_assertion_key)
+            .collect();
+        support_by_assertion.insert(row.assertion_key.clone(), supports);
     }
     let mut history = std::collections::BTreeMap::<String, Vec<RelationshipReviewEvent>>::new();
     for review in reviews {
@@ -1342,6 +1355,10 @@ mod query_plan_tests {
                 details.iter().any(|detail| {
                     detail == "SCAN snapshot"
                         || detail.contains("MATERIALIZE catalog_snapshot_versions")
+                        || detail.contains("MATERIALIZE snapshot_sets")
+                        || detail == "SCAN groups"
+                        || detail.contains("MATERIALIZE asset_requirement_rows")
+                        || detail.starts_with("SCAN payload")
                         || detail == "MATERIALIZE scoped_source_assertions"
                         || detail == "MATERIALIZE scoped_generic_assertions"
                         || detail.starts_with("SCAN relationship_assertions")
@@ -1354,6 +1371,28 @@ mod query_plan_tests {
                 }) || !details
                     .iter()
                     .any(|detail| detail.starts_with("SEARCH position USING PRIMARY KEY"))
+                    || !details
+                        .iter()
+                        .any(|detail| detail.starts_with("SEARCH source_asset_set"))
+                    || [
+                        "mame_rom",
+                        "mame_disk",
+                        "logiqx_rom",
+                        "logiqx_disk",
+                        "cmp_rom",
+                        "pc_file",
+                        "dat_rom",
+                    ]
+                    .iter()
+                    .any(|alias| {
+                        details
+                            .iter()
+                            .any(|detail| detail.starts_with(&format!("SCAN {alias}")))
+                            || !details.iter().any(|detail| {
+                                detail.starts_with(&format!("SEARCH {alias} USING"))
+                                    && detail.contains("PRIMARY KEY")
+                            })
+                    })
                     || details
                         .iter()
                         .filter(|detail| *detail == "MATERIALIZE scoped_assertions")
@@ -1364,8 +1403,89 @@ mod query_plan_tests {
             .collect::<Vec<_>>();
         assert!(
             violations.is_empty(),
-            "scoped queries must seek source, generic, and native assertions: {violations:?}"
+            "scoped queries must seek source, generic, and native assertions and their asset projections: {violations:?}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn production_support_query_seeks_only_selected_assertion_keys() -> crate::Result<()> {
+        let database = crate::database::Database::in_memory()?;
+        let mut conn = database.pool().get()?;
+        let plan = sql_query(format!("EXPLAIN QUERY PLAN {SUPPORT_SQL}"))
+            .bind::<Text, _>("selected-assertion")
+            .load::<PlanRow>(&mut conn)?
+            .into_iter()
+            .map(|row| row.detail)
+            .collect::<Vec<_>>();
+        assert!(
+            plan.iter()
+                .any(|row| row
+                    .starts_with("SEARCH relationship_assertion_support USING PRIMARY KEY"))
+                && !plan
+                    .iter()
+                    .any(|row| row.starts_with("SCAN relationship_assertion_support")),
+            "support hydration must seek only the requested assertion: {plan:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn selected_supports_keep_declared_order_without_unrelated_edges() -> crate::Result<()> {
+        let database = crate::database::Database::in_memory()?;
+        let subject = RelationshipEndpoint::ExternalRecord(ExternalRecordRef::new("test", "left"));
+        let target = RelationshipEndpoint::ExternalRecord(ExternalRecordRef::new("test", "right"));
+        let evidence = RelationshipEvidence::Rationale {
+            reason: "support ordering witness".into(),
+        };
+        let base = RelationshipClaim {
+            relation_type: RelationshipType::CatalogCorrection,
+            subject,
+            target,
+            origin: RelationshipOrigin::UserConclusion,
+            evidence,
+        };
+        let first = record_claim(database.pool(), &base)?;
+        let second = record_claim(database.pool(), &base)?;
+        let unrelated = record_claim(database.pool(), &base)?;
+        let declared = vec![second, first];
+        let selected = record_claim(
+            database.pool(),
+            &RelationshipClaim {
+                origin: RelationshipOrigin::DerivedCandidate {
+                    rule_version: "support-order-v1".into(),
+                    supporting_assertions: declared.clone(),
+                },
+                ..base.clone()
+            },
+        )?;
+        let other = record_claim(
+            database.pool(),
+            &RelationshipClaim {
+                origin: RelationshipOrigin::DerivedCandidate {
+                    rule_version: "unrelated-v1".into(),
+                    supporting_assertions: vec![unrelated],
+                },
+                ..base
+            },
+        )?;
+        assert_ne!(selected, other);
+        let mut conn = database.pool().get()?;
+        let actual = sql_query(SUPPORT_SQL)
+            .bind::<Text, _>(selected.as_str())
+            .load::<SupportRow>(&mut conn)?
+            .into_iter()
+            .map(|row| RelationshipAssertionKey::new(row.supported_assertion_key))
+            .collect::<Vec<_>>();
+        assert_eq!(actual, declared);
+        drop(conn);
+        let explanations = explain_all(database.pool())?;
+        let selected_explanation = explanations
+            .iter()
+            .find(|row| row.assertion_key == selected)
+            .ok_or_else(|| crate::Error::InvalidPath("selected support witness missing".into()))?;
+        assert!(matches!(&selected_explanation.claim.origin,
+            RelationshipOrigin::DerivedCandidate { supporting_assertions, .. } if *supporting_assertions == declared));
         Ok(())
     }
 }

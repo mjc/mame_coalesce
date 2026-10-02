@@ -43,7 +43,7 @@ mod tests {
         let mut conn = database.pool().get()?;
         for key in [
             "generic-key",
-            "mame-dependency:123:4",
+            "registered-source-key",
             "no-intro-dat-cloneof:123",
         ] {
             let plans = sql_query(format!("EXPLAIN QUERY PLAN {LOOKUP_SQL}"))
@@ -59,6 +59,9 @@ mod tests {
                         "SCAN game",
                         "SCAN assertion",
                         "SCAN relationship_assertions",
+                        "SCAN registry",
+                        "SCAN link",
+                        "SCAN reference",
                     ]
                     .iter()
                     .any(|prefix| detail.starts_with(prefix))

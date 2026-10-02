@@ -27,6 +27,7 @@ use crate::{
 
 mod cmp_native;
 mod logiqx_native;
+mod mame_relationships;
 mod mame_specification;
 mod merges;
 mod no_intro_dat_native;
@@ -679,21 +680,12 @@ fn machine_contents(machine: crate::mame::Machine) -> SnapshotSet {
     let switches = machine.switches;
     let bios_sets = machine.bios_sets;
     let mame_facts = machine.facts;
-    let machine_dependencies = runtime_dependencies
-        .iter()
-        .map(|dependency| SnapshotDependency {
-            source_field: dependency.source_field.clone(),
-            target_name: dependency.target_name.clone(),
-            reference_tag: dependency.reference_tag.clone(),
-            source_order: dependency.source_order,
-            location: dependency.location,
-        })
-        .collect();
+    let machine_dependencies = runtime_dependencies;
     SnapshotSet {
         name: machine.name,
         parent: machine.parent,
         parent_field,
-        runtime_dependencies,
+        runtime_dependencies: Vec::new(),
         location: machine.location,
         assets,
         switches,
@@ -1530,7 +1522,7 @@ fn insert_snapshot_set(
 
     if let Some(facts) = &set.mame_facts {
         insert_mame_machine_facts(conn, set_id, facts)?;
-        insert_mame_machine_dependencies(conn, set_id, set)?;
+        mame_relationships::insert(conn, snapshot_key, owner, set)?;
         mame_specification::insert(conn, set_id, set)?;
     }
     if let Some(facts) = &set.no_intro_facts {
@@ -1746,30 +1738,6 @@ fn insert_no_intro_game_facts(
     Ok(())
 }
 
-fn insert_mame_machine_dependencies(
-    conn: &mut SqliteConnection,
-    set_id: i64,
-    set: &SnapshotSet,
-) -> crate::Result<()> {
-    for (order, dependency) in set.machine_dependencies.iter().enumerate() {
-        sql_query(
-            "INSERT INTO mame_machine_dependencies \
-             (set_id, dependency_order, dependency_kind, target_name, reference_tag, source_order, source_line, source_column) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind::<BigInt, _>(set_id)
-        .bind::<BigInt, _>(checked_order(order, "MAME machine dependencies")?)
-        .bind::<Text, _>(&dependency.source_field)
-        .bind::<Text, _>(&dependency.target_name)
-        .bind::<Nullable<Text>, _>(dependency.reference_tag.as_deref())
-        .bind::<Nullable<BigInt>, _>(dependency.source_order)
-        .bind::<BigInt, _>(dependency.location.line)
-        .bind::<BigInt, _>(dependency.location.column)
-        .execute(conn)?;
-    }
-    Ok(())
-}
-
 fn insert_mame_machine_facts(
     conn: &mut SqliteConnection,
     set_id: i64,
@@ -1949,6 +1917,10 @@ fn persist_set_relationships(
     owner: CatalogSetId,
     set: &SnapshotSet,
 ) -> crate::Result<()> {
+    if set.mame_facts.is_some() {
+        // MAME references have native declaration owners and compact identities.
+        return Ok(());
+    }
     let subject = CatalogRecordRef::new(snapshot.clone(), CatalogRecordKind::Set, &set.name)
         .with_owner(owner);
     let location = Some(DocumentLocation {
@@ -1971,9 +1943,6 @@ fn persist_set_relationships(
         )?;
     }
     for dependency in &set.runtime_dependencies {
-        if set.mame_facts.is_some() {
-            continue;
-        }
         insert_source_assertion(
             conn,
             SourceRelationshipDraft {

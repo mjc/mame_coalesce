@@ -320,28 +320,35 @@ fn reject_software_lists(
     Ok(())
 }
 
+const DEVICE_REFERENCES: &str = "WITH requested(set_id) AS MATERIALIZED (\
+    SELECT sets.set_id FROM catalog_set_groups AS groups \
+    CROSS JOIN catalog_sets AS sets \
+    WHERE groups.snapshot_key=? AND groups.kind='root' \
+      AND sets.set_group_id=groups.set_group_id\
+  ) \
+  SELECT logiqx_device_references.set_id AS set_id, logiqx_device_references.target_name, \
+         logiqx_device_references.reference_order AS source_order \
+  FROM requested CROSS JOIN logiqx_device_references \
+  WHERE logiqx_device_references.set_id=requested.set_id \
+  UNION ALL \
+  SELECT mame_device_references.set_id AS set_id, mame_device_references.name AS target_name, \
+         mame_device_references.reference_order AS source_order \
+  FROM requested CROSS JOIN mame_device_references \
+  WHERE mame_device_references.set_id=requested.set_id \
+  ORDER BY set_id, source_order";
+
 fn load_root_sets(
     conn: &mut SqliteConnection,
     snapshot: &SnapshotKey,
 ) -> crate::Result<(BTreeMap<i64, RootSet>, BTreeSet<SetName>)> {
-    let devices = sql_query(
-        "SELECT device_refs.set_id, device_refs.target_name \
-         FROM (SELECT set_id, target_name, reference_order AS source_order \
-               FROM logiqx_device_references \
-               UNION ALL \
-               SELECT set_id, target_name, dependency_order AS source_order \
-               FROM mame_machine_dependencies WHERE dependency_kind = 'device_ref') AS device_refs \
-         JOIN snapshot_sets AS sets USING (set_id) \
-         WHERE sets.snapshot_key = ? \
-         ORDER BY device_refs.set_id, device_refs.source_order",
-    )
-    .bind::<Text, _>(snapshot.as_str())
-    .load::<DeviceReferenceRow>(conn)?
-    .into_iter()
-    .fold(BTreeMap::<i64, Vec<String>>::new(), |mut devices, row| {
-        devices.entry(row.set_id).or_default().push(row.target_name);
-        devices
-    });
+    let devices = sql_query(DEVICE_REFERENCES)
+        .bind::<Text, _>(snapshot.as_str())
+        .load::<DeviceReferenceRow>(conn)?
+        .into_iter()
+        .fold(BTreeMap::<i64, Vec<String>>::new(), |mut devices, row| {
+            devices.entry(row.set_id).or_default().push(row.target_name);
+            devices
+        });
 
     let rows = sql_query(
         "SELECT sets.set_id, sets.set_name, \
@@ -351,14 +358,14 @@ fn load_root_sets(
                   pc_games.bios_text) AS is_bios, \
          COALESCE((SELECT target_name FROM logiqx_set_links \
           WHERE set_id = sets.set_id AND link_kind = 'romof'), \
-          (SELECT target_name FROM mame_machine_dependencies \
-           WHERE set_id = sets.set_id AND dependency_kind = 'romof')) AS rom_of, \
+          (SELECT target_name FROM mame_machine_links \
+           WHERE set_id = sets.set_id AND link_kind = 'romof')) AS rom_of, \
          COALESCE((SELECT target_name FROM logiqx_set_links \
           WHERE set_id = sets.set_id AND link_kind = 'sampleof'), \
           (SELECT target_name FROM cmp_sample_parent_links \
            WHERE record_id = sets.set_id), \
-          (SELECT target_name FROM mame_machine_dependencies \
-           WHERE set_id = sets.set_id AND dependency_kind = 'sampleof')) AS sample_of, \
+          (SELECT target_name FROM mame_machine_links \
+           WHERE set_id = sets.set_id AND link_kind = 'sampleof')) AS sample_of, \
          games.board, COALESCE(games.rebuild_to, cmp.rebuildto) AS rebuild_to, \
          COALESCE(games.description, machines.description, cmp.description, pc_games.description) AS description, \
          COALESCE(games.year, machines.year, cmp.year) AS year, \

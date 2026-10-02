@@ -556,19 +556,6 @@ CREATE TABLE mame_machine_chips (
     PRIMARY KEY (set_id, element_order),
     FOREIGN KEY (set_id) REFERENCES catalog_sets (set_id) ON DELETE RESTRICT
 ) WITHOUT ROWID;
-CREATE TABLE "mame_machine_dependencies" (
-    set_id INTEGER NOT NULL,
-    dependency_order INTEGER NOT NULL CHECK (dependency_order >= 0),
-    dependency_kind TEXT NOT NULL CHECK (dependency_kind IN ('device_ref', 'romof', 'sampleof')),
-    target_name TEXT NOT NULL CHECK (length(target_name) > 0),
-    reference_tag TEXT,
-    source_order INTEGER CHECK (source_order IS NULL OR (typeof(source_order)='integer' AND source_order>=0)),
-    source_line INTEGER NOT NULL CHECK (source_line > 0),
-    source_column INTEGER NOT NULL CHECK (source_column > 0),
-    CHECK ((dependency_kind='device_ref') = (source_order IS NOT NULL)),
-    PRIMARY KEY (set_id, dependency_order),
-    FOREIGN KEY (set_id) REFERENCES catalog_sets (set_id) ON DELETE RESTRICT
-) WITHOUT ROWID;
 CREATE TABLE mame_machine_device_extensions (
     set_id INTEGER NOT NULL,
     element_order INTEGER NOT NULL CHECK (element_order >= 0),
@@ -1643,14 +1630,6 @@ CREATE TABLE logiqx_device_references (
     source_column INTEGER NOT NULL CHECK (source_column > 0),
     PRIMARY KEY (set_id, reference_order)
 ) WITHOUT ROWID;
-CREATE TABLE mame_machine_links (
-    set_id INTEGER NOT NULL REFERENCES catalog_sets(set_id) ON DELETE RESTRICT,
-    link_kind TEXT NOT NULL CHECK (link_kind = 'cloneof'),
-    target_name TEXT NOT NULL,
-    source_line INTEGER NOT NULL CHECK (source_line > 0),
-    source_column INTEGER NOT NULL CHECK (source_column > 0),
-    PRIMARY KEY (set_id, link_kind)
-) WITHOUT ROWID;
 CREATE TABLE clrmamepro_set_links (
     set_id INTEGER NOT NULL REFERENCES catalog_sets(set_id) ON DELETE RESTRICT,
     link_kind TEXT NOT NULL CHECK (link_kind = 'cloneof'),
@@ -1705,15 +1684,6 @@ CREATE TRIGGER mame_bios_sets_native_immutable_update BEFORE UPDATE ON mame_bios
 BEGIN SELECT RAISE(ABORT, 'native set details are immutable'); END;
 CREATE TRIGGER mame_bios_sets_native_immutable_delete BEFORE DELETE ON mame_bios_sets
 BEGIN SELECT RAISE(ABORT, 'native set details are immutable'); END;
-CREATE TRIGGER mame_machine_links_native_owner_insert BEFORE INSERT ON mame_machine_links
-WHEN NOT EXISTS (SELECT 1 FROM catalog_sets WHERE set_id = NEW.set_id AND source_element_kind = 'mame_machine')
- OR EXISTS (SELECT 1 FROM catalog_sets JOIN catalog_set_groups USING (set_group_id)
-            JOIN snapshot_publications USING (snapshot_key) WHERE set_id = NEW.set_id)
-BEGIN SELECT RAISE(ABORT, 'native details require an unpublished set of the matching format'); END;
-CREATE TRIGGER mame_machine_links_native_immutable_update BEFORE UPDATE ON mame_machine_links
-BEGIN SELECT RAISE(ABORT, 'native set details are immutable'); END;
-CREATE TRIGGER mame_machine_links_native_immutable_delete BEFORE DELETE ON mame_machine_links
-BEGIN SELECT RAISE(ABORT, 'native set details are immutable'); END;
 CREATE TRIGGER no_intro_pc_games_native_owner_insert BEFORE INSERT ON no_intro_pc_games
 WHEN NOT EXISTS (SELECT 1 FROM catalog_sets WHERE set_id = NEW.set_id AND source_element_kind = 'no_intro_pc_game')
  OR EXISTS (SELECT 1 FROM catalog_sets JOIN catalog_set_groups USING (set_group_id)
@@ -1753,6 +1723,11 @@ BEGIN SELECT RAISE(ABORT, 'native set details are immutable'); END;
 CREATE TRIGGER catalog_groups_require_unpublished_snapshot BEFORE INSERT ON catalog_set_groups
 WHEN EXISTS (SELECT 1 FROM snapshot_publications WHERE snapshot_key = NEW.snapshot_key)
 BEGIN SELECT RAISE(ABORT, 'published catalog groups are immutable'); END;
+CREATE TRIGGER catalog_groups_reject_replacement BEFORE INSERT ON catalog_set_groups
+WHEN EXISTS (SELECT 1 FROM catalog_set_groups WHERE set_group_id = NEW.set_group_id)
+ OR EXISTS (SELECT 1 FROM catalog_set_groups
+            WHERE snapshot_key = NEW.snapshot_key AND kind = NEW.kind AND list_order = NEW.list_order)
+BEGIN SELECT RAISE(ABORT, 'catalog groups are immutable'); END;
 CREATE TRIGGER catalog_groups_require_matching_format BEFORE INSERT ON catalog_set_groups
 WHEN NOT EXISTS (
     SELECT 1 FROM catalog_snapshots JOIN parser_interpretations USING (interpretation_key)
@@ -1769,6 +1744,11 @@ CREATE TRIGGER catalog_sets_require_unpublished_snapshot BEFORE INSERT ON catalo
 WHEN EXISTS (SELECT 1 FROM catalog_set_groups JOIN snapshot_publications USING (snapshot_key)
              WHERE set_group_id = NEW.set_group_id)
 BEGIN SELECT RAISE(ABORT, 'published catalog sets are immutable'); END;
+CREATE TRIGGER catalog_sets_reject_replacement BEFORE INSERT ON catalog_sets
+WHEN EXISTS (SELECT 1 FROM catalog_sets WHERE set_id = NEW.set_id)
+ OR EXISTS (SELECT 1 FROM catalog_sets
+            WHERE set_group_id = NEW.set_group_id AND list_order = NEW.list_order)
+BEGIN SELECT RAISE(ABORT, 'catalog sets are immutable'); END;
 CREATE TRIGGER software_lists_native_owner_insert BEFORE INSERT ON software_lists
 WHEN NOT EXISTS (
     SELECT 1 FROM catalog_set_groups
@@ -1946,15 +1926,7 @@ FROM relationship_assertions;
 CREATE VIEW relationship_assertion_explanations AS
 SELECT * FROM stored_relationship_assertion_explanations
 UNION ALL
-SELECT 'mame-dependency:' || dependency.set_id || ':' || dependency.dependency_order,
-       'runtime_dependency', 'source_assertion', set_row.snapshot_key,
-       dependency.dependency_kind, dependency.source_line, dependency.source_column,
-       NULL, 'catalog_set', dependency.set_id, NULL, NULL, NULL,
-       set_row.set_name, NULL, NULL, set_row.snapshot_key,
-       NULL, 'catalog_set', NULL, NULL, NULL, NULL,
-       dependency.target_name, NULL, NULL, set_row.snapshot_key, NULL
-FROM mame_machine_dependencies AS dependency
-JOIN snapshot_sets AS set_row ON set_row.set_id = dependency.set_id
+SELECT * FROM mame_source_relationships
 UNION ALL
 SELECT assertion_key, relation_type, origin, source_snapshot_key, source_field,
        source_line, source_column, generic_subject_snapshot_key, subject_kind, subject_set_id,
@@ -2188,22 +2160,6 @@ CREATE TRIGGER mame_document_facts_are_immutable_update
 BEFORE UPDATE ON mame_document_facts
 BEGIN
     SELECT RAISE(ABORT, 'MAME document facts are immutable');
-END;
-CREATE TRIGGER mame_machine_dependencies_are_immutable_delete
-BEFORE DELETE ON mame_machine_dependencies
-BEGIN
-    SELECT RAISE(ABORT, 'MAME machine dependencies are immutable');
-END;
-CREATE TRIGGER mame_machine_dependencies_are_immutable_update
-BEFORE UPDATE ON mame_machine_dependencies
-BEGIN
-    SELECT RAISE(ABORT, 'MAME machine dependencies are immutable');
-END;
-CREATE TRIGGER mame_machine_dependencies_require_set_identity
-BEFORE INSERT ON mame_machine_dependencies
-WHEN NOT EXISTS (SELECT 1 FROM snapshot_sets WHERE set_id = NEW.set_id)
-BEGIN
-    SELECT RAISE(ABORT, 'MAME machine dependency requires a catalog set');
 END;
 CREATE TRIGGER mame_machine_facts_are_immutable_delete
 BEFORE DELETE ON mame_machines
@@ -2439,8 +2395,12 @@ CREATE TRIGGER relationship_assertions_are_immutable_insert
 BEFORE INSERT ON relationship_assertions
 WHEN EXISTS (
     SELECT 1 FROM relationship_assertions WHERE assertion_key = NEW.assertion_key
-) OR NEW.assertion_key GLOB 'mame-dependency:*'
+) OR EXISTS (SELECT 1 FROM catalog_relationships WHERE assertion_key=NEW.assertion_key)
   OR NEW.assertion_key GLOB 'no-intro-dat-cloneof:*'
+  OR (NEW.origin='source_assertion' AND NEW.source_field IN ('cloneof','romof','sampleof','device_ref')
+      AND EXISTS (SELECT 1 FROM catalog_snapshots AS snapshot
+          JOIN parser_interpretations AS interpretation USING(interpretation_key)
+          WHERE snapshot.snapshot_key=NEW.source_snapshot_key AND interpretation.format='mame-listxml'))
 BEGIN
     SELECT RAISE(ABORT, 'relationship assertions are immutable');
 END;

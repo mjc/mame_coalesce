@@ -93,16 +93,16 @@ WHERE native.set_id = requested.owner_id AND native.link_kind = 'cloneof'
 ORDER BY native.set_id
 ";
 
-pub(super) const DEPENDENCIES: &str = "
-SELECT native.set_id AS owner_id, native.dependency_order AS row_order,
-       native.dependency_kind, native.target_name, native.reference_tag,
-       native.source_order, native.source_line AS line,
-       native.source_column AS column
-FROM temp.catalog_machine_requested_owners AS requested
-CROSS JOIN mame_machine_dependencies AS native
-WHERE native.set_id = requested.owner_id
-ORDER BY native.set_id, native.dependency_order
-";
+pub(super) const DEPENDENCIES: &str = concat!(
+    "WITH requested_mame_machines(set_id) AS (\
+       SELECT owner_id FROM temp.catalog_machine_requested_owners\
+     ), dependencies AS (",
+    include_str!("../db/mame_dependencies.sql"),
+    ") SELECT set_id AS owner_id, dependency_order AS row_order, \
+       dependency_kind, target_name, reference_tag, source_order, \
+       source_line AS line, source_column AS column \
+       FROM dependencies ORDER BY set_id, dependency_order"
+);
 
 pub(super) const ROM_ASSETS: &str = "
 SELECT occurrences.record_id AS owner_id, occurrences.occurrence_id,

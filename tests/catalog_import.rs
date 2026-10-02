@@ -414,7 +414,7 @@ fn composite_key_catalog_tables_cluster_rows_by_their_primary_keys()
              'software_item_shared_features', 'software_part_features', \
              'machine_switches', \
              'machine_switch_locations', 'machine_switch_values', 'mame_bios_sets', \
-             'mame_machines', 'mame_machine_dependencies', \
+             'mame_machines', 'mame_machine_links', 'mame_device_references', \
              'software_part_dipswitches', 'software_part_dip_values', 'no_intro_pc_games', \
              'logiqx_games', 'mame_machine_input_controls', \
              'mame_machine_analogs', 'mame_machine_device_extensions', 'mame_machine_slot_options', \
@@ -425,7 +425,7 @@ fn composite_key_catalog_tables_cluster_rows_by_their_primary_keys()
     )
     .get_result::<CountRow>(&mut connection)?;
 
-    assert_eq!(clustered.count, 24);
+    assert_eq!(clustered.count, 25);
 
     let specification_tables = sql_query(
         "SELECT COUNT(*) AS count FROM pragma_table_list \
@@ -444,6 +444,8 @@ fn composite_key_catalog_tables_cluster_rows_by_their_primary_keys()
         ("catalog_set_groups", "set_group_id"),
         ("catalog_sets", "set_id"),
         ("asset_occurrences", "occurrence_id"),
+        ("catalog_relationships", "relationship_id"),
+        ("reported_catalog_relationships", "relationship_id"),
         ("mame_rom_claims", "occurrence_id"),
         ("mame_disk_claims", "occurrence_id"),
         ("logiqx_rom_claims", "occurrence_id"),
@@ -480,11 +482,11 @@ fn composite_key_catalog_tables_cluster_rows_by_their_primary_keys()
 }
 
 #[test]
-fn mame_machine_dependencies_store_a_compact_set_identity() -> Result<(), Box<dyn std::error::Error>>
-{
+fn mame_device_references_store_compact_owner_and_relationship_identities()
+-> Result<(), Box<dyn std::error::Error>> {
     let (_directory, _database, mut connection) = setup()?;
     let columns = sql_query(
-        "SELECT GROUP_CONCAT(name, ',') AS value FROM pragma_table_info('mame_machine_dependencies')",
+        "SELECT GROUP_CONCAT(name, ',') AS value FROM pragma_table_info('mame_device_references')",
     )
     .get_result::<TextRow>(&mut connection)?;
 
@@ -2153,7 +2155,7 @@ fn imports_every_mame_machine_dtd_family_as_typed_query_facts()
     assert_eq!(default_values.value, "0:0:0:0:0:0:0:0:0");
 
     let reference_tag = sql_query(
-        "SELECT dependency.reference_tag AS value FROM mame_machine_dependencies AS dependency \
+        "SELECT dependency.reference_tag AS value FROM mame_machine_dependency_rows AS dependency \
          JOIN snapshot_sets AS sets USING (set_id) \
          WHERE sets.snapshot_key = ? AND sets.set_name = 'complete' \
            AND dependency.dependency_kind = 'device_ref'",
@@ -2774,25 +2776,20 @@ fn persists_mame_rom_and_disk_spec_attributes_as_relational_facts()
 }
 
 #[test]
-fn failed_late_mame_duplicate_does_not_publish_streamed_records()
--> Result<(), Box<dyn std::error::Error>> {
+fn failed_late_mame_eof_does_not_publish_streamed_records() -> Result<(), Box<dyn std::error::Error>>
+{
     let (directory, database, mut connection) = setup()?;
-    let path = directory.path().join("late-duplicate-machine.xml");
+    let path = directory.path().join("late-truncated-machine.xml");
     let document = br#"<mame mameconfig="10" xmlns:vendor="urn:vendor">
-      <machine name="alpha" cloneof="parent"><description>Alpha</description>
+      <machine name="alpha" cloneof="parent" romof="parent" sampleof="audio"><description>Alpha</description>
         <rom name="alpha.rom" size="4" crc="12345678"/>
+        <device_ref name="sound" tag="speaker"/>
         <vendor:extra mode="preserve">unknown</vendor:extra>
       </machine>
-      <machine name="alpha"><description>duplicate</description></machine>
-      <machine name="parent"><description>Parent</description><rom name="parent.rom" size="4" crc="12345678"/></machine>
-    </mame>"#;
+      <machine name="parent"><description>Parent</description><rom name="parent.rom" size="4" crc="12345678"/>
+    "#;
     std::fs::write(&path, document)?;
-    let mut import = request(
-        path,
-        "mame-late-duplicate",
-        "mame-late-duplicate",
-        "MAME late duplicate",
-    )?;
+    let mut import = request(path, "mame-late-eof", "mame-late-eof", "MAME late EOF")?;
     import.format = CatalogDocumentFormat::MameListXml;
 
     let failed = app::import_catalog(&database, &import)?;
@@ -2805,6 +2802,10 @@ fn failed_late_mame_duplicate_does_not_publish_streamed_records()
         "snapshot_sets",
         "asset_requirements",
         "relationship_assertions",
+        "catalog_relationships",
+        "reported_catalog_relationships",
+        "mame_machine_links",
+        "mame_device_references",
     ] {
         assert_eq!(
             count(&mut connection, table)?,

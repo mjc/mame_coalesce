@@ -10,18 +10,26 @@ SELECT requested.assertion_key,
                 SELECT 1 FROM relationship_evidence_publications WHERE assertion_key=assertion.assertion_key))
         )
     ) OR EXISTS (
-        SELECT 1 FROM mame_machine_dependencies AS dependency
-        JOIN catalog_sets AS sets ON sets.set_id=dependency.set_id
-        JOIN catalog_set_groups AS groups USING(set_group_id)
-        JOIN snapshot_publications AS publication ON publication.snapshot_key=groups.snapshot_key
-        WHERE requested.assertion_key GLOB 'mame-dependency:*'
-          AND dependency.set_id=CAST(substr(
-              substr(requested.assertion_key,length('mame-dependency:')+1),1,
-              instr(substr(requested.assertion_key,length('mame-dependency:')+1),':')-1) AS INTEGER)
-          AND dependency.dependency_order=CAST(substr(
-              substr(requested.assertion_key,length('mame-dependency:')+1),
-              instr(substr(requested.assertion_key,length('mame-dependency:')+1),':')+1) AS INTEGER)
-          AND requested.assertion_key='mame-dependency:'||dependency.set_id||':'||dependency.dependency_order
+        SELECT 1 FROM catalog_relationships AS registry
+        JOIN reported_catalog_relationships AS reported USING(relationship_id)
+        JOIN snapshot_publications AS publication ON publication.snapshot_key=registry.snapshot_key
+        WHERE registry.assertion_key=requested.assertion_key AND registry.origin='source'
+          AND (
+              EXISTS (SELECT 1 FROM mame_machine_links AS link
+                  JOIN mame_machines AS machine ON machine.set_id=link.set_id
+                  JOIN catalog_sets AS owner ON owner.set_id=machine.set_id
+                  JOIN catalog_set_groups AS owner_group ON owner_group.set_group_id=owner.set_group_id
+                  WHERE link.relationship_id=registry.relationship_id
+                    AND link.source_reference_kind=reported.source_reference_kind
+                    AND owner_group.snapshot_key=registry.snapshot_key)
+              OR EXISTS (SELECT 1 FROM mame_device_references AS reference
+                  JOIN mame_machines AS machine ON machine.set_id=reference.set_id
+                  JOIN catalog_sets AS owner ON owner.set_id=machine.set_id
+                  JOIN catalog_set_groups AS owner_group ON owner_group.set_group_id=owner.set_group_id
+                  WHERE reference.relationship_id=registry.relationship_id
+                    AND reference.source_reference_kind=reported.source_reference_kind
+                    AND owner_group.snapshot_key=registry.snapshot_key)
+          )
     ) OR EXISTS (
         SELECT 1 FROM no_intro_dat_cloneof_assertions AS native
         JOIN snapshot_publications AS publication ON publication.snapshot_key=native.source_snapshot_key

@@ -24,6 +24,38 @@ struct ImportDiagnostic {
     message: String,
 }
 
+#[derive(QueryableByName)]
+struct DevicePlanRow {
+    #[diesel(sql_type = Text)]
+    detail: String,
+}
+
+#[test]
+fn build_device_references_seek_requested_snapshot_owners() -> crate::Result<()> {
+    let fixture = fixture();
+    let mut connection = fixture.database.pool().get()?;
+    let plan = sql_query(format!("EXPLAIN QUERY PLAN {DEVICE_REFERENCES}"))
+        .bind::<Text, _>("requested-snapshot")
+        .load::<DevicePlanRow>(&mut connection)?
+        .into_iter()
+        .map(|row| row.detail)
+        .collect::<Vec<_>>();
+    for alias in ["logiqx_device_references", "mame_device_references"] {
+        assert!(
+            !plan
+                .iter()
+                .any(|row| row.starts_with(&format!("SCAN {alias}"))),
+            "build device references scan {alias}: {plan:?}"
+        );
+        assert!(
+            plan.iter()
+                .any(|row| row.starts_with(&format!("SEARCH {alias} USING PRIMARY KEY"))),
+            "build device references do not seek {alias}: {plan:?}"
+        );
+    }
+    Ok(())
+}
+
 fn fixture() -> Fixture {
     let directory = tempfile::tempdir().expect("temporary directory");
     let path = Utf8PathBuf::from_path_buf(directory.path().join("catalog.sqlite"))

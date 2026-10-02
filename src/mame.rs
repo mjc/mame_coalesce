@@ -540,7 +540,7 @@ fn parse_machine_records<E: From<crate::Error>>(
     retain_extensions: bool,
     mut consume: impl FnMut(MameRecord) -> Result<(), E>,
 ) -> Result<(), E> {
-    let mut machine_names = std::collections::HashSet::new();
+    let mut saw_machine = false;
     if !empty {
         loop {
             let (namespace, event) = xml_reader::next(reader, positions)?;
@@ -560,9 +560,10 @@ fn parse_machine_records<E: From<crate::Error>>(
                 }
                 _ => continue,
             };
-            let record = parse_record(&node, &mut machine_names, retain_extensions)?;
+            let record = parse_record(&node, retain_extensions)?;
             drop(node);
             if let Some(record) = record {
+                saw_machine |= matches!(&record, MameRecord::Machine(_));
                 consume(record)?;
             }
         }
@@ -583,7 +584,7 @@ fn parse_machine_records<E: From<crate::Error>>(
             }
         }
     }
-    if machine_names.is_empty() {
+    if !saw_machine {
         return Err(
             crate::Error::XmlValidation("MAME document has no machine records".into()).into(),
         );
@@ -591,19 +592,9 @@ fn parse_machine_records<E: From<crate::Error>>(
     Ok(())
 }
 
-fn parse_record(
-    node: &Element,
-    machine_names: &mut std::collections::HashSet<String>,
-    retain_extensions: bool,
-) -> crate::Result<Option<MameRecord>> {
+fn parse_record(node: &Element, retain_extensions: bool) -> crate::Result<Option<MameRecord>> {
     if node.name == "machine" {
         let machine = parse_machine(node, retain_extensions)?;
-        if !machine_names.insert(machine.name.clone()) {
-            return Err(crate::Error::XmlValidation(format!(
-                "duplicate MAME machine name {:?}",
-                machine.name
-            )));
-        }
         Ok(Some(MameRecord::Machine(Box::new(machine))))
     } else if retain_extensions {
         extension("document", None, node)

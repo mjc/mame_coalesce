@@ -2247,15 +2247,9 @@ fn load_mame_machine_dependencies(
     conn: &mut diesel::SqliteConnection,
     key: &SnapshotKey,
 ) -> crate::Result<BTreeMap<i64, Vec<serde_json::Value>>> {
-    let rows = sql_query(
-        "SELECT sets.set_id, dependency.dependency_order, dependency.dependency_kind, \
-                dependency.target_name, dependency.reference_tag, dependency.source_order \
-         FROM mame_machine_dependencies AS dependency \
-         JOIN snapshot_sets AS sets USING (set_id) \
-         WHERE sets.snapshot_key = ? ORDER BY sets.set_name, dependency.dependency_order",
-    )
-    .bind::<Text, _>(key.as_str())
-    .load::<MameMachineDependencyRow>(conn)?;
+    let rows = sql_query(super::machine_dependencies::MAME_DEPENDENCIES)
+        .bind::<Text, _>(key.as_str())
+        .load::<MameMachineDependencyRow>(conn)?;
     let mut facts = BTreeMap::<i64, Vec<serde_json::Value>>::new();
     for row in rows {
         facts
