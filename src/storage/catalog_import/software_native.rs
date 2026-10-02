@@ -19,6 +19,7 @@ use crate::{
         },
         catalog_identity::{AllocatedOccurrence, OccurrenceId},
         relationships::{SourceRelationshipDraft, insert_source_assertion},
+        software_rom_evidence::RomEvidence,
     },
 };
 
@@ -532,14 +533,21 @@ fn insert_rom_component(
         SoftwareClaim::RomDeclaration
     };
     let is_declaration = claim.is_rom_declaration();
+    let evidence = RomEvidence::classify(
+        is_declaration,
+        rom.name
+            .as_ref()
+            .map(crate::mame_softwarelist::ComponentName::as_str),
+        rom.status == Some(crate::mame_softwarelist::DumpStatus::NoDump),
+    );
     let digests = ContentDigestAssertions::new(
-        "whole_asset",
+        evidence.scope(),
         rom.crc.as_ref().map(<[u8; 4]>::as_slice),
         None,
         rom.sha1.as_ref().map(<[u8; 20]>::as_slice),
         None,
     );
-    let source_hashes_usable = rom.name.is_some()
+    let source_hashes_usable = evidence == RomEvidence::WholeFile
         && rom.crc_text.as_ref().is_none_or(|_| rom.crc.is_some())
         && rom.sha1_text.as_ref().is_none_or(|_| rom.sha1.is_some());
     let (occurrence, resolution) = allocate_occurrence(
@@ -550,7 +558,15 @@ fn insert_rom_component(
         source_hashes_usable,
         digests,
     )?;
-    insert_rom_entry(conn, record, area_id, component_order, occurrence, rom)?;
+    insert_rom_entry(
+        conn,
+        record,
+        area_id,
+        component_order,
+        occurrence,
+        rom,
+        evidence,
+    )?;
     update_rom_declaration(conn, record, occurrence, is_declaration, declaration)?;
 
     let use_declaration = if matches!(
@@ -586,13 +602,14 @@ fn insert_rom_entry(
     component_order: i64,
     occurrence: OccurrenceId,
     rom: &SoftwareRom,
+    evidence: RomEvidence,
 ) -> crate::Result<()> {
     sql_query(
         "INSERT INTO software_rom_entries \
          (occurrence_id, record_id, area_id, component_order, source_order, name, evidence_scope, \
           size_text, offset_text, value, crc_text, sha1_text, dump_status, status_specified, \
           load_instruction, source_line, source_column) \
-         VALUES (?, ?, ?, ?, ?, ?, 'whole_asset', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind::<BigInt, _>(occurrence.database_value())
     .bind::<BigInt, _>(record.as_i64())
@@ -604,6 +621,7 @@ fn insert_rom_entry(
             .as_ref()
             .map(crate::mame_softwarelist::ComponentName::as_str),
     )
+    .bind::<Text, _>(evidence.scope())
     .bind::<Nullable<Text>, _>(rom.size_text.as_deref())
     .bind::<Nullable<Text>, _>(rom.offset_text.as_deref())
     .bind::<Nullable<Text>, _>(rom.value.as_deref())

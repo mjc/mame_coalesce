@@ -191,6 +191,10 @@ payloads through both bulk lookup and UUID pages. They retain original numeric
 and checksum text, checked segment sizes/offsets, explicit-default presence,
 source order/location and area-local file-declaration links. Empty or invalid
 declarations remain queryable without inventing usable matching evidence.
+Software load-operation hashes, hashes on unnamed/empty-name ROM entries, and
+hashes declared on `nodump` ROMs retain unknown scope and cannot issue a shared
+file UUID. Publication checks the actual load flag, claim kind and file-use
+operation together; changing a label cannot promote an operation to a file.
 Disk payloads keep CHD-header hashes separate from whole-container identity.
 These payloads describe source facts, not validated executable loading recipes;
 the `catalog_software` API separately pages the lists in an exact published

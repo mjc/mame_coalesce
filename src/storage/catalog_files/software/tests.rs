@@ -38,7 +38,7 @@ fn rom_row() -> RomRow {
         dump_status: "good".to_owned(),
         status_specified: 0,
         load_instruction: Some("continue".to_owned()),
-        evidence_scope: "whole_asset".to_owned(),
+        evidence_scope: "unknown".to_owned(),
         component_order: 1,
         source_order: 1,
         source_line: 12,
@@ -213,12 +213,42 @@ fn rom_rows_keep_source_values_and_reject_corrupt_owner_and_enums() {
 }
 
 #[test]
+fn rom_payload_rejects_whole_file_scope_on_operations_empty_names_and_nodump() {
+    for case in ["operation", "empty", "nodump"] {
+        let mut row = rom_row();
+        row.evidence_scope = "whole_asset".to_owned();
+        if case != "operation" {
+            row.claim_kind = "software_rom_entry".to_owned();
+            row.load_instruction = None;
+            row.operation = Some("load".to_owned());
+            row.name = Some(if case == "empty" { "" } else { "undumped.bin" }.to_owned());
+            if case == "nodump" {
+                row.dump_status = "nodump".to_owned();
+                row.status_specified = 1;
+            }
+            link_self_declaration(&mut row);
+        }
+        assert!(
+            matches!(
+                rom_payload(row),
+                Err(CatalogFilesError::InvalidStoredValue {
+                    field: "software ROM evidence scope",
+                    ..
+                })
+            ),
+            "{case}"
+        );
+    }
+}
+
+#[test]
 fn rom_declaration_links_match_claim_operation_and_area() {
     let mut declaration = rom_row();
     declaration.claim_kind = "software_rom_entry".to_owned();
     declaration.load_instruction = None;
     declaration.operation = Some("load".to_owned());
     declaration.name = Some("primary.bin".to_owned());
+    declaration.evidence_scope = "whole_asset".to_owned();
     link_self_declaration(&mut declaration);
     assert!(rom_payload(declaration).is_ok());
 

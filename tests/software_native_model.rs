@@ -113,7 +113,12 @@ fn software_report_digests_follow_the_native_declared_scope()
         "SELECT evidence_scope AS value FROM software_components WHERE component_name IS NULL",
     )
     .get_result::<TextValue>(&mut conn)?;
-    assert_eq!(scope.value, "whole_asset");
+    assert_eq!(scope.value, "unknown");
+    let file_scope = sql_query(
+        "SELECT evidence_scope AS value FROM software_components WHERE component_name = 'file.bin'",
+    )
+    .get_result::<TextValue>(&mut conn)?;
+    assert_eq!(file_scope.value, "whole_asset");
     Ok(())
 }
 

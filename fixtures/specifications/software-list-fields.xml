@@ -1,0 +1,40 @@
+<?xml version="1.0"?>
+<!DOCTYPE softwarelist>
+<softwarelist name="list α" description=" List description ">
+  <notes> List notes é😀 </notes>
+  <software name="game α" cloneof="parent" supported="partial">
+    <description> Title é😀 </description>
+    <year>19??</year>
+    <publisher> Publisher &amp; company </publisher>
+    <notes> Item notes </notes>
+    <info name="serial" value="SER-001"/>
+    <info name="serial"/>
+    <info name="serial" value=""/>
+    <sharedfeat name="compatibility" value=" PAL "/>
+    <sharedfeat name="compatibility"/>
+    <sharedfeat name="compatibility" value=""/>
+    <part name="cart" interface="cart-interface">
+      <feature name="board" value=" Mapper "/>
+      <feature name="board"/>
+      <feature name="board" value=""/>
+      <dataarea name="program" size="0x20" width="16" endianness="big">
+        <rom name="file α.bin" size="00016" crc="A1B2C3D4" sha1="0123456789ABCDEF0123456789ABCDEF01234567" offset="0x00" value="0xA5" status="baddump" loadflag="load16_byte"/>
+        <rom size="2" offset="0x10" value="0x55" loadflag="continue"/>
+      </dataarea>
+      <dataarea name="program" size=""/>
+      <diskarea name="media">
+        <disk name="image" sha1="FEDCBA9876543210FEDCBA9876543210FEDCBA98" status="nodump" writeable="yes"/>
+      </diskarea>
+      <dipswitch name="Mode" tag=":SW" mask="0x03">
+        <dipvalue name="Default" value="0x01" default="yes"/>
+        <dipvalue name="Default" value=""/>
+      </dipswitch>
+    </part>
+    <part name="cart" interface=""/>
+  </software>
+  <software name="parent">
+    <description/>
+    <year/>
+    <publisher/>
+  </software>
+</softwarelist>

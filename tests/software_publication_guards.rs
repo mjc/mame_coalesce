@@ -48,6 +48,24 @@ struct RomFixture<'a> {
     declare_file: bool,
 }
 
+struct RomSource<'a> {
+    name: &'a str,
+    status: &'a str,
+    scope: &'a str,
+    instruction: Option<&'a str>,
+}
+
+impl Default for RomSource<'_> {
+    fn default() -> Self {
+        Self {
+            name: "game.bin",
+            status: "good",
+            scope: "whole_asset",
+            instruction: None,
+        }
+    }
+}
+
 fn seed() -> TestResult<Seed> {
     let directory = tempfile::tempdir()?;
     let database_path = Utf8PathBuf::from_path_buf(directory.path().join("catalog.sqlite"))
@@ -259,6 +277,24 @@ fn add_rom_with_identity(
     fixture: RomFixture<'_>,
     content_uuid: Option<&[u8]>,
 ) -> TestResult<i64> {
+    add_rom_source(
+        connection,
+        candidate,
+        area_id,
+        fixture,
+        content_uuid,
+        &RomSource::default(),
+    )
+}
+
+fn add_rom_source(
+    connection: &mut SqliteConnection,
+    candidate: &Candidate,
+    area_id: i64,
+    fixture: RomFixture<'_>,
+    content_uuid: Option<&[u8]>,
+    source: &RomSource<'_>,
+) -> TestResult<i64> {
     let occurrence_id = sql_query(
         "INSERT INTO asset_occurrences(record_id, occurrence_order, claim_kind, content_uuid) \
          VALUES (?, ?, ?, ?) RETURNING occurrence_id AS id",
@@ -274,14 +310,19 @@ fn add_rom_with_identity(
          (occurrence_id, record_id, area_id, component_order, source_order, name, evidence_scope, \
           size_text, offset_text, value, crc_text, sha1_text, dump_status, status_specified, \
           load_instruction, source_line, source_column) \
-         VALUES (?, ?, ?, ?, 0, 'game.bin', 'whole_asset', '1', NULL, NULL, ?, ?, 'good', 0, NULL, 1, 1)",
+         VALUES (?, ?, ?, ?, 0, ?, ?, '1', NULL, NULL, ?, ?, ?, ?, ?, 1, 1)",
     )
     .bind::<BigInt, _>(occurrence_id)
     .bind::<BigInt, _>(candidate.record_id)
     .bind::<BigInt, _>(area_id)
     .bind::<BigInt, _>(fixture.occurrence_order)
+    .bind::<Text, _>(source.name)
+    .bind::<Text, _>(source.scope)
     .bind::<Nullable<Text>, _>(fixture.crc_text)
     .bind::<Nullable<Text>, _>(fixture.sha1_text)
+    .bind::<Text, _>(source.status)
+    .bind::<BigInt, _>(i64::from(source.status != "good"))
+    .bind::<Nullable<Text>, _>(source.instruction)
     .execute(connection)?;
     if fixture.declare_file {
         sql_query(
@@ -293,6 +334,152 @@ fn add_rom_with_identity(
         .execute(connection)?;
     }
     Ok(occurrence_id)
+}
+
+#[test]
+fn publication_rejects_unproved_rom_scopes_and_uuids_with_foreign_keys_disabled() -> TestResult {
+    const SHA1: &str = "1111111111111111111111111111111111111111";
+    let seed = seed()?;
+    let mut connection = connect(&seed, false)?;
+    let uuid = [0x55_u8; 16];
+    sql_query("INSERT INTO catalog_contents(content_uuid) VALUES (?)")
+        .bind::<diesel::sql_types::Binary, _>(uuid.as_slice())
+        .execute(&mut connection)?;
+    for (case, name, status, instruction) in [
+        ("empty", "", "good", None),
+        ("nodump", "undumped.bin", "nodump", None),
+        ("continue", "operation.bin", "good", Some("continue")),
+        ("reload", "operation.bin", "good", Some("reload")),
+        (
+            "reload-plain",
+            "operation.bin",
+            "good",
+            Some("reload_plain"),
+        ),
+        ("ignore", "operation.bin", "good", Some("ignore")),
+        ("fill", "operation.bin", "good", Some("fill")),
+    ] {
+        for (variant, scope, linked, allowed) in [
+            ("whole", "whole_asset", false, false),
+            ("control", "unknown", false, true),
+            ("uuid", "unknown", true, false),
+        ] {
+            // Operation UUIDs are already forbidden by the occurrence table CHECK.
+            if instruction.is_some() && linked {
+                continue;
+            }
+            let owner = candidate(
+                &mut connection,
+                &seed.snapshot_key,
+                &format!("{case}-{variant}"),
+                true,
+                None,
+                true,
+            )?;
+            let area = add_area(&mut connection, &owner, "rom", "data", 0, 0)?;
+            let declares_file = instruction.is_none();
+            let rom = add_rom_source(
+                &mut connection,
+                &owner,
+                area,
+                RomFixture {
+                    occurrence_order: 0,
+                    claim_kind: if declares_file {
+                        "software_rom_entry"
+                    } else {
+                        "software_rom_operation"
+                    },
+                    crc_text: None,
+                    sha1_text: Some(SHA1),
+                    declare_file: declares_file,
+                },
+                linked.then_some(uuid.as_slice()),
+                &RomSource {
+                    name,
+                    status,
+                    scope,
+                    instruction,
+                },
+            )?;
+            add_use(
+                &mut connection,
+                &owner,
+                rom,
+                declares_file.then_some(rom),
+                instruction.unwrap_or("load"),
+            )?;
+            add_assertion(
+                &mut connection,
+                rom,
+                "sha1",
+                &hex::decode(SHA1)?,
+                scope,
+                "source_declared",
+            )?;
+            let result = publish(&mut connection, &owner.snapshot_key);
+            assert_eq!(
+                result.is_ok(),
+                allowed,
+                "publication {case}/{variant}: {result:?}"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn publication_rejects_control_operations_mislabeled_as_file_declarations() -> TestResult {
+    const SHA1: &str = "1111111111111111111111111111111111111111";
+    let seed = seed()?;
+    let mut connection = connect(&seed, false)?;
+    let uuid = [0x66_u8; 16];
+    sql_query("INSERT INTO catalog_contents(content_uuid) VALUES (?)")
+        .bind::<diesel::sql_types::Binary, _>(uuid.as_slice())
+        .execute(&mut connection)?;
+    for instruction in ["continue", "reload", "reload_plain", "ignore", "fill"] {
+        for operation in ["load", instruction] {
+            let owner = candidate(
+                &mut connection,
+                &seed.snapshot_key,
+                &format!("forged-{instruction}-{operation}"),
+                true,
+                None,
+                true,
+            )?;
+            let area = add_area(&mut connection, &owner, "rom", "data", 0, 0)?;
+            let rom = add_rom_source(
+                &mut connection,
+                &owner,
+                area,
+                RomFixture {
+                    occurrence_order: 0,
+                    claim_kind: "software_rom_entry",
+                    crc_text: None,
+                    sha1_text: Some(SHA1),
+                    declare_file: true,
+                },
+                Some(uuid.as_slice()),
+                &RomSource {
+                    instruction: Some(instruction),
+                    ..RomSource::default()
+                },
+            )?;
+            add_use(&mut connection, &owner, rom, Some(rom), operation)?;
+            add_assertion(
+                &mut connection,
+                rom,
+                "sha1",
+                &hex::decode(SHA1)?,
+                "whole_asset",
+                "source_declared",
+            )?;
+            assert!(
+                publish(&mut connection, &owner.snapshot_key).is_err(),
+                "forged declaration {instruction}/{operation} published"
+            );
+        }
+    }
+    Ok(())
 }
 
 fn add_disk(

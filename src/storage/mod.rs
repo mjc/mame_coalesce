@@ -18,6 +18,7 @@ pub mod repositories;
 pub mod schema;
 pub mod snapshot_history;
 mod software_area;
+mod software_rom_evidence;
 
 #[cfg(test)]
 mod managed_storage_prototype;

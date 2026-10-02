@@ -276,6 +276,16 @@ WHEN EXISTS (
                OR occurrence.occurrence_id IS NULL OR occurrence.record_id <> rom.record_id
                OR occurrence.claim_kind NOT IN ('software_rom_entry', 'software_rom_operation')
                OR file_use.occurrence_id IS NULL OR file_use.operation = 'disk'
+               OR file_use.operation <> CASE
+                   WHEN rom.load_instruction IN ('continue', 'reload', 'reload_plain', 'ignore', 'fill')
+                   THEN rom.load_instruction ELSE 'load' END
+               OR occurrence.claim_kind <> CASE
+                   WHEN rom.load_instruction IN ('continue', 'reload', 'reload_plain', 'ignore', 'fill')
+                   THEN 'software_rom_operation' ELSE 'software_rom_entry' END
+               OR (occurrence.claim_kind = 'software_rom_operation' AND (
+                   file_use.declaration_occurrence_id = rom.occurrence_id
+                   OR (rom.load_instruction = 'fill' AND file_use.declaration_occurrence_id IS NOT NULL)
+               ))
                OR (occurrence.claim_kind = 'software_rom_entry' AND (
                    NOT EXISTS (SELECT 1 FROM software_file_declarations AS declaration
                                WHERE declaration.occurrence_id = rom.occurrence_id
@@ -361,7 +371,7 @@ WHEN EXISTS (
         WHERE groups.snapshot_key = NEW.snapshot_key AND groups.kind = 'software_list'
           AND occurrence.content_uuid IS NOT NULL AND (
             occurrence.claim_kind <> 'software_rom_entry'
-            OR rom.name IS NULL
+            OR rom.name IS NULL OR rom.name = '' OR rom.dump_status = 'nodump'
             OR rom.evidence_scope NOT IN ('whole_file', 'whole_asset')
             OR NOT COALESCE(length(rom.sha1_text) = 40
                             AND rom.sha1_text NOT GLOB '*[^0-9a-fA-F]*', 0)
@@ -374,6 +384,17 @@ WHEN EXISTS (
                   AND declaration.record_id = rom.record_id
             )
         )
+    )
+    OR EXISTS (
+        SELECT 1 FROM catalog_set_groups AS groups
+        CROSS JOIN catalog_sets AS sets ON sets.set_group_id = groups.set_group_id
+        CROSS JOIN asset_occurrences AS occurrence ON occurrence.record_id = sets.set_id
+        JOIN software_rom_entries AS rom USING (occurrence_id, record_id)
+        WHERE groups.snapshot_key = NEW.snapshot_key AND groups.kind = 'software_list'
+          AND CASE WHEN occurrence.claim_kind = 'software_rom_entry'
+                        AND rom.name IS NOT NULL AND rom.name <> '' AND rom.dump_status <> 'nodump'
+                   THEN rom.evidence_scope NOT IN ('whole_file', 'whole_asset')
+                   ELSE rom.evidence_scope <> 'unknown' END
     )
     OR EXISTS (
         SELECT 1 FROM catalog_set_groups AS groups

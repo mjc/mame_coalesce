@@ -429,6 +429,18 @@ fn rom_payload(row: RomRow) -> Result<SoftwareRomPayload, CatalogFilesError> {
         ));
     }
     validate_rom_declaration_link(&row, operation)?;
+    let status = parse_dump_status(&row.dump_status)?;
+    let evidence = super::super::software_rom_evidence::RomEvidence::classify(
+        row.claim_kind == "software_rom_entry",
+        row.name.as_deref(),
+        status == SoftwareDumpStatus::NoDump,
+    );
+    if !evidence.accepts_scope(&row.evidence_scope) {
+        return Err(invalid_value(
+            "software ROM evidence scope",
+            row.evidence_scope,
+        ));
+    }
 
     Ok(SoftwareRomPayload {
         name: row.name,
@@ -439,7 +451,7 @@ fn rom_payload(row: RomRow) -> Result<SoftwareRomPayload, CatalogFilesError> {
         value: row.value,
         crc_text: row.crc_text,
         sha1_text: row.sha1_text,
-        status: parse_dump_status(row.dump_status)?,
+        status,
         status_specified: stored_bool(row.status_specified, "software ROM status_specified")?,
         load_instruction,
         evidence_scope: row.evidence_scope,
@@ -532,7 +544,7 @@ fn disk_payload(row: DiskRow) -> Result<SoftwareDiskPayload, CatalogFilesError> 
     Ok(SoftwareDiskPayload {
         name: row.name,
         sha1_text: row.sha1_text,
-        status: parse_dump_status(row.dump_status)?,
+        status: parse_dump_status(&row.dump_status)?,
         status_specified: stored_bool(row.status_specified, "software disk status_specified")?,
         writeable: stored_bool(row.writeable, "software disk writeable")?,
         writeable_specified: stored_bool(
@@ -654,12 +666,12 @@ fn software_owner(
     })
 }
 
-fn parse_dump_status(value: String) -> Result<SoftwareDumpStatus, CatalogFilesError> {
-    match value.as_str() {
+fn parse_dump_status(value: &str) -> Result<SoftwareDumpStatus, CatalogFilesError> {
+    match value {
         "good" => Ok(SoftwareDumpStatus::Good),
         "baddump" => Ok(SoftwareDumpStatus::BadDump),
         "nodump" => Ok(SoftwareDumpStatus::NoDump),
-        _ => Err(invalid_value("software dump status", value)),
+        _ => Err(invalid_value("software dump status", value.to_owned())),
     }
 }
 

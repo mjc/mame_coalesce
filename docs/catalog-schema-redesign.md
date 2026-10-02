@@ -229,6 +229,26 @@ not implement the excerpt/highlight/FK contract below.
 
 ## Evidence and corpus coverage
 
+The pinned MAME 0.289 software-list DTD now has an explicit 36-attribute native
+SQL/public-query witness and all five PCDATA owner placements, including both
+notes owners. Independent single-field editions compare exact qualified title
+identities and native values; unchanged parent titles are checked separately.
+Sixteen required attributes, eight enum declarations, and missing/duplicate
+required item text fields exercise rollback without leaking native facts.
+The document history value compares the complete ordered list tree, so a title
+edit also changes that document value; it does not imply another title changed.
+Original XML syntax remains in external retained documents, not copied into a
+second field/value model in SQLite.
+
+ROM hashes on all five control operations, unnamed/empty-name entries and
+`nodump` ROMs remain queryable source assertions with unknown scope and no
+shared UUID. Ordinary named good/baddump file declarations remain eligible.
+The writer and typed file reader share a pure evidence classification. Native
+publication additionally checks load flag/claim/use agreement and rejects
+forged whole-file evidence or UUIDs independently of foreign-key enforcement.
+This does not implement executable loading recipes or complete the remaining
+formats and whole-corpus acceptance matrix.
+
 The CLI currently exposes six parser families: Logiqx XML, MAME machine XML,
 MAME software-list XML, ClrMamePro text, the synthetic No-Intro P/C projection,
 and No-Intro flat DAT XML with explicit v3/v4 interpretation modes.

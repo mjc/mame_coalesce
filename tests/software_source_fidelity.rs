@@ -7,6 +7,10 @@ use diesel::{
 };
 use mame_coalesce::{
     app::{self, CatalogDocumentFormat, CatalogImportRequest},
+    catalog_files::{
+        self, DigestAlgorithm, DigestProvenance, OccurrenceDigest, OccurrenceId,
+        SoftwareFileOperation, SoftwareFilePayload, SoftwareLoadInstruction,
+    },
     database::Database,
     domain::{CatalogKey, CatalogScope, PublishingSourceKey},
 };
@@ -18,6 +22,7 @@ const UPPER_SHA1: &str = "ABCDEF0123ABCDEF0123ABCDEF0123ABCDEF0123";
 
 struct ImportedSoftware {
     _directory: tempfile::TempDir,
+    database: Database,
     connection: SqliteConnection,
     snapshot_key: String,
 }
@@ -115,6 +120,7 @@ fn import_software(xml: &str) -> TestResult<ImportedSoftware> {
         .to_string();
     Ok(ImportedSoftware {
         _directory: directory,
+        database,
         connection: SqliteConnection::establish(database_path.as_str())?,
         snapshot_key,
     })
@@ -484,24 +490,37 @@ fn named_hash_bearing_rom_operations_keep_their_own_assertions_without_identity(
     let xml = format!(
         r#"<softwarelist name="list"><software name="game"><description>Game</description><year>2000</year><publisher>Test</publisher>
           <part name="cart" interface="cart"><dataarea name="rom" size="020">
-            <rom name="program.bin" size="8" offset="0"/>
+            <rom name="program.bin" size="8" offset="0" crc="12345678" sha1="1111111111111111111111111111111111111111"/>
             <rom name="reload.bin" size="02" offset="0x8" loadflag="reload" crc="AB12CD34" sha1="{UPPER_SHA1}"/>
             <rom name="continue.bin" size="02" offset="010" loadflag="continue" crc="AB12CD34" sha1="{UPPER_SHA1}"/>
             <rom name="fill.bin" size="02" offset="+8" loadflag="fill" value="fF" crc="AB12CD34" sha1="{UPPER_SHA1}"/>
+            <rom name="plain.bin" size="02" offset="+8" loadflag="reload_plain" crc="AB12CD34" sha1="{UPPER_SHA1}"/>
+            <rom name="ignore.bin" size="02" offset="+8" loadflag="ignore" crc="AB12CD34" sha1="{UPPER_SHA1}"/>
           </dataarea></part></software></softwarelist>"#
     );
     let mut imported = import_software(&xml)?;
     let rows = identity_sources(&mut imported)?;
     let digests = source_digests(&mut imported)?;
-    assert_eq!(rows.len(), 4);
+    assert_eq!(rows.len(), 6);
     assert_eq!(rows[0].declares_file, 1);
-    assert_source_digests(&digests, rows[0].occurrence_id, "whole_asset", &[])?;
+    assert_source_digests(
+        &digests,
+        rows[0].occurrence_id,
+        "whole_asset",
+        &[
+            ("crc32", "12345678"),
+            ("sha1", "1111111111111111111111111111111111111111"),
+        ],
+    )?;
+    assert_eq!(rows[0].content_uuid.as_ref().map(Vec::len), Some(16));
     for (order, (row, (name, operation, offset))) in rows[1..]
         .iter()
         .zip([
             ("reload.bin", "reload", "0x8"),
             ("continue.bin", "continue", "010"),
             ("fill.bin", "fill", "+8"),
+            ("plain.bin", "reload_plain", "+8"),
+            ("ignore.bin", "ignore", "+8"),
         ])
         .enumerate()
     {
@@ -519,6 +538,7 @@ fn named_hash_bearing_rom_operations_keep_their_own_assertions_without_identity(
         assert_eq!(row.claim_kind, "software_rom_operation");
         assert_eq!(row.declares_file, 0);
         assert_eq!(row.content_uuid, None);
+        assert_eq!(row.evidence_scope, "unknown");
         assert_eq!(
             row.declaration_occurrence_id,
             if operation == "fill" {
@@ -530,13 +550,143 @@ fn named_hash_bearing_rom_operations_keep_their_own_assertions_without_identity(
         assert_source_digests(
             &digests,
             row.occurrence_id,
-            "whole_asset",
+            "unknown",
             &[("crc32", "ab12cd34"), ("sha1", LOWER_SHA1)],
         )?;
     }
     assert_eq!(rows[3].value.as_deref(), Some("fF"));
-    assert_eq!(digests.len(), 6);
-    assert_registry_size(&mut imported.connection, 0)?;
+    assert_eq!(digests.len(), 12);
+    assert_registry_size(&mut imported.connection, 1)?;
+    assert_queried_rom_operations(&imported, &rows)
+}
+
+fn assert_queried_rom_operations(
+    imported: &ImportedSoftware,
+    rows: &[IdentitySourceRow],
+) -> TestResult {
+    let files = catalog_files::occurrences_for_ids(
+        &imported.database,
+        &rows
+            .iter()
+            .map(|row| OccurrenceId::from_database(row.occurrence_id))
+            .collect::<Vec<_>>(),
+    )?;
+    assert_eq!(files.len(), rows.len());
+    for (row, (operation, instruction)) in rows.iter().zip([
+        (SoftwareFileOperation::Load, None),
+        (
+            SoftwareFileOperation::Reload,
+            Some(SoftwareLoadInstruction::Reload),
+        ),
+        (
+            SoftwareFileOperation::Continue,
+            Some(SoftwareLoadInstruction::Continue),
+        ),
+        (
+            SoftwareFileOperation::Fill,
+            Some(SoftwareLoadInstruction::Fill),
+        ),
+        (
+            SoftwareFileOperation::ReloadPlain,
+            Some(SoftwareLoadInstruction::ReloadPlain),
+        ),
+        (
+            SoftwareFileOperation::Ignore,
+            Some(SoftwareLoadInstruction::Ignore),
+        ),
+    ]) {
+        let file = files
+            .iter()
+            .find(|file| file.occurrence_id.database_value() == row.occurrence_id)
+            .ok_or("queried operation missing")?;
+        assert_eq!(file.content_id.is_some(), row.declares_file == 1);
+        assert_eq!(file.canonical_content_id.is_some(), row.declares_file == 1);
+        assert_eq!(file.provenance.set_id.as_i64(), row.record_id);
+        let Some(SoftwareFilePayload::Rom(payload)) = &file.software_file else {
+            return Err("ROM payload missing".into());
+        };
+        assert_eq!(payload.name.as_deref(), Some(row.name.as_str()));
+        assert_eq!(payload.evidence_scope, row.evidence_scope);
+        assert_eq!(payload.operation, operation);
+        assert_eq!(payload.load_instruction, instruction);
+        assert_eq!(
+            payload
+                .declaration_occurrence_id
+                .map(OccurrenceId::database_value),
+            row.declaration_occurrence_id
+        );
+        assert!(
+            file.digests
+                .iter()
+                .all(|digest| digest.scope == row.evidence_scope)
+        );
+        assert_eq!(file.digests.len(), 2);
+        let expected = if row.declares_file == 1 {
+            [
+                (DigestAlgorithm::Crc32, "12345678"),
+                (
+                    DigestAlgorithm::Sha1,
+                    "1111111111111111111111111111111111111111",
+                ),
+            ]
+        } else {
+            [
+                (DigestAlgorithm::Crc32, "ab12cd34"),
+                (DigestAlgorithm::Sha1, LOWER_SHA1),
+            ]
+        };
+        for (algorithm, digest) in expected {
+            assert!(file.digests.contains(&OccurrenceDigest {
+                algorithm,
+                value: hex::decode(digest)?,
+                scope: row.evidence_scope.clone(),
+                provenance: DigestProvenance::SourceDeclared
+            }));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn empty_name_and_nodump_hashes_remain_unproved_source_assertions() -> TestResult {
+    for (name, status) in [("", "good"), ("undumped.bin", "nodump")] {
+        let xml = format!(
+            r#"<softwarelist name="list"><software name="game"><description>Game</description><year>2000</year><publisher>Test</publisher>
+              <part name="cart" interface="cart"><dataarea name="rom" size="8">
+                <rom name="{name}" size="8" status="{status}" crc="AB12CD34" sha1="{UPPER_SHA1}"/>
+              </dataarea></part></software></softwarelist>"#
+        );
+        let mut imported = import_software(&xml)?;
+        let rows = identity_sources(&mut imported)?;
+        assert_eq!(rows.len(), 1);
+        let row = rows.first().ok_or("ROM row missing")?;
+        assert_eq!(row.name, name);
+        assert_eq!(row.crc_text.as_deref(), Some("AB12CD34"));
+        assert_eq!(row.sha1_text.as_deref(), Some(UPPER_SHA1));
+        assert_eq!(row.content_uuid, None, "unproved ROM {name:?}/{status}");
+        assert_eq!(row.evidence_scope, "unknown");
+        assert_source_digests(
+            &source_digests(&mut imported)?,
+            row.occurrence_id,
+            "unknown",
+            &[("crc32", "ab12cd34"), ("sha1", LOWER_SHA1)],
+        )?;
+        assert_registry_size(&mut imported.connection, 0)?;
+        let files = catalog_files::occurrences_for_ids(
+            &imported.database,
+            &[OccurrenceId::from_database(row.occurrence_id)],
+        )?;
+        let file = files.first().ok_or("queried unproved ROM missing")?;
+        assert!(file.content_id.is_none());
+        assert_eq!(file.digests.len(), 2);
+        assert!(file.digests.iter().all(|digest| digest.scope == "unknown"));
+        let Some(SoftwareFilePayload::Rom(payload)) = &file.software_file else {
+            return Err("ROM payload missing".into());
+        };
+        assert_eq!(payload.name.as_deref(), Some(name));
+        assert_eq!(payload.evidence_scope, "unknown");
+        assert_eq!(payload.status.as_str(), status);
+    }
     Ok(())
 }
 

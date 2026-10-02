@@ -3298,17 +3298,23 @@ fn operation_only_software_rom_digest_is_not_promoted_to_file_identity()
         "operation digest source facts remain queryable"
     );
     assert_eq!(count(&mut connection, "catalog_contents")?, 1);
-    assert_eq!(
-        sql_query(
-            "SELECT COUNT(*) AS count FROM occurrence_digest_assertions AS assertion \
-             JOIN software_components USING (occurrence_id) \
-             WHERE assertion.scope = 'whole_asset' AND assertion.provenance = 'source_declared'",
-        )
-        .get_result::<CountRow>(&mut connection)?
-        .count,
-        2,
-        "operation digests remain attached to their own source occurrences"
-    );
+    for (instruction, scope) in [("load16_word", "whole_asset"), ("continue", "unknown")] {
+        assert_eq!(
+            sql_query(
+                "SELECT COUNT(*) AS count FROM occurrence_digest_assertions AS assertion \
+                 JOIN software_components USING (occurrence_id) \
+                 WHERE load_instruction = ? AND assertion.scope = ? \
+                   AND evidence_scope = ? AND assertion.provenance = 'source_declared'",
+            )
+            .bind::<Text, _>(instruction)
+            .bind::<Text, _>(scope)
+            .bind::<Text, _>(scope)
+            .get_result::<CountRow>(&mut connection)?
+            .count,
+            1,
+            "source digests keep their actual owner and proved scope: {instruction}"
+        );
+    }
     Ok(())
 }
 
