@@ -209,6 +209,7 @@ impl Parser {
                 name,
                 value,
                 ordinal,
+                location: positions.attribute_location(&attribute)?,
             });
         }
 
@@ -299,6 +300,7 @@ struct Attribute {
     name: Option<String>,
     value: String,
     ordinal: usize,
+    location: RecordLocation,
 }
 
 #[derive(Debug)]
@@ -695,9 +697,7 @@ fn parse_clrmamepro(
     depth: usize,
 ) -> Result<ClrMameProOptions> {
     parser.validate_attributes(reader, info, &["forcenodump", "header"], None)?;
-    let forcenodump = info
-        .attribute("forcenodump")
-        .map(|attribute| declared_attribute(attribute, info.location));
+    let forcenodump = info.attribute("forcenodump").map(declared_attribute);
     if parser.strict()
         && let Some(value) = &forcenodump
         && !matches!(
@@ -711,9 +711,7 @@ fn parse_clrmamepro(
             "forcenodump is outside its declared enumeration",
         ));
     }
-    let header = info
-        .attribute("header")
-        .map(|attribute| declared_attribute(attribute, info.location));
+    let header = info.attribute("header").map(declared_attribute);
     consume_empty_content(parser, reader, positions, info, empty, depth, "clrmamepro")?;
     Ok(ClrMameProOptions {
         source_order: info.source_order,
@@ -732,9 +730,7 @@ fn parse_romcenter(
     depth: usize,
 ) -> Result<RomCenterOptions> {
     parser.validate_attributes(reader, info, &["plugin"], None)?;
-    let plugin = info
-        .attribute("plugin")
-        .map(|attribute| declared_attribute(attribute, info.location));
+    let plugin = info.attribute("plugin").map(declared_attribute);
     consume_empty_content(parser, reader, positions, info, empty, depth, "romcenter")?;
     Ok(RomCenterOptions {
         source_order: info.source_order,
@@ -754,15 +750,9 @@ fn parse_game(
 ) -> Result<Game> {
     parser.validate_attributes(reader, info, &["name", "id", "cloneof", "cloneofid"], None)?;
     let name = required_attribute(info, "name", "game")?;
-    let id = info
-        .attribute("id")
-        .map(|attribute| declared_attribute(attribute, info.location));
-    let cloneof = info
-        .attribute("cloneof")
-        .map(|attribute| declared_attribute(attribute, info.location));
-    let cloneofid = info
-        .attribute("cloneofid")
-        .map(|attribute| declared_attribute(attribute, info.location));
+    let id = info.attribute("id").map(declared_attribute);
+    let cloneof = info.attribute("cloneof").map(declared_attribute);
+    let cloneofid = info.attribute("cloneofid").map(declared_attribute);
 
     let mut game = Game {
         list_order,
@@ -930,36 +920,16 @@ fn parse_rom(
     };
     parser.validate_attributes(reader, info, allowed, None)?;
     let name = required_attribute(info, "name", "rom")?;
-    let size = info
-        .attribute("size")
-        .map(|attribute| declared_attribute(attribute, info.location));
-    let crc = info
-        .attribute("crc")
-        .map(|attribute| declared_attribute(attribute, info.location));
-    let md5 = info
-        .attribute("md5")
-        .map(|attribute| declared_attribute(attribute, info.location));
-    let sha1 = info
-        .attribute("sha1")
-        .map(|attribute| declared_attribute(attribute, info.location));
-    let sha256 = info
-        .attribute("sha256")
-        .map(|attribute| declared_attribute(attribute, info.location));
-    let status = info
-        .attribute("status")
-        .map(|attribute| declared_attribute(attribute, info.location));
-    let serial = info
-        .attribute("serial")
-        .map(|attribute| declared_attribute(attribute, info.location));
-    let header = info
-        .attribute("header")
-        .map(|attribute| declared_attribute(attribute, info.location));
-    let date = info
-        .attribute("date")
-        .map(|attribute| declared_attribute(attribute, info.location));
-    let mia = info
-        .attribute("mia")
-        .map(|attribute| declared_attribute(attribute, info.location));
+    let size = info.attribute("size").map(declared_attribute);
+    let crc = info.attribute("crc").map(declared_attribute);
+    let md5 = info.attribute("md5").map(declared_attribute);
+    let sha1 = info.attribute("sha1").map(declared_attribute);
+    let sha256 = info.attribute("sha256").map(declared_attribute);
+    let status = info.attribute("status").map(declared_attribute);
+    let serial = info.attribute("serial").map(declared_attribute);
+    let header = info.attribute("header").map(declared_attribute);
+    let date = info.attribute("date").map(declared_attribute);
+    let mia = info.attribute("mia").map(declared_attribute);
 
     if parser.strict() {
         for (name, present) in [
@@ -1490,22 +1460,20 @@ fn set_once(
 }
 
 fn required_attribute(info: &StartInfo, name: &str, kind: &str) -> Result<DeclaredText> {
-    info.attribute(name)
-        .map(|attribute| declared_attribute(attribute, info.location))
-        .ok_or_else(|| {
-            invalid(
-                info,
-                kind,
-                format!("required {name:?} attribute is missing"),
-            )
-        })
+    info.attribute(name).map(declared_attribute).ok_or_else(|| {
+        invalid(
+            info,
+            kind,
+            format!("required {name:?} attribute is missing"),
+        )
+    })
 }
 
-fn declared_attribute(attribute: &Attribute, location: RecordLocation) -> DeclaredText {
+fn declared_attribute(attribute: &Attribute) -> DeclaredText {
     DeclaredText {
         value: attribute.value.clone(),
         source_order: attribute.ordinal,
-        location,
+        location: attribute.location,
     }
 }
 

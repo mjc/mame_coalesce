@@ -1,9 +1,6 @@
 //! Shared bounded XML decoding and borrowing event-reader setup.
 
-use std::{
-    borrow::Cow,
-    collections::{BTreeMap, HashSet},
-};
+use std::{borrow::Cow, collections::HashSet};
 
 use quick_xml::{
     events::{BytesDecl, BytesRef, BytesStart, Event, attributes::Attribute},
@@ -26,6 +23,9 @@ const MAX_NAME_BYTES: usize = 4096;
 const MAX_ATTRIBUTES: usize = 1024;
 const MAX_ATTRIBUTE_BYTES: usize = 1024 * 1024;
 pub const MAX_TEXT_BYTES: usize = 1024 * 1024;
+
+mod attributes;
+pub use attributes::XmlAttributes;
 
 /// A present scalar, including explicit empty text and its source position.
 ///
@@ -121,7 +121,7 @@ impl<'a> XmlReader<'a> {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct Element {
     // Match the canonical key order previously produced through serde_json::Value.
-    pub attributes: BTreeMap<String, String>,
+    pub attributes: XmlAttributes,
     pub content: Vec<ElementContent>,
     pub name: String,
     #[serde(skip)]
@@ -274,6 +274,51 @@ impl<'a> PositionMap<'a> {
             .saturating_sub(1);
         let (line, column) = self.at(u64::try_from(offset).unwrap_or(u64::MAX));
         RecordLocation { line, column }
+    }
+
+    /// Locate an attribute at the first byte of its qualified name.
+    pub(crate) fn attribute_location(
+        &mut self,
+        attribute: &Attribute<'_>,
+    ) -> Result<RecordLocation> {
+        let name = attribute.key.as_ref();
+        let offset = self.checked_slice_offset(name.as_bytes())?;
+        self.checked_location_at(offset)
+    }
+
+    fn checked_slice_offset(&self, slice: &[u8]) -> Result<usize> {
+        let base = self.bytes.as_ptr() as usize;
+        let start = (slice.as_ptr() as usize).checked_sub(base).ok_or_else(|| {
+            Error::XmlValidation("XML attribute name is outside the input".into())
+        })?;
+        let end = start
+            .checked_add(slice.len())
+            .ok_or_else(|| Error::XmlValidation("XML attribute name offset overflow".into()))?;
+        if slice.is_empty() || end > self.bytes.len() {
+            return Err(Error::XmlValidation(
+                "XML attribute name is outside the input".into(),
+            ));
+        }
+        Ok(start)
+    }
+
+    fn checked_location_at(&mut self, offset: usize) -> Result<RecordLocation> {
+        if offset < self.cursor {
+            return Err(Error::XmlValidation(
+                "XML attribute location precedes the current source position".into(),
+            ));
+        }
+        let text = self.bytes.get(self.cursor..offset).ok_or_else(|| {
+            Error::XmlValidation("XML attribute offset is outside the input".into())
+        })?;
+        let text = std::str::from_utf8(text).map_err(|error| {
+            Error::XmlValidation(format!("invalid UTF-8 source position: {error}"))
+        })?;
+        for character in text.chars() {
+            self.position.advance(character);
+        }
+        self.cursor = offset;
+        Ok(self.position.location())
     }
 
     const fn new(bytes: &'a [u8]) -> Self {
@@ -930,9 +975,11 @@ pub fn element_from_start(
 ) -> Result<Element> {
     budget.include(depth)?;
     let name = expanded_name(namespace, start.local_name().as_ref());
-    let mut attributes = BTreeMap::new();
-    for attribute in start.attributes() {
+    let location = positions.start_location(start);
+    let mut attributes = XmlAttributes::default();
+    for (source_order, attribute) in start.attributes().enumerate() {
         let attribute = attribute.map_err(|error| Error::XmlValidation(error.to_string()))?;
+        let location = positions.attribute_location(&attribute)?;
         let raw_name = attribute.key.as_ref();
         if raw_name == "xmlns" || raw_name.starts_with("xmlns:") {
             continue;
@@ -953,13 +1000,19 @@ pub fn element_from_start(
             .normalized_value(quick_xml::XmlVersion::Implicit1_0)
             .map_err(|error| Error::XmlValidation(error.to_string()))?
             .into_owned();
-        if attributes.insert(name.clone(), value).is_some() {
+        if !attributes.push_declared(
+            name.clone(),
+            DeclaredText {
+                value,
+                source_order,
+                location,
+            },
+        ) {
             return Err(Error::XmlValidation(format!(
                 "duplicate XML attribute {name:?}"
             )));
         }
     }
-    let location = positions.start_location(start);
     Ok(Element {
         name,
         attributes,
@@ -1165,6 +1218,130 @@ mod tests {
             Ok::<_, Error>(next(reader, positions)?.0)
         })?;
         assert_eq!(namespace.as_deref(), Some("urn:a&b"));
+        Ok(())
+    }
+
+    #[test]
+    fn extension_attributes_iterate_in_source_order() -> Result<()> {
+        let attributes = with_reader(b"<root z='last' a='first'/>", |reader, positions| {
+            let (namespace, event) = next(reader, positions)?;
+            let Event::Empty(start) = event else {
+                return Err(Error::XmlValidation("expected empty root".into()));
+            };
+            element_from_start(
+                reader,
+                namespace,
+                &start,
+                &mut NodeBudget::default(),
+                0,
+                positions,
+            )
+        })?;
+
+        assert_eq!(
+            attributes
+                .attributes
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>(),
+            ["z", "a"]
+        );
+        Ok(())
+    }
+
+    fn empty_element_attributes(xml: &[u8]) -> Result<XmlAttributes> {
+        with_reader(xml, |reader, positions| {
+            let (namespace, start) = loop {
+                let (namespace, event) = next(reader, positions)?;
+                match event {
+                    Event::Decl(_) => {}
+                    Event::Empty(start) => break (namespace, start),
+                    _ => return Err(Error::XmlValidation("expected empty element".into())),
+                }
+            };
+            Ok(element_from_start(
+                reader,
+                namespace,
+                &start,
+                &mut NodeBudget::default(),
+                0,
+                positions,
+            )?
+            .attributes)
+        })
+    }
+
+    fn declared<'a>(attributes: &'a XmlAttributes, name: &str) -> Result<&'a DeclaredText> {
+        attributes
+            .get_declared(name)
+            .ok_or_else(|| Error::XmlValidation(format!("missing test attribute {name:?}")))
+    }
+
+    #[test]
+    fn attributes_keep_resolved_names_normalized_values_and_lexical_ordinals() -> Result<()> {
+        let xml = "<root xmlns:p='urn:p' vendor='x' p:名='é\r\nz' value='a\tb&#x9;c'/>";
+        let attributes = empty_element_attributes(xml.as_bytes())?;
+
+        assert_eq!(declared(&attributes, "vendor")?.source_order, 1);
+        let namespaced = declared(&attributes, "{urn:p}名")?;
+        assert_eq!(namespaced.source_order, 2);
+        assert_eq!(namespaced.value, "é z");
+        let (prefix, _) = xml
+            .split_once("p:名=")
+            .ok_or_else(|| Error::XmlValidation("missing namespaced test QName".into()))?;
+        let expected_column = i64::try_from(prefix.chars().count() + 1)
+            .map_err(|error| Error::XmlValidation(error.to_string()))?;
+        assert_eq!(
+            (namespaced.location.line, namespaced.location.column),
+            (1, expected_column),
+            "the original prefix is part of the attribute token"
+        );
+        let value = declared(&attributes, "value")?;
+        assert_eq!(value.source_order, 3);
+        assert_eq!(value.value, "a b\tc");
+        assert_eq!(
+            attributes.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["vendor", "{urn:p}名", "value"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn attribute_locations_use_qname_start_and_unicode_scalar_columns() -> Result<()> {
+        let attributes =
+            empty_element_attributes("<root\r\n\tz='1'\t名='é'\r\n a='3'/>".as_bytes())?;
+
+        for (name, expected) in [("z", (2, 2)), ("名", (2, 8)), ("a", (3, 2))] {
+            let location = declared(&attributes, name)?.location;
+            assert_eq!((location.line, location.column), expected, "{name}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn attribute_locations_use_decoded_coordinates_for_utf16() -> Result<()> {
+        let xml = "<?xml version='1.0' encoding='UTF-16'?><root z='1' a='2'/>";
+        let mut utf16 = vec![0xff, 0xfe];
+        utf16.extend(xml.encode_utf16().flat_map(u16::to_le_bytes));
+        let attributes = empty_element_attributes(&utf16)?;
+
+        let location = declared(&attributes, "a")?.location;
+        let (prefix, _) = xml
+            .split_once("a='2'")
+            .ok_or_else(|| Error::XmlValidation("missing test QName".into()))?;
+        let expected_column = i64::try_from(prefix.chars().count() + 1)
+            .map_err(|error| Error::XmlValidation(error.to_string()))?;
+        assert_eq!((location.line, location.column), (1, expected_column));
+        Ok(())
+    }
+
+    #[test]
+    fn attribute_serde_keeps_canonical_sorted_keys() -> Result<()> {
+        let attributes = empty_element_attributes(b"<root z='last' a='first'/>")?;
+        assert_eq!(
+            serde_json::to_string(&attributes)?,
+            r#"{"a":"first","z":"last"}"#
+        );
         Ok(())
     }
 

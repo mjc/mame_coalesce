@@ -319,8 +319,6 @@ impl Disk {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-
     use crate::{
         logiqx::{
             RecordLocation,
@@ -334,7 +332,7 @@ mod tests {
             attributes: attributes
                 .iter()
                 .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
-                .collect::<BTreeMap<_, _>>(),
+                .collect(),
             content: vec![ElementContent::Text(String::new())],
             name: name.to_owned(),
             location: RecordLocation { line: 1, column: 1 },

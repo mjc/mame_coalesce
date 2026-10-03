@@ -190,6 +190,17 @@ they cannot silently assign a whole-file UUID. Parsing streams one game at a
 time, and an error anywhere through EOF rolls back the pending catalog edition.
 This flat DAT dialect is distinct from database-export and synthetic P/C XML.
 
+No-Intro DAT and database-export attribute positions locate the first character
+of the original qualified attribute name, not the opening element. Ordinals
+include namespace declarations and vendor attributes. Coordinates are one-based
+lines and Unicode-scalar columns in decoded XML, with CRLF counted once and tabs
+counted as one character; they are not encoded-byte offsets. The external source
+retains the exact original UTF-8, UTF-16 or gzip bytes. These coordinate rules use
+the `no-intro-dat-xsd-v2`, `no-intro-dat-observed-compat-v2`,
+`no-intro-database-observed-compat-v2` and `no-intro-database-nul-recovery-v2`
+interpretations. A changed interpretation produces a new immutable snapshot;
+existing snapshots are not rewritten or migrated.
+
 The separate `no_intro_db_xml::read_with` Rust API streams No-Intro database
 exports into typed games, archive descriptions, dump sources and releases.
 Each dump source or release owns its own details, serials and files. Explicit

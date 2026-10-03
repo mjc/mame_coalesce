@@ -312,12 +312,12 @@ impl ParserInterpretationKey {
             "logiqx" => "logiqx-declared-text-compat-v1",
             "mame-listxml" => "mame-observed-compat-declared-text-v1",
             "clrmamepro-dat" => "clrmamepro-declared-text-compat-v1",
-            "no-intro-dat-v3-strict" | "no-intro-dat-v4-strict" => "no-intro-dat-xsd-v1",
+            "no-intro-dat-v3-strict" | "no-intro-dat-v4-strict" => "no-intro-dat-xsd-v2",
             "no-intro-dat-v3-compatible" | "no-intro-dat-v4-compatible" => {
-                "no-intro-dat-observed-compat-v1"
+                "no-intro-dat-observed-compat-v2"
             }
-            "no-intro-database-xml-compatible" => "no-intro-database-observed-compat-v1",
-            "no-intro-database-xml-nul-compatible" => "no-intro-database-nul-recovery-v1",
+            "no-intro-database-xml-compatible" => "no-intro-database-observed-compat-v2",
+            "no-intro-database-xml-nul-compatible" => "no-intro-database-nul-recovery-v2",
             _ => "normalization-v1",
         }
     }
@@ -2067,6 +2067,36 @@ pub struct DuplicateMatch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn no_intro_interpretations_version_attribute_token_coordinates() {
+        for (format, expected) in [
+            ("no-intro-dat-v3-strict", "no-intro-dat-xsd-v2"),
+            ("no-intro-dat-v4-strict", "no-intro-dat-xsd-v2"),
+            (
+                "no-intro-dat-v3-compatible",
+                "no-intro-dat-observed-compat-v2",
+            ),
+            (
+                "no-intro-dat-v4-compatible",
+                "no-intro-dat-observed-compat-v2",
+            ),
+            (
+                "no-intro-database-xml-compatible",
+                "no-intro-database-observed-compat-v2",
+            ),
+            (
+                "no-intro-database-xml-nul-compatible",
+                "no-intro-database-nul-recovery-v2",
+            ),
+        ] {
+            assert_eq!(
+                ParserInterpretationKey::rules_version(format),
+                expected,
+                "{format}"
+            );
+        }
+    }
 
     #[test]
     fn catalog_content_id_is_exactly_sixteen_persistable_bytes() {

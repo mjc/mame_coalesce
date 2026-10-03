@@ -267,6 +267,29 @@ fn fixture_location(document: &str, marker: &str) -> (i64, i64) {
         "unique fixture marker: {marker:?}"
     );
     let offset = document.find(marker).expect("fixture marker exists");
+    fixture_location_at(document, offset)
+}
+
+fn fixture_attribute_location(document: &str, context: &str, attribute: &str) -> (i64, i64) {
+    assert_eq!(
+        document.matches(context).count(),
+        1,
+        "unique fixture context: {context:?}"
+    );
+    let context_offset = document.find(context).expect("fixture context exists");
+    let tag_end = document[context_offset..]
+        .find('>')
+        .map(|offset| context_offset + offset)
+        .expect("fixture start tag ends");
+    let tag = &document[context_offset..=tag_end];
+    let attribute_offset = tag
+        .find(&format!(" {attribute}"))
+        .expect("fixture tag contains the requested attribute")
+        + 1;
+    fixture_location_at(document, context_offset + attribute_offset)
+}
+
+fn fixture_location_at(document: &str, offset: usize) -> (i64, i64) {
     let prefix = &document[..offset];
     let line = i64::try_from(
         prefix
@@ -619,7 +642,9 @@ fn assert_releases(connection: &mut SqliteConnection, document: &str) -> TestRes
          AND release_order=0 ORDER BY field_kind",
     )
     .load::<ReleasePosition>(connection)?;
-    let release_location = fixture_location(document, "<release\n      name=\"First release\"");
+    let release_context = "<release\n      name=\"First release\"";
+    let release_name_location = fixture_attribute_location(document, release_context, "name=");
+    let release_region_location = fixture_attribute_location(document, release_context, "region=");
     assert_eq!(
         (
             releases[0].name_source_order,
@@ -631,13 +656,13 @@ fn assert_releases(connection: &mut SqliteConnection, document: &str) -> TestRes
         ),
         (
             0,
-            release_location.0,
-            release_location.1,
+            release_name_location.0,
+            release_name_location.1,
             1,
-            release_location.0,
-            release_location.1
+            release_region_location.0,
+            release_region_location.1
         ),
-        "release name and region retain their distinct source ordinals and owner location"
+        "release name and region retain their distinct source ordinals and attribute locations"
     );
     assert_eq!(
         release_positions,
@@ -645,17 +670,17 @@ fn assert_releases(connection: &mut SqliteConnection, document: &str) -> TestRes
             ReleasePosition {
                 field_kind: "name".to_owned(),
                 source_order: 0,
-                source_line: release_location.0,
-                source_column: release_location.1
+                source_line: release_name_location.0,
+                source_column: release_name_location.1
             },
             ReleasePosition {
                 field_kind: "region".to_owned(),
                 source_order: 1,
-                source_line: release_location.0,
-                source_column: release_location.1
+                source_line: release_region_location.0,
+                source_column: release_region_location.1
             },
         ],
-        "release attributes keep their field identity, attribute ordinal, and opening-tag location"
+        "release attributes keep their field identity, ordinal, and QName locations"
     );
     assert_eq!(
         sql_query(
@@ -747,7 +772,11 @@ fn assert_game_positions(imported: &mut Imported, document: &str) -> TestResult 
         "SELECT game.set_id AS value FROM no_intro_dat_games AS game \
          JOIN catalog_sets AS sets USING(set_id) WHERE sets.set_name='fixture-game-a'",
     )?;
-    let game_location = fixture_location(document, "<game\n    name=\"fixture-game-a\"");
+    let game_context = "<game\n    name=\"fixture-game-a\"";
+    let game_name_location = fixture_attribute_location(document, game_context, "name=");
+    let game_id_location = fixture_attribute_location(document, game_context, "id=");
+    let game_cloneof_location = fixture_attribute_location(document, game_context, "cloneof=");
+    let game_cloneofid_location = fixture_attribute_location(document, game_context, "cloneofid=");
     let description_location = fixture_location(document, "<description>First game description");
     for position_domain in [0, 1] {
         let positions = sql_query(
@@ -778,29 +807,29 @@ fn assert_game_positions(imported: &mut Imported, document: &str) -> TestResult 
                 field_kind: 0,
                 position_domain: Some(0),
                 source_order: 0,
-                source_line: game_location.0,
-                source_column: game_location.1
+                source_line: game_name_location.0,
+                source_column: game_name_location.1
             },
             FieldPosition {
                 field_kind: 1,
                 position_domain: Some(0),
                 source_order: 1,
-                source_line: game_location.0,
-                source_column: game_location.1
+                source_line: game_id_location.0,
+                source_column: game_id_location.1
             },
             FieldPosition {
                 field_kind: 2,
                 position_domain: Some(0),
                 source_order: 2,
-                source_line: game_location.0,
-                source_column: game_location.1
+                source_line: game_cloneof_location.0,
+                source_column: game_cloneof_location.1
             },
             FieldPosition {
                 field_kind: 3,
                 position_domain: Some(0),
                 source_order: 3,
-                source_line: game_location.0,
-                source_column: game_location.1
+                source_line: game_cloneofid_location.0,
+                source_column: game_cloneofid_location.1
             },
             FieldPosition {
                 field_kind: 4,
@@ -834,7 +863,12 @@ fn assert_rom_positions(imported: &mut Imported, document: &str) -> TestResult {
     .load::<Position>(&mut imported.connection)?;
     assert!(!all_rom_positions.is_empty());
     assert_positions_are_source_ordered(&all_rom_positions);
-    let rom_location = fixture_location(document, "<rom\n      name=\"fixture-a.bin\"");
+    let rom_context = "<rom\n      name=\"fixture-a.bin\"";
+    let rom_name_location = fixture_attribute_location(document, rom_context, "name=");
+    let rom_size_location = fixture_attribute_location(document, rom_context, "size=");
+    let rom_sha256_location = fixture_attribute_location(document, rom_context, "sha256=");
+    let rom_status_location = fixture_attribute_location(document, rom_context, "status=");
+    let rom_serial_location = fixture_attribute_location(document, rom_context, "serial=");
     assert_eq!(
         rom_positions,
         [
@@ -842,39 +876,39 @@ fn assert_rom_positions(imported: &mut Imported, document: &str) -> TestResult {
                 field_kind: 0,
                 position_domain: None,
                 source_order: 0,
-                source_line: rom_location.0,
-                source_column: rom_location.1
+                source_line: rom_name_location.0,
+                source_column: rom_name_location.1
             },
             FieldPosition {
                 field_kind: 1,
                 position_domain: None,
                 source_order: 1,
-                source_line: rom_location.0,
-                source_column: rom_location.1
+                source_line: rom_size_location.0,
+                source_column: rom_size_location.1
             },
             FieldPosition {
                 field_kind: 5,
                 position_domain: None,
                 source_order: 5,
-                source_line: rom_location.0,
-                source_column: rom_location.1
+                source_line: rom_sha256_location.0,
+                source_column: rom_sha256_location.1
             },
             FieldPosition {
                 field_kind: 6,
                 position_domain: None,
                 source_order: 6,
-                source_line: rom_location.0,
-                source_column: rom_location.1
+                source_line: rom_status_location.0,
+                source_column: rom_status_location.1
             },
             FieldPosition {
                 field_kind: 7,
                 position_domain: None,
                 source_order: 7,
-                source_line: rom_location.0,
-                source_column: rom_location.1
+                source_line: rom_serial_location.0,
+                source_column: rom_serial_location.1
             },
         ],
-        "ROM attributes share their opening-tag location and retain attribute ordinals"
+        "ROM attributes retain their source QName locations and attribute ordinals"
     );
     Ok(())
 }

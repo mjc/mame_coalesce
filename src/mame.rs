@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 use quick_xml::events::Event;
 
 use crate::{
@@ -111,7 +109,7 @@ impl MachineFlags {
         Ok(Self(flags))
     }
 
-    fn parse(attributes: &BTreeMap<String, String>) -> crate::Result<Self> {
+    fn parse(attributes: &xml_reader::XmlAttributes) -> crate::Result<Self> {
         let mut flags = 0;
         for (attribute, flag, specified, default) in [
             ("isdevice", Self::DEVICE, Self::DEVICE_SPECIFIED, false),

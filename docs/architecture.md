@@ -192,6 +192,17 @@ parser-internal representations the public contract.
   as linked source evidence. A later conflict in a streaming import retains the
   earlier association and all conflict evidence rather than discarding the
   document; subsequent resolution cannot reuse the disputed alias.
+- Shared XML attributes retain lexical order and one owned normalized value with
+  its ordinal and qualified-name location. Map-style lookup does not sort source
+  declarations; canonical transient extension serialization sorts borrowed
+  entries only. No-Intro DAT and database-export native positions use the exact
+  attribute token rather than the containing tag. Their v2 interpretations
+  distinguish this coordinate contract from earlier immutable editions.
+  Ordinals include namespace/vendor declarations, and locations are one-based
+  Unicode-scalar coordinates in decoded XML, with XML CRLF folding. Encoded byte
+  highlights remain a separate diagnostic contract. Propagating shared lexical
+  metadata into every remaining format's native field/query/history owners is
+  still required; the shared reader alone is not proof of full native coverage.
 - The public database-export XML reader has a separate typed source/release
   ownership model. It delivers one game at a time, moves its header once and
   returns a privately constructed EOF proof. NUL recovery modifies only the

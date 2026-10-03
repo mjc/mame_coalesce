@@ -1089,6 +1089,15 @@ Parent declarations have native owners too. `no_intro_dat_set_links` owns each
 present `cloneof` or `cloneofid` literal once and links it to a once-issued
 reported relationship identity. The game row does not repeat either value.
 Existing game field-position rows retain their attribute order and location.
+Attribute locations identify the first QName character, including any prefix,
+not the opening tag. The lexical ordinal counts every attribute, including
+namespace and vendor declarations. Lines and Unicode-scalar columns are
+one-based in decoded XML; CRLF is one newline and a tab is one column. UTF-16
+coordinates are not original encoded-byte offsets. Both strict and compatible
+DAT modes use v2 rules for this contract; a reimport creates a different parser
+interpretation without rewriting an earlier published edition. Database-export
+observed and NUL-recovery interpretations likewise use v2 attribute positions
+on their existing closed native owners. Exact originals stay external.
 A name-based parent stays an unresolved set-name reference; a publisher-ID
 parent stays an unresolved `NoIntroDatIdReference` on its actual declaring set.
 Empty strings and leading zeroes are significant. Both declarations can exist

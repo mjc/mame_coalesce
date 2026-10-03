@@ -193,6 +193,31 @@ fn attributes(prefix: &str, fields: &[&str]) -> String {
     result
 }
 
+fn fixture_location(xml: &str, marker: &str) -> (i64, i64) {
+    assert_eq!(xml.matches(marker).count(), 1, "unique fixture marker");
+    let offset = xml.find(marker).expect("fixture marker exists");
+    let prefix = &xml[..offset];
+    let line = i64::try_from(
+        prefix
+            .chars()
+            .filter(|character| *character == '\n')
+            .count(),
+    )
+    .expect("fixture line count fits i64")
+        + 1;
+    let column = i64::try_from(
+        prefix
+            .rsplit('\n')
+            .next()
+            .expect("prefix has a final line")
+            .chars()
+            .count(),
+    )
+    .expect("fixture column count fits i64")
+        + 1;
+    (line, column)
+}
+
 const ARCHIVE_FIELDS: &[&str] = &[
     "additional",
     "aftermarket",
@@ -576,13 +601,10 @@ fn equal_current_and_origin_sha256_have_one_value_and_two_scoped_assertions() ->
 
 #[test]
 fn public_import_persists_each_native_field_owner_order_and_hash_scope() -> TestResult {
-    let mut imported = Imported::new(
-        &all_fields_xml(),
-        NoIntroDatabaseMode::ObservedCompatible,
-        "all-fields",
-    )?;
+    let xml = all_fields_xml();
+    let mut imported = Imported::new(&xml, NoIntroDatabaseMode::ObservedCompatible, "all-fields")?;
     assert_export_header_fields(&mut imported)?;
-    assert_game_and_archive_fields(&mut imported)?;
+    assert_game_and_archive_fields(&mut imported, &xml)?;
     assert_dump_source_fields(&mut imported)?;
     assert_release_owner_fields(&mut imported)?;
     assert_dump_file_fields(&mut imported)?;
@@ -668,7 +690,7 @@ fn game_ids(imported: &mut Imported) -> TestResult<(i64, i64)> {
     Ok((game_a, game_b))
 }
 
-fn assert_game_and_archive_fields(imported: &mut Imported) -> TestResult {
+fn assert_game_and_archive_fields(imported: &mut Imported, xml: &str) -> TestResult {
     let (game_a, game_b) = game_ids(imported)?;
     assert_ne!(
         game_a, game_b,
@@ -678,26 +700,41 @@ fn assert_game_and_archive_fields(imported: &mut Imported) -> TestResult {
         imported.count("SELECT COUNT(*) AS value FROM no_intro_database_games")?,
         2
     );
+    let first_name_location = fixture_location(
+        xml,
+        "name='same-publisher-name'>\n<archive additional='archive-a:additional'",
+    );
+    let second_name_location = fixture_location(
+        xml,
+        "name='same-publisher-name'>\n<archive number='same-publisher-id'",
+    );
     assert_eq!(
         imported.integer(
             "SELECT name_source_line AS value FROM no_intro_database_games \
              JOIN catalog_sets USING(set_id) WHERE list_order=0"
         )?,
-        3
+        first_name_location.0
     );
     assert_eq!(
         imported.integer(
             "SELECT name_source_column AS value FROM no_intro_database_games \
              JOIN catalog_sets USING(set_id) WHERE list_order=0"
         )?,
-        1
+        first_name_location.1
     );
     assert_eq!(
         imported.integer(
             "SELECT name_source_line AS value FROM no_intro_database_games \
              JOIN catalog_sets USING(set_id) WHERE list_order=1"
         )?,
-        21
+        second_name_location.0
+    );
+    assert_eq!(
+        imported.integer(
+            "SELECT name_source_column AS value FROM no_intro_database_games \
+             JOIN catalog_sets USING(set_id) WHERE list_order=1"
+        )?,
+        second_name_location.1
     );
     assert_archive_description_fields(imported, game_a, game_b)
 }

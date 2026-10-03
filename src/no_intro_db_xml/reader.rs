@@ -507,6 +507,7 @@ impl Parser {
                 name,
                 value,
                 ordinal,
+                location: positions.attribute_location(&attribute)?,
             });
         }
         let (line, column) = positions.at(reader.buffer_position());
@@ -546,6 +547,7 @@ struct Attribute {
     name: Option<String>,
     value: String,
     ordinal: usize,
+    location: RecordLocation,
 }
 struct StartInfo {
     namespace: Option<String>,
@@ -564,7 +566,7 @@ impl StartInfo {
             .map(|attr| DeclaredText {
                 value: attr.value.clone(),
                 source_order: attr.ordinal,
-                location: self.location,
+                location: attr.location,
             })
     }
 }

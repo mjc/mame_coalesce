@@ -188,13 +188,39 @@ fn ledger_attributes(prefix: &str, names: &[&str]) -> String {
     attributes
 }
 
-fn assert_ledger_fields(prefix: &str, line: i64, fields: &[(&str, &Option<DeclaredText>)]) {
+fn assert_ledger_fields(
+    xml: &str,
+    element: &str,
+    prefix: &str,
+    fields: &[(&str, &Option<DeclaredText>)],
+) {
+    let first_name = fields.first().expect("ledger owner has declared fields").0;
+    let context = format!("<{element} {first_name}='{prefix}:{first_name}'");
     for (ordinal, (name, field)) in fields.iter().enumerate() {
         let field = field.as_ref().expect("present ledger field");
         assert_eq!(field.value, format!("{prefix}:{name}"));
         assert_eq!(field.source_order, ordinal);
-        assert_eq!(field.location, RecordLocation { line, column: 1 });
+        assert_eq!(
+            field.location,
+            fixture_attribute_location(xml, &context, name),
+            "{element}.{name} location"
+        );
     }
+}
+
+fn fixture_attribute_location(xml: &str, context: &str, attribute: &str) -> RecordLocation {
+    assert_eq!(xml.matches(context).count(), 1, "unique fixture context");
+    let context_offset = xml.find(context).expect("fixture context exists");
+    let tag_end = xml[context_offset..]
+        .find('>')
+        .map(|offset| context_offset + offset)
+        .expect("fixture start tag ends");
+    let tag = &xml[context_offset..=tag_end];
+    let attribute_offset = tag
+        .find(&format!(" {attribute}="))
+        .unwrap_or_else(|| panic!("fixture tag contains attribute {attribute:?}"))
+        + 1;
+    location_at(xml, context_offset + attribute_offset)
 }
 
 macro_rules! names {
@@ -406,9 +432,9 @@ fn every_ledger_field_maps_to_its_own_distinct_value_and_position() {
     assert_distinct_header(document);
     let game = &games[0];
     assert_eq!(game.name.value, "distinct");
-    assert_distinct_archive(game);
-    assert_distinct_source(game);
-    assert_distinct_release(game);
+    assert_distinct_archive(game, &xml);
+    assert_distinct_source(game, &xml);
+    assert_distinct_release(game, &xml);
 }
 
 fn assert_distinct_header(document: NoIntroDatabaseDocument) {
@@ -434,12 +460,14 @@ fn assert_distinct_header(document: NoIntroDatabaseDocument) {
     }
 }
 
-fn assert_distinct_archive(game: &DatabaseGame) {
+fn assert_distinct_archive(game: &DatabaseGame, xml: &str) {
     let archive = &game.archives[0];
     assert_eq!(archive.source_order, 0);
+    let archive_context = "<archive additional='archive:additional";
     assert_ledger_fields(
+        xml,
         "archive",
-        4,
+        "archive",
         fields!(archive; additional, adult, aftermarket, alt, bios, categories, complete, dat, datter_note, description, devstatus, gameid1, gameid2, langchecked, languages, licensed, listed, mergename, name, name_alt, number, physical, region, regparent, showlang, special1, special2, sticky_note, version1, version2, mergeof),
     );
     let ArchiveClone::ParentMarker(marker) = archive.clone.as_ref().expect("clone marker") else {
@@ -447,10 +475,13 @@ fn assert_distinct_archive(game: &DatabaseGame) {
     };
     assert_eq!(marker.value, "P");
     assert_eq!(marker.source_order, 31);
-    assert_eq!(marker.location, RecordLocation { line: 4, column: 1 });
+    assert_eq!(
+        marker.location,
+        fixture_attribute_location(xml, archive_context, "clone")
+    );
 }
 
-fn assert_distinct_source(game: &DatabaseGame) {
+fn assert_distinct_source(game: &DatabaseGame, xml: &str) {
     let SourceOrRelease::Source(source) = &game.source_or_release[0] else {
         panic!("dump source");
     };
@@ -458,37 +489,59 @@ fn assert_distinct_source(game: &DatabaseGame) {
     let details = source.details.as_ref().expect("dump details");
     assert_eq!(details.source_order, 0);
     assert_ledger_fields(
+        xml,
+        "details",
         "dump-details",
-        6,
         fields!(details; comment1, comment2, d_date, d_date_info, dumper, id, link1, link2, link3, media_title, nodump, origin, originalformat, project, r_date, r_date_info, region, rominfo, section, tool),
     );
     let serials = source.serials.as_ref().expect("dump serials");
     assert_eq!(serials.source_order, 1);
     assert_ledger_fields(
+        xml,
+        "serials",
         "dump-serials",
-        7,
         fields!(serials; box_barcode, box_serial, chip_serial, digital_serial1, digital_serial2, lockout_serial, media_serial1, media_serial2, media_serial3, mediastamp, pcb_serial, romchip_serial1, romchip_serial2, savechip_serial),
     );
     let file = &source.files[0];
     assert_eq!(file.source_order, 2);
+    let file_context = "<file bad='dump-file:bad";
     assert_ledger_fields(
+        xml,
+        "file",
         "dump-file",
-        8,
         fields!(file; bad, date, extension, filter, forcename, forcescenename, format, header, id, item, mia, note, origin_size, serial, size, unique, update_type, version),
     );
     assert_digests(
-        8,
+        xml,
+        file_context,
         18,
         &[
             expected_digest(
+                "crc32",
                 file.crc32.as_ref(),
                 "AaBbCcDd",
                 Some(vec![0xaa, 0xbb, 0xcc, 0xdd]),
             ),
-            expected_digest(file.md5.as_ref(), &"11".repeat(16), Some(vec![0x11; 16])),
-            expected_digest(file.sha1.as_ref(), &"22".repeat(20), Some(vec![0x22; 20])),
-            expected_digest(file.sha256.as_ref(), &"33".repeat(32), Some(vec![0x33; 32])),
             expected_digest(
+                "md5",
+                file.md5.as_ref(),
+                &"11".repeat(16),
+                Some(vec![0x11; 16]),
+            ),
+            expected_digest(
+                "sha1",
+                file.sha1.as_ref(),
+                &"22".repeat(20),
+                Some(vec![0x22; 20]),
+            ),
+            expected_digest(
+                "sha256",
+                file.sha256.as_ref(),
+                &"33".repeat(32),
+                Some(vec![0x33; 32]),
+            ),
+            expected_digest(
+                "origin_sha256",
                 file.origin_sha256.as_ref(),
                 &"44".repeat(32),
                 Some(vec![0x44; 32]),
@@ -497,80 +550,119 @@ fn assert_distinct_source(game: &DatabaseGame) {
     );
 }
 
-fn assert_distinct_release(game: &DatabaseGame) {
+fn assert_distinct_release(game: &DatabaseGame, xml: &str) {
     let SourceOrRelease::Release(release) = &game.source_or_release[1] else {
         panic!("release");
     };
     assert_eq!(release.source_order, 2);
     let details = release.details.as_ref().expect("release details");
     assert_eq!(details.source_order, 0);
+    let details_context = "<details archivename='release-details:archivename";
     assert_ledger_fields(
+        xml,
+        "details",
         "release-details",
-        11,
         fields!(details; archivename, category, comment, date, dirname, group, id, nfo_size, nfoname, nfosize, origin, originalformat, region, rominfo, tool),
     );
     assert_digests(
-        11,
+        xml,
+        details_context,
         15,
         &[
             expected_digest(
+                "nfo_crc32",
                 details.nfo_crc32.as_ref(),
                 "CcDdEeFf",
                 Some(vec![0xcc, 0xdd, 0xee, 0xff]),
             ),
-            expected_digest(details.nfocrc.as_ref(), "invalid-nfo-crc", None),
+            expected_digest("nfocrc", details.nfocrc.as_ref(), "invalid-nfo-crc", None),
         ],
     );
     let serials = release.serials.as_ref().expect("release serials");
     assert_eq!(serials.source_order, 1);
     assert_ledger_fields(
+        xml,
+        "serials",
         "release-serials",
-        12,
         fields!(serials; box_barcode, box_serial, media_serial1, mediastamp, pcb_serial, romchip_serial1),
     );
     let file = &release.files[0];
     assert_eq!(file.source_order, 2);
+    let file_context = "<file bad='release-file:bad";
     assert_ledger_fields(
+        xml,
+        "file",
         "release-file",
-        13,
         fields!(file; bad, extension, forcename, forcescenename, format, header, id, item, note, serial, size, update_type, version),
     );
     assert_digests(
-        13,
+        xml,
+        file_context,
         13,
         &[
             expected_digest(
+                "crc32",
                 file.crc32.as_ref(),
                 "Aa00Bb11",
                 Some(vec![0xaa, 0x00, 0xbb, 0x11]),
             ),
-            expected_digest(file.md5.as_ref(), &"55".repeat(16), Some(vec![0x55; 16])),
-            expected_digest(file.sha1.as_ref(), &"66".repeat(20), Some(vec![0x66; 20])),
-            expected_digest(file.sha256.as_ref(), &"77".repeat(32), Some(vec![0x77; 32])),
+            expected_digest(
+                "md5",
+                file.md5.as_ref(),
+                &"55".repeat(16),
+                Some(vec![0x55; 16]),
+            ),
+            expected_digest(
+                "sha1",
+                file.sha1.as_ref(),
+                &"66".repeat(20),
+                Some(vec![0x66; 20]),
+            ),
+            expected_digest(
+                "sha256",
+                file.sha256.as_ref(),
+                &"77".repeat(32),
+                Some(vec![0x77; 32]),
+            ),
         ],
     );
 }
 
 struct DigestExpectation<'a> {
+    attribute: &'a str,
     field: Option<&'a DatabaseDigest>,
     text: &'a str,
     bytes: Option<Vec<u8>>,
 }
 
 const fn expected_digest<'a>(
+    attribute: &'a str,
     field: Option<&'a DatabaseDigest>,
     text: &'a str,
     bytes: Option<Vec<u8>>,
 ) -> DigestExpectation<'a> {
-    DigestExpectation { field, text, bytes }
+    DigestExpectation {
+        attribute,
+        field,
+        text,
+        bytes,
+    }
 }
 
-fn assert_digests(line: i64, first_ordinal: usize, fields: &[DigestExpectation<'_>]) {
+fn assert_digests(
+    xml: &str,
+    context: &str,
+    first_ordinal: usize,
+    fields: &[DigestExpectation<'_>],
+) {
     for (ordinal, expected) in fields.iter().enumerate() {
         let digest = expected.field.expect("present digest declaration");
         assert_eq!(digest.source.value, expected.text);
         assert_eq!(digest.source.source_order, first_ordinal + ordinal);
-        assert_eq!(digest.source.location, RecordLocation { line, column: 1 });
+        assert_eq!(
+            digest.source.location,
+            fixture_attribute_location(xml, context, expected.attribute)
+        );
         assert_eq!(&digest.value, &expected.bytes);
     }
 }
