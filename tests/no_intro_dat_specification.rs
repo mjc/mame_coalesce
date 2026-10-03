@@ -376,9 +376,9 @@ fn strict_v3_and_v4_publish_every_declared_schema_field_in_native_owners() -> Te
             "mode={mode:?}"
         );
         assert_eq!(
-            imported.count("SELECT declared_version IS NULL AS value FROM catalog_snapshots")?,
-            1,
-            "the source header version must not populate the unrelated snapshot field"
+            imported.count("SELECT COUNT(*) AS value FROM pragma_table_info('catalog_snapshots') WHERE name='declared_version'")?,
+            0,
+            "source versions have no second persisted owner"
         );
         assert_eq!(
             imported.count("SELECT COUNT(*) AS value FROM sqlite_master WHERE type='table' AND name LIKE '%spec_element%'")?,

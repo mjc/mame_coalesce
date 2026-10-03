@@ -386,6 +386,14 @@ CREATE TABLE no_intro_release_details_diagnostics (
 CREATE VIEW catalog_snapshot_versions AS
 SELECT snapshot.snapshot_key,
        CASE
+         WHEN parser.format = 'logiqx' THEN (
+             SELECT header.header_version FROM logiqx_document_facts AS header
+             WHERE header.snapshot_key = snapshot.snapshot_key
+         )
+         WHEN parser.format = 'clrmamepro-dat' THEN (
+             SELECT header.version FROM cmp_header_facts AS header
+             WHERE header.snapshot_key = snapshot.snapshot_key
+         )
          WHEN parser.format = 'no-intro-pc-xml' THEN (
              SELECT header.version_text FROM no_intro_pc_headers AS header
              WHERE header.snapshot_key = snapshot.snapshot_key
@@ -411,7 +419,7 @@ SELECT snapshot.snapshot_key,
              WHERE header_field.snapshot_key = snapshot.snapshot_key
                AND header_field.field_kind = 4
          )
-         ELSE snapshot.declared_version
+         ELSE NULL
        END AS declared_version
 FROM catalog_snapshots AS snapshot
 LEFT JOIN parser_interpretations AS parser

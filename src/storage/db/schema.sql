@@ -77,7 +77,6 @@ CREATE TABLE catalog_snapshots (
     document_key        TEXT NOT NULL REFERENCES documents (document_key) ON DELETE RESTRICT,
     interpretation_key  TEXT NOT NULL REFERENCES parser_interpretations (interpretation_key) ON DELETE RESTRICT,
     acquisition_key     TEXT REFERENCES acquisitions (acquisition_key) ON DELETE RESTRICT,
-    declared_version    TEXT,
     coverage_id INTEGER NOT NULL REFERENCES catalog_coverage(coverage_id) ON DELETE RESTRICT,
     parent_snapshot_key TEXT,
     CHECK (parent_snapshot_key IS NULL OR parent_snapshot_key <> snapshot_key),

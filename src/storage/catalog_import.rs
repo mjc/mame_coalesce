@@ -9,7 +9,7 @@ use crate::{
     domain::{
         CatalogSetId, DocumentKey, ImportRunKey, OccurrenceId, ParserInterpretationKey, SnapshotKey,
     },
-    logiqx::{DataFile, Game, XmlSourceMap},
+    logiqx::{DocumentMetadata, Game, LocatedGame, ValidatedLogiqx},
     mame::{self, MameRecord, ValidatedMame},
     mame_softwarelist::SoftwareListCatalog,
     no_intro_pc_xml::Catalog as NoIntroCatalog,
@@ -84,12 +84,12 @@ struct PublishedSnapshot {
 struct IdentityOnlySnapshot {
     #[diesel(sql_type = Text)]
     snapshot_key: String,
-    #[diesel(sql_type = Nullable<Text>)]
-    declared_version: Option<String>,
     #[diesel(sql_type = BigInt)]
     coverage_id: i64,
     #[diesel(sql_type = Nullable<Text>)]
     acquisition_source: Option<String>,
+    #[diesel(sql_type = BigInt)]
+    is_identity_only: i64,
 }
 
 #[derive(QueryableByName)]
@@ -101,11 +101,8 @@ struct CatalogIdentityRow {
 }
 
 struct SnapshotData {
-    version: Option<String>,
     sets: Vec<SnapshotSet>,
     software_lists: Option<SoftwareListCatalog>,
-    logiqx_document_facts: Option<LogiqxDocumentFacts>,
-    logiqx_document_details: Option<logiqx_native::DocumentDetails>,
     cmp_header_facts: Option<crate::clrmamepro::Header>,
     cmp_comments: Option<Vec<crate::clrmamepro::Comment>>,
     no_intro_document: Option<no_intro_pc_native::DocumentFacts>,
@@ -131,7 +128,7 @@ struct LogiqxDocumentFacts {
 }
 
 impl LogiqxDocumentFacts {
-    fn from_data_file(data_file: &DataFile) -> Self {
+    fn from_metadata(data_file: &DocumentMetadata) -> Self {
         let header = data_file.header_opt();
         Self {
             build: data_file.build().map(str::to_owned),
@@ -333,104 +330,10 @@ fn interpretation(request: &CatalogImportRequest) -> ParserInterpretationKey {
 }
 
 impl SnapshotData {
-    fn from_logiqx(data_file: &DataFile, source_map: &XmlSourceMap) -> crate::Result<Self> {
-        let mut sets = Vec::with_capacity(data_file.games().len());
-        for (game_index, game) in data_file.games().iter().enumerate() {
-            let location = source_map
-                .game_locations
-                .get(game_index)
-                .copied()
-                .ok_or_else(|| {
-                    crate::Error::InvalidPath("Logiqx set source location is missing".into())
-                })?;
-            let rom_locations = source_map.rom_locations.get(game_index).ok_or_else(|| {
-                crate::Error::InvalidPath("Logiqx asset source locations are missing".into())
-            })?;
-            let device_ref_locations =
-                source_map
-                    .device_ref_locations
-                    .get(game_index)
-                    .ok_or_else(|| {
-                        crate::Error::InvalidPath(
-                            "Logiqx device-reference source locations are missing".into(),
-                        )
-                    })?;
-            if game.device_refs().count() != device_ref_locations.len() {
-                return Err(crate::Error::InvalidPath(
-                    "Logiqx device-reference source locations do not match parsed references"
-                        .into(),
-                ));
-            }
-            let assets = logiqx_assets(game, rom_locations)?;
-            sets.push(SnapshotSet {
-                name: game.name().into(),
-                parent: game.cloneof().map(str::to_owned),
-                runtime_dependencies: game
-                    .romof_opt()
-                    .map(|name| SnapshotDependency {
-                        source_field: "romof".to_owned(),
-                        target_name: name.to_owned(),
-                        reference_tag: None,
-                        source_order: None,
-                        location,
-                    })
-                    .into_iter()
-                    .chain(game.sampleof_opt().map(|name| SnapshotDependency {
-                        source_field: "sampleof".to_owned(),
-                        target_name: name.to_owned(),
-                        reference_tag: None,
-                        source_order: None,
-                        location,
-                    }))
-                    .chain(
-                        game.device_refs()
-                            .zip(device_ref_locations)
-                            .map(|(name, location)| SnapshotDependency {
-                                source_field: "device_ref".to_owned(),
-                                target_name: name.to_owned(),
-                                reference_tag: None,
-                                source_order: None,
-                                location: *location,
-                            }),
-                    )
-                    .collect(),
-                location,
-                assets,
-                switches: Vec::new(),
-                bios_sets: Vec::new(),
-                specification: Vec::new(),
-                mame_facts: None,
-                no_intro_facts: None,
-                logiqx_facts: Some(LogiqxSetFacts::from_game(game)),
-                logiqx_details: Some(logiqx_native::GameDetails::from_game(game)?),
-                cmp_facts: None,
-                machine_dependencies: Vec::new(),
-            });
-        }
-        Ok(Self {
-            version: data_file
-                .header_opt()
-                .and_then(|header| header.version().cloned()),
-            sets,
-            software_lists: None,
-            logiqx_document_facts: Some(LogiqxDocumentFacts::from_data_file(data_file)),
-            logiqx_document_details: Some(logiqx_native::DocumentDetails::from_data_file(
-                data_file,
-            )?),
-            cmp_header_facts: None,
-            cmp_comments: None,
-            no_intro_document: None,
-        })
-    }
-
     const fn from_mame_softwarelist(catalog: SoftwareListCatalog) -> Self {
         Self {
-            // Wrapper build text has one native owner, not a second snapshot copy.
-            version: None,
             sets: Vec::new(),
             software_lists: Some(catalog),
-            logiqx_document_facts: None,
-            logiqx_document_details: None,
             cmp_header_facts: None,
             cmp_comments: None,
             no_intro_document: None,
@@ -500,11 +403,8 @@ impl SnapshotData {
                 })
                 .collect();
         Self {
-            version: catalog.version,
             sets,
             software_lists: None,
-            logiqx_document_facts: None,
-            logiqx_document_details: None,
             cmp_header_facts: catalog.header,
             cmp_comments: Some(catalog.comments),
             no_intro_document: None,
@@ -560,11 +460,8 @@ impl SnapshotData {
             })
             .collect();
         Self {
-            version: None,
             sets,
             software_lists: None,
-            logiqx_document_facts: None,
-            logiqx_document_details: None,
             cmp_header_facts: None,
             cmp_comments: None,
             no_intro_document: Some(no_intro_pc_native::DocumentFacts {
@@ -803,8 +700,15 @@ pub fn import(pool: &Pool, request: &CatalogImportRequest) -> crate::Result<Cata
     };
     let bytes = documents.load(&retained.document_key)?;
     let parsed = match request.format {
-        CatalogDocumentFormat::Logiqx => DataFile::from_reader_with_source_map(bytes.as_slice())
-            .and_then(|(data_file, source_map)| SnapshotData::from_logiqx(&data_file, &source_map)),
+        CatalogDocumentFormat::Logiqx => {
+            return import_logiqx(
+                pool,
+                request,
+                retained.document_key,
+                &retained.acquisition_key.to_string(),
+                &bytes,
+            );
+        }
         CatalogDocumentFormat::MameListXml => {
             return import_mame(
                 pool,
@@ -888,6 +792,147 @@ struct StreamingImport<'a> {
     run_key: ImportRunKey,
 }
 
+fn start_streaming_import<'a>(
+    conn: &'a mut SqliteConnection,
+    request: &CatalogImportRequest,
+    document_key: &DocumentKey,
+    acquisition_key: &str,
+    interpretation: &ParserInterpretationKey,
+) -> crate::Result<StreamingImport<'a>> {
+    let publication =
+        prepare_snapshot(conn, request, document_key, acquisition_key, interpretation)?;
+    let run_key = ImportRunKey::fresh();
+    insert_import_run(
+        conn,
+        request,
+        document_key,
+        interpretation,
+        acquisition_key,
+        &run_key,
+        Some(publication.key()),
+        "succeeded",
+        None,
+    )?;
+    Ok(StreamingImport {
+        conn,
+        publication,
+        run_key,
+    })
+}
+
+fn logiqx_contents(record: &LocatedGame) -> crate::Result<SnapshotSet> {
+    let game = &record.game;
+    let location = record.location;
+    if game.device_refs().count() != record.device_ref_locations.len() {
+        return Err(crate::Error::InvalidPath(
+            "Logiqx device-reference source locations do not match parsed references".into(),
+        ));
+    }
+    Ok(SnapshotSet {
+        name: game.name().into(),
+        parent: game.cloneof().map(str::to_owned),
+        runtime_dependencies: game
+            .romof_opt()
+            .map(|name| SnapshotDependency {
+                source_field: "romof".to_owned(),
+                target_name: name.to_owned(),
+                reference_tag: None,
+                source_order: None,
+                location,
+            })
+            .into_iter()
+            .chain(game.sampleof_opt().map(|name| SnapshotDependency {
+                source_field: "sampleof".to_owned(),
+                target_name: name.to_owned(),
+                reference_tag: None,
+                source_order: None,
+                location,
+            }))
+            .chain(
+                game.device_refs()
+                    .zip(&record.device_ref_locations)
+                    .map(|(name, location)| SnapshotDependency {
+                        source_field: "device_ref".to_owned(),
+                        target_name: name.to_owned(),
+                        reference_tag: None,
+                        source_order: None,
+                        location: *location,
+                    }),
+            )
+            .collect(),
+        location,
+        assets: logiqx_assets(game, &record.rom_locations)?,
+        switches: Vec::new(),
+        bios_sets: Vec::new(),
+        specification: Vec::new(),
+        mame_facts: None,
+        no_intro_facts: None,
+        logiqx_facts: Some(LogiqxSetFacts::from_game(game)),
+        logiqx_details: Some(logiqx_native::GameDetails::from_game(game)?),
+        cmp_facts: None,
+        machine_dependencies: Vec::new(),
+    })
+}
+
+fn import_logiqx(
+    pool: &Pool,
+    request: &CatalogImportRequest,
+    document_key: DocumentKey,
+    acquisition_key: &str,
+    bytes: &[u8],
+) -> crate::Result<CatalogImportReport> {
+    let interpretation = interpretation(request);
+    let mut conn = pool.get()?;
+    let result = conn.immediate_transaction::<_, StreamingImportError, _>(|conn| {
+        ensure_identities(conn, request, &interpretation).map_err(StreamingImportError::Storage)?;
+        let validated = crate::logiqx::read_with::<_, StreamingImportError>(
+            bytes,
+            |_| {
+                start_streaming_import(
+                    conn,
+                    request,
+                    &document_key,
+                    acquisition_key,
+                    &interpretation,
+                )
+                .map_err(StreamingImportError::Storage)
+            },
+            |sink, record| {
+                // Reimports still consume and validate every record and late metadata,
+                // but cannot recreate any of the immutable published owners.
+                if let SnapshotPublication::Pending(key) = &sink.publication {
+                    let set = logiqx_contents(&record)?;
+                    insert_snapshot_set(sink.conn, key, &set)
+                        .map_err(StreamingImportError::Storage)?;
+                }
+                Ok(())
+            },
+        )?;
+        publish_logiqx_import(validated, request, &document_key, &interpretation)
+            .map_err(StreamingImportError::Storage)
+    });
+    drop(conn);
+    finish_streaming_result(result, pool, request, document_key, acquisition_key)
+}
+
+fn publish_logiqx_import(
+    validated: ValidatedLogiqx<StreamingImport<'_>>,
+    request: &CatalogImportRequest,
+    document_key: &DocumentKey,
+    interpretation: &ParserInterpretationKey,
+) -> crate::Result<CatalogImportReport> {
+    let (metadata, sink) = validated.into_parts();
+    if let SnapshotPublication::Pending(key) = &sink.publication {
+        insert_logiqx_document_facts(
+            sink.conn,
+            key,
+            &LogiqxDocumentFacts::from_metadata(&metadata),
+        )?;
+        logiqx_native::DocumentDetails::from_metadata(&metadata)?.insert(sink.conn, key)?;
+    }
+    finish_streaming_import(sink, request, document_key, interpretation)
+}
+
 impl StreamingImport<'_> {
     fn consume(&mut self, record: MameRecord) -> crate::Result<()> {
         match record {
@@ -921,37 +966,19 @@ fn import_mame(
         let validated = mame::read_with::<_, StreamingImportError>(
             bytes,
             |header| {
-                let publication = prepare_snapshot(
+                let sink = start_streaming_import(
                     conn,
                     request,
                     &document_key,
                     acquisition_key,
                     &interpretation,
-                    None,
                 )
                 .map_err(StreamingImportError::Storage)?;
-                if let SnapshotPublication::Pending(key) = &publication {
-                    insert_mame_document_facts(conn, key, &header)
+                if let SnapshotPublication::Pending(key) = &sink.publication {
+                    insert_mame_document_facts(sink.conn, key, &header)
                         .map_err(StreamingImportError::Storage)?;
                 }
                 drop(header.extensions);
-                let run_key = ImportRunKey::fresh();
-                insert_import_run(
-                    conn,
-                    request,
-                    &document_key,
-                    &interpretation,
-                    acquisition_key,
-                    &run_key,
-                    Some(publication.key()),
-                    "succeeded",
-                    None,
-                )?;
-                let sink = StreamingImport {
-                    conn,
-                    publication,
-                    run_key,
-                };
                 Ok(sink)
             },
             |sink, record| sink.consume(record).map_err(StreamingImportError::Storage),
@@ -961,13 +988,7 @@ fn import_mame(
     });
     // Release the connection before recording a failure in a separate transaction.
     drop(conn);
-    match result {
-        Ok(report) => Ok(report),
-        Err(StreamingImportError::Storage(error)) => Err(error),
-        Err(StreamingImportError::Parse(error)) => {
-            record_failed_import(pool, request, document_key, acquisition_key, &error)
-        }
-    }
+    finish_streaming_result(result, pool, request, document_key, acquisition_key)
 }
 
 fn publish_mame_import(
@@ -982,6 +1003,24 @@ fn publish_mame_import(
         document_key,
         interpretation,
     )
+}
+
+// Called only after the catalog transaction's connection has been released.
+// Parse diagnostics survive in their own transaction; storage failures stay errors.
+fn finish_streaming_result(
+    result: Result<CatalogImportReport, StreamingImportError>,
+    pool: &Pool,
+    request: &CatalogImportRequest,
+    document_key: DocumentKey,
+    acquisition_key: &str,
+) -> crate::Result<CatalogImportReport> {
+    match result {
+        Ok(report) => Ok(report),
+        Err(StreamingImportError::Storage(error)) => Err(error),
+        Err(StreamingImportError::Parse(error)) => {
+            record_failed_import(pool, request, document_key, acquisition_key, &error)
+        }
+    }
 }
 
 fn finish_streaming_import(
@@ -1023,39 +1062,22 @@ fn import_no_intro_dat(
             bytes,
             mode,
             |document| {
-                let publication = prepare_snapshot(
+                let import = start_streaming_import(
                     conn,
                     request,
                     &document_key,
                     acquisition_key,
                     &interpretation,
-                    None,
                 )
                 .map_err(StreamingImportError::Storage)?;
                 let counts = no_intro_dat_native::ImportCounts::from_document(&document);
                 let digest_scope = no_intro_dat_native::DigestScope::from_document(&document);
-                if let SnapshotPublication::Pending(key) = &publication {
-                    no_intro_dat_native::insert_document(conn, key, &document)
+                if let SnapshotPublication::Pending(key) = &import.publication {
+                    no_intro_dat_native::insert_document(import.conn, key, &document)
                         .map_err(StreamingImportError::Storage)?;
                 }
-                let run_key = ImportRunKey::fresh();
-                insert_import_run(
-                    conn,
-                    request,
-                    &document_key,
-                    &interpretation,
-                    acquisition_key,
-                    &run_key,
-                    Some(publication.key()),
-                    "succeeded",
-                    None,
-                )?;
                 Ok(NoIntroDatImport {
-                    import: StreamingImport {
-                        conn,
-                        publication,
-                        run_key,
-                    },
+                    import,
                     counts,
                     digest_scope,
                 })
@@ -1080,13 +1102,7 @@ fn import_no_intro_dat(
             .map_err(StreamingImportError::Storage)
     });
     drop(conn);
-    match result {
-        Ok(report) => Ok(report),
-        Err(StreamingImportError::Storage(error)) => Err(error),
-        Err(StreamingImportError::Parse(error)) => {
-            record_failed_import(pool, request, document_key, acquisition_key, &error)
-        }
-    }
+    finish_streaming_result(result, pool, request, document_key, acquisition_key)
 }
 
 fn publish_no_intro_dat_import(
@@ -1123,41 +1139,21 @@ fn import_no_intro_database(
             bytes,
             mode,
             |document| {
-                let publication = prepare_snapshot(
+                let import = start_streaming_import(
                     conn,
                     request,
                     &document_key,
                     acquisition_key,
                     &interpretation,
-                    None,
                 )
                 .map_err(StreamingImportError::Storage)?;
                 let counts = no_intro_database_native::ImportCounts::from_document(&document)
                     .map_err(StreamingImportError::Storage)?;
-                if let SnapshotPublication::Pending(key) = &publication {
-                    no_intro_database_native::insert_document(conn, key, &document)
+                if let SnapshotPublication::Pending(key) = &import.publication {
+                    no_intro_database_native::insert_document(import.conn, key, &document)
                         .map_err(StreamingImportError::Storage)?;
                 }
-                let run_key = ImportRunKey::fresh();
-                insert_import_run(
-                    conn,
-                    request,
-                    &document_key,
-                    &interpretation,
-                    acquisition_key,
-                    &run_key,
-                    Some(publication.key()),
-                    "succeeded",
-                    None,
-                )?;
-                Ok(NoIntroDatabaseImport {
-                    import: StreamingImport {
-                        conn,
-                        publication,
-                        run_key,
-                    },
-                    counts,
-                })
+                Ok(NoIntroDatabaseImport { import, counts })
             },
             |sink, game| {
                 sink.counts
@@ -1201,13 +1197,7 @@ fn import_no_intro_database(
         Ok(report)
     });
     drop(conn);
-    match result {
-        Ok(report) => Ok(report),
-        Err(StreamingImportError::Storage(error)) => Err(error),
-        Err(StreamingImportError::Parse(error)) => {
-            record_failed_import(pool, request, document_key, acquisition_key, &error)
-        }
-    }
+    finish_streaming_result(result, pool, request, document_key, acquisition_key)
 }
 
 fn ensure_source(pool: &Pool, request: &CatalogImportRequest) -> crate::Result<()> {
@@ -1300,14 +1290,8 @@ fn ensure_snapshot_publication(
     interpretation: &ParserInterpretationKey,
     snapshot_data: &SnapshotData,
 ) -> crate::Result<SnapshotKey> {
-    let publication = prepare_snapshot(
-        conn,
-        request,
-        document_key,
-        acquisition_key,
-        interpretation,
-        snapshot_data.version.as_deref(),
-    )?;
+    let publication =
+        prepare_snapshot(conn, request, document_key, acquisition_key, interpretation)?;
     if let SnapshotPublication::Pending(key) = &publication {
         insert_snapshot_contents(conn, key, snapshot_data)?;
     }
@@ -1320,7 +1304,6 @@ fn prepare_snapshot(
     document_key: &DocumentKey,
     acquisition_key: &str,
     interpretation: &ParserInterpretationKey,
-    version: Option<&str>,
 ) -> crate::Result<SnapshotPublication> {
     let published = sql_query(
         "SELECT snapshot_key FROM snapshot_publications \
@@ -1340,8 +1323,19 @@ fn prepare_snapshot(
 
     let coverage_id = super::catalog_coverage::ensure(conn, &request.scope)?;
     let identity_rows = sql_query(
-        "SELECT snapshot.snapshot_key, snapshot.declared_version, snapshot.coverage_id, \
-                acquisition.source_key AS acquisition_source \
+        "SELECT snapshot.snapshot_key, snapshot.coverage_id, \
+                acquisition.source_key AS acquisition_source, \
+                NOT EXISTS (SELECT 1 FROM catalog_set_groups WHERE snapshot_key=snapshot.snapshot_key) \
+                AND NOT EXISTS (SELECT 1 FROM mame_document_facts WHERE snapshot_key=snapshot.snapshot_key) \
+                AND NOT EXISTS (SELECT 1 FROM logiqx_document_facts WHERE snapshot_key=snapshot.snapshot_key) \
+                AND NOT EXISTS (SELECT 1 FROM cmp_documents WHERE snapshot_key=snapshot.snapshot_key) \
+                AND NOT EXISTS (SELECT 1 FROM cmp_header_facts WHERE snapshot_key=snapshot.snapshot_key) \
+                AND NOT EXISTS (SELECT 1 FROM no_intro_pc_documents WHERE snapshot_key=snapshot.snapshot_key) \
+                AND NOT EXISTS (SELECT 1 FROM software_documents WHERE snapshot_key=snapshot.snapshot_key) \
+                AND NOT EXISTS (SELECT 1 FROM no_intro_dat_documents WHERE snapshot_key=snapshot.snapshot_key) \
+                AND NOT EXISTS (SELECT 1 FROM no_intro_exports WHERE snapshot_key=snapshot.snapshot_key) \
+                AND NOT EXISTS (SELECT 1 FROM catalog_relationships WHERE snapshot_key=snapshot.snapshot_key) \
+                AS is_identity_only \
          FROM catalog_snapshots AS snapshot \
          LEFT JOIN acquisitions AS acquisition \
            ON acquisition.acquisition_key = snapshot.acquisition_key \
@@ -1354,7 +1348,7 @@ fn prepare_snapshot(
     .bind::<Text, _>(interpretation.as_str())
     .load::<IdentityOnlySnapshot>(conn)?;
     let matching_identity = identity_rows.iter().find(|row| {
-        row.declared_version.as_deref() == version
+        row.is_identity_only == 1
             && row.coverage_id == coverage_id.database_value()
             && row.acquisition_source.as_deref() == Some(request.source_key.as_str())
     });
@@ -1369,15 +1363,14 @@ fn prepare_snapshot(
         sql_query(
             "INSERT INTO catalog_snapshots \
              (snapshot_key, catalog_key, document_key, interpretation_key, acquisition_key, \
-              declared_version, coverage_id) \
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+              coverage_id) \
+             VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind::<Text, _>(snapshot_key.as_str())
         .bind::<Text, _>(request.catalog_key.as_str())
         .bind::<Text, _>(document_key.to_string())
         .bind::<Text, _>(interpretation.as_str())
         .bind::<Nullable<Text>, _>(Some(acquisition_key.to_owned()))
-        .bind::<Nullable<Text>, _>(version)
         .bind::<BigInt, _>(coverage_id.database_value())
         .execute(conn)?;
         snapshot_key
@@ -1475,12 +1468,6 @@ fn insert_snapshot_contents(
 
     if let Some(catalog) = &snapshot_data.software_lists {
         software_native::insert(conn, snapshot_key, catalog)?;
-    }
-    if let Some(facts) = &snapshot_data.logiqx_document_facts {
-        insert_logiqx_document_facts(conn, snapshot_key, facts)?;
-    }
-    if let Some(details) = &snapshot_data.logiqx_document_details {
-        details.insert(conn, snapshot_key)?;
     }
     if let Some(header) = &snapshot_data.cmp_header_facts {
         cmp_native::insert_header_facts(conn, snapshot_key, header)?;

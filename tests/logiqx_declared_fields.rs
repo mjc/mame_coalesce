@@ -252,6 +252,10 @@ enum LinkedClaimCase {
 }
 
 fn stage_logiqx_set(connection: &mut SqliteConnection) -> diesel::QueryResult<i64> {
+    // These game/claim witnesses use headerless sources. Their positive controls
+    // still need the one native document owner required by publication.
+    sql_query("INSERT INTO logiqx_document_facts(snapshot_key) VALUES('pending')")
+        .execute(connection)?;
     sql_query(
         "INSERT INTO catalog_set_groups(snapshot_key,kind,list_order) VALUES('pending','root',0)",
     )

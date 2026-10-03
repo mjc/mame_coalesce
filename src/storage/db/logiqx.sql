@@ -309,6 +309,14 @@ BEGIN SELECT RAISE(ABORT, 'native scalar positions are immutable'); END;
 CREATE TRIGGER logiqx_scalar_positions_require_complete_publication
 BEFORE INSERT ON snapshot_publications
 WHEN EXISTS (
+    SELECT 1 FROM catalog_snapshots AS snapshot
+    JOIN parser_interpretations AS parser USING (interpretation_key)
+    WHERE snapshot.snapshot_key = NEW.snapshot_key AND parser.format = 'logiqx'
+      AND NOT EXISTS (
+          SELECT 1 FROM logiqx_document_facts AS document
+          WHERE document.snapshot_key = snapshot.snapshot_key
+      )
+) OR EXISTS (
     SELECT 1 FROM logiqx_document_facts AS details
     LEFT JOIN logiqx_header_text_positions AS position0
       ON position0.snapshot_key = details.snapshot_key AND position0.field_kind = 0

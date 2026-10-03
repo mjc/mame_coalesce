@@ -19,11 +19,26 @@ CLI (clap, terminal rendering, exit mapping)
 ```
 
 `domain` owns typed catalog identities, retained-document and scan evidence,
-matching/build requests, logical plans, and reports. Format adapters turn
-Logiqx, MAME listxml, MAME software-list XML, ClrMamePro, and No-Intro PC XML
-into the common snapshot model; `storage::catalog_import` persists normalized
-snapshots and parser extensions. `document_input` bounds and validates input;
-`storage::documents` retains immutable bytes and acquisition metadata.
+matching/build requests, logical plans, and reports. Format adapters emit typed
+native catalog facts; `storage::catalog_import` persists their source owners,
+order and positions alongside shared identity/provenance. Logiqx, MAME listxml,
+flat No-Intro DAT and No-Intro database exports use completed-record callbacks
+inside one catalog transaction. Only reader-owned valid-EOF proofs permit
+publication. `document_input` bounds and validates input;
+`storage::documents` retains immutable bytes externally and records acquisition
+metadata. Unknown producer fields remain in those originals, not generic
+SQLite extension rows. Snapshot versions derive from native document/header
+owners through a view; snapshots have no copied version column.
+
+`catalog_logiqx` reads published native document/header facts and keyset-paged
+games in one read transaction, without loading an original document. Ordered
+comments, releases, BIOS sets, archive and device references belong to the
+selected game owners; media references reuse occurrence IDs and the existing
+`catalog_files` payload API. Header options distinguish `Explicit(value)` from
+`Defaulted(value)`, and omitted defaults have no invented QName positions.
+Stored numeric provenance must have SQLite integer types before conversion;
+corrupt fractional coordinates or ordinals return typed errors instead of
+silently truncating. This compatibility interface is not strict DTD validation.
 
 `operations::scan` discovers and fingerprints source files and archive
 members. `sources` is the backend boundary for bare files and supported archive

@@ -271,7 +271,6 @@ CREATE TRIGGER no_intro_pc_document_publication_guard BEFORE INSERT ON snapshot_
 WHEN EXISTS(SELECT 1 FROM catalog_snapshots AS snapshot JOIN parser_interpretations AS parser USING(interpretation_key)
 WHERE snapshot.snapshot_key=NEW.snapshot_key AND parser.format='no-intro-pc-xml')
 AND (NOT EXISTS(SELECT 1 FROM no_intro_pc_documents WHERE snapshot_key=NEW.snapshot_key)
-OR EXISTS(SELECT 1 FROM catalog_snapshots WHERE snapshot_key=NEW.snapshot_key AND declared_version IS NOT NULL)
 OR EXISTS(SELECT 1 FROM no_intro_pc_documents AS document WHERE document.snapshot_key=NEW.snapshot_key
 AND document.header_present<>EXISTS(SELECT 1 FROM no_intro_pc_headers WHERE snapshot_key=NEW.snapshot_key))
 OR EXISTS(SELECT 1 FROM catalog_sets AS sets JOIN catalog_set_groups AS groups USING(set_group_id)

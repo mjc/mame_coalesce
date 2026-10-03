@@ -18,13 +18,19 @@ use crate::{
 
 #[derive(Debug)]
 pub struct DataFile {
-    file_name: Option<String>,
-    build: Option<String>,
-    debug: Option<String>, // bool
-    header: Option<Header>,
-    sha1: Option<Vec<u8>>,
+    metadata: DocumentMetadata,
     games: Vec<Game>,
-    attribute_positions: Vec<AttributePosition<DocumentAttribute>>,
+}
+
+/// Document-owned Logiqx facts, independent of its streamed game records.
+#[derive(Clone, Debug, Default)]
+pub struct DocumentMetadata {
+    pub(super) file_name: Option<String>,
+    pub(super) build: Option<String>,
+    pub(super) debug: Option<String>,
+    pub(super) header: Option<Header>,
+    pub(super) sha1: Option<Vec<u8>>,
+    pub(super) attribute_positions: Vec<AttributePosition<DocumentAttribute>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,7 +60,7 @@ pub struct XmlSourceMap {
 impl DataFile {
     pub fn from_reader<R: Read>(reader: R) -> crate::Result<Self> {
         let raw = document_input::read_bounded(reader, document_input::MAX_DOCUMENT_BYTES)?;
-        Self::parse_bytes(&raw).map(|(data_file, _)| data_file)
+        Self::collect_bytes(&raw, false).map(|(data_file, _)| data_file)
     }
 
     pub fn from_path(path: &Utf8Path) -> crate::Result<Self> {
@@ -62,159 +68,92 @@ impl DataFile {
         // historical size behavior. `from_reader` remains deliberately bounded.
         let mmap = hashes::mmap_path(path)?;
         let raw = mmap.as_slice();
-        let (mut data_file, _) = Self::parse_bytes(raw)?;
-        data_file.file_name = path
+        let (mut data_file, _) = Self::collect_bytes(raw, false)?;
+        data_file.metadata.file_name = path
             .canonicalize()
             .ok()
             .map(|p| p.to_string_lossy().into_owned());
-        data_file.sha1 = Some(hashes::sha1_bytes(raw).to_vec());
+        data_file.metadata.sha1 = Some(hashes::sha1_bytes(raw).to_vec());
         Ok(data_file)
     }
 
-    pub(crate) fn from_reader_with_source_map<R: Read>(
-        reader: R,
-    ) -> crate::Result<(Self, XmlSourceMap)> {
+    #[cfg(test)]
+    fn from_reader_with_source_map<R: Read>(reader: R) -> crate::Result<(Self, XmlSourceMap)> {
         let raw = document_input::read_bounded(reader, document_input::MAX_DOCUMENT_BYTES)?;
-        Self::parse_bytes(&raw)
+        Self::collect_bytes(&raw, true)
     }
 
     pub(crate) fn validate_document_bytes(raw: &[u8]) -> crate::Result<()> {
-        Self::parse_bytes(raw).map(|_| ())
+        super::read_with(raw, |_| Ok(()), |(), _| Ok(())).map(|_| ())
     }
 
-    fn parse_bytes(raw: &[u8]) -> crate::Result<(Self, XmlSourceMap)> {
-        xml_reader::with_reader(raw, |reader, positions| {
-            let mut budget = NodeBudget::default();
-            let (root, empty) = read_datafile_root(reader, positions, &mut budget)?;
-            let mut source_map = XmlSourceMap::default();
-            collect_unsupported_attributes(&root, None, &mut source_map);
-            let build = root.attributes.get("build").cloned();
-            let debug = root.attributes.get("debug").cloned();
-            if root
-                .attributes
-                .get("debug")
-                .is_some_and(|value| !["yes", "no"].contains(&value.as_str()))
-            {
-                return Err(crate::Error::XmlValidation(
-                    "invalid debug value on <datafile>".into(),
-                ));
-            }
-            let mut header = None;
-            let mut file_name = None;
-            let mut sha1 = None;
-            let mut games = Vec::new();
-            if !empty {
-                loop {
-                    let (namespace, event) = xml_reader::next(reader, positions)?;
-                    let node = match event {
-                        Event::Start(start) => Some(xml_reader::read_element(
-                            reader,
-                            namespace,
-                            &start,
-                            &mut budget,
-                            1,
-                            positions,
-                        )?),
-                        Event::Empty(start) => Some(xml_reader::element_from_start(
-                            reader,
-                            namespace,
-                            &start,
-                            &mut budget,
-                            1,
-                            positions,
-                        )?),
-                        Event::End(_) => break,
-                        Event::Eof => {
-                            return Err(crate::Error::XmlValidation(
-                                "unexpected end of input inside <datafile>".into(),
-                            ));
-                        }
-                        _ => None,
-                    };
-                    let Some(node) = node else { continue };
-                    match local_name(&node.name) {
-                        "header" => {
-                            let parsed_header = Header::from_xml(&node)?;
-                            if header.replace(parsed_header).is_some() {
-                                return Err(crate::Error::XmlValidation(
-                                    "duplicate <header> in <datafile>".into(),
-                                ));
-                            }
-                            collect_subtree_attributes(&node, None, &mut source_map);
-                        }
-                        "game" => {
-                            let game_index = games.len();
-                            source_map.game_locations.push(node.location);
-                            source_map.rom_locations.push(Vec::new());
-                            source_map.device_ref_locations.push(Vec::new());
-                            collect_game_source_map(&node, game_index, &mut source_map);
-                            games.push(Game::from_xml(&node)?);
-                        }
-                        "file_name" => set_once(&mut file_name, node.direct_text(), "file_name")?,
-                        "sha1" => {
-                            set_once(&mut sha1, parse_datafile_sha1(&node.direct_text())?, "sha1")?;
-                        }
-                        _ => {}
-                    }
+    fn collect_bytes(raw: &[u8], retain_diagnostics: bool) -> crate::Result<(Self, XmlSourceMap)> {
+        let validated = super::reader::read_with_diagnostics(
+            raw,
+            retain_diagnostics,
+            |_| Ok::<_, crate::Error>((Vec::new(), XmlSourceMap::default())),
+            |(games, source_map), game| {
+                if retain_diagnostics {
+                    source_map.game_locations.push(game.location);
+                    source_map.rom_locations.push(game.rom_locations);
+                    source_map
+                        .device_ref_locations
+                        .push(game.device_ref_locations);
+                    source_map
+                        .unsupported_attributes
+                        .extend(game.unsupported_attributes);
                 }
-            }
-            finish_document(reader, positions)?;
-            Ok((
-                Self {
-                    file_name,
-                    build,
-                    debug,
-                    header,
-                    sha1,
-                    games,
-                    attribute_positions: root
-                        .attributes
-                        .positions(DocumentAttribute::from_name)
-                        .collect(),
-                },
-                source_map,
-            ))
-        })
+                games.push(game.game);
+                Ok(())
+            },
+        )?;
+        let (metadata, (games, mut source_map), document_diagnostics) =
+            validated.into_collected_parts();
+        source_map
+            .unsupported_attributes
+            .extend(document_diagnostics);
+        source_map
+            .unsupported_attributes
+            .sort_by_key(|diagnostic| (diagnostic.location.line, diagnostic.location.column));
+        Ok((Self { metadata, games }, source_map))
+    }
+
+    /// Borrow document-owned facts without the collecting API's game vector.
+    #[must_use]
+    pub const fn metadata(&self) -> &DocumentMetadata {
+        &self.metadata
     }
 
     /// Get a reference to the optional data file header.
     #[must_use]
     pub const fn header_opt(&self) -> Option<&Header> {
-        self.header.as_ref()
+        self.metadata.header_opt()
     }
 
     /// Get a reference to the data file's header.
     pub fn header(&self) -> crate::Result<&Header> {
-        self.header.as_ref().ok_or_else(|| {
-            crate::Error::XmlValidation("Logiqx data file is missing its header".to_owned())
-        })
+        self.metadata.header()
     }
 
     #[must_use]
     pub const fn clrmamepro_options_opt(&self) -> Option<&ClrMameProOptions> {
-        match &self.header {
-            Some(header) => header.clrmamepro_options(),
-            None => None,
-        }
+        self.metadata.clrmamepro_options_opt()
     }
 
     #[must_use]
     pub const fn romcenter_options_opt(&self) -> Option<&RomCenterOptions> {
-        match &self.header {
-            Some(header) => header.romcenter_options(),
-            None => None,
-        }
+        self.metadata.romcenter_options_opt()
     }
 
     /// Return the DTD-effective debug value.
     #[must_use]
     pub fn debug_effective(&self) -> &str {
-        self.debug.as_deref().unwrap_or("no")
+        self.metadata.debug_effective()
     }
 
     #[must_use]
     pub const fn debug_was_explicit(&self) -> bool {
-        self.debug.is_some()
+        self.metadata.debug_was_explicit()
     }
 
     /// Get a reference to the data file's games.
@@ -226,34 +165,88 @@ impl DataFile {
     /// Get a reference to the data file's sha1.
     #[must_use]
     pub fn sha1(&self) -> Option<&[u8]> {
-        self.sha1.as_deref()
+        self.metadata.sha1()
     }
 
     /// Get a reference to the data file's file name.
     #[must_use]
     pub fn file_name(&self) -> Option<&str> {
-        self.file_name.as_deref()
+        self.metadata.file_name()
     }
 
     /// Get a reference to the data file's build.
     #[must_use]
     pub fn build(&self) -> Option<&str> {
-        self.build.as_deref()
+        self.metadata.build()
     }
 
     /// Get a reference to the data file's debug.
     #[must_use]
     pub fn debug(&self) -> Option<&str> {
-        self.debug.as_deref()
+        self.metadata.debug()
     }
 
+    #[must_use]
+    pub fn attribute_positions(&self) -> &[AttributePosition<DocumentAttribute>] {
+        self.metadata.attribute_positions()
+    }
+}
+
+impl DocumentMetadata {
+    #[must_use]
+    pub const fn header_opt(&self) -> Option<&Header> {
+        self.header.as_ref()
+    }
+    pub fn header(&self) -> crate::Result<&Header> {
+        self.header.as_ref().ok_or_else(|| {
+            crate::Error::XmlValidation("Logiqx data file is missing its header".to_owned())
+        })
+    }
+    #[must_use]
+    pub const fn clrmamepro_options_opt(&self) -> Option<&ClrMameProOptions> {
+        match &self.header {
+            Some(header) => header.clrmamepro_options(),
+            None => None,
+        }
+    }
+    #[must_use]
+    pub const fn romcenter_options_opt(&self) -> Option<&RomCenterOptions> {
+        match &self.header {
+            Some(header) => header.romcenter_options(),
+            None => None,
+        }
+    }
+    #[must_use]
+    pub fn debug_effective(&self) -> &str {
+        self.debug.as_deref().unwrap_or("no")
+    }
+    #[must_use]
+    pub const fn debug_was_explicit(&self) -> bool {
+        self.debug.is_some()
+    }
+    #[must_use]
+    pub fn sha1(&self) -> Option<&[u8]> {
+        self.sha1.as_deref()
+    }
+    #[must_use]
+    pub fn file_name(&self) -> Option<&str> {
+        self.file_name.as_deref()
+    }
+    #[must_use]
+    pub fn build(&self) -> Option<&str> {
+        self.build.as_deref()
+    }
+    #[must_use]
+    pub fn debug(&self) -> Option<&str> {
+        self.debug.as_deref()
+    }
     #[must_use]
     pub fn attribute_positions(&self) -> &[AttributePosition<DocumentAttribute>] {
         &self.attribute_positions
     }
 }
 
-fn read_datafile_root(
+pub(super) fn read_datafile_root(
     reader: &mut crate::xml_reader::XmlReader<'_>,
     positions: &mut xml_reader::PositionMap<'_>,
     budget: &mut NodeBudget,
@@ -287,7 +280,7 @@ fn read_datafile_root(
     Ok((root, empty))
 }
 
-fn parse_datafile_sha1(value: &str) -> crate::Result<Vec<u8>> {
+pub(super) fn parse_datafile_sha1(value: &str) -> crate::Result<Vec<u8>> {
     let digest = hex::decode(value.trim())
         .map_err(|error| crate::Error::XmlValidation(format!("invalid datafile SHA1: {error}")))?;
     if digest.len() != 20 {
@@ -298,7 +291,7 @@ fn parse_datafile_sha1(value: &str) -> crate::Result<Vec<u8>> {
     Ok(digest)
 }
 
-fn set_once<T>(slot: &mut Option<T>, value: T, name: &str) -> crate::Result<()> {
+pub(super) fn set_once<T>(slot: &mut Option<T>, value: T, name: &str) -> crate::Result<()> {
     if slot.replace(value).is_some() {
         return Err(crate::Error::XmlValidation(format!(
             "duplicate <{name}> in <datafile>"
@@ -307,7 +300,7 @@ fn set_once<T>(slot: &mut Option<T>, value: T, name: &str) -> crate::Result<()> 
     Ok(())
 }
 
-fn finish_document(
+pub(super) fn finish_document(
     reader: &mut crate::xml_reader::XmlReader<'_>,
     positions: &mut xml_reader::PositionMap<'_>,
 ) -> crate::Result<()> {
@@ -325,23 +318,11 @@ fn finish_document(
     }
 }
 
-fn local_name(name: &str) -> &str {
+pub(super) fn local_name(name: &str) -> &str {
     name.rsplit_once('}').map_or(name, |(_, local)| local)
 }
 
-fn collect_game_source_map(element: &Element, game_index: usize, source_map: &mut XmlSourceMap) {
-    collect_unsupported_attributes(element, Some(game_index), source_map);
-    for child in element.children() {
-        match local_name(&child.name) {
-            "rom" => source_map.rom_locations[game_index].push(child.location),
-            "device_ref" => source_map.device_ref_locations[game_index].push(child.location),
-            _ => {}
-        }
-        collect_subtree_attributes(child, Some(game_index), source_map);
-    }
-}
-
-fn collect_subtree_attributes(
+pub(super) fn collect_subtree_attributes(
     element: &Element,
     in_game: Option<usize>,
     source_map: &mut XmlSourceMap,
@@ -352,7 +333,7 @@ fn collect_subtree_attributes(
     }
 }
 
-fn collect_unsupported_attributes(
+pub(super) fn collect_unsupported_attributes(
     element: &Element,
     in_game: Option<usize>,
     source_map: &mut XmlSourceMap,
@@ -522,6 +503,22 @@ mod tests {
         assert_eq!(source_map.unsupported_attributes.len(), 2);
         assert_eq!(source_map.unsupported_attributes[0].field_name, "future");
         assert_eq!(source_map.unsupported_attributes[1].value, "unknown");
+        Ok(())
+    }
+
+    #[test]
+    fn collected_diagnostics_keep_source_order_when_header_follows_games() -> crate::Result<()> {
+        let xml = b"<datafile root-extension='root'>\n<game name='first' game-extension='game'/>\n<header header-extension='header'><name>Late</name></header>\n</datafile>";
+        let (_, source_map) = DataFile::from_reader_with_source_map(xml.as_slice())?;
+        let names = source_map
+            .unsupported_attributes
+            .iter()
+            .map(|diagnostic| diagnostic.field_name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            ["root-extension", "game-extension", "header-extension"]
+        );
         Ok(())
     }
 

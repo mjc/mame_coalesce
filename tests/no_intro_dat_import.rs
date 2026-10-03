@@ -298,8 +298,8 @@ fn assert_native_text_fields(catalog: &mut Catalog) -> TestResult {
             Some(" v4 "),
         ),
         (
-            "SELECT declared_version AS value FROM catalog_snapshots",
-            None,
+            "SELECT declared_version AS value FROM catalog_snapshot_versions",
+            Some(" v4 "),
         ),
         (
             "SELECT trademarks AS value FROM no_intro_dat_headers",

@@ -1,4 +1,80 @@
-# Catalog import profiling, 2026-09-29
+# Catalog import profiling
+
+## Streaming native Logiqx checkpoint, 2026-10-03
+
+This capture uses the optimized, symbolized `profiling` build and the native
+Logiqx streaming writer, not the historical schema below. Artifacts are in
+`target/profiling/logiqx-streaming-20261003/`; the separate build is in
+`target/logiqx-streaming-profile-build-20261003/`. Neither existing build output
+nor source files were cleaned. `capture.sh`, input hashes, executable hash,
+raw traces, SVGs, reports, databases and query-proof source are retained locally
+and ignored by Git. Executable SHA-256:
+`73e1667134d8e611b1ed6eda44de553074ebe3ea846ce2b3113681709766acdb`.
+
+The four inputs are the downloaded TOSEC C64 D64 demos DAT, TOSEC-ISO Tomy
+KISS-Site games DAT, TOSEC-PIX Macintosh iCreate magazines DAT, and PureDOS DAT.
+Their byte-exact hashes are in `inputs.sha256`. The C64 input is 18,993,083
+bytes and contains 61,454 games and 61,454 ROM declarations. The ISO, PIX and
+PureDOS inputs contribute 19/57, 3/3 and 216/21,491 games/media respectively.
+An XML `rom` element does not prove that its file is a ROM image: ISO/PIX lists
+can describe other media, including documents.
+
+CPU capture used the repository profiling environment, 997 Hz user-space
+cycle sampling, 8 KiB DWARF stacks and 1,024 mmap pages. The initial perf
+attempt failed before import because its memory-lock allowance was too small;
+the empty trace and failure log are preserved. Raising
+`kernel.perf_event_mlock_kb` from 516 to 8,192 enabled capture; it was restored
+to 516 afterwards. `perf_event_paranoid=1` and `kptr_restrict=0` were unchanged.
+Rendering used `scripts/render_catalog_flamegraph.sh`; analysis used our local
+`scripts/parse_flamegraph`.
+
+The fresh CPU database published all four documents (`succeeded=4 failed=0`),
+with 61,692 games and 83,005 media declarations. SQLite occupies 106,602,496
+logical bytes. SQLite quick/FK checks and application integrity passed. With
+the external originals temporarily unavailable, the public native query API
+returned the expected counts over 126 pages of up to 500 games, with matching
+one-game page boundaries. The proof explicitly checked that original loading
+failed before querying; originals were restored afterwards. This proves
+source-independent interface/count consistency for these four files, not
+field-by-field agreement for every real record or full 4,743-file acceptance.
+The helper retains first/boundary pages and does not measure one-page-only
+memory. Its `declared_positions` count excludes media attribute positions.
+
+Perf recorded 358,617 samples. The collapsed SVG weights reflect event periods,
+not that raw sample count: percentages below are event-weighted coverage, not
+wall time. `[unknown]` has 0.01% inclusive coverage and `sqlite3_prepare_v3`
+has 78.68%. Deepest-frame SQLite/Diesel category coverage is 55.37%; named
+SQLite internals also occur in `Other`. Inclusive ancestors/descendants overlap
+and must not be added. No before/after speedup is claimed.
+
+Heaptrack used the same executable with a separate fresh database and only the
+C64 input. It completed (`succeeded=1 failed=0`) in 600.51 seconds under the
+profiler, with 269,775,522 allocation calls, 53.90 MB peak traced live heap
+(53,904,458 bytes in `heap-peak.folded`) and 82.61 MB peak RSS including
+profiler overhead. Units are decimal. The 83,943,424-byte database has exactly
+one publication, 61,454 games and 61,454 media; SQLite quick/FK checks and
+application integrity pass. This is a completed-import observation, not a
+controlled throughput comparison with the four-input CPU run.
+
+`heap-report.txt` lists the top 100 individual allocation-count, peak and
+temporary-allocation stacks with backtrace merging disabled. The largest
+peak stack is 33.55 MB through input `read_to_end`; the next is 8.39 MB growing
+the compressed sidecar output, followed by 3.66 MB of zstd workspace. These
+are acquisition/source-object costs, not a retained tree of every parsed game.
+The top allocation-count stack is 5,838,130 calls through SQLite expression
+duplication and trigger compilation during `logiqx_native::insert_positions`,
+with zero bytes from that stack live at the global heap peak. Together with
+the CPU profile this points to repeated statement preparation/compilation
+churn; it does not justify truncating input or imposing an arbitrary catalog
+memory cap.
+
+The writer releases each completed game before proceeding and publishes only
+after validated EOF within the same transaction. Original/decoded input bytes,
+coordinate bookkeeping and the current game or ignored subtree can still
+require input-dependent memory. Strict pinned-DTD conformance, remaining
+formats and full-corpus field/loading/query/performance acceptance remain open.
+
+## Historical captures, 2026-09-29
 
 The seven CPU flamegraphs and their raw perf recordings are under
 `target/profiling/catalog-import-flamegraphs-2026-09-29-userspace-all/`. The

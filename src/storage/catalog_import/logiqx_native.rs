@@ -6,9 +6,9 @@ use diesel::{
 use crate::{
     domain::{CatalogSetId, OccurrenceId, SnapshotKey},
     logiqx::{
-        AttributePosition, BiosSetAttribute, ClrMameProAttribute, DataFile, DiskAttribute,
-        DocumentAttribute, Game, GameAttribute, GameTextPosition, HeaderTextPosition,
-        NameAttribute, ReleaseAttribute, RomAttribute, RomCenterAttribute,
+        AttributePosition, BiosSetAttribute, ClrMameProAttribute, DiskAttribute, DocumentAttribute,
+        DocumentMetadata, Game, GameAttribute, GameTextPosition, HeaderTextPosition, NameAttribute,
+        ReleaseAttribute, RomAttribute, RomCenterAttribute,
     },
 };
 
@@ -197,7 +197,7 @@ pub(super) struct DocumentDetails {
 }
 
 impl DocumentDetails {
-    pub(super) fn from_data_file(data_file: &DataFile) -> crate::Result<Self> {
+    pub(super) fn from_metadata(data_file: &DocumentMetadata) -> crate::Result<Self> {
         let header = data_file.header_opt();
         let header_text_positions =
             header.map_or_else(Vec::new, |header| header.text_positions().to_vec());

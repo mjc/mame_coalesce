@@ -102,8 +102,8 @@ fn candidate(
     sql_query(
         "INSERT INTO catalog_snapshots \
          (snapshot_key, catalog_key, document_key, interpretation_key, acquisition_key, \
-          declared_version, coverage_id, parent_snapshot_key) \
-         SELECT ?, ?, document_key, interpretation_key, acquisition_key, declared_version, \
+          coverage_id, parent_snapshot_key) \
+         SELECT ?, ?, document_key, interpretation_key, acquisition_key, \
                 coverage_id, NULL FROM catalog_snapshots WHERE snapshot_key = ?",
     )
     .bind::<Text, _>(&snapshot_key)

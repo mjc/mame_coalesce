@@ -1155,6 +1155,26 @@ fn logiqx_effective_defaults_keep_presence_and_root_rom_size_text()
 #[test]
 fn publishing_completes_a_matching_identity_only_snapshot() -> Result<(), Box<dyn std::error::Error>>
 {
+    assert_identity_shell_publication(DraftFacts::Empty)
+}
+
+#[test]
+fn partially_populated_drafts_are_not_adopted_as_identity_only_snapshots()
+-> Result<(), Box<dyn std::error::Error>> {
+    for facts in [DraftFacts::Document, DraftFacts::RootGroup] {
+        assert_identity_shell_publication(facts)?;
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug)]
+enum DraftFacts {
+    Empty,
+    Document,
+    RootGroup,
+}
+
+fn assert_identity_shell_publication(facts: DraftFacts) -> Result<(), Box<dyn std::error::Error>> {
     let (directory, database, mut connection) = setup()?;
     let path = directory.path().join("identity-only.dat");
     let bytes = br#"<datafile><header><name>Legacy</name></header><game name="set"><rom name="asset.bin" crc="12345678"/></game></datafile>"#;
@@ -1199,16 +1219,42 @@ fn publishing_completes_a_matching_identity_only_snapshot() -> Result<(), Box<dy
     .bind::<BigInt, _>(coverage_id)
     .execute(&mut connection)?;
 
+    match facts {
+        DraftFacts::Empty => {}
+        DraftFacts::Document => {
+            sql_query(
+                "INSERT INTO logiqx_document_facts(snapshot_key) VALUES('identity-only-snapshot')",
+            )
+            .execute(&mut connection)?;
+        }
+        DraftFacts::RootGroup => {
+            sql_query("INSERT INTO catalog_set_groups(snapshot_key,kind,list_order) VALUES('identity-only-snapshot','root',0)")
+                .execute(&mut connection)?;
+        }
+    }
     let report = app::import_catalog(&database, &request)?;
     assert_eq!(
-        report
-            .snapshot_key
-            .as_ref()
-            .map(ToString::to_string)
-            .as_deref(),
-        Some("identity-only-snapshot")
+        report.status,
+        app::CatalogImportStatus::Succeeded,
+        "{facts:?}"
     );
-    assert_eq!(count(&mut connection, "catalog_snapshots")?, 1);
+    let published = report
+        .snapshot_key
+        .ok_or("successful import has no snapshot")?;
+    let expected_snapshots = match facts {
+        DraftFacts::Empty => {
+            assert_eq!(published.as_str(), "identity-only-snapshot");
+            1
+        }
+        DraftFacts::Document | DraftFacts::RootGroup => {
+            assert_ne!(published.as_str(), "identity-only-snapshot", "{facts:?}");
+            2
+        }
+    };
+    assert_eq!(
+        count(&mut connection, "catalog_snapshots")?,
+        expected_snapshots
+    );
     assert_eq!(count(&mut connection, "snapshot_sets")?, 1);
     assert_eq!(count(&mut connection, "asset_requirements")?, 1);
     assert_eq!(count(&mut connection, "snapshot_publications")?, 1);
@@ -1267,9 +1313,8 @@ fn imports_no_intro_pc_xml_metadata_without_inventing_title_relationships()
     .get_result::<TextRow>(&mut connection)?;
     assert_eq!(declared_version.value, "synthetic-2026-09-24");
     let copied_version = sql_query(
-        "SELECT COUNT(*) AS count FROM catalog_snapshots WHERE snapshot_key=? AND declared_version IS NOT NULL",
+        "SELECT COUNT(*) AS count FROM pragma_table_info('catalog_snapshots') WHERE name='declared_version'",
     )
-    .bind::<Text, _>(snapshot.as_str())
     .get_result::<CountRow>(&mut connection)?;
     assert_eq!(copied_version.count, 0);
 
@@ -1500,7 +1545,7 @@ fn assert_no_intro_source_assertions(
 }
 
 #[test]
-fn stale_identity_only_metadata_is_not_published_as_current()
+fn identity_only_snapshot_without_acquisition_is_not_published_as_current()
 -> Result<(), Box<dyn std::error::Error>> {
     let (directory, database, mut connection) = setup()?;
     let path = directory.path().join("stale-identity.dat");
@@ -1530,8 +1575,8 @@ fn stale_identity_only_metadata_is_not_published_as_current()
     .execute(&mut connection)?;
     sql_query(
         "INSERT INTO catalog_snapshots \
-         (snapshot_key, catalog_key, document_key, interpretation_key, declared_version, coverage_id) \
-         VALUES ('stale-identity-snapshot', ?, ?, ?, '1.0', ?)",
+         (snapshot_key, catalog_key, document_key, interpretation_key, coverage_id) \
+         VALUES ('stale-identity-snapshot', ?, ?, ?, ?)",
     )
     .bind::<Text, _>(request.catalog_key.as_str())
     .bind::<Text, _>(&document_key)
@@ -1548,10 +1593,11 @@ fn stale_identity_only_metadata_is_not_published_as_current()
     assert_ne!(published_key, "stale-identity-snapshot");
     assert_eq!(count(&mut connection, "catalog_snapshots")?, 2);
     assert_eq!(count(&mut connection, "snapshot_publications")?, 1);
-    let version =
-        sql_query("SELECT declared_version AS value FROM catalog_snapshots WHERE snapshot_key = ?")
-            .bind::<Text, _>(published_key)
-            .get_result::<NullableTextRow>(&mut connection)?;
+    let version = sql_query(
+        "SELECT declared_version AS value FROM catalog_snapshot_versions WHERE snapshot_key = ?",
+    )
+    .bind::<Text, _>(published_key)
+    .get_result::<NullableTextRow>(&mut connection)?;
     assert_eq!(version.value.as_deref(), Some("2.0"));
     Ok(())
 }
@@ -1866,11 +1912,7 @@ fn imports_mame_machine_rom_disk_bios_and_device_semantics_loss_aware()
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<NullableTextRow>(&mut connection)?;
     assert_eq!(version.value.as_deref(), Some("0.216-synthetic"));
-    let copied_version =
-        sql_query("SELECT declared_version AS value FROM catalog_snapshots WHERE snapshot_key = ?")
-            .bind::<Text, _>(snapshot.as_str())
-            .get_result::<NullableTextRow>(&mut connection)?;
-    assert_eq!(copied_version.value, None);
+    assert_no_copied_snapshot_version(&mut connection)?;
     let source = app::load_snapshot_source(&database, &snapshot)?;
     assert!(
         source
@@ -3475,14 +3517,7 @@ fn imports_mame_softwarelists_with_nested_order_dependencies_and_load_claims()
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<NullableTextRow>(&mut connection)?;
     assert_eq!(version.value.as_deref(), Some("0.289-synthetic"));
-    let copied_version =
-        sql_query("SELECT declared_version AS value FROM catalog_snapshots WHERE snapshot_key = ?")
-            .bind::<Text, _>(snapshot.as_str())
-            .get_result::<NullableTextRow>(&mut connection)?;
-    assert_eq!(
-        copied_version.value, None,
-        "wrapper build has only its native owner"
-    );
+    assert_no_copied_snapshot_version(&mut connection)?;
 
     assert_eq!(count(&mut connection, "software_lists")?, 2);
     assert_eq!(count(&mut connection, "software_items")?, 3);
@@ -4477,6 +4512,15 @@ fn assert_clrmamepro_rom_facts(
     Ok(())
 }
 
+fn assert_no_copied_snapshot_version(
+    connection: &mut SqliteConnection,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let copied = sql_query("SELECT COUNT(*) AS count FROM pragma_table_info('catalog_snapshots') WHERE name='declared_version'")
+        .get_result::<CountRow>(connection)?;
+    assert_eq!(copied.count, 0, "source versions have only native owners");
+    Ok(())
+}
+
 fn assert_clrmamepro_source_recovery(
     database: &Database,
     request: &CatalogImportRequest,
@@ -4495,10 +4539,11 @@ fn assert_clrmamepro_source_recovery(
             .bind::<Text, _>(snapshot.as_str())
             .get_result::<TextRow>(connection)?;
     assert_eq!(header_name.value, "Synthetic Catalog");
-    let version =
-        sql_query("SELECT declared_version AS value FROM catalog_snapshots WHERE snapshot_key = ?")
-            .bind::<Text, _>(snapshot.as_str())
-            .get_result::<TextRow>(connection)?;
+    let version = sql_query(
+        "SELECT declared_version AS value FROM catalog_snapshot_versions WHERE snapshot_key = ?",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .get_result::<TextRow>(connection)?;
     assert_eq!(version.value, "synthetic-1");
     Ok(())
 }

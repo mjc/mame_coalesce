@@ -64,8 +64,6 @@ struct SnapshotSeed {
     interpretation_key: String,
     #[diesel(sql_type = Nullable<Text>)]
     acquisition_key: Option<String>,
-    #[diesel(sql_type = Nullable<Text>)]
-    declared_version: Option<String>,
     #[diesel(sql_type = BigInt)]
     coverage_id: i64,
 }
@@ -175,7 +173,7 @@ fn insert_pc_snapshot_owner(
 ) -> TestResult<PendingPcSnapshot> {
     let seed = sql_query(
         "SELECT catalog_key, document_key, interpretation_key, acquisition_key, \
-                declared_version, coverage_id \
+                coverage_id \
          FROM catalog_snapshots WHERE snapshot_key = ?",
     )
     .bind::<Text, _>(source_snapshot.as_str())
@@ -184,15 +182,14 @@ fn insert_pc_snapshot_owner(
     sql_query(
         "INSERT INTO catalog_snapshots \
          (snapshot_key,catalog_key,document_key,interpretation_key,acquisition_key, \
-          declared_version,coverage_id,parent_snapshot_key) \
-         VALUES (?,?,?,?,?,?,?,NULL)",
+          coverage_id,parent_snapshot_key) \
+         VALUES (?,?,?,?,?,?,NULL)",
     )
     .bind::<Text, _>(&snapshot)
     .bind::<Text, _>(seed.catalog_key)
     .bind::<Text, _>(seed.document_key)
     .bind::<Text, _>(seed.interpretation_key)
     .bind::<Nullable<Text>, _>(seed.acquisition_key)
-    .bind::<Nullable<Text>, _>(seed.declared_version)
     .bind::<BigInt, _>(seed.coverage_id)
     .execute(connection)?;
     sql_query("INSERT INTO no_intro_pc_documents(snapshot_key,header_present,source_line,source_column) VALUES(?,0,1,1)")

@@ -43,6 +43,22 @@ pub enum HeaderTextField {
 }
 
 impl HeaderTextField {
+    pub(crate) const fn from_code(code: i64) -> Option<Self> {
+        match code {
+            0 => Some(Self::Name),
+            1 => Some(Self::Description),
+            2 => Some(Self::Category),
+            3 => Some(Self::Version),
+            4 => Some(Self::Date),
+            5 => Some(Self::Author),
+            6 => Some(Self::Email),
+            7 => Some(Self::Homepage),
+            8 => Some(Self::Url),
+            9 => Some(Self::Comment),
+            _ => None,
+        }
+    }
+
     fn from_element_name(name: &str) -> Option<Self> {
         match name {
             "name" => Some(Self::Name),

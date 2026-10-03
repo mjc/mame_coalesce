@@ -422,8 +422,7 @@ fn native_version_is_public_history_and_relationship_provenance_not_snapshot_col
 
     let mut connection = catalog.connection()?;
     let raw_version =
-        sql_query("SELECT declared_version AS value FROM catalog_snapshots WHERE snapshot_key=?")
-            .bind::<Text, _>(snapshot.as_str())
+        sql_query("SELECT CASE WHEN EXISTS (SELECT 1 FROM pragma_table_info('catalog_snapshots') WHERE name='declared_version') THEN 'copied' ELSE NULL END AS value")
             .get_result::<NullableText>(&mut connection)?;
     assert_eq!(raw_version.value, None);
     Ok(())

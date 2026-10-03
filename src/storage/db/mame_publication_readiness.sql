@@ -2,8 +2,7 @@ SELECT 1
 FROM catalog_snapshots AS snapshot JOIN parser_interpretations USING (interpretation_key)
 JOIN requested USING (snapshot_key)
 WHERE format='mame-listxml' AND (
-    snapshot.declared_version IS NOT NULL
-    OR NOT EXISTS (SELECT 1 FROM mame_document_facts WHERE snapshot_key=snapshot.snapshot_key)
+    NOT EXISTS (SELECT 1 FROM mame_document_facts WHERE snapshot_key=snapshot.snapshot_key)
     OR (SELECT count(*) FROM catalog_set_groups WHERE snapshot_key=snapshot.snapshot_key AND kind='root')<>1
     OR EXISTS (SELECT 1 FROM catalog_set_groups WHERE snapshot_key=snapshot.snapshot_key AND kind<>'root')
     OR NOT EXISTS (

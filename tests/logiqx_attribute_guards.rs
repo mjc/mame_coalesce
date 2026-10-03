@@ -127,6 +127,29 @@ fn attribute_position_tables_use_closed_rowid_free_storage() -> TestResult {
 }
 
 #[test]
+fn publication_requires_document_facts_after_streamed_games() -> TestResult {
+    let (_directory, path, snapshot) = setup()?;
+    let mut connection = connect(&path)?;
+    let set_id = draft_game(&mut connection, &snapshot)?;
+    for (field, order) in [(0, 0), (1, 1)] {
+        sql_query("INSERT INTO logiqx_game_attribute_positions(set_id,field_kind,source_order,source_line,source_column) VALUES(?,?,?,1,1)")
+            .bind::<BigInt, _>(set_id)
+            .bind::<BigInt, _>(field)
+            .bind::<BigInt, _>(order)
+            .execute(&mut connection)?;
+    }
+    let publish = "INSERT INTO snapshot_publications(catalog_key,document_key,interpretation_key,snapshot_key) SELECT catalog_key,document_key,interpretation_key,snapshot_key FROM catalog_snapshots WHERE snapshot_key='draft-attributes'";
+    assert!(
+        sql_query(publish).execute(&mut connection).is_err(),
+        "completed game rows cannot replace the required document owner"
+    );
+    sql_query("INSERT INTO logiqx_document_facts(snapshot_key) VALUES('draft-attributes')")
+        .execute(&mut connection)?;
+    sql_query(publish).execute(&mut connection)?;
+    Ok(())
+}
+
+#[test]
 fn draft_native_game_replace_is_rejected_with_both_pragmas_off() -> TestResult {
     let (_directory, path, snapshot) = setup()?;
     let mut connection = connect(&path)?;
