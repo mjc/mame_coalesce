@@ -638,7 +638,10 @@ fn published_native_tables_reject_late_insert_update_and_delete() -> TestResult 
 fn cmp_native_document_and_set_facts_reject_wrong_format_owners() -> TestResult {
     let xml =
         r#"<datafile><header><name>Wrong format</name></header><game name="game-a"/></datafile>"#;
-    let (directory, _database, source) = setup(CatalogDocumentFormat::Logiqx, xml)?;
+    let (directory, _database, source) = setup(
+        CatalogDocumentFormat::Logiqx(mame_coalesce::logiqx::LogiqxMode::ObservedCompatible),
+        xml,
+    )?;
     let mut connection = connect(&directory)?;
     sql_query("PRAGMA foreign_keys=ON").execute(&mut connection)?;
     insert_pending_snapshot(&mut connection, &source)?;

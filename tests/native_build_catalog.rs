@@ -115,7 +115,9 @@ fn import_catalog(
         database,
         &CatalogImportRequest {
             document_path: path.clone(),
-            format: CatalogDocumentFormat::Logiqx,
+            format: CatalogDocumentFormat::Logiqx(
+                mame_coalesce::logiqx::LogiqxMode::ObservedCompatible,
+            ),
             source_key: PublishingSourceKey::new(format!("publisher-{catalog_key}")),
             source_display_name: format!("Publisher {catalog_key}"),
             catalog_key: CatalogKey::new(catalog_key),

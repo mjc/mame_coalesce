@@ -3315,6 +3315,9 @@ const MAME_SPECIFICATION_SQL: &str = concat!(
 );
 
 #[cfg(test)]
+mod no_intro_database_consumers;
+
+#[cfg(test)]
 mod tests;
 
 fn load_mame_machine_specification_facts(

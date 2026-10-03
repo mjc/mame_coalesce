@@ -4,6 +4,7 @@ use camino::Utf8Path;
 use fmmap::MmapFileExt;
 use quick_xml::events::Event;
 
+use super::dtd15::{self, DeclarationPolicy};
 use super::game::Game;
 use super::header::{ClrMameProOptions, Header, RomCenterOptions};
 use super::{
@@ -59,8 +60,15 @@ pub struct XmlSourceMap {
 }
 impl DataFile {
     pub fn from_reader<R: Read>(reader: R) -> crate::Result<Self> {
+        Self::from_reader_with_mode(reader, super::LogiqxMode::ObservedCompatible)
+    }
+
+    pub fn from_reader_with_mode<R: Read>(
+        reader: R,
+        mode: super::LogiqxMode,
+    ) -> crate::Result<Self> {
         let raw = document_input::read_bounded(reader, document_input::MAX_DOCUMENT_BYTES)?;
-        Self::collect_bytes(&raw, false).map(|(data_file, _)| data_file)
+        Self::collect_bytes(&raw, false, mode).map(|(data_file, _)| data_file)
     }
 
     pub fn from_path(path: &Utf8Path) -> crate::Result<Self> {
@@ -68,7 +76,8 @@ impl DataFile {
         // historical size behavior. `from_reader` remains deliberately bounded.
         let mmap = hashes::mmap_path(path)?;
         let raw = mmap.as_slice();
-        let (mut data_file, _) = Self::collect_bytes(raw, false)?;
+        let (mut data_file, _) =
+            Self::collect_bytes(raw, false, super::LogiqxMode::ObservedCompatible)?;
         data_file.metadata.file_name = path
             .canonicalize()
             .ok()
@@ -80,17 +89,22 @@ impl DataFile {
     #[cfg(test)]
     fn from_reader_with_source_map<R: Read>(reader: R) -> crate::Result<(Self, XmlSourceMap)> {
         let raw = document_input::read_bounded(reader, document_input::MAX_DOCUMENT_BYTES)?;
-        Self::collect_bytes(&raw, true)
+        Self::collect_bytes(&raw, true, super::LogiqxMode::ObservedCompatible)
     }
 
     pub(crate) fn validate_document_bytes(raw: &[u8]) -> crate::Result<()> {
         super::read_with(raw, |_| Ok(()), |(), _| Ok(())).map(|_| ())
     }
 
-    fn collect_bytes(raw: &[u8], retain_diagnostics: bool) -> crate::Result<(Self, XmlSourceMap)> {
-        let validated = super::reader::read_with_diagnostics(
+    fn collect_bytes(
+        raw: &[u8],
+        retain_diagnostics: bool,
+        mode: super::LogiqxMode,
+    ) -> crate::Result<(Self, XmlSourceMap)> {
+        let validated = super::reader::read_with_diagnostics_mode(
             raw,
             retain_diagnostics,
+            mode,
             |_| Ok::<_, crate::Error>((Vec::new(), XmlSourceMap::default())),
             |(games, source_map), game| {
                 if retain_diagnostics {
@@ -246,11 +260,227 @@ impl DocumentMetadata {
     }
 }
 
+#[derive(Clone, Copy)]
+enum Standalone {
+    Yes,
+    No,
+}
+
+enum PrologState {
+    DeclarationAllowed,
+    DoctypeAllowed(Standalone),
+    RootExpected(DeclarationPolicy),
+}
+
+impl PrologState {
+    fn accept(&mut self, event: &Event<'_>) -> crate::Result<()> {
+        match event {
+            Event::Decl(declaration) if matches!(self, Self::DeclarationAllowed) => {
+                let standalone = declaration
+                    .standalone()
+                    .transpose()
+                    .map_err(|error| crate::Error::XmlValidation(error.to_string()))?;
+                *self = Self::DoctypeAllowed(if standalone.as_deref() == Some("yes") {
+                    Standalone::Yes
+                } else {
+                    Standalone::No
+                });
+            }
+            Event::DocType(declaration) => {
+                let standalone = match self {
+                    Self::DeclarationAllowed => Standalone::No,
+                    Self::DoctypeAllowed(standalone) => *standalone,
+                    Self::RootExpected(_) => {
+                        return Err(crate::Error::XmlValidation("duplicate DOCTYPE".into()));
+                    }
+                };
+                let doctype = parse_doctype(declaration.as_ref())?;
+                *self = Self::RootExpected(match (standalone, doctype) {
+                    (Standalone::Yes, DoctypeKind::System | DoctypeKind::Public) => {
+                        DeclarationPolicy::StandaloneExternal
+                    }
+                    _ => DeclarationPolicy::Ordinary,
+                });
+            }
+            Event::Comment(_) | Event::PI(_) => self.accept_misc(),
+            Event::Text(text) if dtd15::xml_whitespace(&text.xml10_content()) => self.accept_misc(),
+            _ => {
+                return Err(crate::Error::XmlValidation(
+                    "invalid content before the document root".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    const fn accept_misc(&mut self) {
+        if matches!(self, Self::DeclarationAllowed) {
+            *self = Self::DoctypeAllowed(Standalone::No);
+        }
+    }
+
+    const fn policy(&self) -> DeclarationPolicy {
+        match self {
+            Self::RootExpected(policy) => *policy,
+            Self::DeclarationAllowed | Self::DoctypeAllowed(_) => DeclarationPolicy::Ordinary,
+        }
+    }
+}
+
+enum DoctypeKind {
+    NameOnly,
+    System,
+    Public,
+}
+
+#[derive(Clone, Copy)]
+enum DoctypeLiteral {
+    System,
+    Public,
+}
+
+/// A borrowed cursor over one DOCTYPE event, without interpreting its DTD or URI.
+struct DoctypeCursor<'a> {
+    remaining: &'a str,
+}
+
+impl DoctypeCursor<'_> {
+    fn skip_xml_space(&mut self) -> bool {
+        let before = self.remaining.len();
+        self.remaining = self.remaining.trim_start_matches([' ', '\t', '\r', '\n']);
+        self.remaining.len() != before
+    }
+
+    fn require_xml_space(&mut self) -> crate::Result<()> {
+        if !self.skip_xml_space() {
+            return Err(doctype_error("required XML whitespace is missing"));
+        }
+        Ok(())
+    }
+
+    fn quoted_literal(&mut self, kind: DoctypeLiteral) -> crate::Result<()> {
+        let Some(quote @ ('\'' | '"')) = self.remaining.chars().next() else {
+            return Err(doctype_error("expected a quoted literal"));
+        };
+        let content = self
+            .remaining
+            .strip_prefix(quote)
+            .ok_or_else(|| doctype_error("expected an opening quote"))?;
+        let (literal, remaining) = content
+            .split_once(quote)
+            .ok_or_else(|| doctype_error("unterminated quoted literal"))?;
+        if matches!(kind, DoctypeLiteral::Public) && !literal.chars().all(is_pubid_character) {
+            return Err(doctype_error("invalid character in public identifier"));
+        }
+        self.remaining = remaining;
+        Ok(())
+    }
+
+    fn reject_internal_subset(&self) -> crate::Result<()> {
+        if self.remaining.starts_with('[') {
+            return Err(doctype_error(
+                "internal subsets are unsupported by the pinned Logiqx grammar",
+            ));
+        }
+        Ok(())
+    }
+
+    fn finish(mut self) -> crate::Result<()> {
+        self.skip_xml_space();
+        self.reject_internal_subset()?;
+        if !self.remaining.is_empty() {
+            return Err(doctype_error("unexpected content after the declaration"));
+        }
+        Ok(())
+    }
+}
+
+fn parse_doctype(declaration: &str) -> crate::Result<DoctypeKind> {
+    let Some(remainder) = declaration.strip_prefix("datafile") else {
+        return Err(doctype_error("root name must be datafile"));
+    };
+    if remainder
+        .chars()
+        .next()
+        .is_some_and(|character| !matches!(character, ' ' | '\t' | '\r' | '\n' | '['))
+    {
+        return Err(doctype_error("root name must be datafile"));
+    }
+    let mut cursor = DoctypeCursor {
+        remaining: remainder,
+    };
+    let separated = cursor.skip_xml_space();
+    if cursor.remaining.is_empty() {
+        return Ok(DoctypeKind::NameOnly);
+    }
+    cursor.reject_internal_subset()?;
+    if !separated {
+        return Err(doctype_error(
+            "required XML whitespace is missing after the root name",
+        ));
+    }
+    let (kind, remaining) = if let Some(remaining) = cursor.remaining.strip_prefix("SYSTEM") {
+        (DoctypeLiteral::System, remaining)
+    } else if let Some(remaining) = cursor.remaining.strip_prefix("PUBLIC") {
+        (DoctypeLiteral::Public, remaining)
+    } else {
+        return Err(doctype_error(
+            "expected SYSTEM or PUBLIC external identifier",
+        ));
+    };
+    cursor.remaining = remaining;
+    cursor.require_xml_space()?;
+    if matches!(kind, DoctypeLiteral::Public) {
+        cursor.quoted_literal(DoctypeLiteral::Public)?;
+        cursor.require_xml_space()?;
+    }
+    cursor.quoted_literal(DoctypeLiteral::System)?;
+    cursor.finish()?;
+    Ok(match kind {
+        DoctypeLiteral::System => DoctypeKind::System,
+        DoctypeLiteral::Public => DoctypeKind::Public,
+    })
+}
+
+const fn is_pubid_character(character: char) -> bool {
+    character.is_ascii_alphanumeric()
+        || matches!(
+            character,
+            ' ' | '\r'
+                | '\n'
+                | '-'
+                | '\''
+                | '('
+                | ')'
+                | '+'
+                | ','
+                | '.'
+                | '/'
+                | ':'
+                | '='
+                | '?'
+                | ';'
+                | '!'
+                | '*'
+                | '#'
+                | '@'
+                | '$'
+                | '_'
+                | '%'
+        )
+}
+
+fn doctype_error(message: &str) -> crate::Error {
+    crate::Error::XmlValidation(format!("Logiqx DOCTYPE: {message}"))
+}
+
 pub(super) fn read_datafile_root(
     reader: &mut crate::xml_reader::XmlReader<'_>,
     positions: &mut xml_reader::PositionMap<'_>,
     budget: &mut NodeBudget,
-) -> crate::Result<(Element, bool)> {
+    strict_dtd15: bool,
+) -> crate::Result<(Element, bool, DeclarationPolicy)> {
+    let mut prolog = PrologState::DeclarationAllowed;
     let (namespace, event) = loop {
         let (namespace, event) = xml_reader::next(reader, positions)?;
         if matches!(event, Event::Start(_) | Event::Empty(_)) {
@@ -258,6 +488,9 @@ pub(super) fn read_datafile_root(
         }
         if event == Event::Eof {
             return Err(crate::Error::XmlValidation("missing document root".into()));
+        }
+        if strict_dtd15 {
+            prolog.accept(&event)?;
         }
     };
     let (root, empty) = match event {
@@ -277,7 +510,7 @@ pub(super) fn read_datafile_root(
             root.name
         )));
     }
-    Ok((root, empty))
+    Ok((root, empty, prolog.policy()))
 }
 
 pub(super) fn parse_datafile_sha1(value: &str) -> crate::Result<Vec<u8>> {
@@ -303,11 +536,17 @@ pub(super) fn set_once<T>(slot: &mut Option<T>, value: T, name: &str) -> crate::
 pub(super) fn finish_document(
     reader: &mut crate::xml_reader::XmlReader<'_>,
     positions: &mut xml_reader::PositionMap<'_>,
+    strict_dtd15: bool,
 ) -> crate::Result<()> {
     loop {
         match xml_reader::next(reader, positions)?.1 {
             Event::Eof => return Ok(()),
-            Event::Text(text) if text.xml10_content().trim().is_empty() => {}
+            Event::Text(text)
+                if if strict_dtd15 {
+                    dtd15::xml_whitespace(&text.xml10_content())
+                } else {
+                    text.xml10_content().trim().is_empty()
+                } => {}
             Event::Comment(_) | Event::PI(_) => {}
             _ => {
                 return Err(crate::Error::XmlValidation(

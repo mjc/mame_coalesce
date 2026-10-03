@@ -30,7 +30,9 @@ fn native_import_accepts_an_absent_header_without_inventing_a_title()
     )?;
     let request = CatalogImportRequest {
         document_path: document_path.clone(),
-        format: CatalogDocumentFormat::Logiqx,
+        format: CatalogDocumentFormat::Logiqx(
+            mame_coalesce::logiqx::LogiqxMode::ObservedCompatible,
+        ),
         source_key: PublishingSourceKey::new("headerless"),
         source_display_name: "Headerless source".to_owned(),
         catalog_key: CatalogKey::new("headerless"),

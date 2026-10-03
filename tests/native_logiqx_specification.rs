@@ -214,7 +214,9 @@ fn import_persists_native_logiqx_fields_defaults_order_locations_and_guards()
     let request = CatalogImportRequest {
         document_path: Utf8PathBuf::from_path_buf(document_path)
             .map_err(|_| "non-UTF-8 document path")?,
-        format: CatalogDocumentFormat::Logiqx,
+        format: CatalogDocumentFormat::Logiqx(
+            mame_coalesce::logiqx::LogiqxMode::ObservedCompatible,
+        ),
         source_key: PublishingSourceKey::new("native-logiqx-specification"),
         source_display_name: "Native Logiqx specification".to_owned(),
         catalog_key: CatalogKey::new("native-logiqx-specification"),
@@ -285,7 +287,9 @@ fn headerless_native_document_keeps_option_families_absent()
     let request = CatalogImportRequest {
         document_path: Utf8PathBuf::from_path_buf(document_path)
             .map_err(|_| "non-UTF-8 document path")?,
-        format: CatalogDocumentFormat::Logiqx,
+        format: CatalogDocumentFormat::Logiqx(
+            mame_coalesce::logiqx::LogiqxMode::ObservedCompatible,
+        ),
         source_key: PublishingSourceKey::new("headerless-native-logiqx"),
         source_display_name: "Headerless Logiqx".to_owned(),
         catalog_key: CatalogKey::new("headerless-native-logiqx"),

@@ -32,7 +32,9 @@ fn repeated_name_vendor_extensions_are_recoverable_from_original_source()
         .map_err(|_| std::io::Error::other("non-UTF-8 document path"))?;
     let request = CatalogImportRequest {
         document_path,
-        format: CatalogDocumentFormat::Logiqx,
+        format: CatalogDocumentFormat::Logiqx(
+            mame_coalesce::logiqx::LogiqxMode::ObservedCompatible,
+        ),
         source_key: PublishingSourceKey::new("extension-owner-source"),
         source_display_name: "Extension owner source".to_owned(),
         catalog_key: CatalogKey::new("extension-owner-catalog"),

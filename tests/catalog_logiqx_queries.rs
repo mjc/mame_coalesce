@@ -109,7 +109,11 @@ impl Catalog {
 #[test]
 fn public_pages_return_complete_native_document_and_game_fields() -> TestResult {
     let catalog = Catalog::new()?;
-    let snapshot = catalog.import("full", CatalogDocumentFormat::Logiqx, FULL_DOCUMENT)?;
+    let snapshot = catalog.import(
+        "full",
+        CatalogDocumentFormat::Logiqx(mame_coalesce::logiqx::LogiqxMode::ObservedCompatible),
+        FULL_DOCUMENT,
+    )?;
 
     let first = logiqx_for_snapshot(&catalog.database, &snapshot, None, LogiqxPageLimit::new(1)?)?;
     assert_eq!(first.snapshot.snapshot_key, snapshot);
@@ -344,10 +348,14 @@ fn snapshot_cursor_limits_and_format_are_validated() -> TestResult {
     assert!(LogiqxPageLimit::new(500).is_ok());
 
     let catalog = Catalog::new()?;
-    let snapshot = catalog.import("source", CatalogDocumentFormat::Logiqx, FULL_DOCUMENT)?;
+    let snapshot = catalog.import(
+        "source",
+        CatalogDocumentFormat::Logiqx(mame_coalesce::logiqx::LogiqxMode::ObservedCompatible),
+        FULL_DOCUMENT,
+    )?;
     let other_snapshot = catalog.import(
         "other",
-        CatalogDocumentFormat::Logiqx,
+        CatalogDocumentFormat::Logiqx(mame_coalesce::logiqx::LogiqxMode::ObservedCompatible),
         "<datafile><game name='other'><description>Other</description></game></datafile>",
     )?;
     let page = logiqx_for_snapshot(&catalog.database, &snapshot, None, LogiqxPageLimit::new(1)?)?;
@@ -388,12 +396,12 @@ fn absent_header_empty_header_and_zero_game_documents_remain_distinct() -> TestR
     let catalog = Catalog::new()?;
     let absent = catalog.import(
         "absent-header",
-        CatalogDocumentFormat::Logiqx,
+        CatalogDocumentFormat::Logiqx(mame_coalesce::logiqx::LogiqxMode::ObservedCompatible),
         "<datafile/>",
     )?;
     let empty = catalog.import(
         "empty-header",
-        CatalogDocumentFormat::Logiqx,
+        CatalogDocumentFormat::Logiqx(mame_coalesce::logiqx::LogiqxMode::ObservedCompatible),
         "<datafile><header><name></name><clrmamepro/><romcenter/></header></datafile>",
     )?;
 
@@ -468,7 +476,11 @@ fn absent_header_empty_header_and_zero_game_documents_remain_distinct() -> TestR
 #[test]
 fn source_free_queries_match_after_paired_backup_restore() -> TestResult {
     let catalog = Catalog::new()?;
-    let snapshot = catalog.import("backup", CatalogDocumentFormat::Logiqx, FULL_DOCUMENT)?;
+    let snapshot = catalog.import(
+        "backup",
+        CatalogDocumentFormat::Logiqx(mame_coalesce::logiqx::LogiqxMode::ObservedCompatible),
+        FULL_DOCUMENT,
+    )?;
     let before = logiqx_for_snapshot(
         &catalog.database,
         &snapshot,
@@ -564,7 +576,11 @@ fn mutate_with_restored_guard(
 #[test]
 fn fractional_native_provenance_returns_typed_errors_without_truncation() -> TestResult {
     let catalog = Catalog::new()?;
-    let snapshot = catalog.import("fractional", CatalogDocumentFormat::Logiqx, FULL_DOCUMENT)?;
+    let snapshot = catalog.import(
+        "fractional",
+        CatalogDocumentFormat::Logiqx(mame_coalesce::logiqx::LogiqxMode::ObservedCompatible),
+        FULL_DOCUMENT,
+    )?;
     let mut connection = catalog.connection()?;
     let owner = sql_query(
         "SELECT sets.set_id FROM catalog_sets AS sets \
@@ -641,7 +657,11 @@ fn assert_fractional_columns(
 #[test]
 fn fractional_presence_bits_and_composite_position_keys_reject_check_bypass() -> TestResult {
     let catalog = Catalog::new()?;
-    let snapshot = catalog.import("check-bypass", CatalogDocumentFormat::Logiqx, FULL_DOCUMENT)?;
+    let snapshot = catalog.import(
+        "check-bypass",
+        CatalogDocumentFormat::Logiqx(mame_coalesce::logiqx::LogiqxMode::ObservedCompatible),
+        FULL_DOCUMENT,
+    )?;
     let page = logiqx_for_snapshot(&catalog.database, &snapshot, None, LogiqxPageLimit::new(1)?)?;
     let owner = page
         .games
@@ -768,7 +788,11 @@ fn fractional_native_families(owner: i64) -> Vec<(&'static str, &'static [&'stat
 #[test]
 fn missing_native_attribute_position_returns_typed_error_after_exact_guard_restore() -> TestResult {
     let catalog = Catalog::new()?;
-    let snapshot = catalog.import("corrupt", CatalogDocumentFormat::Logiqx, FULL_DOCUMENT)?;
+    let snapshot = catalog.import(
+        "corrupt",
+        CatalogDocumentFormat::Logiqx(mame_coalesce::logiqx::LogiqxMode::ObservedCompatible),
+        FULL_DOCUMENT,
+    )?;
     let mut connection = catalog.connection()?;
     let owner = sql_query(
         "SELECT sets.set_id FROM catalog_sets AS sets \

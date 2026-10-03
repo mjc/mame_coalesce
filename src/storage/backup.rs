@@ -968,7 +968,7 @@ mod tests {
             std::fs::read(fixture_root.join("fixtures/catalog/logiqx/catalog-a-v1.dat"))?;
         let logiqx_request = CatalogImportRequest {
             document_path: utf8(fixture_root.join("fixtures/catalog/logiqx/catalog-a-v1.dat"))?,
-            format: CatalogDocumentFormat::Logiqx,
+            format: CatalogDocumentFormat::Logiqx(crate::logiqx::LogiqxMode::ObservedCompatible),
             source_key: PublishingSourceKey::new("logiqx-source"),
             source_display_name: "Logiqx source".to_owned(),
             catalog_key: CatalogKey::new("logiqx-catalog"),

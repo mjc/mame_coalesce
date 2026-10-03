@@ -21,7 +21,9 @@ fn import_logiqx(
         database,
         &CatalogImportRequest {
             document_path,
-            format: CatalogDocumentFormat::Logiqx,
+            format: CatalogDocumentFormat::Logiqx(
+                mame_coalesce::logiqx::LogiqxMode::ObservedCompatible,
+            ),
             source_key: PublishingSourceKey::new("repeated-owner-history"),
             source_display_name: "Repeated owner history".to_owned(),
             catalog_key: CatalogKey::new("repeated-owner-history"),

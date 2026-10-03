@@ -1,14 +1,18 @@
 #![allow(clippy::expect_used, clippy::panic)]
 
 use std::fmt::Write as _;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
-use camino::Utf8PathBuf;
-use mame_coalesce::{
+use diesel::{Connection, connection::InstrumentationEvent};
+
+use crate::{
     app::{self, CatalogDocumentFormat, CatalogImportRequest, CatalogImportStatus},
     database::Database,
     domain::{CatalogKey, CatalogScope, CatalogSnapshotDiff, PublishingSourceKey, SnapshotKey},
     no_intro_db_xml::NoIntroDatabaseMode,
 };
+use camino::Utf8PathBuf;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
@@ -21,16 +25,25 @@ struct Catalog {
 impl Catalog {
     fn new() -> TestResult<Self> {
         let directory = tempfile::tempdir()?;
-        let path = Utf8PathBuf::from_path_buf(directory.path().join("catalog.sqlite"))
-            .map_err(|_| "non-UTF-8 database path")?;
         Ok(Self {
-            database: Database::open(&path)?,
+            database: Database::in_memory()?,
             directory,
             next_document: 0,
         })
     }
 
     fn import(&mut self, xml: &str) -> TestResult<SnapshotKey> {
+        self.import_with_format(
+            xml,
+            CatalogDocumentFormat::NoIntroDatabase(NoIntroDatabaseMode::ObservedCompatible),
+        )
+    }
+
+    fn import_with_format(
+        &mut self,
+        xml: &str,
+        format: CatalogDocumentFormat,
+    ) -> TestResult<SnapshotKey> {
         let path = Utf8PathBuf::from_path_buf(
             self.directory
                 .path()
@@ -43,9 +56,7 @@ impl Catalog {
             &self.database,
             &CatalogImportRequest {
                 document_path: path,
-                format: CatalogDocumentFormat::NoIntroDatabase(
-                    NoIntroDatabaseMode::ObservedCompatible,
-                ),
+                format,
                 source_key: PublishingSourceKey::new("export-consumers"),
                 source_display_name: "Export publisher".into(),
                 catalog_key: CatalogKey::new("export-consumers"),
@@ -69,6 +80,42 @@ impl Catalog {
         after: &SnapshotKey,
     ) -> TestResult<CatalogSnapshotDiff> {
         Ok(app::diff_catalog_snapshots(&self.database, before, after)?)
+    }
+
+    fn root_endpoints(
+        &self,
+        snapshot: &SnapshotKey,
+    ) -> TestResult<Vec<crate::domain::RelationshipEndpoint>> {
+        use crate::domain::{
+            CatalogRecordKind, CatalogRecordRef, CatalogSetId, RelationshipEndpoint,
+        };
+        use diesel::{
+            QueryableByName, RunQueryDsl, sql_query,
+            sql_types::{BigInt, Text},
+        };
+
+        #[derive(QueryableByName)]
+        struct Owner {
+            #[diesel(sql_type = BigInt)]
+            set_id: i64,
+            #[diesel(sql_type = Text)]
+            set_name: String,
+        }
+
+        let mut connection = self.database.pool().get()?;
+        let owners = sql_query("SELECT sets.set_id, sets.set_name FROM catalog_set_groups AS groups JOIN catalog_sets AS sets USING(set_group_id) WHERE groups.snapshot_key=? AND groups.kind='root' ORDER BY sets.list_order")
+            .bind::<Text, _>(snapshot.as_str()).load::<Owner>(&mut connection)?;
+        Ok(owners
+            .into_iter()
+            .map(|owner| {
+                RelationshipEndpoint::CatalogRecord(CatalogRecordRef::new_owned(
+                    snapshot.clone(),
+                    CatalogRecordKind::Set,
+                    owner.set_name,
+                    CatalogSetId::from_database(owner.set_id),
+                ))
+            })
+            .collect())
     }
 }
 
@@ -118,7 +165,7 @@ where
         assert!(record.requirement_changes.is_empty(), "{name}");
         assert_eq!(
             record.correspondence,
-            mame_coalesce::domain::SnapshotRecordCorrespondence::UniqueName,
+            crate::domain::SnapshotRecordCorrespondence::UniqueName,
             "{name}"
         );
     }
@@ -334,7 +381,7 @@ impl NativeOwner {
     }
 }
 
-fn owner_games(groups: &[(NativeOwner, &[&str])], value: Option<&str>) -> String {
+fn owner_games(groups: &[(NativeOwner, &[&str])], comparison: &str, value: Option<&str>) -> String {
     let mut games = String::new();
     for (owner, fields) in groups {
         for field in *fields {
@@ -343,7 +390,7 @@ fn owner_games(groups: &[(NativeOwner, &[&str])], value: Option<&str>) -> String
                 .unwrap_or_default();
             write!(
                 games,
-                "<game name='field-{}-{field}'>{}</game>",
+                "<game name='field-{comparison}-{}-{field}'>{}</game>",
                 owner.label(),
                 owner.xml(&attributes)
             )
@@ -354,12 +401,14 @@ fn owner_games(groups: &[(NativeOwner, &[&str])], value: Option<&str>) -> String
 }
 
 fn assert_field_records(diff: &CatalogSnapshotDiff, groups: &[(NativeOwner, &[&str])]) {
-    let mut expected = groups
-        .iter()
-        .flat_map(|(owner, fields)| {
-            fields
-                .iter()
-                .map(|field| format!("field-{}-{field}", owner.label()))
+    let mut expected = ["value", "presence"]
+        .into_iter()
+        .flat_map(|comparison| {
+            groups.iter().flat_map(move |(owner, fields)| {
+                fields
+                    .iter()
+                    .map(move |field| format!("field-{comparison}-{}-{field}", owner.label()))
+            })
         })
         .collect::<Vec<_>>();
     let mut actual = diff
@@ -432,7 +481,7 @@ fn repeated_export_versions_are_not_arbitrarily_reduced_to_one_value() -> TestRe
             .find(|explanation| {
                 matches!(
                     &explanation.claim.subject,
-                    mame_coalesce::domain::RelationshipEndpoint::NoIntroArchive {
+                    crate::domain::RelationshipEndpoint::NoIntroArchive {
                         snapshot: owner, ..
                     } if *owner == snapshot
                 )
@@ -483,51 +532,44 @@ fn every_native_owner_field_is_visible_to_history() -> TestResult {
         "all owner-qualified native field witnesses remain represented"
     );
     let mut catalog = Catalog::new()?;
+    // Separate names keep both comparisons independent within one snapshot pair.
     let before = format!(
-        "<datafile>{}</datafile>",
-        owner_games(&groups, Some("before"))
+        "<datafile>{}{}</datafile>",
+        owner_games(&groups, "value", Some("before")),
+        owner_games(&groups, "presence", None),
     );
     let after = format!(
-        "<datafile>{}</datafile>",
-        owner_games(&groups, Some("after"))
+        "<datafile>{}{}</datafile>",
+        owner_games(&groups, "value", Some("after")),
+        owner_games(&groups, "presence", Some("")),
     );
-    let absent = format!("<datafile>{}</datafile>", owner_games(&groups, None));
-    let empty = format!("<datafile>{}</datafile>", owner_games(&groups, Some("")));
     let before_snapshot = catalog.import(&before)?;
     let after_snapshot = catalog.import(&after)?;
-    let absent_snapshot = catalog.import(&absent)?;
-    let empty_snapshot = catalog.import(&empty)?;
     assert_eq!(
-        catalog.next_document, 4,
+        catalog.next_document, 2,
         "one import per comparison document"
     );
 
-    let value_diff = catalog.diff_snapshots(&before_snapshot, &after_snapshot)?;
-    let empty_diff = catalog.diff_snapshots(&absent_snapshot, &empty_snapshot)?;
-    for (diff, metadata_message) in [
-        (&value_diff, "missing native field"),
-        (&empty_diff, "empty/present collapsed"),
-    ] {
-        assert_field_records(diff, &groups);
-        assert!(!diff.document_metadata_changed);
-        for record in &diff.records {
-            assert_eq!(
-                record.correspondence,
-                mame_coalesce::domain::SnapshotRecordCorrespondence::UniqueName,
-                "field game must have one-to-one history correspondence: {}",
-                record.set_name
-            );
-            assert!(
-                record.metadata_changed,
-                "{metadata_message} for {}",
-                record.set_name
-            );
-            assert!(
-                record.requirement_changes.is_empty(),
-                "unknown-scope declaration became requirement: {}",
-                record.set_name
-            );
-        }
+    let diff = catalog.diff_snapshots(&before_snapshot, &after_snapshot)?;
+    assert_field_records(&diff, &groups);
+    assert!(!diff.document_metadata_changed);
+    for record in &diff.records {
+        assert_eq!(
+            record.correspondence,
+            crate::domain::SnapshotRecordCorrespondence::UniqueName,
+            "field game must have one-to-one history correspondence: {}",
+            record.set_name
+        );
+        assert!(
+            record.metadata_changed,
+            "native value or declaration presence change missing for {}",
+            record.set_name
+        );
+        assert!(
+            record.requirement_changes.is_empty(),
+            "unknown-scope declaration became requirement: {}",
+            record.set_name
+        );
     }
     Ok(())
 }
@@ -790,9 +832,256 @@ fn repeated_game_names_compare_fact_multisets_not_generated_ids_or_list_position
     assert_eq!(diff.records.len(), 1);
     assert_eq!(
         diff.records[0].correspondence,
-        mame_coalesce::domain::SnapshotRecordCorrespondence::ExactFacts
+        crate::domain::SnapshotRecordCorrespondence::ExactFacts
     );
     assert!(!diff.records[0].metadata_changed);
     assert!(diff.records[0].requirement_changes.is_empty());
+    Ok(())
+}
+
+#[test]
+fn export_history_does_not_expand_empty_root_relationships() -> TestResult {
+    let mut catalog = Catalog::new()?;
+    let before = catalog.import("<datafile><header><version>before</version></header><game name='same'><archive name='before'/></game></datafile>")?;
+    let after = catalog.import("<datafile><header><version>after</version></header><game name='same'><archive name='after'/></game></datafile>")?;
+    let samples = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&samples);
+    let mut active = None;
+    {
+        let mut connection = catalog.database.pool().get()?;
+        connection.set_instrumentation(move |event: InstrumentationEvent<'_>| match event {
+            InstrumentationEvent::StartQuery { query, .. } => {
+                active = Some((query.to_string(), Instant::now()));
+            }
+            InstrumentationEvent::FinishQuery { .. } => {
+                if let Some((query, started)) = active.take() {
+                    captured
+                        .lock()
+                        .expect("query samples mutex")
+                        .push((query, started.elapsed()));
+                }
+            }
+            _ => {}
+        });
+    }
+    let diff = catalog.diff_snapshots(&before, &after)?;
+    assert!(diff.document_metadata_changed);
+    let [record] = diff.records.as_slice() else {
+        panic!("one native game history record expected");
+    };
+    assert!(record.metadata_changed);
+    assert!(record.requirement_changes.is_empty());
+
+    let mut samples = samples.lock().expect("query samples mutex");
+    let elapsed: Duration = samples.iter().map(|(_, elapsed)| *elapsed).sum();
+    eprintln!("export history: {} queries in {elapsed:?}", samples.len());
+    samples.sort_by_key(|(_, elapsed)| std::cmp::Reverse(*elapsed));
+    for (query, elapsed) in samples.iter().take(8) {
+        eprintln!(
+            "{elapsed:?}: {}",
+            query.chars().take(140).collect::<String>()
+        );
+    }
+    let explanation_queries = samples
+        .iter()
+        .filter(|(query, _)| query.contains("scoped_assertions AS MATERIALIZED"))
+        .count();
+    drop(samples);
+    assert_eq!(
+        explanation_queries, 0,
+        "proven-empty root relationships must not expand the full explanation queries"
+    );
+    Ok(())
+}
+
+#[test]
+fn export_history_keeps_owned_decisions_supports_and_reviews() -> TestResult {
+    use crate::domain::{
+        RelationshipClaim, RelationshipEndpoint, RelationshipEvidence, RelationshipOrigin,
+        RelationshipReview, RelationshipReviewDecision, RelationshipRule, RelationshipType,
+    };
+    let mut catalog = Catalog::new()?;
+    let xml = "<datafile><game name='same'><archive number='1' clone='unresolved'/></game><game name='same'><archive number='2'/></game></datafile>";
+    let before = catalog.import(xml)?;
+    let after = catalog.import(&xml.replace("number='2'", "number='3'"))?;
+    let owners = catalog.root_endpoints(&before)?;
+    let [first, second] = owners.as_slice() else {
+        panic!("two actual duplicate-name owners expected");
+    };
+    let base = RelationshipClaim {
+        relation_type: RelationshipType::CatalogCorrection,
+        subject: first.clone(),
+        target: second.clone(),
+        origin: RelationshipOrigin::UserConclusion,
+        evidence: RelationshipEvidence::Rationale {
+            reason: "actual duplicate owner witness".into(),
+        },
+    };
+    let manual = app::record_relationship(&catalog.database, &base)?;
+    let reverse = app::record_relationship(
+        &catalog.database,
+        &RelationshipClaim {
+            subject: base.target.clone(),
+            target: base.subject.clone(),
+            ..base.clone()
+        },
+    )?;
+    let supports = vec![reverse.clone(), manual.clone()];
+    let inferred = app::record_relationship(
+        &catalog.database,
+        &RelationshipClaim {
+            origin: RelationshipOrigin::DerivedCandidate {
+                rule: RelationshipRule::new("history-witness", "v1", "Owned history candidate")?,
+                supporting_assertions: supports.clone(),
+            },
+            ..base
+        },
+    )?;
+    app::review_relationship(
+        &catalog.database,
+        &manual,
+        &RelationshipReview {
+            decision: RelationshipReviewDecision::Accepted,
+            note: "accepted owner-specific correction".into(),
+            superseded_by: None,
+        },
+    )?;
+    let diff = catalog.diff_snapshots(&before, &after)?;
+    let [record] = diff.records.as_slice() else {
+        panic!("one duplicate-name history group expected")
+    };
+    assert_eq!(record.relationship_evidence.len(), 3);
+    let accepted = record
+        .relationship_evidence
+        .iter()
+        .find(|row| row.assertion_key == manual)
+        .expect("manual correction");
+    assert_eq!(accepted.review_history.len(), 1);
+    assert_eq!(
+        accepted.review_history[0].review.decision,
+        RelationshipReviewDecision::Accepted
+    );
+    let candidate = record
+        .relationship_evidence
+        .iter()
+        .find(|row| row.assertion_key == inferred)
+        .expect("inferred candidate");
+    assert!(
+        matches!(&candidate.claim.origin, RelationshipOrigin::DerivedCandidate { supporting_assertions, .. } if *supporting_assertions == supports)
+    );
+    assert!(
+        record
+            .relationship_evidence
+            .iter()
+            .any(|row| row.assertion_key == reverse)
+    );
+    let all = app::explain_relationships(&catalog.database)?;
+    assert!(all.iter().any(|row| matches!(
+        row.claim.subject,
+        RelationshipEndpoint::NoIntroArchive { .. }
+    )));
+    Ok(())
+}
+
+#[test]
+fn export_history_keeps_reported_relationships_across_parser_formats() -> TestResult {
+    let mut catalog = Catalog::new()?;
+    let export =
+        catalog.import("<datafile><game name='same'><archive number='1'/></game></datafile>")?;
+    let xml = "<datafile><game name='same' cloneof='base'><description>Child</description></game><game name='base'><description>Base</description></game></datafile>";
+    for mode in [
+        crate::logiqx::LogiqxMode::ObservedCompatible,
+        crate::logiqx::LogiqxMode::StrictDtd15,
+    ] {
+        let reported = catalog.import_with_format(xml, CatalogDocumentFormat::Logiqx(mode))?;
+        for (before, after) in [(&export, &reported), (&reported, &export)] {
+            let diff = catalog.diff_snapshots(before, after)?;
+            let record = diff
+                .records
+                .iter()
+                .find(|row| row.set_name == "same")
+                .expect("shared root name");
+            assert!(record.relationship_evidence.iter().any(|row| matches!(&row.claim.origin,
+                crate::domain::RelationshipOrigin::SourceAssertion { snapshot, .. } if *snapshot == reported)));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn export_history_keeps_incoming_actual_and_unresolved_root_decisions() -> TestResult {
+    use crate::domain::{
+        CatalogRecordKind, CatalogRecordRef, RelationshipClaim, RelationshipEndpoint,
+        RelationshipEvidence, RelationshipOrigin, RelationshipType,
+    };
+
+    let mut catalog = Catalog::new()?;
+    let before =
+        catalog.import("<datafile><game name='same'><archive number='1'/></game></datafile>")?;
+    let after =
+        catalog.import("<datafile><game name='same'><archive number='2'/></game></datafile>")?;
+    let outside = catalog.import("<datafile><game name='outside'/></datafile>")?;
+    let owners = catalog.root_endpoints(&before)?;
+    let [actual] = owners.as_slice() else {
+        panic!("one actual root owner expected");
+    };
+    let unresolved = RelationshipEndpoint::CatalogRecord(CatalogRecordRef::new(
+        before.clone(),
+        CatalogRecordKind::Set,
+        "same",
+    ));
+    let subject = RelationshipEndpoint::CatalogRecord(CatalogRecordRef::new(
+        outside,
+        CatalogRecordKind::Set,
+        "outside",
+    ));
+    let mut incoming = Vec::new();
+    for target in [actual.clone(), unresolved] {
+        incoming.push(app::record_relationship(
+            &catalog.database,
+            &RelationshipClaim {
+                relation_type: RelationshipType::CatalogCorrection,
+                subject: subject.clone(),
+                target,
+                origin: RelationshipOrigin::UserConclusion,
+                evidence: RelationshipEvidence::Rationale {
+                    reason: "incoming root decision".into(),
+                },
+            },
+        )?);
+    }
+    for (previous, current) in [(&before, &after), (&after, &before)] {
+        let diff = catalog.diff_snapshots(previous, current)?;
+        let [record] = diff.records.as_slice() else {
+            panic!("one root history record expected");
+        };
+        assert_eq!(record.relationship_evidence.len(), incoming.len());
+        for key in &incoming {
+            assert!(
+                record
+                    .relationship_evidence
+                    .iter()
+                    .any(|row| &row.assertion_key == key)
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn unknown_history_parser_format_is_not_an_empty_relationship_scope() -> TestResult {
+    use diesel::{RunQueryDsl, sql_query, sql_types::Text};
+
+    let mut catalog = Catalog::new()?;
+    let known = catalog.import("<datafile/>")?;
+    let unknown = SnapshotKey::from_persisted("unknown-history-edition".into());
+    let mut connection = catalog.database.pool().get()?;
+    sql_query("INSERT INTO parser_interpretations(interpretation_key,format) VALUES('unknown-history-interpretation','unsupported-history-format')").execute(&mut connection)?;
+    sql_query("INSERT INTO catalog_snapshots(snapshot_key,catalog_key,document_key,interpretation_key,acquisition_key,coverage_id) SELECT ?,catalog_key,document_key,'unknown-history-interpretation',acquisition_key,coverage_id FROM catalog_snapshots WHERE snapshot_key=?")
+        .bind::<Text, _>(unknown.as_str()).bind::<Text, _>(known.as_str()).execute(&mut connection)?;
+    drop(connection);
+    assert!(
+        matches!(catalog.diff_snapshots(&known, &unknown), Err(error) if error.to_string().contains("unsupported-history-format"))
+    );
     Ok(())
 }

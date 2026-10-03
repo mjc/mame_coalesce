@@ -492,7 +492,9 @@ fn shared_content_pages_do_not_attach_software_payloads_to_root_roms() -> TestRe
         &imported.database,
         &CatalogImportRequest {
             document_path: root_document,
-            format: CatalogDocumentFormat::Logiqx,
+            format: CatalogDocumentFormat::Logiqx(
+                mame_coalesce::logiqx::LogiqxMode::ObservedCompatible,
+            ),
             source_key: PublishingSourceKey::new("root-query"),
             source_display_name: "Root query".to_owned(),
             catalog_key: CatalogKey::new("root-query"),

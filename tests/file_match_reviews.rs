@@ -271,7 +271,7 @@ fn imported_conflict() -> Result<ImportedCatalogs, Box<dyn Error>> {
         &database,
         "review-candidate-source",
         "review-candidate-catalog",
-        CatalogDocumentFormat::Logiqx,
+        CatalogDocumentFormat::Logiqx(mame_coalesce::logiqx::LogiqxMode::ObservedCompatible),
         "candidate.dat",
         r#"<datafile><header><name>Review candidate</name></header>
           <game name="candidate"><rom name="candidate.bin" size="16"
@@ -325,7 +325,7 @@ fn imported_merge_conflict() -> Result<MergeFixture, Box<dyn Error>> {
         &database,
         "review-merge-sha1-source",
         "review-merge-sha1-catalog",
-        CatalogDocumentFormat::Logiqx,
+        CatalogDocumentFormat::Logiqx(mame_coalesce::logiqx::LogiqxMode::ObservedCompatible),
         "candidate-sha1.xml",
         r#"<datafile><header><name>SHA-1 candidate</name></header>
           <game name="candidate-sha1"><rom name="a.bin" size="16"

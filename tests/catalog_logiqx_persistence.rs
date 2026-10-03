@@ -46,7 +46,9 @@ fn logiqx_rom_disk_and_sample_each_have_a_native_source_occurrence()
         &database,
         &CatalogImportRequest {
             document_path,
-            format: CatalogDocumentFormat::Logiqx,
+            format: CatalogDocumentFormat::Logiqx(
+                mame_coalesce::logiqx::LogiqxMode::ObservedCompatible,
+            ),
             source_key: PublishingSourceKey::new("all-media"),
             source_display_name: "All media".into(),
             catalog_key: CatalogKey::new("all-media"),

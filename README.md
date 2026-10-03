@@ -115,6 +115,26 @@ file UUID. Logical disk hashes never identify whole-container files. The default
 `logiqx-declared-text-compat-v2` interpretation accepts sparse compatibility
 documents; it is not strict DTD validation.
 
+Use catalog import's `--format logiqx-dtd15` to select the pinned Logiqx DTD
+1.5 grammar instead. The Rust API uses
+`CatalogDocumentFormat::Logiqx(LogiqxMode::StrictDtd15)`; ordinary DAT workflows
+and `--format logiqx` retain `ObservedCompatible`. Strict and compatible
+interpretations create distinct immutable editions over the same external
+original and use the same native catalog tables and shared file registry.
+Strict parsing checks required fields, child order and multiplicity, declared
+attributes, enumerations, and EMPTY/PCDATA content rules during the existing
+streaming pass. Required CDATA may be empty or numerically uninterpretable;
+it is not silently converted to usable file evidence. Enumeration space
+normalization retains original QName positions and explicit/default presence.
+The fixed grammar does not fetch DTDs or expand external entities.
+With an external DOCTYPE, `standalone="yes"` is accepted only when omitted
+defaults, enumeration normalization, or container whitespace do not depend on
+the external declaration. DOCTYPE names must match `datafile`; declarations
+inside catalog elements are rejected rather than discarded.
+Strict mode accepts a name-only DOCTYPE or a syntactically valid SYSTEM/PUBLIC
+external reference. Internal subsets are unsupported and rejected explicitly;
+document-supplied declarations cannot override the configured pinned grammar.
+
 ClrMamePro ROM declarations likewise retain checksum case, leading-zero size
 text, quoted/empty values, both CRC aliases and independent dump flags in native
 columns. Conflicting declarations remain queryable but cannot assign a shared
@@ -694,6 +714,12 @@ and catalog regressions cover these behaviors:
 - `catalog_history_ownership` compares complete same-name owner fact multisets,
   preserves unchanged permutations and reports ambiguous changes without
   inventing continuity between entries.
+- `snapshot_history::no_intro_database_consumers` checks every observed export
+  owner field through value and absent/present-empty changes using isolated
+  in-memory catalogs with the production DDL and external source store. Its
+  relationship regressions preserve duplicate-owner decisions, inference
+  supports, reviews, incoming links and mixed parser editions while proving
+  empty root-relationship queries avoid the full explanation plan.
 - `catalog_extension_ownership` checks exact external-document recovery of
   unknown game/ROM fields even when both game and ROM names repeat.
 - Coverage unit tests check exact scope reuse, root/software qualification,
@@ -701,6 +727,15 @@ and catalog regressions cover these behaviors:
   coverage rows.
 - `logiqx_native_model` checks parser defaults and repeated ROM, disk, sample,
   release and BIOS-set fields, plus headerless native imports and snapshot diffs.
+- `logiqx_dtd15_contract` independently checks the pinned grammar, all 44
+  attributes and 15 enumerations, lexical content and normalization boundaries,
+  decoded QName coordinates, declaration/BOM source ranges, and separation
+  from permissive compatibility.
+- `logiqx_dtd15_import` checks interpretation identity, idempotence and shared
+  UUIDs, actual SQL-before-late-error rollback, normalized native query values
+  and original positions without promoting invalid size declarations. Its
+  complete-field witness queries every DTD attribute and text field from
+  native storage.
 - `native_logiqx_specification` checks native header options and repeated game
   children, explicit/default presence, empty fields, ordering and owner guards.
 - `catalog_logiqx_persistence` checks separate ROM/disk/sample occurrences,

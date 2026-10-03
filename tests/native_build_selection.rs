@@ -57,7 +57,9 @@ impl Fixture {
             &self.database,
             &CatalogImportRequest {
                 document_path: document_path.clone(),
-                format: CatalogDocumentFormat::Logiqx,
+                format: CatalogDocumentFormat::Logiqx(
+                    mame_coalesce::logiqx::LogiqxMode::ObservedCompatible,
+                ),
                 source_key: PublishingSourceKey::new(format!("publisher-{catalog_key}")),
                 source_display_name: "Test publisher".to_owned(),
                 catalog_key: CatalogKey::new(catalog_key),

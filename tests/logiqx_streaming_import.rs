@@ -37,7 +37,9 @@ impl Fixture {
             &self.database,
             &CatalogImportRequest {
                 document_path,
-                format: CatalogDocumentFormat::Logiqx,
+                format: CatalogDocumentFormat::Logiqx(
+                    mame_coalesce::logiqx::LogiqxMode::ObservedCompatible,
+                ),
                 source_key: PublishingSourceKey::new("streaming-logiqx-source"),
                 source_display_name: "Streaming Logiqx source".into(),
                 catalog_key: CatalogKey::new("streaming-logiqx-catalog"),

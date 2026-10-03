@@ -450,7 +450,7 @@ fn import_test_catalog(
         .map_err(|_| "temporary catalog path is not UTF-8")?;
     let request = CatalogImportRequest {
         document_path,
-        format: CatalogDocumentFormat::Logiqx,
+        format: CatalogDocumentFormat::Logiqx(crate::logiqx::LogiqxMode::ObservedCompatible),
         source_key: PublishingSourceKey::new("repository-test-source"),
         source_display_name: "Repository test source".to_owned(),
         catalog_key: CatalogKey::new("repository-test-catalog"),

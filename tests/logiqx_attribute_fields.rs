@@ -43,7 +43,9 @@ impl Catalog {
         std::fs::write(&document_path, bytes)?;
         Ok(CatalogImportRequest {
             document_path,
-            format: CatalogDocumentFormat::Logiqx,
+            format: CatalogDocumentFormat::Logiqx(
+                mame_coalesce::logiqx::LogiqxMode::ObservedCompatible,
+            ),
             source_key: PublishingSourceKey::new("logiqx-all-attributes"),
             source_display_name: "Logiqx fields".into(),
             catalog_key: CatalogKey::new("logiqx-all-attributes"),

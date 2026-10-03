@@ -40,7 +40,7 @@ fn logiqx_and_cmp_history_versions_are_native_header_facts() -> TestResult {
     for (key, format, text, version) in [
         (
             "logiqx-version",
-            CatalogDocumentFormat::Logiqx,
+            CatalogDocumentFormat::Logiqx(mame_coalesce::logiqx::LogiqxMode::ObservedCompatible),
             "<datafile><header><name>Native</name><version> logiqx-v </version></header><game name='same'/></datafile>",
             " logiqx-v ",
         ),

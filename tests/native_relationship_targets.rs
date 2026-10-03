@@ -52,7 +52,7 @@ impl Catalog {
     }
 
     fn import(&self, key: &str) -> TestResult<SnapshotKey> {
-        self.import_format(key, app::CatalogDocumentFormat::Logiqx,
+        self.import_format(key, app::CatalogDocumentFormat::Logiqx(mame_coalesce::logiqx::LogiqxMode::ObservedCompatible),
             "<datafile><game name='same'><rom name='same.bin' size='1' sha1='1111111111111111111111111111111111111111'/></game><game name='same'/></datafile>")
     }
 

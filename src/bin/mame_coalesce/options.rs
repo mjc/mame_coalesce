@@ -185,6 +185,8 @@ pub struct CatalogImportArgs {
 pub enum CatalogDocumentFormatArg {
     #[value(name = "logiqx")]
     Logiqx,
+    #[value(name = "logiqx-dtd15")]
+    LogiqxDtd15,
     #[value(name = "clrmamepro-dat")]
     ClrMamePro,
     #[value(name = "no-intro-pc-xml")]
@@ -210,7 +212,12 @@ pub enum CatalogDocumentFormatArg {
 impl From<CatalogDocumentFormatArg> for mame_coalesce::app::CatalogDocumentFormat {
     fn from(format: CatalogDocumentFormatArg) -> Self {
         match format {
-            CatalogDocumentFormatArg::Logiqx => Self::Logiqx,
+            CatalogDocumentFormatArg::Logiqx => {
+                Self::Logiqx(mame_coalesce::logiqx::LogiqxMode::ObservedCompatible)
+            }
+            CatalogDocumentFormatArg::LogiqxDtd15 => {
+                Self::Logiqx(mame_coalesce::logiqx::LogiqxMode::StrictDtd15)
+            }
             CatalogDocumentFormatArg::ClrMamePro => Self::ClrMamePro,
             CatalogDocumentFormatArg::NoIntroPcXml => Self::NoIntroPcXml,
             CatalogDocumentFormatArg::MachineXml => Self::MameListXml,

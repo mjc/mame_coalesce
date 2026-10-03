@@ -1,0 +1,15 @@
+pub const ALL_DECLARED_FIELDS: &str = concat!(
+    "<datafile build='' debug='yes'><header>",
+    "<name/><description/><category/><version/><date/><author/>",
+    "<email/><homepage/><url/><comment/>",
+    "<clrmamepro header='' forcemerging='none' forcenodump='ignore' forcepacking='unzip'/>",
+    "<romcenter plugin='' rommode='merged' biosmode='unmerged' samplemode='unmerged' ",
+    "lockrommode='yes' lockbiosmode='yes' locksamplemode='yes'/></header>",
+    "<game name='' sourcefile='' isbios='yes' cloneof='' romof='' sampleof='' board='' rebuildto=''>",
+    "<comment/><description/><year/><manufacturer/>",
+    "<release name='' region='' language='' date='' default='yes'/>",
+    "<biosset name='' description='' default='yes'/>",
+    "<rom name='' size='' crc='' sha1='' md5='' merge='' status='verified' date=''/>",
+    "<disk name='' sha1='' md5='' merge='' status='baddump'/>",
+    "<sample name=''/><archive name=''/></game></datafile>",
+);

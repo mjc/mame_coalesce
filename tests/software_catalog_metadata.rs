@@ -468,7 +468,8 @@ fn root_catalogs_cannot_masquerade_as_software_metadata() -> TestResult {
         "<datafile><game name=\"root\"><rom name=\"file\" size=\"1\"/></game></datafile>",
     )?;
     let mut root_request = request(path);
-    root_request.format = CatalogDocumentFormat::Logiqx;
+    root_request.format =
+        CatalogDocumentFormat::Logiqx(mame_coalesce::logiqx::LogiqxMode::ObservedCompatible);
     let report = app::import_catalog(&imported.database, &root_request)?;
     assert_eq!(report.status, app::CatalogImportStatus::Succeeded);
     let snapshot = report.snapshot_key.ok_or("root snapshot")?;

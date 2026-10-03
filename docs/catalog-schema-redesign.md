@@ -920,10 +920,21 @@ settings. Current accepted file-name/SHA-1 metadata, ROM serial fields and
 device references are outside this pinned DTD and belong to an explicitly named
 compatible dialect if retained as supported input. The implementation now has
 native releases, BIOS sets, disk/sample/archive and option blocks, with
-explicit-versus-default presence. Complete strict grammar and field-witness
-coverage remain open; these tables alone do not establish DTD conformance.
+explicit-versus-default presence. The opt-in `logiqx-dtd-1.5-v1` interpretation
+checks the pinned content grammar in the existing completed-game streaming
+pass. It has its own interpretation/edition identity but reuses the same native
+owners, source store and file registry. The default compatibility interpretation
+continues accepting sparse and named producer fields. Full real-corpus
+field/query acceptance remains distinct from the grammar witnesses; these
+tables alone do not establish every producer dialect's conformance.
 
-The default interpretation is named `logiqx-declared-text-compat-v1`. ROM size,
+The strict interpretation validates supported name-only and SYSTEM/PUBLIC
+DOCTYPE syntax without resolving external identifiers. Internal subsets are
+unsupported and rejected; this is the pinned format grammar, not an arbitrary
+document-supplied DTD interpreter. External `standalone="yes"` cannot depend
+on omitted defaults, changed enumeration normalization or container whitespace.
+
+The default interpretation is named `logiqx-declared-text-compat-v2`. ROM size,
 CRC, MD5 and SHA-1, and disk MD5/SHA-1 retain their declared text on the native
 claim. Missing, empty and uninterpretable values remain distinct. Numeric size
 is a virtual projection only for ASCII decimal values within SQLite's signed

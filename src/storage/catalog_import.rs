@@ -326,7 +326,11 @@ impl SnapshotAsset {
 }
 
 fn interpretation(request: &CatalogImportRequest) -> ParserInterpretationKey {
-    ParserInterpretationKey::for_format(request.format.as_str(), &request.scope)
+    ParserInterpretationKey::for_format_with_rules(
+        request.format.as_str(),
+        request.format.rules_version(),
+        &request.scope,
+    )
 }
 
 impl SnapshotData {
@@ -678,7 +682,7 @@ pub fn import(pool: &Pool, request: &CatalogImportRequest) -> crate::Result<Cata
     ensure_source(pool, request)?;
     let documents = DocumentStore::from_pool(pool.clone())?;
     let retained = match request.format {
-        CatalogDocumentFormat::Logiqx => {
+        CatalogDocumentFormat::Logiqx(_) => {
             documents.retain_path(request.source_key.clone(), &request.document_path)?
         }
         CatalogDocumentFormat::MameListXml => {
@@ -700,13 +704,14 @@ pub fn import(pool: &Pool, request: &CatalogImportRequest) -> crate::Result<Cata
     };
     let bytes = documents.load(&retained.document_key)?;
     let parsed = match request.format {
-        CatalogDocumentFormat::Logiqx => {
+        CatalogDocumentFormat::Logiqx(mode) => {
             return import_logiqx(
                 pool,
                 request,
                 retained.document_key,
                 &retained.acquisition_key.to_string(),
                 &bytes,
+                mode,
             );
         }
         CatalogDocumentFormat::MameListXml => {
@@ -880,13 +885,15 @@ fn import_logiqx(
     document_key: DocumentKey,
     acquisition_key: &str,
     bytes: &[u8],
+    mode: crate::logiqx::LogiqxMode,
 ) -> crate::Result<CatalogImportReport> {
     let interpretation = interpretation(request);
     let mut conn = pool.get()?;
     let result = conn.immediate_transaction::<_, StreamingImportError, _>(|conn| {
         ensure_identities(conn, request, &interpretation).map_err(StreamingImportError::Storage)?;
-        let validated = crate::logiqx::read_with::<_, StreamingImportError>(
+        let validated = crate::logiqx::read_with_mode::<_, StreamingImportError>(
             bytes,
+            mode,
             |_| {
                 start_streaming_import(
                     conn,
@@ -1418,9 +1425,7 @@ fn ensure_identities(
     .bind::<Text, _>(interpretation.as_str())
     .bind::<Text, _>(request.format.as_str())
     .bind::<Nullable<Text>, _>(Some(env!("CARGO_PKG_VERSION").to_owned()))
-    .bind::<Text, _>(ParserInterpretationKey::rules_version(
-        request.format.as_str(),
-    ))
+    .bind::<Text, _>(request.format.rules_version())
     .execute(conn)?;
     Ok(())
 }

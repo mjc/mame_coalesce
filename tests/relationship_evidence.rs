@@ -468,7 +468,9 @@ fn source_evidence_stays_with_native_owners_and_cannot_acquire_decision_copies()
         &catalog.database,
         &app::CatalogImportRequest {
             document_path: document,
-            format: app::CatalogDocumentFormat::Logiqx,
+            format: app::CatalogDocumentFormat::Logiqx(
+                mame_coalesce::logiqx::LogiqxMode::ObservedCompatible,
+            ),
             source_key: mame_coalesce::domain::PublishingSourceKey::new("fixture"),
             source_display_name: "Fixture".into(),
             catalog_key: mame_coalesce::domain::CatalogKey::new("fixture"),

@@ -101,7 +101,9 @@ fn import(
         database,
         &CatalogImportRequest {
             document_path: Utf8PathBuf::from_path_buf(path).map_err(|_| "non-UTF-8 path")?,
-            format: CatalogDocumentFormat::Logiqx,
+            format: CatalogDocumentFormat::Logiqx(
+                mame_coalesce::logiqx::LogiqxMode::ObservedCompatible,
+            ),
             source_key: PublishingSourceKey::new("declared-fields-source"),
             source_display_name: "Declared fields".into(),
             catalog_key: CatalogKey::new("declared-fields"),

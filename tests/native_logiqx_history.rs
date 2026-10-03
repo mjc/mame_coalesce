@@ -43,7 +43,9 @@ fn import(
         database,
         &CatalogImportRequest {
             document_path,
-            format: CatalogDocumentFormat::Logiqx,
+            format: CatalogDocumentFormat::Logiqx(
+                mame_coalesce::logiqx::LogiqxMode::ObservedCompatible,
+            ),
             source_key: PublishingSourceKey::new("native-logiqx-history"),
             source_display_name: "Native Logiqx history".to_owned(),
             catalog_key: CatalogKey::new("native-logiqx-history"),

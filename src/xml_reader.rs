@@ -142,7 +142,26 @@ pub struct Element {
     pub content: Vec<ElementContent>,
     pub name: String,
     #[serde(skip)]
+    pub(crate) content_kind: ElementContentKind,
+    #[serde(skip)]
+    pub(crate) has_namespace_declarations: bool,
+    #[serde(skip)]
     pub location: RecordLocation,
+}
+
+/// Coarse XML content classification retained without saving markup strings.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ElementContentKind {
+    #[default]
+    Empty,
+    ElementOnly,
+    CharacterData,
+}
+
+impl ElementContentKind {
+    fn include(&mut self, kind: Self) {
+        *self = (*self).max(kind);
+    }
 }
 
 impl Element {
@@ -743,8 +762,11 @@ pub fn next<'a>(
     };
     match &event {
         Event::Decl(declaration) => validate_declaration(declaration, event_offset)?,
-        Event::DocType(declaration) if declaration.as_ref().contains("<!ENTITY") => {
-            return Err(Error::XmlEntityNotAllowed);
+        Event::DocType(declaration) => {
+            validate_doctype_opening(positions, event_offset, reader.buffer_position())?;
+            if declaration.as_ref().contains("<!ENTITY") {
+                return Err(Error::XmlEntityNotAllowed);
+            }
         }
         Event::GeneralRef(reference) if !allowed_reference(reference) => {
             return Err(Error::XmlEntityNotAllowed);
@@ -776,6 +798,38 @@ pub fn next<'a>(
         _ => {}
     }
     Ok((namespace, event))
+}
+
+fn validate_doctype_opening(positions: &PositionMap<'_>, start: u64, end: u64) -> Result<()> {
+    // quick-xml excludes the transport BOM from both buffer offsets; the
+    // retained decoded source keeps it for source-position reconstruction.
+    let bom_length = if positions.bytes.starts_with(&[0xef, 0xbb, 0xbf]) {
+        3
+    } else {
+        0
+    };
+    let source_offset = |offset| {
+        usize::try_from(offset)
+            .ok()
+            .and_then(|offset| offset.checked_add(bom_length))
+            .ok_or_else(|| Error::XmlValidation("invalid DOCTYPE source offset".into()))
+    };
+    let start = source_offset(start)?;
+    let end = source_offset(end)?;
+    let source = positions
+        .bytes
+        .get(start..end)
+        .ok_or_else(|| Error::XmlValidation("invalid DOCTYPE source range".into()))?;
+    if !source
+        .strip_prefix(b"<!DOCTYPE")
+        .and_then(|remainder| remainder.first())
+        .is_some_and(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n'))
+    {
+        return Err(Error::XmlValidation(
+            "DOCTYPE requires exact uppercase markup followed by XML whitespace".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_start(start: &BytesStart<'_>, reader: &XmlReader<'_>) -> Result<()> {
@@ -1001,11 +1055,13 @@ pub fn element_from_start(
     let name = expanded_name(namespace, start.local_name().as_ref());
     let location = positions.start_location(start);
     let mut attributes = XmlAttributes::default();
+    let mut has_namespace_declarations = false;
     for (source_order, attribute) in start.attributes().enumerate() {
         let attribute = attribute.map_err(|error| Error::XmlValidation(error.to_string()))?;
         let location = positions.attribute_location(&attribute)?;
         let raw_name = attribute.key.as_ref();
         if raw_name == "xmlns" || raw_name.starts_with("xmlns:") {
+            has_namespace_declarations = true;
             continue;
         }
         let (namespace, local) = reader.resolver().resolve_attribute(attribute.key);
@@ -1041,6 +1097,8 @@ pub fn element_from_start(
         name,
         attributes,
         content: Vec::new(),
+        content_kind: ElementContentKind::Empty,
+        has_namespace_declarations,
         location,
     })
 }
@@ -1058,15 +1116,23 @@ pub fn read_element(
     loop {
         let (namespace, event) = next(reader, positions)?;
         match event {
-            Event::Start(child) => element.content.push(ElementContent::Element(read_element(
-                reader,
-                namespace,
-                &child,
-                budget,
-                depth.saturating_add(1),
-                positions,
-            )?)),
+            Event::Start(child) => {
+                element
+                    .content_kind
+                    .include(ElementContentKind::ElementOnly);
+                element.content.push(ElementContent::Element(read_element(
+                    reader,
+                    namespace,
+                    &child,
+                    budget,
+                    depth.saturating_add(1),
+                    positions,
+                )?));
+            }
             Event::Empty(child) => {
+                element
+                    .content_kind
+                    .include(ElementContentKind::ElementOnly);
                 element
                     .content
                     .push(ElementContent::Element(element_from_start(
@@ -1081,14 +1147,28 @@ pub fn read_element(
             Event::Text(text) => {
                 let text = text.xml10_content();
                 if !text.is_empty() {
+                    let kind = if text
+                        .chars()
+                        .all(|character| matches!(character, ' ' | '\t' | '\r' | '\n'))
+                    {
+                        ElementContentKind::ElementOnly
+                    } else {
+                        ElementContentKind::CharacterData
+                    };
+                    element.content_kind.include(kind);
                     element
                         .content
                         .push(ElementContent::Text(text.into_owned()));
                 }
             }
-            Event::CData(text) => element
-                .content
-                .push(ElementContent::Text(text.as_ref().to_owned())),
+            Event::CData(text) => {
+                element
+                    .content_kind
+                    .include(ElementContentKind::CharacterData);
+                element
+                    .content
+                    .push(ElementContent::Text(text.as_ref().to_owned()));
+            }
             Event::GeneralRef(reference) => {
                 let text = match reference
                     .resolve_char_ref()
@@ -1099,7 +1179,20 @@ pub fn read_element(
                         .ok_or(Error::XmlEntityNotAllowed)?
                         .to_owned(),
                 };
+                element
+                    .content_kind
+                    .include(ElementContentKind::CharacterData);
                 element.content.push(ElementContent::Text(text));
+            }
+            Event::Comment(_) | Event::PI(_) => {
+                element
+                    .content_kind
+                    .include(ElementContentKind::ElementOnly);
+            }
+            Event::DocType(_) => {
+                return Err(Error::XmlValidation(
+                    "DOCTYPE is not allowed inside an element".into(),
+                ));
             }
             Event::End(_) => return Ok(element),
             Event::Eof => {
@@ -1114,7 +1207,7 @@ pub fn read_element(
                     coordinates: Some(crate::diagnostics::CoordinateConvention::XmlUnicodeScalars),
                 });
             }
-            _ => {}
+            Event::Decl(_) => {}
         }
     }
 }

@@ -187,7 +187,12 @@ fn assert_native_relationships(
 
 #[test]
 fn logiqx_parent_and_merge_declarations_have_once_issued_native_owners() -> TestResult {
-    assert_native_relationships(CatalogDocumentFormat::Logiqx, LOGIQX, 4, 7)
+    assert_native_relationships(
+        CatalogDocumentFormat::Logiqx(mame_coalesce::logiqx::LogiqxMode::ObservedCompatible),
+        LOGIQX,
+        4,
+        7,
+    )
 }
 
 #[test]
@@ -594,7 +599,7 @@ fn assert_review_backup_and_rollback(
 #[test]
 fn logiqx_native_keys_survive_reviews_backup_and_late_eof_failure() -> TestResult {
     assert_review_backup_and_rollback(
-        CatalogDocumentFormat::Logiqx,
+        CatalogDocumentFormat::Logiqx(mame_coalesce::logiqx::LogiqxMode::ObservedCompatible),
         LOGIQX,
         "<datafile><game name='late' cloneof='missing'><description>Late</description><rom name='late.bin' merge='lost'/></game>",
         RelationshipType::SourceMerge,
@@ -917,7 +922,7 @@ fn assert_published_native_facts_are_sealed(
 #[test]
 fn logiqx_actual_owners_and_identities_reject_replacement_and_mutation() -> TestResult {
     assert_published_native_facts_are_sealed(
-        CatalogDocumentFormat::Logiqx,
+        CatalogDocumentFormat::Logiqx(mame_coalesce::logiqx::LogiqxMode::ObservedCompatible),
         LOGIQX,
         &[
             ("logiqx_set_links", "target_name"),
@@ -1186,7 +1191,11 @@ fn assert_readiness_checks_native_owner_edition(
 
 #[test]
 fn logiqx_readiness_independently_verifies_native_owner_edition() -> TestResult {
-    assert_readiness_checks_native_owner_edition(CatalogDocumentFormat::Logiqx, LOGIQX, 6)
+    assert_readiness_checks_native_owner_edition(
+        CatalogDocumentFormat::Logiqx(mame_coalesce::logiqx::LogiqxMode::ObservedCompatible),
+        LOGIQX,
+        6,
+    )
 }
 
 #[test]
@@ -1317,7 +1326,7 @@ fn add_unrelated_native_owners(fixture: &Fixture) -> TestResult {
             "</mame>",
         ),
         (
-            CatalogDocumentFormat::Logiqx,
+            CatalogDocumentFormat::Logiqx(mame_coalesce::logiqx::LogiqxMode::ObservedCompatible),
             "unrelated-logiqx",
             "<datafile>",
             "<game name='SEEDNAME' cloneof='missing'><description>Unrelated</description><rom name='rom' size='1' merge='missing'/><disk name='disk' merge='missing'/></game>",
@@ -1472,7 +1481,7 @@ fn assert_native_lookup_plans_are_keyed(
 #[test]
 fn logiqx_native_queries_seek_actual_identity_and_edition_keys() -> TestResult {
     assert_native_lookup_plans_are_keyed(
-        CatalogDocumentFormat::Logiqx,
+        CatalogDocumentFormat::Logiqx(mame_coalesce::logiqx::LogiqxMode::ObservedCompatible),
         LOGIQX,
         "logiqx_cmp_source_relationships",
     )

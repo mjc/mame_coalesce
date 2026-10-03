@@ -131,6 +131,14 @@ impl XmlAttributes {
         true
     }
 
+    pub(crate) fn update_value(&mut self, name: &str, value: String) -> bool {
+        let Some(entry) = self.entries.iter_mut().find(|entry| entry.name == name) else {
+            return false;
+        };
+        entry.declared.value = value;
+        true
+    }
+
     fn insert_declared(&mut self, name: String, declared: DeclaredText) {
         if let Some(entry) = self.entries.iter_mut().find(|entry| entry.name == name) {
             entry.declared = declared;

@@ -53,7 +53,7 @@ pub struct CatalogImportRequest {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 /// Format of a supported catalog document.
 pub enum CatalogDocumentFormat {
-    Logiqx,
+    Logiqx(crate::logiqx::LogiqxMode),
     MameListXml,
     MameSoftwareListXml,
     ClrMamePro,
@@ -67,13 +67,20 @@ impl CatalogDocumentFormat {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Logiqx => "logiqx",
+            Self::Logiqx(_) => "logiqx",
             Self::MameListXml => "mame-listxml",
             Self::MameSoftwareListXml => "mame-softwarelist-xml",
             Self::ClrMamePro => "clrmamepro-dat",
             Self::NoIntroPcXml => "no-intro-pc-xml",
             Self::NoIntroDat(mode) => mode.as_str(),
             Self::NoIntroDatabase(mode) => mode.format(),
+        }
+    }
+
+    pub(crate) fn rules_version(self) -> &'static str {
+        match self {
+            Self::Logiqx(crate::logiqx::LogiqxMode::StrictDtd15) => "logiqx-dtd-1.5-v1",
+            _ => crate::domain::ParserInterpretationKey::rules_version(self.as_str()),
         }
     }
 }
@@ -772,7 +779,7 @@ pub fn import_dat(
         database,
         &CatalogImportRequest {
             document_path: path,
-            format: CatalogDocumentFormat::Logiqx,
+            format: CatalogDocumentFormat::Logiqx(crate::logiqx::LogiqxMode::ObservedCompatible),
             source_key: PublishingSourceKey::new("local-dat-files"),
             source_display_name: "Local DAT files".to_owned(),
             catalog_key: catalog_key.clone(),

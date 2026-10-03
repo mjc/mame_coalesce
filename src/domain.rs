@@ -293,6 +293,14 @@ impl ParserInterpretationKey {
 
     #[must_use]
     pub fn for_format(format: &str, scope: &CatalogScope) -> Self {
+        Self::for_format_with_rules(format, Self::rules_version(format), scope)
+    }
+
+    pub(crate) fn for_format_with_rules(
+        format: &str,
+        rules_version: &str,
+        scope: &CatalogScope,
+    ) -> Self {
         let scope_kind = scope.kind();
         let scope_identity = scope.stable_identity();
         Self(stable_key(
@@ -300,7 +308,7 @@ impl ParserInterpretationKey {
             &[
                 format,
                 env!("CARGO_PKG_VERSION"),
-                Self::rules_version(format),
+                rules_version,
                 scope_kind,
                 &scope_identity,
             ],

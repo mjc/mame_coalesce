@@ -1,9 +1,11 @@
 use quick_xml::events::Event;
 
+use super::LogiqxMode;
 use super::{
     AttributePosition, DocumentAttribute, DocumentMetadata, Game, Header, RecordLocation,
     UnsupportedAttribute,
     data_file::{self, XmlSourceMap},
+    dtd15,
 };
 use crate::xml_reader::{self, Element, NodeBudget};
 
@@ -53,22 +55,42 @@ pub fn read_with<S, E: From<crate::Error>>(
     start: impl FnOnce(DocumentAttributes<'_>) -> Result<S, E>,
     consume: impl FnMut(&mut S, LocatedGame) -> Result<(), E>,
 ) -> Result<ValidatedLogiqx<S>, E> {
-    read_with_diagnostics(bytes, false, start, consume)
+    read_with_mode(bytes, LogiqxMode::ObservedCompatible, start, consume)
 }
 
-pub(super) fn read_with_diagnostics<S, E: From<crate::Error>>(
+/// Stream a Logiqx document using the selected interpretation.
+pub fn read_with_mode<S, E: From<crate::Error>>(
+    bytes: &[u8],
+    mode: LogiqxMode,
+    start: impl FnOnce(DocumentAttributes<'_>) -> Result<S, E>,
+    consume: impl FnMut(&mut S, LocatedGame) -> Result<(), E>,
+) -> Result<ValidatedLogiqx<S>, E> {
+    read_with_diagnostics_mode(bytes, false, mode, start, consume)
+}
+
+pub(super) fn read_with_diagnostics_mode<S, E: From<crate::Error>>(
     bytes: &[u8],
     retain_diagnostics: bool,
+    mode: LogiqxMode,
     start: impl FnOnce(DocumentAttributes<'_>) -> Result<S, E>,
     mut consume: impl FnMut(&mut S, LocatedGame) -> Result<(), E>,
 ) -> Result<ValidatedLogiqx<S>, E> {
     xml_reader::with_reader(bytes, |reader, positions| {
         let mut budget = NodeBudget::default();
-        let (root, empty) = data_file::read_datafile_root(reader, positions, &mut budget)?;
-        if root
-            .attributes
-            .get("debug")
-            .is_some_and(|value| !["yes", "no"].contains(&value.as_str()))
+        let strict_dtd15 = mode == LogiqxMode::StrictDtd15;
+        let (mut root, empty, declaration_policy) =
+            data_file::read_datafile_root(reader, positions, &mut budget, strict_dtd15)?;
+        let grammar_policy = strict_dtd15.then_some(declaration_policy);
+        let mut dtd15 = if strict_dtd15 {
+            Some(dtd15::Validator::new(&mut root, declaration_policy)?)
+        } else {
+            None
+        };
+        if dtd15.is_none()
+            && root
+                .attributes
+                .get("debug")
+                .is_some_and(|value| !["yes", "no"].contains(&value.as_str()))
         {
             return Err(
                 crate::Error::XmlValidation("invalid debug value on <datafile>".into()).into(),
@@ -95,33 +117,15 @@ pub(super) fn read_with_diagnostics<S, E: From<crate::Error>>(
         })?;
         if !empty {
             loop {
-                let (namespace, event) = xml_reader::next(reader, positions)?;
-                let node = match event {
-                    Event::Start(start) => xml_reader::read_element(
-                        reader,
-                        namespace,
-                        &start,
-                        &mut budget,
-                        1,
-                        positions,
-                    )?,
-                    Event::Empty(start) => xml_reader::element_from_start(
-                        reader,
-                        namespace,
-                        &start,
-                        &mut budget,
-                        1,
-                        positions,
-                    )?,
-                    Event::End(_) => break,
-                    Event::Eof => {
-                        return Err(crate::Error::XmlValidation(
-                            "unexpected end of input inside <datafile>".into(),
-                        )
-                        .into());
-                    }
-                    _ => continue,
-                };
+                let mut node =
+                    match read_root_child(reader, positions, &mut budget, grammar_policy)? {
+                        RootEvent::Child(node) => node,
+                        RootEvent::Misc => continue,
+                        RootEvent::RootEnd => break,
+                    };
+                if let Some(validator) = &mut dtd15 {
+                    validator.accept_root_child(&mut node)?;
+                }
                 match data_file::local_name(&node.name) {
                     "header" => {
                         data_file::set_once(
@@ -152,13 +156,64 @@ pub(super) fn read_with_diagnostics<S, E: From<crate::Error>>(
                 }
             }
         }
-        data_file::finish_document(reader, positions)?;
+        data_file::finish_document(reader, positions, strict_dtd15)?;
+        if let Some(validator) = dtd15 {
+            validator.finish()?;
+        }
         Ok(ValidatedLogiqx {
             metadata,
             sink,
             document_diagnostics: document_map.unsupported_attributes,
         })
     })
+}
+
+enum RootEvent {
+    Child(Element),
+    Misc,
+    RootEnd,
+}
+
+fn read_root_child(
+    reader: &mut xml_reader::XmlReader<'_>,
+    positions: &mut xml_reader::PositionMap<'_>,
+    budget: &mut NodeBudget,
+    policy: Option<dtd15::DeclarationPolicy>,
+) -> crate::Result<RootEvent> {
+    let (namespace, event) = xml_reader::next(reader, positions)?;
+    match event {
+        Event::Start(start) => {
+            xml_reader::read_element(reader, namespace, &start, budget, 1, positions)
+                .map(RootEvent::Child)
+        }
+        Event::Empty(start) => {
+            xml_reader::element_from_start(reader, namespace, &start, budget, 1, positions)
+                .map(RootEvent::Child)
+        }
+        Event::End(_) => Ok(RootEvent::RootEnd),
+        Event::Text(text) => {
+            if let Some(policy) = policy {
+                policy.validate_container_text(&text.xml10_content(), "datafile")?;
+            }
+            Ok(RootEvent::Misc)
+        }
+        Event::Comment(_) | Event::PI(_) => Ok(RootEvent::Misc),
+        Event::CData(_) | Event::GeneralRef(_) => {
+            if policy.is_some() {
+                return Err(crate::Error::XmlValidation(
+                    "CDATA and character references are not allowed in element-only <datafile>"
+                        .into(),
+                ));
+            }
+            Ok(RootEvent::Misc)
+        }
+        Event::Decl(_) | Event::DocType(_) => Err(crate::Error::XmlValidation(
+            "declarations are not allowed inside the document root".into(),
+        )),
+        Event::Eof => Err(crate::Error::XmlValidation(
+            "unexpected end of input inside <datafile>".into(),
+        )),
+    }
 }
 
 fn located_game(node: &Element, retain_diagnostics: bool) -> crate::Result<LocatedGame> {

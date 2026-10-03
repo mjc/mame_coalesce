@@ -631,7 +631,9 @@ fn request(
     })?;
     Ok(CatalogImportRequest {
         document_path,
-        format: CatalogDocumentFormat::Logiqx,
+        format: CatalogDocumentFormat::Logiqx(
+            mame_coalesce::logiqx::LogiqxMode::ObservedCompatible,
+        ),
         source_key: PublishingSourceKey::new(source),
         source_display_name: format!("Publisher {source}"),
         catalog_key: CatalogKey::new(catalog),

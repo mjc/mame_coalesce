@@ -1,6 +1,6 @@
 use diesel::{
     QueryableByName, RunQueryDsl, SqliteConnection, sql_query,
-    sql_types::{BigInt, Nullable, Text},
+    sql_types::{BigInt, Bool, Nullable, Text},
 };
 use std::collections::HashMap;
 
@@ -566,6 +566,9 @@ pub fn explain_catalog_sets_for_snapshots(
     previous: &SnapshotKey,
     current: &SnapshotKey,
 ) -> crate::Result<Vec<RelationshipExplanation>> {
+    if catalog_set_relationships_are_empty(conn, previous, current)? {
+        return Ok(Vec::new());
+    }
     let rows = sql_query(ExplanationScope::CatalogSets.query())
         .bind::<Text, _>(previous.as_str())
         .bind::<Text, _>(current.as_str())
@@ -583,6 +586,86 @@ pub fn explain_catalog_sets_for_snapshots(
         .bind::<Text, _>(current.as_str())
         .load::<ReviewRow>(conn)?;
     build_explanations(conn, rows, reviews)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NativeRelationshipOwners {
+    CatalogSets,
+    NoIntroArchives,
+}
+
+impl NativeRelationshipOwners {
+    fn for_snapshot(conn: &mut SqliteConnection, snapshot: &SnapshotKey) -> crate::Result<Self> {
+        #[derive(QueryableByName)]
+        struct FormatRow {
+            #[diesel(sql_type = Text)]
+            format: String,
+        }
+
+        let row = sql_query(
+            "SELECT interpretation.format FROM catalog_snapshots AS snapshot \
+             JOIN parser_interpretations AS interpretation USING(interpretation_key) \
+             WHERE snapshot.snapshot_key=?",
+        )
+        .bind::<Text, _>(snapshot.as_str())
+        .get_result::<FormatRow>(conn)?;
+        match row.format.as_str() {
+            "no-intro-database-xml-compatible" | "no-intro-database-xml-nul-compatible" => {
+                Ok(Self::NoIntroArchives)
+            }
+            "mame-listxml"
+            | "logiqx"
+            | "clrmamepro-dat"
+            | "mame-softwarelist-xml"
+            | "no-intro-pc-xml"
+            | "no-intro-dat-v3-strict"
+            | "no-intro-dat-v3-compatible"
+            | "no-intro-dat-v4-strict"
+            | "no-intro-dat-v4-compatible" => Ok(Self::CatalogSets),
+            _ => Err(crate::Error::DatabaseSchema(format!(
+                "unsupported history parser format: {}",
+                row.format
+            ))),
+        }
+    }
+}
+
+fn catalog_set_relationships_are_empty(
+    conn: &mut SqliteConnection,
+    previous: &SnapshotKey,
+    current: &SnapshotKey,
+) -> crate::Result<bool> {
+    #[derive(QueryableByName)]
+    struct DecisionPresence {
+        #[diesel(sql_type = Bool)]
+        present: bool,
+    }
+
+    let previous_owners = NativeRelationshipOwners::for_snapshot(conn, previous)?;
+    let current_owners = NativeRelationshipOwners::for_snapshot(conn, current)?;
+    if previous_owners != NativeRelationshipOwners::NoIntroArchives
+        || current_owners != NativeRelationshipOwners::NoIntroArchives
+    {
+        return Ok(false);
+    }
+
+    // Export source assertions belong to archives, not root catalog sets. Root
+    // owners can still acquire manual or inferred decisions at either endpoint.
+    // Reuse the full reader's canonical owner scope before avoiding its costly
+    // native-source expansion; any scoped decision requires the full reader.
+    let query = format!(
+        "WITH requested_decision_snapshots(snapshot_key) AS (VALUES (?),(?),(?),(?)), \
+         requested_relationship_kinds(kind) AS (VALUES ('catalog_set')), \
+         {} SELECT EXISTS(SELECT 1 FROM scoped_decision_ids) AS present",
+        include_str!("db/relationship_scope.sql")
+    );
+    let decisions = sql_query(query)
+        .bind::<Text, _>(previous.as_str())
+        .bind::<Text, _>(current.as_str())
+        .bind::<Text, _>(previous.as_str())
+        .bind::<Text, _>(current.as_str())
+        .get_result::<DecisionPresence>(conn)?;
+    Ok(!decisions.present)
 }
 
 pub fn explain_for_snapshots(
@@ -1103,7 +1186,9 @@ mod query_plan_tests {
                 database,
                 &CatalogImportRequest {
                     document_path: path.clone(),
-                    format: CatalogDocumentFormat::Logiqx,
+                    format: CatalogDocumentFormat::Logiqx(
+                        crate::logiqx::LogiqxMode::ObservedCompatible,
+                    ),
                     source_key: PublishingSourceKey::new(name),
                     source_display_name: name.into(),
                     catalog_key: CatalogKey::new(name),
@@ -1132,7 +1217,9 @@ mod query_plan_tests {
             database,
             &CatalogImportRequest {
                 document_path: unrelated_path,
-                format: CatalogDocumentFormat::Logiqx,
+                format: CatalogDocumentFormat::Logiqx(
+                    crate::logiqx::LogiqxMode::ObservedCompatible,
+                ),
                 source_key: PublishingSourceKey::new("populated-unrelated"),
                 source_display_name: "Populated unrelated".into(),
                 catalog_key: CatalogKey::new("populated-unrelated"),

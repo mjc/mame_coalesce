@@ -53,7 +53,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn parse_format(value: &str) -> Result<CatalogDocumentFormat, Box<dyn std::error::Error>> {
     match value {
-        "logiqx" => Ok(CatalogDocumentFormat::Logiqx),
+        "logiqx" => Ok(CatalogDocumentFormat::Logiqx(
+            mame_coalesce::logiqx::LogiqxMode::ObservedCompatible,
+        )),
+        "logiqx-dtd15" => Ok(CatalogDocumentFormat::Logiqx(
+            mame_coalesce::logiqx::LogiqxMode::StrictDtd15,
+        )),
         "machine" => Ok(CatalogDocumentFormat::MameListXml),
         "software-list" => Ok(CatalogDocumentFormat::MameSoftwareListXml),
         _ => Err(format!("unsupported benchmark format: {value}").into()),

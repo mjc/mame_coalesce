@@ -356,6 +356,8 @@ mod tests {
                 .collect(),
             content: vec![ElementContent::Text(String::new())],
             name: name.to_owned(),
+            content_kind: crate::xml_reader::ElementContentKind::CharacterData,
+            has_namespace_declarations: false,
             location: RecordLocation { line: 1, column: 1 },
         }
     }

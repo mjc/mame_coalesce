@@ -136,7 +136,7 @@ fn seed_published_merge(
         pool,
         directory,
         "candidate-sha1.xml",
-        crate::app::CatalogDocumentFormat::Logiqx,
+        crate::app::CatalogDocumentFormat::Logiqx(crate::logiqx::LogiqxMode::ObservedCompatible),
         r#"<datafile><header><name>SHA-1 candidate</name></header>
           <game name="candidate-sha1"><rom name="a.bin" size="16"
             crc="12345678" md5="00112233445566778899aabbccddeeff"
@@ -429,7 +429,7 @@ fn bulk_keeps_repeated_and_unlinked_owners_and_digests_as_children() -> TestResu
         &pool,
         &directory,
         "root.dat",
-        crate::app::CatalogDocumentFormat::Logiqx,
+        crate::app::CatalogDocumentFormat::Logiqx(crate::logiqx::LogiqxMode::ObservedCompatible),
         logiqx_document(),
     )?;
     let ids = occurrence_ids(&pool)?;
@@ -513,7 +513,7 @@ fn canonical_occurrence_content_exposes_only_linked_native_occurrences() -> Test
         &pool,
         &directory,
         "root.dat",
-        crate::app::CatalogDocumentFormat::Logiqx,
+        crate::app::CatalogDocumentFormat::Logiqx(crate::logiqx::LogiqxMode::ObservedCompatible),
         logiqx_document(),
     )?;
     let ids = occurrence_ids(&pool)?;
@@ -550,7 +550,7 @@ fn content_pages_are_keyset_ordered_and_cursor_is_uuid_bound() -> TestResult {
         &pool,
         &directory,
         "root.dat",
-        crate::app::CatalogDocumentFormat::Logiqx,
+        crate::app::CatalogDocumentFormat::Logiqx(crate::logiqx::LogiqxMode::ObservedCompatible),
         logiqx_document(),
     )?;
     let ids = occurrence_ids(&pool)?;
@@ -678,7 +678,7 @@ fn cursor_cannot_be_reused_after_registry_rebuild() -> TestResult {
         &first_pool,
         &first_directory,
         "root.dat",
-        crate::app::CatalogDocumentFormat::Logiqx,
+        crate::app::CatalogDocumentFormat::Logiqx(crate::logiqx::LogiqxMode::ObservedCompatible),
         logiqx_document(),
     )?;
     let first_ids = occurrence_ids(&first_pool)?;
@@ -702,7 +702,7 @@ fn cursor_cannot_be_reused_after_registry_rebuild() -> TestResult {
         &rebuilt_pool,
         &rebuilt_directory,
         "root.dat",
-        crate::app::CatalogDocumentFormat::Logiqx,
+        crate::app::CatalogDocumentFormat::Logiqx(crate::logiqx::LogiqxMode::ObservedCompatible),
         logiqx_document(),
     )?;
     let rebuilt_ids = occurrence_ids(&rebuilt_pool)?;
@@ -775,7 +775,7 @@ fn malformed_digest_lengths_are_rejected_by_bulk_and_page_queries() -> TestResul
         &pool,
         &directory,
         "root.dat",
-        crate::app::CatalogDocumentFormat::Logiqx,
+        crate::app::CatalogDocumentFormat::Logiqx(crate::logiqx::LogiqxMode::ObservedCompatible),
         logiqx_document(),
     )?;
     let ids = occurrence_ids(&pool)?;
@@ -1005,7 +1005,7 @@ fn native_payload_page_plan_searches_payload_keys_without_scanning_union_sources
         &pool,
         &directory,
         "root.dat",
-        crate::app::CatalogDocumentFormat::Logiqx,
+        crate::app::CatalogDocumentFormat::Logiqx(crate::logiqx::LogiqxMode::ObservedCompatible),
         logiqx_document(),
     )?;
     let ids = occurrence_ids(&pool)?;
@@ -1071,7 +1071,7 @@ fn root_and_software_lists_share_a_content_identity_without_flattening() -> Test
         &pool,
         &directory,
         "root.dat",
-        crate::app::CatalogDocumentFormat::Logiqx,
+        crate::app::CatalogDocumentFormat::Logiqx(crate::logiqx::LogiqxMode::ObservedCompatible),
         logiqx_document(),
     )?;
     import_document(
@@ -1139,7 +1139,7 @@ fn historical_publications_are_visible_and_unpublished_snapshots_are_not() -> Te
         &pool,
         &directory,
         "history-one.dat",
-        crate::app::CatalogDocumentFormat::Logiqx,
+        crate::app::CatalogDocumentFormat::Logiqx(crate::logiqx::LogiqxMode::ObservedCompatible),
         logiqx_document(),
         "history-source",
         "history-catalog",
@@ -1148,7 +1148,7 @@ fn historical_publications_are_visible_and_unpublished_snapshots_are_not() -> Te
         &pool,
         &directory,
         "history-two.dat",
-        crate::app::CatalogDocumentFormat::Logiqx,
+        crate::app::CatalogDocumentFormat::Logiqx(crate::logiqx::LogiqxMode::ObservedCompatible),
         &logiqx_document().replace("352441c2", "e8b7be43"),
         "history-source",
         "history-catalog",

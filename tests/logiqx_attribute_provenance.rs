@@ -36,7 +36,9 @@ fn import(
         database,
         &CatalogImportRequest {
             document_path,
-            format: CatalogDocumentFormat::Logiqx,
+            format: CatalogDocumentFormat::Logiqx(
+                mame_coalesce::logiqx::LogiqxMode::ObservedCompatible,
+            ),
             source_key: PublishingSourceKey::new("logiqx-attribute-provenance"),
             source_display_name: "Logiqx attribute provenance".to_owned(),
             catalog_key: CatalogKey::new("logiqx-attribute-provenance"),

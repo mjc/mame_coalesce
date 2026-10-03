@@ -523,7 +523,7 @@ fn disputed_sha1_does_not_gain_a_late_sparse_alias() -> Result<(), Box<dyn Error
         &database,
         &mut connection,
         &initial_path,
-        CatalogDocumentFormat::Logiqx,
+        CatalogDocumentFormat::Logiqx(mame_coalesce::logiqx::LogiqxMode::ObservedCompatible),
         "initial",
     )?;
     let initial = occurrence(&mut connection, "logiqx_rom_claims", "initial.bin")?;
@@ -564,7 +564,7 @@ fn disputed_sha1_does_not_gain_a_late_sparse_alias() -> Result<(), Box<dyn Error
         &database,
         &mut connection,
         &later_path,
-        CatalogDocumentFormat::Logiqx,
+        CatalogDocumentFormat::Logiqx(mame_coalesce::logiqx::LogiqxMode::ObservedCompatible),
         "later",
     )?;
     let later = occurrence(&mut connection, "logiqx_rom_claims", "later.bin")?;
@@ -745,7 +745,7 @@ fn published_digest_assertions_and_disputes_are_immutable() -> Result<(), Box<dy
         &database,
         &mut connection,
         &initial_path,
-        CatalogDocumentFormat::Logiqx,
+        CatalogDocumentFormat::Logiqx(mame_coalesce::logiqx::LogiqxMode::ObservedCompatible),
         "immutable-initial",
     )?;
     let initial = occurrence(&mut connection, "logiqx_rom_claims", "initial.bin")?;
@@ -825,7 +825,7 @@ fn matching_cross_format_claims_share_identity() -> Result<(), Box<dyn Error>> {
         &database,
         &mut connection,
         &logiqx_path,
-        CatalogDocumentFormat::Logiqx,
+        CatalogDocumentFormat::Logiqx(mame_coalesce::logiqx::LogiqxMode::ObservedCompatible),
         "whole-file",
     )?;
 
@@ -908,7 +908,7 @@ fn registry_generation_and_content_identity_survive_backup_restore() -> Result<(
         &database,
         &mut connection,
         &document_path,
-        CatalogDocumentFormat::Logiqx,
+        CatalogDocumentFormat::Logiqx(mame_coalesce::logiqx::LogiqxMode::ObservedCompatible),
         "identity",
     )?;
     let original_occurrence = occurrence(&mut connection, "logiqx_rom_claims", "identity.bin")?;
@@ -945,7 +945,7 @@ fn registry_generation_and_content_identity_survive_backup_restore() -> Result<(
         &fresh_database,
         &mut fresh_connection,
         &document_path,
-        CatalogDocumentFormat::Logiqx,
+        CatalogDocumentFormat::Logiqx(mame_coalesce::logiqx::LogiqxMode::ObservedCompatible),
         "identity",
     )?;
     let fresh_registry = registry_uuid(&mut fresh_connection)?;

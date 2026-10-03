@@ -153,7 +153,7 @@ fn logiqx_root_metadata_sparse_hashes_and_large_size_survive_loading() {
     import(
         &fixture,
         &path,
-        CatalogDocumentFormat::Logiqx,
+        CatalogDocumentFormat::Logiqx(crate::logiqx::LogiqxMode::ObservedCompatible),
         "logiqx-root",
     );
 
@@ -322,11 +322,26 @@ fn renamed_header_alias_uses_current_publications_without_stale_aliases() {
     let a_path = fixture.directory.path().join("header-a.dat");
     let b_path = fixture.directory.path().join("header-b.dat");
     write_logiqx(&a_path, "Old", "set-a");
-    import(&fixture, &a_path, CatalogDocumentFormat::Logiqx, "header-a");
+    import(
+        &fixture,
+        &a_path,
+        CatalogDocumentFormat::Logiqx(crate::logiqx::LogiqxMode::ObservedCompatible),
+        "header-a",
+    );
     write_logiqx(&a_path, "New", "set-a");
-    import(&fixture, &a_path, CatalogDocumentFormat::Logiqx, "header-a");
+    import(
+        &fixture,
+        &a_path,
+        CatalogDocumentFormat::Logiqx(crate::logiqx::LogiqxMode::ObservedCompatible),
+        "header-a",
+    );
     write_logiqx(&b_path, "Old", "set-b");
-    import(&fixture, &b_path, CatalogDocumentFormat::Logiqx, "header-b");
+    import(
+        &fixture,
+        &b_path,
+        CatalogDocumentFormat::Logiqx(crate::logiqx::LogiqxMode::ObservedCompatible),
+        "header-b",
+    );
 
     let old_alias = load(&fixture, "Old");
     let new_alias = load(&fixture, "New");

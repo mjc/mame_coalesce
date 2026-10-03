@@ -116,7 +116,9 @@ fn repeated_logiqx_set_names_retain_separate_ordered_native_owners()
         &database,
         &CatalogImportRequest {
             document_path: document,
-            format: CatalogDocumentFormat::Logiqx,
+            format: CatalogDocumentFormat::Logiqx(
+                mame_coalesce::logiqx::LogiqxMode::ObservedCompatible,
+            ),
             source_key: PublishingSourceKey::new("repeated"),
             source_display_name: "Repeated".into(),
             catalog_key: CatalogKey::new("repeated"),
@@ -249,7 +251,9 @@ fn native_set_details_and_links_enforce_format_ownership_and_immutability()
         &database,
         &CatalogImportRequest {
             document_path: document,
-            format: CatalogDocumentFormat::Logiqx,
+            format: CatalogDocumentFormat::Logiqx(
+                mame_coalesce::logiqx::LogiqxMode::ObservedCompatible,
+            ),
             source_key: PublishingSourceKey::new("links"),
             source_display_name: "Links".into(),
             catalog_key: CatalogKey::new("links"),

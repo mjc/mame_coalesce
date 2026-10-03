@@ -41,7 +41,9 @@ fn failed_excerpt(bytes: &[u8]) -> TestResult<Diagnostic> {
     std::fs::write(&path, bytes)?;
     let request = CatalogImportRequest {
         document_path: Utf8PathBuf::from_path_buf(path).map_err(|_| "UTF-8 path")?,
-        format: CatalogDocumentFormat::Logiqx,
+        format: CatalogDocumentFormat::Logiqx(
+            mame_coalesce::logiqx::LogiqxMode::ObservedCompatible,
+        ),
         source_key: PublishingSourceKey::new("diagnostic-source"),
         source_display_name: "Diagnostic source".into(),
         catalog_key: CatalogKey::new("diagnostic-catalog"),

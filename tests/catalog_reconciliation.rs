@@ -568,7 +568,9 @@ fn published_snapshots_reconcile_without_any_local_inventory()
     )?;
     let import = |path, publisher: &str, catalog: &str| CatalogImportRequest {
         document_path: path,
-        format: CatalogDocumentFormat::Logiqx,
+        format: CatalogDocumentFormat::Logiqx(
+            mame_coalesce::logiqx::LogiqxMode::ObservedCompatible,
+        ),
         source_key: PublishingSourceKey::new(publisher),
         source_display_name: publisher.to_owned(),
         catalog_key: CatalogKey::new(catalog),
