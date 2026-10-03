@@ -182,14 +182,7 @@ impl DocumentStore {
 
     pub fn register_source(&self, source: &PublishingSource) -> crate::Result<()> {
         let mut conn = self.pool.get()?;
-        sql_query(
-            "INSERT INTO publishing_sources (source_key, display_name) VALUES (?, ?) \
-             ON CONFLICT (source_key) DO UPDATE SET display_name = excluded.display_name",
-        )
-        .bind::<Text, _>(source.key().as_str())
-        .bind::<Text, _>(source.display_name())
-        .execute(&mut conn)?;
-        Ok(())
+        super::publishing_sources::register(&mut conn, source)
     }
 
     pub fn resolve_source(
@@ -971,6 +964,12 @@ mod tests {
         let columns = sql_query("PRAGMA table_info(documents)")
             .load::<ColumnNameRow>(&mut store.pool.get()?)?;
         assert!(!columns.iter().any(|column| column.name == "payload"));
+        store.register_source(&PublishingSource::new("fresh-source", "Renamed Publisher"))?;
+        let renamed = store
+            .resolve_source(&PublishingSourceKey::new("fresh-source"))?
+            .ok_or("renamed source did not resolve")?;
+        assert_eq!(renamed.display_name(), "Renamed Publisher");
+        assert_eq!(store.load(&retained.document_key)?, VALID_DAT);
         assert_eq!(count(&store, "acquisitions")?, 1);
         assert_eq!(count(&store, "acquisition_attempts")?, 1);
         Ok(())

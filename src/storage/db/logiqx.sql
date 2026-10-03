@@ -112,8 +112,6 @@ CREATE TABLE logiqx_file_merges (
         CASE claim_kind WHEN 'logiqx_rom' THEN 'logiqx_rom_merge'
                         WHEN 'logiqx_disk' THEN 'logiqx_disk_merge' END
     ) VIRTUAL,
-    source_line INTEGER NOT NULL CHECK (typeof(source_line) = 'integer' AND source_line > 0),
-    source_column INTEGER NOT NULL CHECK (typeof(source_column) = 'integer' AND source_column > 0),
     FOREIGN KEY (occurrence_id,claim_kind)
         REFERENCES asset_occurrences(occurrence_id,claim_kind) ON DELETE RESTRICT,
     FOREIGN KEY (relationship_id,source_reference_kind)

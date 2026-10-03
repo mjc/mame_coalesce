@@ -263,11 +263,18 @@ fn stage_logiqx_set(connection: &mut SqliteConnection) -> diesel::QueryResult<i6
     ).get_result::<IdRow>(connection)?.value)
 }
 
+fn stage_game_name_position(connection: &mut SqliteConnection, set_id: i64) -> TestResult {
+    sql_query("INSERT INTO logiqx_game_attribute_positions(set_id,field_kind,source_order,source_line,source_column) VALUES(?,0,0,1,1)")
+        .bind::<BigInt,_>(set_id).execute(connection)?;
+    Ok(())
+}
+
 fn stage_linked_claim(connection: &mut SqliteConnection, case: LinkedClaimCase) -> TestResult {
     let set_id = stage_logiqx_set(connection)?;
     sql_query("INSERT INTO logiqx_games(set_id) VALUES(?)")
         .bind::<BigInt, _>(set_id)
         .execute(connection)?;
+    stage_game_name_position(connection, set_id)?;
     let kind = if matches!(case, LinkedClaimCase::DiskData) {
         "logiqx_disk"
     } else {
@@ -306,6 +313,25 @@ fn stage_linked_claim(connection: &mut SqliteConnection, case: LinkedClaimCase) 
         ).bind::<BigInt,_>(occurrence_id).bind::<Text,_>(size)
             .bind::<Nullable<Text>,_>(crc).bind::<Nullable<Text>,_>(md5)
             .bind::<Nullable<Text>,_>(sha1).execute(connection)?;
+    }
+    let (table, fields) = if matches!(case, LinkedClaimCase::DiskData) {
+        ("logiqx_disk_attribute_positions", vec![0, 1, 2])
+    } else {
+        let mut fields = vec![0, 1];
+        if matches!(case, LinkedClaimCase::InvalidCrc) {
+            fields.push(2);
+        }
+        if !matches!(case, LinkedClaimCase::MissingSha1) {
+            fields.push(3);
+        }
+        if matches!(case, LinkedClaimCase::EmptyMd5) {
+            fields.push(4);
+        }
+        ("logiqx_rom_attribute_positions", fields)
+    };
+    for field in fields {
+        sql_query(format!("INSERT INTO {table}(occurrence_id,field_kind,source_order,source_line,source_column) VALUES(?,?,?,1,?)"))
+            .bind::<BigInt,_>(occurrence_id).bind::<BigInt,_>(field).bind::<BigInt,_>(field).bind::<BigInt,_>(field+1).execute(connection)?;
     }
     let digest = if matches!(case, LinkedClaimCase::MismatchedDigest) {
         [0xbb; 20]
@@ -425,6 +451,7 @@ fn publication_requires_positions_for_each_present_game_scalar() -> TestResult {
         ))
         .bind::<BigInt, _>(set_id)
         .execute(&mut connection)?;
+        stage_game_name_position(&mut connection, set_id)?;
         let error = publish_pending(&mut connection)
             .err()
             .ok_or("present game scalar published without a position")?;

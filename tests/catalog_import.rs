@@ -958,6 +958,9 @@ fn seed_ambiguous_digest_witnesses(
         .bind::<Text, _>(&snapshot_key)
         .get_result::<IntegerRow>(connection)?
         .value;
+        sql_query("INSERT INTO logiqx_games(set_id) VALUES(?)")
+            .bind::<BigInt, _>(set_id)
+            .execute(connection)?;
         let occurrence_id = sql_query(
             "INSERT INTO asset_occurrences \
              (record_id, occurrence_order, claim_kind, content_uuid) \
@@ -1180,7 +1183,7 @@ fn publishing_completes_a_matching_identity_only_snapshot() -> Result<(), Box<dy
     .bind::<Text, _>(&document_key)
     .execute(&mut connection)?;
     sql_query(
-        "INSERT INTO parser_interpretations (interpretation_key,format,parser_name,parser_version,rules_version) VALUES (?,'logiqx','mame_coalesce',?,'logiqx-declared-text-compat-v1')",
+        "INSERT INTO parser_interpretations (interpretation_key,format,parser_name,parser_version,rules_version) VALUES (?,'logiqx','mame_coalesce',?,'logiqx-declared-text-compat-v2')",
     )
     .bind::<Text, _>(interpretation.as_str())
     .bind::<Text, _>(env!("CARGO_PKG_VERSION"))
@@ -1520,7 +1523,7 @@ fn stale_identity_only_metadata_is_not_published_as_current()
         .bind::<Text, _>(&document_key)
         .execute(&mut connection)?;
     sql_query(
-        "INSERT INTO parser_interpretations (interpretation_key,format,parser_name,parser_version,rules_version) VALUES (?,'logiqx','mame_coalesce',?,'logiqx-declared-text-compat-v1')",
+        "INSERT INTO parser_interpretations (interpretation_key,format,parser_name,parser_version,rules_version) VALUES (?,'logiqx','mame_coalesce',?,'logiqx-declared-text-compat-v2')",
     )
     .bind::<Text, _>(interpretation.as_str())
     .bind::<Text, _>(env!("CARGO_PKG_VERSION"))
@@ -5838,7 +5841,7 @@ fn source_relationship_assertions_keep_snapshot_and_field_provenance()
     assert_eq!(assertion.target_key, "parent");
     assert_eq!(assertion.source_field.as_deref(), Some("cloneof"));
     assert_eq!(assertion.source_line, Some(4));
-    assert_eq!(assertion.source_column, Some(3));
+    assert_eq!(assertion.source_column, Some(22));
     assert!(assertion.rule_version.is_none());
     assert_eq!(
         assertion.source_snapshot_key.as_deref(),
@@ -5881,7 +5884,7 @@ fn source_relationship_assertions_keep_snapshot_and_field_provenance()
     .get_result::<QueryableAssertion>(&mut connection)?;
     assert_eq!(device_claim.target_key, "fixture-sound");
     assert_eq!(device_claim.source_line, Some(8));
-    assert_eq!(device_claim.source_column, Some(5));
+    assert_eq!(device_claim.source_column, Some(17));
 
     // An identical reimport reuses the immutable snapshot rather than duplicating its claims.
     app::import_catalog(

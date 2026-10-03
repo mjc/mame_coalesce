@@ -938,9 +938,29 @@ fn bulk_owner_and_digest_plans_search_requested_ids_before_catalog_rows() -> Tes
     let owners = requested_occurrence_select();
     for (query, expected_search, forbidden_scan) in [
         (owners, "search occurrence", "occurrence"),
+        (
+            logiqx::PAYLOAD_SELECT.into(),
+            "search occurrence",
+            "occurrence",
+        ),
         (digest_select(), "search assertion", "assertion"),
         (
             no_intro_pc_rom_attribute_select().into(),
+            "search positions using primary key (occurrence_id=?)",
+            "positions",
+        ),
+        (
+            logiqx::attribute_select("logiqx_rom_attribute_positions"),
+            "search positions using primary key (occurrence_id=?)",
+            "positions",
+        ),
+        (
+            logiqx::attribute_select("logiqx_disk_attribute_positions"),
+            "search positions using primary key (occurrence_id=?)",
+            "positions",
+        ),
+        (
+            logiqx::attribute_select("logiqx_sample_attribute_positions"),
             "search positions using primary key (occurrence_id=?)",
             "positions",
         ),
@@ -1139,9 +1159,30 @@ fn historical_publications_are_visible_and_unpublished_snapshots_are_not() -> Te
     let published_content_id = occurrences_for_ids_in_pool(&pool, &published_ids)?[0]
         .content_id
         .ok_or("published fixture occurrence was not linked")?;
-    let staged_id = {
-        let mut connection = pool.get()?;
-        connection.transaction::<_, diesel::result::Error, _>(|connection| {
+    let staged_id = stage_unpublished_logiqx_occurrence(&pool, published_content_id)?;
+    let mut ids = published_ids;
+    ids.push(OccurrenceId::from_database(staged_id));
+    let visible = occurrences_for_ids_in_pool(&pool, &ids)?;
+    assert_eq!(visible.len(), 6);
+    assert!(
+        visible
+            .iter()
+            .all(|occurrence| { occurrence.provenance.snapshot_key != "staged-snapshot" })
+    );
+    assert!(
+        visible
+            .iter()
+            .any(|occurrence| !occurrence.provenance.document_key.is_empty())
+    );
+    Ok(())
+}
+
+fn stage_unpublished_logiqx_occurrence(
+    pool: &Pool,
+    published_content_id: CatalogContentId,
+) -> TestResult<i64> {
+    let mut connection = pool.get()?;
+    Ok(connection.transaction::<_, diesel::result::Error, _>(|connection| {
             let snapshot = sql_query(
                 "SELECT catalog_key, document_key, interpretation_key, coverage_id \
                  FROM catalog_snapshots ORDER BY rowid DESC LIMIT 1",
@@ -1181,6 +1222,9 @@ fn historical_publications_are_visible_and_unpublished_snapshots_are_not() -> Te
             .bind::<BigInt, _>(group_id)
             .get_result::<IdRow>(connection)?
             .occurrence_id;
+            sql_query("INSERT INTO logiqx_games(set_id) VALUES(?)")
+                .bind::<BigInt, _>(set_id)
+                .execute(connection)?;
             let staged_id = sql_query(
                 "INSERT INTO asset_occurrences (record_id, occurrence_order, claim_kind, content_uuid) \
                  VALUES (?, 0, 'logiqx_rom', ?) RETURNING occurrence_id",
@@ -1197,22 +1241,5 @@ fn historical_publications_are_visible_and_unpublished_snapshots_are_not() -> Te
             .bind::<BigInt, _>(staged_id)
             .execute(connection)?;
             Ok(staged_id)
-        })?
-    };
-
-    let mut ids = published_ids;
-    ids.push(OccurrenceId::from_database(staged_id));
-    let visible = occurrences_for_ids_in_pool(&pool, &ids)?;
-    assert_eq!(visible.len(), 6);
-    assert!(
-        visible
-            .iter()
-            .all(|occurrence| { occurrence.provenance.snapshot_key != "staged-snapshot" })
-    );
-    assert!(
-        visible
-            .iter()
-            .any(|occurrence| !occurrence.provenance.document_key.is_empty())
-    );
-    Ok(())
+        })?)
 }

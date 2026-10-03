@@ -21,6 +21,8 @@ pub const SCHEMA: &str = concat!(
     "\n",
     include_str!("logiqx.sql"),
     "\n",
+    include_str!("logiqx_attribute_positions.sql"),
+    "\n",
     include_str!("cmp.sql"),
     "\n",
     include_str!("reported_relationship_guards.sql"),

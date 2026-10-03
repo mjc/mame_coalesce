@@ -26,13 +26,22 @@ pub const MAX_TEXT_BYTES: usize = 1024 * 1024;
 
 mod attributes;
 pub use attributes::XmlAttributes;
+pub(crate) use attributes::attribute_fields;
+
+/// The first character of an attribute `QName`, never its owner's tag position.
+/// Columns count Unicode scalars; tabs count as one column.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AttributeLocation {
+    pub line: i64,
+    pub column: i64,
+}
 
 /// Position of a recognized XML attribute, without another owned value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AttributePosition<Field> {
     pub field: Field,
     pub source_order: usize,
-    pub location: RecordLocation,
+    pub location: AttributeLocation,
 }
 
 /// A present scalar, including explicit empty text and its source position.
@@ -332,7 +341,14 @@ impl<'a> PositionMap<'a> {
     const fn new(bytes: &'a [u8]) -> Self {
         Self {
             bytes,
-            cursor: 0,
+            // The transport BOM is not a decoded-text column. Keep offsets in
+            // the original buffer so borrowed tags and attribute names still
+            // address the correct bytes; an interior U+FEFF remains text.
+            cursor: if matches!(bytes, [0xef, 0xbb, 0xbf, ..]) {
+                3
+            } else {
+                0
+            },
             position: SourcePosition::new(),
         }
     }
@@ -1340,6 +1356,21 @@ mod tests {
         let expected_column = i64::try_from(prefix.chars().count() + 1)
             .map_err(|error| Error::XmlValidation(error.to_string()))?;
         assert_eq!((location.line, location.column), (1, expected_column));
+        Ok(())
+    }
+
+    #[test]
+    fn attribute_locations_ignore_only_the_transport_bom() -> Result<()> {
+        let text = "<root z='\u{feff}' a='2'/>";
+        let input = format!("\u{feff}{text}");
+        let attributes = empty_element_attributes(input.as_bytes())?;
+        let location = declared(&attributes, "a")?.location;
+        let (prefix, _) = text
+            .split_once("a='2'")
+            .ok_or_else(|| Error::XmlValidation("missing test QName".into()))?;
+        let column = i64::try_from(prefix.chars().count() + 1)
+            .map_err(|error| Error::XmlValidation(error.to_string()))?;
+        assert_eq!((location.line, location.column), (1, column));
         Ok(())
     }
 

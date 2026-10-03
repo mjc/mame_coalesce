@@ -25,7 +25,6 @@ pub(super) fn insert_logiqx(
             owner,
             XmlReferenceKind::CloneOf,
             parent,
-            set.location,
         )?;
     }
     let mut reference_order = 0;
@@ -41,15 +40,13 @@ pub(super) fn insert_logiqx(
                 )?;
                 sql_query(
                     "INSERT INTO logiqx_device_references \
-                     (set_id,reference_order,target_name,relationship_id,source_line,source_column) \
-                     VALUES (?,?,?,?,?,?)",
+                     (set_id,reference_order,target_name,relationship_id) \
+                     VALUES (?,?,?,?)",
                 )
                 .bind::<BigInt, _>(owner.as_i64())
                 .bind::<BigInt, _>(checked_order(reference_order, "Logiqx device references")?)
                 .bind::<Text, _>(&dependency.target_name)
                 .bind::<BigInt, _>(relationship.database_value())
-                .bind::<BigInt, _>(dependency.location.line)
-                .bind::<BigInt, _>(dependency.location.column)
                 .execute(connection)?;
                 reference_order += 1;
                 continue;
@@ -60,14 +57,7 @@ pub(super) fn insert_logiqx(
                 )));
             }
         };
-        insert_logiqx_link(
-            connection,
-            snapshot,
-            owner,
-            kind,
-            &dependency.target_name,
-            dependency.location,
-        )?;
+        insert_logiqx_link(connection, snapshot, owner, kind, &dependency.target_name)?;
     }
     Ok(())
 }
@@ -78,19 +68,16 @@ fn insert_logiqx_link(
     owner: CatalogSetId,
     kind: XmlReferenceKind,
     literal: &str,
-    location: crate::logiqx::RecordLocation,
 ) -> crate::Result<()> {
     let relationship = register(connection, snapshot, ReportedReferenceKind::Logiqx(kind))?;
     sql_query(
         "INSERT INTO logiqx_set_links \
-         (set_id,link_kind,target_name,relationship_id,source_line,source_column) VALUES (?,?,?,?,?,?)",
+         (set_id,link_kind,target_name,relationship_id) VALUES (?,?,?,?)",
     )
     .bind::<BigInt, _>(owner.as_i64())
     .bind::<Text, _>(kind.field())
     .bind::<Text, _>(literal)
     .bind::<BigInt, _>(relationship.database_value())
-    .bind::<BigInt, _>(location.line)
-    .bind::<BigInt, _>(location.column)
     .execute(connection)?;
     Ok(())
 }

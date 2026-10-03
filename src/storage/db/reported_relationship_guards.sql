@@ -23,6 +23,8 @@ WHERE interpretation.format='mame-listxml'
 UNION ALL
 SELECT link.relationship_id,link.source_reference_kind,link.set_id,CAST(NULL AS INTEGER),groups.snapshot_key
 FROM logiqx_set_links AS link CROSS JOIN logiqx_games AS native USING(set_id)
+CROSS JOIN logiqx_game_attribute_positions AS position ON position.set_id=link.set_id
+ AND position.field_kind=CASE link.link_kind WHEN 'cloneof' THEN 3 WHEN 'romof' THEN 4 WHEN 'sampleof' THEN 5 END
 CROSS JOIN catalog_sets AS sets USING(set_id) CROSS JOIN catalog_set_groups AS groups USING(set_group_id)
 CROSS JOIN catalog_snapshots AS snapshot USING(snapshot_key)
 CROSS JOIN parser_interpretations AS interpretation USING(interpretation_key)
@@ -30,6 +32,8 @@ WHERE sets.source_element_kind='logiqx_game' AND interpretation.format='logiqx'
 UNION ALL
 SELECT reference.relationship_id,reference.source_reference_kind,reference.set_id,CAST(NULL AS INTEGER),groups.snapshot_key
 FROM logiqx_device_references AS reference CROSS JOIN logiqx_games AS native USING(set_id)
+CROSS JOIN logiqx_device_reference_attribute_positions AS position ON position.set_id=reference.set_id
+ AND position.reference_order=reference.reference_order AND position.field_kind=0
 CROSS JOIN catalog_sets AS sets USING(set_id) CROSS JOIN catalog_set_groups AS groups USING(set_group_id)
 CROSS JOIN catalog_snapshots AS snapshot USING(snapshot_key)
 CROSS JOIN parser_interpretations AS interpretation USING(interpretation_key)
@@ -40,6 +44,7 @@ SELECT declaration.relationship_id,declaration.source_reference_kind,occurrence.
 FROM logiqx_file_merges AS declaration CROSS JOIN asset_occurrences AS occurrence USING(occurrence_id)
 CROSS JOIN logiqx_games AS native ON native.set_id=occurrence.record_id
 CROSS JOIN logiqx_rom_claims AS payload ON payload.occurrence_id=declaration.occurrence_id
+CROSS JOIN logiqx_rom_attribute_positions AS position ON position.occurrence_id=declaration.occurrence_id AND position.field_kind=5
 CROSS JOIN catalog_sets AS sets ON sets.set_id=native.set_id CROSS JOIN catalog_set_groups AS groups USING(set_group_id)
 CROSS JOIN catalog_snapshots AS snapshot USING(snapshot_key)
 CROSS JOIN parser_interpretations AS interpretation USING(interpretation_key)
@@ -51,6 +56,7 @@ SELECT declaration.relationship_id,declaration.source_reference_kind,occurrence.
 FROM logiqx_file_merges AS declaration CROSS JOIN asset_occurrences AS occurrence USING(occurrence_id)
 CROSS JOIN logiqx_games AS native ON native.set_id=occurrence.record_id
 CROSS JOIN logiqx_disk_claims AS payload ON payload.occurrence_id=declaration.occurrence_id
+CROSS JOIN logiqx_disk_attribute_positions AS position ON position.occurrence_id=declaration.occurrence_id AND position.field_kind=3
 CROSS JOIN catalog_sets AS sets ON sets.set_id=native.set_id CROSS JOIN catalog_set_groups AS groups USING(set_group_id)
 CROSS JOIN catalog_snapshots AS snapshot USING(snapshot_key)
 CROSS JOIN parser_interpretations AS interpretation USING(interpretation_key)

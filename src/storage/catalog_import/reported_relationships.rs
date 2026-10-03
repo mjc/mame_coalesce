@@ -308,7 +308,7 @@ pub(super) fn insert_asset_merge(
     let relationship = register(connection, snapshot, owner.reference_kind())?;
     let mut columns = "occurrence_id,relationship_id,merge_name".to_owned();
     let mut placeholders = "?,?,?".to_owned();
-    let stores_location = !matches!(owner, MergeOwner::ClrMamePro);
+    let stores_location = matches!(owner, MergeOwner::Mame(_));
     if stores_location {
         columns.push_str(",source_line,source_column");
         placeholders.push_str(",?,?");
@@ -333,6 +333,8 @@ pub(super) fn insert_asset_merge(
         } else {
             query.execute(connection)?;
         }
+    } else if let Some(claim_kind) = owner.claim_kind() {
+        query.bind::<Text, _>(claim_kind).execute(connection)?;
     } else {
         query.execute(connection)?;
     }

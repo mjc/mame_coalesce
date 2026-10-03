@@ -112,7 +112,7 @@ Logiqx imports retain the original size/checksum spelling, empty declarations,
 and text boundary spaces in native catalog fields. Uninterpretable declarations
 remain queryable but are not usable matching evidence and cannot assign a shared
 file UUID. Logical disk hashes never identify whole-container files. The default
-`logiqx-declared-text-compat-v1` interpretation accepts sparse compatibility
+`logiqx-declared-text-compat-v2` interpretation accepts sparse compatibility
 documents; it is not strict DTD validation.
 
 ClrMamePro ROM declarations likewise retain checksum case, leading-zero size
@@ -308,6 +308,19 @@ hash position. Clone/merge explanations point at their declaring attribute.
 The named `no-intro-pc-synthetic-provenance-v2` interpretation detects recognized
 attribute reordering while ignoring vendor-only gaps and reindentation.
 Authentic producer grammar remains separate unfinished work.
+
+Logiqx retains all 44 DTD 1.5 attributes in their native value owners, with
+position-only tables for explicit declarations. Closed field enums distinguish
+these from named compatibility fields such as ROM serials and device references.
+Coordinates point at attribute QNames in decoded Unicode scalars; transport BOMs
+do not count as columns. Omitted defaults acquire no invented positions.
+The `logiqx-declared-text-compat-v2` interpretation tracks recognized attribute
+reordering, independently of child order, vendor-only gaps and reindentation.
+Bounded file queries, history and relationship explanations use these native
+facts without reading the original document. Publication requires complete
+attribute positions and actual native ancestry; standalone integrity checks also
+find orphaned draft values. This does not establish strict DTD conformance or
+complete format/corpus acceptance.
 
 Import errors can retain an exact byte excerpt with a start-inclusive,
 end-exclusive highlight relative to that saved excerpt, not the whole file.
@@ -695,6 +708,19 @@ and catalog regressions cover these behaviors:
 - `native_logiqx_history` checks option and repeated-child edits, native order
   across media families, default presence, vendor-only insertions, whitespace
   changes and repeated-owner permutations without false size/hash changes.
+- `logiqx_attribute_fields` checks every DTD attribute's native field code,
+  lexical order and exact QName in UTF-8, UTF-8 with BOM and UTF-16, plus named
+  compatibility fields, omitted/explicit defaults and empty/NULL distinctions.
+  It checks source-free payloads, history and explanations after backup/restore,
+  SQL-fault rollback after a position write, and independent late-EOF failure.
+- `logiqx_attribute_guards` checks native parents, immutable positions and all
+  value-owner REPLACE paths with foreign keys and recursive triggers off. It
+  independently checks orphaned drafts, publication closure and BIOS ancestry.
+  `logiqx_attribute_provenance` checks recognized attribute reordering without
+  false changes from vendor attributes or reindentation.
+- `catalog_ancestor_guards` checks stable publisher/catalog/document keys while
+  permitting label edits, and confirms the actual Logiqx publication guard
+  seeks the requested snapshot instead of scanning other native owners.
 - `native_mame_specification` checks ordered machine specification facts and
   their stored field values.
 - `clrmamepro_native_model` checks native CMP header directives, set/sample

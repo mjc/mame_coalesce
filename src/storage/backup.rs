@@ -503,7 +503,25 @@ fn check_connection(
     }
     check_retained_documents(conn, &mut report)?;
     check_publication_states(conn, &mut report)?;
+    check_logiqx_attribute_positions(conn, &mut report)?;
     Ok(report)
+}
+
+fn check_logiqx_attribute_positions(
+    conn: &mut SqliteConnection,
+    report: &mut IntegrityReport,
+) -> Result<()> {
+    // Global corruption checks belong here, not in per-edition publication.
+    let rows = sql_query("SELECT 'Logiqx attributes: ' || reason || ' (' || owner_kind || ':' || CAST(owner_a AS TEXT) || ',' || owner_b || ', field ' || field_kind || ')' AS integrity_check FROM logiqx_attribute_violations")
+        .load_iter::<IntegrityCheckRow, _>(conn)
+        .map_err(|error| backup_error(format!("Logiqx attribute integrity check failed: {error}")))?;
+    for row in rows {
+        let row = row.map_err(|error| {
+            backup_error(format!("Logiqx attribute integrity check failed: {error}"))
+        })?;
+        push_issue(&mut report.durable_issues, row.integrity_check);
+    }
+    Ok(())
 }
 
 fn check_schema(conn: &mut SqliteConnection, report: &mut IntegrityReport) -> bool {

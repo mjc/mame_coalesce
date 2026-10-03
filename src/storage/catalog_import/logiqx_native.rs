@@ -4,9 +4,137 @@ use diesel::{
 };
 
 use crate::{
-    domain::{CatalogSetId, SnapshotKey},
-    logiqx::{DataFile, Game, GameTextPosition, HeaderTextPosition},
+    domain::{CatalogSetId, OccurrenceId, SnapshotKey},
+    logiqx::{
+        AttributePosition, BiosSetAttribute, ClrMameProAttribute, DataFile, DiskAttribute,
+        DocumentAttribute, Game, GameAttribute, GameTextPosition, HeaderTextPosition,
+        NameAttribute, ReleaseAttribute, RomAttribute, RomCenterAttribute,
+    },
 };
+
+/// Actual native owner keys; family ordinals are never attribute ordinals.
+#[derive(Clone, Copy)]
+enum PositionOwner<'a> {
+    Document(&'a SnapshotKey),
+    ClrMamePro(&'a SnapshotKey),
+    RomCenter(&'a SnapshotKey),
+    Game(CatalogSetId),
+    Release(CatalogSetId, i64),
+    Bios(CatalogSetId, i64),
+    Archive(CatalogSetId, i64),
+    Device(CatalogSetId, i64),
+    Rom(OccurrenceId),
+    Disk(OccurrenceId),
+    Sample(OccurrenceId),
+}
+
+impl PositionOwner<'_> {
+    const fn table_and_keys(&self) -> (&'static str, &'static str, &'static str) {
+        match self {
+            Self::Document(_) => ("logiqx_document_attribute_positions", "snapshot_key", "?"),
+            Self::ClrMamePro(_) => ("logiqx_clrmamepro_attribute_positions", "snapshot_key", "?"),
+            Self::RomCenter(_) => ("logiqx_romcenter_attribute_positions", "snapshot_key", "?"),
+            Self::Game(_) => ("logiqx_game_attribute_positions", "set_id", "?"),
+            Self::Release(..) => (
+                "logiqx_release_attribute_positions",
+                "set_id,release_order",
+                "?,?",
+            ),
+            Self::Bios(..) => (
+                "logiqx_bios_attribute_positions",
+                "set_id,bios_order",
+                "?,?",
+            ),
+            Self::Archive(..) => (
+                "logiqx_archive_attribute_positions",
+                "set_id,archive_order",
+                "?,?",
+            ),
+            Self::Device(..) => (
+                "logiqx_device_reference_attribute_positions",
+                "set_id,reference_order",
+                "?,?",
+            ),
+            Self::Rom(_) => ("logiqx_rom_attribute_positions", "occurrence_id", "?"),
+            Self::Disk(_) => ("logiqx_disk_attribute_positions", "occurrence_id", "?"),
+            Self::Sample(_) => ("logiqx_sample_attribute_positions", "occurrence_id", "?"),
+        }
+    }
+}
+
+fn insert_positions<Field: Copy>(
+    conn: &mut SqliteConnection,
+    owner: PositionOwner<'_>,
+    positions: &[AttributePosition<Field>],
+    field_code: impl Fn(Field) -> i64,
+) -> crate::Result<()> {
+    let (table, keys, placeholders) = owner.table_and_keys();
+    let statement = format!(
+        "INSERT INTO {table} ({keys},field_kind,source_order,source_line,source_column) VALUES ({placeholders},?,?,?,?)"
+    );
+    for position in positions {
+        let mut query = sql_query(&statement).into_boxed::<diesel::sqlite::Sqlite>();
+        query = match owner {
+            PositionOwner::Document(snapshot)
+            | PositionOwner::ClrMamePro(snapshot)
+            | PositionOwner::RomCenter(snapshot) => query.bind::<Text, _>(snapshot.as_str()),
+            PositionOwner::Game(set) => query.bind::<BigInt, _>(set.as_i64()),
+            PositionOwner::Release(set, order)
+            | PositionOwner::Bios(set, order)
+            | PositionOwner::Archive(set, order)
+            | PositionOwner::Device(set, order) => query
+                .bind::<BigInt, _>(set.as_i64())
+                .bind::<BigInt, _>(order),
+            PositionOwner::Rom(occurrence)
+            | PositionOwner::Disk(occurrence)
+            | PositionOwner::Sample(occurrence) => {
+                query.bind::<BigInt, _>(occurrence.database_value())
+            }
+        };
+        query
+            .bind::<BigInt, _>(field_code(position.field))
+            .bind::<BigInt, _>(checked_family_order(position.source_order, "attributes")?)
+            .bind::<BigInt, _>(position.location.line)
+            .bind::<BigInt, _>(position.location.column)
+            .execute(conn)?;
+    }
+    Ok(())
+}
+
+pub(super) enum MediaAttributePositions {
+    Rom(Vec<AttributePosition<RomAttribute>>),
+    Disk(Vec<AttributePosition<DiskAttribute>>),
+    Sample(Vec<AttributePosition<NameAttribute>>),
+}
+
+impl MediaAttributePositions {
+    pub(super) fn insert(
+        &self,
+        conn: &mut SqliteConnection,
+        occurrence: OccurrenceId,
+    ) -> crate::Result<()> {
+        match self {
+            Self::Rom(positions) => insert_positions(
+                conn,
+                PositionOwner::Rom(occurrence),
+                positions,
+                RomAttribute::code,
+            ),
+            Self::Disk(positions) => insert_positions(
+                conn,
+                PositionOwner::Disk(occurrence),
+                positions,
+                DiskAttribute::code,
+            ),
+            Self::Sample(positions) => insert_positions(
+                conn,
+                PositionOwner::Sample(occurrence),
+                positions,
+                NameAttribute::code,
+            ),
+        }
+    }
+}
 
 #[derive(Clone)]
 enum DeclaredValue<T> {
@@ -36,6 +164,7 @@ const fn declared_value(value: String, was_present: bool) -> DeclaredValue<Strin
 
 #[derive(Clone)]
 struct ClrMameProOptions {
+    attribute_positions: Vec<AttributePosition<ClrMameProAttribute>>,
     source_order: Option<usize>,
     line: i64,
     column: i64,
@@ -47,6 +176,7 @@ struct ClrMameProOptions {
 
 #[derive(Clone)]
 struct RomCenterOptions {
+    attribute_positions: Vec<AttributePosition<RomCenterAttribute>>,
     source_order: Option<usize>,
     line: i64,
     column: i64,
@@ -60,6 +190,7 @@ struct RomCenterOptions {
 }
 
 pub(super) struct DocumentDetails {
+    attribute_positions: Vec<AttributePosition<DocumentAttribute>>,
     header_text_positions: Vec<HeaderTextPosition>,
     clrmamepro: Option<ClrMameProOptions>,
     romcenter: Option<RomCenterOptions>,
@@ -73,6 +204,7 @@ impl DocumentDetails {
         let clrmamepro = data_file.clrmamepro_options_opt().map(|options| {
             let location = options.location();
             ClrMameProOptions {
+                attribute_positions: options.attribute_positions().to_vec(),
                 source_order: header.and_then(|header| header.child_source_order(location)),
                 line: location.line,
                 column: location.column,
@@ -94,6 +226,7 @@ impl DocumentDetails {
         let romcenter = data_file.romcenter_options_opt().map(|options| {
             let location = options.location();
             RomCenterOptions {
+                attribute_positions: options.attribute_positions().to_vec(),
                 source_order: header.and_then(|header| header.child_source_order(location)),
                 line: location.line,
                 column: location.column,
@@ -125,6 +258,7 @@ impl DocumentDetails {
             }
         });
         let details = Self {
+            attribute_positions: data_file.attribute_positions().to_vec(),
             header_text_positions,
             clrmamepro,
             romcenter,
@@ -143,6 +277,12 @@ impl DocumentDetails {
         conn: &mut SqliteConnection,
         snapshot_key: &SnapshotKey,
     ) -> crate::Result<()> {
+        insert_positions(
+            conn,
+            PositionOwner::Document(snapshot_key),
+            &self.attribute_positions,
+            DocumentAttribute::code,
+        )?;
         if let Some(options) = &self.clrmamepro {
             sql_query(
                 "INSERT INTO logiqx_clrmamepro_options (
@@ -169,6 +309,12 @@ impl DocumentDetails {
             .bind::<Text, _>(options.forcepacking.value())
             .bind::<Bool, _>(options.forcepacking.was_present())
             .execute(conn)?;
+            insert_positions(
+                conn,
+                PositionOwner::ClrMamePro(snapshot_key),
+                &options.attribute_positions,
+                ClrMameProAttribute::code,
+            )?;
         }
 
         if let Some(options) = &self.romcenter {
@@ -206,6 +352,12 @@ impl DocumentDetails {
             .bind::<Text, _>(options.locksamplemode.value())
             .bind::<Bool, _>(options.locksamplemode.was_present())
             .execute(conn)?;
+            insert_positions(
+                conn,
+                PositionOwner::RomCenter(snapshot_key),
+                &options.attribute_positions,
+                RomCenterAttribute::code,
+            )?;
         }
 
         for position in &self.header_text_positions {
@@ -237,6 +389,7 @@ struct CommentDetails {
 }
 
 struct ReleaseDetails {
+    attribute_positions: Vec<AttributePosition<ReleaseAttribute>>,
     release_order: i64,
     source_order: i64,
     name: String,
@@ -249,6 +402,7 @@ struct ReleaseDetails {
 }
 
 struct BiosSetDetails {
+    attribute_positions: Vec<AttributePosition<BiosSetAttribute>>,
     bios_order: i64,
     source_order: i64,
     name: String,
@@ -259,6 +413,7 @@ struct BiosSetDetails {
 }
 
 struct ArchiveReferenceDetails {
+    attribute_positions: Vec<AttributePosition<NameAttribute>>,
     archive_order: i64,
     source_order: i64,
     archive_name: String,
@@ -267,6 +422,8 @@ struct ArchiveReferenceDetails {
 }
 
 pub(super) struct GameDetails {
+    attribute_positions: Vec<AttributePosition<GameAttribute>>,
+    device_attribute_positions: Vec<Vec<AttributePosition<NameAttribute>>>,
     text_positions: Vec<GameTextPosition>,
     comments: Vec<CommentDetails>,
     releases: Vec<ReleaseDetails>,
@@ -276,7 +433,6 @@ pub(super) struct GameDetails {
 
 impl GameDetails {
     pub(super) fn from_game(game: &Game) -> crate::Result<Self> {
-        let text_positions = game.text_positions().to_vec();
         let comments = game
             .comments()
             .iter()
@@ -302,6 +458,7 @@ impl GameDetails {
             .map(|(order, release)| -> crate::Result<_> {
                 let location = release.location();
                 Ok(ReleaseDetails {
+                    attribute_positions: release.attribute_positions().to_vec(),
                     release_order: checked_family_order(order, "releases")?,
                     source_order: checked_source_order(
                         game.child_source_order(location),
@@ -327,6 +484,7 @@ impl GameDetails {
             .map(|(order, bios_set)| -> crate::Result<_> {
                 let location = bios_set.location();
                 Ok(BiosSetDetails {
+                    attribute_positions: bios_set.attribute_positions().to_vec(),
                     bios_order: checked_family_order(order, "BIOS sets")?,
                     source_order: checked_source_order(
                         game.child_source_order(location),
@@ -350,6 +508,7 @@ impl GameDetails {
             .map(|(order, archive)| -> crate::Result<_> {
                 let location = archive.location();
                 Ok(ArchiveReferenceDetails {
+                    attribute_positions: archive.attribute_positions().to_vec(),
                     archive_order: checked_family_order(order, "archive references")?,
                     source_order: checked_source_order(
                         game.child_source_order(location),
@@ -362,7 +521,13 @@ impl GameDetails {
             })
             .collect::<crate::Result<Vec<_>>>()?;
         Ok(Self {
-            text_positions,
+            attribute_positions: game.attribute_positions().to_vec(),
+            device_attribute_positions: game
+                .device_references()
+                .iter()
+                .map(|reference| reference.attribute_positions().to_vec())
+                .collect(),
+            text_positions: game.text_positions().to_vec(),
             comments,
             releases,
             bios_sets,
@@ -375,6 +540,20 @@ impl GameDetails {
         conn: &mut SqliteConnection,
         set_id: CatalogSetId,
     ) -> crate::Result<()> {
+        insert_positions(
+            conn,
+            PositionOwner::Game(set_id),
+            &self.attribute_positions,
+            GameAttribute::code,
+        )?;
+        for (order, positions) in self.device_attribute_positions.iter().enumerate() {
+            insert_positions(
+                conn,
+                PositionOwner::Device(set_id, checked_family_order(order, "device references")?),
+                positions,
+                NameAttribute::code,
+            )?;
+        }
         for comment in &self.comments {
             sql_query(
                 "INSERT INTO logiqx_game_comments \
@@ -409,6 +588,12 @@ impl GameDetails {
             .bind::<BigInt, _>(release.line)
             .bind::<BigInt, _>(release.column)
             .execute(conn)?;
+            insert_positions(
+                conn,
+                PositionOwner::Release(set_id, release.release_order),
+                &release.attribute_positions,
+                ReleaseAttribute::code,
+            )?;
         }
 
         for bios_set in &self.bios_sets {
@@ -428,6 +613,12 @@ impl GameDetails {
             .bind::<BigInt, _>(bios_set.line)
             .bind::<BigInt, _>(bios_set.column)
             .execute(conn)?;
+            insert_positions(
+                conn,
+                PositionOwner::Bios(set_id, bios_set.bios_order),
+                &bios_set.attribute_positions,
+                BiosSetAttribute::code,
+            )?;
         }
 
         for archive in &self.archive_references {
@@ -443,8 +634,22 @@ impl GameDetails {
             .bind::<BigInt, _>(archive.line)
             .bind::<BigInt, _>(archive.column)
             .execute(conn)?;
+            insert_positions(
+                conn,
+                PositionOwner::Archive(set_id, archive.archive_order),
+                &archive.attribute_positions,
+                NameAttribute::code,
+            )?;
         }
 
+        self.insert_text_positions(conn, set_id)
+    }
+
+    fn insert_text_positions(
+        &self,
+        conn: &mut SqliteConnection,
+        set_id: CatalogSetId,
+    ) -> crate::Result<()> {
         for position in &self.text_positions {
             sql_query(
                 "INSERT INTO logiqx_game_text_positions \

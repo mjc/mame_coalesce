@@ -5,7 +5,47 @@ use serde::ser::{SerializeMap, Serializer};
 #[cfg(test)]
 use crate::logiqx::RecordLocation;
 
-use super::{AttributePosition, DeclaredText};
+use super::{AttributeLocation, AttributePosition, DeclaredText};
+
+macro_rules! attribute_fields {
+    ($name:ident { $($variant:ident = $code:literal => $wire:literal),+ $(,)? }) => {
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        #[repr(i64)]
+        pub enum $name {
+            $($variant = $code),+
+        }
+
+        impl $name {
+            #[must_use]
+            pub const fn code(self) -> i64 {
+                self as i64
+            }
+
+            #[must_use]
+            pub const fn as_str(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $wire),+
+                }
+            }
+
+            pub(crate) fn from_name(name: &str) -> Option<Self> {
+                match name {
+                    $($wire => Some(Self::$variant)),+,
+                    _ => None,
+                }
+            }
+
+            pub(crate) const fn from_code(code: i64) -> Option<Self> {
+                match code {
+                    $($code => Some(Self::$variant)),+,
+                    _ => None,
+                }
+            }
+        }
+    };
+}
+
+pub(crate) use attribute_fields;
 
 /// Source-ordered XML attributes, each owning its value and declaration position.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -74,7 +114,10 @@ impl XmlAttributes {
             identify(name).map(|field| AttributePosition {
                 field,
                 source_order: declared.source_order,
-                location: declared.location,
+                location: AttributeLocation {
+                    line: declared.location.line,
+                    column: declared.location.column,
+                },
             })
         })
     }

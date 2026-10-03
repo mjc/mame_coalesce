@@ -1,4 +1,7 @@
-use super::{Disk, RecordLocation, Rom};
+use super::{
+    AttributePosition, BiosSetAttribute, Disk, GameAttribute, NameAttribute, RecordLocation,
+    ReleaseAttribute, Rom,
+};
 use crate::xml_reader::Element;
 
 #[derive(Debug)]
@@ -22,9 +25,10 @@ pub struct Game {
     disks: Vec<Disk>,
     samples: Vec<Sample>,
     archives: Vec<Archive>,
-    device_refs: Vec<String>,
+    device_refs: Vec<DeviceReference>,
     child_locations: Vec<RecordLocation>,
     text_positions: Vec<GameTextPosition>,
+    attribute_positions: Vec<AttributePosition<GameAttribute>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,6 +77,7 @@ pub struct Release {
     default: String,
     default_was_explicit: bool,
     location: RecordLocation,
+    attribute_positions: Vec<AttributePosition<ReleaseAttribute>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -82,18 +87,39 @@ pub struct BiosSet {
     default: String,
     default_was_explicit: bool,
     location: RecordLocation,
+    attribute_positions: Vec<AttributePosition<BiosSetAttribute>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Sample {
     name: String,
     location: RecordLocation,
+    attribute_positions: Vec<AttributePosition<NameAttribute>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Archive {
     name: String,
     location: RecordLocation,
+    attribute_positions: Vec<AttributePosition<NameAttribute>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeviceReference {
+    name: String,
+    attribute_positions: Vec<AttributePosition<NameAttribute>>,
+}
+
+impl DeviceReference {
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    #[must_use]
+    pub fn attribute_positions(&self) -> &[AttributePosition<NameAttribute>] {
+        &self.attribute_positions
+    }
 }
 
 fn enum_attribute(
@@ -142,7 +168,13 @@ impl Game {
         let mut archives = Vec::new();
         for child in element.children() {
             match child.name.as_str() {
-                "device_ref" => device_refs.push(child.required_attribute("name")?),
+                "device_ref" => device_refs.push(DeviceReference {
+                    name: child.required_attribute("name")?,
+                    attribute_positions: child
+                        .attributes
+                        .positions(NameAttribute::from_name)
+                        .collect(),
+                }),
                 "comment" => comments.push(NativeComment {
                     text: child.direct_text(),
                     location: child.location,
@@ -154,10 +186,18 @@ impl Game {
                 "sample" => samples.push(Sample {
                     name: child.required_attribute("name")?,
                     location: child.location,
+                    attribute_positions: child
+                        .attributes
+                        .positions(NameAttribute::from_name)
+                        .collect(),
                 }),
                 "archive" => archives.push(Archive {
                     name: child.required_attribute("name")?,
                     location: child.location,
+                    attribute_positions: child
+                        .attributes
+                        .positions(NameAttribute::from_name)
+                        .collect(),
                 }),
                 _ => {}
             }
@@ -195,6 +235,10 @@ impl Game {
             samples,
             archives,
             device_refs,
+            attribute_positions: element
+                .attributes
+                .positions(GameAttribute::from_name)
+                .collect(),
         })
     }
 
@@ -247,7 +291,15 @@ impl Game {
         self.manufacturer.as_deref()
     }
     pub fn device_refs(&self) -> impl Iterator<Item = &str> {
-        self.device_refs.iter().map(String::as_str)
+        self.device_refs.iter().map(DeviceReference::name)
+    }
+    #[must_use]
+    pub fn device_references(&self) -> &[DeviceReference] {
+        &self.device_refs
+    }
+    #[must_use]
+    pub fn attribute_positions(&self) -> &[AttributePosition<GameAttribute>] {
+        &self.attribute_positions
     }
     #[must_use]
     pub fn roms(&self) -> &[Rom] {
@@ -293,6 +345,10 @@ impl Release {
             default: enum_attribute(element, "default", "no", &["yes", "no"])?,
             default_was_explicit: element.attributes.contains_key("default"),
             location: element.location,
+            attribute_positions: element
+                .attributes
+                .positions(ReleaseAttribute::from_name)
+                .collect(),
         })
     }
 
@@ -324,6 +380,10 @@ impl Release {
     pub const fn location(&self) -> RecordLocation {
         self.location
     }
+    #[must_use]
+    pub fn attribute_positions(&self) -> &[AttributePosition<ReleaseAttribute>] {
+        &self.attribute_positions
+    }
 }
 
 impl BiosSet {
@@ -334,6 +394,10 @@ impl BiosSet {
             default: enum_attribute(element, "default", "no", &["yes", "no"])?,
             default_was_explicit: element.attributes.contains_key("default"),
             location: element.location,
+            attribute_positions: element
+                .attributes
+                .positions(BiosSetAttribute::from_name)
+                .collect(),
         })
     }
     #[must_use]
@@ -356,6 +420,10 @@ impl BiosSet {
     pub const fn location(&self) -> RecordLocation {
         self.location
     }
+    #[must_use]
+    pub fn attribute_positions(&self) -> &[AttributePosition<BiosSetAttribute>] {
+        &self.attribute_positions
+    }
 }
 
 impl NativeComment {
@@ -371,6 +439,10 @@ impl NativeComment {
 
 impl Sample {
     #[must_use]
+    pub fn attribute_positions(&self) -> &[AttributePosition<NameAttribute>] {
+        &self.attribute_positions
+    }
+    #[must_use]
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -381,6 +453,10 @@ impl Sample {
 }
 
 impl Archive {
+    #[must_use]
+    pub fn attribute_positions(&self) -> &[AttributePosition<NameAttribute>] {
+        &self.attribute_positions
+    }
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name

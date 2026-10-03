@@ -15,6 +15,7 @@ use crate::domain::{
 use super::catalog_coverage::CoverageId;
 use super::db::Pool;
 
+mod logiqx;
 mod no_intro_database;
 mod no_intro_pc;
 mod software;
@@ -941,6 +942,7 @@ struct MachineConditionRow {
 
 #[derive(Default)]
 struct CatalogRecords {
+    logiqx_attributes: BTreeMap<i64, Vec<serde_json::Value>>,
     sets: BTreeMap<String, Vec<SetRow>>,
     requirements: BTreeMap<i64, BTreeMap<String, Vec<serde_json::Value>>>,
     machine_switches: BTreeMap<i64, Vec<serde_json::Value>>,
@@ -1201,6 +1203,7 @@ struct NoIntroDatHeaderRow {
 
 #[derive(PartialEq, Eq)]
 struct DocumentMetadata {
+    logiqx_attributes: logiqx::DocumentAttributes,
     mame: Option<MameDocumentMetadataRow>,
     logiqx: Option<LogiqxDocumentMetadataRow>,
     clrmamepro: Option<LogiqxClrMameProOptionsRow>,
@@ -1382,6 +1385,7 @@ fn document_metadata(
     let no_intro_pc = no_intro_pc::load_document(conn, snapshot)?;
     let software = software::load_document(conn, snapshot)?;
     Ok(DocumentMetadata {
+        logiqx_attributes: logiqx::load_document(conn, snapshot)?,
         mame,
         logiqx,
         clrmamepro,
@@ -1895,7 +1899,10 @@ fn records(
     let cmp_native_ranks = cmp_set_native_ranks(conn, key)?;
     let cmp_set_facts = load_cmp_set_facts(conn, key, &cmp_native_ranks)?;
 
-    let mut result = CatalogRecords::default();
+    let mut result = CatalogRecords {
+        logiqx_attributes: logiqx::load_games(conn, key)?,
+        ..CatalogRecords::default()
+    };
     for set in sets {
         result
             .sets
@@ -1939,12 +1946,14 @@ fn records(
     sort_json_groups(&mut result.cmp_set_facts);
     let cmp_positions = load_cmp_rom_positions(conn, key, &cmp_native_ranks)?;
     let no_intro_pc_rom_attributes = no_intro_pc::load_rom_attributes(conn, key)?;
+    let logiqx_media_attributes = logiqx::load_media(conn, key)?;
     assemble_requirements(
         &mut result,
         requirements,
         &cmp_positions,
         &no_intro_dat_rom_positions,
         &no_intro_pc_rom_attributes,
+        &logiqx_media_attributes,
     );
     normalize_logiqx_child_order(&mut result);
     normalize_mame_child_order(&mut result, &mame_child_ranks);
@@ -3034,6 +3043,7 @@ fn assemble_requirements(
     cmp_positions: &BTreeMap<i64, Vec<serde_json::Value>>,
     no_intro_dat_rom_positions: &BTreeMap<i64, Vec<serde_json::Value>>,
     no_intro_pc_rom_attributes: &BTreeMap<i64, Vec<serde_json::Value>>,
+    logiqx_media_attributes: &BTreeMap<i64, Vec<serde_json::Value>>,
 ) {
     for row in requirements {
         let no_intro_dat_attributes = no_intro_dat_rom_attributes(&row, no_intro_dat_rom_positions);
@@ -3075,6 +3085,7 @@ fn assemble_requirements(
                 "writeable": row.mame_writeable.map(|value| value != 0),
             },
             "logiqx_attributes": {
+                "attributes": logiqx_media_attributes.get(&row.occurrence_id),
                 "size_text": row.logiqx_size_text,
                 "crc_text": row.logiqx_crc_text,
                 "md5_text": row.logiqx_md5_text,
@@ -3558,6 +3569,7 @@ fn owner_metadata(sets: &[SetRow], records: &CatalogRecords) -> Vec<serde_json::
 
 fn set_metadata(records: &CatalogRecords, set: &SetRow) -> serde_json::Value {
     serde_json::json!({
+        "logiqx_attributes": records.logiqx_attributes.get(&set.set_id),
         "mame_machine_facts": records.mame_machine_facts.get(&set.set_id),
         "mame_machine_specification_facts": records.mame_machine_specification_facts.get(&set.set_id),
         "mame_machine_dependencies": records.mame_machine_dependencies.get(&set.set_id),

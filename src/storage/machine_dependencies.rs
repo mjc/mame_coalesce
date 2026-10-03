@@ -130,12 +130,16 @@ fn load_dependencies(
         MAME_DEPENDENCIES
     } else {
         "SELECT links.set_id, links.link_kind AS dependency_kind, links.target_name \
-         FROM (SELECT sets.set_id, sets.set_name, link.link_kind, link.target_name, link.source_line, link.source_column, 0 AS reference_order \
+         FROM (SELECT sets.set_id, sets.set_name, link.link_kind, link.target_name, position.source_line, position.source_column, 0 AS reference_order \
                FROM logiqx_set_links AS link JOIN snapshot_sets AS sets USING (set_id) \
+               JOIN logiqx_game_attribute_positions AS position ON position.set_id=link.set_id \
+                AND position.field_kind=CASE link.link_kind WHEN 'romof' THEN 4 WHEN 'sampleof' THEN 5 END \
                WHERE sets.snapshot_key = ? AND link.link_kind IN ('romof', 'sampleof') \
                UNION ALL \
-               SELECT sets.set_id, sets.set_name, 'device_ref', reference.target_name, reference.source_line, reference.source_column, reference.reference_order \
+               SELECT sets.set_id, sets.set_name, 'device_ref', reference.target_name, position.source_line, position.source_column, reference.reference_order \
                FROM logiqx_device_references AS reference JOIN snapshot_sets AS sets USING (set_id) \
+               JOIN logiqx_device_reference_attribute_positions AS position \
+                ON position.set_id=reference.set_id AND position.reference_order=reference.reference_order AND position.field_kind=0 \
                WHERE sets.snapshot_key = ?) AS links \
          ORDER BY links.set_name, links.source_line, links.source_column, links.reference_order"
     };

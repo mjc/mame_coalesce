@@ -309,7 +309,7 @@ impl ParserInterpretationKey {
 
     pub(crate) fn rules_version(format: &str) -> &'static str {
         match format {
-            "logiqx" => "logiqx-declared-text-compat-v1",
+            "logiqx" => "logiqx-declared-text-compat-v2",
             "mame-listxml" => "mame-observed-compat-declared-text-v1",
             "clrmamepro-dat" => "clrmamepro-declared-text-compat-v1",
             "no-intro-pc-xml" => "no-intro-pc-synthetic-provenance-v2",
@@ -2098,6 +2098,14 @@ mod tests {
                 "{format}"
             );
         }
+    }
+
+    #[test]
+    fn logiqx_interpretation_versions_declared_attribute_provenance() {
+        assert_eq!(
+            ParserInterpretationKey::rules_version("logiqx"),
+            "logiqx-declared-text-compat-v2",
+        );
     }
 
     #[test]

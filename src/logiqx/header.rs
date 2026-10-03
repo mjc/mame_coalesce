@@ -1,6 +1,9 @@
 use serde::Deserialize;
 
-use crate::{logiqx::RecordLocation, xml_reader::Element};
+use crate::{
+    logiqx::{AttributePosition, ClrMameProAttribute, RecordLocation, RomCenterAttribute},
+    xml_reader::Element,
+};
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct Header {
@@ -76,6 +79,7 @@ pub struct ClrMameProOptions {
     forcemerging: Option<String>,
     forcenodump: Option<String>,
     forcepacking: Option<String>,
+    attribute_positions: Vec<AttributePosition<ClrMameProAttribute>>,
 }
 
 #[derive(Clone, Debug)]
@@ -88,6 +92,7 @@ pub struct RomCenterOptions {
     lockrommode: Option<String>,
     lockbiosmode: Option<String>,
     locksamplemode: Option<String>,
+    attribute_positions: Vec<AttributePosition<RomCenterAttribute>>,
 }
 
 fn option_value(element: &Element, name: &str, values: &[&str]) -> crate::Result<Option<String>> {
@@ -105,6 +110,10 @@ fn option_value(element: &Element, name: &str, values: &[&str]) -> crate::Result
 }
 
 impl ClrMameProOptions {
+    #[must_use]
+    pub fn attribute_positions(&self) -> &[AttributePosition<ClrMameProAttribute>] {
+        &self.attribute_positions
+    }
     fn from_xml(element: &Element) -> crate::Result<Self> {
         Ok(Self {
             location: element.location,
@@ -112,6 +121,10 @@ impl ClrMameProOptions {
             forcemerging: option_value(element, "forcemerging", &["none", "split", "full"])?,
             forcenodump: option_value(element, "forcenodump", &["obsolete", "required", "ignore"])?,
             forcepacking: option_value(element, "forcepacking", &["zip", "unzip"])?,
+            attribute_positions: element
+                .attributes
+                .positions(ClrMameProAttribute::from_name)
+                .collect(),
         })
     }
 
@@ -151,6 +164,10 @@ impl ClrMameProOptions {
 }
 
 impl RomCenterOptions {
+    #[must_use]
+    pub fn attribute_positions(&self) -> &[AttributePosition<RomCenterAttribute>] {
+        &self.attribute_positions
+    }
     fn from_xml(element: &Element) -> crate::Result<Self> {
         Ok(Self {
             location: element.location,
@@ -161,6 +178,10 @@ impl RomCenterOptions {
             lockrommode: option_value(element, "lockrommode", &["yes", "no"])?,
             lockbiosmode: option_value(element, "lockbiosmode", &["yes", "no"])?,
             locksamplemode: option_value(element, "locksamplemode", &["yes", "no"])?,
+            attribute_positions: element
+                .attributes
+                .positions(RomCenterAttribute::from_name)
+                .collect(),
         })
     }
 

@@ -93,11 +93,11 @@ struct IdentityOnlySnapshot {
 }
 
 #[derive(QueryableByName)]
-struct IdentityRow {
+struct CatalogIdentityRow {
     #[diesel(sql_type = Text)]
-    first_value: String,
-    #[diesel(sql_type = Nullable<Text>)]
-    second_value: Option<String>,
+    source_key: String,
+    #[diesel(sql_type = Text)]
+    display_name: String,
 }
 
 struct SnapshotData {
@@ -243,6 +243,7 @@ enum NativeAssetFacts {
 }
 
 struct LogiqxAssetAttributes {
+    attribute_positions: logiqx_native::MediaAttributePositions,
     size_text: Option<String>,
     crc_text: Option<String>,
     md5_text: Option<String>,
@@ -307,6 +308,9 @@ impl SnapshotAsset {
             serial: expected.serial,
             date: expected.date,
             native: NativeAssetFacts::Logiqx(LogiqxAssetAttributes {
+                attribute_positions: logiqx_native::MediaAttributePositions::Rom(
+                    rom.attribute_positions().to_vec(),
+                ),
                 size_text: rom.size_text().map(str::to_owned),
                 crc_text: rom.crc_text().map(str::to_owned),
                 md5_text: rom.md5_text().map(str::to_owned),
@@ -600,6 +604,9 @@ fn logiqx_assets(
             serial: None,
             date: None,
             native: NativeAssetFacts::Logiqx(LogiqxAssetAttributes {
+                attribute_positions: logiqx_native::MediaAttributePositions::Disk(
+                    disk.attribute_positions().to_vec(),
+                ),
                 size_text: None,
                 crc_text: None,
                 md5_text: disk.md5_text().map(str::to_owned),
@@ -616,6 +623,9 @@ fn logiqx_assets(
             sample.name().to_owned(),
             sample.location(),
             NativeAssetFacts::Logiqx(LogiqxAssetAttributes {
+                attribute_positions: logiqx_native::MediaAttributePositions::Sample(
+                    sample.attribute_positions().to_vec(),
+                ),
                 size_text: None,
                 crc_text: None,
                 md5_text: None,
@@ -1203,25 +1213,7 @@ fn import_no_intro_database(
 fn ensure_source(pool: &Pool, request: &CatalogImportRequest) -> crate::Result<()> {
     let mut conn = pool.get()?;
     conn.immediate_transaction::<_, crate::Error, _>(|conn| {
-        sql_query(
-            "INSERT INTO publishing_sources (source_key, display_name) VALUES (?, ?) \
-             ON CONFLICT(source_key) DO NOTHING",
-        )
-        .bind::<Text, _>(request.source_key.as_str())
-        .bind::<Text, _>(&request.source_display_name)
-        .execute(conn)?;
-        let source = sql_query(
-            "SELECT display_name AS first_value, NULL AS second_value \
-             FROM publishing_sources WHERE source_key = ?",
-        )
-        .bind::<Text, _>(request.source_key.as_str())
-        .get_result::<IdentityRow>(conn)?;
-        if source.first_value != request.source_display_name {
-            return Err(crate::Error::SourceIdentityConflict(
-                request.source_key.as_str().to_owned(),
-            ));
-        }
-        Ok(())
+        super::publishing_sources::ensure(conn, &request.source_key, &request.source_display_name)
     })
 }
 
@@ -1398,45 +1390,30 @@ fn ensure_identities(
     request: &CatalogImportRequest,
     interpretation: &ParserInterpretationKey,
 ) -> crate::Result<()> {
-    sql_query(
-        "INSERT INTO publishing_sources (source_key, display_name) VALUES (?, ?) \
-         ON CONFLICT(source_key) DO NOTHING",
-    )
-    .bind::<Text, _>(request.source_key.as_str())
-    .bind::<Text, _>(&request.source_display_name)
-    .execute(conn)?;
-    let source = sql_query(
-        "SELECT display_name AS first_value, locator AS second_value \
-         FROM publishing_sources WHERE source_key = ?",
-    )
-    .bind::<Text, _>(request.source_key.as_str())
-    .get_result::<IdentityRow>(conn)?;
-    if source.first_value != request.source_display_name {
-        return Err(crate::Error::SourceIdentityConflict(
-            request.source_key.as_str().to_owned(),
-        ));
-    }
-
-    sql_query(
-        "INSERT INTO catalogs (catalog_key, source_key, display_name) VALUES (?, ?, ?) \
-         ON CONFLICT(catalog_key) DO NOTHING",
-    )
-    .bind::<Text, _>(request.catalog_key.as_str())
-    .bind::<Text, _>(request.source_key.as_str())
-    .bind::<Text, _>(&request.catalog_display_name)
-    .execute(conn)?;
-    let catalog = sql_query(
-        "SELECT source_key AS first_value, display_name AS second_value \
-         FROM catalogs WHERE catalog_key = ?",
-    )
-    .bind::<Text, _>(request.catalog_key.as_str())
-    .get_result::<IdentityRow>(conn)?;
-    if catalog.first_value != request.source_key.as_str()
-        || catalog.second_value.as_deref() != Some(request.catalog_display_name.as_str())
-    {
-        return Err(crate::Error::CatalogIdentityConflict(
-            request.catalog_key.as_str().to_owned(),
-        ));
+    super::publishing_sources::ensure(conn, &request.source_key, &request.source_display_name)?;
+    let catalog = sql_query("SELECT source_key, display_name FROM catalogs WHERE catalog_key = ?")
+        .bind::<Text, _>(request.catalog_key.as_str())
+        .get_result::<CatalogIdentityRow>(conn)
+        .optional()?;
+    match catalog {
+        Some(catalog)
+            if catalog.source_key != request.source_key.as_str()
+                || catalog.display_name != request.catalog_display_name =>
+        {
+            return Err(crate::Error::CatalogIdentityConflict(
+                request.catalog_key.as_str().to_owned(),
+            ));
+        }
+        Some(_) => {}
+        None => {
+            sql_query(
+                "INSERT INTO catalogs (catalog_key, source_key, display_name) VALUES (?, ?, ?)",
+            )
+            .bind::<Text, _>(request.catalog_key.as_str())
+            .bind::<Text, _>(request.source_key.as_str())
+            .bind::<Text, _>(&request.catalog_display_name)
+            .execute(conn)?;
+        }
     }
 
     sql_query(
@@ -1615,6 +1592,9 @@ fn insert_asset_requirement(
         content_uuid,
     )?;
     reported_relationships::insert_asset_merge(conn, snapshot_key, occurrence, asset)?;
+    if let NativeAssetFacts::Logiqx(attributes) = &asset.native {
+        attributes.attribute_positions.insert(conn, occurrence)?;
+    }
     if let Some(facts) = asset.cmp_rom_facts() {
         cmp_native::insert_rom_positions(conn, occurrence.database_value(), facts)?;
     }

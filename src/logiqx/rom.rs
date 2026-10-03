@@ -1,4 +1,7 @@
-use crate::{logiqx::RecordLocation, xml_reader::Element};
+use crate::{
+    logiqx::{AttributePosition, DiskAttribute, RecordLocation, RomAttribute},
+    xml_reader::Element,
+};
 
 #[derive(Debug)]
 pub struct Rom {
@@ -13,6 +16,7 @@ pub struct Rom {
     date: Option<String>,
     status_was_explicit: bool,
     location: RecordLocation,
+    attribute_positions: Vec<AttributePosition<RomAttribute>>,
 }
 
 #[derive(Debug)]
@@ -106,6 +110,10 @@ impl DigestAttributeField {
 }
 
 impl Rom {
+    #[must_use]
+    pub fn attribute_positions(&self) -> &[AttributePosition<RomAttribute>] {
+        &self.attribute_positions
+    }
     pub(crate) fn from_xml(element: &Element) -> crate::Result<Self> {
         let status = element.attributes.get("status").cloned();
         if status
@@ -140,6 +148,10 @@ impl Rom {
             date: element.attributes.get("date").cloned(),
             status_was_explicit: element.attributes.contains_key("status"),
             location: element.location,
+            attribute_positions: element
+                .attributes
+                .positions(RomAttribute::from_name)
+                .collect(),
         })
     }
 
@@ -241,9 +253,14 @@ pub struct Disk {
     status: Option<String>,
     status_was_explicit: bool,
     location: RecordLocation,
+    attribute_positions: Vec<AttributePosition<DiskAttribute>>,
 }
 
 impl Disk {
+    #[must_use]
+    pub fn attribute_positions(&self) -> &[AttributePosition<DiskAttribute>] {
+        &self.attribute_positions
+    }
     pub(crate) fn from_xml(element: &Element) -> crate::Result<Self> {
         let status = element.attributes.get("status").cloned();
         if status
@@ -269,6 +286,10 @@ impl Disk {
             status,
             status_was_explicit: element.attributes.contains_key("status"),
             location: element.location,
+            attribute_positions: element
+                .attributes
+                .positions(DiskAttribute::from_name)
+                .collect(),
         })
     }
 

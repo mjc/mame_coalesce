@@ -20,8 +20,12 @@ pub use crate::mame_softwarelist::DumpStatus as SoftwareDumpStatus;
 pub use crate::no_intro_pc_xml::RomAttribute as NoIntroPcRomAttribute;
 pub use crate::storage::catalog_identity::OccurrenceId;
 
+mod logiqx;
 mod mame;
 mod software;
+pub use logiqx::{
+    LogiqxDiskPayload, LogiqxDumpStatus, LogiqxFilePayload, LogiqxRomPayload, LogiqxSamplePayload,
+};
 pub use mame::{
     MameAssetDeclarations, MameBoolean, MameDiskCompatibility, MameDiskPayload, MameDumpStatus,
     MameFilePayload, MameRomCompatibility, MameRomEvidenceScope, MameRomPayload, MameSamplePayload,
@@ -163,6 +167,8 @@ pub struct CatalogFileOccurrence {
     pub no_intro_database_file: Option<NoIntroDatabaseFilePayload>,
     /// Native MAME ROM, disk or filename-only sample data, when this occurrence has one.
     pub mame_file: Option<MameFilePayload>,
+    /// Native declared Logiqx fields and exact recognized attribute positions.
+    pub logiqx_file: Option<LogiqxFilePayload>,
 }
 
 /// Native ROM declaration in the application's synthetic P/C dialect.
@@ -179,17 +185,19 @@ pub struct NoIntroPcRomPayload {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-/// Source provenance for one explicitly present synthetic P/C ROM attribute.
-pub struct NoIntroPcRomAttributePosition {
-    pub field: NoIntroPcRomAttribute,
+/// Source provenance for one explicitly present, closed native XML attribute.
+pub struct XmlAttributePosition<Field> {
+    pub field: Field,
     /// Zero-based lexical ordinal, including namespace and vendor attributes.
     pub source_order: i64,
     /// One-based decoded XML Unicode-scalar `QName` coordinates (not byte offsets).
     pub location: SourceLocation,
 }
 
+pub type NoIntroPcRomAttributePosition = XmlAttributePosition<NoIntroPcRomAttribute>;
+
 #[derive(QueryableByName)]
-struct NoIntroPcRomAttributeRow {
+struct XmlAttributeRow {
     #[diesel(sql_type = BigInt)]
     occurrence_id: i64,
     #[diesel(sql_type = BigInt)]
@@ -901,8 +909,7 @@ fn attach_no_intro_pc_rom_attributes(
     connection: &mut SqliteConnection,
     occurrences: &mut [CatalogFileOccurrence],
 ) -> Result<(), CatalogFilesError> {
-    let rows = sql_query(no_intro_pc_rom_attribute_select())
-        .load::<NoIntroPcRomAttributeRow>(connection)?;
+    let rows = sql_query(no_intro_pc_rom_attribute_select()).load::<XmlAttributeRow>(connection)?;
     let mut positions = BTreeMap::<i64, Vec<NoIntroPcRomAttributePosition>>::new();
     for row in rows {
         let field = NoIntroPcRomAttribute::from_code(row.field_kind).ok_or_else(|| {
@@ -1039,6 +1046,7 @@ fn assemble_occurrences(
         };
     }
     attach_no_intro_pc_rom_attributes(connection, &mut occurrences)?;
+    logiqx::attach_payloads(connection, &mut occurrences)?;
     attach_no_intro_dat_rom_payloads(connection, &mut occurrences)?;
     attach_no_intro_database_file_payloads(connection, &mut occurrences)?;
     mame::attach_payloads(connection, &mut occurrences)?;
@@ -1467,6 +1475,7 @@ fn try_occurrence(row: OccurrenceRow) -> Result<CatalogFileOccurrence, CatalogFi
         no_intro_pc_rom: None,
         no_intro_database_file: None,
         mame_file: None,
+        logiqx_file: None,
     })
 }
 

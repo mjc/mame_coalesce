@@ -3,7 +3,7 @@ CREATE VIEW logiqx_cmp_source_relationships AS
 SELECT registry.assertion_key,
        CASE link.link_kind WHEN 'cloneof' THEN 'source_parent_clone' ELSE 'runtime_dependency' END AS relation_type,
        'source_assertion' AS origin, registry.snapshot_key AS source_snapshot_key,
-       link.link_kind AS source_field, link.source_line, link.source_column,
+       link.link_kind AS source_field, position.source_line, position.source_column,
        NULL AS generic_subject_snapshot_key, 'catalog_set' AS subject_kind,
        link.set_id AS subject_set_id, NULL AS generic_subject_a, NULL AS generic_subject_b,
        NULL AS generic_subject_c, owner.set_name AS source_subject_a,
@@ -16,12 +16,15 @@ SELECT registry.assertion_key,
 FROM catalog_relationships AS registry
 CROSS JOIN reported_catalog_relationships AS reported
 CROSS JOIN logiqx_set_links AS link
+CROSS JOIN logiqx_game_attribute_positions AS position
 CROSS JOIN catalog_sets AS owner
 WHERE registry.origin='source' AND reported.relationship_id=registry.relationship_id
   AND link.relationship_id=reported.relationship_id AND owner.set_id=link.set_id
+  AND position.set_id=link.set_id
+  AND position.field_kind=CASE link.link_kind WHEN 'cloneof' THEN 3 WHEN 'romof' THEN 4 WHEN 'sampleof' THEN 5 END
 UNION ALL
 SELECT registry.assertion_key,'runtime_dependency','source_assertion',registry.snapshot_key,
-       'device_ref',reference.source_line,reference.source_column,
+       'device_ref',position.source_line,position.source_column,
        NULL,'catalog_set',reference.set_id,NULL,NULL,NULL,
        owner.set_name,NULL,NULL,registry.snapshot_key,
        NULL,'catalog_set',NULL,NULL,NULL,NULL,reference.target_name,NULL,NULL,
@@ -29,9 +32,11 @@ SELECT registry.assertion_key,'runtime_dependency','source_assertion',registry.s
 FROM catalog_relationships AS registry
 CROSS JOIN reported_catalog_relationships AS reported
 CROSS JOIN logiqx_device_references AS reference
+CROSS JOIN logiqx_device_reference_attribute_positions AS position
 CROSS JOIN catalog_sets AS owner
 WHERE registry.origin='source' AND reported.relationship_id=registry.relationship_id
   AND reference.relationship_id=reported.relationship_id AND owner.set_id=reference.set_id
+  AND position.set_id=reference.set_id AND position.reference_order=reference.reference_order AND position.field_kind=0
 UNION ALL
 SELECT registry.assertion_key,
        CASE link.link_kind WHEN 'cloneof' THEN 'source_parent_clone' ELSE 'runtime_dependency' END,
@@ -50,7 +55,7 @@ WHERE registry.origin='source' AND reported.relationship_id=registry.relationshi
   AND position.field_kind=CASE link.link_kind WHEN 'cloneof' THEN 1 WHEN 'sampleof' THEN 6 END
 UNION ALL
 SELECT registry.assertion_key,'source_merge','source_assertion',registry.snapshot_key,
-       'merge',declaration.source_line,declaration.source_column,
+       'merge',position.source_line,position.source_column,
        NULL,'catalog_media_entry',occurrence.record_id,NULL,NULL,NULL,
        owner.set_name,payload.name,occurrence.occurrence_id,registry.snapshot_key,
        NULL,'catalog_rom_merge_reference',occurrence.record_id,NULL,NULL,NULL,
@@ -61,6 +66,7 @@ CROSS JOIN reported_catalog_relationships AS reported
 CROSS JOIN logiqx_file_merges AS declaration
 CROSS JOIN asset_occurrences AS occurrence
 CROSS JOIN logiqx_rom_claims AS payload
+CROSS JOIN logiqx_rom_attribute_positions AS position
 CROSS JOIN catalog_sets AS owner
 LEFT JOIN logiqx_set_links AS rom_parent
   ON rom_parent.set_id=owner.set_id AND rom_parent.link_kind='romof'
@@ -71,9 +77,10 @@ WHERE registry.origin='source' AND reported.relationship_id=registry.relationshi
   AND reported.source_reference_kind='logiqx_rom_merge'
   AND occurrence.occurrence_id=declaration.occurrence_id
   AND payload.occurrence_id=occurrence.occurrence_id AND owner.set_id=occurrence.record_id
+  AND position.occurrence_id=declaration.occurrence_id AND position.field_kind=5
 UNION ALL
 SELECT registry.assertion_key,'source_merge','source_assertion',registry.snapshot_key,
-       'merge',declaration.source_line,declaration.source_column,
+       'merge',position.source_line,position.source_column,
        NULL,'catalog_media_entry',occurrence.record_id,NULL,NULL,NULL,
        owner.set_name,payload.name,occurrence.occurrence_id,registry.snapshot_key,
        NULL,'catalog_disk_merge_reference',occurrence.record_id,NULL,NULL,NULL,
@@ -84,6 +91,7 @@ CROSS JOIN reported_catalog_relationships AS reported
 CROSS JOIN logiqx_file_merges AS declaration
 CROSS JOIN asset_occurrences AS occurrence
 CROSS JOIN logiqx_disk_claims AS payload
+CROSS JOIN logiqx_disk_attribute_positions AS position
 CROSS JOIN catalog_sets AS owner
 LEFT JOIN logiqx_set_links AS rom_parent
   ON rom_parent.set_id=owner.set_id AND rom_parent.link_kind='romof'
@@ -94,6 +102,7 @@ WHERE registry.origin='source' AND reported.relationship_id=registry.relationshi
   AND reported.source_reference_kind='logiqx_disk_merge'
   AND occurrence.occurrence_id=declaration.occurrence_id
   AND payload.occurrence_id=occurrence.occurrence_id AND owner.set_id=occurrence.record_id
+  AND position.occurrence_id=declaration.occurrence_id AND position.field_kind=3
 UNION ALL
 SELECT registry.assertion_key,'source_merge','source_assertion',registry.snapshot_key,
        lower(position.source_field),position.source_line,position.source_column,

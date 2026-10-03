@@ -2,7 +2,7 @@ use crate::{
     domain::{CatalogSetId, SnapshotKey},
     logiqx::RecordLocation,
     no_intro_pc_xml::{AttributePosition, GameAttribute, Header, RomAttribute},
-    xml_reader::DeclaredText,
+    xml_reader::{AttributeLocation, DeclaredText},
 };
 use diesel::{
     RunQueryDsl, SqliteConnection, sql_query,
@@ -56,7 +56,7 @@ fn insert_positions(
     conn: &mut SqliteConnection,
     statement: &'static str,
     owner: i64,
-    positions: impl Iterator<Item = (i64, usize, RecordLocation)>,
+    positions: impl Iterator<Item = (i64, usize, AttributeLocation)>,
 ) -> crate::Result<()> {
     for (field, order, location) in positions {
         sql_query(statement)

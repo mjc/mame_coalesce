@@ -2,8 +2,10 @@
 
 use camino::Utf8PathBuf;
 use diesel::{
-    Connection, QueryableByName, RunQueryDsl, SqliteConnection, connection::SimpleConnection,
-    sql_query, sql_types::BigInt,
+    Connection, QueryableByName, RunQueryDsl, SqliteConnection,
+    connection::SimpleConnection,
+    sql_query,
+    sql_types::{BigInt, Text},
 };
 use mame_coalesce::database::Database;
 
@@ -39,6 +41,12 @@ struct CountRow {
     count: i64,
 }
 
+#[derive(QueryableByName)]
+struct TriggerSql {
+    #[diesel(sql_type = Text)]
+    sql: String,
+}
+
 #[test]
 fn catalog_has_no_second_mutable_dat_model() {
     let (_directory, mut conn) = connection();
@@ -62,12 +70,36 @@ fn published_logiqx_occurrences_reject_late_native_payloads() {
          VALUES (1,'logiqx-snapshot','root',0);
          INSERT INTO catalog_sets(set_id,set_group_id,source_element_kind,list_order,set_name,source_line,source_column)
          VALUES (1,1,'logiqx_game',0,'game',1,1);
+         INSERT INTO logiqx_games(set_id) VALUES(1);
+         INSERT INTO logiqx_game_attribute_positions(set_id,field_kind,source_order,source_line,source_column)
+         VALUES(1,0,0,1,7);
+         INSERT INTO logiqx_document_facts(snapshot_key) VALUES('logiqx-snapshot');
          INSERT INTO asset_occurrences(occurrence_id,record_id,occurrence_order,claim_kind)
-         VALUES (1,1,0,'logiqx_rom'),(2,1,1,'logiqx_disk'),(3,1,2,'logiqx_sample');
-         INSERT INTO snapshot_publications(catalog_key,document_key,interpretation_key,snapshot_key)
-         VALUES ('catalog','document','parser-logiqx','logiqx-snapshot');",
+         VALUES (1,1,0,'logiqx_rom'),(2,1,1,'logiqx_disk'),(3,1,2,'logiqx_sample');",
     )
     .expect("stage occurrences before publication");
+    let publication = "INSERT INTO snapshot_publications(catalog_key,document_key,interpretation_key,snapshot_key)
+         VALUES ('catalog','document','parser-logiqx','logiqx-snapshot')";
+    let rejected = conn
+        .batch_execute(publication)
+        .expect_err("missing native payloads must prevent publication");
+    assert!(rejected.to_string().contains("exact position closure"));
+    // Deliberately corrupt only the publication seal, then restore its guard.
+    // Native parents are real and no payload PK exists: a late insertion must
+    // fail because the snapshot is published, not because of missing ancestry
+    // or a duplicate key. Ordinary writes cannot create this malformed state.
+    let guard = sql_query(
+        "SELECT sql FROM sqlite_schema WHERE name='logiqx_attribute_positions_publication_guard'",
+    )
+    .get_result::<TriggerSql>(&mut conn)
+    .expect("publication guard")
+    .sql;
+    conn.batch_execute("DROP TRIGGER logiqx_attribute_positions_publication_guard")
+        .expect("temporarily bypass fixture publication guard");
+    let staged = conn.batch_execute(publication);
+    conn.batch_execute(&guard)
+        .expect("restore exact publication guard");
+    staged.expect("stage explicitly corrupt published fixture");
     for statement in [
         "INSERT INTO logiqx_rom_claims(occurrence_id,name,evidence_scope,evidence_provenance,source_line,source_column)
          VALUES (1,'late.rom','whole_asset','source_declared',1,1)",

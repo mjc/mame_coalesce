@@ -6,6 +6,10 @@ use quick_xml::events::Event;
 
 use super::game::Game;
 use super::header::{ClrMameProOptions, Header, RomCenterOptions};
+use super::{
+    AttributePosition, BiosSetAttribute, ClrMameProAttribute, DiskAttribute, DocumentAttribute,
+    GameAttribute, NameAttribute, ReleaseAttribute, RomAttribute, RomCenterAttribute,
+};
 
 use crate::{
     document_input, hashes,
@@ -20,6 +24,7 @@ pub struct DataFile {
     header: Option<Header>,
     sha1: Option<Vec<u8>>,
     games: Vec<Game>,
+    attribute_positions: Vec<AttributePosition<DocumentAttribute>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -162,6 +167,10 @@ impl DataFile {
                     header,
                     sha1,
                     games,
+                    attribute_positions: root
+                        .attributes
+                        .positions(DocumentAttribute::from_name)
+                        .collect(),
                 },
                 source_map,
             ))
@@ -236,6 +245,11 @@ impl DataFile {
     #[must_use]
     pub fn debug(&self) -> Option<&str> {
         self.debug.as_deref()
+    }
+
+    #[must_use]
+    pub fn attribute_positions(&self) -> &[AttributePosition<DocumentAttribute>] {
+        &self.attribute_positions
     }
 }
 
@@ -374,25 +388,18 @@ fn collect_unsupported_attributes(
 }
 
 fn known_attribute(element: &str, attribute: &str) -> bool {
-    let known = match element {
-        "datafile" => &["build", "debug"][..],
-        "game" => &[
-            "name",
-            "sourcefile",
-            "isbios",
-            "cloneof",
-            "romof",
-            "sampleof",
-            "board",
-            "rebuildto",
-        ][..],
-        "rom" => &[
-            "name", "size", "md5", "sha1", "crc", "merge", "status", "serial", "date",
-        ][..],
-        "device_ref" => &["name"][..],
-        _ => &[][..],
-    };
-    known.contains(&attribute)
+    match element {
+        "datafile" => DocumentAttribute::from_name(attribute).is_some(),
+        "clrmamepro" => ClrMameProAttribute::from_name(attribute).is_some(),
+        "romcenter" => RomCenterAttribute::from_name(attribute).is_some(),
+        "game" => GameAttribute::from_name(attribute).is_some(),
+        "release" => ReleaseAttribute::from_name(attribute).is_some(),
+        "biosset" => BiosSetAttribute::from_name(attribute).is_some(),
+        "rom" => RomAttribute::from_name(attribute).is_some(),
+        "disk" => DiskAttribute::from_name(attribute).is_some(),
+        "sample" | "archive" | "device_ref" => NameAttribute::from_name(attribute).is_some(),
+        _ => false,
+    }
 }
 
 #[cfg(test)]

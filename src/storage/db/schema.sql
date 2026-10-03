@@ -1528,8 +1528,6 @@ CREATE TABLE logiqx_set_links (
     target_name TEXT NOT NULL,
     relationship_id INTEGER NOT NULL UNIQUE CHECK (typeof(relationship_id) = 'integer'),
     source_reference_kind TEXT GENERATED ALWAYS AS ('logiqx_' || link_kind) VIRTUAL,
-    source_line INTEGER NOT NULL CHECK (source_line > 0),
-    source_column INTEGER NOT NULL CHECK (source_column > 0),
     PRIMARY KEY (set_id, link_kind),
     FOREIGN KEY (relationship_id, source_reference_kind)
         REFERENCES reported_catalog_relationships(relationship_id, source_reference_kind) ON DELETE RESTRICT
@@ -1541,8 +1539,6 @@ CREATE TABLE logiqx_device_references (
     relationship_id INTEGER NOT NULL UNIQUE CHECK (typeof(relationship_id) = 'integer'),
     source_reference_kind TEXT NOT NULL DEFAULT 'logiqx_device_ref'
         CHECK (source_reference_kind='logiqx_device_ref'),
-    source_line INTEGER NOT NULL CHECK (source_line > 0),
-    source_column INTEGER NOT NULL CHECK (source_column > 0),
     PRIMARY KEY (set_id, reference_order),
     FOREIGN KEY (relationship_id, source_reference_kind)
         REFERENCES reported_catalog_relationships(relationship_id, source_reference_kind) ON DELETE RESTRICT
@@ -1998,6 +1994,31 @@ BEFORE DELETE ON catalog_snapshots
 BEGIN
     SELECT RAISE(ABORT, 'catalog snapshots are immutable');
 END;
+-- Display labels may change, but catalog ancestry never changes identity. These
+-- guards also cover REPLACE with foreign keys and recursive triggers disabled.
+CREATE TRIGGER publishing_sources_stable_insert
+BEFORE INSERT ON publishing_sources
+WHEN EXISTS (SELECT 1 FROM publishing_sources WHERE source_key = NEW.source_key)
+BEGIN SELECT RAISE(ABORT, 'publisher keys cannot be replaced'); END;
+CREATE TRIGGER publishing_sources_stable_update
+BEFORE UPDATE OF source_key ON publishing_sources
+WHEN NEW.source_key IS NOT OLD.source_key
+BEGIN SELECT RAISE(ABORT, 'publisher keys are immutable'); END;
+CREATE TRIGGER publishing_sources_stable_delete
+BEFORE DELETE ON publishing_sources
+BEGIN SELECT RAISE(ABORT, 'publishers cannot be deleted'); END;
+CREATE TRIGGER catalogs_stable_insert
+BEFORE INSERT ON catalogs
+WHEN EXISTS (SELECT 1 FROM catalogs WHERE catalog_key = NEW.catalog_key)
+  OR NOT EXISTS (SELECT 1 FROM publishing_sources WHERE source_key = NEW.source_key)
+BEGIN SELECT RAISE(ABORT, 'catalog requires a publisher and a fresh key'); END;
+CREATE TRIGGER catalogs_stable_update
+BEFORE UPDATE OF catalog_key, source_key ON catalogs
+WHEN NEW.catalog_key IS NOT OLD.catalog_key OR NEW.source_key IS NOT OLD.source_key
+BEGIN SELECT RAISE(ABORT, 'catalog identity and publisher are immutable'); END;
+CREATE TRIGGER catalogs_stable_delete
+BEFORE DELETE ON catalogs
+BEGIN SELECT RAISE(ABORT, 'catalogs cannot be deleted'); END;
 CREATE TRIGGER catalog_snapshots_are_immutable_insert
 BEFORE INSERT ON catalog_snapshots
 WHEN EXISTS (SELECT 1 FROM catalog_snapshots WHERE snapshot_key = NEW.snapshot_key)
@@ -2034,6 +2055,10 @@ WHEN OLD.retention_status = 'retained'
 BEGIN
     SELECT RAISE(ABORT, 'retained source documents are immutable');
 END;
+CREATE TRIGGER documents_stable_key_update
+BEFORE UPDATE OF document_key ON documents
+WHEN NEW.document_key IS NOT OLD.document_key
+BEGIN SELECT RAISE(ABORT, 'source document keys are immutable'); END;
 CREATE TRIGGER logiqx_disk_claims_immutable_delete BEFORE DELETE ON logiqx_disk_claims
 BEGIN SELECT RAISE(ABORT,'native asset claims are immutable'); END;
 CREATE TRIGGER logiqx_disk_claims_immutable_update BEFORE UPDATE ON logiqx_disk_claims
