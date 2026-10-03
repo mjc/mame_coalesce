@@ -76,6 +76,55 @@ fn document(children: &str) -> String {
     format!("<datafile><game name='same'>{children}</game></datafile>")
 }
 
+fn games_document<'a>(games: impl IntoIterator<Item = (&'a str, &'a str)>) -> String {
+    let mut xml = String::from("<datafile>");
+    for (name, children) in games {
+        write!(xml, "<game name='{name}'>{children}</game>")
+            .expect("writing XML fixture to a String cannot fail");
+    }
+    xml.push_str("</datafile>");
+    xml
+}
+
+fn assert_named_game_changes<N, C>(catalog: &mut Catalog, cases: &[(N, C, C)]) -> TestResult
+where
+    N: AsRef<str>,
+    C: AsRef<str>,
+{
+    let before = games_document(
+        cases
+            .iter()
+            .map(|(name, before, _)| (name.as_ref(), before.as_ref())),
+    );
+    let after = games_document(
+        cases
+            .iter()
+            .map(|(name, _, after)| (name.as_ref(), after.as_ref())),
+    );
+    let diff = catalog.diff(&before, &after)?;
+    assert_eq!(
+        diff.records.len(),
+        cases.len(),
+        "one history record per owner"
+    );
+    for (name, _, _) in cases {
+        let name = name.as_ref();
+        let record = diff
+            .records
+            .iter()
+            .find(|record| record.set_name == name)
+            .unwrap_or_else(|| panic!("missing history record for {name}"));
+        assert!(record.metadata_changed, "{name}");
+        assert!(record.requirement_changes.is_empty(), "{name}");
+        assert_eq!(
+            record.correspondence,
+            mame_coalesce::domain::SnapshotRecordCorrespondence::UniqueName,
+            "{name}"
+        );
+    }
+    Ok(())
+}
+
 fn owner_games(fields: &[&str], owner: &impl Fn(&str) -> String, value: Option<&str>) -> String {
     let mut games = String::new();
     for field in fields {
@@ -440,38 +489,54 @@ fn assert_owner_fields(fields: &[&str], owner: impl Fn(&str) -> String) -> TestR
 #[test]
 fn native_owner_order_and_empty_elements_are_preserved() -> TestResult {
     let mut catalog = Catalog::new()?;
-    for (before, after) in [
+    let cases = [
         (
+            "archive-source-order",
             "<archive name='A'/><source/>",
             "<source/><archive name='A'/>",
         ),
-        ("<source/><release/>", "<release/><source/>"),
-        ("<source/>", "<source><details/></source>"),
-        ("<release/>", "<release><serials/></release>"),
         (
+            "source-release-order",
+            "<source/><release/>",
+            "<release/><source/>",
+        ),
+        (
+            "empty-source-details",
+            "<source/>",
+            "<source><details/></source>",
+        ),
+        (
+            "empty-release-serials",
+            "<release/>",
+            "<release><serials/></release>",
+        ),
+        (
+            "source-file-order",
             "<source><file id='1'/><file id='2'/></source>",
             "<source><file id='2'/><file id='1'/></source>",
         ),
         (
+            "source-file-details-order",
             "<source><file id='1'/><details id='D'/></source>",
             "<source><details id='D'/><file id='1'/></source>",
         ),
         (
+            "source-serials-details-order",
             "<source><serials/><details/></source>",
             "<source><details/><serials/></source>",
         ),
         (
+            "release-serials-file-order",
             "<release><serials/><file id='1'/></release>",
             "<release><file id='1'/><serials/></release>",
         ),
         (
+            "archive-sibling-order",
             "<archive name='A'/><archive name='B'/>",
             "<archive name='B'/><archive name='A'/>",
         ),
-    ] {
-        let diff = catalog.diff(&document(before), &document(after))?;
-        assert!(diff.records[0].metadata_changed, "{before} => {after}");
-    }
+    ];
+    assert_named_game_changes(&mut catalog, &cases)?;
     Ok(())
 }
 
@@ -492,17 +557,34 @@ fn formatting_and_physical_locations_do_not_change_native_facts() -> TestResult 
 #[test]
 fn every_header_field_and_repeated_declaration_is_compared() -> TestResult {
     let mut catalog = Catalog::new()?;
-    for field in ["author", "piracy", "trademarks", "url", "version"] {
-        let before = format!(
-            "<datafile><header><{field}>A</{field}></header><game name='same'/></datafile>"
-        );
+    let fields = ["author", "piracy", "trademarks", "url", "version"];
+    let mut before_header = String::new();
+    for field in fields {
+        write!(before_header, "<{field}>A</{field}>")
+            .expect("writing XML fixture to a String cannot fail");
+    }
+    let before = catalog.import(&format!(
+        "<datafile><header>{before_header}</header><game name='same'/></datafile>"
+    ))?;
+    for field in fields {
         for values in [
             format!("<{field}>B</{field}>"),
             format!("<{field}>A</{field}><{field}>A</{field}>"),
         ] {
-            let after =
-                format!("<datafile><header>{values}</header><game name='same'/></datafile>");
-            let diff = catalog.diff(&before, &after)?;
+            let after_header = fields
+                .iter()
+                .map(|other| {
+                    if *other == field {
+                        values.clone()
+                    } else {
+                        format!("<{other}>A</{other}>")
+                    }
+                })
+                .collect::<String>();
+            let after = catalog.import(&format!(
+                "<datafile><header>{after_header}</header><game name='same'/></datafile>"
+            ))?;
+            let diff = catalog.diff_snapshots(&before, &after)?;
             assert!(diff.document_metadata_changed, "{field}");
         }
     }
@@ -512,71 +594,76 @@ fn every_header_field_and_repeated_declaration_is_compared() -> TestResult {
 #[test]
 fn recognized_attribute_order_is_visible_in_each_native_owner() -> TestResult {
     let mut catalog = Catalog::new()?;
-    for (before, after) in [
+    let cases = [
         (
+            "archive-attributes",
             "<archive name='A' number='1'/>",
             "<archive number='1' name='A'/>",
         ),
         (
+            "source-details-attributes",
             "<source><details id='1' dumper='D'/></source>",
             "<source><details dumper='D' id='1'/></source>",
         ),
         (
+            "source-serials-attributes",
             "<source><serials box_serial='A' pcb_serial='B'/></source>",
             "<source><serials pcb_serial='B' box_serial='A'/></source>",
         ),
         (
+            "source-file-attributes",
             "<source><file id='1' note='A'/></source>",
             "<source><file note='A' id='1'/></source>",
         ),
         (
+            "release-details-attributes",
             "<release><details id='1' comment='A'/></release>",
             "<release><details comment='A' id='1'/></release>",
         ),
         (
+            "release-serials-attributes",
             "<release><serials box_serial='A' pcb_serial='B'/></release>",
             "<release><serials pcb_serial='B' box_serial='A'/></release>",
         ),
         (
+            "release-file-attributes",
             "<release><file id='1' note='A'/></release>",
             "<release><file note='A' id='1'/></release>",
         ),
-    ] {
-        let diff = catalog.diff(&document(before), &document(after))?;
-        assert!(diff.records[0].metadata_changed, "{before} => {after}");
-    }
+    ];
+    assert_named_game_changes(&mut catalog, &cases)?;
     Ok(())
 }
 
 #[test]
 fn valid_file_origin_and_nfo_digest_changes_do_not_invent_whole_file_requirements() -> TestResult {
     let mut catalog = Catalog::new()?;
-    for (field, width) in [
+    let digest_fields = [
         ("crc32", 8),
         ("md5", 32),
         ("sha1", 40),
         ("sha256", 64),
         ("origin_sha256", 64),
-    ] {
-        let before = document(&format!(
-            "<source><file {field}='{}'/></source>",
-            "1".repeat(width)
-        ));
-        let after = document(&format!(
-            "<source><file {field}='{}'/></source>",
-            "2".repeat(width)
-        ));
-        let diff = catalog.diff(&before, &after)?;
-        assert!(diff.records[0].metadata_changed, "{field}");
-        assert!(diff.records[0].requirement_changes.is_empty(), "{field}");
-    }
-    for field in ["nfocrc", "nfo_crc32"] {
-        let before = document(&format!("<release><details {field}='11111111'/></release>"));
-        let after = document(&format!("<release><details {field}='22222222'/></release>"));
-        let diff = catalog.diff(&before, &after)?;
-        assert!(diff.records[0].metadata_changed, "{field}");
-        assert!(diff.records[0].requirement_changes.is_empty());
-    }
+    ];
+    let nfo_fields = ["nfocrc", "nfo_crc32"];
+    let mut cases = digest_fields
+        .iter()
+        .map(|(field, width)| {
+            (
+                (*field).to_owned(),
+                format!("<source><file {field}='{}'/></source>", "1".repeat(*width)),
+                format!("<source><file {field}='{}'/></source>", "2".repeat(*width)),
+            )
+        })
+        .collect::<Vec<_>>();
+    cases.extend(nfo_fields.iter().map(|field| {
+        (
+            (*field).to_owned(),
+            format!("<release><details {field}='11111111'/></release>"),
+            format!("<release><details {field}='22222222'/></release>"),
+        )
+    }));
+    assert_named_game_changes(&mut catalog, &cases)?;
     Ok(())
 }
 
