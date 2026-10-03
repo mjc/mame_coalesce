@@ -125,26 +125,242 @@ where
     Ok(())
 }
 
-fn owner_games(fields: &[&str], owner: &impl Fn(&str) -> String, value: Option<&str>) -> String {
+#[derive(Clone, Copy)]
+enum NativeOwner {
+    Archive,
+    SourceDetails,
+    SourceSerials,
+    ReleaseDetails,
+    ReleaseSerials,
+    SourceFile,
+    ReleaseFile,
+}
+
+const ARCHIVE_FIELDS: &[&str] = &[
+    "additional",
+    "adult",
+    "aftermarket",
+    "alt",
+    "bios",
+    "categories",
+    "complete",
+    "dat",
+    "datter_note",
+    "description",
+    "devstatus",
+    "gameid1",
+    "gameid2",
+    "langchecked",
+    "languages",
+    "licensed",
+    "listed",
+    "mergename",
+    "name",
+    "name_alt",
+    "number",
+    "physical",
+    "region",
+    "regparent",
+    "showlang",
+    "special1",
+    "special2",
+    "sticky_note",
+    "version1",
+    "version2",
+    "clone",
+    "mergeof",
+];
+
+const SOURCE_DETAILS_FIELDS: &[&str] = &[
+    "comment1",
+    "comment2",
+    "d_date",
+    "d_date_info",
+    "dumper",
+    "id",
+    "link1",
+    "link2",
+    "link3",
+    "media_title",
+    "nodump",
+    "origin",
+    "originalformat",
+    "project",
+    "r_date",
+    "r_date_info",
+    "region",
+    "rominfo",
+    "section",
+    "tool",
+];
+
+const SOURCE_SERIALS_FIELDS: &[&str] = &[
+    "box_barcode",
+    "box_serial",
+    "chip_serial",
+    "digital_serial1",
+    "digital_serial2",
+    "lockout_serial",
+    "media_serial1",
+    "media_serial2",
+    "media_serial3",
+    "mediastamp",
+    "pcb_serial",
+    "romchip_serial1",
+    "romchip_serial2",
+    "savechip_serial",
+];
+
+const RELEASE_DETAILS_FIELDS: &[&str] = &[
+    "archivename",
+    "category",
+    "comment",
+    "date",
+    "dirname",
+    "group",
+    "id",
+    "nfo_crc32",
+    "nfo_size",
+    "nfocrc",
+    "nfoname",
+    "nfosize",
+    "origin",
+    "originalformat",
+    "region",
+    "rominfo",
+    "tool",
+];
+
+const RELEASE_SERIALS_FIELDS: &[&str] = &[
+    "box_barcode",
+    "box_serial",
+    "media_serial1",
+    "mediastamp",
+    "pcb_serial",
+    "romchip_serial1",
+];
+
+const SOURCE_FILE_FIELDS: &[&str] = &[
+    "bad",
+    "crc32",
+    "date",
+    "extension",
+    "filter",
+    "forcename",
+    "forcescenename",
+    "format",
+    "header",
+    "id",
+    "item",
+    "md5",
+    "mia",
+    "note",
+    "origin_sha256",
+    "origin_size",
+    "serial",
+    "sha1",
+    "sha256",
+    "size",
+    "unique",
+    "update_type",
+    "version",
+];
+
+const RELEASE_FILE_FIELDS: &[&str] = &[
+    "bad",
+    "crc32",
+    "extension",
+    "forcename",
+    "forcescenename",
+    "format",
+    "header",
+    "id",
+    "item",
+    "md5",
+    "note",
+    "serial",
+    "sha1",
+    "sha256",
+    "size",
+    "update_type",
+    "version",
+];
+
+impl NativeOwner {
+    const ALL: [Self; 7] = [
+        Self::Archive,
+        Self::SourceDetails,
+        Self::SourceSerials,
+        Self::ReleaseDetails,
+        Self::ReleaseSerials,
+        Self::SourceFile,
+        Self::ReleaseFile,
+    ];
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Archive => "archive",
+            Self::SourceDetails => "source-details",
+            Self::SourceSerials => "source-serials",
+            Self::ReleaseDetails => "release-details",
+            Self::ReleaseSerials => "release-serials",
+            Self::SourceFile => "source-file",
+            Self::ReleaseFile => "release-file",
+        }
+    }
+
+    const fn fields(self) -> &'static [&'static str] {
+        match self {
+            Self::Archive => ARCHIVE_FIELDS,
+            Self::SourceDetails => SOURCE_DETAILS_FIELDS,
+            Self::SourceSerials => SOURCE_SERIALS_FIELDS,
+            Self::ReleaseDetails => RELEASE_DETAILS_FIELDS,
+            Self::ReleaseSerials => RELEASE_SERIALS_FIELDS,
+            Self::SourceFile => SOURCE_FILE_FIELDS,
+            Self::ReleaseFile => RELEASE_FILE_FIELDS,
+        }
+    }
+
+    fn xml(self, attributes: &str) -> String {
+        match self {
+            Self::Archive => format!("<archive {attributes}/>"),
+            Self::SourceDetails => format!("<source><details {attributes}/></source>"),
+            Self::SourceSerials => format!("<source><serials {attributes}/></source>"),
+            Self::ReleaseDetails => format!("<release><details {attributes}/></release>"),
+            Self::ReleaseSerials => format!("<release><serials {attributes}/></release>"),
+            Self::SourceFile => format!("<source><file {attributes}/></source>"),
+            Self::ReleaseFile => format!("<release><file {attributes}/></release>"),
+        }
+    }
+}
+
+fn owner_games(groups: &[(NativeOwner, &[&str])], value: Option<&str>) -> String {
     let mut games = String::new();
-    for field in fields {
-        let attributes = value
-            .map(|value| format!("{field}='{value}'"))
-            .unwrap_or_default();
-        write!(
-            games,
-            "<game name='field-{field}'>{}</game>",
-            owner(&attributes)
-        )
-        .expect("writing XML fixture to a String cannot fail");
+    for (owner, fields) in groups {
+        for field in *fields {
+            let attributes = value
+                .map(|value| format!("{field}='{value}'"))
+                .unwrap_or_default();
+            write!(
+                games,
+                "<game name='field-{}-{field}'>{}</game>",
+                owner.label(),
+                owner.xml(&attributes)
+            )
+            .expect("writing XML fixture to a String cannot fail");
+        }
     }
     games
 }
 
-fn assert_field_records(diff: &CatalogSnapshotDiff, fields: &[&str]) {
-    let mut expected = fields
+fn assert_field_records(diff: &CatalogSnapshotDiff, groups: &[(NativeOwner, &[&str])]) {
+    let mut expected = groups
         .iter()
-        .map(|field| format!("field-{field}"))
+        .flat_map(|(owner, fields)| {
+            fields
+                .iter()
+                .map(|field| format!("field-{}-{field}", owner.label()))
+        })
         .collect::<Vec<_>>();
     let mut actual = diff
         .records
@@ -184,18 +400,24 @@ fn history_derives_export_version_and_relationship_provenance_from_native_header
 #[test]
 fn repeated_export_versions_are_not_arbitrarily_reduced_to_one_value() -> TestResult {
     let mut catalog = Catalog::new()?;
-    for fields in [
+    let cases = [
         "",
         "<version/>",
         "<version>one</version><version>two</version>",
         "<version>one</version><version>one</version>",
-    ] {
+    ];
+    let mut snapshots = Vec::with_capacity(cases.len());
+    for fields in cases {
         let xml = format!(
             "<datafile><header>{fields}</header><game name='same'><archive clone='2'/></game></datafile>"
         );
-        let snapshot = catalog.import(&xml)?;
-        let history =
-            app::catalog_snapshot_history(&catalog.database, &CatalogKey::new("export-consumers"))?;
+        snapshots.push((fields, catalog.import(&xml)?));
+    }
+
+    let history =
+        app::catalog_snapshot_history(&catalog.database, &CatalogKey::new("export-consumers"))?;
+    let explanations = app::explain_relationships(&catalog.database)?;
+    for (fields, snapshot) in snapshots {
         let entry = history
             .iter()
             .find(|entry| entry.snapshot == snapshot)
@@ -205,7 +427,6 @@ fn repeated_export_versions_are_not_arbitrarily_reduced_to_one_value() -> TestRe
             (fields == "<version/>").then_some(""),
             "{fields}"
         );
-        let explanations = app::explain_relationships(&catalog.database)?;
         let explanation = explanations
             .iter()
             .find(|explanation| {
@@ -235,218 +456,43 @@ fn repeated_export_versions_are_not_arbitrarily_reduced_to_one_value() -> TestRe
 fn export_header_order_presence_and_envelope_are_document_metadata() -> TestResult {
     let mut catalog = Catalog::new()?;
     let before = "<datafile><header><version>one</version><author>A</author></header><game name='same'/></datafile>";
+    let before_snapshot = catalog.import(before)?;
     for after in [
         "<datafile><header><version>two</version><author>A</author></header><game name='same'/></datafile>",
         "<datafile><header><author>A</author><version>one</version></header><game name='same'/></datafile>",
         "<header><version>one</version><author>A</author></header><datafile><game name='same'/></datafile>",
     ] {
-        let diff = catalog.diff(before, after)?;
+        let after_snapshot = catalog.import(after)?;
+        let diff = catalog.diff_snapshots(&before_snapshot, &after_snapshot)?;
         assert!(diff.document_metadata_changed, "{after}");
         assert!(!diff.records[0].metadata_changed);
     }
-    let diff = catalog.diff(
-        "<datafile><game name='same'/></datafile>",
-        "<datafile><header/><game name='same'/></datafile>",
-    )?;
+    let without_header = catalog.import("<datafile><game name='same'/></datafile>")?;
+    let with_header = catalog.import("<datafile><header/><game name='same'/></datafile>")?;
+    let diff = catalog.diff_snapshots(&without_header, &with_header)?;
     assert!(diff.document_metadata_changed);
     Ok(())
 }
 
 #[test]
-fn all_archive_attributes_are_visible_to_history() -> TestResult {
-    assert_owner_fields(
-        &[
-            "additional",
-            "adult",
-            "aftermarket",
-            "alt",
-            "bios",
-            "categories",
-            "complete",
-            "dat",
-            "datter_note",
-            "description",
-            "devstatus",
-            "gameid1",
-            "gameid2",
-            "langchecked",
-            "languages",
-            "licensed",
-            "listed",
-            "mergename",
-            "name",
-            "name_alt",
-            "number",
-            "physical",
-            "region",
-            "regparent",
-            "showlang",
-            "special1",
-            "special2",
-            "sticky_note",
-            "version1",
-            "version2",
-            "clone",
-            "mergeof",
-        ],
-        |attributes| format!("<archive {attributes}/>"),
-    )
-}
-
-#[test]
-fn all_dump_details_and_serials_are_visible_to_history() -> TestResult {
-    assert_owner_fields(
-        &[
-            "comment1",
-            "comment2",
-            "d_date",
-            "d_date_info",
-            "dumper",
-            "id",
-            "link1",
-            "link2",
-            "link3",
-            "media_title",
-            "nodump",
-            "origin",
-            "originalformat",
-            "project",
-            "r_date",
-            "r_date_info",
-            "region",
-            "rominfo",
-            "section",
-            "tool",
-        ],
-        |attributes| format!("<source><details {attributes}/></source>"),
-    )?;
-    assert_owner_fields(
-        &[
-            "box_barcode",
-            "box_serial",
-            "chip_serial",
-            "digital_serial1",
-            "digital_serial2",
-            "lockout_serial",
-            "media_serial1",
-            "media_serial2",
-            "media_serial3",
-            "mediastamp",
-            "pcb_serial",
-            "romchip_serial1",
-            "romchip_serial2",
-            "savechip_serial",
-        ],
-        |attributes| format!("<source><serials {attributes}/></source>"),
-    )
-}
-
-#[test]
-fn all_release_details_serials_and_nfo_aliases_are_visible_to_history() -> TestResult {
-    assert_owner_fields(
-        &[
-            "archivename",
-            "category",
-            "comment",
-            "date",
-            "dirname",
-            "group",
-            "id",
-            "nfo_crc32",
-            "nfo_size",
-            "nfocrc",
-            "nfoname",
-            "nfosize",
-            "origin",
-            "originalformat",
-            "region",
-            "rominfo",
-            "tool",
-        ],
-        |attributes| format!("<release><details {attributes}/></release>"),
-    )?;
-    assert_owner_fields(
-        &[
-            "box_barcode",
-            "box_serial",
-            "media_serial1",
-            "mediastamp",
-            "pcb_serial",
-            "romchip_serial1",
-        ],
-        |attributes| format!("<release><serials {attributes}/></release>"),
-    )
-}
-
-#[test]
-fn all_source_and_release_file_declarations_remain_scoped_metadata() -> TestResult {
-    assert_owner_fields(
-        &[
-            "bad",
-            "crc32",
-            "date",
-            "extension",
-            "filter",
-            "forcename",
-            "forcescenename",
-            "format",
-            "header",
-            "id",
-            "item",
-            "md5",
-            "mia",
-            "note",
-            "origin_sha256",
-            "origin_size",
-            "serial",
-            "sha1",
-            "sha256",
-            "size",
-            "unique",
-            "update_type",
-            "version",
-        ],
-        |attributes| format!("<source><file {attributes}/></source>"),
-    )?;
-    assert_owner_fields(
-        &[
-            "bad",
-            "crc32",
-            "extension",
-            "forcename",
-            "forcescenename",
-            "format",
-            "header",
-            "id",
-            "item",
-            "md5",
-            "note",
-            "serial",
-            "sha1",
-            "sha256",
-            "size",
-            "update_type",
-            "version",
-        ],
-        |attributes| format!("<release><file {attributes}/></release>"),
-    )
-}
-
-fn assert_owner_fields(fields: &[&str], owner: impl Fn(&str) -> String) -> TestResult {
+fn every_native_owner_field_is_visible_to_history() -> TestResult {
+    let groups = NativeOwner::ALL.map(|owner| (owner, owner.fields()));
+    assert_eq!(
+        groups.iter().map(|(_, fields)| fields.len()).sum::<usize>(),
+        129,
+        "all owner-qualified native field witnesses remain represented"
+    );
     let mut catalog = Catalog::new()?;
     let before = format!(
         "<datafile>{}</datafile>",
-        owner_games(fields, &owner, Some("before"))
+        owner_games(&groups, Some("before"))
     );
     let after = format!(
         "<datafile>{}</datafile>",
-        owner_games(fields, &owner, Some("after"))
+        owner_games(&groups, Some("after"))
     );
-    let absent = format!("<datafile>{}</datafile>", owner_games(fields, &owner, None));
-    let empty = format!(
-        "<datafile>{}</datafile>",
-        owner_games(fields, &owner, Some(""))
-    );
+    let absent = format!("<datafile>{}</datafile>", owner_games(&groups, None));
+    let empty = format!("<datafile>{}</datafile>", owner_games(&groups, Some("")));
     let before_snapshot = catalog.import(&before)?;
     let after_snapshot = catalog.import(&after)?;
     let absent_snapshot = catalog.import(&absent)?;
@@ -462,7 +508,7 @@ fn assert_owner_fields(fields: &[&str], owner: impl Fn(&str) -> String) -> TestR
         (&value_diff, "missing native field"),
         (&empty_diff, "empty/present collapsed"),
     ] {
-        assert_field_records(diff, fields);
+        assert_field_records(diff, &groups);
         assert!(!diff.document_metadata_changed);
         for record in &diff.records {
             assert_eq!(
@@ -704,26 +750,34 @@ fn file_claims_remain_attached_to_the_actual_history_owner() -> TestResult {
 #[test]
 fn clone_marker_and_reference_and_distinct_nfo_aliases_do_not_collapse() -> TestResult {
     let mut catalog = Catalog::new()?;
-    for (before, after) in [
-        ("<archive clone='P'/>", "<archive clone='1'/>"),
-        ("<archive clone='1'/>", "<archive mergeof='1'/>"),
+    let cases = [
         (
+            "clone-marker",
+            "<archive clone='P'/>",
+            "<archive clone='1'/>",
+        ),
+        (
+            "clone-reference-kind",
+            "<archive clone='1'/>",
+            "<archive mergeof='1'/>",
+        ),
+        (
+            "nfo-alias",
             "<release><details nfocrc='11111111'/></release>",
             "<release><details nfo_crc32='11111111'/></release>",
         ),
         (
+            "file-digest-kind",
             "<source><file sha256='1111111111111111111111111111111111111111111111111111111111111111'/></source>",
             "<source><file origin_sha256='1111111111111111111111111111111111111111111111111111111111111111'/></source>",
         ),
         (
+            "file-size-format",
             "<source><file size='7'/></source>",
             "<source><file size='0007'/></source>",
         ),
-    ] {
-        let diff = catalog.diff(&document(before), &document(after))?;
-        assert!(diff.records[0].metadata_changed, "{before} => {after}");
-        assert!(diff.records[0].requirement_changes.is_empty());
-    }
+    ];
+    assert_named_game_changes(&mut catalog, &cases)?;
     Ok(())
 }
 
