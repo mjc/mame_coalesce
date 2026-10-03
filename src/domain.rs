@@ -318,7 +318,7 @@ impl ParserInterpretationKey {
     pub(crate) fn rules_version(format: &str) -> &'static str {
         match format {
             "logiqx" => "logiqx-declared-text-compat-v2",
-            "mame-listxml" => "mame-observed-compat-declared-text-v1",
+            "mame-listxml" => "mame-observed-compat-declared-text-v2",
             "mame-softwarelist-xml" => "mame-softwarelist-declared-text-compat-v2",
             "clrmamepro-dat" => "clrmamepro-declared-text-compat-v1",
             "no-intro-pc-xml" => "no-intro-pc-synthetic-provenance-v2",

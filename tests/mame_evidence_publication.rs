@@ -282,9 +282,11 @@ fn pending_machine(
         .execute(connection)?;
     if header {
         sql_query("INSERT INTO mame_document_facts(snapshot_key,build,debug,debug_specified,config_version,source_line,source_column) SELECT ?,build,debug,debug_specified,config_version,source_line,source_column FROM mame_document_facts WHERE snapshot_key=?")
-            .bind::<Text, _>(&key)
-            .bind::<Text, _>(base)
-            .execute(connection)?;
+        .bind::<Text, _>(&key)
+        .bind::<Text, _>(base)
+        .execute(connection)?;
+        sql_query("INSERT INTO mame_document_facts_attribute_positions(document_id,field_kind,source_order,source_line,source_column) SELECT document_id,2,0,1,7 FROM mame_document_facts WHERE snapshot_key=?")
+        .bind::<Text, _>(&key).execute(connection)?;
     }
     let group = sql_query(
         "INSERT INTO catalog_set_groups(snapshot_key,kind,list_order) VALUES (?,'root',0) \
@@ -300,6 +302,8 @@ fn pending_machine(
     sql_query("INSERT INTO mame_machines(set_id,description,description_source_order,description_line,description_column,is_device,is_device_specified,runnable,runnable_specified,is_bios,is_bios_specified,is_mechanical,is_mechanical_specified,attributes_line,attributes_column) VALUES (?,'Pending',0,1,1,0,0,1,0,0,0,0,0,1,1)")
         .bind::<BigInt, _>(owner)
         .execute(connection)?;
+    sql_query("INSERT INTO mame_machines_attribute_positions(set_id,field_kind,source_order,source_line,source_column) VALUES (?,0,0,1,1)")
+        .bind::<BigInt, _>(owner).execute(connection)?;
     Ok((key, owner))
 }
 
@@ -317,6 +321,8 @@ fn insert_rom(
         .bind::<Text, _>(SHA1)
         .bind::<Text, _>(scope)
         .execute(connection)?;
+    sql_query("INSERT INTO mame_rom_claims_attribute_positions(occurrence_id,field_kind,source_order,source_line,source_column) VALUES (?,0,0,2,1),(?,4,1,2,2)")
+        .bind::<BigInt, _>(occurrence).bind::<BigInt, _>(occurrence).execute(connection)?;
     Ok(occurrence)
 }
 
@@ -334,6 +340,8 @@ fn insert_disk(
         .bind::<Text, _>(SHA1)
         .bind::<Text, _>(scope)
         .execute(connection)?;
+    sql_query("INSERT INTO mame_disk_claims_attribute_positions(occurrence_id,field_kind,source_order,source_line,source_column) VALUES (?,0,0,2,1),(?,1,1,2,2)")
+        .bind::<BigInt, _>(occurrence).bind::<BigInt, _>(occurrence).execute(connection)?;
     Ok(occurrence)
 }
 

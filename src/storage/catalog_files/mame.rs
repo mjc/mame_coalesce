@@ -1,19 +1,26 @@
 //! Published native MAME ROM, disk and sample occurrence payloads.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use diesel::sql_types::{BigInt, Bool, Nullable, Text};
 use diesel::{QueryableByName, RunQueryDsl, SqliteConnection, sql_query};
 
 use crate::disk::DiskDigestScope;
+use crate::storage::mame_attributes::{Family, Positions};
 
 use super::{CatalogFileOccurrence, CatalogFilesError, OccurrenceKind, SourceLocation};
 
-pub use crate::mame::{MameAssetDeclarations, MameBoolean, MameDumpStatus};
+pub use crate::mame::{
+    MameAssetDeclarations, MameBoolean, MameDiskAttribute, MameDiskCompatibilityAttribute,
+    MameDumpStatus, MameRomAttribute, MameRomCompatibilityAttribute, MameSampleAttribute,
+};
 
 /// MAME's native ROM claim, including source lexemes and normalized declarations.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MameRomPayload {
+    pub attribute_positions: Vec<super::XmlAttributePosition<MameRomAttribute>>,
+    pub compatibility_attribute_positions:
+        Vec<super::XmlAttributePosition<MameRomCompatibilityAttribute>>,
     pub name: String,
     pub declarations: MameAssetDeclarations,
     pub size: Option<i64>,
@@ -47,6 +54,9 @@ pub struct MameRomCompatibility {
 /// MAME's native disk claim. ROM-only fields are intentionally not present.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MameDiskPayload {
+    pub attribute_positions: Vec<super::XmlAttributePosition<MameDiskAttribute>>,
+    pub compatibility_attribute_positions:
+        Vec<super::XmlAttributePosition<MameDiskCompatibilityAttribute>>,
     pub name: String,
     pub declarations: MameAssetDeclarations,
     pub evidence_scope: DiskDigestScope,
@@ -77,6 +87,7 @@ pub enum MameFilePayload {
 /// A filename-only expected audio sample, with no inferred size or digest.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MameSamplePayload {
+    pub attribute_positions: Vec<super::XmlAttributePosition<MameSampleAttribute>>,
     pub name: String,
     pub source_order: i64,
     pub location: SourceLocation,
@@ -272,10 +283,10 @@ LEFT JOIN mame_rom_compatibility AS rom_compat_raw \
   ON rom_compat_raw.occurrence_id = occurrence.occurrence_id \
 LEFT JOIN mame_rom_compatibility AS rom_compat \
   ON rom_compat.occurrence_id = occurrence.occurrence_id \
- AND interpretation.rules_version = 'mame-observed-compat-declared-text-v1' \
+ AND interpretation.rules_version IN ('mame-observed-compat-declared-text-v1', 'mame-observed-compat-declared-text-v2') \
 LEFT JOIN mame_disk_compatibility AS disk_compat \
   ON disk_compat.occurrence_id = occurrence.occurrence_id \
- AND interpretation.rules_version = 'mame-observed-compat-declared-text-v1' \
+ AND interpretation.rules_version IN ('mame-observed-compat-declared-text-v1', 'mame-observed-compat-declared-text-v2') \
 WHERE occurrence.occurrence_id = requested.occurrence_id \
   AND occurrence.claim_kind IN ('mame_rom', 'mame_disk') \
 ORDER BY occurrence.occurrence_id";
@@ -299,6 +310,7 @@ pub(super) fn attach_payloads(
             return Err(CatalogFilesError::MissingMameFilePayload(id));
         }
         let sample = MameSamplePayload {
+            attribute_positions: Vec::new(),
             name: required(row.name, "sample name", id)?,
             source_order: required(row.source_order, "sample source order", id)?,
             location: SourceLocation {
@@ -314,6 +326,7 @@ pub(super) fn attach_payloads(
         }
     }
 
+    attach_attribute_positions(connection, &mut payloads)?;
     for occurrence in occurrences {
         let id = occurrence.occurrence_id.database_value();
         let is_mame = matches!(
@@ -355,6 +368,138 @@ pub(super) fn attach_payloads(
     Ok(())
 }
 
+fn attach_attribute_positions(
+    connection: &mut SqliteConnection,
+    payloads: &mut BTreeMap<i64, MameFilePayload>,
+) -> Result<(), CatalogFilesError> {
+    let mut positions = Positions::default();
+    for family in [
+        Family::Rom,
+        Family::RomCompatibility,
+        Family::Disk,
+        Family::DiskCompatibility,
+        Family::Sample,
+    ] {
+        positions.load(connection, family,
+            "FROM temp.catalog_files_requested_occurrences AS requested CROSS JOIN __NATIVE_POSITIONS__ AS position WHERE position.occurrence_id=requested.occurrence_id")?;
+    }
+    for (&id, payload) in payloads {
+        match payload {
+            MameFilePayload::Rom(rom) => attach_rom_positions(&mut positions, id, rom)?,
+            MameFilePayload::Disk(disk) => attach_disk_positions(&mut positions, id, disk)?,
+            MameFilePayload::Sample(sample) => {
+                sample.attribute_positions = positions.take(
+                    Family::Sample,
+                    [id, 0, 0, 0],
+                    MameSampleAttribute::from_code,
+                    &[true],
+                )?;
+            }
+        }
+    }
+    positions.finish()?;
+    Ok(())
+}
+
+fn attach_rom_positions(
+    positions: &mut Positions,
+    id: i64,
+    rom: &mut MameRomPayload,
+) -> Result<(), CatalogFilesError> {
+    rom.attribute_positions = positions.take(
+        Family::Rom,
+        [id, 0, 0, 0],
+        MameRomAttribute::from_code,
+        &[
+            true,
+            rom.bios.is_some(),
+            rom.declarations.size_text.is_some(),
+            rom.declarations.crc_text.is_some(),
+            rom.declarations.sha1_text.is_some(),
+            rom.merge_name.is_some(),
+            rom.region.is_some(),
+            rom.declarations.offset_text.is_some(),
+            rom.status_specified,
+            rom.optional_specified,
+        ],
+    )?;
+    let compatibility = rom.compatibility.as_ref();
+    rom.compatibility_attribute_positions = positions.take(
+        Family::RomCompatibility,
+        [id, 0, 0, 0],
+        MameRomCompatibilityAttribute::from_code,
+        &[
+            rom.declarations.md5_text.is_some(),
+            compatibility.is_some_and(|value| value.sound_only.is_some()),
+            compatibility.is_some_and(|value| value.dispose.is_some()),
+            compatibility.is_some_and(|value| value.load_flag.is_some()),
+            compatibility.is_some_and(|value| value.value.is_some()),
+            compatibility.is_some_and(|value| value.inverted.is_some()),
+            compatibility.is_some_and(|value| value.ovha.is_some()),
+            compatibility.is_some_and(|value| value.no_thread.is_some()),
+        ],
+    )?;
+    validate_joint_ordinals(
+        id,
+        &rom.attribute_positions,
+        &rom.compatibility_attribute_positions,
+    )
+}
+
+fn attach_disk_positions(
+    positions: &mut Positions,
+    id: i64,
+    disk: &mut MameDiskPayload,
+) -> Result<(), CatalogFilesError> {
+    disk.attribute_positions = positions.take(
+        Family::Disk,
+        [id, 0, 0, 0],
+        MameDiskAttribute::from_code,
+        &[
+            true,
+            disk.declarations.sha1_text.is_some(),
+            disk.merge_name.is_some(),
+            disk.region.is_some(),
+            disk.disk_index.is_some(),
+            disk.writable_specified,
+            disk.status_specified,
+            disk.optional_specified,
+        ],
+    )?;
+    disk.compatibility_attribute_positions = positions.take(
+        Family::DiskCompatibility,
+        [id, 0, 0, 0],
+        MameDiskCompatibilityAttribute::from_code,
+        &[disk.compatibility.is_some()],
+    )?;
+    validate_joint_ordinals(
+        id,
+        &disk.attribute_positions,
+        &disk.compatibility_attribute_positions,
+    )
+}
+
+fn validate_joint_ordinals<Native, Compatibility>(
+    owner: i64,
+    native: &[super::XmlAttributePosition<Native>],
+    compatibility: &[super::XmlAttributePosition<Compatibility>],
+) -> Result<(), CatalogFilesError> {
+    let mut ordinals = BTreeSet::new();
+    for ordinal in native
+        .iter()
+        .map(|p| p.source_order)
+        .chain(compatibility.iter().map(|p| p.source_order))
+    {
+        if !ordinals.insert(ordinal) {
+            return Err(CatalogFilesError::InvalidStoredValue {
+                field: "native/compatibility attribute order",
+                value: format!("duplicate ordinal {ordinal} on MAME owner {owner}"),
+            });
+        }
+    }
+    Ok(())
+}
+
 fn payload(row: MamePayloadRow) -> Result<MameFilePayload, CatalogFilesError> {
     let expected_kind = match row.claim_kind.as_str() {
         "mame_rom" => OccurrenceKind::MameRom,
@@ -391,6 +536,8 @@ fn rom_payload(row: MamePayloadRow, owner: i64) -> Result<MameRomPayload, Catalo
         no_thread: optional_bool(row.rom_no_thread, "no_thread", owner)?,
     };
     Ok(MameRomPayload {
+        attribute_positions: Vec::new(),
+        compatibility_attribute_positions: Vec::new(),
         name: required(row.rom_name, "MAME ROM name", owner)?,
         declarations: MameAssetDeclarations {
             size_text: row.rom_size_text,
@@ -438,6 +585,8 @@ fn disk_payload(row: MamePayloadRow, owner: i64) -> Result<MameDiskPayload, Cata
     let compatibility = optional_bool(row.disk_writeable, "writeable", owner)?
         .map(|writeable| MameDiskCompatibility { writeable });
     Ok(MameDiskPayload {
+        attribute_positions: Vec::new(),
+        compatibility_attribute_positions: Vec::new(),
         name: required(row.disk_name, "MAME disk name", owner)?,
         declarations: MameAssetDeclarations {
             sha1_text: row.disk_sha1_text,

@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mame xmlns:v="urn:vendor" v:marker="α" mameconfig="10" build="0.289" debug="no">
+	<machine sourcefile="systems/α.cpp" v:marker="β" name="complete" isconsumable="no" isbios="no" isdevice="no" ismechanical="yes" runnable="yes" cloneof="parent" romof="parent" sampleof="parent">
+		<description>Complete α</description><year>1981</year><manufacturer>Maker</manufacturer>
+		<biosset description="Default BIOS" name="bios" default="no"/>
+		<rom bios="bios" name="complete.rom" v:marker="γ" md5="11111111111111111111111111111111" size="1" crc="deadbeef" sha1="2222222222222222222222222222222222222222" merge="parent.rom" region="maincpu" offset="0" status="good" optional="no" soundonly="no" dispose="yes" loadflag="load16_byte" value="" inverted="no" ovha="" nothread="no"/>
+		<disk sha1="3333333333333333333333333333333333333333" name="complete.disk" merge="parent.disk" region="disk" index="0" writable="no" writeable="yes" status="good" optional="no"/>
+		<device_ref name="parent" tag=":device"/>
+		<sample name="sample"/>
+		<chip type="cpu" name="CPU" tag=":cpu" clock="4000000"/>
+		<display type="svg" tag=":screen" rotate="90" flipx="no" width="320" height="240" refresh="60.0" pixclock="12000000" htotal="400" hbend="10" hbstart="330" vtotal="260" vbend="5" vbstart="245"/>
+		<sound channels="2"/>
+		<input players="1" service="no" tilt="yes" coins="1"><control player="1" type="joy" buttons="2" minimum="0" maximum="255" sensitivity="50" keydelta="10" reverse="no" ways="8" ways2="4" ways3="2"/></input>
+		<dipswitch tag=":DSW" name="Mode" mask="3">
+			<condition mask="1" tag=":CFG" relation="eq" value="1"/>
+			<diplocation number="1" name="SW1" inverted="no"/>
+			<dipvalue value="1" name="On" default="no"><condition relation="ne" tag=":CFG" mask="1" value="0"/></dipvalue>
+		</dipswitch>
+		<configuration mask="4" name="Video" tag=":CFG">
+			<condition value="0" tag=":CFG" mask="2" relation="gt"/>
+			<conflocation inverted="yes" name="JP1" number="2"/>
+			<confsetting default="no" name="" value="4"><condition tag=":CFG" relation="le" mask="2" value="1"/></confsetting>
+		</configuration>
+		<port tag=":IN0"><analog mask="255"/></port>
+		<adjuster default="80" name="Volume"><condition relation="lt" value="2" tag=":CFG" mask="1"/></adjuster>
+		<driver emulation="good" status="imperfect" cocktail="preliminary" savestate="supported" requiresartwork="no" unofficial="no" nosoundhardware="no" incomplete="yes"/>
+		<feature status="imperfect" type="graphics" overall="unemulated"/>
+		<device tag=":fd" type="floppy" fixed_image="disk" mandatory="yes" interface="floppy"><instance briefname="FDD" name="floppy1"/><extension name="dsk"/><extension name=""/></device>
+		<slot name=":cartslot"><slotoption devname="cart" name="game" default="no"/></slot>
+		<softwarelist status="compatible" name="softlist" tag=":software" filter="original"/>
+		<ramoption default="2M" name="ram">2M</ramoption>
+	</machine>
+	<machine name="parent"><description>Parent</description></machine>
+	<machine name="defaults"><description>Defaults</description><display type="unknown" refresh="0"/><input players="1"><control type="button"/></input><driver status="good" emulation="good" savestate="supported"/><slot name="empty"><slotoption name="default-option" devname="device"/></slot><rom name="eligible.rom" size="1" sha1="4444444444444444444444444444444444444444"/></machine>
+</mame>

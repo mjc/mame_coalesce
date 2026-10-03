@@ -178,7 +178,7 @@ fn native_rom_disk_and_historical_fields_have_distinct_qualified_owners() -> Tes
         "SELECT count(*) AS count FROM mame_machine_compatibility WHERE is_consumable=0 AND is_consumable_specified=1",
         "SELECT count(*) AS count FROM mame_rom_compatibility WHERE md5_text='ABCDEF0123456789ABCDEF0123456789' AND sound_only=1 AND dispose=0 AND load_flag='' AND value='0' AND inverted=0 AND ovha='' AND no_thread=1",
         "SELECT count(*) AS count FROM mame_disk_claims JOIN mame_disk_compatibility USING(occurrence_id) WHERE writable=0 AND writable_specified=1 AND writeable=1",
-        "SELECT count(*) AS count FROM parser_interpretations WHERE format='mame-listxml' AND rules_version='mame-observed-compat-declared-text-v1'",
+        "SELECT count(*) AS count FROM parser_interpretations WHERE format='mame-listxml' AND rules_version='mame-observed-compat-declared-text-v2'",
     ] {
         assert_eq!(
             sql_query(query).get_result::<Count>(&mut connection)?.count,

@@ -21,8 +21,10 @@ fn connection() -> (tempfile::TempDir, SqliteConnection) {
         "INSERT INTO publishing_sources VALUES ('source','Publisher',NULL);
          INSERT INTO catalogs VALUES ('catalog','source','Catalog');
          INSERT INTO documents(document_key) VALUES ('document');
+         INSERT INTO parser_interpretations(interpretation_key,format,rules_version)
+         VALUES ('parser-mame','mame-listxml','mame-observed-compat-declared-text-v2');
          INSERT INTO parser_interpretations(interpretation_key,format)
-         VALUES ('parser-mame','mame-listxml'),('parser-software','mame-softwarelist-xml');
+         VALUES ('parser-software','mame-softwarelist-xml');
          INSERT INTO catalog_coverage(coverage_id,kind) VALUES (1,'complete');
          INSERT INTO catalog_snapshots(
              snapshot_key,catalog_key,document_key,interpretation_key,coverage_id

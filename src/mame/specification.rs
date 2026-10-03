@@ -1,6 +1,13 @@
 use crate::{logiqx::RecordLocation, xml_reader::Element};
 
-use super::MameBoolean;
+use super::{
+    AttributePosition, MameAdjusterAttribute, MameAnalogAttribute, MameBoolean, MameChipAttribute,
+    MameConditionAttribute, MameControlAttribute, MameDeviceAttribute, MameDisplayAttribute,
+    MameDriverAttribute, MameExtensionAttribute, MameFeatureAttribute, MameInputAttribute,
+    MameInstanceAttribute, MamePortAttribute, MameRamOptionAttribute, MameSampleAttribute,
+    MameSlotAttribute, MameSlotOptionAttribute, MameSoftwareListAttribute, MameSoundAttribute,
+    attributes,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MachineSpecificationElement {
@@ -29,6 +36,7 @@ pub enum MachineSpecification {
 pub struct Sample {
     pub name: String,
     pub location: RecordLocation,
+    pub attribute_positions: Vec<AttributePosition<MameSampleAttribute>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -38,6 +46,7 @@ pub struct Chip {
     pub kind: ChipKind,
     pub clock: Option<String>,
     pub location: RecordLocation,
+    pub attribute_positions: Vec<AttributePosition<MameChipAttribute>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -74,6 +83,7 @@ pub struct Display {
     pub vertical_blank_end: Option<String>,
     pub vertical_blank_start: Option<String>,
     pub location: RecordLocation,
+    pub attribute_positions: Vec<AttributePosition<MameDisplayAttribute>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -122,6 +132,7 @@ impl DisplayRotation {
 pub struct Sound {
     pub channels: String,
     pub location: RecordLocation,
+    pub attribute_positions: Vec<AttributePosition<MameSoundAttribute>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -134,6 +145,7 @@ pub struct Input {
     pub coins: Option<String>,
     pub controls: Vec<InputControl>,
     pub location: RecordLocation,
+    pub attribute_positions: Vec<AttributePosition<MameInputAttribute>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -151,6 +163,7 @@ pub struct InputControl {
     pub ways2: Option<String>,
     pub ways3: Option<String>,
     pub location: RecordLocation,
+    pub attribute_positions: Vec<AttributePosition<MameControlAttribute>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -158,12 +171,14 @@ pub struct Port {
     pub tag: String,
     pub analogs: Vec<Analog>,
     pub location: RecordLocation,
+    pub attribute_positions: Vec<AttributePosition<MamePortAttribute>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Analog {
     pub mask: String,
     pub location: RecordLocation,
+    pub attribute_positions: Vec<AttributePosition<MameAnalogAttribute>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -172,6 +187,7 @@ pub struct Adjuster {
     pub default: String,
     pub condition: Option<MachineCondition>,
     pub location: RecordLocation,
+    pub attribute_positions: Vec<AttributePosition<MameAdjusterAttribute>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -181,6 +197,7 @@ pub struct MachineCondition {
     pub relation: ConditionRelation,
     pub value: String,
     pub location: RecordLocation,
+    pub attribute_positions: Vec<AttributePosition<MameConditionAttribute>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -223,6 +240,7 @@ pub struct Driver {
     pub incomplete: MameBoolean,
     pub incomplete_specified: bool,
     pub location: RecordLocation,
+    pub attribute_positions: Vec<AttributePosition<MameDriverAttribute>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -265,6 +283,7 @@ pub struct Feature {
     pub status: Option<FeatureStatus>,
     pub overall: Option<FeatureStatus>,
     pub location: RecordLocation,
+    pub attribute_positions: Vec<AttributePosition<MameFeatureAttribute>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -347,6 +366,7 @@ pub struct Device {
     pub instance: Option<DeviceInstance>,
     pub extensions: Vec<DeviceExtension>,
     pub location: RecordLocation,
+    pub attribute_positions: Vec<AttributePosition<MameDeviceAttribute>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -354,12 +374,14 @@ pub struct DeviceInstance {
     pub name: String,
     pub brief_name: String,
     pub location: RecordLocation,
+    pub attribute_positions: Vec<AttributePosition<MameInstanceAttribute>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeviceExtension {
     pub name: String,
     pub location: RecordLocation,
+    pub attribute_positions: Vec<AttributePosition<MameExtensionAttribute>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -367,6 +389,7 @@ pub struct Slot {
     pub name: String,
     pub options: Vec<SlotOption>,
     pub location: RecordLocation,
+    pub attribute_positions: Vec<AttributePosition<MameSlotAttribute>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -376,6 +399,7 @@ pub struct SlotOption {
     pub is_default: MameBoolean,
     pub default_specified: bool,
     pub location: RecordLocation,
+    pub attribute_positions: Vec<AttributePosition<MameSlotOptionAttribute>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -385,6 +409,7 @@ pub struct SoftwareList {
     pub status: SoftwareListStatus,
     pub filter: Option<String>,
     pub location: RecordLocation,
+    pub attribute_positions: Vec<AttributePosition<MameSoftwareListAttribute>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -409,6 +434,7 @@ pub struct RamOption {
     pub default: Option<String>,
     pub text: String,
     pub location: RecordLocation,
+    pub attribute_positions: Vec<AttributePosition<MameRamOptionAttribute>>,
 }
 
 fn attribute(node: &Element, name: &str) -> Option<String> {
@@ -465,6 +491,10 @@ pub(super) fn parse_condition(node: &Element) -> crate::Result<MachineCondition>
         )?,
         value: required(node, "value")?,
         location: node.location,
+        attribute_positions: attributes::select(
+            &node.attributes,
+            MameConditionAttribute::from_name,
+        )?,
     })
 }
 
@@ -489,6 +519,10 @@ pub(super) fn parse_element(node: &Element) -> crate::Result<MachineSpecificatio
         "sample" => MachineSpecification::Sample(Sample {
             name: required(node, "name")?,
             location,
+            attribute_positions: attributes::select(
+                &node.attributes,
+                MameSampleAttribute::from_name,
+            )?,
         }),
         "chip" => MachineSpecification::Chip(Chip {
             name: required(node, "name")?,
@@ -500,6 +534,10 @@ pub(super) fn parse_element(node: &Element) -> crate::Result<MachineSpecificatio
             )?,
             clock: attribute(node, "clock"),
             location,
+            attribute_positions: attributes::select(
+                &node.attributes,
+                MameChipAttribute::from_name,
+            )?,
         }),
         "display" => MachineSpecification::Display(Display {
             tag: attribute(node, "tag"),
@@ -543,10 +581,18 @@ pub(super) fn parse_element(node: &Element) -> crate::Result<MachineSpecificatio
             vertical_blank_end: attribute(node, "vbend"),
             vertical_blank_start: attribute(node, "vbstart"),
             location,
+            attribute_positions: attributes::select(
+                &node.attributes,
+                MameDisplayAttribute::from_name,
+            )?,
         }),
         "sound" => MachineSpecification::Sound(Sound {
             channels: required(node, "channels")?,
             location,
+            attribute_positions: attributes::select(
+                &node.attributes,
+                MameSoundAttribute::from_name,
+            )?,
         }),
         "input" => MachineSpecification::Input(Input {
             service: boolean(node, "service", false)?,
@@ -573,10 +619,18 @@ pub(super) fn parse_element(node: &Element) -> crate::Result<MachineSpecificatio
                         ways2: attribute(child, "ways2"),
                         ways3: attribute(child, "ways3"),
                         location: child.location,
+                        attribute_positions: attributes::select(
+                            &child.attributes,
+                            MameControlAttribute::from_name,
+                        )?,
                     })
                 })
                 .collect::<crate::Result<Vec<_>>>()?,
             location,
+            attribute_positions: attributes::select(
+                &node.attributes,
+                MameInputAttribute::from_name,
+            )?,
         }),
         "port" => MachineSpecification::Port(Port {
             tag: required(node, "tag")?,
@@ -587,16 +641,28 @@ pub(super) fn parse_element(node: &Element) -> crate::Result<MachineSpecificatio
                     Ok(Analog {
                         mask: required(child, "mask")?,
                         location: child.location,
+                        attribute_positions: attributes::select(
+                            &child.attributes,
+                            MameAnalogAttribute::from_name,
+                        )?,
                     })
                 })
                 .collect::<crate::Result<Vec<_>>>()?,
             location,
+            attribute_positions: attributes::select(
+                &node.attributes,
+                MamePortAttribute::from_name,
+            )?,
         }),
         "adjuster" => MachineSpecification::Adjuster(Adjuster {
             name: required(node, "name")?,
             default: required(node, "default")?,
             condition: parse_optional_condition(node)?,
             location,
+            attribute_positions: attributes::select(
+                &node.attributes,
+                MameAdjusterAttribute::from_name,
+            )?,
         }),
         "driver" => MachineSpecification::Driver(Driver {
             status: choice(
@@ -649,6 +715,10 @@ pub(super) fn parse_element(node: &Element) -> crate::Result<MachineSpecificatio
             incomplete: boolean(node, "incomplete", false)?,
             incomplete_specified: node.attributes.contains_key("incomplete"),
             location,
+            attribute_positions: attributes::select(
+                &node.attributes,
+                MameDriverAttribute::from_name,
+            )?,
         }),
         "feature" => MachineSpecification::Feature(Feature {
             kind: choice(
@@ -707,6 +777,10 @@ pub(super) fn parse_element(node: &Element) -> crate::Result<MachineSpecificatio
                 })
                 .transpose()?,
             location,
+            attribute_positions: attributes::select(
+                &node.attributes,
+                MameFeatureAttribute::from_name,
+            )?,
         }),
         "device" => MachineSpecification::Device(Device {
             kind: required(node, "type")?,
@@ -722,6 +796,10 @@ pub(super) fn parse_element(node: &Element) -> crate::Result<MachineSpecificatio
                         name: required(child, "name")?,
                         brief_name: required(child, "briefname")?,
                         location: child.location,
+                        attribute_positions: attributes::select(
+                            &child.attributes,
+                            MameInstanceAttribute::from_name,
+                        )?,
                     })
                 })
                 .transpose()?,
@@ -732,10 +810,18 @@ pub(super) fn parse_element(node: &Element) -> crate::Result<MachineSpecificatio
                     Ok(DeviceExtension {
                         name: required(child, "name")?,
                         location: child.location,
+                        attribute_positions: attributes::select(
+                            &child.attributes,
+                            MameExtensionAttribute::from_name,
+                        )?,
                     })
                 })
                 .collect::<crate::Result<Vec<_>>>()?,
             location,
+            attribute_positions: attributes::select(
+                &node.attributes,
+                MameDeviceAttribute::from_name,
+            )?,
         }),
         "slot" => MachineSpecification::Slot(Slot {
             name: required(node, "name")?,
@@ -749,10 +835,18 @@ pub(super) fn parse_element(node: &Element) -> crate::Result<MachineSpecificatio
                         is_default: boolean(child, "default", false)?,
                         default_specified: child.attributes.contains_key("default"),
                         location: child.location,
+                        attribute_positions: attributes::select(
+                            &child.attributes,
+                            MameSlotOptionAttribute::from_name,
+                        )?,
                     })
                 })
                 .collect::<crate::Result<Vec<_>>>()?,
             location,
+            attribute_positions: attributes::select(
+                &node.attributes,
+                MameSlotAttribute::from_name,
+            )?,
         }),
         "softwarelist" => MachineSpecification::SoftwareList(SoftwareList {
             tag: required(node, "tag")?,
@@ -767,12 +861,20 @@ pub(super) fn parse_element(node: &Element) -> crate::Result<MachineSpecificatio
             )?,
             filter: attribute(node, "filter"),
             location,
+            attribute_positions: attributes::select(
+                &node.attributes,
+                MameSoftwareListAttribute::from_name,
+            )?,
         }),
         "ramoption" => MachineSpecification::RamOption(RamOption {
             name: required(node, "name")?,
             default: attribute(node, "default"),
             text: node.direct_text(),
             location,
+            attribute_positions: attributes::select(
+                &node.attributes,
+                MameRamOptionAttribute::from_name,
+            )?,
         }),
         other => {
             return Err(crate::Error::XmlValidation(format!(

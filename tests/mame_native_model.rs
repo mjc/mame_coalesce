@@ -115,6 +115,8 @@ fn pending_machine(
     if header {
         sql_query("INSERT INTO mame_document_facts(snapshot_key,build,debug,debug_specified,config_version,source_line,source_column) SELECT ?,build,debug,debug_specified,config_version,source_line,source_column FROM mame_document_facts WHERE snapshot_key=?")
             .bind::<Text,_>(&key).bind::<Text,_>(base).execute(connection)?;
+        sql_query("INSERT INTO mame_document_facts_attribute_positions(document_id,field_kind,source_order,source_line,source_column) SELECT target.document_id,positions.field_kind,positions.source_order,positions.source_line,positions.source_column FROM mame_document_facts AS target CROSS JOIN mame_document_facts AS source CROSS JOIN mame_document_facts_attribute_positions AS positions WHERE target.snapshot_key=? AND source.snapshot_key=? AND positions.document_id=source.document_id")
+            .bind::<Text,_>(&key).bind::<Text,_>(base).execute(connection)?;
     }
     let group = sql_query("INSERT INTO catalog_set_groups(snapshot_key,kind,list_order) VALUES (?,'root',0) RETURNING set_group_id AS count")
         .bind::<Text,_>(&key).get_result::<Count>(connection)?.count;
@@ -123,8 +125,50 @@ fn pending_machine(
     if machine {
         sql_query("INSERT INTO mame_machines(set_id,description,description_source_order,description_line,description_column,is_device,is_device_specified,runnable,runnable_specified,is_bios,is_bios_specified,is_mechanical,is_mechanical_specified,attributes_line,attributes_column) VALUES (?,'Pending',0,1,1,0,0,1,0,0,0,0,0,1,1)")
             .bind::<BigInt,_>(owner).execute(connection)?;
+        insert_positions(
+            connection,
+            "mame_machines_attribute_positions",
+            &[("set_id", owner)],
+            &[0],
+        )?;
     }
     Ok((key, owner))
+}
+
+fn insert_positions(
+    connection: &mut SqliteConnection,
+    table: &str,
+    owners: &[(&str, i64)],
+    fields: &[i64],
+) -> TestResult {
+    insert_positions_at(connection, table, owners, fields, 0)
+}
+
+fn insert_positions_at(
+    connection: &mut SqliteConnection,
+    table: &str,
+    owners: &[(&str, i64)],
+    fields: &[i64],
+    first_order: usize,
+) -> TestResult {
+    let columns = owners
+        .iter()
+        .map(|(name, _)| *name)
+        .collect::<Vec<_>>()
+        .join(",");
+    let keys = owners
+        .iter()
+        .map(|(_, value)| value.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    for (index, field) in fields.iter().enumerate() {
+        let order = first_order + index;
+        sql_query(format!(
+            "INSERT INTO {table}({columns},field_kind,source_order,source_line,source_column) VALUES ({keys},{field},{order},1,{})",
+            order + 1
+        )).execute(connection)?;
+    }
+    Ok(())
 }
 
 fn publish_pending(connection: &mut SqliteConnection, key: &str) -> QueryResult<usize> {
@@ -153,6 +197,8 @@ fn publication_rejects_a_mame_root_without_any_machine() -> TestResult {
         .bind::<Text,_>(key).bind::<Text,_>(key).bind::<Text,_>(base.as_str()).execute(&mut connection)?;
     sql_query("INSERT INTO mame_document_facts(snapshot_key,build,debug,debug_specified,config_version,source_line,source_column) SELECT ?,build,debug,debug_specified,config_version,source_line,source_column FROM mame_document_facts WHERE snapshot_key=?")
         .bind::<Text,_>(key).bind::<Text,_>(base.as_str()).execute(&mut connection)?;
+    sql_query("INSERT INTO mame_document_facts_attribute_positions(document_id,field_kind,source_order,source_line,source_column) SELECT document_id,2,0,1,7 FROM mame_document_facts WHERE snapshot_key=?")
+        .bind::<Text,_>(key).execute(&mut connection)?;
     sql_query("INSERT INTO catalog_set_groups(snapshot_key,kind,list_order) VALUES (?,'root',0)")
         .bind::<Text, _>(key)
         .execute(&mut connection)?;
@@ -234,7 +280,25 @@ fn publication_rejects_unusable_or_mismatched_native_uuid_declarations() -> Test
                 .bind::<BigInt, _>(occurrence)
                 .bind::<Text, _>(md5)
                 .execute(&mut connection)?;
+            insert_positions_at(
+                &mut connection,
+                "mame_rom_compatibility_attribute_positions",
+                &[("occurrence_id", occurrence)],
+                &[0],
+                3,
+            )?;
         }
+        let fields = if crc.is_some() {
+            &[0, 2, 3, 4][..]
+        } else {
+            &[0, 2, 4][..]
+        };
+        insert_positions(
+            &mut connection,
+            "mame_rom_claims_attribute_positions",
+            &[("occurrence_id", occurrence)],
+            fields,
+        )?;
         sql_query("INSERT INTO occurrence_digest_assertions(occurrence_id,digest_id,scope,provenance) SELECT ?,digest_id,scope,provenance FROM occurrence_digest_assertions WHERE occurrence_id=?")
             .bind::<BigInt,_>(occurrence).bind::<BigInt,_>(seed).execute(&mut connection)?;
         let error = publish_pending(&mut connection, &key)
@@ -274,6 +338,12 @@ fn publication_requires_native_header_machine_and_unique_child_positions() -> Te
         if collision {
             sql_query("INSERT INTO mame_machine_chips(set_id,element_order,name,kind,source_line,source_column) VALUES (?,0,'cpu','cpu',1,1)")
                 .bind::<BigInt,_>(owner).execute(&mut connection)?;
+            insert_positions(
+                &mut connection,
+                "mame_machine_chips_attribute_positions",
+                &[("set_id", owner), ("element_order", 0)],
+                &[0, 2],
+            )?;
         }
         let error = publish_pending(&mut connection, &key)
             .err()
@@ -286,6 +356,12 @@ fn publication_requires_native_header_machine_and_unique_child_positions() -> Te
     let (key, owner) = pending_machine(&mut connection, base.as_str(), "source-gaps", true, true)?;
     sql_query("INSERT INTO mame_machine_chips(set_id,element_order,name,kind,source_line,source_column) VALUES (?,7,'cpu','cpu',1,1)")
         .bind::<BigInt,_>(owner).execute(&mut connection)?;
+    insert_positions(
+        &mut connection,
+        "mame_machine_chips_attribute_positions",
+        &[("set_id", owner), ("element_order", 7)],
+        &[0, 2],
+    )?;
     for statement in [
         "INSERT INTO mame_machine_displays(set_id,element_order,kind,flip_x,flip_x_specified,refresh,source_line,source_column) VALUES (?,8,'raster',1,0,'60',1,1)",
         "INSERT INTO mame_machine_input_controls(set_id,element_order,control_order,control_type,reverse,reverse_specified,source_line,source_column) VALUES (?,9,0,'joy',0,0,1,1)",
@@ -310,6 +386,12 @@ fn assert_remaining_publication_rules(connection: &mut SqliteConnection, base: &
     for order in [1_i64, 2] {
         sql_query("INSERT INTO mame_machine_sounds(set_id,element_order,channels,source_line,source_column) VALUES (?,?,'1',1,1)")
             .bind::<BigInt,_>(owner).bind::<BigInt,_>(order).execute(connection)?;
+        insert_positions(
+            connection,
+            "mame_machine_sounds_attribute_positions",
+            &[("set_id", owner), ("element_order", order)],
+            &[0],
+        )?;
     }
     assert!(publish_pending(connection, &key).is_err());
     for kind in ["mame_rom", "mame_disk"] {
@@ -341,6 +423,12 @@ fn assert_remaining_publication_rules(connection: &mut SqliteConnection, base: &
     }
     sql_query("INSERT INTO mame_disk_claims(occurrence_id,name,evidence_scope,evidence_provenance,dump_status,status_specified,source_order,optional,optional_specified,writable,writable_specified,source_line,source_column) VALUES (?,'disk','chd_header_sha1','source_declared','good',0,1,0,0,0,0,1,1)")
         .bind::<BigInt,_>(occurrence).execute(connection)?;
+    insert_positions(
+        connection,
+        "mame_disk_claims_attribute_positions",
+        &[("occurrence_id", occurrence)],
+        &[0],
+    )?;
     assert_eq!(publish_pending(connection, &key)?, 1);
     let (key, owner) = pending_machine(connection, base, "nested-collision", true, true)?;
     sql_query("INSERT INTO machine_switches(set_id,switch_order,kind,name,tag,mask,source_order,source_line,source_column) VALUES (?,0,'dipswitch','Switch',':DSW','0x01',1,1,1)")
@@ -349,6 +437,28 @@ fn assert_remaining_publication_rules(connection: &mut SqliteConnection, base: &
         .bind::<BigInt,_>(owner).execute(connection)?;
     sql_query("INSERT INTO machine_switch_values(set_id,switch_order,value_order,source_order,name,value,is_default,default_specified,source_line,source_column) VALUES (?,0,0,0,'Off','0x00',0,0,1,1)")
         .bind::<BigInt,_>(owner).execute(connection)?;
+    insert_positions(
+        connection,
+        "machine_switches_attribute_positions",
+        &[("set_id", owner), ("switch_order", 0)],
+        &[0, 1, 2],
+    )?;
+    insert_positions(
+        connection,
+        "machine_switch_locations_attribute_positions",
+        &[
+            ("set_id", owner),
+            ("switch_order", 0),
+            ("location_order", 0),
+        ],
+        &[0, 1],
+    )?;
+    insert_positions(
+        connection,
+        "machine_switch_values_attribute_positions",
+        &[("set_id", owner), ("switch_order", 0), ("value_order", 0)],
+        &[0, 1],
+    )?;
     assert!(publish_pending(connection, &key).is_err());
     Ok(())
 }
@@ -376,14 +486,14 @@ fn publication_child_checks_seek_requested_machine_owners() -> TestResult {
             .get_result::<StoredSql>(&mut connection)?
             .sql;
     let query = trigger
-        .split_once("WHEN EXISTS (")
+        .split_once("WHEN ")
         .ok_or("missing publication predicate")?
         .1
-        .rsplit_once(") BEGIN")
+        .rsplit_once(" BEGIN")
         .ok_or("missing publication body")?
         .0
         .replace("NEW.snapshot_key", "'requested'");
-    let steps = sql_query(format!("EXPLAIN QUERY PLAN {query}"))
+    let steps = sql_query(format!("EXPLAIN QUERY PLAN SELECT {query}"))
         .load::<PlanStep>(&mut connection)?
         .into_iter()
         .map(|step| step.detail)

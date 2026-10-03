@@ -16,6 +16,7 @@ use super::catalog_coverage::CoverageId;
 use super::db::Pool;
 
 mod logiqx;
+mod mame_attributes;
 mod no_intro_database;
 mod no_intro_pc;
 mod software;
@@ -814,10 +815,6 @@ struct MachineSpecificationRow {
     device_instance_name: Option<String>,
     #[diesel(sql_type = Nullable<Text>)]
     device_instance_briefname: Option<String>,
-    #[diesel(sql_type = Nullable<BigInt>)]
-    device_instance_line: Option<i64>,
-    #[diesel(sql_type = Nullable<BigInt>)]
-    device_instance_column: Option<i64>,
     #[diesel(sql_type = Nullable<Text>)]
     slot_name: Option<String>,
     #[diesel(sql_type = Nullable<Text>)]
@@ -942,6 +939,8 @@ struct MachineConditionRow {
 
 #[derive(Default)]
 struct CatalogRecords {
+    mame_attributes: BTreeMap<i64, Vec<serde_json::Value>>,
+    mame_media_attributes: BTreeMap<i64, mame_attributes::MediaOrders>,
     logiqx_attributes: BTreeMap<i64, Vec<serde_json::Value>>,
     sets: BTreeMap<String, Vec<SetRow>>,
     requirements: BTreeMap<i64, BTreeMap<String, Vec<serde_json::Value>>>,
@@ -1088,6 +1087,16 @@ fn compare_owner_group(
         }
         _ => SnapshotRecordCorrespondence::Ambiguous,
     };
+    let metadata_changed = metadata_changed
+        || (correspondence == SnapshotRecordCorrespondence::UniqueName
+            && mame_attributes::media_changed(
+                before
+                    .first()
+                    .and_then(|set| previous_records.mame_media_attributes.get(&set.set_id)),
+                after
+                    .first()
+                    .and_then(|set| current_records.mame_media_attributes.get(&set.set_id)),
+            ));
     let requirement_changes = match correspondence {
         SnapshotRecordCorrespondence::UniqueName => {
             let previous = before
@@ -1203,6 +1212,7 @@ struct NoIntroDatHeaderRow {
 
 #[derive(PartialEq, Eq)]
 struct DocumentMetadata {
+    mame_attributes: Vec<i64>,
     logiqx_attributes: logiqx::DocumentAttributes,
     mame: Option<MameDocumentMetadataRow>,
     logiqx: Option<LogiqxDocumentMetadataRow>,
@@ -1385,6 +1395,7 @@ fn document_metadata(
     let no_intro_pc = no_intro_pc::load_document(conn, snapshot)?;
     let software = software::load_document(conn, snapshot)?;
     Ok(DocumentMetadata {
+        mame_attributes: mame_attributes::document(conn, snapshot)?,
         logiqx_attributes: logiqx::load_document(conn, snapshot)?,
         mame,
         logiqx,
@@ -1957,8 +1968,21 @@ fn records(
     );
     normalize_logiqx_child_order(&mut result);
     normalize_mame_child_order(&mut result, &mame_child_ranks);
-    software::load_records(conn, key, &mut result)?;
+    load_attribute_history(conn, key, &mame_child_ranks, &mut result)?;
     Ok(result)
+}
+
+fn load_attribute_history(
+    conn: &mut diesel::SqliteConnection,
+    key: &SnapshotKey,
+    mame_child_ranks: &BTreeMap<i64, BTreeMap<i64, i64>>,
+    result: &mut CatalogRecords,
+) -> crate::Result<()> {
+    let attributes = mame_attributes::records(conn, key, mame_child_ranks)?;
+    result.mame_attributes = attributes.machines;
+    result.mame_media_attributes = attributes.media;
+    super::mame_attributes::validate_edition(conn, key)?;
+    software::load_records(conn, key, result)
 }
 
 /// Compare native-child ordering without treating vendor-only gaps as edits.
@@ -2245,7 +2269,7 @@ const ROOT_REQUIREMENTS_SQL: &str = "SELECT occurrence.occurrence_id, sets.set_i
            ON mame_snapshot.snapshot_key = sets.snapshot_key \
          LEFT JOIN parser_interpretations AS mame_interpretation \
            ON mame_interpretation.interpretation_key = mame_snapshot.interpretation_key \
-          AND mame_interpretation.rules_version = 'mame-observed-compat-declared-text-v1' \
+          AND mame_interpretation.rules_version IN ('mame-observed-compat-declared-text-v1', 'mame-observed-compat-declared-text-v2') \
          LEFT JOIN mame_rom_compatibility AS mame_rom_compat \
            ON mame_rom_compat.occurrence_id = occurrence.occurrence_id \
           AND mame_interpretation.interpretation_key IS NOT NULL \
@@ -3573,6 +3597,7 @@ fn owner_metadata(sets: &[SetRow], records: &CatalogRecords) -> Vec<serde_json::
 fn set_metadata(records: &CatalogRecords, set: &SetRow) -> serde_json::Value {
     serde_json::json!({
         "logiqx_attributes": records.logiqx_attributes.get(&set.set_id),
+        "mame_attributes": records.mame_attributes.get(&set.set_id),
         "mame_machine_facts": records.mame_machine_facts.get(&set.set_id),
         "mame_machine_specification_facts": records.mame_machine_specification_facts.get(&set.set_id),
         "mame_machine_dependencies": records.mame_machine_dependencies.get(&set.set_id),
@@ -3603,6 +3628,7 @@ fn owner_signatures(sets: &[SetRow], records: &CatalogRecords) -> Vec<serde_json
         .map(|set| {
             serde_json::json!({
                 "metadata": set_metadata(records, set),
+                "mame_media_attributes": mame_attributes::media_signature(records.mame_media_attributes.get(&set.set_id)),
                 "parent": set.parent_name,
                 "requirements": records.requirements.get(&set.set_id),
             })

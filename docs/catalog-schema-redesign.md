@@ -758,7 +758,7 @@ recursive-trigger enforcement disabled.
 ROM declarations now retain size, CRC, SHA-1 and offset source text. Checked
 numeric size is virtual rather than a stored copy. Native ROM/disk shapes are
 separate, and historical machine/ROM/disk attributes have actual native-parent
-compatibility owners qualified by `mame-observed-compat-declared-text-v1`.
+compatibility owners qualified by `mame-observed-compat-declared-text-v2`.
 ROM MD5 text belongs to that compatibility owner. Public file payloads hydrate
 typed native media fields from existing occurrence references; history compares
 raw declaration spelling as well as normalized evidence.
@@ -772,12 +772,24 @@ when their source text contains only decimal-looking digits. Referenced parser
 interpretations cannot be replaced or deleted beneath their native facts, and
 reinterning a digest preserves the existing digest owner ID.
 
-This is not completion of the pinned MAME field contract. Exhaustive field/query
-and grammar witnesses remain open. Configuration `conflocation` is declared by
+Position-only companions now retain all 125 declared attributes and ten qualified
+compatibility fields on 33 actual native owners. Numeric owner keys, closed field
+codes, source order and positive integer QName coordinates are the only columns;
+no values or source syntax are copied. Conditions keep their complete actual
+parent key, including condition order, with one shared field enum across three
+native condition tables. Native and compatibility fields occupy one opening-tag
+ordinal domain. Publication and source-free history share edition-scoped
+validation, while public readers check the complete requested owners.
+
+The independent pinned inventory and synthetic all-field fixture exercise SQL
+owners and public queries, including decoded UTF-16 and compressed inputs.
+This is not completion of the broad pinned MAME contract: grammar, executable
+loading semantics and full acquired-corpus acceptance remain open.
+Configuration `conflocation` is declared by
 the [pinned 0.289 embedded DTD](https://github.com/mamedev/mame/blob/mame0289/src/frontend/mame/infoxml.cpp):
 `name` and `number` are required, and `inverted` defaults to `no`. Its attribute
-presence, defaults and cardinality need the same native witnesses as the other
-declared machine fields.
+presence and defaults are covered by the same native witnesses as the other
+declared machine fields; its coordinates are not borrowed from the switch tag.
 
 ## MAME software-list native relations
 

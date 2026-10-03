@@ -27,6 +27,10 @@ struct RelationshipReviewId(i64);
 
 #[derive(QueryableByName)]
 struct ExplanationRow {
+    #[diesel(sql_type = Nullable<Text>)]
+    source_format: Option<String>,
+    #[diesel(sql_type = diesel::sql_types::Bool)]
+    source_location_valid: bool,
     #[diesel(sql_type = BigInt)]
     relationship_id: i64,
     #[diesel(sql_type = Text)]
@@ -475,6 +479,9 @@ impl ExplanationScope {
                 s.document_key, \
                 (SELECT source_version.declared_version FROM catalog_snapshot_versions source_version \
                  WHERE source_version.snapshot_key = a.source_snapshot_key) AS declared_version, \
+                pi.format AS source_format, \
+                (typeof(a.source_line)='integer' AND typeof(a.source_column)='integer' \
+                 AND a.source_line>0 AND a.source_column>0) AS source_location_valid, \
                 pi.parser_name, pi.parser_version, pi.rules_version \
          FROM {from} \
          CROSS JOIN catalog_relationships registry ON registry.assertion_key=a.assertion_key \
@@ -842,6 +849,14 @@ fn explanation_origin(
     supporting_assertions: Vec<String>,
     rule: Option<RelationshipRule>,
 ) -> crate::Result<RelationshipOrigin> {
+    if row.origin == "source_assertion"
+        && row.source_format.as_deref() == Some("mame-listxml")
+        && !row.source_location_valid
+    {
+        return Err(crate::Error::XmlValidation(
+            "MAME relationship has no valid attribute QName witness".into(),
+        ));
+    }
     match row.origin.as_str() {
         "source_assertion" => Ok(RelationshipOrigin::SourceAssertion {
             snapshot: SnapshotKey::from_persisted(row.source_snapshot_key.clone().ok_or_else(

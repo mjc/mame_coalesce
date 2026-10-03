@@ -162,7 +162,7 @@ missing, empty, leading-zero or uninterpretable values. Numeric size is a checke
 virtual decimal projection; offset queries follow MAME's hexadecimal spelling.
 ROM and CHD disk rows have separate native shapes, and historical attributes
 belong to separately qualified compatibility owners. The default interpretation
-is `mame-observed-compat-declared-text-v1`, not strict DTD validation.
+is `mame-observed-compat-declared-text-v2`, not strict DTD validation.
 Uninterpretable supplied declarations prevent shared UUID association. No-dump
 claims and historical loading fields without a pinned whole-file contract retain
 their literals and unknown-scope hash evidence without receiving a UUID. CHD
@@ -171,6 +171,15 @@ source literals and normalized source assertions to agree in both directions.
 The `catalog_files` API hydrates typed MAME ROM/disk/sample payloads from existing
 machine media references without reparsing originals. History includes their raw
 declarations, explicit defaults and compatibility fields.
+All 125 attributes in the pinned machine specification and ten separately
+qualified compatibility fields have position-only companions on their actual
+native owners. Public machine and file queries expose closed field enums,
+lexical attribute order, and decoded QName coordinates without reading originals.
+An omitted default has no invented position; explicitly empty declarations do.
+Native and compatibility fields share the opening tag's attribute order.
+History compares relative recognized-field order, ignoring vendor gaps, layout
+and coordinates. Publication and history share edition-scoped presence and
+coordinate validation; these companions contain no copied values or XML.
 Each filename-only sample owns a distinct occurrence, including repeated and
 empty names, in mixed ROM/disk/sample source order. `mame_samples` stores its
 name and position once; its machine is reached through the occurrence owner.

@@ -1,5 +1,6 @@
 //! Bounded queries for published native MAME machine facts.
 
+mod attributes;
 mod queries;
 mod reader;
 
@@ -25,6 +26,17 @@ pub use crate::{
         SaveState, Slot, SlotOption, SoftwareList, SoftwareListStatus, Sound,
     },
     storage::catalog_files::OccurrenceId,
+};
+
+pub use crate::mame::{
+    AttributeLocation, AttributePosition, MameAdjusterAttribute, MameAnalogAttribute,
+    MameBiosAttribute, MameChipAttribute, MameConditionAttribute, MameControlAttribute,
+    MameDeviceAttribute, MameDeviceReferenceAttribute, MameDisplayAttribute, MameDocumentAttribute,
+    MameDriverAttribute, MameExtensionAttribute, MameFeatureAttribute, MameInputAttribute,
+    MameInstanceAttribute, MameMachineAttribute, MameMachineCompatibilityAttribute,
+    MamePortAttribute, MameRamOptionAttribute, MameSlotAttribute, MameSlotOptionAttribute,
+    MameSoftwareListAttribute, MameSoundAttribute, MameSwitchAttribute,
+    MameSwitchLocationAttribute, MameSwitchValueAttribute,
 };
 
 const MAX_PAGE_SIZE: usize = 500;
@@ -63,6 +75,7 @@ pub struct MachineCursor {
 /// Native MAME document facts and their source location, returned once per page.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MameDocumentFacts {
+    pub attribute_positions: Vec<AttributePosition<MameDocumentAttribute>>,
     pub build: Option<String>,
     pub debug: bool,
     pub debug_specified: bool,
@@ -123,6 +136,7 @@ pub enum MachineAssetKind {
 /// A native DIP or configuration switch and its ordered child facts.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MachineSwitch {
+    pub attribute_positions: Vec<AttributePosition<MameSwitchAttribute>>,
     pub kind: MachineSwitchKind,
     pub name: String,
     pub tag: String,
@@ -144,6 +158,7 @@ pub enum MachineSwitchLocationKind {
 /// A native switch location, retaining compatibility configuration locations.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MachineSwitchLocation {
+    pub attribute_positions: Vec<AttributePosition<MameSwitchLocationAttribute>>,
     pub kind: MachineSwitchLocationKind,
     pub name: String,
     pub number: String,
@@ -163,6 +178,7 @@ pub enum MachineSwitchValueKind {
 /// A native switch value with its element kind and optional condition.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MachineSwitchValue {
+    pub attribute_positions: Vec<AttributePosition<MameSwitchValueAttribute>>,
     pub kind: MachineSwitchValueKind,
     pub name: String,
     pub value: String,

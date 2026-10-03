@@ -489,7 +489,8 @@ CREATE TABLE mame_disk_claims (
     FOREIGN KEY (occurrence_id,claim_kind) REFERENCES asset_occurrences(occurrence_id,claim_kind) ON DELETE RESTRICT
 );
 CREATE TABLE mame_document_facts (
-    snapshot_key TEXT NOT NULL PRIMARY KEY,
+    document_id INTEGER PRIMARY KEY NOT NULL CHECK(typeof(document_id)='integer' AND document_id>0),
+    snapshot_key TEXT NOT NULL UNIQUE,
     build TEXT,
     debug INTEGER NOT NULL CHECK (debug IN (0, 1)),
     debug_specified INTEGER NOT NULL CHECK (debug_specified IN (0, 1)),

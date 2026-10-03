@@ -34,6 +34,7 @@ macro_rules! row {
 }
 
 row!(SnapshotRow {
+    document_id: i64 => BigInt,
     registry_uuid: Vec<u8> => Binary,
     snapshot_key: String => Text,
     source_key: String => Text,
@@ -447,7 +448,8 @@ fn snapshot_row(
     if row_generation != generation {
         return Err(MachineQueryError::CursorRegistryMismatch);
     }
-    let header = MameDocumentFacts {
+    let mut header = MameDocumentFacts {
+        attribute_positions: Vec::new(),
         build: row.build,
         debug: stored_bool(row.debug, "debug", 0)?,
         debug_specified: stored_bool(row.debug_specified, "debug_specified", 0)?,
@@ -457,6 +459,7 @@ fn snapshot_row(
             column: row.header_column,
         },
     };
+    super::attributes::document(connection, row.document_id, &mut header)?;
     Ok(MachineSnapshot {
         registry_id: generation,
         snapshot_key: SnapshotKey::from_persisted(row.snapshot_key),
@@ -495,6 +498,8 @@ fn parse_machine_row(row: MachineRow) -> QueryResult<Machine> {
             column: row.column,
         },
         facts: crate::mame::MachineFacts {
+            attribute_positions: Vec::new(),
+            compatibility_attribute_positions: Vec::new(),
             source_file: row.source_file,
             description,
             description_location,
@@ -697,6 +702,7 @@ fn load_machine_children(
         &mut expected_positions,
     )?;
     validate_child_positions(connection, &owner_indexes, expected_positions)?;
+    super::attributes::machines(connection, machines)?;
     connection.batch_execute(super::queries::DROP_REQUESTED_OWNERS)?;
     Ok(())
 }
@@ -716,6 +722,7 @@ fn load_bios_sets(
         let source_order = nonnegative(row.source_order, "BIOS source order", row.owner_id)?;
         positions.insert((row.owner_id, source_order, "biosset", order));
         machine.bios_sets.push(crate::mame::MachineBiosSet {
+            attribute_positions: Vec::new(),
             name: row.name,
             description: row.description,
             is_default: stored_bool(row.is_default, "BIOS default", row.owner_id)?,
@@ -782,6 +789,7 @@ fn load_dependencies(
                 )?;
                 positions.insert((row.owner_id, source_order, "device_ref", order));
                 MachineDependency::DeviceReference(crate::mame::DeviceReference {
+                    attribute_positions: Vec::new(),
                     name: row.target_name,
                     tag: required(row.reference_tag, "device reference tag", row.owner_id)?,
                     source_order,
@@ -888,6 +896,7 @@ fn load_switches(
         positions.insert((row.owner_id, source_order, child_kind, row_order));
         let index = machine.switches.len();
         machine.switches.push(MachineSwitch {
+            attribute_positions: Vec::new(),
             kind,
             name: row.name,
             tag: row.tag,
@@ -973,6 +982,7 @@ fn load_switch_locations(
             MachineSwitchKind::Configuration => MachineSwitchLocationKind::ConfigurationLocation,
         };
         switch.locations.push(MachineSwitchLocation {
+            attribute_positions: Vec::new(),
             kind,
             name: row.name,
             number: row.number,
@@ -1040,6 +1050,7 @@ fn load_switch_values(
         }
         let value_position = switch.values.len();
         switch.values.push(MachineSwitchValue {
+            attribute_positions: Vec::new(),
             kind,
             name: row.name,
             value: row.value,
@@ -1123,6 +1134,7 @@ fn load_specification(
             ));
         }
         values.push(InputControl {
+            attribute_positions: Vec::new(),
             kind: row.control_type,
             player: row.player,
             buttons: row.buttons,
@@ -1152,6 +1164,7 @@ fn load_specification(
             return Err(MachineQueryError::InvalidPositions(row.owner_id));
         }
         values.push(Analog {
+            attribute_positions: Vec::new(),
             mask: row.mask,
             location: RecordLocation {
                 line: row.line,
@@ -1180,6 +1193,7 @@ fn load_specification(
         sql_query(super::queries::SPEC_DEVICE_INSTANCES).load::<DeviceInstanceRow>(connection)?
     {
         let value = DeviceInstance {
+            attribute_positions: Vec::new(),
             name: row.name,
             brief_name: row.brief_name,
             location: RecordLocation {
@@ -1206,6 +1220,7 @@ fn load_specification(
             return Err(MachineQueryError::InvalidPositions(row.owner_id));
         }
         values.push(DeviceExtension {
+            attribute_positions: Vec::new(),
             name: row.name,
             location: RecordLocation {
                 line: row.line,
@@ -1237,6 +1252,7 @@ fn load_specification(
             ));
         }
         values.push(SlotOption {
+            attribute_positions: Vec::new(),
             name: row.name,
             device_name: row.devname,
             is_default: mame_boolean(is_default),
@@ -1257,6 +1273,7 @@ fn load_specification(
             row.element_order,
             "sample",
             MachineSpecification::Sample(Sample {
+                attribute_positions: Vec::new(),
                 name: row.name,
                 location: RecordLocation {
                     line: row.line,
@@ -1279,6 +1296,7 @@ fn load_specification(
             row.element_order,
             "chip",
             MachineSpecification::Chip(Chip {
+                attribute_positions: Vec::new(),
                 name: row.name,
                 tag: row.tag,
                 kind,
@@ -1323,6 +1341,7 @@ fn load_specification(
             row.element_order,
             "display",
             MachineSpecification::Display(Display {
+                attribute_positions: Vec::new(),
                 tag: row.tag,
                 kind,
                 rotation,
@@ -1354,6 +1373,7 @@ fn load_specification(
             row.element_order,
             "sound",
             MachineSpecification::Sound(Sound {
+                attribute_positions: Vec::new(),
                 channels: row.channels,
                 location: RecordLocation {
                     line: row.line,
@@ -1383,6 +1403,7 @@ fn load_specification(
             row.element_order,
             "input",
             MachineSpecification::Input(Input {
+                attribute_positions: Vec::new(),
                 service: mame_boolean(service),
                 service_specified,
                 tilt: mame_boolean(tilt),
@@ -1406,6 +1427,7 @@ fn load_specification(
             row.element_order,
             "port",
             MachineSpecification::Port(Port {
+                attribute_positions: Vec::new(),
                 tag: row.tag,
                 analogs: analogs
                     .remove(&(row.owner_id, row.element_order))
@@ -1426,6 +1448,7 @@ fn load_specification(
             row.element_order,
             "adjuster",
             MachineSpecification::Adjuster(Adjuster {
+                attribute_positions: Vec::new(),
                 name: row.name,
                 default: row.default_value,
                 condition: adjuster_conditions.remove(&(row.owner_id, row.element_order)),
@@ -1457,6 +1480,7 @@ fn load_specification(
             row.element_order,
             "driver",
             MachineSpecification::Driver(Driver {
+                attribute_positions: Vec::new(),
                 status,
                 emulation,
                 cocktail,
@@ -1528,6 +1552,7 @@ fn load_specification(
             row.element_order,
             "feature",
             MachineSpecification::Feature(Feature {
+                attribute_positions: Vec::new(),
                 kind,
                 status,
                 overall,
@@ -1548,6 +1573,7 @@ fn load_specification(
             row.element_order,
             "device",
             MachineSpecification::Device(Device {
+                attribute_positions: Vec::new(),
                 kind: row.kind,
                 tag: row.tag,
                 fixed_image: row.fixed_image,
@@ -1571,6 +1597,7 @@ fn load_specification(
             row.element_order,
             "slot",
             MachineSpecification::Slot(Slot {
+                attribute_positions: Vec::new(),
                 name: row.name,
                 options: slot_options
                     .remove(&(row.owner_id, row.element_order))
@@ -1596,6 +1623,7 @@ fn load_specification(
             row.element_order,
             "softwarelist",
             MachineSpecification::SoftwareList(SoftwareList {
+                attribute_positions: Vec::new(),
                 tag: row.tag,
                 name: row.name,
                 status,
@@ -1616,6 +1644,7 @@ fn load_specification(
             row.element_order,
             "ramoption",
             MachineSpecification::RamOption(RamOption {
+                attribute_positions: Vec::new(),
                 name: row.name,
                 default: row.default_value,
                 text: row.text,
@@ -1750,6 +1779,7 @@ fn parse_condition(
         other => return Err(invalid(field, row.owner_id, other)),
     };
     Ok(crate::mame::MachineCondition {
+        attribute_positions: Vec::new(),
         tag: row.tag,
         mask: row.mask,
         relation,

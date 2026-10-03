@@ -27,8 +27,10 @@ pub use logiqx::{
     LogiqxDiskPayload, LogiqxDumpStatus, LogiqxFilePayload, LogiqxRomPayload, LogiqxSamplePayload,
 };
 pub use mame::{
-    MameAssetDeclarations, MameBoolean, MameDiskCompatibility, MameDiskPayload, MameDumpStatus,
-    MameFilePayload, MameRomCompatibility, MameRomEvidenceScope, MameRomPayload, MameSamplePayload,
+    MameAssetDeclarations, MameBoolean, MameDiskAttribute, MameDiskCompatibility,
+    MameDiskCompatibilityAttribute, MameDiskPayload, MameDumpStatus, MameFilePayload,
+    MameRomAttribute, MameRomCompatibility, MameRomCompatibilityAttribute, MameRomEvidenceScope,
+    MameRomPayload, MameSampleAttribute, MameSamplePayload,
 };
 pub use software::{
     SoftwareDiskPayload, SoftwareFileOperation, SoftwareFilePayload, SoftwareRomPayload,

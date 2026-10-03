@@ -4,6 +4,10 @@ use diesel::{
 };
 
 use super::{SnapshotSet, checked_order};
+use crate::{
+    mame,
+    storage::mame_attributes::{self, Family},
+};
 
 #[derive(Clone, Copy)]
 enum MameConditionOwner {
@@ -224,6 +228,150 @@ pub(super) fn insert(
                 "text": Text = &value.text);
             }
         }
+        match &element.value {
+            mame::MachineSpecification::Sample(_) => {}
+            mame::MachineSpecification::Chip(value) => mame_attributes::insert(
+                conn,
+                Family::Chip,
+                &[set_id, order],
+                &value.attribute_positions,
+                mame::MameChipAttribute::code,
+            )?,
+            mame::MachineSpecification::Display(value) => mame_attributes::insert(
+                conn,
+                Family::Display,
+                &[set_id, order],
+                &value.attribute_positions,
+                mame::MameDisplayAttribute::code,
+            )?,
+            mame::MachineSpecification::Sound(value) => mame_attributes::insert(
+                conn,
+                Family::Sound,
+                &[set_id, order],
+                &value.attribute_positions,
+                mame::MameSoundAttribute::code,
+            )?,
+            mame::MachineSpecification::Input(value) => {
+                mame_attributes::insert(
+                    conn,
+                    Family::Input,
+                    &[set_id, order],
+                    &value.attribute_positions,
+                    mame::MameInputAttribute::code,
+                )?;
+                for (index, control) in value.controls.iter().enumerate() {
+                    mame_attributes::insert(
+                        conn,
+                        Family::Control,
+                        &[set_id, order, checked_order(index, "MAME controls")?],
+                        &control.attribute_positions,
+                        mame::MameControlAttribute::code,
+                    )?;
+                }
+            }
+            mame::MachineSpecification::Port(value) => {
+                mame_attributes::insert(
+                    conn,
+                    Family::Port,
+                    &[set_id, order],
+                    &value.attribute_positions,
+                    mame::MamePortAttribute::code,
+                )?;
+                for (index, analog) in value.analogs.iter().enumerate() {
+                    mame_attributes::insert(
+                        conn,
+                        Family::Analog,
+                        &[set_id, order, checked_order(index, "MAME analogs")?],
+                        &analog.attribute_positions,
+                        mame::MameAnalogAttribute::code,
+                    )?;
+                }
+            }
+            mame::MachineSpecification::Adjuster(value) => mame_attributes::insert(
+                conn,
+                Family::Adjuster,
+                &[set_id, order],
+                &value.attribute_positions,
+                mame::MameAdjusterAttribute::code,
+            )?,
+            mame::MachineSpecification::Driver(value) => mame_attributes::insert(
+                conn,
+                Family::Driver,
+                &[set_id, order],
+                &value.attribute_positions,
+                mame::MameDriverAttribute::code,
+            )?,
+            mame::MachineSpecification::Feature(value) => mame_attributes::insert(
+                conn,
+                Family::Feature,
+                &[set_id, order],
+                &value.attribute_positions,
+                mame::MameFeatureAttribute::code,
+            )?,
+            mame::MachineSpecification::Device(value) => {
+                mame_attributes::insert(
+                    conn,
+                    Family::Device,
+                    &[set_id, order],
+                    &value.attribute_positions,
+                    mame::MameDeviceAttribute::code,
+                )?;
+                if let Some(instance) = &value.instance {
+                    mame_attributes::insert(
+                        conn,
+                        Family::Instance,
+                        &[set_id, order],
+                        &instance.attribute_positions,
+                        mame::MameInstanceAttribute::code,
+                    )?;
+                }
+                for (index, extension) in value.extensions.iter().enumerate() {
+                    mame_attributes::insert(
+                        conn,
+                        Family::Extension,
+                        &[
+                            set_id,
+                            order,
+                            checked_order(index, "MAME device extensions")?,
+                        ],
+                        &extension.attribute_positions,
+                        mame::MameExtensionAttribute::code,
+                    )?;
+                }
+            }
+            mame::MachineSpecification::Slot(value) => {
+                mame_attributes::insert(
+                    conn,
+                    Family::Slot,
+                    &[set_id, order],
+                    &value.attribute_positions,
+                    mame::MameSlotAttribute::code,
+                )?;
+                for (index, option) in value.options.iter().enumerate() {
+                    mame_attributes::insert(
+                        conn,
+                        Family::SlotOption,
+                        &[set_id, order, checked_order(index, "MAME slot options")?],
+                        &option.attribute_positions,
+                        mame::MameSlotOptionAttribute::code,
+                    )?;
+                }
+            }
+            mame::MachineSpecification::SoftwareList(value) => mame_attributes::insert(
+                conn,
+                Family::SoftwareList,
+                &[set_id, order],
+                &value.attribute_positions,
+                mame::MameSoftwareListAttribute::code,
+            )?,
+            mame::MachineSpecification::RamOption(value) => mame_attributes::insert(
+                conn,
+                Family::RamOption,
+                &[set_id, order],
+                &value.attribute_positions,
+                mame::MameRamOptionAttribute::code,
+            )?,
+        }
     }
     Ok(())
 }
@@ -250,6 +398,13 @@ fn insert_condition(
             .bind::<BigInt, _>(condition.location.line)
             .bind::<BigInt, _>(condition.location.column)
             .execute(conn)?;
+            mame_attributes::insert(
+                conn,
+                Family::AdjusterCondition,
+                &[set_id, order, 0],
+                &condition.attribute_positions,
+                mame::MameConditionAttribute::code,
+            )?;
         }
         MameConditionOwner::Switch { order } => {
             sql_query(
@@ -266,6 +421,13 @@ fn insert_condition(
             .bind::<BigInt, _>(condition.location.line)
             .bind::<BigInt, _>(condition.location.column)
             .execute(conn)?;
+            mame_attributes::insert(
+                conn,
+                Family::SwitchCondition,
+                &[set_id, order, 0],
+                &condition.attribute_positions,
+                mame::MameConditionAttribute::code,
+            )?;
         }
         MameConditionOwner::SwitchValue {
             switch_order,
@@ -286,6 +448,13 @@ fn insert_condition(
             .bind::<BigInt, _>(condition.location.line)
             .bind::<BigInt, _>(condition.location.column)
             .execute(conn)?;
+            mame_attributes::insert(
+                conn,
+                Family::SwitchValueCondition,
+                &[set_id, switch_order, value_order, 0],
+                &condition.attribute_positions,
+                mame::MameConditionAttribute::code,
+            )?;
         }
     }
     Ok(())

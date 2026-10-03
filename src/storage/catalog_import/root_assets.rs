@@ -1,7 +1,10 @@
 use super::{NativeAssetFacts, SnapshotAsset, sqlite_mame_boolean};
 use crate::{
     domain::CatalogSetId,
-    storage::catalog_identity::{AllocatedOccurrence, OccurrenceId},
+    storage::{
+        catalog_identity::{AllocatedOccurrence, OccurrenceId},
+        mame_attributes::{self, Family},
+    },
 };
 use diesel::{
     QueryableByName, RunQueryDsl, SqliteConnection, sql_query,
@@ -103,7 +106,11 @@ pub(super) fn insert(
             insert_mame(conn, id, kind, asset)?;
         }
         RootClaimKind::MameSample => {
-            let NativeAssetFacts::MameSample { source_order } = &asset.native else {
+            let NativeAssetFacts::MameSample {
+                source_order,
+                attribute_positions,
+            } = &asset.native
+            else {
                 return Err(crate::Error::InvalidPath(
                     "MAME sample has no native declaration".into(),
                 ));
@@ -112,6 +119,13 @@ pub(super) fn insert(
                 .bind::<BigInt, _>(id.database_value()).bind::<Text, _>(&asset.name)
                 .bind::<BigInt, _>(*source_order).bind::<BigInt, _>(asset.location.line)
                 .bind::<BigInt, _>(asset.location.column).execute(conn)?;
+            mame_attributes::insert(
+                conn,
+                Family::Sample,
+                &[id.database_value()],
+                attribute_positions,
+                crate::mame::MameSampleAttribute::code,
+            )?;
         }
         RootClaimKind::LogiqxRom | RootClaimKind::LogiqxDisk | RootClaimKind::LogiqxSample => {
             insert_logiqx(conn, id, kind, asset)?;
@@ -222,6 +236,7 @@ fn insert_mame(
         attributes,
         declarations,
         source_order,
+        attribute_positions,
     } = &asset.native
     else {
         return Err(crate::Error::InvalidPath(
@@ -292,6 +307,70 @@ fn insert_mame(
         _ => {
             return Err(crate::Error::InvalidPath(
                 "non-MAME native media owner".into(),
+            ));
+        }
+    }
+    insert_mame_positions(conn, id, kind, attribute_positions)
+}
+
+fn insert_mame_positions(
+    conn: &mut SqliteConnection,
+    id: OccurrenceId,
+    kind: RootClaimKind,
+    positions: &crate::mame::MameAssetAttributePositions,
+) -> crate::Result<()> {
+    match (kind, positions) {
+        (
+            RootClaimKind::MameRom,
+            crate::mame::MameAssetAttributePositions::Rom {
+                native,
+                compatibility,
+            },
+        ) => {
+            mame_attributes::insert(
+                conn,
+                Family::Rom,
+                &[id.database_value()],
+                native,
+                crate::mame::MameRomAttribute::code,
+            )?;
+            if !compatibility.is_empty() {
+                mame_attributes::insert(
+                    conn,
+                    Family::RomCompatibility,
+                    &[id.database_value()],
+                    compatibility,
+                    crate::mame::MameRomCompatibilityAttribute::code,
+                )?;
+            }
+        }
+        (
+            RootClaimKind::MameDisk,
+            crate::mame::MameAssetAttributePositions::Disk {
+                native,
+                compatibility,
+            },
+        ) => {
+            mame_attributes::insert(
+                conn,
+                Family::Disk,
+                &[id.database_value()],
+                native,
+                crate::mame::MameDiskAttribute::code,
+            )?;
+            if !compatibility.is_empty() {
+                mame_attributes::insert(
+                    conn,
+                    Family::DiskCompatibility,
+                    &[id.database_value()],
+                    compatibility,
+                    crate::mame::MameDiskCompatibilityAttribute::code,
+                )?;
+            }
+        }
+        _ => {
+            return Err(crate::Error::InvalidPath(
+                "MAME attribute positions have the wrong asset family".into(),
             ));
         }
     }

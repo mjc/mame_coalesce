@@ -14,6 +14,7 @@ pub mod documents;
 pub mod file_match_reviews;
 mod import_diagnostics;
 pub mod machine_dependencies;
+mod mame_attributes;
 pub mod models;
 mod publishing_sources;
 pub mod relationships;

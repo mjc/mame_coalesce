@@ -70,6 +70,9 @@ fn pending_snapshot(
         .bind::<Text, _>(&key)
         .bind::<Text, _>(base)
         .execute(connection)?;
+    sql_query("INSERT INTO mame_document_facts_attribute_positions(document_id,field_kind,source_order,source_line,source_column) SELECT document_id,2,0,1,7 FROM mame_document_facts WHERE snapshot_key=?")
+        .bind::<Text, _>(&key)
+        .execute(connection)?;
     Ok(key)
 }
 
@@ -106,6 +109,9 @@ fn insert_machine(
     .get_result::<IdRow>(connection)?
     .value;
     sql_query("INSERT INTO mame_machines(set_id,description,description_source_order,description_line,description_column,is_device,is_device_specified,runnable,runnable_specified,is_bios,is_bios_specified,is_mechanical,is_mechanical_specified,attributes_line,attributes_column) VALUES (?,'Pending',0,1,1,0,0,1,0,0,0,0,0,1,1)")
+        .bind::<BigInt, _>(owner)
+        .execute(connection)?;
+    sql_query("INSERT INTO mame_machines_attribute_positions(set_id,field_kind,source_order,source_line,source_column) VALUES (?,0,0,1,1)")
         .bind::<BigInt, _>(owner)
         .execute(connection)?;
     Ok(owner)
@@ -150,6 +156,7 @@ fn insert_reported(
     .execute(connection)
 }
 
+#[allow(clippy::expect_used)]
 fn insert_link(
     connection: &mut SqliteConnection,
     owner: i64,
@@ -157,7 +164,7 @@ fn insert_link(
     target: &str,
     identity: i64,
 ) -> diesel::QueryResult<usize> {
-    sql_query(
+    let inserted = sql_query(
         "INSERT INTO mame_machine_links(set_id,link_kind,target_name,relationship_id,source_line,source_column) \
          VALUES (?,?,?,?,1,1)",
     )
@@ -165,9 +172,21 @@ fn insert_link(
     .bind::<Text, _>(kind)
     .bind::<Text, _>(target)
     .bind::<BigInt, _>(identity)
-    .execute(connection)
+    .execute(connection)?;
+    let field = match kind {
+        "cloneof" => 6_i64,
+        "romof" => 7,
+        "sampleof" => 8,
+        _ => return Err(diesel::result::Error::NotFound),
+    };
+    sql_query("INSERT INTO mame_machines_attribute_positions(set_id,field_kind,source_order,source_line,source_column) VALUES (?,?,?,1,?)")
+        .bind::<BigInt, _>(owner).bind::<BigInt, _>(field)
+        .bind::<BigInt, _>(field - 5).bind::<BigInt, _>(field).execute(connection)
+        .expect("successful native link must accept its attribute witness");
+    Ok(inserted)
 }
 
+#[allow(clippy::expect_used)]
 fn insert_device_reference(
     connection: &mut SqliteConnection,
     owner: i64,
@@ -176,7 +195,7 @@ fn insert_device_reference(
     tag: &str,
     identity: i64,
 ) -> diesel::QueryResult<usize> {
-    sql_query(
+    let inserted = sql_query(
         "INSERT INTO mame_device_references(set_id,reference_order,name,tag,source_order,relationship_id,source_line,source_column) \
          VALUES (?,?,?,?,?,?,1,1)",
     )
@@ -186,7 +205,12 @@ fn insert_device_reference(
     .bind::<Text, _>(tag)
     .bind::<BigInt, _>(order + 1)
     .bind::<BigInt, _>(identity)
-    .execute(connection)
+    .execute(connection)?;
+    sql_query("INSERT INTO mame_device_references_attribute_positions(set_id,reference_order,field_kind,source_order,source_line,source_column) VALUES (?,?,1,0,1,1),(?,?,0,1,1,2)")
+        .bind::<BigInt, _>(owner).bind::<BigInt, _>(order)
+        .bind::<BigInt, _>(owner).bind::<BigInt, _>(order).execute(connection)
+        .expect("successful native device reference must accept its attribute witnesses");
+    Ok(inserted)
 }
 
 fn insert_media_claim(
@@ -230,9 +254,12 @@ fn insert_media_claim_at_source_order(
         }
         _ => return Err(format!("unsupported media kind: {kind}").into()),
     }
+    sql_query(format!("INSERT INTO mame_{kind}_claims_attribute_positions(occurrence_id,field_kind,source_order,source_line,source_column) VALUES (?,0,0,1,1)"))
+        .bind::<BigInt, _>(occurrence).execute(connection)?;
     Ok(occurrence)
 }
 
+#[allow(clippy::expect_used)]
 fn insert_native_merge(
     connection: &mut SqliteConnection,
     kind: &str,
@@ -240,19 +267,23 @@ fn insert_native_merge(
     identity: i64,
     name: &str,
 ) -> diesel::QueryResult<usize> {
-    let table = match kind {
-        "rom" => "mame_rom_merges",
-        "disk" => "mame_disk_merges",
+    let (table, field) = match kind {
+        "rom" => ("mame_rom_merges", 5_i64),
+        "disk" => ("mame_disk_merges", 2_i64),
         _ => return Err(diesel::result::Error::NotFound),
     };
-    sql_query(format!(
+    let inserted = sql_query(format!(
         "INSERT INTO {table}(occurrence_id,relationship_id,merge_name,source_line,source_column) \
          VALUES (?,?,?,1,1)"
     ))
     .bind::<BigInt, _>(occurrence)
     .bind::<BigInt, _>(identity)
     .bind::<Text, _>(name)
-    .execute(connection)
+    .execute(connection)?;
+    sql_query(format!("INSERT INTO mame_{kind}_claims_attribute_positions(occurrence_id,field_kind,source_order,source_line,source_column) VALUES (?,?,1,1,2)"))
+        .bind::<BigInt, _>(occurrence).bind::<BigInt, _>(field).execute(connection)
+        .expect("successful native merge must accept its attribute witness");
+    Ok(inserted)
 }
 
 fn publish(connection: &mut SqliteConnection, snapshot: &str) -> diesel::QueryResult<usize> {

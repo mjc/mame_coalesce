@@ -9,7 +9,10 @@ use crate::{
 
 use crate::xml_reader::Element;
 
+mod attributes;
 mod specification;
+pub use crate::xml_reader::{AttributeLocation, AttributePosition};
+pub use attributes::*;
 pub use specification::*;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -21,6 +24,7 @@ pub struct MameCatalog {
     pub config_version: String,
     pub machines: Vec<Machine>,
     pub extensions: Vec<XmlExtension>,
+    pub attribute_positions: Vec<AttributePosition<MameDocumentAttribute>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -53,6 +57,9 @@ pub struct MachineFacts {
     pub manufacturer_source_order: Option<i64>,
     pub flags: MachineFlags,
     pub attributes_location: RecordLocation,
+    pub attribute_positions: Vec<AttributePosition<MameMachineAttribute>>,
+    pub compatibility_attribute_positions:
+        Vec<AttributePosition<MameMachineCompatibilityAttribute>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -188,6 +195,7 @@ pub struct MachineBiosSet {
     pub default_specified: bool,
     pub source_order: i64,
     pub location: RecordLocation,
+    pub attribute_positions: Vec<AttributePosition<MameBiosAttribute>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -217,6 +225,7 @@ pub struct MachineSwitch {
     pub condition: Option<MachineCondition>,
     pub locations: Vec<MachineSwitchLocation>,
     pub values: Vec<MachineSwitchValue>,
+    pub attribute_positions: Vec<AttributePosition<MameSwitchAttribute>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -227,6 +236,7 @@ pub struct MachineSwitchLocation {
     pub inverted_specified: bool,
     pub source_order: i64,
     pub location: RecordLocation,
+    pub attribute_positions: Vec<AttributePosition<MameSwitchLocationAttribute>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -238,6 +248,7 @@ pub struct MachineSwitchValue {
     pub condition: Option<MachineCondition>,
     pub source_order: i64,
     pub location: RecordLocation,
+    pub attribute_positions: Vec<AttributePosition<MameSwitchValueAttribute>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -246,6 +257,7 @@ pub struct DeviceReference {
     pub name: String,
     pub source_order: i64,
     pub location: RecordLocation,
+    pub attribute_positions: Vec<AttributePosition<MameDeviceReferenceAttribute>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -264,6 +276,7 @@ pub struct MachineAsset {
     pub source_order: i64,
     pub attributes: MameAssetAttributes,
     pub extensions: Vec<XmlExtension>,
+    pub attribute_positions: MameAssetAttributePositions,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -406,6 +419,7 @@ pub struct MameHeader {
     pub config_version: String,
     pub location: RecordLocation,
     pub extensions: Vec<XmlExtension>,
+    pub attribute_positions: Vec<AttributePosition<MameDocumentAttribute>>,
 }
 
 pub enum MameRecord {
@@ -472,6 +486,8 @@ pub fn read_with<S, E: From<crate::Error>>(
         let build = root.attributes.get("build").cloned();
         let debug = parse_mame_boolean(root.attributes.get("debug"), "debug")?;
         let config_version = required(&root, "mameconfig")?.to_owned();
+        let attribute_positions =
+            attributes::select(&root.attributes, MameDocumentAttribute::from_name)?;
         let extensions = root
             .attributes
             .iter()
@@ -495,6 +511,7 @@ pub fn read_with<S, E: From<crate::Error>>(
             config_version,
             location: root.location,
             extensions,
+            attribute_positions,
         })?;
         parse_machine_records(reader, positions, &mut budget, empty, true, |record| {
             consume(&mut sink, record)
@@ -516,6 +533,7 @@ impl MameCatalog {
                     config_version: header.config_version,
                     machines: Vec::new(),
                     extensions: header.extensions,
+                    attribute_positions: header.attribute_positions,
                 })
             },
             |catalog, record| {
@@ -656,6 +674,10 @@ fn parse_device_reference(node: &Element, source_order: i64) -> crate::Result<De
         name: required(node, "name")?.to_owned(),
         source_order,
         location: node.location,
+        attribute_positions: attributes::select(
+            &node.attributes,
+            MameDeviceReferenceAttribute::from_name,
+        )?,
     })
 }
 
@@ -737,6 +759,14 @@ fn parse_machine(node: &Element, retain_extensions: bool) -> crate::Result<Machi
             manufacturer_source_order: children.manufacturer_source_order,
             flags,
             attributes_location: node.location,
+            attribute_positions: attributes::select(
+                &node.attributes,
+                MameMachineAttribute::from_name,
+            )?,
+            compatibility_attribute_positions: attributes::select(
+                &node.attributes,
+                MameMachineCompatibilityAttribute::from_name,
+            )?,
         },
         assets: children.assets,
         device_refs: children.device_refs,
@@ -922,6 +952,7 @@ fn parse_machine_bios_set(node: &Element, source_order: i64) -> crate::Result<Ma
         default_specified: node.attributes.contains_key("default"),
         source_order,
         location: node.location,
+        attribute_positions: attributes::select(&node.attributes, MameBiosAttribute::from_name)?,
     })
 }
 
@@ -982,37 +1013,32 @@ fn parse_machine_switch(
                 }
                 condition = Some(specification::parse_condition(child)?);
             }
-            "diplocation" if kind == MachineSwitchKind::DipSwitch => {
-                locations.push(MachineSwitchLocation {
-                    name: required(child, "name")?.to_owned(),
-                    number: required(child, "number")?.to_owned(),
-                    inverted: parse_mame_boolean(
-                        child.attributes.get("inverted"),
-                        "switch location inverted",
-                    )?,
-                    inverted_specified: child.attributes.contains_key("inverted"),
-                    source_order: child_source_order,
-                    location: child.location,
-                });
-            }
-            "conflocation" if kind == MachineSwitchKind::Configuration => {
-                locations.push(MachineSwitchLocation {
-                    name: required(child, "name")?.to_owned(),
-                    number: required(child, "number")?.to_owned(),
-                    inverted: parse_mame_boolean(
-                        child.attributes.get("inverted"),
-                        "switch location inverted",
-                    )?,
-                    inverted_specified: child.attributes.contains_key("inverted"),
-                    source_order: child_source_order,
-                    location: child.location,
-                });
-            }
             "diplocation" | "conflocation" => {
-                return Err(crate::Error::XmlValidation(format!(
-                    "<{}> is not valid under <{}>",
-                    child.name, node.name
-                )));
+                if !matches!(
+                    (kind, child.name.as_str()),
+                    (MachineSwitchKind::DipSwitch, "diplocation")
+                        | (MachineSwitchKind::Configuration, "conflocation")
+                ) {
+                    return Err(crate::Error::XmlValidation(format!(
+                        "<{}> is not valid under <{}>",
+                        child.name, node.name
+                    )));
+                }
+                locations.push(MachineSwitchLocation {
+                    name: required(child, "name")?.to_owned(),
+                    number: required(child, "number")?.to_owned(),
+                    inverted: parse_mame_boolean(
+                        child.attributes.get("inverted"),
+                        "switch location inverted",
+                    )?,
+                    inverted_specified: child.attributes.contains_key("inverted"),
+                    source_order: child_source_order,
+                    location: child.location,
+                    attribute_positions: attributes::select(
+                        &child.attributes,
+                        MameSwitchLocationAttribute::from_name,
+                    )?,
+                });
             }
             "dipvalue" | "confsetting" => {
                 let valid_owner = matches!(
@@ -1037,6 +1063,10 @@ fn parse_machine_switch(
                     condition: specification::parse_optional_condition(child)?,
                     source_order: child_source_order,
                     location: child.location,
+                    attribute_positions: attributes::select(
+                        &child.attributes,
+                        MameSwitchValueAttribute::from_name,
+                    )?,
                 });
             }
             _ => {}
@@ -1052,6 +1082,7 @@ fn parse_machine_switch(
         condition,
         locations,
         values,
+        attribute_positions: attributes::select(&node.attributes, MameSwitchAttribute::from_name)?,
     })
 }
 
@@ -1176,6 +1207,23 @@ fn parse_asset(
         source_order,
         attributes,
         extensions,
+        attribute_positions: if node.name == "rom" {
+            MameAssetAttributePositions::Rom {
+                native: attributes::select(&node.attributes, MameRomAttribute::from_name)?,
+                compatibility: attributes::select(
+                    &node.attributes,
+                    MameRomCompatibilityAttribute::from_name,
+                )?,
+            }
+        } else {
+            MameAssetAttributePositions::Disk {
+                native: attributes::select(&node.attributes, MameDiskAttribute::from_name)?,
+                compatibility: attributes::select(
+                    &node.attributes,
+                    MameDiskCompatibilityAttribute::from_name,
+                )?,
+            }
+        },
     })
 }
 

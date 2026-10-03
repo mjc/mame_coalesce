@@ -20,6 +20,7 @@ use crate::{
         },
         db::Pool,
         documents::DocumentStore,
+        mame_attributes::{self, Family},
     },
 };
 
@@ -200,6 +201,13 @@ struct SnapshotDependency {
     reference_tag: Option<String>,
     source_order: Option<i64>,
     location: crate::logiqx::RecordLocation,
+    attribute_positions: Vec<mame::AttributePosition<mame::MameDeviceReferenceAttribute>>,
+}
+
+#[derive(diesel::QueryableByName)]
+struct MameDocumentId {
+    #[diesel(sql_type = BigInt)]
+    document_id: i64,
 }
 
 struct SnapshotAsset {
@@ -221,12 +229,14 @@ struct SnapshotAsset {
 /// A media entry has exactly one format-specific source owner.
 enum NativeAssetFacts {
     Mame {
-        attributes: mame::MameAssetAttributes,
+        attributes: Box<mame::MameAssetAttributes>,
         declarations: mame::MameAssetDeclarations,
         source_order: i64,
+        attribute_positions: mame::MameAssetAttributePositions,
     },
     MameSample {
         source_order: i64,
+        attribute_positions: Vec<mame::AttributePosition<mame::MameSampleAttribute>>,
     },
     Logiqx(LogiqxAssetAttributes),
     CmpRom(Box<crate::clrmamepro::AssetFacts>),
@@ -558,6 +568,7 @@ fn machine_contents(machine: crate::mame::Machine) -> SnapshotSet {
             reference_tag: Some(reference.tag),
             source_order: Some(reference.source_order),
             location: reference.location,
+            attribute_positions: reference.attribute_positions,
         })
         .chain(machine.rom_of.into_iter().map(|name| SnapshotDependency {
             source_field: "romof".to_owned(),
@@ -565,6 +576,7 @@ fn machine_contents(machine: crate::mame::Machine) -> SnapshotSet {
             reference_tag: None,
             source_order: None,
             location: machine.location,
+            attribute_positions: Vec::new(),
         }))
         .chain(
             machine
@@ -576,6 +588,7 @@ fn machine_contents(machine: crate::mame::Machine) -> SnapshotSet {
                     reference_tag: None,
                     source_order: None,
                     location: machine.location,
+                    attribute_positions: Vec::new(),
                 }),
         )
         .collect();
@@ -590,6 +603,7 @@ fn machine_contents(machine: crate::mame::Machine) -> SnapshotSet {
                     sample.location,
                     NativeAssetFacts::MameSample {
                         source_order: element.element_order,
+                        attribute_positions: sample.attribute_positions,
                     },
                 ),
             ));
@@ -667,9 +681,10 @@ fn machine_assets(assets: Vec<crate::mame::MachineAsset>) -> Vec<(i64, SnapshotA
                     serial: None,
                     date: None,
                     native: NativeAssetFacts::Mame {
-                        attributes: asset.attributes,
+                        attributes: Box::new(asset.attributes),
                         declarations: asset.declarations,
                         source_order: asset.source_order,
+                        attribute_positions: asset.attribute_positions,
                     },
                     location: asset.location,
                 },
@@ -844,6 +859,7 @@ fn logiqx_contents(record: &LocatedGame) -> crate::Result<SnapshotSet> {
                 reference_tag: None,
                 source_order: None,
                 location,
+                attribute_positions: Vec::new(),
             })
             .into_iter()
             .chain(game.sampleof_opt().map(|name| SnapshotDependency {
@@ -852,6 +868,7 @@ fn logiqx_contents(record: &LocatedGame) -> crate::Result<SnapshotSet> {
                 reference_tag: None,
                 source_order: None,
                 location,
+                attribute_positions: Vec::new(),
             }))
             .chain(
                 game.device_refs()
@@ -862,6 +879,7 @@ fn logiqx_contents(record: &LocatedGame) -> crate::Result<SnapshotSet> {
                         reference_tag: None,
                         source_order: None,
                         location: *location,
+                        attribute_positions: Vec::new(),
                     }),
             )
             .collect(),
@@ -1500,6 +1518,23 @@ fn insert_snapshot_set(
     if let Some(facts) = &set.mame_facts {
         insert_mame_machine_facts(conn, set_id, facts)?;
         mame_relationships::insert(conn, snapshot_key, owner, set)?;
+        let mut reference_order = 0_i64;
+        for dependency in set
+            .machine_dependencies
+            .iter()
+            .filter(|item| item.source_field == "device_ref")
+        {
+            mame_attributes::insert(
+                conn,
+                Family::DeviceReference,
+                &[set_id, reference_order],
+                &dependency.attribute_positions,
+                mame::MameDeviceReferenceAttribute::code,
+            )?;
+            reference_order = reference_order.checked_add(1).ok_or_else(|| {
+                crate::Error::InvalidPath("too many MAME device references".into())
+            })?;
+        }
         mame_specification::insert(conn, set_id, set)?;
     }
     if let Some(facts) = &set.no_intro_facts {
@@ -1792,11 +1827,25 @@ fn insert_mame_machine_facts(
     .bind::<BigInt, _>(facts.attributes_location.line)
     .bind::<BigInt, _>(facts.attributes_location.column)
     .execute(conn)?;
+    mame_attributes::insert(
+        conn,
+        Family::Machine,
+        &[set_id],
+        &facts.attribute_positions,
+        mame::MameMachineAttribute::code,
+    )?;
     if facts.flags.is_consumable_specified() {
         sql_query("INSERT INTO mame_machine_compatibility(set_id,is_consumable,is_consumable_specified) VALUES (?,?,1)")
             .bind::<BigInt, _>(set_id)
             .bind::<diesel::sql_types::Bool, _>(facts.flags.is_consumable())
             .execute(conn)?;
+        mame_attributes::insert(
+            conn,
+            Family::MachineCompatibility,
+            &[set_id],
+            &facts.compatibility_attribute_positions,
+            mame::MameMachineCompatibilityAttribute::code,
+        )?;
     }
     Ok(())
 }
@@ -1806,10 +1855,10 @@ fn insert_mame_document_facts(
     snapshot_key: &SnapshotKey,
     header: &mame::MameHeader,
 ) -> crate::Result<()> {
-    sql_query(
+    let document = sql_query(
         "INSERT INTO mame_document_facts \
          (snapshot_key, build, debug, debug_specified, config_version, source_line, source_column) \
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING document_id",
     )
     .bind::<Text, _>(snapshot_key.as_str())
     .bind::<Nullable<Text>, _>(header.build.as_deref())
@@ -1818,7 +1867,14 @@ fn insert_mame_document_facts(
     .bind::<Text, _>(&header.config_version)
     .bind::<BigInt, _>(header.location.line)
     .bind::<BigInt, _>(header.location.column)
-    .execute(conn)?;
+    .get_result::<MameDocumentId>(conn)?;
+    mame_attributes::insert(
+        conn,
+        Family::Document,
+        &[document.document_id],
+        &header.attribute_positions,
+        mame::MameDocumentAttribute::code,
+    )?;
     Ok(())
 }
 
@@ -1843,6 +1899,13 @@ fn insert_machine_bios_sets(
         .bind::<BigInt, _>(bios_set.location.line)
         .bind::<BigInt, _>(bios_set.location.column)
         .execute(conn)?;
+        mame_attributes::insert(
+            conn,
+            Family::Bios,
+            &[set_id, checked_order(bios_order, "MAME BIOS sets")?],
+            &bios_set.attribute_positions,
+            mame::MameBiosAttribute::code,
+        )?;
     }
     Ok(())
 }
@@ -1869,6 +1932,13 @@ fn insert_machine_switches(
         .bind::<BigInt, _>(switch.location.line)
         .bind::<BigInt, _>(switch.location.column)
         .execute(conn)?;
+        mame_attributes::insert(
+            conn,
+            Family::Switch,
+            &[set_id, switch_order],
+            &switch.attribute_positions,
+            mame::MameSwitchAttribute::code,
+        )?;
         if let Some(condition) = &switch.condition {
             mame_specification::insert_switch_condition(conn, set_id, switch_order, condition)?;
         }
@@ -1890,6 +1960,17 @@ fn insert_machine_switches(
             .bind::<BigInt, _>(location.location.line)
             .bind::<BigInt, _>(location.location.column)
             .execute(conn)?;
+            mame_attributes::insert(
+                conn,
+                Family::SwitchLocation,
+                &[
+                    set_id,
+                    switch_order,
+                    checked_order(location_order, "machine switch locations")?,
+                ],
+                &location.attribute_positions,
+                mame::MameSwitchLocationAttribute::code,
+            )?;
         }
 
         for (value_order, switch_value) in switch.values.iter().enumerate() {
@@ -1909,6 +1990,17 @@ fn insert_machine_switches(
             .bind::<BigInt, _>(switch_value.location.line)
             .bind::<BigInt, _>(switch_value.location.column)
             .execute(conn)?;
+            mame_attributes::insert(
+                conn,
+                Family::SwitchValue,
+                &[
+                    set_id,
+                    switch_order,
+                    checked_order(value_order, "machine switch values")?,
+                ],
+                &switch_value.attribute_positions,
+                mame::MameSwitchValueAttribute::code,
+            )?;
             if let Some(condition) = &switch_value.condition {
                 mame_specification::insert_switch_value_condition(
                     conn,
