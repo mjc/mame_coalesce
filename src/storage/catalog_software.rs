@@ -1,6 +1,20 @@
 //! Bounded queries for native MAME software-list metadata.
 
+mod attributes;
 mod queries;
+use super::catalog_files::XmlAttributePosition;
+pub use crate::mame_softwarelist::{
+    SoftwareDataAreaAttribute, SoftwareDipSwitchAttribute, SoftwareDipValueAttribute,
+    SoftwareDiskAreaAttribute, SoftwareDiskAttribute, SoftwareItemAttribute, SoftwareListAttribute,
+    SoftwareNamedValueAttribute, SoftwarePartAttribute, SoftwareRomAttribute,
+    SoftwareWrapperAttribute,
+};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SoftwareAreaAttributePositions {
+    Data(Vec<XmlAttributePosition<SoftwareDataAreaAttribute>>),
+    Disk(Vec<XmlAttributePosition<SoftwareDiskAreaAttribute>>),
+}
 
 #[cfg(test)]
 mod tests;
@@ -126,6 +140,7 @@ pub enum SoftwareEnvelope {
 /// Snapshot and publication provenance shared by every row in a result page.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SoftwareSnapshot {
+    pub wrapper_attribute_positions: Vec<XmlAttributePosition<SoftwareWrapperAttribute>>,
     pub registry_id: CatalogRegistryId,
     pub snapshot_key: SnapshotKey,
     pub source_key: PublishingSourceKey,
@@ -162,6 +177,7 @@ pub struct SoftwareTextPosition {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SoftwareList {
+    pub attribute_positions: Vec<XmlAttributePosition<SoftwareListAttribute>>,
     pub id: SoftwareListId,
     pub name: String,
     pub description: Option<String>,
@@ -174,6 +190,7 @@ pub struct SoftwareList {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SoftwareTitle {
+    pub attribute_positions: Vec<XmlAttributePosition<SoftwareItemAttribute>>,
     pub id: CatalogSetId,
     pub name: String,
     pub order: i64,
@@ -194,6 +211,7 @@ pub struct SoftwareTitle {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SoftwareNamedValue {
+    pub attribute_positions: Vec<XmlAttributePosition<SoftwareNamedValueAttribute>>,
     pub order: i64,
     pub source_order: i64,
     pub location: SourceLocation,
@@ -203,6 +221,7 @@ pub struct SoftwareNamedValue {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SoftwarePart {
+    pub attribute_positions: Vec<XmlAttributePosition<SoftwarePartAttribute>>,
     pub id: SoftwarePartId,
     pub name: String,
     pub interface: String,
@@ -216,6 +235,7 @@ pub struct SoftwarePart {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SoftwareDipSwitch {
+    pub attribute_positions: Vec<XmlAttributePosition<SoftwareDipSwitchAttribute>>,
     pub order: i64,
     pub source_order: i64,
     pub location: SourceLocation,
@@ -227,6 +247,7 @@ pub struct SoftwareDipSwitch {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SoftwareDipValue {
+    pub attribute_positions: Vec<XmlAttributePosition<SoftwareDipValueAttribute>>,
     pub order: i64,
     pub source_order: i64,
     pub location: SourceLocation,
@@ -259,6 +280,7 @@ pub enum SoftwareAreaFields {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SoftwareArea {
+    pub attribute_positions: SoftwareAreaAttributePositions,
     pub id: SoftwareAreaId,
     pub name: String,
     pub order: i64,
@@ -614,6 +636,7 @@ pub fn lists_for_snapshot(
                 list.id.database_value(),
             )?;
         }
+        attributes::lists(connection, &mut lists)?;
         let next_cursor = if has_more {
             lists.last().map(|list| SoftwareListCursor {
                 generation,
@@ -724,6 +747,7 @@ fn snapshot_row(
             ));
         }
     };
+    let wrapper_attribute_positions = attributes::wrapper(connection, snapshot, &envelope)?;
     let registry_bytes: [u8; 16] = row
         .registry_uuid
         .try_into()
@@ -739,6 +763,7 @@ fn snapshot_row(
         interpretation_key: ParserInterpretationKey::from_persisted(row.interpretation_key),
         format: row.format,
         envelope,
+        wrapper_attribute_positions,
     })
 }
 
@@ -759,6 +784,7 @@ fn parse_list_row(row: ListRow) -> QueryResult<SoftwareList> {
             column: required_value(row.column, "software list column", row.id)?,
         },
         text_positions: Vec::new(),
+        attribute_positions: Vec::new(),
     })
 }
 
@@ -784,6 +810,7 @@ fn selected_list(
         &list.text_positions,
         id.database_value(),
     )?;
+    attributes::lists(connection, std::slice::from_mut(&mut list))?;
     Ok(list)
 }
 
@@ -886,6 +913,7 @@ fn parse_title_row(row: TitleRow) -> QueryResult<SoftwareTitle> {
         notes: row.notes,
         text_positions: Vec::new(),
         info: Vec::new(),
+        attribute_positions: Vec::new(),
         shared_features: Vec::new(),
         parts: Vec::new(),
     })
@@ -945,6 +973,7 @@ fn load_title_children(
     if titles.is_empty() {
         return Ok(());
     }
+    let mut attribute_positions = attributes::titles(connection)?;
     let mut title_ids = BTreeMap::<i64, usize>::new();
     for (index, title) in titles.iter().enumerate() {
         title_ids.insert(title.id.as_i64(), index);
@@ -1022,6 +1051,7 @@ fn load_title_children(
                 column: row.column,
             },
             features: Vec::new(),
+            attribute_positions: Vec::new(),
             switches: Vec::new(),
             areas: Vec::new(),
         });
@@ -1030,6 +1060,8 @@ fn load_title_children(
     load_part_features(connection, &part_index, titles)?;
     load_switches(connection, &part_index, titles)?;
     load_areas(connection, &part_index, &part_records, titles)?;
+    attributes::attach_titles(&mut attribute_positions, titles)?;
+    attribute_positions.finish()?;
     Ok(())
 }
 
@@ -1072,6 +1104,7 @@ fn group_named(
             });
         }
         values.push(SoftwareNamedValue {
+            attribute_positions: Vec::new(),
             order: row.row_order,
             source_order: row.source_order,
             location: SourceLocation {
@@ -1109,6 +1142,7 @@ fn load_part_features(
             .and_then(|title| title.parts.get_mut(part_no))
             .ok_or(SoftwareQueryError::MismatchedOwner(row.part_id))?;
         part.features.push(SoftwareNamedValue {
+            attribute_positions: Vec::new(),
             order: row.row_order,
             source_order: row.source_order,
             location: SourceLocation {
@@ -1148,6 +1182,7 @@ fn load_switches(
             .ok_or(SoftwareQueryError::MismatchedOwner(row.part_id))?;
         let switch_no = part.switches.len();
         part.switches.push(SoftwareDipSwitch {
+            attribute_positions: Vec::new(),
             order: row.row_order,
             source_order: row.source_order,
             location: SourceLocation {
@@ -1182,6 +1217,7 @@ fn load_switches(
             .and_then(|part| part.switches.get_mut(switch_no))
             .ok_or(SoftwareQueryError::MismatchedOwner(row.part_id))?;
         switch.values.push(SoftwareDipValue {
+            attribute_positions: Vec::new(),
             order: row.row_order,
             source_order: row.source_order,
             location: SourceLocation {
@@ -1339,6 +1375,10 @@ fn parse_area_row(row: AreaRow) -> QueryResult<SoftwareArea> {
         value => return Err(invalid("software area kind", value.to_owned())),
     };
     Ok(SoftwareArea {
+        attribute_positions: match &fields {
+            SoftwareAreaFields::Data { .. } => SoftwareAreaAttributePositions::Data(Vec::new()),
+            SoftwareAreaFields::Disk => SoftwareAreaAttributePositions::Disk(Vec::new()),
+        },
         id: SoftwareAreaId::from_database(row.id),
         name: required_value(row.name, "software area name", row.id)?,
         order: row.order_value,

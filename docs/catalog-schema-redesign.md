@@ -773,8 +773,11 @@ interpretations cannot be replaced or deleted beneath their native facts, and
 reinterning a digest preserves the existing digest owner ID.
 
 This is not completion of the pinned MAME field contract. Exhaustive field/query
-and grammar witnesses remain open. The accepted `conflocation` fixture is
-compatibility input, not evidence that it belongs to the pinned 0.289 DTD.
+and grammar witnesses remain open. Configuration `conflocation` is declared by
+the [pinned 0.289 embedded DTD](https://github.com/mamedev/mame/blob/mame0289/src/frontend/mame/infoxml.cpp):
+`name` and `number` are required, and `inverted` defaults to `no`. Its attribute
+presence, defaults and cardinality need the same native witnesses as the other
+declared machine fields.
 
 ## MAME software-list native relations
 
@@ -811,8 +814,25 @@ source locations and the actual file-declaration owner. Requested IDs bound
 both native payload branches; no catalog-wide software union is materialized.
 The existing provenance retains list/title/part/area ownership. The public
 `catalog_software` pages include complete native title/part scalar, info,
-feature, switch and area metadata. Executable loading recipes and complete
-lexical field witnesses remain separate unfinished work.
+feature, switch and area metadata. The new
+`mame-softwarelist-declared-text-compat-v2` interpretation retains all 36 pinned
+attributes, plus the compatibility wrapper's `build`, in 13 native position-only
+child tables. Each row belongs to its actual numeric native owner and stores a
+closed field code, source ordinal and decoded QName line/column; attribute values
+remain stored only in their native field. The plural-only wrapper header has an
+integer owner ID and a unique snapshot key. Empty or malformed raw hash text
+still has a lexical position, independently of usable digest evidence. Omitted
+defaults have no synthetic position. Typed metadata and media APIs hydrate these
+vectors from SQLite without the original document, and history compares
+recognized attribute ranks without treating vendor gaps or physical formatting
+as changes. GPT-6.1 Sol medium review/fix/re-review is clear. A full-gate
+follow-up restores native-area error precedence while retaining complete
+lexical-witness checks; all 30 focused area, attribute and history tests pass.
+The complete devenv gate passes 1,306 tests with one existing ignored test;
+all-feature nextest passes 1,309 tests with three existing optional skips.
+Strict Clippy and warning-denied all-feature documentation also pass.
+Executable loading recipes and full-corpus acceptance remain separate
+unfinished work.
 The [pinned loader decision table](software-list-loading.md) separates observed
 MAME 0.289 behavior from the proposed checked Rust interpretation. Approval and
 the executable interpretation remain separate gates; retaining source facts

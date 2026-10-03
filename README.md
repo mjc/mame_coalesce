@@ -276,7 +276,14 @@ once. Software areas have compact owners and separate data-area/disk-area
 detail tables: disk areas store no size, width or endianness placeholders.
 Publication requires exactly one matching detail row; source order stays with
 that detail and remains unique across data/disk areas in the same part.
-Full lexical witnesses and executable loading interpretation remain open.
+The `mame-softwarelist-declared-text-compat-v2` interpretation retains all 36
+pinned software-list attributes and the compatibility wrapper's `build`
+attribute in 13 position-only native child tables. Public metadata and media
+results expose closed, typed attribute-position vectors without reading the
+source document. Positions identify the attribute QName in decoded XML;
+omitted defaults have no synthetic position. History compares recognized
+attribute order, ignoring vendor gaps and physical formatting. Executable
+loading interpretation and full-format acceptance remain open.
 Results distinguish the immutable source-issued UUID from its current canonical
 UUID. Published reviews also version cursors: after another review, restart
 pagination rather than silently skip newly merged members.

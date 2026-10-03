@@ -1,4 +1,78 @@
 pub use crate::domain::media::SourceLoadInstruction as LoadInstruction;
+pub use crate::xml_reader::AttributePosition;
+use crate::xml_reader::attribute_fields;
+
+attribute_fields! { SoftwareWrapperAttribute {
+    Build = 0 => "build",
+} }
+
+attribute_fields! { SoftwareListAttribute {
+    Name = 0 => "name",
+    Description = 1 => "description",
+} }
+
+attribute_fields! { SoftwareItemAttribute {
+    Name = 0 => "name",
+    CloneOf = 1 => "cloneof",
+    Supported = 2 => "supported",
+} }
+
+attribute_fields! { SoftwareNamedValueAttribute {
+    Name = 0 => "name",
+    Value = 1 => "value",
+} }
+
+attribute_fields! { SoftwarePartAttribute {
+    Name = 0 => "name",
+    Interface = 1 => "interface",
+} }
+
+attribute_fields! { SoftwareDataAreaAttribute {
+    Name = 0 => "name",
+    Size = 1 => "size",
+    Width = 2 => "width",
+    Endianness = 3 => "endianness",
+} }
+
+attribute_fields! { SoftwareDiskAreaAttribute {
+    Name = 0 => "name",
+} }
+
+attribute_fields! { SoftwareRomAttribute {
+    Name = 0 => "name",
+    Size = 1 => "size",
+    Crc = 2 => "crc",
+    Sha1 = 3 => "sha1",
+    Offset = 4 => "offset",
+    Value = 5 => "value",
+    Status = 6 => "status",
+    LoadFlag = 7 => "loadflag",
+} }
+
+attribute_fields! { SoftwareDiskAttribute {
+    Name = 0 => "name",
+    Sha1 = 1 => "sha1",
+    Status = 2 => "status",
+    Writeable = 3 => "writeable",
+} }
+
+attribute_fields! { SoftwareDipSwitchAttribute {
+    Name = 0 => "name",
+    Tag = 1 => "tag",
+    Mask = 2 => "mask",
+} }
+
+attribute_fields! { SoftwareDipValueAttribute {
+    Name = 0 => "name",
+    Value = 1 => "value",
+    Default = 2 => "default",
+} }
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SoftwareAreaAttributePositions {
+    Data(Vec<AttributePosition<SoftwareDataAreaAttribute>>),
+    Disk(Vec<AttributePosition<SoftwareDiskAreaAttribute>>),
+}
 
 use crate::{
     logiqx::RecordLocation,
@@ -52,6 +126,7 @@ impl SupportedStatus {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NamedValue {
+    pub attribute_positions: Vec<AttributePosition<SoftwareNamedValueAttribute>>,
     pub name: String,
     pub value: Option<String>,
     pub source_order: usize,
@@ -108,6 +183,7 @@ pub struct SoftwareTextPosition {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SoftwareListCatalog {
+    pub attribute_positions: Vec<AttributePosition<SoftwareWrapperAttribute>>,
     pub root_kind: SoftwareListRootKind,
     pub build: Option<String>,
     pub lists: Vec<SoftwareList>,
@@ -116,6 +192,7 @@ pub struct SoftwareListCatalog {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SoftwareList {
+    pub attribute_positions: Vec<AttributePosition<SoftwareListAttribute>>,
     pub name: SoftwareListName,
     pub description: Option<String>,
     pub notes: Option<String>,
@@ -127,6 +204,7 @@ pub struct SoftwareList {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SoftwareItem {
+    pub attribute_positions: Vec<AttributePosition<SoftwareItemAttribute>>,
     pub name: SoftwareItemName,
     pub clone_of: Option<SoftwareItemName>,
     pub supported: Option<SupportedStatus>,
@@ -145,6 +223,7 @@ pub struct SoftwareItem {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SoftwarePart {
+    pub attribute_positions: Vec<AttributePosition<SoftwarePartAttribute>>,
     pub name: PartName,
     pub interface: String,
     pub features: Vec<NamedValue>,
@@ -156,6 +235,7 @@ pub struct SoftwarePart {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SoftwareDipSwitch {
+    pub attribute_positions: Vec<AttributePosition<SoftwareDipSwitchAttribute>>,
     pub name: DipSwitchName,
     pub tag: String,
     pub mask: String,
@@ -166,6 +246,7 @@ pub struct SoftwareDipSwitch {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SoftwareDipValue {
+    pub attribute_positions: Vec<AttributePosition<SoftwareDipValueAttribute>>,
     pub name: String,
     pub value: String,
     pub is_default: bool,
@@ -207,6 +288,7 @@ impl Endianness {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SoftwareArea {
+    pub attribute_positions: SoftwareAreaAttributePositions,
     pub name: AreaName,
     pub kind: AreaKind,
     pub declared_size: Option<u64>,
@@ -228,6 +310,7 @@ pub enum SoftwareComponent {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SoftwareRom {
+    pub attribute_positions: Vec<AttributePosition<SoftwareRomAttribute>>,
     pub name: Option<ComponentName>,
     pub size: Option<u64>,
     pub size_text: Option<String>,
@@ -247,6 +330,7 @@ pub struct SoftwareRom {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SoftwareDisk {
+    pub attribute_positions: Vec<AttributePosition<SoftwareDiskAttribute>>,
     pub requirement: crate::disk::DiskRequirement,
     pub status: Option<DumpStatus>,
     pub status_specified: bool,
@@ -303,6 +387,7 @@ impl SoftwareListCatalog {
                     )?;
                     finish_softwarelist_document(reader, positions)?;
                     return Ok(Self {
+                        attribute_positions: Vec::new(),
                         root_kind: SoftwareListRootKind::SingleList,
                         build: None,
                         lists: vec![list],
@@ -425,6 +510,10 @@ fn parse_softwarelists(
     }
     finish_softwarelist_document(reader, positions)?;
     Ok(SoftwareListCatalog {
+        attribute_positions: root
+            .attributes
+            .positions(SoftwareWrapperAttribute::from_name)
+            .collect(),
         root_kind: SoftwareListRootKind::PluralLists,
         build,
         lists,
@@ -581,6 +670,10 @@ fn parse_list_parts(
         )));
     }
     Ok(SoftwareList {
+        attribute_positions: node
+            .attributes
+            .positions(SoftwareListAttribute::from_name)
+            .collect(),
         name,
         description: node.attributes.get("description").cloned(),
         notes,
@@ -611,7 +704,6 @@ fn parse_item(
         .get("cloneof")
         .cloned()
         .map(SoftwareItemName::new);
-    let supported_specified = node.attributes.contains_key("supported");
     let supported = match node.attributes.get("supported").map(String::as_str) {
         None | Some("yes") => Some(SupportedStatus::Yes),
         Some("partial") => Some(SupportedStatus::Partial),
@@ -679,10 +771,14 @@ fn parse_item(
         }
     }
     Ok(SoftwareItem {
+        attribute_positions: node
+            .attributes
+            .positions(SoftwareItemAttribute::from_name)
+            .collect(),
         name,
         clone_of,
         supported,
-        supported_specified,
+        supported_specified: node.attributes.contains_key("supported"),
         description: required_text(description, "description", &record)?,
         year: required_text(year, "year", &record)?,
         publisher: required_text(publisher, "publisher", &record)?,
@@ -739,6 +835,10 @@ fn parse_part(
         }
     }
     Ok(SoftwarePart {
+        attribute_positions: node
+            .attributes
+            .positions(SoftwarePartAttribute::from_name)
+            .collect(),
         name,
         interface,
         features,
@@ -782,6 +882,10 @@ fn parse_dipswitch(
                 Some(other) => return Err(invalid_value(child, &record, "default", other)),
             };
             values.push(SoftwareDipValue {
+                attribute_positions: child
+                    .attributes
+                    .positions(SoftwareDipValueAttribute::from_name)
+                    .collect(),
                 name: required(child, "name")?,
                 value: required(child, "value")?,
                 is_default,
@@ -794,6 +898,10 @@ fn parse_dipswitch(
         }
     }
     Ok(SoftwareDipSwitch {
+        attribute_positions: node
+            .attributes
+            .positions(SoftwareDipSwitchAttribute::from_name)
+            .collect(),
         name,
         tag: required(node, "tag")?,
         mask: required(node, "mask")?,
@@ -870,6 +978,18 @@ fn parse_area(
         }
     }
     Ok(SoftwareArea {
+        attribute_positions: match kind {
+            AreaKind::Data => SoftwareAreaAttributePositions::Data(
+                node.attributes
+                    .positions(SoftwareDataAreaAttribute::from_name)
+                    .collect(),
+            ),
+            AreaKind::Disk => SoftwareAreaAttributePositions::Disk(
+                node.attributes
+                    .positions(SoftwareDiskAreaAttribute::from_name)
+                    .collect(),
+            ),
+        },
         name,
         kind,
         declared_size,
@@ -908,6 +1028,10 @@ fn parse_rom(
     let sha1_text = node.attributes.get("sha1").cloned();
     let status_specified = node.attributes.contains_key("status");
     Ok(SoftwareRom {
+        attribute_positions: node
+            .attributes
+            .positions(SoftwareRomAttribute::from_name)
+            .collect(),
         name: node.attributes.get("name").cloned().map(ComponentName::new),
         size: parse_optional_number(node, "size"),
         size_text,
@@ -952,6 +1076,10 @@ fn parse_disk(
     let sha1 = parse_digest(node, "sha1");
     let status_specified = node.attributes.contains_key("status");
     Ok(SoftwareDisk {
+        attribute_positions: node
+            .attributes
+            .positions(SoftwareDiskAttribute::from_name)
+            .collect(),
         requirement: crate::disk::DiskRequirement::new(
             crate::disk::DiskName::new(name),
             sha1.map(crate::disk::DiskIdentitySha1::new),
@@ -1043,6 +1171,10 @@ fn parse_digest<const N: usize>(node: &Element, field: &str) -> Option<[u8; N]> 
 
 fn named_value(node: &Element, source_order: usize) -> crate::Result<NamedValue> {
     Ok(NamedValue {
+        attribute_positions: node
+            .attributes
+            .positions(SoftwareNamedValueAttribute::from_name)
+            .collect(),
         name: required(node, "name")?,
         value: node.attributes.get("value").cloned(),
         source_order,

@@ -1,3 +1,12 @@
+mod positions;
+use crate::mame_softwarelist::{
+    SoftwareAreaAttributePositions, SoftwareDataAreaAttribute, SoftwareDipSwitchAttribute,
+    SoftwareDipValueAttribute, SoftwareDiskAreaAttribute, SoftwareDiskAttribute,
+    SoftwareItemAttribute, SoftwareListAttribute, SoftwareNamedValueAttribute,
+    SoftwarePartAttribute, SoftwareRomAttribute, SoftwareWrapperAttribute,
+};
+use positions::PositionOwner;
+
 use diesel::{
     QueryableByName, RunQueryDsl, SqliteConnection, sql_query,
     sql_types::{BigInt, Binary, Nullable, Text},
@@ -23,6 +32,12 @@ use crate::{
 struct NamespaceIdRow {
     #[diesel(sql_type = BigInt)]
     namespace_id: i64,
+}
+
+#[derive(QueryableByName)]
+struct WrapperIdRow {
+    #[diesel(sql_type = BigInt)]
+    wrapper_id: i64,
 }
 
 #[derive(QueryableByName)]
@@ -54,10 +69,16 @@ pub(super) fn insert(
         .bind::<Text, _>(catalog.root_kind.as_str())
         .execute(conn)?;
     if catalog.root_kind.as_str() == "plural_lists" {
-        sql_query("INSERT INTO software_wrapper_headers(snapshot_key, build) VALUES (?, ?)")
+        let wrapper = sql_query("INSERT INTO software_wrapper_headers(snapshot_key, build) VALUES (?, ?) RETURNING wrapper_id")
             .bind::<Text, _>(snapshot_key.as_str())
             .bind::<Nullable<Text>, _>(catalog.build.as_deref())
-            .execute(conn)?;
+            .get_result::<WrapperIdRow>(conn)?.wrapper_id;
+        positions::insert(
+            conn,
+            PositionOwner::Wrapper(wrapper),
+            &catalog.attribute_positions,
+            SoftwareWrapperAttribute::code,
+        )?;
     }
     for (list_order, list) in catalog.lists.iter().enumerate() {
         insert_list(conn, snapshot_key, list, list_order)?;
@@ -93,6 +114,12 @@ fn insert_list(
     .bind::<BigInt, _>(list.location.line)
     .bind::<BigInt, _>(list.location.column)
     .execute(conn)?;
+    positions::insert(
+        conn,
+        PositionOwner::List(namespace),
+        &list.attribute_positions,
+        SoftwareListAttribute::code,
+    )?;
     for position in &list.text_positions {
         sql_query(
             "INSERT INTO software_list_text_positions \
@@ -164,6 +191,12 @@ fn insert_item(
         )?;
     }
 
+    positions::insert(
+        conn,
+        PositionOwner::Item(record.as_i64()),
+        &item.attribute_positions,
+        SoftwareItemAttribute::code,
+    )?;
     insert_named_values(
         conn,
         "software_item_info",
@@ -224,6 +257,25 @@ fn insert_named_values(
         .bind::<BigInt, _>(value.location.line)
         .bind::<BigInt, _>(value.location.column)
         .execute(conn)?;
+        let owner = match table {
+            "software_item_info" => {
+                PositionOwner::Info(record.as_i64(), checked_order(order, kind)?)
+            }
+            "software_item_shared_features" => {
+                PositionOwner::SharedFeature(record.as_i64(), checked_order(order, kind)?)
+            }
+            _ => {
+                return Err(crate::Error::XmlValidation(
+                    "unknown software named-value owner".into(),
+                ));
+            }
+        };
+        positions::insert(
+            conn,
+            owner,
+            &value.attribute_positions,
+            SoftwareNamedValueAttribute::code,
+        )?;
     }
     Ok(())
 }
@@ -249,6 +301,12 @@ fn insert_part(
     .bind::<BigInt, _>(part.location.column)
     .get_result::<PartIdRow>(conn)?
     .part_id;
+    positions::insert(
+        conn,
+        PositionOwner::Part(part_id),
+        &part.attribute_positions,
+        SoftwarePartAttribute::code,
+    )?;
 
     for (value_order, value) in part.features.iter().enumerate() {
         sql_query(
@@ -264,6 +322,15 @@ fn insert_part(
         .bind::<BigInt, _>(value.location.line)
         .bind::<BigInt, _>(value.location.column)
         .execute(conn)?;
+        positions::insert(
+            conn,
+            PositionOwner::Feature(
+                part_id,
+                checked_order(value_order, "software part features")?,
+            ),
+            &value.attribute_positions,
+            SoftwareNamedValueAttribute::code,
+        )?;
     }
     for (switch_order, switch) in part.dipswitches.iter().enumerate() {
         let switch_order = checked_order(switch_order, "software part DIP switches")?;
@@ -281,6 +348,12 @@ fn insert_part(
         .bind::<BigInt, _>(switch.location.line)
         .bind::<BigInt, _>(switch.location.column)
         .execute(conn)?;
+        positions::insert(
+            conn,
+            PositionOwner::DipSwitch(part_id, switch_order),
+            &switch.attribute_positions,
+            SoftwareDipSwitchAttribute::code,
+        )?;
         for (value_order, value) in switch.values.iter().enumerate() {
             sql_query(
                 "INSERT INTO software_part_dip_values \
@@ -298,6 +371,16 @@ fn insert_part(
             .bind::<BigInt, _>(value.location.line)
             .bind::<BigInt, _>(value.location.column)
             .execute(conn)?;
+            positions::insert(
+                conn,
+                PositionOwner::DipValue(
+                    part_id,
+                    switch_order,
+                    checked_order(value_order, "software DIP values")?,
+                ),
+                &value.attribute_positions,
+                SoftwareDipValueAttribute::code,
+            )?;
         }
     }
 
@@ -367,6 +450,29 @@ fn insert_area(
         }
     }
 
+    match &area.attribute_positions {
+        SoftwareAreaAttributePositions::Data(values) if area.kind == AreaKind::Data => {
+            positions::insert(
+                conn,
+                PositionOwner::DataArea(area_id),
+                values,
+                SoftwareDataAreaAttribute::code,
+            )?;
+        }
+        SoftwareAreaAttributePositions::Disk(values) if area.kind == AreaKind::Disk => {
+            positions::insert(
+                conn,
+                PositionOwner::DiskArea(area_id),
+                values,
+                SoftwareDiskAreaAttribute::code,
+            )?;
+        }
+        _ => {
+            return Err(crate::Error::XmlValidation(
+                "software attribute area subtype mismatch".into(),
+            ));
+        }
+    }
     let mut declaration = None;
     for (component_order, component) in area.components.iter().enumerate() {
         insert_component(
@@ -597,6 +703,12 @@ fn insert_rom_entry(
     .bind::<BigInt, _>(rom.location.line)
     .bind::<BigInt, _>(rom.location.column)
     .execute(conn)?;
+    positions::insert(
+        conn,
+        PositionOwner::Rom(occurrence.database_value()),
+        &rom.attribute_positions,
+        SoftwareRomAttribute::code,
+    )?;
     Ok(())
 }
 
@@ -691,6 +803,12 @@ fn insert_disk_component(
     .bind::<BigInt, _>(disk.location.line)
     .bind::<BigInt, _>(disk.location.column)
     .execute(conn)?;
+    positions::insert(
+        conn,
+        PositionOwner::Disk(occurrence.database_value()),
+        &disk.attribute_positions,
+        SoftwareDiskAttribute::code,
+    )?;
     sql_query(
         "INSERT INTO software_file_uses \
          (occurrence_id, record_id, declaration_occurrence_id, operation) \

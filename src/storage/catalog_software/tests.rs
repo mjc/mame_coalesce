@@ -15,6 +15,63 @@ use super::{
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
+#[test]
+fn attribute_integrity_reports_missing_and_orphaned_native_positions() -> TestResult {
+    let fixture = fixture()?;
+    let mut conn = fixture.database.pool().get()?;
+    let clean = sql_query("SELECT COUNT(*) AS owner_id FROM software_attribute_violations")
+        .get_result::<OwnerId>(&mut conn)?;
+    assert_eq!(clean.owner_id, 0);
+    conn.batch_execute("PRAGMA foreign_keys=OFF; DROP TRIGGER software_item_attribute_positions_immutable_delete; DROP TRIGGER software_list_attribute_positions_immutable_update;")?;
+    sql_query("DELETE FROM software_item_attribute_positions WHERE record_id=? AND field_kind=2")
+        .bind::<BigInt, _>(fixture.title.as_i64())
+        .execute(&mut conn)?;
+    let missing=sql_query("SELECT COUNT(*) AS owner_id FROM software_attribute_violations WHERE owner_kind='item' AND owner_a=? AND field_kind=2 AND reason='missing_position'")
+        .bind::<BigInt,_>(fixture.title.as_i64()).get_result::<OwnerId>(&mut conn)?;
+    assert_eq!(missing.owner_id, 1);
+    sql_query("UPDATE software_list_attribute_positions SET namespace_id=900001 WHERE namespace_id=? AND field_kind=0")
+        .bind::<BigInt,_>(fixture.list.database_value()).execute(&mut conn)?;
+    let orphan=sql_query("SELECT COUNT(*) AS owner_id FROM software_attribute_violations WHERE owner_kind='list' AND owner_a=900001 AND field_kind=0 AND reason='orphan_or_invalid_position'")
+        .get_result::<OwnerId>(&mut conn)?;
+    assert_eq!(orphan.owner_id, 1);
+    drop(conn);
+    assert!(
+        lists_for_snapshot(
+            &fixture.database,
+            &fixture.snapshot,
+            SoftwarePageLimit::new(10)?,
+            None
+        )
+        .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn wrapper_replacement_rejects_both_native_id_and_edition_collisions() -> TestResult {
+    let fixture = fixture()?;
+    let mut conn = fixture.database.pool().get()?;
+    conn.batch_execute("PRAGMA foreign_keys=OFF; PRAGMA recursive_triggers=OFF;")?;
+    for key in ["wrapper-draft-a", "wrapper-draft-b"] {
+        sql_query("INSERT INTO catalog_snapshots(snapshot_key,catalog_key,document_key,interpretation_key,coverage_id) SELECT ?,catalog_key,document_key,interpretation_key,coverage_id FROM catalog_snapshots WHERE snapshot_key=?")
+            .bind::<Text,_>(key).bind::<Text,_>(fixture.snapshot.as_str()).execute(&mut conn)?;
+        sql_query(
+            "INSERT INTO software_documents(snapshot_key,envelope_kind) VALUES (?,'plural_lists')",
+        )
+        .bind::<Text, _>(key)
+        .execute(&mut conn)?;
+    }
+    conn.batch_execute("INSERT INTO software_wrapper_headers(wrapper_id,snapshot_key,build) VALUES (900001,'wrapper-draft-a','');")?;
+    for (id, key) in [(900_001, "wrapper-draft-b"), (900_002, "wrapper-draft-a")] {
+        assert!(sql_query("INSERT OR REPLACE INTO software_wrapper_headers(wrapper_id,snapshot_key,build) VALUES (?,?,'replacement')")
+            .bind::<BigInt,_>(id).bind::<Text,_>(key).execute(&mut conn).is_err());
+    }
+    let survivor=sql_query("SELECT wrapper_id AS owner_id FROM software_wrapper_headers WHERE snapshot_key='wrapper-draft-a' AND build=''")
+        .get_result::<OwnerId>(&mut conn)?;
+    assert_eq!(survivor.owner_id, 900_001);
+    Ok(())
+}
+
 fn software_list_xml() -> TestResult<String> {
     let mut xml = String::from(
         "<softwarelists><softwarelist name=\"fixture\" description=\"List\"><notes>List notes</notes>",

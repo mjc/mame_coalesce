@@ -181,10 +181,12 @@ fn history_rejects_a_second_opposite_area_detail() -> TestResult {
         let mut imported = imported_areas()?;
         app::diff_catalog_snapshots(&imported.database, &imported.snapshot, &imported.snapshot)?;
         add_opposite_detail(&mut imported, kind)?;
+        let result =
+            app::diff_catalog_snapshots(&imported.database, &imported.snapshot, &imported.snapshot);
         assert!(
-            matches!(app::diff_catalog_snapshots(&imported.database, &imported.snapshot, &imported.snapshot),
+            matches!(&result,
                 Err(mame_coalesce::Error::InvalidPath(message)) if message.contains("exactly one matching native detail")),
-            "{kind} area with both subtypes was silently accepted by history"
+            "{kind} area with both subtypes must report its invalid native detail, got {result:?}"
         );
     }
     Ok(())

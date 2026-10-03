@@ -137,7 +137,7 @@ UNION ALL SELECT * FROM no_intro_pc_source_relationships;
 CREATE VIEW software_dat_source_relationships AS
 SELECT registry.assertion_key, 'source_parent_clone' AS relation_type,
        'source_assertion' AS origin, registry.snapshot_key AS source_snapshot_key,
-       'cloneof' AS source_field, owner.source_line, owner.source_column,
+       'cloneof' AS source_field, position.source_line, position.source_column,
        NULL AS generic_subject_snapshot_key, 'software_item' AS subject_kind,
        link.set_id AS subject_set_id, NULL AS generic_subject_a, NULL AS generic_subject_b,
        NULL AS generic_subject_c, list.name AS source_subject_a,
@@ -152,6 +152,8 @@ FROM catalog_relationships AS registry
 CROSS JOIN reported_catalog_relationships AS reported
 CROSS JOIN software_clone_links AS link
 CROSS JOIN software_items AS native ON native.record_id = link.set_id
+CROSS JOIN software_item_attribute_positions AS position
+  ON position.record_id=link.set_id AND position.field_kind=1
 CROSS JOIN catalog_sets AS owner ON owner.set_id = native.record_id
 CROSS JOIN catalog_set_groups AS groups ON groups.set_group_id = owner.set_group_id
 CROSS JOIN software_lists AS list ON list.namespace_id = groups.set_group_id

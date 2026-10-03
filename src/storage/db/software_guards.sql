@@ -11,6 +11,7 @@ BEFORE INSERT ON software_wrapper_headers
 WHEN NOT EXISTS (SELECT 1 FROM software_documents WHERE snapshot_key = NEW.snapshot_key AND envelope_kind = 'plural_lists')
  OR EXISTS (SELECT 1 FROM snapshot_publications WHERE snapshot_key = NEW.snapshot_key)
  OR EXISTS (SELECT 1 FROM software_wrapper_headers WHERE snapshot_key = NEW.snapshot_key)
+ OR EXISTS (SELECT 1 FROM software_wrapper_headers WHERE wrapper_id = NEW.wrapper_id)
 BEGIN SELECT RAISE(ABORT, 'software wrapper header requires an unpublished software document'); END;
 
 CREATE TRIGGER software_parts_native_owner_insert BEFORE INSERT ON software_parts

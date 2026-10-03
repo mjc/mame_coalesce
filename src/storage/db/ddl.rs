@@ -60,6 +60,8 @@ pub const SCHEMA: &str = concat!(
     "\n",
     include_str!("software_guards.sql"),
     "\n",
+    include_str!("software_attribute_positions.sql"),
+    "\n",
     "CREATE VIEW mame_machine_child_positions AS WITH requested_mame_machines(set_id) AS (SELECT set_id FROM mame_machines) ",
     include_str!("mame_positions.sql"),
     ";",

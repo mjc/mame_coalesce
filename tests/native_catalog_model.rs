@@ -29,7 +29,7 @@ fn connection() -> (tempfile::TempDir, SqliteConnection) {
          ) VALUES ('mame-snapshot','catalog','document','parser-mame',1),
                   ('software-snapshot','catalog','document','parser-software',1);
          INSERT INTO software_documents VALUES ('software-snapshot','plural_lists');
-         INSERT INTO software_wrapper_headers VALUES ('software-snapshot',NULL);",
+         INSERT INTO software_wrapper_headers(snapshot_key,build) VALUES ('software-snapshot',NULL);",
     )
     .expect("snapshot parents");
     (directory, conn)
@@ -139,7 +139,11 @@ fn native_sets_have_scoped_integer_identity_and_typed_detail_owners() {
                 (4,1,'yes',0,'Same-list duplicate','1981','Publisher');
          INSERT INTO software_item_text_positions(record_id,field_kind,source_order,source_line,source_column)
          SELECT record_id,field_kind,field_kind,1,1 FROM software_items CROSS JOIN
-         (SELECT 0 AS field_kind UNION ALL SELECT 1 UNION ALL SELECT 2);",
+         (SELECT 0 AS field_kind UNION ALL SELECT 1 UNION ALL SELECT 2);
+         INSERT INTO software_list_attribute_positions(namespace_id,field_kind,source_order,source_line,source_column)
+         SELECT namespace_id,0,0,1,1 FROM software_lists;
+         INSERT INTO software_item_attribute_positions(record_id,field_kind,source_order,source_line,source_column)
+         SELECT record_id,0,0,1,1 FROM software_items;",
     )
     .expect("scoped set identities and native detail owners");
 

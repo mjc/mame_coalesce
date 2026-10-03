@@ -2,6 +2,7 @@
 //! coordinates do not establish continuity between catalog editions.
 
 use std::collections::BTreeMap;
+mod attributes;
 
 use diesel::{
     OptionalExtension, QueryableByName, RunQueryDsl, SqliteConnection, sql_query,
@@ -149,6 +150,9 @@ pub(super) fn load_document(
         .into_iter()
         .map(|(_, facts)| facts)
         .collect::<Vec<_>>();
+    // Preserve native-structure errors before checking their lexical witnesses.
+    // Neither incomplete positions nor malformed owners can escape this reader.
+    crate::storage::software_attributes::validate_edition(conn, key)?;
     Ok(Some(json!({"envelope": envelope, "lists": lists})))
 }
 
@@ -159,6 +163,7 @@ fn load_list_facts(
     facts: &BTreeMap<i64, Value>,
 ) -> crate::Result<Vec<(i64, Value)>> {
     let lists = load_lists(conn, key)?;
+    let mut attribute_orders = attributes::lists(conn, key)?;
     let positions = sql_query("SELECT positions.namespace_id AS parent_id, positions.source_order, positions.field_kind \
         FROM catalog_set_groups AS groups CROSS JOIN software_list_text_positions AS positions \
         ON positions.namespace_id = groups.set_group_id WHERE groups.snapshot_key = ? ORDER BY positions.source_order")
@@ -186,6 +191,11 @@ fn load_list_facts(
         .into_iter()
         .map(|list| {
             let mut fact = serde_json::to_value(&list)?;
+            fact["attribute_order"] = json!(
+                attribute_orders
+                    .remove(&list.namespace_id)
+                    .unwrap_or_default()
+            );
             fact["children"] = ordered(children.remove(&list.namespace_id).unwrap_or_default());
             Ok((list.namespace_id, fact))
         })
@@ -257,8 +267,12 @@ fn load_item_facts(
         )?;
     }
     let mut facts = BTreeMap::new();
+    let mut attribute_orders = attributes::items(conn, key)?;
     for item in items {
         let mut value = serde_json::to_value(item)?;
+        value["attribute_orders"] = attribute_orders
+            .remove(&item.record_id)
+            .unwrap_or_else(|| json!([]));
         value["children"] = ordered(children.remove(&item.record_id).unwrap_or_default());
         facts.insert(item.record_id, value);
     }

@@ -504,7 +504,26 @@ fn check_connection(
     check_retained_documents(conn, &mut report)?;
     check_publication_states(conn, &mut report)?;
     check_logiqx_attribute_positions(conn, &mut report)?;
+    check_software_attribute_positions(conn, &mut report)?;
     Ok(report)
+}
+
+fn check_software_attribute_positions(
+    conn: &mut SqliteConnection,
+    report: &mut IntegrityReport,
+) -> Result<()> {
+    let rows=sql_query("SELECT 'Software attributes: ' || reason || ' (' || owner_kind || ':' || owner_a || ',' || owner_b || ',' || owner_c || ', field ' || field_kind || ')' AS integrity_check FROM software_attribute_violations")
+        .load_iter::<IntegrityCheckRow,_>(conn)
+        .map_err(|error|backup_error(format!("software attribute integrity check failed: {error}")))?;
+    for row in rows {
+        let row = row.map_err(|error| {
+            backup_error(format!(
+                "software attribute integrity check failed: {error}"
+            ))
+        })?;
+        push_issue(&mut report.durable_issues, row.integrity_check);
+    }
+    Ok(())
 }
 
 fn check_logiqx_attribute_positions(

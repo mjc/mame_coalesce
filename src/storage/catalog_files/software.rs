@@ -1,3 +1,7 @@
+use crate::{
+    mame_softwarelist::{SoftwareDiskAttribute, SoftwareRomAttribute},
+    storage::software_attributes::{Family, Positions},
+};
 use std::collections::BTreeMap;
 
 use diesel::{
@@ -29,6 +33,8 @@ pub enum SoftwareFileOperation {
 /// Native metadata for a ROM entry or ROM operation in a software list.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SoftwareRomPayload {
+    pub attribute_positions:
+        Vec<super::XmlAttributePosition<crate::mame_softwarelist::SoftwareRomAttribute>>,
     pub name: Option<String>,
     pub size_text: Option<String>,
     pub size: Option<i64>,
@@ -52,6 +58,8 @@ pub struct SoftwareRomPayload {
 /// Native metadata for a disk entry in a software list.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SoftwareDiskPayload {
+    pub attribute_positions:
+        Vec<super::XmlAttributePosition<crate::mame_softwarelist::SoftwareDiskAttribute>>,
     pub name: String,
     pub sha1_text: Option<String>,
     pub status: SoftwareDumpStatus,
@@ -274,6 +282,7 @@ pub(super) fn attach_payloads(
         })
         .collect::<Result<BTreeMap<_, _>, CatalogFilesError>>()?;
 
+    attach_attribute_positions(connection, &mut native_roms, &mut native_disks)?;
     for occurrence in occurrences {
         let id = occurrence.occurrence_id.database_value();
         let payload = match occurrence.provenance.occurrence_kind {
@@ -310,6 +319,49 @@ pub(super) fn attach_payloads(
     if let Some((&id, _)) = native_disks.first_key_value() {
         return Err(CatalogFilesError::MissingOccurrenceOwner(id));
     }
+    Ok(())
+}
+
+fn attach_attribute_positions(
+    connection: &mut SqliteConnection,
+    native_roms: &mut BTreeMap<i64, SoftwareRomPayload>,
+    native_disks: &mut BTreeMap<i64, SoftwareDiskPayload>,
+) -> Result<(), CatalogFilesError> {
+    let mut positions = Positions::default();
+    for family in [Family::Rom, Family::Disk] {
+        positions.load(connection,family,"FROM temp.catalog_files_requested_occurrences AS requested CROSS JOIN __NATIVE_POSITIONS__ AS position WHERE position.occurrence_id=requested.occurrence_id")?;
+    }
+    for (&id, payload) in native_roms {
+        payload.attribute_positions = positions.take(
+            Family::Rom,
+            (id, 0, 0),
+            SoftwareRomAttribute::from_code,
+            &[
+                payload.name.is_some(),
+                payload.size_text.is_some(),
+                payload.crc_text.is_some(),
+                payload.sha1_text.is_some(),
+                payload.offset_text.is_some(),
+                payload.value.is_some(),
+                payload.status_specified,
+                payload.load_instruction.is_some(),
+            ],
+        )?;
+    }
+    for (&id, payload) in native_disks {
+        payload.attribute_positions = positions.take(
+            Family::Disk,
+            (id, 0, 0),
+            SoftwareDiskAttribute::from_code,
+            &[
+                true,
+                payload.sha1_text.is_some(),
+                payload.status_specified,
+                payload.writeable_specified,
+            ],
+        )?;
+    }
+    positions.finish()?;
     Ok(())
 }
 
@@ -443,6 +495,7 @@ fn rom_payload(row: RomRow) -> Result<SoftwareRomPayload, CatalogFilesError> {
     }
 
     Ok(SoftwareRomPayload {
+        attribute_positions: Vec::new(),
         name: row.name,
         size_text: row.size_text,
         size: row.size,
@@ -542,6 +595,7 @@ fn disk_payload(row: DiskRow) -> Result<SoftwareDiskPayload, CatalogFilesError> 
         ));
     }
     Ok(SoftwareDiskPayload {
+        attribute_positions: Vec::new(),
         name: row.name,
         sha1_text: row.sha1_text,
         status: parse_dump_status(&row.dump_status)?,

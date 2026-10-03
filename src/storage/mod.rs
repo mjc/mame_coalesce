@@ -21,6 +21,7 @@ pub mod repositories;
 pub mod schema;
 pub mod snapshot_history;
 mod software_area;
+mod software_attributes;
 mod software_rom_evidence;
 
 #[cfg(test)]

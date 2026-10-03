@@ -129,6 +129,13 @@ fn candidate(
     )
     .bind::<BigInt, _>(group_id)
     .execute(connection)?;
+    attribute_positions(
+        connection,
+        "software_list_attribute_positions",
+        "namespace_id",
+        group_id,
+        &[0],
+    )?;
     let record_id = sql_query(
         "INSERT INTO catalog_sets \
          (set_group_id, source_element_kind, list_order, set_name, source_line, source_column) \
@@ -145,17 +152,7 @@ fn candidate(
     )
     .bind::<BigInt, _>(record_id)
     .execute(connection)?;
-    for (field_kind, source_order) in [(0_i64, 0_i64), (1, 2), (2, 4)] {
-        sql_query(
-            "INSERT INTO software_item_text_positions \
-             (record_id, field_kind, source_order, source_line, source_column) \
-             VALUES (?, ?, ?, 1, 1)",
-        )
-        .bind::<BigInt, _>(record_id)
-        .bind::<BigInt, _>(field_kind)
-        .bind::<BigInt, _>(source_order)
-        .execute(connection)?;
-    }
+    seed_item_positions(connection, record_id)?;
     let mut part_ids = Vec::with_capacity(part_count);
     for part_order in 0..part_count {
         part_ids.push(
@@ -172,11 +169,42 @@ fn candidate(
             .id,
         );
     }
+    for &part in &part_ids {
+        attribute_positions(
+            connection,
+            "software_part_attribute_positions",
+            "part_id",
+            part,
+            &[0, 1],
+        )?;
+    }
     Ok(Candidate {
         snapshot_key,
         record_id,
         part_ids,
     })
+}
+
+fn seed_item_positions(connection: &mut SqliteConnection, record_id: i64) -> TestResult {
+    attribute_positions(
+        connection,
+        "software_item_attribute_positions",
+        "record_id",
+        record_id,
+        &[0],
+    )?;
+    for (field_kind, source_order) in [(0_i64, 0_i64), (1, 2), (2, 4)] {
+        sql_query(
+            "INSERT INTO software_item_text_positions \
+             (record_id, field_kind, source_order, source_line, source_column) \
+             VALUES (?, ?, ?, 1, 1)",
+        )
+        .bind::<BigInt, _>(record_id)
+        .bind::<BigInt, _>(field_kind)
+        .bind::<BigInt, _>(source_order)
+        .execute(connection)?;
+    }
+    Ok(())
 }
 
 fn add_area_anchor(
@@ -204,7 +232,7 @@ fn add_data_detail(
     area_name: &str,
     source_order: i64,
 ) -> diesel::QueryResult<usize> {
-    sql_query(
+    let inserted = sql_query(
         "INSERT INTO software_data_areas \
          (area_id, area_name, source_order, declared_size_text, width, width_specified, \
           endianness, endianness_specified, source_line, source_column) \
@@ -213,7 +241,15 @@ fn add_data_detail(
     .bind::<BigInt, _>(area_id)
     .bind::<Text, _>(area_name)
     .bind::<BigInt, _>(source_order)
-    .execute(connection)
+    .execute(connection)?;
+    attribute_positions(
+        connection,
+        "software_data_area_attribute_positions",
+        "area_id",
+        area_id,
+        &[0, 1],
+    )?;
+    Ok(inserted)
 }
 
 fn add_disk_detail(
@@ -222,14 +258,22 @@ fn add_disk_detail(
     area_name: &str,
     source_order: i64,
 ) -> diesel::QueryResult<usize> {
-    sql_query(
+    let inserted=sql_query(
         "INSERT INTO software_disk_areas(area_id, area_name, source_order, source_line, source_column) \
          VALUES (?, ?, ?, 1, 1)",
     )
     .bind::<BigInt, _>(area_id)
     .bind::<Text, _>(area_name)
     .bind::<BigInt, _>(source_order)
-    .execute(connection)
+    .execute(connection)?;
+    attribute_positions(
+        connection,
+        "software_disk_area_attribute_positions",
+        "area_id",
+        area_id,
+        &[0],
+    )?;
+    Ok(inserted)
 }
 
 fn part_at(candidate: &Candidate, index: usize) -> TestResult<i64> {
@@ -238,6 +282,22 @@ fn part_at(candidate: &Candidate, index: usize) -> TestResult<i64> {
         .get(index)
         .copied()
         .ok_or_else(|| format!("candidate is missing part {index}").into())
+}
+
+fn attribute_positions(
+    connection: &mut SqliteConnection,
+    table: &str,
+    key: &str,
+    owner: i64,
+    fields: &[i64],
+) -> diesel::QueryResult<()> {
+    for (order, field) in fields.iter().enumerate() {
+        sql_query(format!("INSERT INTO {table}({key},field_kind,source_order,source_line,source_column) VALUES (?,?,?,1,1)"))
+            .bind::<BigInt,_>(owner).bind::<BigInt,_>(*field)
+            .bind::<BigInt,_>(i64::try_from(order).map_err(|error|diesel::result::Error::SerializationError(Box::new(error)))?)
+            .execute(connection)?;
+    }
+    Ok(())
 }
 
 fn publish(connection: &mut SqliteConnection, snapshot_key: &str) -> diesel::QueryResult<usize> {

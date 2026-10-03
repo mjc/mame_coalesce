@@ -2,7 +2,6 @@
 
 use std::fmt::Write as _;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 
 use diesel::{Connection, connection::InstrumentationEvent};
 
@@ -844,24 +843,17 @@ fn export_history_does_not_expand_empty_root_relationships() -> TestResult {
     let mut catalog = Catalog::new()?;
     let before = catalog.import("<datafile><header><version>before</version></header><game name='same'><archive name='before'/></game></datafile>")?;
     let after = catalog.import("<datafile><header><version>after</version></header><game name='same'><archive name='after'/></game></datafile>")?;
-    let samples = Arc::new(Mutex::new(Vec::new()));
-    let captured = Arc::clone(&samples);
-    let mut active = None;
+    let queries = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&queries);
     {
         let mut connection = catalog.database.pool().get()?;
-        connection.set_instrumentation(move |event: InstrumentationEvent<'_>| match event {
-            InstrumentationEvent::StartQuery { query, .. } => {
-                active = Some((query.to_string(), Instant::now()));
+        connection.set_instrumentation(move |event: InstrumentationEvent<'_>| {
+            if let InstrumentationEvent::StartQuery { query, .. } = event {
+                captured
+                    .lock()
+                    .expect("query capture mutex")
+                    .push(query.to_string());
             }
-            InstrumentationEvent::FinishQuery { .. } => {
-                if let Some((query, started)) = active.take() {
-                    captured
-                        .lock()
-                        .expect("query samples mutex")
-                        .push((query, started.elapsed()));
-                }
-            }
-            _ => {}
         });
     }
     let diff = catalog.diff_snapshots(&before, &after)?;
@@ -872,21 +864,12 @@ fn export_history_does_not_expand_empty_root_relationships() -> TestResult {
     assert!(record.metadata_changed);
     assert!(record.requirement_changes.is_empty());
 
-    let mut samples = samples.lock().expect("query samples mutex");
-    let elapsed: Duration = samples.iter().map(|(_, elapsed)| *elapsed).sum();
-    eprintln!("export history: {} queries in {elapsed:?}", samples.len());
-    samples.sort_by_key(|(_, elapsed)| std::cmp::Reverse(*elapsed));
-    for (query, elapsed) in samples.iter().take(8) {
-        eprintln!(
-            "{elapsed:?}: {}",
-            query.chars().take(140).collect::<String>()
-        );
-    }
-    let explanation_queries = samples
+    let explanation_queries = queries
+        .lock()
+        .expect("query capture mutex")
         .iter()
-        .filter(|(query, _)| query.contains("scoped_assertions AS MATERIALIZED"))
+        .filter(|query| query.contains("scoped_assertions AS MATERIALIZED"))
         .count();
-    drop(samples);
     assert_eq!(
         explanation_queries, 0,
         "proven-empty root relationships must not expand the full explanation queries"

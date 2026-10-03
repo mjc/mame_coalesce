@@ -164,6 +164,13 @@ fn candidate(
     )
     .bind::<BigInt, _>(group_id)
     .execute(connection)?;
+    attribute_positions(
+        connection,
+        "software_list_attribute_positions",
+        "namespace_id",
+        group_id,
+        &[0],
+    )?;
     let record_id = sql_query(
         "INSERT INTO catalog_sets \
          (set_group_id, source_element_kind, list_order, set_name, source_line, source_column) \
@@ -181,20 +188,7 @@ fn candidate(
         )
         .bind::<BigInt, _>(record_id)
         .execute(connection)?;
-        for field_kind in 0_i64..3 {
-            if missing_field == Some(field_kind) {
-                continue;
-            }
-            sql_query(
-                "INSERT INTO software_item_text_positions \
-                 (record_id, field_kind, source_order, source_line, source_column) \
-                 VALUES (?, ?, ?, 1, 1)",
-            )
-            .bind::<BigInt, _>(record_id)
-            .bind::<BigInt, _>(field_kind)
-            .bind::<BigInt, _>(field_kind)
-            .execute(connection)?;
-        }
+        seed_item_positions(connection, record_id, missing_field)?;
     }
     let part_id = if with_part {
         Some(
@@ -210,11 +204,49 @@ fn candidate(
     } else {
         None
     };
+    if let Some(part) = part_id {
+        attribute_positions(
+            connection,
+            "software_part_attribute_positions",
+            "part_id",
+            part,
+            &[0, 1],
+        )?;
+    }
     Ok(Candidate {
         snapshot_key,
         record_id,
         part_id,
     })
+}
+
+fn seed_item_positions(
+    connection: &mut SqliteConnection,
+    record_id: i64,
+    missing_field: Option<i64>,
+) -> TestResult {
+    attribute_positions(
+        connection,
+        "software_item_attribute_positions",
+        "record_id",
+        record_id,
+        &[0],
+    )?;
+    for field_kind in 0_i64..3 {
+        if missing_field == Some(field_kind) {
+            continue;
+        }
+        sql_query(
+            "INSERT INTO software_item_text_positions \
+             (record_id, field_kind, source_order, source_line, source_column) \
+             VALUES (?, ?, ?, 1, 1)",
+        )
+        .bind::<BigInt, _>(record_id)
+        .bind::<BigInt, _>(field_kind)
+        .bind::<BigInt, _>(field_kind)
+        .execute(connection)?;
+    }
+    Ok(())
 }
 
 fn add_area(
@@ -258,6 +290,12 @@ fn add_area(
         .bind::<BigInt, _>(source_order)
         .execute(connection)?;
     }
+    let (table, fields): (&str, &[i64]) = if kind == "data" {
+        ("software_data_area_attribute_positions", &[0, 1])
+    } else {
+        ("software_disk_area_attribute_positions", &[0])
+    };
+    attribute_positions(connection, table, "area_id", area_id, fields)?;
     Ok(area_id)
 }
 
@@ -324,6 +362,24 @@ fn add_rom_source(
     .bind::<BigInt, _>(i64::from(source.status != "good"))
     .bind::<Nullable<Text>, _>(source.instruction)
     .execute(connection)?;
+    let fields = [
+        Some(0),
+        Some(1),
+        fixture.crc_text.map(|_| 2),
+        fixture.sha1_text.map(|_| 3),
+        (source.status != "good").then_some(6),
+        source.instruction.map(|_| 7),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+    attribute_positions(
+        connection,
+        "software_rom_attribute_positions",
+        "occurrence_id",
+        occurrence_id,
+        &fields,
+    )?;
     if fixture.declare_file {
         sql_query(
             "INSERT INTO software_file_declarations(occurrence_id, record_id, declared_size) \
@@ -517,6 +573,17 @@ fn add_disk_with_identity(
     .bind::<BigInt, _>(area_id)
     .bind::<Nullable<Text>, _>(sha1_text)
     .execute(connection)?;
+    let fields = [Some(0), sha1_text.map(|_| 1)]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    attribute_positions(
+        connection,
+        "software_disk_attribute_positions",
+        "occurrence_id",
+        occurrence_id,
+        &fields,
+    )?;
     sql_query(
         "INSERT INTO software_file_uses(occurrence_id, record_id, declaration_occurrence_id, operation) \
          VALUES (?, ?, NULL, 'disk')",
@@ -572,6 +639,22 @@ fn add_assertion(
     .bind::<Text, _>(scope)
     .bind::<Text, _>(provenance)
     .execute(connection)?;
+    Ok(())
+}
+
+fn attribute_positions(
+    connection: &mut SqliteConnection,
+    table: &str,
+    key: &str,
+    owner: i64,
+    fields: &[i64],
+) -> diesel::QueryResult<()> {
+    for (order, field) in fields.iter().enumerate() {
+        sql_query(format!("INSERT INTO {table}({key},field_kind,source_order,source_line,source_column) VALUES (?,?,?,1,1)"))
+            .bind::<BigInt,_>(owner).bind::<BigInt,_>(*field)
+            .bind::<BigInt,_>(i64::try_from(order).map_err(|error|diesel::result::Error::SerializationError(Box::new(error)))?)
+            .execute(connection)?;
+    }
     Ok(())
 }
 

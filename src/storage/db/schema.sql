@@ -1248,10 +1248,11 @@ CREATE TABLE software_documents (
     FOREIGN KEY (snapshot_key) REFERENCES catalog_snapshots (snapshot_key) ON DELETE RESTRICT
 ) WITHOUT ROWID;
 CREATE TABLE software_wrapper_headers (
-    snapshot_key TEXT PRIMARY KEY NOT NULL,
+    wrapper_id INTEGER PRIMARY KEY NOT NULL CHECK(typeof(wrapper_id)='integer' AND wrapper_id>0),
+    snapshot_key TEXT NOT NULL UNIQUE,
     build TEXT,
     FOREIGN KEY (snapshot_key) REFERENCES software_documents (snapshot_key) ON DELETE RESTRICT
-) WITHOUT ROWID;
+);
 CREATE TABLE software_list_text_positions (
     namespace_id INTEGER NOT NULL,
     field_kind INTEGER NOT NULL CHECK (typeof(field_kind) = 'integer' AND field_kind = 3),

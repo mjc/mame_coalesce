@@ -67,6 +67,151 @@ const NATIVE: &str = r#"<softwarelists build="original"><softwarelist name="nes"
 <dipswitch name="Mode" tag="MODE" mask="0x01"><dipvalue name="Off" value="0" default="no"/><dipvalue name="On" value="1" default="yes"/></dipswitch>
 </part></software></softwarelist></softwarelists>"#;
 
+const ATTRIBUTE_REORDERS: &[(&str, &str, &str)] = &[
+    (
+        "item",
+        "name=\"game\" cloneof=\"parent\"",
+        "cloneof=\"parent\" name=\"game\"",
+    ),
+    (
+        "info",
+        "name=\"region\" value=\"US\"",
+        "value=\"US\" name=\"region\"",
+    ),
+    (
+        "sharedfeat",
+        "name=\"shared\" value=\"shared value\"",
+        "value=\"shared value\" name=\"shared\"",
+    ),
+    (
+        "part",
+        "name=\"cart\" interface=\"cart\"",
+        "interface=\"cart\" name=\"cart\"",
+    ),
+    (
+        "feature",
+        "name=\"mapper\" value=\"mapper value\"",
+        "value=\"mapper value\" name=\"mapper\"",
+    ),
+    (
+        "dataarea",
+        "name=\"rom\" size=\"020\"",
+        "size=\"020\" name=\"rom\"",
+    ),
+    (
+        "rom",
+        "name=\"file.bin\" size=\"010\"",
+        "size=\"010\" name=\"file.bin\"",
+    ),
+    (
+        "disk",
+        "name=\"disk.chd\" sha1=\"2222222222222222222222222222222222222222\"",
+        "sha1=\"2222222222222222222222222222222222222222\" name=\"disk.chd\"",
+    ),
+    (
+        "dipswitch",
+        "name=\"Mode\" tag=\"MODE\"",
+        "tag=\"MODE\" name=\"Mode\"",
+    ),
+    (
+        "dipvalue",
+        "name=\"Off\" value=\"0\"",
+        "value=\"0\" name=\"Off\"",
+    ),
+];
+
+#[test]
+fn recognized_attribute_order_changes_each_actual_software_owner() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let database = open_database(&directory)?;
+    let start = NATIVE
+        .find("<software name=")
+        .ok_or("software item missing")?;
+    let end = NATIVE.find("</software>").ok_or("software end missing")? + "</software>".len();
+    let item = NATIVE.get(start..end).ok_or("invalid item range")?;
+    let mut before_items = Vec::new();
+    let mut after_items = Vec::new();
+    for &(owner, old, new) in ATTRIBUTE_REORDERS {
+        assert_eq!(item.matches(old).count(), 1, "independent fixture: {owner}");
+        let rename = |xml: &str| xml.replacen("name=\"game\"", &format!("name=\"{owner}\""), 1);
+        before_items.push(rename(item));
+        after_items.push(rename(&item.replacen(old, new, 1)));
+    }
+    let control = item.replacen("name=\"game\"", "name=\"untouched\"", 1);
+    before_items.push(control.clone());
+    after_items.push(control);
+    let wrap = |items: &[String]| {
+        format!(
+            "<softwarelist name=\"nes\">{}</softwarelist>",
+            items.join("\n")
+        )
+    };
+    let before = import(
+        &database,
+        &directory,
+        "attribute-before.xml",
+        &wrap(&before_items),
+    )?;
+    let after = import(
+        &database,
+        &directory,
+        "attribute-after.xml",
+        &wrap(&after_items),
+    )?;
+    let diff = app::diff_catalog_snapshots(&database, &before, &after)?;
+    assert_eq!(diff.records.len(), ATTRIBUTE_REORDERS.len() + 1);
+    let mut lost_owners = Vec::new();
+    for record in &diff.records {
+        let [list, owner]: [String; 2] = serde_json::from_str(&record.set_name)?;
+        assert_eq!(list, "nes");
+        if owner == "untouched" {
+            assert_eq!(record.status, SnapshotRecordStatus::Unchanged);
+            assert!(!record.metadata_changed);
+        } else if record.status != SnapshotRecordStatus::Changed || !record.metadata_changed {
+            lost_owners.push(owner);
+        }
+        assert!(
+            record.requirement_changes.is_empty(),
+            "order is not changed size/hash evidence"
+        );
+    }
+    assert!(
+        lost_owners.is_empty(),
+        "lost native attribute order: {lost_owners:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn list_attribute_order_is_document_metadata_but_vendor_gaps_are_neutral() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let database = open_database(&directory)?;
+    let before = import(&database, &directory, "list-before.xml", NATIVE)?;
+    let reordered = NATIVE.replacen(
+        "name=\"nes\" description=\"NES\"",
+        "description=\"NES\" name=\"nes\"",
+        1,
+    );
+    let after = import(&database, &directory, "list-after.xml", &reordered)?;
+    let diff = app::diff_catalog_snapshots(&database, &before, &after)?;
+    assert!(
+        diff.document_metadata_changed,
+        "list attribute order must survive import"
+    );
+    assert_eq!(diff.records[0].status, SnapshotRecordStatus::Unchanged);
+    let gaps = NATIVE
+        .replace(
+            " name=",
+            " xmlns:v=\"urn:vendor\" v:extra=\"ignored\"\r\n\t name=",
+        )
+        .replace(" size=", "\r\n\t size=");
+    let layout = import(&database, &directory, "list-gaps.xml", &gaps)?;
+    let diff = app::diff_catalog_snapshots(&database, &before, &layout)?;
+    assert!(!diff.document_metadata_changed);
+    assert_eq!(diff.records[0].status, SnapshotRecordStatus::Unchanged);
+    Ok(())
+}
+
 #[test]
 fn every_native_software_family_changes_history() -> TestResult {
     let directory = tempfile::tempdir()?;
