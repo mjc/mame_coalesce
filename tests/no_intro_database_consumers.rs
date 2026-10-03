@@ -1,5 +1,7 @@
 #![allow(clippy::expect_used, clippy::panic)]
 
+use std::fmt::Write as _;
+
 use camino::Utf8PathBuf;
 use mame_coalesce::{
     app::{self, CatalogDocumentFormat, CatalogImportRequest, CatalogImportStatus},
@@ -58,16 +60,51 @@ impl Catalog {
     fn diff(&mut self, before: &str, after: &str) -> TestResult<CatalogSnapshotDiff> {
         let before = self.import(before)?;
         let after = self.import(after)?;
-        Ok(app::diff_catalog_snapshots(
-            &self.database,
-            &before,
-            &after,
-        )?)
+        self.diff_snapshots(&before, &after)
+    }
+
+    fn diff_snapshots(
+        &self,
+        before: &SnapshotKey,
+        after: &SnapshotKey,
+    ) -> TestResult<CatalogSnapshotDiff> {
+        Ok(app::diff_catalog_snapshots(&self.database, before, after)?)
     }
 }
 
 fn document(children: &str) -> String {
     format!("<datafile><game name='same'>{children}</game></datafile>")
+}
+
+fn owner_games(fields: &[&str], owner: &impl Fn(&str) -> String, value: Option<&str>) -> String {
+    let mut games = String::new();
+    for field in fields {
+        let attributes = value
+            .map(|value| format!("{field}='{value}'"))
+            .unwrap_or_default();
+        write!(
+            games,
+            "<game name='field-{field}'>{}</game>",
+            owner(&attributes)
+        )
+        .expect("writing XML fixture to a String cannot fail");
+    }
+    games
+}
+
+fn assert_field_records(diff: &CatalogSnapshotDiff, fields: &[&str]) {
+    let mut expected = fields
+        .iter()
+        .map(|field| format!("field-{field}"))
+        .collect::<Vec<_>>();
+    let mut actual = diff
+        .records
+        .iter()
+        .map(|record| record.set_name.clone())
+        .collect::<Vec<_>>();
+    expected.sort();
+    actual.sort();
+    assert_eq!(actual, expected, "field game set and count");
 }
 
 #[test]
@@ -348,27 +385,54 @@ fn all_source_and_release_file_declarations_remain_scoped_metadata() -> TestResu
 
 fn assert_owner_fields(fields: &[&str], owner: impl Fn(&str) -> String) -> TestResult {
     let mut catalog = Catalog::new()?;
-    for field in fields {
-        let before = document(&owner(&format!("{field}='before'")));
-        let after = document(&owner(&format!("{field}='after'")));
-        let diff = catalog.diff(&before, &after)?;
-        assert!(!diff.document_metadata_changed, "{field}");
-        assert!(
-            diff.records[0].metadata_changed,
-            "missing native field: {field}"
-        );
-        assert!(
-            diff.records[0].requirement_changes.is_empty(),
-            "unknown-scope declaration became requirement: {field}"
-        );
-        let diff = catalog.diff(
-            &document(&owner("")),
-            &document(&owner(&format!("{field}=''"))),
-        )?;
-        assert!(
-            diff.records[0].metadata_changed,
-            "empty/present collapsed: {field}"
-        );
+    let before = format!(
+        "<datafile>{}</datafile>",
+        owner_games(fields, &owner, Some("before"))
+    );
+    let after = format!(
+        "<datafile>{}</datafile>",
+        owner_games(fields, &owner, Some("after"))
+    );
+    let absent = format!("<datafile>{}</datafile>", owner_games(fields, &owner, None));
+    let empty = format!(
+        "<datafile>{}</datafile>",
+        owner_games(fields, &owner, Some(""))
+    );
+    let before_snapshot = catalog.import(&before)?;
+    let after_snapshot = catalog.import(&after)?;
+    let absent_snapshot = catalog.import(&absent)?;
+    let empty_snapshot = catalog.import(&empty)?;
+    assert_eq!(
+        catalog.next_document, 4,
+        "one import per comparison document"
+    );
+
+    let value_diff = catalog.diff_snapshots(&before_snapshot, &after_snapshot)?;
+    let empty_diff = catalog.diff_snapshots(&absent_snapshot, &empty_snapshot)?;
+    for (diff, metadata_message) in [
+        (&value_diff, "missing native field"),
+        (&empty_diff, "empty/present collapsed"),
+    ] {
+        assert_field_records(diff, fields);
+        assert!(!diff.document_metadata_changed);
+        for record in &diff.records {
+            assert_eq!(
+                record.correspondence,
+                mame_coalesce::domain::SnapshotRecordCorrespondence::UniqueName,
+                "field game must have one-to-one history correspondence: {}",
+                record.set_name
+            );
+            assert!(
+                record.metadata_changed,
+                "{metadata_message} for {}",
+                record.set_name
+            );
+            assert!(
+                record.requirement_changes.is_empty(),
+                "unknown-scope declaration became requirement: {}",
+                record.set_name
+            );
+        }
     }
     Ok(())
 }
