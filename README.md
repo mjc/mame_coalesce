@@ -300,9 +300,14 @@ Missing and empty fields remain different. Header versions are read from their
 native owner, not copied into snapshot rows. ROM size spelling is retained;
 valid unsigned sizes beyond SQLite's signed range remain queryable without
 inventing a signed size or assigning a shared UUID. Bulk file queries expose
-the native P/C ROM payload. History detects native field/order edits while
-ignoring vendor-only gaps and reindentation. Exact attribute positions/order
-and authentic producer grammar remain separate unfinished work.
+the native P/C ROM payload with typed attribute positions. Nine game and five
+ROM attributes have position-only native owners: lexical order and one-based
+Unicode-scalar QName coordinates, not copies of their values. Publication
+requires every present attribute's position and exactly one source hash per
+hash position. Clone/merge explanations point at their declaring attribute.
+The named `no-intro-pc-synthetic-provenance-v2` interpretation detects recognized
+attribute reordering while ignoring vendor-only gaps and reindentation.
+Authentic producer grammar remains separate unfinished work.
 
 Import errors can retain an exact byte excerpt with a start-inclusive,
 end-exclusive highlight relative to that saved excerpt, not the whole file.

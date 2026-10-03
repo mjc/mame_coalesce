@@ -35,6 +35,9 @@ fn pending_game(
     sql_query("INSERT INTO no_intro_pc_games(set_id,document_order) VALUES(?,0)")
         .bind::<BigInt, _>(set)
         .execute(conn)?;
+    sql_query("INSERT INTO no_intro_pc_game_attribute_positions(set_id,field_kind,source_order,source_line,source_column) VALUES(?,0,0,1,1)")
+        .bind::<BigInt, _>(set)
+        .execute(conn)?;
     Ok(set)
 }
 
@@ -77,6 +80,9 @@ fn native_pc_publication_requires_each_rom_payload_before_sealing() -> TestResul
     );
     sql_query("INSERT INTO no_intro_pc_file_claims(occurrence_id,name,source_order,evidence_scope,evidence_provenance,source_line,source_column) VALUES(?,'actual.bin',0,'whole_asset','source_declared',1,1)")
         .bind::<BigInt,_>(occurrence).execute(&mut conn)?;
+    sql_query("INSERT INTO no_intro_pc_rom_attribute_positions(occurrence_id,field_kind,source_order,source_line,source_column) VALUES(?,0,0,1,1)")
+        .bind::<BigInt, _>(occurrence)
+        .execute(&mut conn)?;
     assert_eq!(publish_pending(&mut conn)?, 1);
     Ok(())
 }

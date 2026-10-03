@@ -131,6 +131,7 @@ pub(super) fn insert(
             let NativeAssetFacts::NoIntroPc {
                 size_text,
                 source_order,
+                ..
             } = &asset.native
             else {
                 return Err(crate::Error::InvalidPath(

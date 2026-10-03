@@ -1288,19 +1288,28 @@ fn synthetic_pc_storage_failure_after_registry_issuance_rolls_back_import() -> T
         .map_err(|_| "non-UTF-8 document path")?;
     let database_path = Utf8PathBuf::from_path_buf(directory.path().join("failure.sqlite"))
         .map_err(|_| "non-UTF-8 database path")?;
-    std::fs::write(&document_path, PC_XML)?;
+    std::fs::write(
+        &document_path,
+        "<datafile><header><version>rollback</version></header><game name='clone' clone='0007'><rom name='failed.bin' size='1' crc='12345678'/></game></datafile>",
+    )?;
     let database = Database::open(&database_path)?;
     let mut connection = SqliteConnection::establish(database_path.as_str())?;
     connection.batch_execute(
-        "CREATE TRIGGER inject_pc_clone_storage_failure \
-         BEFORE INSERT ON no_intro_pc_clone_links \
+        "CREATE TRIGGER inject_pc_position_storage_failure \
+         BEFORE INSERT ON no_intro_pc_rom_attribute_positions WHEN NEW.field_kind=1 \
          BEGIN SELECT CASE WHEN EXISTS ( \
            SELECT 1 FROM catalog_relationships identity \
            JOIN reported_catalog_relationships reported USING(relationship_id) \
-           WHERE identity.relationship_id=NEW.relationship_id AND identity.origin='source' \
+           JOIN no_intro_pc_clone_links AS link USING(relationship_id) \
+           JOIN no_intro_pc_game_attribute_positions AS game ON game.set_id=link.set_id \
+           JOIN asset_occurrences AS occurrence ON occurrence.record_id=game.set_id \
+           JOIN no_intro_pc_rom_attribute_positions AS rom USING(occurrence_id) \
+           JOIN occurrence_digest_assertions AS digest USING(occurrence_id) \
+           WHERE occurrence.occurrence_id=NEW.occurrence_id AND identity.origin='source' \
              AND reported.source_reference_kind='no_intro_pc_clone' \
-         ) THEN RAISE(ABORT,'injected P/C link failure after issued registry') \
-           ELSE RAISE(ABORT,'P/C link insert has no issued registry') END; END",
+             AND game.field_kind=7 AND rom.field_kind=0 \
+         ) THEN RAISE(ABORT,'injected P/C failure after registry and native positions') \
+           ELSE RAISE(ABORT,'P/C position insert has no preceding registry and positions') END; END",
     )?;
 
     let result = app::import_catalog(
@@ -1321,7 +1330,7 @@ fn synthetic_pc_storage_failure_after_registry_issuance_rolls_back_import() -> T
     assert!(
         error
             .to_string()
-            .contains("injected P/C link failure after issued registry"),
+            .contains("injected P/C failure after registry and native positions"),
         "storage witness did not prove issued registry ownership: {error}"
     );
     for table in [
@@ -1333,6 +1342,12 @@ fn synthetic_pc_storage_failure_after_registry_issuance_rolls_back_import() -> T
         "no_intro_pc_documents",
         "no_intro_pc_clone_links",
         "no_intro_pc_merge_links",
+        "no_intro_pc_game_attribute_positions",
+        "no_intro_pc_rom_attribute_positions",
+        "no_intro_pc_file_claims",
+        "occurrence_digest_assertions",
+        "digest_values",
+        "asset_occurrences",
         "catalog_sets",
         "catalog_set_groups",
         "catalog_snapshots",

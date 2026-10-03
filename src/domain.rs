@@ -312,6 +312,7 @@ impl ParserInterpretationKey {
             "logiqx" => "logiqx-declared-text-compat-v1",
             "mame-listxml" => "mame-observed-compat-declared-text-v1",
             "clrmamepro-dat" => "clrmamepro-declared-text-compat-v1",
+            "no-intro-pc-xml" => "no-intro-pc-synthetic-provenance-v2",
             "no-intro-dat-v3-strict" | "no-intro-dat-v4-strict" => "no-intro-dat-xsd-v2",
             "no-intro-dat-v3-compatible" | "no-intro-dat-v4-compatible" => {
                 "no-intro-dat-observed-compat-v2"
@@ -2071,6 +2072,7 @@ mod tests {
     #[test]
     fn no_intro_interpretations_version_attribute_token_coordinates() {
         for (format, expected) in [
+            ("no-intro-pc-xml", "no-intro-pc-synthetic-provenance-v2"),
             ("no-intro-dat-v3-strict", "no-intro-dat-xsd-v2"),
             ("no-intro-dat-v4-strict", "no-intro-dat-xsd-v2"),
             (

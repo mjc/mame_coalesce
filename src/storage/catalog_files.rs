@@ -17,6 +17,7 @@ use super::db::Pool;
 pub use crate::domain::ContentDigestAlgorithm as DigestAlgorithm;
 pub use crate::domain::media::SourceLoadInstruction as SoftwareLoadInstruction;
 pub use crate::mame_softwarelist::DumpStatus as SoftwareDumpStatus;
+pub use crate::no_intro_pc_xml::RomAttribute as NoIntroPcRomAttribute;
 pub use crate::storage::catalog_identity::OccurrenceId;
 
 mod mame;
@@ -173,6 +174,32 @@ pub struct NoIntroPcRomPayload {
     pub size_text: Option<String>,
     pub size: Option<u64>,
     pub source_order: i64,
+    /// Explicit recognized attributes in source order, including `QName` locations.
+    pub attribute_positions: Vec<NoIntroPcRomAttributePosition>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Source provenance for one explicitly present synthetic P/C ROM attribute.
+pub struct NoIntroPcRomAttributePosition {
+    pub field: NoIntroPcRomAttribute,
+    /// Zero-based lexical ordinal, including namespace and vendor attributes.
+    pub source_order: i64,
+    /// One-based decoded XML Unicode-scalar `QName` coordinates (not byte offsets).
+    pub location: SourceLocation,
+}
+
+#[derive(QueryableByName)]
+struct NoIntroPcRomAttributeRow {
+    #[diesel(sql_type = BigInt)]
+    occurrence_id: i64,
+    #[diesel(sql_type = BigInt)]
+    field_kind: i64,
+    #[diesel(sql_type = BigInt)]
+    source_order: i64,
+    #[diesel(sql_type = BigInt)]
+    source_line: i64,
+    #[diesel(sql_type = BigInt)]
+    source_column: i64,
 }
 
 /// Stable row identity for a native No-Intro dump source.
@@ -861,6 +888,96 @@ const fn native_payload_select() -> &'static str {
      ORDER BY occurrence.occurrence_id"
 }
 
+const fn no_intro_pc_rom_attribute_select() -> &'static str {
+    "SELECT positions.occurrence_id, positions.field_kind, positions.source_order, \
+                positions.source_line, positions.source_column \
+         FROM temp.catalog_files_requested_occurrences AS requested \
+         CROSS JOIN no_intro_pc_rom_attribute_positions AS positions \
+         WHERE positions.occurrence_id=requested.occurrence_id \
+         ORDER BY positions.occurrence_id, positions.source_order"
+}
+
+fn attach_no_intro_pc_rom_attributes(
+    connection: &mut SqliteConnection,
+    occurrences: &mut [CatalogFileOccurrence],
+) -> Result<(), CatalogFilesError> {
+    let rows = sql_query(no_intro_pc_rom_attribute_select())
+        .load::<NoIntroPcRomAttributeRow>(connection)?;
+    let mut positions = BTreeMap::<i64, Vec<NoIntroPcRomAttributePosition>>::new();
+    for row in rows {
+        let field = NoIntroPcRomAttribute::from_code(row.field_kind).ok_or_else(|| {
+            invalid_value("synthetic P/C ROM attribute", row.field_kind.to_string())
+        })?;
+        if row.source_order < 0 || row.source_line <= 0 || row.source_column <= 0 {
+            return Err(invalid_value(
+                "synthetic P/C attribute position",
+                row.occurrence_id.to_string(),
+            ));
+        }
+        positions
+            .entry(row.occurrence_id)
+            .or_default()
+            .push(NoIntroPcRomAttributePosition {
+                field,
+                source_order: row.source_order,
+                location: SourceLocation {
+                    line: row.source_line,
+                    column: row.source_column,
+                },
+            });
+    }
+    for occurrence in occurrences {
+        let id = occurrence.occurrence_id.database_value();
+        if let Some(payload) = &mut occurrence.no_intro_pc_rom {
+            if occurrence.provenance.source_element_kind != SourceElementKind::NoIntroPcGame {
+                return Err(invalid_value("synthetic P/C ROM owner", id.to_string()));
+            }
+            payload.attribute_positions = positions.remove(&id).ok_or_else(|| {
+                invalid_value("missing synthetic P/C ROM positions", id.to_string())
+            })?;
+            if !payload
+                .attribute_positions
+                .iter()
+                .any(|position| position.field == NoIntroPcRomAttribute::Name)
+            {
+                return Err(invalid_value(
+                    "missing synthetic P/C ROM name position",
+                    id.to_string(),
+                ));
+            }
+        } else if positions.contains_key(&id) {
+            return Err(invalid_value(
+                "unexpected synthetic P/C ROM positions",
+                id.to_string(),
+            ));
+        }
+    }
+    if let Some((id, _)) = positions.first_key_value() {
+        return Err(CatalogFilesError::MissingOccurrenceOwner(*id));
+    }
+    Ok(())
+}
+
+fn no_intro_pc_rom_payload(
+    size_text: Option<String>,
+    source_order: Option<i64>,
+) -> Result<NoIntroPcRomPayload, CatalogFilesError> {
+    let size = size_text
+        .as_ref()
+        .map(|value| {
+            value
+                .parse::<u64>()
+                .map_err(|_| invalid_value("synthetic P/C size", value.clone()))
+        })
+        .transpose()?;
+    Ok(NoIntroPcRomPayload {
+        size_text,
+        size,
+        source_order: required_native(source_order, "synthetic P/C ROM source order")?,
+        attribute_positions: Vec::new(),
+    })
+}
+
 fn assemble_occurrences(
     connection: &mut SqliteConnection,
     rows: Vec<OccurrenceRow>,
@@ -895,23 +1012,10 @@ fn assemble_occurrences(
             .ok_or(CatalogFilesError::MissingOccurrenceOwner(row.occurrence_id))?;
         occurrence.provenance.asset_name = row.asset_name;
         if occurrence.provenance.occurrence_kind == OccurrenceKind::NoIntroPcFile {
-            let size = row
-                .no_intro_pc_size_text
-                .as_ref()
-                .map(|value| {
-                    value
-                        .parse::<u64>()
-                        .map_err(|_| invalid_value("synthetic P/C size", value.clone()))
-                })
-                .transpose()?;
-            occurrence.no_intro_pc_rom = Some(NoIntroPcRomPayload {
-                size_text: row.no_intro_pc_size_text,
-                size,
-                source_order: required_native(
-                    row.no_intro_pc_source_order,
-                    "synthetic P/C ROM source order",
-                )?,
-            });
+            occurrence.no_intro_pc_rom = Some(no_intro_pc_rom_payload(
+                row.no_intro_pc_size_text,
+                row.no_intro_pc_source_order,
+            )?);
         }
         occurrence.provenance.native_occurrence_location = optional_location(
             row.native_line,
@@ -934,6 +1038,7 @@ fn assemble_occurrences(
             }),
         };
     }
+    attach_no_intro_pc_rom_attributes(connection, &mut occurrences)?;
     attach_no_intro_dat_rom_payloads(connection, &mut occurrences)?;
     attach_no_intro_database_file_payloads(connection, &mut occurrences)?;
     mame::attach_payloads(connection, &mut occurrences)?;

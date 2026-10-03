@@ -27,6 +27,14 @@ pub const MAX_TEXT_BYTES: usize = 1024 * 1024;
 mod attributes;
 pub use attributes::XmlAttributes;
 
+/// Position of a recognized XML attribute, without another owned value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AttributePosition<Field> {
+    pub field: Field,
+    pub source_order: usize,
+    pub location: RecordLocation,
+}
+
 /// A present scalar, including explicit empty text and its source position.
 ///
 /// Child fields use the zero-based ordinal among all direct child elements of

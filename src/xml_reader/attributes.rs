@@ -5,7 +5,7 @@ use serde::ser::{SerializeMap, Serializer};
 #[cfg(test)]
 use crate::logiqx::RecordLocation;
 
-use super::DeclaredText;
+use super::{AttributePosition, DeclaredText};
 
 /// Source-ordered XML attributes, each owning its value and declaration position.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -63,6 +63,20 @@ impl XmlAttributes {
         self.entries
             .iter()
             .map(|entry| (entry.name.as_str(), &entry.declared))
+    }
+
+    /// Select closed native fields without copying their names or values.
+    pub fn positions<Field>(
+        &self,
+        identify: impl Fn(&str) -> Option<Field>,
+    ) -> impl Iterator<Item = AttributePosition<Field>> {
+        self.declared_iter().filter_map(move |(name, declared)| {
+            identify(name).map(|field| AttributePosition {
+                field,
+                source_order: declared.source_order,
+                location: declared.location,
+            })
+        })
     }
 
     #[must_use]

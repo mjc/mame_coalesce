@@ -1,10 +1,69 @@
 //! Semantic history from native synthetic P/C owners, never source reparsing.
 use crate::domain::SnapshotKey;
+use crate::no_intro_pc_xml::{GameAttribute, RomAttribute};
 use diesel::{
     OptionalExtension, QueryableByName, RunQueryDsl, SqliteConnection, sql_query,
     sql_types::{BigInt, Text},
 };
 use std::collections::BTreeMap;
+
+#[derive(QueryableByName)]
+struct AttributeRow {
+    #[diesel(sql_type = BigInt)]
+    owner_id: i64,
+    #[diesel(sql_type = BigInt)]
+    field_kind: i64,
+}
+
+pub(super) fn load_game_attributes(
+    conn: &mut SqliteConnection,
+    snapshot: &SnapshotKey,
+) -> crate::Result<BTreeMap<i64, Vec<serde_json::Value>>> {
+    let rows = sql_query(
+        "SELECT positions.set_id AS owner_id, positions.field_kind \
+         FROM catalog_set_groups AS groups JOIN catalog_sets AS sets USING(set_group_id) \
+         JOIN no_intro_pc_game_attribute_positions AS positions USING(set_id) \
+         WHERE groups.snapshot_key=? ORDER BY positions.set_id, positions.source_order",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .load::<AttributeRow>(conn)?;
+    attribute_layouts(rows, |code| {
+        GameAttribute::from_code(code).map(GameAttribute::as_str)
+    })
+}
+
+pub(super) fn load_rom_attributes(
+    conn: &mut SqliteConnection,
+    snapshot: &SnapshotKey,
+) -> crate::Result<BTreeMap<i64, Vec<serde_json::Value>>> {
+    let rows = sql_query(
+        "SELECT positions.occurrence_id AS owner_id, positions.field_kind \
+         FROM catalog_set_groups AS groups JOIN catalog_sets AS sets USING(set_group_id) \
+         JOIN asset_occurrences AS occurrence ON occurrence.record_id=sets.set_id \
+         JOIN no_intro_pc_rom_attribute_positions AS positions USING(occurrence_id) \
+         WHERE groups.snapshot_key=? ORDER BY positions.occurrence_id, positions.source_order",
+    )
+    .bind::<Text, _>(snapshot.as_str())
+    .load::<AttributeRow>(conn)?;
+    attribute_layouts(rows, |code| {
+        RomAttribute::from_code(code).map(RomAttribute::as_str)
+    })
+}
+
+fn attribute_layouts(
+    rows: Vec<AttributeRow>,
+    identify: impl Fn(i64) -> Option<&'static str>,
+) -> crate::Result<BTreeMap<i64, Vec<serde_json::Value>>> {
+    let mut layouts = BTreeMap::<i64, Vec<serde_json::Value>>::new();
+    for row in rows {
+        let field = identify(row.field_kind).ok_or_else(|| {
+            crate::Error::DatabaseSchema("unknown native P/C attribute kind".into())
+        })?;
+        // Relative recognized-field order is semantic; vendor gaps and coordinates aren't.
+        layouts.entry(row.owner_id).or_default().push(field.into());
+    }
+    Ok(layouts)
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct DocumentMetadata {

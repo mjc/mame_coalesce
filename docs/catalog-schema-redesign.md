@@ -1144,6 +1144,26 @@ long leading zeros; empty text, NULs, non-ASCII digits and non-text storage are
 rejected. A game's own archive ID is not required to declare a target.
 `clone="P"` remains a separate marker and may coexist with merge text.
 All owner views and explanations follow the actual set, native game and snapshot.
+
+The synthetic `no-intro-pc-synthetic-provenance-v2` interpretation stores only
+lexical order and QName coordinates in `no_intro_pc_game_attribute_positions`
+(name, id, namealt, region, languages, version, bios, clone, mergeof) and
+`no_intro_pc_rom_attribute_positions` (name, size, crc, md5, sha1). Closed field
+codes and native owner IDs form each WITHOUT ROWID primary key; values stay
+with their existing game, claim, language, link or normalized digest owner.
+Namespace/vendor attributes count toward ordinals but have no native rows.
+Coordinates are one-based decoded Unicode scalars, with CRLF folded once and
+tabs counting one column, including UTF-16 input.
+
+Positions are immutable, require pending native owners and cannot be replaced
+or appended after publication. Publication closes attribute presence in both
+directions; insertion and publication require exactly one source-declared
+whole-asset digest per hash position. Computed or unrelated assertions cannot
+stand in for source fields. Clone/merge explanations derive their QName
+coordinates from game positions. Public bulk ROM queries seek requested
+occurrence IDs and expose typed positions; history compares relative recognized
+attribute order, not vendor gaps or whitespace. Authentic P/C, remaining native
+XML position owners, loading policy and full corpus/profile proof stay open.
 Targets remain unresolved archive-number references even when build planning
 finds an archive with the same number. The synthetic interpretation projects
 clone as source-parent and merge as alternate-representation evidence, not

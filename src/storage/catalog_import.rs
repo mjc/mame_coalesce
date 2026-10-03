@@ -237,6 +237,8 @@ enum NativeAssetFacts {
     NoIntroPc {
         size_text: Option<String>,
         source_order: usize,
+        attribute_positions:
+            Vec<crate::no_intro_pc_xml::AttributePosition<crate::no_intro_pc_xml::RomAttribute>>,
     },
 }
 
@@ -530,6 +532,7 @@ impl SnapshotData {
                         native: NativeAssetFacts::NoIntroPc {
                             size_text: asset.size_text,
                             source_order: asset.source_order,
+                            attribute_positions: asset.attribute_positions,
                         },
                         location: asset.location,
                     })
@@ -1616,6 +1619,13 @@ fn insert_asset_requirement(
         cmp_native::insert_rom_positions(conn, occurrence.database_value(), facts)?;
     }
     record_occurrence_digest_assertions(conn, occurrence, digests, "source_declared")?;
+    if let NativeAssetFacts::NoIntroPc {
+        attribute_positions,
+        ..
+    } = &asset.native
+    {
+        no_intro_pc_native::insert_rom_positions(conn, occurrence, attribute_positions)?;
+    }
     if let Some(facts) = asset.cmp_rom_facts() {
         for field in [&facts.crc, &facts.crc32].into_iter().flatten() {
             let digest = hex::decode(&field.value).map_err(|error| {
@@ -1764,6 +1774,7 @@ fn insert_no_intro_game_facts(
             target.as_str(),
         )?;
     }
+    no_intro_pc_native::insert_game_positions(conn, owner, &facts.attribute_positions)?;
     Ok(())
 }
 

@@ -1,5 +1,9 @@
 use std::collections::HashSet;
 
+mod attributes;
+pub use crate::xml_reader::AttributePosition;
+pub use attributes::{GameAttribute, RomAttribute};
+
 use crate::{
     logiqx::RecordLocation,
     mame::{ExtensionValue, XmlExtension, parse_xml_element},
@@ -35,6 +39,7 @@ pub struct Entry {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GameFacts {
     pub source_order: usize,
+    pub attribute_positions: Vec<AttributePosition<GameAttribute>>,
     pub archive_id: Option<ArchiveId>,
     pub description: Option<String>,
     pub description_location: Option<RecordLocation>,
@@ -52,6 +57,7 @@ pub struct GameFacts {
 pub struct Asset {
     pub name: String,
     pub source_order: usize,
+    pub attribute_positions: Vec<AttributePosition<RomAttribute>>,
     pub size: Option<u64>,
     pub size_text: Option<String>,
     pub crc: Option<Vec<u8>>,
@@ -275,6 +281,10 @@ fn parse_entry_attributes(
 ) -> crate::Result<GameFacts> {
     Ok(GameFacts {
         source_order,
+        attribute_positions: node
+            .attributes
+            .positions(GameAttribute::from_name)
+            .collect(),
         archive_id: None,
         description: None,
         description_location: None,
@@ -420,6 +430,7 @@ fn parse_asset(node: &Element, source_order: usize) -> crate::Result<Asset> {
     Ok(Asset {
         name,
         source_order,
+        attribute_positions: node.attributes.positions(RomAttribute::from_name).collect(),
         size,
         size_text,
         crc,

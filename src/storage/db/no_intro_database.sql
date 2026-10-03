@@ -475,7 +475,7 @@ SELECT registry.assertion_key,
        END AS relation_type,
        'source_assertion' AS origin, registry.snapshot_key AS source_snapshot_key,
        CASE reported.source_reference_kind WHEN 'no_intro_pc_clone' THEN 'clone' ELSE 'mergeof' END AS source_field,
-       sets.source_line, sets.source_column,
+       positions.source_line, positions.source_column,
        NULL AS generic_subject_snapshot_key, 'catalog_set' AS subject_kind,
        sets.set_id AS subject_set_id, NULL AS generic_subject_a, NULL AS generic_subject_b,
        NULL AS generic_subject_c, sets.set_name AS source_subject_a, NULL AS source_subject_b,
@@ -489,6 +489,7 @@ FROM catalog_relationships AS registry
 JOIN reported_catalog_relationships AS reported USING(relationship_id)
 JOIN no_intro_pc_clone_links AS link USING(relationship_id)
 JOIN no_intro_pc_games AS native USING(set_id)
+JOIN no_intro_pc_game_attribute_positions AS positions ON positions.set_id=native.set_id AND positions.field_kind=7
 JOIN catalog_sets AS sets USING(set_id)
 JOIN catalog_set_groups AS groups USING(set_group_id)
 JOIN catalog_snapshots AS snapshot USING(snapshot_key)
@@ -499,7 +500,7 @@ WHERE registry.origin='source' AND registry.snapshot_key=groups.snapshot_key
   AND interpretation.format='no-intro-pc-xml'
 UNION ALL
 SELECT registry.assertion_key,'alternate_representation_of','source_assertion',registry.snapshot_key,
-       'mergeof',sets.source_line,sets.source_column,
+       'mergeof',positions.source_line,positions.source_column,
        NULL,'catalog_set',sets.set_id,NULL,NULL,NULL,sets.set_name,NULL,NULL,registry.snapshot_key,
        NULL,'no_intro_archive_reference',NULL,NULL,NULL,NULL,link.target_archive_id,NULL,NULL,
        registry.snapshot_key,NULL
@@ -507,6 +508,7 @@ FROM catalog_relationships AS registry
 JOIN reported_catalog_relationships AS reported USING(relationship_id)
 JOIN no_intro_pc_merge_links AS link USING(relationship_id)
 JOIN no_intro_pc_games AS native USING(set_id)
+JOIN no_intro_pc_game_attribute_positions AS positions ON positions.set_id=native.set_id AND positions.field_kind=8
 JOIN catalog_sets AS sets USING(set_id)
 JOIN catalog_set_groups AS groups USING(set_group_id)
 JOIN catalog_snapshots AS snapshot USING(snapshot_key)

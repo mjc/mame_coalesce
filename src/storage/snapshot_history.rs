@@ -1938,11 +1938,13 @@ fn records(
     sort_json_groups(&mut result.logiqx_archive_references);
     sort_json_groups(&mut result.cmp_set_facts);
     let cmp_positions = load_cmp_rom_positions(conn, key, &cmp_native_ranks)?;
+    let no_intro_pc_rom_attributes = no_intro_pc::load_rom_attributes(conn, key)?;
     assemble_requirements(
         &mut result,
         requirements,
         &cmp_positions,
         &no_intro_dat_rom_positions,
+        &no_intro_pc_rom_attributes,
     );
     normalize_logiqx_child_order(&mut result);
     normalize_mame_child_order(&mut result, &mame_child_ranks);
@@ -2663,6 +2665,7 @@ fn load_no_intro_game_facts(
     let clone_links = load_no_intro_archive_links(conn, key, "no_intro_pc_clone_links")?;
     let merge_links = load_no_intro_archive_links(conn, key, "no_intro_pc_merge_links")?;
     let mut child_layouts = no_intro_pc::load_game_layouts(conn, key)?;
+    let mut attribute_layouts = no_intro_pc::load_game_attributes(conn, key)?;
     Ok(facts
         .into_iter()
         .map(|(set_id, row)| {
@@ -2679,6 +2682,7 @@ fn load_no_intro_game_facts(
                 "clone_links": clone_links.get(&set_id).cloned().unwrap_or_default(),
                 "merge_links": merge_links.get(&set_id).cloned().unwrap_or_default(),
                 "children": child_layouts.remove(&set_id).unwrap_or_default(),
+                "attributes": attribute_layouts.remove(&set_id).unwrap_or_default(),
             });
             (set_id, vec![fact])
         })
@@ -3029,6 +3033,7 @@ fn assemble_requirements(
     requirements: Vec<RequirementRow>,
     cmp_positions: &BTreeMap<i64, Vec<serde_json::Value>>,
     no_intro_dat_rom_positions: &BTreeMap<i64, Vec<serde_json::Value>>,
+    no_intro_pc_rom_attributes: &BTreeMap<i64, Vec<serde_json::Value>>,
 ) {
     for row in requirements {
         let no_intro_dat_attributes = no_intro_dat_rom_attributes(&row, no_intro_dat_rom_positions);
@@ -3088,6 +3093,7 @@ fn assemble_requirements(
             "no_intro_pc_attributes": {
                 "size_text": row.no_intro_pc_size_text,
                 "source_order": row.no_intro_pc_source_order,
+                "attributes": no_intro_pc_rom_attributes.get(&row.occurrence_id),
             },
         });
         result

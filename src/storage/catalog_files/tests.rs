@@ -940,6 +940,11 @@ fn bulk_owner_and_digest_plans_search_requested_ids_before_catalog_rows() -> Tes
         (owners, "search occurrence", "occurrence"),
         (digest_select(), "search assertion", "assertion"),
         (
+            no_intro_pc_rom_attribute_select().into(),
+            "search positions using primary key (occurrence_id=?)",
+            "positions",
+        ),
+        (
             no_intro_dat_rom_select(),
             "search rom using primary key (occurrence_id=?)",
             "rom",
