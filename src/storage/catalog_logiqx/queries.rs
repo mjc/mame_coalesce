@@ -1,7 +1,9 @@
 pub(super) const SNAPSHOT: &str = "
 SELECT snapshots.snapshot_key, sources.source_key, sources.display_name AS source_name,
        catalogs.catalog_key, catalogs.display_name AS catalog_name, snapshots.document_key,
-       snapshots.interpretation_key, interpretations.format, versions.declared_version,
+       snapshots.interpretation_key, interpretations.rules_version,
+       typeof(interpretations.rules_version) IN ('text','null') AS rules_valid,
+       interpretations.format, versions.declared_version,
        publication.snapshot_key IS NOT NULL AS published
 FROM catalog_snapshots AS snapshots
 JOIN catalogs ON catalogs.catalog_key = snapshots.catalog_key

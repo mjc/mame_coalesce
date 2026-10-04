@@ -40,11 +40,14 @@ pub(super) fn insert_logiqx(
                 )?;
                 sql_query(
                     "INSERT INTO logiqx_device_references \
-                     (set_id,reference_order,target_name,relationship_id) \
-                     VALUES (?,?,?,?)",
+                     (set_id,reference_order,source_order,source_line,source_column,target_name,relationship_id) \
+                     VALUES (?,?,?,?,?,?,?)",
                 )
                 .bind::<BigInt, _>(owner.as_i64())
                 .bind::<BigInt, _>(checked_order(reference_order, "Logiqx device references")?)
+                .bind::<BigInt, _>(dependency.source_order.ok_or_else(|| crate::Error::DatabaseSchema("Logiqx device reference has no source child order".into()))?)
+                .bind::<BigInt, _>(dependency.location.line)
+                .bind::<BigInt, _>(dependency.location.column)
                 .bind::<Text, _>(&dependency.target_name)
                 .bind::<BigInt, _>(relationship.database_value())
                 .execute(connection)?;

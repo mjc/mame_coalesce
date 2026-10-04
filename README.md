@@ -313,6 +313,33 @@ independent producer-specification check. Valid hash spelling/case, root QName,
 schemaLocation attribute QName/position and ignored vendor content are outside
 the native query contract. A mismatch or incomplete source exits unsuccessfully.
 
+The MAME machine and Logiqx verifiers use the same existing-database safeguards:
+
+```sh
+cargo run --locked --profile profiling --example mame_native_query_verify -- /path/catalog.sqlite sha256:SNAPSHOT_HEX /path/mame.xml
+cargo run --locked --profile profiling --example logiqx_xml_native_verify -- /path/catalog.sqlite sha256:SNAPSHOT_HEX /path/catalog.dat observed-compatible
+```
+
+For a strict Logiqx snapshot, select `strict-dtd15` instead. The verifiers check
+the actual retained reading-rules version, not its opaque interpretation key.
+They traverse the source once through valid EOF, compare typed native metadata,
+declared values/default presence and positions, and require complete query-page
+exhaustion. Normalized source-declared digest assertions are checked independently
+of raw hash spelling, including their scope and multiplicity. Media requests are
+batched without capping or dropping a game's children. MAME and Logiqx each retain
+one parsed record and a 64-record native page; those records' children and the
+original/decoded buffers remain input-dependent. Logiqx uses 256-occurrence SQL
+batches; MAME uses the public 10,000-occurrence bulk limit.
+
+These are storage/query round-trip checks, not independent producer grammar
+proof or observed ROM-byte verification. Unsupported vendor extension payloads
+remain in the external original, outside the native query comparisons. MAME's
+existing compatibility parser is not a strict pinned-DTD validator. Logiqx keeps
+raw valid hash spelling except the binary document-level SHA-1. Native Logiqx
+device references retain element locations and mixed-child order separately
+from their family ordinal and name-attribute QName positions; history detects
+crossings while ignoring reindentation and vendor-only ordinal gaps.
+
 `catalog_no_intro_database::games_for_snapshot` reads an exact published export
 without opening its original document. A checked page limit bounds games;
 every selected game's archive, dump-source and release histories are complete,

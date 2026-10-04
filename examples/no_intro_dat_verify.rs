@@ -1,9 +1,6 @@
-use std::{env, error::Error, fmt::Debug, fs::File, io::Read, path::Path};
+use std::{env, error::Error, fs::File, io::Read, path::Path};
 
 use camino::Utf8PathBuf;
-use diesel::{
-    Connection, QueryableByName, RunQueryDsl, SqliteConnection, sql_query, sql_types::BigInt,
-};
 use mame_coalesce::{
     NoIntroDatMode,
     catalog_files::NoIntroDatEvidenceScope,
@@ -20,8 +17,11 @@ use mame_coalesce::{
     },
 };
 
+mod support;
+
+use support::catalog_verify::{VerifyResult, equal, open_existing_catalog};
+
 const PAGE_SIZE: usize = 64;
-type VerifyResult<T = ()> = Result<T, Box<dyn Error>>;
 
 fn main() -> Result<(), Box<dyn Error>> {
     run(env::args().skip(1))
@@ -37,13 +37,7 @@ fn run(arguments: impl IntoIterator<Item = String>) -> VerifyResult {
     }
 
     let database_path = Utf8PathBuf::from(database_argument);
-    if !database_path.is_file() {
-        return Err(format!("catalog database is not an existing file: {database_path}").into());
-    }
-    if std::fs::metadata(&database_path)?.len() == 0 {
-        return Err(format!("catalog database is an empty file: {database_path}").into());
-    }
-    require_catalog_schema(&database_path)?;
+    let database = open_existing_catalog(&database_path)?;
     let snapshot: SnapshotKey = snapshot_argument.parse()?;
     let source_path = Path::new(&source_argument);
     // The public reader streams parsed games through its callback, but currently takes the
@@ -51,10 +45,6 @@ fn run(arguments: impl IntoIterator<Item = String>) -> VerifyResult {
     let mut source_bytes = Vec::new();
     File::open(source_path)?.read_to_end(&mut source_bytes)?;
 
-    // Database::open creates a schema for an empty SQLite database. The read-only marker probe
-    // above ensures only an initialized catalog reaches it; the public page query verifies that
-    // the exact requested snapshot is published.
-    let database = Database::open(&database_path)?;
     let page = catalog_no_intro_dat::games_for_snapshot(
         &database,
         &snapshot,
@@ -94,26 +84,6 @@ fn run(arguments: impl IntoIterator<Item = String>) -> VerifyResult {
     println!(
         "Not persisted by the native contract: valid hash spelling/case, root QName, and schemaLocation attribute QName/position."
     );
-    Ok(())
-}
-
-#[derive(QueryableByName)]
-struct CatalogSchemaMarker {
-    #[diesel(sql_type = BigInt)]
-    count: i64,
-}
-
-fn require_catalog_schema(path: &Utf8PathBuf) -> VerifyResult {
-    let mut connection = SqliteConnection::establish(path.as_str())?;
-    sql_query("PRAGMA query_only = ON").execute(&mut connection)?;
-    let marker = sql_query(
-        "SELECT COUNT(*) AS count FROM sqlite_schema \
-         WHERE type='table' AND name='database_schema'",
-    )
-    .get_result::<CatalogSchemaMarker>(&mut connection)?;
-    if marker.count != 1 {
-        return Err(format!("not an initialized catalog database: {path}").into());
-    }
     Ok(())
 }
 
@@ -252,14 +222,6 @@ fn ensure_page_identity(
         mode.as_str(),
     )?;
     equal("document.mode", &page.document.mode, &mode)
-}
-
-fn equal<T: PartialEq + Debug + ?Sized>(field: &str, source: &T, catalog: &T) -> VerifyResult {
-    if source == catalog {
-        Ok(())
-    } else {
-        Err(format!("{field} mismatch: source={source:?}, catalog={catalog:?}").into())
-    }
 }
 
 fn compare_header(source: &Header, catalog: &NoIntroDatHeader) -> VerifyResult {

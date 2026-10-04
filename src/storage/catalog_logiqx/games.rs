@@ -97,6 +97,9 @@ row!(ArchiveRow {
 row!(DeviceRow {
     owner_id: i64 => BigInt,
     row_order: i64 => BigInt,
+    source_order: i64 => BigInt,
+    line: i64 => BigInt,
+    column: i64 => BigInt,
     name: String => Text,
     snapshot_key: Option<String> => Nullable<Text>,
     source_reference_kind: Option<String> => Nullable<Text>,
@@ -327,7 +330,12 @@ fn hydrate_children(
                 .chain(game.releases.iter().map(|child| child.source_order))
                 .chain(game.bios_sets.iter().map(|child| child.source_order))
                 .chain(game.media.iter().map(|child| child.source_order))
-                .chain(game.archives.iter().map(|child| child.source_order)),
+                .chain(game.archives.iter().map(|child| child.source_order))
+                .chain(
+                    game.device_references
+                        .iter()
+                        .map(|child| child.source_order),
+                ),
             game.id.as_i64(),
         )?;
     }
@@ -628,7 +636,7 @@ fn load_devices(
     let rows = batch::<DeviceRow>(
         connection,
         &queries::owners(
-            "native.reference_order AS row_order, native.target_name AS name, registry.snapshot_key, reported.source_reference_kind, registry.origin, typeof(native.reference_order)='integer' AS valid",
+            "native.reference_order AS row_order, native.source_order, native.source_line AS line, native.source_column AS column, native.target_name AS name, registry.snapshot_key, reported.source_reference_kind, registry.origin, (typeof(native.reference_order)='integer' AND typeof(native.source_order)='integer' AND typeof(native.source_line)='integer' AND typeof(native.source_column)='integer') AS valid",
             "logiqx_device_references AS native LEFT JOIN catalog_relationships AS registry USING(relationship_id) \
          LEFT JOIN reported_catalog_relationships AS reported USING(relationship_id)",
             ids.len(),
@@ -664,6 +672,8 @@ fn load_devices(
         )?;
         game.device_references.push(LogiqxDeviceReference {
             reference_order: row.row_order,
+            source_order: row.source_order,
+            location: location(row.line, row.column, row.owner_id)?,
             name: row.name,
             attribute_positions,
         });

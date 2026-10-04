@@ -416,7 +416,7 @@ fn native_value_owners_require_actual_parents_with_both_pragmas_off() -> TestRes
         accepted_without_parent.push("archive reference without a native game");
     }
 
-    let device = sql_query("INSERT INTO logiqx_device_references(set_id,reference_order,target_name,relationship_id) VALUES(?,0,'device',7901)")
+    let device = sql_query("INSERT INTO logiqx_device_references(set_id,reference_order,source_order,source_line,source_column,target_name,relationship_id) VALUES(?,0,0,1,1,'device',7901)")
         .bind::<BigInt, _>(orphan_set)
         .execute(&mut conn);
     if device.is_ok() {

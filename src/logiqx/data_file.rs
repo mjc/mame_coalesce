@@ -35,7 +35,7 @@ pub struct DocumentMetadata {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-/// A one-based XML parser position immediately after an opening record tag.
+/// A one-based decoded-XML position of the opening tag's `<` character.
 pub struct RecordLocation {
     pub line: i64,
     pub column: i64,

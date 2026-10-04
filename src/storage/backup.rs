@@ -895,7 +895,7 @@ mod tests {
     }
 
     fn database(path: &Utf8Path) -> crate::Result<crate::database::Database> {
-        crate::database::Database::open(&path.to_owned())
+        crate::database::Database::open(path)
     }
 
     fn add_retained_document(path: &Utf8Path, payload: &[u8]) -> Result<()> {

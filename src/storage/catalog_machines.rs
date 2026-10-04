@@ -94,6 +94,8 @@ pub struct MachineSnapshot {
     pub catalog_name: String,
     pub document_key: crate::domain::DocumentKey,
     pub interpretation_key: crate::domain::ParserInterpretationKey,
+    /// The retained reading contract, distinct from its opaque identity key.
+    pub rules_version: Option<String>,
     pub format: String,
     pub header: MameDocumentFacts,
 }

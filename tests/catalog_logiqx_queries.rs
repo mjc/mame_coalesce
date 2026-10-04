@@ -298,6 +298,42 @@ fn assert_game_children(game: &mame_coalesce::catalog_logiqx::LogiqxGame) {
             .collect::<Vec<_>>(),
         ["sound", "sound"]
     );
+    assert_eq!(
+        game.device_references
+            .iter()
+            .map(|device| (device.reference_order, device.source_order))
+            .collect::<Vec<_>>(),
+        [(0, 13), (1, 14)]
+    );
+    let opening_tags = FULL_DOCUMENT
+        .match_indices("<device_ref name=\"sound\"/>")
+        .map(|(start, _tag)| {
+            let before = &FULL_DOCUMENT[..start];
+            (
+                Some(before.bytes().filter(|byte| *byte == b'\n').count() + 1),
+                before
+                    .rsplit('\n')
+                    .next()
+                    .map(|line| line.chars().count() + 1),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        game.device_references
+            .iter()
+            .map(|device| (
+                usize::try_from(device.location.line).ok(),
+                usize::try_from(device.location.column).ok()
+            ))
+            .collect::<Vec<_>>(),
+        opening_tags
+    );
+    assert!(game.device_references.iter().all(|device| {
+        device.attribute_positions.first().is_some_and(|attribute| {
+            (device.location.line, device.location.column)
+                != (attribute.location.line, attribute.location.column)
+        })
+    }));
 
     assert_eq!(game.media.len(), 3);
     assert_eq!(
@@ -555,7 +591,18 @@ fn mutate_with_restored_guard(
         connection.batch_execute(&format!("DROP TRIGGER {}", guard.name))?;
     }
     let update = format!("UPDATE {table} SET {column} = {column} + {delta}");
+    let strict_device_owner = table == "logiqx_device_references";
+    let checks =
+        sql_query("SELECT ignore_check_constraints AS value FROM pragma_ignore_check_constraints")
+            .get_result::<Count>(connection)?
+            .value;
+    if strict_device_owner {
+        connection.batch_execute("PRAGMA ignore_check_constraints = ON")?;
+    }
     let mutation = connection.batch_execute(&update);
+    if strict_device_owner && checks == 0 {
+        connection.batch_execute("PRAGMA ignore_check_constraints = OFF")?;
+    }
     for guard in &guards {
         connection.batch_execute(&guard.sql)?;
     }
@@ -590,7 +637,9 @@ fn fractional_native_provenance_returns_typed_errors_without_truncation() -> Tes
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<OwnerId>(&mut connection)?;
     // Fractional family keys are a malformed-ancestry witness. Coordinates and
-    // source ordinals need no CHECK bypass; the native range constraints permit REALs.
+    // source ordinals in older range-only owners permit REALs without CHECK bypass.
+    // Device-reference owners have exact-class checks; their attack bypass is
+    // local to the mutation and restored before the public query is exercised.
     connection.batch_execute("PRAGMA foreign_keys = OFF;")?;
     assert_fractional_families(&catalog, &snapshot, &mut connection, owner.set_id)?;
     logiqx_for_snapshot(&catalog.database, &snapshot, None, LogiqxPageLimit::new(1)?)?;
@@ -770,7 +819,16 @@ fn fractional_native_families(owner: i64) -> Vec<(&'static str, &'static [&'stat
             ],
             owner,
         ),
-        ("logiqx_device_references", &["reference_order"], owner),
+        (
+            "logiqx_device_references",
+            &[
+                "reference_order",
+                "source_order",
+                "source_line",
+                "source_column",
+            ],
+            owner,
+        ),
         (
             "logiqx_clrmamepro_options",
             &["source_order", "source_line", "source_column"],

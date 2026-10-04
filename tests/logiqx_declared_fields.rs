@@ -550,6 +550,45 @@ fn native_history_ignores_vendor_gaps_but_preserves_pcdata_spaces() -> TestResul
 }
 
 #[test]
+fn device_reference_crossings_change_native_history_but_layout_does_not() -> TestResult {
+    let (directory, database, _) = setup()?;
+    let before = import(
+        &directory,
+        &database,
+        "device-before",
+        "<datafile><game name='g'><device_ref name='sound'/><rom name='r' size='1'/></game></datafile>",
+    )?;
+    let crossed = import(
+        &directory,
+        &database,
+        "device-crossed",
+        "<datafile><game name='g'><rom name='r' size='1'/><device_ref name='sound'/></game></datafile>",
+    )?;
+    let diff = app::diff_catalog_snapshots(&database, &before, &crossed)?;
+    assert!(
+        diff.records
+            .first()
+            .ok_or("history record missing")?
+            .metadata_changed,
+        "device/media crossing was lost"
+    );
+    let reindented = import(
+        &directory,
+        &database,
+        "device-layout",
+        "<datafile>\n<game name='g'>\n<vendor/><device_ref name='sound'/>\n<vendor/><rom name='r' size='1'/>\n</game></datafile>",
+    )?;
+    let diff = app::diff_catalog_snapshots(&database, &before, &reindented)?;
+    let record = diff.records.first().ok_or("history record missing")?;
+    assert!(
+        !record.metadata_changed,
+        "layout/vendor gap invented a metadata change"
+    );
+    assert!(record.requirement_changes.is_empty());
+    Ok(())
+}
+
+#[test]
 fn sqlite_size_interpretation_matches_rust_at_decimal_boundaries() -> TestResult {
     let (directory, database, mut connection) = setup()?;
     let texts = [

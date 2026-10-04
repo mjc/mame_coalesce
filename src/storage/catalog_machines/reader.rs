@@ -43,6 +43,8 @@ row!(SnapshotRow {
     catalog_name: String => Text,
     document_key: String => Text,
     interpretation_key: String => Text,
+    rules_version: Option<String> => Nullable<Text>,
+    rules_valid: i64 => BigInt,
     format: String => Text,
     build: Option<String> => Nullable<Text>,
     debug: i64 => BigInt,
@@ -437,7 +439,7 @@ fn snapshot_row(
             }
             other => MachineQueryError::Database(other),
         })?;
-    if row.snapshot_key != snapshot.as_str() {
+    if row.snapshot_key != snapshot.as_str() || row.rules_valid != 1 {
         return Err(MachineQueryError::NotPublishedMame(snapshot.clone()));
     }
     let registry_bytes: [u8; 16] = row
@@ -471,6 +473,7 @@ fn snapshot_row(
         interpretation_key: crate::domain::ParserInterpretationKey::from_persisted(
             row.interpretation_key,
         ),
+        rules_version: row.rules_version,
         format: row.format,
         header,
     })

@@ -962,6 +962,7 @@ struct CatalogRecords {
     logiqx_releases: BTreeMap<i64, Vec<serde_json::Value>>,
     logiqx_bios_sets: BTreeMap<i64, Vec<serde_json::Value>>,
     logiqx_archive_references: BTreeMap<i64, Vec<serde_json::Value>>,
+    logiqx_device_references: BTreeMap<i64, Vec<serde_json::Value>>,
     cmp_set_facts: BTreeMap<i64, Vec<serde_json::Value>>,
     software_items: BTreeMap<i64, Vec<serde_json::Value>>,
     software_item_lists: BTreeMap<i64, i64>,
@@ -1907,6 +1908,7 @@ fn records(
     let logiqx_releases = load_logiqx_releases(conn, key)?;
     let logiqx_bios_sets = load_logiqx_bios_sets(conn, key)?;
     let logiqx_archive_references = load_logiqx_archive_references(conn, key)?;
+    let logiqx_device_references = logiqx::load_device_references(conn, key)?;
     let cmp_native_ranks = cmp_set_native_ranks(conn, key)?;
     let cmp_set_facts = load_cmp_set_facts(conn, key, &cmp_native_ranks)?;
 
@@ -1942,19 +1944,9 @@ fn records(
     result.logiqx_releases = logiqx_releases;
     result.logiqx_bios_sets = logiqx_bios_sets;
     result.logiqx_archive_references = logiqx_archive_references;
+    result.logiqx_device_references = logiqx_device_references;
     result.cmp_set_facts = cmp_set_facts;
-    sort_json_groups(&mut result.machine_switches);
-    sort_json_groups(&mut result.machine_bios_sets);
-    sort_json_groups(&mut result.mame_machine_dependencies);
-    sort_json_groups(&mut result.mame_machine_facts);
-    sort_json_groups(&mut result.mame_machine_specification_facts);
-    sort_json_groups(&mut result.no_intro_game_facts);
-    sort_json_groups(&mut result.logiqx_set_facts);
-    sort_json_groups(&mut result.logiqx_game_comments);
-    sort_json_groups(&mut result.logiqx_releases);
-    sort_json_groups(&mut result.logiqx_bios_sets);
-    sort_json_groups(&mut result.logiqx_archive_references);
-    sort_json_groups(&mut result.cmp_set_facts);
+    sort_native_metadata(&mut result);
     let cmp_positions = load_cmp_rom_positions(conn, key, &cmp_native_ranks)?;
     let no_intro_pc_rom_attributes = no_intro_pc::load_rom_attributes(conn, key)?;
     let logiqx_media_attributes = logiqx::load_media(conn, key)?;
@@ -1970,6 +1962,26 @@ fn records(
     normalize_mame_child_order(&mut result, &mame_child_ranks);
     load_attribute_history(conn, key, &mame_child_ranks, &mut result)?;
     Ok(result)
+}
+
+fn sort_native_metadata(records: &mut CatalogRecords) {
+    for family in [
+        &mut records.machine_switches,
+        &mut records.machine_bios_sets,
+        &mut records.mame_machine_dependencies,
+        &mut records.mame_machine_facts,
+        &mut records.mame_machine_specification_facts,
+        &mut records.no_intro_game_facts,
+        &mut records.logiqx_set_facts,
+        &mut records.logiqx_game_comments,
+        &mut records.logiqx_releases,
+        &mut records.logiqx_bios_sets,
+        &mut records.logiqx_archive_references,
+        &mut records.logiqx_device_references,
+        &mut records.cmp_set_facts,
+    ] {
+        sort_json_groups(family);
+    }
 }
 
 fn load_attribute_history(
@@ -1995,6 +2007,7 @@ fn normalize_logiqx_child_order(records: &mut CatalogRecords) {
         &records.logiqx_releases,
         &records.logiqx_bios_sets,
         &records.logiqx_archive_references,
+        &records.logiqx_device_references,
     ] {
         for (set_id, facts) in family {
             for fact in facts {
@@ -2021,6 +2034,7 @@ fn normalize_logiqx_child_order(records: &mut CatalogRecords) {
         &mut records.logiqx_releases,
         &mut records.logiqx_bios_sets,
         &mut records.logiqx_archive_references,
+        &mut records.logiqx_device_references,
     ] {
         for (set_id, facts) in family {
             for fact in facts.iter_mut() {
@@ -3614,6 +3628,7 @@ fn set_metadata(records: &CatalogRecords, set: &SetRow) -> serde_json::Value {
         "logiqx_releases": records.logiqx_releases.get(&set.set_id),
         "logiqx_bios_sets": records.logiqx_bios_sets.get(&set.set_id),
         "logiqx_archive_references": records.logiqx_archive_references.get(&set.set_id),
+        "logiqx_device_references": records.logiqx_device_references.get(&set.set_id),
         "cmp_set_facts": records.cmp_set_facts.get(&set.set_id),
         "software_items": records.software_items.get(&set.set_id),
         "software_parent_context": records.software_context_classes.get(&set.set_id),

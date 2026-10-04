@@ -367,6 +367,21 @@ WHEN EXISTS (
 )
 BEGIN SELECT RAISE(ABORT, 'native scalar values require complete position ownership'); END;
 
+CREATE TRIGGER logiqx_device_positions_require_valid_publication
+BEFORE INSERT ON snapshot_publications
+WHEN EXISTS (
+    SELECT 1 FROM catalog_set_groups AS groups CROSS JOIN catalog_sets AS sets
+    CROSS JOIN logiqx_device_references AS reference
+    WHERE groups.snapshot_key=NEW.snapshot_key AND sets.set_group_id=groups.set_group_id
+      AND reference.set_id=sets.set_id AND (
+        typeof(reference.reference_order)<>'integer' OR reference.reference_order<0
+        OR typeof(reference.source_order)<>'integer' OR reference.source_order<0
+        OR typeof(reference.source_line)<>'integer' OR reference.source_line<=0
+        OR typeof(reference.source_column)<>'integer' OR reference.source_column<=0
+      )
+)
+BEGIN SELECT RAISE(ABORT, 'Logiqx device references require valid element positions'); END;
+
 -- Interpretation is derived, never another stored source-field projection.
 CREATE VIEW logiqx_rom_declared_field_states AS
 SELECT occurrence_id,

@@ -401,6 +401,7 @@ impl ExtensionValue {
     }
 
     #[cfg(test)]
+    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -431,13 +432,16 @@ pub enum MameRecord {
 pub struct ValidatedMame<S>(S);
 
 impl<S> ValidatedMame<S> {
-    pub(crate) fn into_inner(self) -> S {
+    /// Consume the reader-owned valid-EOF proof and return its completed sink.
+    #[must_use]
+    pub fn into_inner(self) -> S {
         self.0
     }
 }
 
-/// Consume each record before reading the next. Only a complete document returns
-/// a validated sink. Parser errors convert through `E::from`; consumers can use
+/// Consume records one at a time and return a sink only after valid EOF.
+///
+/// Parser errors convert through `E::from`; consumers can use
 /// a separate error variant for persistence failures.
 pub fn read_with<S, E: From<crate::Error>>(
     bytes: &[u8],

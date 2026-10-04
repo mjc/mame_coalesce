@@ -149,6 +149,55 @@ pub(super) fn load_games(
     Ok(result)
 }
 
+/// Element order is separate from the device name attribute's `QName` order.
+pub(super) fn load_device_references(
+    conn: &mut SqliteConnection,
+    snapshot: &SnapshotKey,
+) -> crate::Result<BTreeMap<i64, Vec<serde_json::Value>>> {
+    #[derive(QueryableByName)]
+    struct DeviceRow {
+        #[diesel(sql_type = BigInt)]
+        set_id: i64,
+        #[diesel(sql_type = BigInt)]
+        reference_order: i64,
+        #[diesel(sql_type = BigInt)]
+        source_order: i64,
+        #[diesel(sql_type = Text)]
+        target_name: String,
+        #[diesel(sql_type = BigInt)]
+        valid: i64,
+    }
+    let rows = sql_query(
+        "SELECT sets.set_id, reference.reference_order, reference.source_order, reference.target_name, \
+         (typeof(reference.reference_order)='integer' AND reference.reference_order>=0 \
+          AND typeof(reference.source_order)='integer' AND reference.source_order>=0 \
+          AND typeof(reference.source_line)='integer' AND reference.source_line>0 \
+          AND typeof(reference.source_column)='integer' AND reference.source_column>0) AS valid \
+         FROM catalog_set_groups AS groups CROSS JOIN catalog_sets AS sets \
+         CROSS JOIN logiqx_device_references AS reference \
+         WHERE groups.snapshot_key=? AND sets.set_group_id=groups.set_group_id \
+           AND reference.set_id=sets.set_id \
+         ORDER BY sets.set_id, reference.reference_order",
+    ).bind::<Text, _>(snapshot.as_str()).load::<DeviceRow>(conn)?;
+    let mut result = BTreeMap::<i64, Vec<serde_json::Value>>::new();
+    for row in rows {
+        if row.valid != 1 {
+            return Err(crate::Error::DatabaseSchema(
+                "invalid native Logiqx device reference position".into(),
+            ));
+        }
+        result
+            .entry(row.set_id)
+            .or_default()
+            .push(serde_json::json!({
+                "reference_order": row.reference_order,
+                "source_order": row.source_order,
+                "target_name": row.target_name,
+            }));
+    }
+    Ok(result)
+}
+
 pub(super) fn load_media(
     conn: &mut SqliteConnection,
     snapshot: &SnapshotKey,

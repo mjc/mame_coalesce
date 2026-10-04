@@ -1,8 +1,9 @@
 # Catalog schema redesign from all input formats
 
-Status: corpus-expanded and adversarially reviewed proposal, 2026-09-30. This
-document specifies the next catalog storage model; it does not describe an
-implemented migration. The original proposal received four Luna audits and a
+Status: reviewed greenfield implementation in progress, 2026-10-04. The
+current-state sections describe the implemented native model and remaining
+acceptance requirements; dated checkpoints retain their frozen-revision evidence.
+This is not a migration. The original proposal received four Luna audits and a
 repeated Sol review. The expanded Sol review identified the six Xbox 360 NULs,
 the observed-vs-strict v3 distinction, and release/source ownership cases;
 those findings are incorporated here. Existing SQLite imports and source
@@ -10,8 +11,10 @@ objects remain the comparison baseline.
 
 Durable design: [MAMEC-DOC-7](https://lific.mjc.lol/MAMEC/pages/89).
 Implementation sequence: [MAMEC-PLAN-3](https://lific.mjc.lol/MAMEC/plans/108).
-The expanded proposal now records the adversarial review findings. Importer
-implementation and field/query conformance testing remain outstanding.
+The expanded proposal records the adversarial review findings. Native importers,
+storage and source-free queries now exist for the supported families. Remaining
+producer/dialect and complete current-corpus/query/profiling proof is not implied
+by those bounded implementations.
 
 ## Decision and scope
 
@@ -60,9 +63,9 @@ metadata from native owners in one read transaction. Shared file UUIDs now use
 an immutable registry generation, source-backed hash/size views and native
 conflict evidence; published cross-list membership has bounded bulk and keyset
 queries. Reviewed conflict outcomes and UUID redirects now have an atomic typed
-storage API; remaining per-format coverage and observed-byte endpoints are
-unfinished. This is not a claim of complete
-DTD conformance.
+storage API. Separate observed whole-file digest endpoints are implemented;
+automatic immutable scan/location integration and remaining per-format acceptance
+are not. This is not a claim of complete DTD conformance.
 
 ### Reviewed shared-file decisions
 
@@ -143,17 +146,20 @@ historical published editions stay visible. Queries batch the selected owners
 inside one read transaction. Page size bounds lists/titles, not the retained
 children of each title; no silent child truncation is permitted. Source-order
 gaps from vendor elements are preserved separately from each family's order.
-Lexical attribute positions and approved executable loader interpretation
-remain required for complete format acceptance.
+All 36 pinned lexical attributes, five PCDATA placements and the approved checked
+MAME 0.289 data-area loading recipe are implemented and independently reviewed.
+Source-only whole-file matching derives the first-run verification length from
+native chains. File I/O/device-bus/boot integration, durable runtime-warning links
+and complete current-corpus/query/profiling acceptance remain open.
 
 | Input | Native structure and facts | Current implementation gap |
 |---|---|---|
-| MAME machine XML | Machine -> ROM/disk/sample, chips, displays, input/controls, switches/values/conditions, ports, devices, slots, driver/features, software-list references and RAM options. | Native families and numeric owners replace the wide stored union; complete specification presence/default and field witnesses remain open. |
-| MAME software-list XML | List -> item -> part -> data/disk area -> ordered ROM/disk entries. File declarations and load/continue/reload/ignore uses are separate relations; fill has no file claim. | Numeric owners, separate declarations/operations and area-local loading chains exist; complete per-flag loading rules and native field witnesses remain open. |
-| Logiqx XML / TOSEC | Document/header/options -> game -> comments, releases, BIOS sets, ROM/disk/sample claims, archive references and distinct parent declarations. | Native families, explicit defaults, declared size/hash text and scalar positions exist. Parent/device/media-merge declarations use native owners and shared reported identities. Complete pinned-DTD grammar, field/query and corpus acceptance remains open. |
-| ClrMamePro text | Header/directives -> set -> ROM claims and scalar sample claims; native flags and sample-parent declarations. | Native CMP facts/directives and numeric set/occurrence owners exist; remaining specification fields and complete query witnesses remain open. |
+| MAME machine XML | Machine -> ROM/disk/sample, chips, displays, input/controls, switches/values/conditions, ports, devices, slots, driver/features, software-list references and RAM options. | Native source-free queries expose specification families, defaults and all 125 pinned plus ten compatibility attribute positions. The current cut adds a streaming source-to-query verifier. Strict producer grammar, executable machine loading and full current-corpus/query/profiling acceptance remain open. |
+| MAME software-list XML | List -> item -> part -> data/disk area -> ordered ROM/disk entries. File declarations and load/continue/reload/ignore uses are separate relations; fill has no file claim. | Separate native area details, complete pinned field/provenance witnesses, source-free metadata/media APIs, checked per-flag recipes and qualified source-size matching are implemented. Complete current-corpus/query/profiling proof and runtime integration remain open. |
+| Logiqx XML / TOSEC | Document/header/options -> game -> comments, releases, BIOS sets, ROM/disk/sample claims, archive references and distinct parent declarations. | Opt-in pinned DTD 1.5 grammar, all 44 attribute witnesses, native source-free queries and compatibility declarations are implemented. The current cut adds the device-reference element/order correction and a streaming source-to-query verifier. Full current-corpus/query/profiling acceptance remains open. |
+| ClrMamePro text | Header/directives -> set -> ROM claims and scalar sample claims; native flags and sample-parent declarations. | The named compat-v1 adapter exposes all 39 field codes through source-free native document/set/media queries. Broader producer grammar/dialect and complete current-corpus/query/profiling proof remain open. |
 | No-Intro flat DAT v3/v4 | Document/header/directives -> game -> scoped identifiers, categories, releases and ROM declarations; name-based and ID-based parents stay distinct. | Separate v3/v4 strict and observed-compatible interpretations stream into native typed owners. Raw size text, interned valid hashes, typed invalid hash literals, SHA-256 assertions, options, field positions and repeated children are retained. Full corpus/query/performance acceptance remains open; this is not a Logiqx envelope import or database-export coverage. |
-| No-Intro database XML | Game -> archive, source histories and releases. A source or release owns its own details, serials and files; numeric file IDs may repeat under different owners. | The one-pass reader and native writer preserve the observed field ledger, both envelopes, field presence/order and distinct details/serial/file owners. Bulk file queries, scoped interned digests, typed archive references, NUL warning ownership and paired backup regressions exist. Native history compares all observed fields and ordered owners; source versions derive from native headers. All 275 exports pass reader verification; full native SQL corpus and producer-grammar acceptance remain open. |
+| No-Intro database XML | Game -> archive, source histories and releases. A source or release owns its own details, serials and files; numeric file IDs may repeat under different owners. | Native source-free queries expose all 129 observed attributes, five header kinds and game names. Typed diagnostic owners, scoped file payloads, native history and paired backups are implemented. The frozen earlier 275-export SQL run completed; complete current-schema query/profiling and producer-grammar proof remain open. |
 | Synthetic No-Intro P/C projection | Archive record -> ordered language/native fields and file claims, with parent-marker/reference/merge-token distinctions. | Typed archive, region, alternate name, version, BIOS, ordered languages and distinct clone/merge tokens exist; this is not proof of authentic DAT-o-MATIC P/C conformance. |
 
 TOSEC ISO/PIX assets retain their source `rom` declaration even when the file
@@ -407,8 +413,9 @@ publication. Evidence cannot be replaced or extended after publication, even
 with SQLite foreign-key and recursive-trigger enforcement disabled. Integrity
 and backup reject unfinished non-source decisions. There is no upgrade or
 legacy evidence conversion. Inferred/manual endpoint subtypes now have actual
-native ownership. Immutable observed-file endpoints remain a separate
-unfinished shared-model requirement.
+native ownership. Observed whole-file digest endpoints are a separate typed
+identity and are implemented without converting them into catalog UUIDs.
+Automatic immutable scan/location integration remains open.
 
 Evidence, rationale, comparison and review children reference integer
 `relationship_id` owners, not repeated external assertion keys. Comparison
@@ -503,11 +510,13 @@ qualified source occurrences. `asset_requirement_digest_assertions` and
 digest, scope, and provenance. The physical occurrence rows no longer store
 CRC/MD5/SHA-1 bytes. `asset_requirements` and `software_components` currently
 derive the former single-hash columns as compatibility projections; direct
-query consumers still need to move to long-form assertion queries as the
-remaining schema migration proceeds. MAME software-list and machine imports
+query consumers use native long-form assertions where complete evidence is
+required; any remaining consumer acceptance is a greenfield replacement/proof
+task, not a migration. MAME software-list and machine imports
 share eligible SHA-1 identities without collapsing their occurrence rows;
-operation-only and scoped disk assertions remain unlinked. SHA-256 parser
-coverage and explicit digest-bridge review/redirects remain outstanding.
+operation-only and scoped disk assertions remain unlinked. No-Intro DAT SHA-256
+fields and reviewed digest-bridge decisions/UUID redirects are implemented;
+ambiguous bridges do not silently merge identities.
 UUID interchange is checked undashed 32-hex text, not stored text.
 Conflict hash/size children point to their actual native owners; unresolved
 disputes also block later sparse declarations. Published cross-list occurrence
@@ -1583,6 +1592,15 @@ checked before publication, including any optional resolved target.
 The attribute value listed in a native family inventory is stored in this
 declaration owner when it is reviewable, and is exposed on that family's query
 view by joining. It is not also copied into the owning machine/item/ROM row.
+
+Native Logiqx device references also own their required integer global child
+ordinal and opening-element line/column once. The `(set_id, reference_order)`
+key remains the device-family ordinal, not the global child ordinal. Name
+attribute QName positions stay separate. Public native pages and verification
+compare all these witnesses; history ranks device references alongside text,
+media and other recognized children, preserving crossings while ignoring
+indentation and vendor-only gaps. These position columns are part of the fresh
+direct schema; there is no migration or conversion of older databases.
 Derived/user assertion subtypes carry explicit endpoint FKs, rule/evidence and
 ordered support. Publication rejects assertion identities missing a native
 owner, assigned to multiple owners, of the wrong origin/kind, or attached to a

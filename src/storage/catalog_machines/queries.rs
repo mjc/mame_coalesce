@@ -2,7 +2,8 @@ pub(super) const PUBLISHED_SNAPSHOT: &str = "
 SELECT registry.registry_uuid, snapshots.snapshot_key, sources.source_key,
        sources.display_name AS source_name, catalogs.catalog_key,
        catalogs.display_name AS catalog_name, documents.document_key,
-       snapshots.interpretation_key, interpretations.format,
+       snapshots.interpretation_key, interpretations.rules_version,
+       typeof(interpretations.rules_version) IN ('text','null') AS rules_valid, interpretations.format,
        facts.document_id, facts.build, facts.debug, facts.debug_specified, facts.config_version,
        facts.source_line AS header_line, facts.source_column AS header_column
 FROM catalog_snapshots AS snapshots

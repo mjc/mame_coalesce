@@ -846,41 +846,40 @@ fn logiqx_contents(record: &LocatedGame) -> crate::Result<SnapshotSet> {
             "Logiqx device-reference source locations do not match parsed references".into(),
         ));
     }
+    let mut runtime_dependencies = game
+        .romof_opt()
+        .map(|name| SnapshotDependency {
+            source_field: "romof".to_owned(),
+            target_name: name.to_owned(),
+            reference_tag: None,
+            source_order: None,
+            location,
+            attribute_positions: Vec::new(),
+        })
+        .into_iter()
+        .chain(game.sampleof_opt().map(|name| SnapshotDependency {
+            source_field: "sampleof".to_owned(),
+            target_name: name.to_owned(),
+            reference_tag: None,
+            source_order: None,
+            location,
+            attribute_positions: Vec::new(),
+        }))
+        .collect::<Vec<_>>();
+    for (name, location) in game.device_refs().zip(&record.device_ref_locations) {
+        runtime_dependencies.push(SnapshotDependency {
+            source_field: "device_ref".to_owned(),
+            target_name: name.to_owned(),
+            reference_tag: None,
+            source_order: Some(logiqx_child_order(game, *location)?),
+            location: *location,
+            attribute_positions: Vec::new(),
+        });
+    }
     Ok(SnapshotSet {
         name: game.name().into(),
         parent: game.cloneof().map(str::to_owned),
-        runtime_dependencies: game
-            .romof_opt()
-            .map(|name| SnapshotDependency {
-                source_field: "romof".to_owned(),
-                target_name: name.to_owned(),
-                reference_tag: None,
-                source_order: None,
-                location,
-                attribute_positions: Vec::new(),
-            })
-            .into_iter()
-            .chain(game.sampleof_opt().map(|name| SnapshotDependency {
-                source_field: "sampleof".to_owned(),
-                target_name: name.to_owned(),
-                reference_tag: None,
-                source_order: None,
-                location,
-                attribute_positions: Vec::new(),
-            }))
-            .chain(
-                game.device_refs()
-                    .zip(&record.device_ref_locations)
-                    .map(|(name, location)| SnapshotDependency {
-                        source_field: "device_ref".to_owned(),
-                        target_name: name.to_owned(),
-                        reference_tag: None,
-                        source_order: None,
-                        location: *location,
-                        attribute_positions: Vec::new(),
-                    }),
-            )
-            .collect(),
+        runtime_dependencies,
         location,
         assets: logiqx_assets(game, &record.rom_locations)?,
         switches: Vec::new(),

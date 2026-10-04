@@ -294,6 +294,8 @@ pub struct LogiqxArchiveReference {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LogiqxDeviceReference {
     pub reference_order: i64,
+    pub source_order: i64,
+    pub location: RecordLocation,
     pub name: String,
     pub attribute_positions: Vec<crate::logiqx::AttributePosition<NameAttribute>>,
 }
@@ -309,6 +311,8 @@ pub struct LogiqxSnapshot {
     pub catalog_name: String,
     pub document_key: crate::domain::DocumentKey,
     pub interpretation_key: crate::domain::ParserInterpretationKey,
+    /// The retained reading contract, distinct from its opaque identity key.
+    pub rules_version: Option<String>,
     pub format: String,
     pub declared_version: Option<String>,
 }

@@ -33,6 +33,8 @@ row!(SnapshotRow {
     catalog_name: String => Text,
     document_key: String => Text,
     interpretation_key: String => Text,
+    rules_version: Option<String> => Nullable<Text>,
+    rules_valid: i64 => BigInt,
     format: String => Text,
     declared_version: Option<String> => Nullable<Text>,
     published: i64 => BigInt,
@@ -129,7 +131,11 @@ fn snapshot_row(
             }
             other => LogiqxQueryError::Database(other),
         })?;
-    if row.published != 1 || row.format != "logiqx" || row.snapshot_key != snapshot.as_str() {
+    if row.published != 1
+        || row.format != "logiqx"
+        || row.snapshot_key != snapshot.as_str()
+        || row.rules_valid != 1
+    {
         return Err(LogiqxQueryError::NotPublishedLogiqx(snapshot.clone()));
     }
     Ok(LogiqxSnapshot {
@@ -143,6 +149,7 @@ fn snapshot_row(
         interpretation_key: crate::domain::ParserInterpretationKey::from_persisted(
             row.interpretation_key,
         ),
+        rules_version: row.rules_version,
         format: row.format,
         declared_version: row.declared_version,
     })

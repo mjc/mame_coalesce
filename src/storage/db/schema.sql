@@ -1536,7 +1536,10 @@ CREATE TABLE logiqx_set_links (
 ) WITHOUT ROWID;
 CREATE TABLE logiqx_device_references (
     set_id INTEGER NOT NULL REFERENCES catalog_sets(set_id) ON DELETE RESTRICT,
-    reference_order INTEGER NOT NULL CHECK (reference_order >= 0),
+    reference_order INTEGER NOT NULL CHECK (typeof(reference_order)='integer' AND reference_order >= 0),
+    source_order INTEGER NOT NULL CHECK (typeof(source_order)='integer' AND source_order >= 0),
+    source_line INTEGER NOT NULL CHECK (typeof(source_line)='integer' AND source_line > 0),
+    source_column INTEGER NOT NULL CHECK (typeof(source_column)='integer' AND source_column > 0),
     target_name TEXT NOT NULL,
     relationship_id INTEGER NOT NULL UNIQUE CHECK (typeof(relationship_id) = 'integer'),
     source_reference_kind TEXT NOT NULL DEFAULT 'logiqx_device_ref'

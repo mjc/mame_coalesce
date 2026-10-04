@@ -212,6 +212,15 @@ WHERE NOT EXISTS (SELECT 1 FROM logiqx_actual_attribute_positions AS actual
  WHERE actual.snapshot_key=expected.snapshot_key AND actual.owner_kind=expected.owner_kind
  AND actual.owner_a=expected.owner_a AND actual.owner_b=expected.owner_b AND actual.field_kind=expected.field_kind)
 UNION ALL
+SELECT groups.snapshot_key,'device_reference',reference.set_id,reference.reference_order,0,'invalid_element_position'
+FROM logiqx_device_references AS reference
+LEFT JOIN catalog_sets AS sets USING(set_id)
+LEFT JOIN catalog_set_groups AS groups USING(set_group_id)
+WHERE typeof(reference.reference_order)<>'integer' OR reference.reference_order<0
+   OR typeof(reference.source_order)<>'integer' OR reference.source_order<0
+   OR typeof(reference.source_line)<>'integer' OR reference.source_line<=0
+   OR typeof(reference.source_column)<>'integer' OR reference.source_column<=0
+UNION ALL
 SELECT actual.snapshot_key,actual.owner_kind,actual.owner_a,actual.owner_b,actual.field_kind,'extraneous_or_misplaced_position'
 FROM logiqx_actual_attribute_positions AS actual
 WHERE NOT EXISTS (SELECT 1 FROM logiqx_expected_attribute_positions AS expected
