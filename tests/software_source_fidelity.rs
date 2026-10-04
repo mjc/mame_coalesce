@@ -370,7 +370,7 @@ fn raw_numeric_hash_text_survives_unresolved_and_empty_interpretations()
     assert_eq!(rows[1].crc_text.as_deref(), Some(""));
     assert_eq!(rows[1].sha1_text.as_deref(), Some(""));
     assert_eq!(rows[1].size_text.as_deref(), Some("+0000000000000008"));
-    assert_eq!(rows[1].size, Some(8));
+    assert_eq!(rows[1].size, None);
     assert_eq!(rows[1].offset, Some(8));
     assert_eq!(rows[1].content_uuid, None);
     assert_eq!(rows[2].size_text.as_deref(), Some("00010"));

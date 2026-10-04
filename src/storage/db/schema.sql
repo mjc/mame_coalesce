@@ -1064,27 +1064,27 @@ CREATE TABLE software_data_areas (
 CASE
         WHEN declared_size_text IS NULL OR declared_size_text = '' THEN NULL
         WHEN substr(declared_size_text, 1, 2) GLOB '0[xX]'
-             AND length(CASE WHEN substr(declared_size_text, 3, 1) = '+' THEN substr(declared_size_text, 4) ELSE substr(declared_size_text, 3) END) > 0
-             AND CASE WHEN substr(declared_size_text, 3, 1) = '+' THEN substr(declared_size_text, 4) ELSE substr(declared_size_text, 3) END NOT GLOB '*[^0-9a-fA-F]*'
-             AND length(ltrim(CASE WHEN substr(declared_size_text, 3, 1) = '+' THEN substr(declared_size_text, 4) ELSE substr(declared_size_text, 3) END, '0')) <= 16
-             AND (length(ltrim(CASE WHEN substr(declared_size_text, 3, 1) = '+' THEN substr(declared_size_text, 4) ELSE substr(declared_size_text, 3) END, '0')) < 16 OR substr(ltrim(CASE WHEN substr(declared_size_text, 3, 1) = '+' THEN substr(declared_size_text, 4) ELSE substr(declared_size_text, 3) END, '0'), 1, 1) <= '7')
+             AND length(substr(declared_size_text, 3)) > 0
+             AND substr(declared_size_text, 3) NOT GLOB '*[^0-9a-fA-F]*'
+             AND length(ltrim(substr(declared_size_text, 3), '0')) <= 16
+             AND (length(ltrim(substr(declared_size_text, 3), '0')) < 16 OR substr(ltrim(substr(declared_size_text, 3), '0'), 1, 1) <= '7')
             THEN (
-            CASE WHEN length(ltrim(CASE WHEN substr(declared_size_text, 3, 1) = '+' THEN substr(declared_size_text, 4) ELSE substr(declared_size_text, 3) END, '0')) > 0 THEN (instr('0123456789abcdef', lower(substr(ltrim(CASE WHEN substr(declared_size_text, 3, 1) = '+' THEN substr(declared_size_text, 4) ELSE substr(declared_size_text, 3) END, '0'), -1, 1))) - 1) * 1 ELSE 0 END +
-            CASE WHEN length(ltrim(CASE WHEN substr(declared_size_text, 3, 1) = '+' THEN substr(declared_size_text, 4) ELSE substr(declared_size_text, 3) END, '0')) > 1 THEN (instr('0123456789abcdef', lower(substr(ltrim(CASE WHEN substr(declared_size_text, 3, 1) = '+' THEN substr(declared_size_text, 4) ELSE substr(declared_size_text, 3) END, '0'), -2, 1))) - 1) * 16 ELSE 0 END +
-            CASE WHEN length(ltrim(CASE WHEN substr(declared_size_text, 3, 1) = '+' THEN substr(declared_size_text, 4) ELSE substr(declared_size_text, 3) END, '0')) > 2 THEN (instr('0123456789abcdef', lower(substr(ltrim(CASE WHEN substr(declared_size_text, 3, 1) = '+' THEN substr(declared_size_text, 4) ELSE substr(declared_size_text, 3) END, '0'), -3, 1))) - 1) * 256 ELSE 0 END +
-            CASE WHEN length(ltrim(CASE WHEN substr(declared_size_text, 3, 1) = '+' THEN substr(declared_size_text, 4) ELSE substr(declared_size_text, 3) END, '0')) > 3 THEN (instr('0123456789abcdef', lower(substr(ltrim(CASE WHEN substr(declared_size_text, 3, 1) = '+' THEN substr(declared_size_text, 4) ELSE substr(declared_size_text, 3) END, '0'), -4, 1))) - 1) * 4096 ELSE 0 END +
-            CASE WHEN length(ltrim(CASE WHEN substr(declared_size_text, 3, 1) = '+' THEN substr(declared_size_text, 4) ELSE substr(declared_size_text, 3) END, '0')) > 4 THEN (instr('0123456789abcdef', lower(substr(ltrim(CASE WHEN substr(declared_size_text, 3, 1) = '+' THEN substr(declared_size_text, 4) ELSE substr(declared_size_text, 3) END, '0'), -5, 1))) - 1) * 65536 ELSE 0 END +
-            CASE WHEN length(ltrim(CASE WHEN substr(declared_size_text, 3, 1) = '+' THEN substr(declared_size_text, 4) ELSE substr(declared_size_text, 3) END, '0')) > 5 THEN (instr('0123456789abcdef', lower(substr(ltrim(CASE WHEN substr(declared_size_text, 3, 1) = '+' THEN substr(declared_size_text, 4) ELSE substr(declared_size_text, 3) END, '0'), -6, 1))) - 1) * 1048576 ELSE 0 END +
-            CASE WHEN length(ltrim(CASE WHEN substr(declared_size_text, 3, 1) = '+' THEN substr(declared_size_text, 4) ELSE substr(declared_size_text, 3) END, '0')) > 6 THEN (instr('0123456789abcdef', lower(substr(ltrim(CASE WHEN substr(declared_size_text, 3, 1) = '+' THEN substr(declared_size_text, 4) ELSE substr(declared_size_text, 3) END, '0'), -7, 1))) - 1) * 16777216 ELSE 0 END +
-            CASE WHEN length(ltrim(CASE WHEN substr(declared_size_text, 3, 1) = '+' THEN substr(declared_size_text, 4) ELSE substr(declared_size_text, 3) END, '0')) > 7 THEN (instr('0123456789abcdef', lower(substr(ltrim(CASE WHEN substr(declared_size_text, 3, 1) = '+' THEN substr(declared_size_text, 4) ELSE substr(declared_size_text, 3) END, '0'), -8, 1))) - 1) * 268435456 ELSE 0 END +
-            CASE WHEN length(ltrim(CASE WHEN substr(declared_size_text, 3, 1) = '+' THEN substr(declared_size_text, 4) ELSE substr(declared_size_text, 3) END, '0')) > 8 THEN (instr('0123456789abcdef', lower(substr(ltrim(CASE WHEN substr(declared_size_text, 3, 1) = '+' THEN substr(declared_size_text, 4) ELSE substr(declared_size_text, 3) END, '0'), -9, 1))) - 1) * 4294967296 ELSE 0 END +
-            CASE WHEN length(ltrim(CASE WHEN substr(declared_size_text, 3, 1) = '+' THEN substr(declared_size_text, 4) ELSE substr(declared_size_text, 3) END, '0')) > 9 THEN (instr('0123456789abcdef', lower(substr(ltrim(CASE WHEN substr(declared_size_text, 3, 1) = '+' THEN substr(declared_size_text, 4) ELSE substr(declared_size_text, 3) END, '0'), -10, 1))) - 1) * 68719476736 ELSE 0 END +
-            CASE WHEN length(ltrim(CASE WHEN substr(declared_size_text, 3, 1) = '+' THEN substr(declared_size_text, 4) ELSE substr(declared_size_text, 3) END, '0')) > 10 THEN (instr('0123456789abcdef', lower(substr(ltrim(CASE WHEN substr(declared_size_text, 3, 1) = '+' THEN substr(declared_size_text, 4) ELSE substr(declared_size_text, 3) END, '0'), -11, 1))) - 1) * 1099511627776 ELSE 0 END +
-            CASE WHEN length(ltrim(CASE WHEN substr(declared_size_text, 3, 1) = '+' THEN substr(declared_size_text, 4) ELSE substr(declared_size_text, 3) END, '0')) > 11 THEN (instr('0123456789abcdef', lower(substr(ltrim(CASE WHEN substr(declared_size_text, 3, 1) = '+' THEN substr(declared_size_text, 4) ELSE substr(declared_size_text, 3) END, '0'), -12, 1))) - 1) * 17592186044416 ELSE 0 END +
-            CASE WHEN length(ltrim(CASE WHEN substr(declared_size_text, 3, 1) = '+' THEN substr(declared_size_text, 4) ELSE substr(declared_size_text, 3) END, '0')) > 12 THEN (instr('0123456789abcdef', lower(substr(ltrim(CASE WHEN substr(declared_size_text, 3, 1) = '+' THEN substr(declared_size_text, 4) ELSE substr(declared_size_text, 3) END, '0'), -13, 1))) - 1) * 281474976710656 ELSE 0 END +
-            CASE WHEN length(ltrim(CASE WHEN substr(declared_size_text, 3, 1) = '+' THEN substr(declared_size_text, 4) ELSE substr(declared_size_text, 3) END, '0')) > 13 THEN (instr('0123456789abcdef', lower(substr(ltrim(CASE WHEN substr(declared_size_text, 3, 1) = '+' THEN substr(declared_size_text, 4) ELSE substr(declared_size_text, 3) END, '0'), -14, 1))) - 1) * 4503599627370496 ELSE 0 END +
-            CASE WHEN length(ltrim(CASE WHEN substr(declared_size_text, 3, 1) = '+' THEN substr(declared_size_text, 4) ELSE substr(declared_size_text, 3) END, '0')) > 14 THEN (instr('0123456789abcdef', lower(substr(ltrim(CASE WHEN substr(declared_size_text, 3, 1) = '+' THEN substr(declared_size_text, 4) ELSE substr(declared_size_text, 3) END, '0'), -15, 1))) - 1) * 72057594037927936 ELSE 0 END +
-            CASE WHEN length(ltrim(CASE WHEN substr(declared_size_text, 3, 1) = '+' THEN substr(declared_size_text, 4) ELSE substr(declared_size_text, 3) END, '0')) > 15 THEN (instr('0123456789abcdef', lower(substr(ltrim(CASE WHEN substr(declared_size_text, 3, 1) = '+' THEN substr(declared_size_text, 4) ELSE substr(declared_size_text, 3) END, '0'), -16, 1))) - 1) * 1152921504606846976 ELSE 0 END
+            CASE WHEN length(ltrim(substr(declared_size_text, 3), '0')) > 0 THEN (instr('0123456789abcdef', lower(substr(ltrim(substr(declared_size_text, 3), '0'), -1, 1))) - 1) * 1 ELSE 0 END +
+            CASE WHEN length(ltrim(substr(declared_size_text, 3), '0')) > 1 THEN (instr('0123456789abcdef', lower(substr(ltrim(substr(declared_size_text, 3), '0'), -2, 1))) - 1) * 16 ELSE 0 END +
+            CASE WHEN length(ltrim(substr(declared_size_text, 3), '0')) > 2 THEN (instr('0123456789abcdef', lower(substr(ltrim(substr(declared_size_text, 3), '0'), -3, 1))) - 1) * 256 ELSE 0 END +
+            CASE WHEN length(ltrim(substr(declared_size_text, 3), '0')) > 3 THEN (instr('0123456789abcdef', lower(substr(ltrim(substr(declared_size_text, 3), '0'), -4, 1))) - 1) * 4096 ELSE 0 END +
+            CASE WHEN length(ltrim(substr(declared_size_text, 3), '0')) > 4 THEN (instr('0123456789abcdef', lower(substr(ltrim(substr(declared_size_text, 3), '0'), -5, 1))) - 1) * 65536 ELSE 0 END +
+            CASE WHEN length(ltrim(substr(declared_size_text, 3), '0')) > 5 THEN (instr('0123456789abcdef', lower(substr(ltrim(substr(declared_size_text, 3), '0'), -6, 1))) - 1) * 1048576 ELSE 0 END +
+            CASE WHEN length(ltrim(substr(declared_size_text, 3), '0')) > 6 THEN (instr('0123456789abcdef', lower(substr(ltrim(substr(declared_size_text, 3), '0'), -7, 1))) - 1) * 16777216 ELSE 0 END +
+            CASE WHEN length(ltrim(substr(declared_size_text, 3), '0')) > 7 THEN (instr('0123456789abcdef', lower(substr(ltrim(substr(declared_size_text, 3), '0'), -8, 1))) - 1) * 268435456 ELSE 0 END +
+            CASE WHEN length(ltrim(substr(declared_size_text, 3), '0')) > 8 THEN (instr('0123456789abcdef', lower(substr(ltrim(substr(declared_size_text, 3), '0'), -9, 1))) - 1) * 4294967296 ELSE 0 END +
+            CASE WHEN length(ltrim(substr(declared_size_text, 3), '0')) > 9 THEN (instr('0123456789abcdef', lower(substr(ltrim(substr(declared_size_text, 3), '0'), -10, 1))) - 1) * 68719476736 ELSE 0 END +
+            CASE WHEN length(ltrim(substr(declared_size_text, 3), '0')) > 10 THEN (instr('0123456789abcdef', lower(substr(ltrim(substr(declared_size_text, 3), '0'), -11, 1))) - 1) * 1099511627776 ELSE 0 END +
+            CASE WHEN length(ltrim(substr(declared_size_text, 3), '0')) > 11 THEN (instr('0123456789abcdef', lower(substr(ltrim(substr(declared_size_text, 3), '0'), -12, 1))) - 1) * 17592186044416 ELSE 0 END +
+            CASE WHEN length(ltrim(substr(declared_size_text, 3), '0')) > 12 THEN (instr('0123456789abcdef', lower(substr(ltrim(substr(declared_size_text, 3), '0'), -13, 1))) - 1) * 281474976710656 ELSE 0 END +
+            CASE WHEN length(ltrim(substr(declared_size_text, 3), '0')) > 13 THEN (instr('0123456789abcdef', lower(substr(ltrim(substr(declared_size_text, 3), '0'), -14, 1))) - 1) * 4503599627370496 ELSE 0 END +
+            CASE WHEN length(ltrim(substr(declared_size_text, 3), '0')) > 14 THEN (instr('0123456789abcdef', lower(substr(ltrim(substr(declared_size_text, 3), '0'), -15, 1))) - 1) * 72057594037927936 ELSE 0 END +
+            CASE WHEN length(ltrim(substr(declared_size_text, 3), '0')) > 15 THEN (instr('0123456789abcdef', lower(substr(ltrim(substr(declared_size_text, 3), '0'), -16, 1))) - 1) * 1152921504606846976 ELSE 0 END
             )
         WHEN length(declared_size_text) > 1
              AND substr(declared_size_text, 1, 1) = '0'
@@ -1114,11 +1114,11 @@ CASE
             CASE WHEN length(ltrim(substr(declared_size_text, 2), '0')) > 19 THEN (instr('01234567', lower(substr(ltrim(substr(declared_size_text, 2), '0'), -20, 1))) - 1) * 144115188075855872 ELSE 0 END +
             CASE WHEN length(ltrim(substr(declared_size_text, 2), '0')) > 20 THEN (instr('01234567', lower(substr(ltrim(substr(declared_size_text, 2), '0'), -21, 1))) - 1) * 1152921504606846976 ELSE 0 END
             )
-        WHEN length(CASE WHEN substr(declared_size_text, 1, 1) = '+' THEN substr(declared_size_text, 2) ELSE declared_size_text END) > 0
-             AND CASE WHEN substr(declared_size_text, 1, 1) = '+' THEN substr(declared_size_text, 2) ELSE declared_size_text END NOT GLOB '*[^0-9]*'
+        WHEN length(declared_size_text) > 0
+             AND declared_size_text NOT GLOB '*[^0-9]*'
              AND (substr(declared_size_text, 1, 1) <> '0' OR declared_size_text = '0')
-             AND length(ltrim(CASE WHEN substr(declared_size_text, 1, 1) = '+' THEN substr(declared_size_text, 2) ELSE declared_size_text END, '0')) <= 19
-             AND (length(ltrim(CASE WHEN substr(declared_size_text, 1, 1) = '+' THEN substr(declared_size_text, 2) ELSE declared_size_text END, '0')) < 19 OR ltrim(CASE WHEN substr(declared_size_text, 1, 1) = '+' THEN substr(declared_size_text, 2) ELSE declared_size_text END, '0') <= '9223372036854775807')
+             AND length(ltrim(declared_size_text, '0')) <= 19
+             AND (length(ltrim(declared_size_text, '0')) < 19 OR ltrim(declared_size_text, '0') <= '9223372036854775807')
             THEN CAST(declared_size_text AS INTEGER)
         ELSE NULL
     END
@@ -1342,27 +1342,27 @@ CREATE TABLE software_rom_entries (
 CASE
         WHEN size_text IS NULL OR size_text = '' THEN NULL
         WHEN substr(size_text, 1, 2) GLOB '0[xX]'
-             AND length(CASE WHEN substr(size_text, 3, 1) = '+' THEN substr(size_text, 4) ELSE substr(size_text, 3) END) > 0
-             AND CASE WHEN substr(size_text, 3, 1) = '+' THEN substr(size_text, 4) ELSE substr(size_text, 3) END NOT GLOB '*[^0-9a-fA-F]*'
-             AND length(ltrim(CASE WHEN substr(size_text, 3, 1) = '+' THEN substr(size_text, 4) ELSE substr(size_text, 3) END, '0')) <= 16
-             AND (length(ltrim(CASE WHEN substr(size_text, 3, 1) = '+' THEN substr(size_text, 4) ELSE substr(size_text, 3) END, '0')) < 16 OR substr(ltrim(CASE WHEN substr(size_text, 3, 1) = '+' THEN substr(size_text, 4) ELSE substr(size_text, 3) END, '0'), 1, 1) <= '7')
+             AND length(substr(size_text, 3)) > 0
+             AND substr(size_text, 3) NOT GLOB '*[^0-9a-fA-F]*'
+             AND length(ltrim(substr(size_text, 3), '0')) <= 16
+             AND (length(ltrim(substr(size_text, 3), '0')) < 16 OR substr(ltrim(substr(size_text, 3), '0'), 1, 1) <= '7')
             THEN (
-            CASE WHEN length(ltrim(CASE WHEN substr(size_text, 3, 1) = '+' THEN substr(size_text, 4) ELSE substr(size_text, 3) END, '0')) > 0 THEN (instr('0123456789abcdef', lower(substr(ltrim(CASE WHEN substr(size_text, 3, 1) = '+' THEN substr(size_text, 4) ELSE substr(size_text, 3) END, '0'), -1, 1))) - 1) * 1 ELSE 0 END +
-            CASE WHEN length(ltrim(CASE WHEN substr(size_text, 3, 1) = '+' THEN substr(size_text, 4) ELSE substr(size_text, 3) END, '0')) > 1 THEN (instr('0123456789abcdef', lower(substr(ltrim(CASE WHEN substr(size_text, 3, 1) = '+' THEN substr(size_text, 4) ELSE substr(size_text, 3) END, '0'), -2, 1))) - 1) * 16 ELSE 0 END +
-            CASE WHEN length(ltrim(CASE WHEN substr(size_text, 3, 1) = '+' THEN substr(size_text, 4) ELSE substr(size_text, 3) END, '0')) > 2 THEN (instr('0123456789abcdef', lower(substr(ltrim(CASE WHEN substr(size_text, 3, 1) = '+' THEN substr(size_text, 4) ELSE substr(size_text, 3) END, '0'), -3, 1))) - 1) * 256 ELSE 0 END +
-            CASE WHEN length(ltrim(CASE WHEN substr(size_text, 3, 1) = '+' THEN substr(size_text, 4) ELSE substr(size_text, 3) END, '0')) > 3 THEN (instr('0123456789abcdef', lower(substr(ltrim(CASE WHEN substr(size_text, 3, 1) = '+' THEN substr(size_text, 4) ELSE substr(size_text, 3) END, '0'), -4, 1))) - 1) * 4096 ELSE 0 END +
-            CASE WHEN length(ltrim(CASE WHEN substr(size_text, 3, 1) = '+' THEN substr(size_text, 4) ELSE substr(size_text, 3) END, '0')) > 4 THEN (instr('0123456789abcdef', lower(substr(ltrim(CASE WHEN substr(size_text, 3, 1) = '+' THEN substr(size_text, 4) ELSE substr(size_text, 3) END, '0'), -5, 1))) - 1) * 65536 ELSE 0 END +
-            CASE WHEN length(ltrim(CASE WHEN substr(size_text, 3, 1) = '+' THEN substr(size_text, 4) ELSE substr(size_text, 3) END, '0')) > 5 THEN (instr('0123456789abcdef', lower(substr(ltrim(CASE WHEN substr(size_text, 3, 1) = '+' THEN substr(size_text, 4) ELSE substr(size_text, 3) END, '0'), -6, 1))) - 1) * 1048576 ELSE 0 END +
-            CASE WHEN length(ltrim(CASE WHEN substr(size_text, 3, 1) = '+' THEN substr(size_text, 4) ELSE substr(size_text, 3) END, '0')) > 6 THEN (instr('0123456789abcdef', lower(substr(ltrim(CASE WHEN substr(size_text, 3, 1) = '+' THEN substr(size_text, 4) ELSE substr(size_text, 3) END, '0'), -7, 1))) - 1) * 16777216 ELSE 0 END +
-            CASE WHEN length(ltrim(CASE WHEN substr(size_text, 3, 1) = '+' THEN substr(size_text, 4) ELSE substr(size_text, 3) END, '0')) > 7 THEN (instr('0123456789abcdef', lower(substr(ltrim(CASE WHEN substr(size_text, 3, 1) = '+' THEN substr(size_text, 4) ELSE substr(size_text, 3) END, '0'), -8, 1))) - 1) * 268435456 ELSE 0 END +
-            CASE WHEN length(ltrim(CASE WHEN substr(size_text, 3, 1) = '+' THEN substr(size_text, 4) ELSE substr(size_text, 3) END, '0')) > 8 THEN (instr('0123456789abcdef', lower(substr(ltrim(CASE WHEN substr(size_text, 3, 1) = '+' THEN substr(size_text, 4) ELSE substr(size_text, 3) END, '0'), -9, 1))) - 1) * 4294967296 ELSE 0 END +
-            CASE WHEN length(ltrim(CASE WHEN substr(size_text, 3, 1) = '+' THEN substr(size_text, 4) ELSE substr(size_text, 3) END, '0')) > 9 THEN (instr('0123456789abcdef', lower(substr(ltrim(CASE WHEN substr(size_text, 3, 1) = '+' THEN substr(size_text, 4) ELSE substr(size_text, 3) END, '0'), -10, 1))) - 1) * 68719476736 ELSE 0 END +
-            CASE WHEN length(ltrim(CASE WHEN substr(size_text, 3, 1) = '+' THEN substr(size_text, 4) ELSE substr(size_text, 3) END, '0')) > 10 THEN (instr('0123456789abcdef', lower(substr(ltrim(CASE WHEN substr(size_text, 3, 1) = '+' THEN substr(size_text, 4) ELSE substr(size_text, 3) END, '0'), -11, 1))) - 1) * 1099511627776 ELSE 0 END +
-            CASE WHEN length(ltrim(CASE WHEN substr(size_text, 3, 1) = '+' THEN substr(size_text, 4) ELSE substr(size_text, 3) END, '0')) > 11 THEN (instr('0123456789abcdef', lower(substr(ltrim(CASE WHEN substr(size_text, 3, 1) = '+' THEN substr(size_text, 4) ELSE substr(size_text, 3) END, '0'), -12, 1))) - 1) * 17592186044416 ELSE 0 END +
-            CASE WHEN length(ltrim(CASE WHEN substr(size_text, 3, 1) = '+' THEN substr(size_text, 4) ELSE substr(size_text, 3) END, '0')) > 12 THEN (instr('0123456789abcdef', lower(substr(ltrim(CASE WHEN substr(size_text, 3, 1) = '+' THEN substr(size_text, 4) ELSE substr(size_text, 3) END, '0'), -13, 1))) - 1) * 281474976710656 ELSE 0 END +
-            CASE WHEN length(ltrim(CASE WHEN substr(size_text, 3, 1) = '+' THEN substr(size_text, 4) ELSE substr(size_text, 3) END, '0')) > 13 THEN (instr('0123456789abcdef', lower(substr(ltrim(CASE WHEN substr(size_text, 3, 1) = '+' THEN substr(size_text, 4) ELSE substr(size_text, 3) END, '0'), -14, 1))) - 1) * 4503599627370496 ELSE 0 END +
-            CASE WHEN length(ltrim(CASE WHEN substr(size_text, 3, 1) = '+' THEN substr(size_text, 4) ELSE substr(size_text, 3) END, '0')) > 14 THEN (instr('0123456789abcdef', lower(substr(ltrim(CASE WHEN substr(size_text, 3, 1) = '+' THEN substr(size_text, 4) ELSE substr(size_text, 3) END, '0'), -15, 1))) - 1) * 72057594037927936 ELSE 0 END +
-            CASE WHEN length(ltrim(CASE WHEN substr(size_text, 3, 1) = '+' THEN substr(size_text, 4) ELSE substr(size_text, 3) END, '0')) > 15 THEN (instr('0123456789abcdef', lower(substr(ltrim(CASE WHEN substr(size_text, 3, 1) = '+' THEN substr(size_text, 4) ELSE substr(size_text, 3) END, '0'), -16, 1))) - 1) * 1152921504606846976 ELSE 0 END
+            CASE WHEN length(ltrim(substr(size_text, 3), '0')) > 0 THEN (instr('0123456789abcdef', lower(substr(ltrim(substr(size_text, 3), '0'), -1, 1))) - 1) * 1 ELSE 0 END +
+            CASE WHEN length(ltrim(substr(size_text, 3), '0')) > 1 THEN (instr('0123456789abcdef', lower(substr(ltrim(substr(size_text, 3), '0'), -2, 1))) - 1) * 16 ELSE 0 END +
+            CASE WHEN length(ltrim(substr(size_text, 3), '0')) > 2 THEN (instr('0123456789abcdef', lower(substr(ltrim(substr(size_text, 3), '0'), -3, 1))) - 1) * 256 ELSE 0 END +
+            CASE WHEN length(ltrim(substr(size_text, 3), '0')) > 3 THEN (instr('0123456789abcdef', lower(substr(ltrim(substr(size_text, 3), '0'), -4, 1))) - 1) * 4096 ELSE 0 END +
+            CASE WHEN length(ltrim(substr(size_text, 3), '0')) > 4 THEN (instr('0123456789abcdef', lower(substr(ltrim(substr(size_text, 3), '0'), -5, 1))) - 1) * 65536 ELSE 0 END +
+            CASE WHEN length(ltrim(substr(size_text, 3), '0')) > 5 THEN (instr('0123456789abcdef', lower(substr(ltrim(substr(size_text, 3), '0'), -6, 1))) - 1) * 1048576 ELSE 0 END +
+            CASE WHEN length(ltrim(substr(size_text, 3), '0')) > 6 THEN (instr('0123456789abcdef', lower(substr(ltrim(substr(size_text, 3), '0'), -7, 1))) - 1) * 16777216 ELSE 0 END +
+            CASE WHEN length(ltrim(substr(size_text, 3), '0')) > 7 THEN (instr('0123456789abcdef', lower(substr(ltrim(substr(size_text, 3), '0'), -8, 1))) - 1) * 268435456 ELSE 0 END +
+            CASE WHEN length(ltrim(substr(size_text, 3), '0')) > 8 THEN (instr('0123456789abcdef', lower(substr(ltrim(substr(size_text, 3), '0'), -9, 1))) - 1) * 4294967296 ELSE 0 END +
+            CASE WHEN length(ltrim(substr(size_text, 3), '0')) > 9 THEN (instr('0123456789abcdef', lower(substr(ltrim(substr(size_text, 3), '0'), -10, 1))) - 1) * 68719476736 ELSE 0 END +
+            CASE WHEN length(ltrim(substr(size_text, 3), '0')) > 10 THEN (instr('0123456789abcdef', lower(substr(ltrim(substr(size_text, 3), '0'), -11, 1))) - 1) * 1099511627776 ELSE 0 END +
+            CASE WHEN length(ltrim(substr(size_text, 3), '0')) > 11 THEN (instr('0123456789abcdef', lower(substr(ltrim(substr(size_text, 3), '0'), -12, 1))) - 1) * 17592186044416 ELSE 0 END +
+            CASE WHEN length(ltrim(substr(size_text, 3), '0')) > 12 THEN (instr('0123456789abcdef', lower(substr(ltrim(substr(size_text, 3), '0'), -13, 1))) - 1) * 281474976710656 ELSE 0 END +
+            CASE WHEN length(ltrim(substr(size_text, 3), '0')) > 13 THEN (instr('0123456789abcdef', lower(substr(ltrim(substr(size_text, 3), '0'), -14, 1))) - 1) * 4503599627370496 ELSE 0 END +
+            CASE WHEN length(ltrim(substr(size_text, 3), '0')) > 14 THEN (instr('0123456789abcdef', lower(substr(ltrim(substr(size_text, 3), '0'), -15, 1))) - 1) * 72057594037927936 ELSE 0 END +
+            CASE WHEN length(ltrim(substr(size_text, 3), '0')) > 15 THEN (instr('0123456789abcdef', lower(substr(ltrim(substr(size_text, 3), '0'), -16, 1))) - 1) * 1152921504606846976 ELSE 0 END
             )
         WHEN length(size_text) > 1
              AND substr(size_text, 1, 1) = '0'
@@ -1392,11 +1392,11 @@ CASE
             CASE WHEN length(ltrim(substr(size_text, 2), '0')) > 19 THEN (instr('01234567', lower(substr(ltrim(substr(size_text, 2), '0'), -20, 1))) - 1) * 144115188075855872 ELSE 0 END +
             CASE WHEN length(ltrim(substr(size_text, 2), '0')) > 20 THEN (instr('01234567', lower(substr(ltrim(substr(size_text, 2), '0'), -21, 1))) - 1) * 1152921504606846976 ELSE 0 END
             )
-        WHEN length(CASE WHEN substr(size_text, 1, 1) = '+' THEN substr(size_text, 2) ELSE size_text END) > 0
-             AND CASE WHEN substr(size_text, 1, 1) = '+' THEN substr(size_text, 2) ELSE size_text END NOT GLOB '*[^0-9]*'
+        WHEN length(size_text) > 0
+             AND size_text NOT GLOB '*[^0-9]*'
              AND (substr(size_text, 1, 1) <> '0' OR size_text = '0')
-             AND length(ltrim(CASE WHEN substr(size_text, 1, 1) = '+' THEN substr(size_text, 2) ELSE size_text END, '0')) <= 19
-             AND (length(ltrim(CASE WHEN substr(size_text, 1, 1) = '+' THEN substr(size_text, 2) ELSE size_text END, '0')) < 19 OR ltrim(CASE WHEN substr(size_text, 1, 1) = '+' THEN substr(size_text, 2) ELSE size_text END, '0') <= '9223372036854775807')
+             AND length(ltrim(size_text, '0')) <= 19
+             AND (length(ltrim(size_text, '0')) < 19 OR ltrim(size_text, '0') <= '9223372036854775807')
             THEN CAST(size_text AS INTEGER)
         ELSE NULL
     END
@@ -1406,27 +1406,27 @@ CASE
 CASE
         WHEN offset_text IS NULL OR offset_text = '' THEN NULL
         WHEN substr(offset_text, 1, 2) GLOB '0[xX]'
-             AND length(CASE WHEN substr(offset_text, 3, 1) = '+' THEN substr(offset_text, 4) ELSE substr(offset_text, 3) END) > 0
-             AND CASE WHEN substr(offset_text, 3, 1) = '+' THEN substr(offset_text, 4) ELSE substr(offset_text, 3) END NOT GLOB '*[^0-9a-fA-F]*'
-             AND length(ltrim(CASE WHEN substr(offset_text, 3, 1) = '+' THEN substr(offset_text, 4) ELSE substr(offset_text, 3) END, '0')) <= 16
-             AND (length(ltrim(CASE WHEN substr(offset_text, 3, 1) = '+' THEN substr(offset_text, 4) ELSE substr(offset_text, 3) END, '0')) < 16 OR substr(ltrim(CASE WHEN substr(offset_text, 3, 1) = '+' THEN substr(offset_text, 4) ELSE substr(offset_text, 3) END, '0'), 1, 1) <= '7')
+             AND length(substr(offset_text, 3)) > 0
+             AND substr(offset_text, 3) NOT GLOB '*[^0-9a-fA-F]*'
+             AND length(ltrim(substr(offset_text, 3), '0')) <= 16
+             AND (length(ltrim(substr(offset_text, 3), '0')) < 16 OR substr(ltrim(substr(offset_text, 3), '0'), 1, 1) <= '7')
             THEN (
-            CASE WHEN length(ltrim(CASE WHEN substr(offset_text, 3, 1) = '+' THEN substr(offset_text, 4) ELSE substr(offset_text, 3) END, '0')) > 0 THEN (instr('0123456789abcdef', lower(substr(ltrim(CASE WHEN substr(offset_text, 3, 1) = '+' THEN substr(offset_text, 4) ELSE substr(offset_text, 3) END, '0'), -1, 1))) - 1) * 1 ELSE 0 END +
-            CASE WHEN length(ltrim(CASE WHEN substr(offset_text, 3, 1) = '+' THEN substr(offset_text, 4) ELSE substr(offset_text, 3) END, '0')) > 1 THEN (instr('0123456789abcdef', lower(substr(ltrim(CASE WHEN substr(offset_text, 3, 1) = '+' THEN substr(offset_text, 4) ELSE substr(offset_text, 3) END, '0'), -2, 1))) - 1) * 16 ELSE 0 END +
-            CASE WHEN length(ltrim(CASE WHEN substr(offset_text, 3, 1) = '+' THEN substr(offset_text, 4) ELSE substr(offset_text, 3) END, '0')) > 2 THEN (instr('0123456789abcdef', lower(substr(ltrim(CASE WHEN substr(offset_text, 3, 1) = '+' THEN substr(offset_text, 4) ELSE substr(offset_text, 3) END, '0'), -3, 1))) - 1) * 256 ELSE 0 END +
-            CASE WHEN length(ltrim(CASE WHEN substr(offset_text, 3, 1) = '+' THEN substr(offset_text, 4) ELSE substr(offset_text, 3) END, '0')) > 3 THEN (instr('0123456789abcdef', lower(substr(ltrim(CASE WHEN substr(offset_text, 3, 1) = '+' THEN substr(offset_text, 4) ELSE substr(offset_text, 3) END, '0'), -4, 1))) - 1) * 4096 ELSE 0 END +
-            CASE WHEN length(ltrim(CASE WHEN substr(offset_text, 3, 1) = '+' THEN substr(offset_text, 4) ELSE substr(offset_text, 3) END, '0')) > 4 THEN (instr('0123456789abcdef', lower(substr(ltrim(CASE WHEN substr(offset_text, 3, 1) = '+' THEN substr(offset_text, 4) ELSE substr(offset_text, 3) END, '0'), -5, 1))) - 1) * 65536 ELSE 0 END +
-            CASE WHEN length(ltrim(CASE WHEN substr(offset_text, 3, 1) = '+' THEN substr(offset_text, 4) ELSE substr(offset_text, 3) END, '0')) > 5 THEN (instr('0123456789abcdef', lower(substr(ltrim(CASE WHEN substr(offset_text, 3, 1) = '+' THEN substr(offset_text, 4) ELSE substr(offset_text, 3) END, '0'), -6, 1))) - 1) * 1048576 ELSE 0 END +
-            CASE WHEN length(ltrim(CASE WHEN substr(offset_text, 3, 1) = '+' THEN substr(offset_text, 4) ELSE substr(offset_text, 3) END, '0')) > 6 THEN (instr('0123456789abcdef', lower(substr(ltrim(CASE WHEN substr(offset_text, 3, 1) = '+' THEN substr(offset_text, 4) ELSE substr(offset_text, 3) END, '0'), -7, 1))) - 1) * 16777216 ELSE 0 END +
-            CASE WHEN length(ltrim(CASE WHEN substr(offset_text, 3, 1) = '+' THEN substr(offset_text, 4) ELSE substr(offset_text, 3) END, '0')) > 7 THEN (instr('0123456789abcdef', lower(substr(ltrim(CASE WHEN substr(offset_text, 3, 1) = '+' THEN substr(offset_text, 4) ELSE substr(offset_text, 3) END, '0'), -8, 1))) - 1) * 268435456 ELSE 0 END +
-            CASE WHEN length(ltrim(CASE WHEN substr(offset_text, 3, 1) = '+' THEN substr(offset_text, 4) ELSE substr(offset_text, 3) END, '0')) > 8 THEN (instr('0123456789abcdef', lower(substr(ltrim(CASE WHEN substr(offset_text, 3, 1) = '+' THEN substr(offset_text, 4) ELSE substr(offset_text, 3) END, '0'), -9, 1))) - 1) * 4294967296 ELSE 0 END +
-            CASE WHEN length(ltrim(CASE WHEN substr(offset_text, 3, 1) = '+' THEN substr(offset_text, 4) ELSE substr(offset_text, 3) END, '0')) > 9 THEN (instr('0123456789abcdef', lower(substr(ltrim(CASE WHEN substr(offset_text, 3, 1) = '+' THEN substr(offset_text, 4) ELSE substr(offset_text, 3) END, '0'), -10, 1))) - 1) * 68719476736 ELSE 0 END +
-            CASE WHEN length(ltrim(CASE WHEN substr(offset_text, 3, 1) = '+' THEN substr(offset_text, 4) ELSE substr(offset_text, 3) END, '0')) > 10 THEN (instr('0123456789abcdef', lower(substr(ltrim(CASE WHEN substr(offset_text, 3, 1) = '+' THEN substr(offset_text, 4) ELSE substr(offset_text, 3) END, '0'), -11, 1))) - 1) * 1099511627776 ELSE 0 END +
-            CASE WHEN length(ltrim(CASE WHEN substr(offset_text, 3, 1) = '+' THEN substr(offset_text, 4) ELSE substr(offset_text, 3) END, '0')) > 11 THEN (instr('0123456789abcdef', lower(substr(ltrim(CASE WHEN substr(offset_text, 3, 1) = '+' THEN substr(offset_text, 4) ELSE substr(offset_text, 3) END, '0'), -12, 1))) - 1) * 17592186044416 ELSE 0 END +
-            CASE WHEN length(ltrim(CASE WHEN substr(offset_text, 3, 1) = '+' THEN substr(offset_text, 4) ELSE substr(offset_text, 3) END, '0')) > 12 THEN (instr('0123456789abcdef', lower(substr(ltrim(CASE WHEN substr(offset_text, 3, 1) = '+' THEN substr(offset_text, 4) ELSE substr(offset_text, 3) END, '0'), -13, 1))) - 1) * 281474976710656 ELSE 0 END +
-            CASE WHEN length(ltrim(CASE WHEN substr(offset_text, 3, 1) = '+' THEN substr(offset_text, 4) ELSE substr(offset_text, 3) END, '0')) > 13 THEN (instr('0123456789abcdef', lower(substr(ltrim(CASE WHEN substr(offset_text, 3, 1) = '+' THEN substr(offset_text, 4) ELSE substr(offset_text, 3) END, '0'), -14, 1))) - 1) * 4503599627370496 ELSE 0 END +
-            CASE WHEN length(ltrim(CASE WHEN substr(offset_text, 3, 1) = '+' THEN substr(offset_text, 4) ELSE substr(offset_text, 3) END, '0')) > 14 THEN (instr('0123456789abcdef', lower(substr(ltrim(CASE WHEN substr(offset_text, 3, 1) = '+' THEN substr(offset_text, 4) ELSE substr(offset_text, 3) END, '0'), -15, 1))) - 1) * 72057594037927936 ELSE 0 END +
-            CASE WHEN length(ltrim(CASE WHEN substr(offset_text, 3, 1) = '+' THEN substr(offset_text, 4) ELSE substr(offset_text, 3) END, '0')) > 15 THEN (instr('0123456789abcdef', lower(substr(ltrim(CASE WHEN substr(offset_text, 3, 1) = '+' THEN substr(offset_text, 4) ELSE substr(offset_text, 3) END, '0'), -16, 1))) - 1) * 1152921504606846976 ELSE 0 END
+            CASE WHEN length(ltrim(substr(offset_text, 3), '0')) > 0 THEN (instr('0123456789abcdef', lower(substr(ltrim(substr(offset_text, 3), '0'), -1, 1))) - 1) * 1 ELSE 0 END +
+            CASE WHEN length(ltrim(substr(offset_text, 3), '0')) > 1 THEN (instr('0123456789abcdef', lower(substr(ltrim(substr(offset_text, 3), '0'), -2, 1))) - 1) * 16 ELSE 0 END +
+            CASE WHEN length(ltrim(substr(offset_text, 3), '0')) > 2 THEN (instr('0123456789abcdef', lower(substr(ltrim(substr(offset_text, 3), '0'), -3, 1))) - 1) * 256 ELSE 0 END +
+            CASE WHEN length(ltrim(substr(offset_text, 3), '0')) > 3 THEN (instr('0123456789abcdef', lower(substr(ltrim(substr(offset_text, 3), '0'), -4, 1))) - 1) * 4096 ELSE 0 END +
+            CASE WHEN length(ltrim(substr(offset_text, 3), '0')) > 4 THEN (instr('0123456789abcdef', lower(substr(ltrim(substr(offset_text, 3), '0'), -5, 1))) - 1) * 65536 ELSE 0 END +
+            CASE WHEN length(ltrim(substr(offset_text, 3), '0')) > 5 THEN (instr('0123456789abcdef', lower(substr(ltrim(substr(offset_text, 3), '0'), -6, 1))) - 1) * 1048576 ELSE 0 END +
+            CASE WHEN length(ltrim(substr(offset_text, 3), '0')) > 6 THEN (instr('0123456789abcdef', lower(substr(ltrim(substr(offset_text, 3), '0'), -7, 1))) - 1) * 16777216 ELSE 0 END +
+            CASE WHEN length(ltrim(substr(offset_text, 3), '0')) > 7 THEN (instr('0123456789abcdef', lower(substr(ltrim(substr(offset_text, 3), '0'), -8, 1))) - 1) * 268435456 ELSE 0 END +
+            CASE WHEN length(ltrim(substr(offset_text, 3), '0')) > 8 THEN (instr('0123456789abcdef', lower(substr(ltrim(substr(offset_text, 3), '0'), -9, 1))) - 1) * 4294967296 ELSE 0 END +
+            CASE WHEN length(ltrim(substr(offset_text, 3), '0')) > 9 THEN (instr('0123456789abcdef', lower(substr(ltrim(substr(offset_text, 3), '0'), -10, 1))) - 1) * 68719476736 ELSE 0 END +
+            CASE WHEN length(ltrim(substr(offset_text, 3), '0')) > 10 THEN (instr('0123456789abcdef', lower(substr(ltrim(substr(offset_text, 3), '0'), -11, 1))) - 1) * 1099511627776 ELSE 0 END +
+            CASE WHEN length(ltrim(substr(offset_text, 3), '0')) > 11 THEN (instr('0123456789abcdef', lower(substr(ltrim(substr(offset_text, 3), '0'), -12, 1))) - 1) * 17592186044416 ELSE 0 END +
+            CASE WHEN length(ltrim(substr(offset_text, 3), '0')) > 12 THEN (instr('0123456789abcdef', lower(substr(ltrim(substr(offset_text, 3), '0'), -13, 1))) - 1) * 281474976710656 ELSE 0 END +
+            CASE WHEN length(ltrim(substr(offset_text, 3), '0')) > 13 THEN (instr('0123456789abcdef', lower(substr(ltrim(substr(offset_text, 3), '0'), -14, 1))) - 1) * 4503599627370496 ELSE 0 END +
+            CASE WHEN length(ltrim(substr(offset_text, 3), '0')) > 14 THEN (instr('0123456789abcdef', lower(substr(ltrim(substr(offset_text, 3), '0'), -15, 1))) - 1) * 72057594037927936 ELSE 0 END +
+            CASE WHEN length(ltrim(substr(offset_text, 3), '0')) > 15 THEN (instr('0123456789abcdef', lower(substr(ltrim(substr(offset_text, 3), '0'), -16, 1))) - 1) * 1152921504606846976 ELSE 0 END
             )
         WHEN length(offset_text) > 1
              AND substr(offset_text, 1, 1) = '0'
@@ -1456,11 +1456,11 @@ CASE
             CASE WHEN length(ltrim(substr(offset_text, 2), '0')) > 19 THEN (instr('01234567', lower(substr(ltrim(substr(offset_text, 2), '0'), -20, 1))) - 1) * 144115188075855872 ELSE 0 END +
             CASE WHEN length(ltrim(substr(offset_text, 2), '0')) > 20 THEN (instr('01234567', lower(substr(ltrim(substr(offset_text, 2), '0'), -21, 1))) - 1) * 1152921504606846976 ELSE 0 END
             )
-        WHEN length(CASE WHEN substr(offset_text, 1, 1) = '+' THEN substr(offset_text, 2) ELSE offset_text END) > 0
-             AND CASE WHEN substr(offset_text, 1, 1) = '+' THEN substr(offset_text, 2) ELSE offset_text END NOT GLOB '*[^0-9]*'
+        WHEN length(offset_text) > 0
+             AND offset_text NOT GLOB '*[^0-9]*'
              AND (substr(offset_text, 1, 1) <> '0' OR offset_text = '0')
-             AND length(ltrim(CASE WHEN substr(offset_text, 1, 1) = '+' THEN substr(offset_text, 2) ELSE offset_text END, '0')) <= 19
-             AND (length(ltrim(CASE WHEN substr(offset_text, 1, 1) = '+' THEN substr(offset_text, 2) ELSE offset_text END, '0')) < 19 OR ltrim(CASE WHEN substr(offset_text, 1, 1) = '+' THEN substr(offset_text, 2) ELSE offset_text END, '0') <= '9223372036854775807')
+             AND length(ltrim(offset_text, '0')) <= 19
+             AND (length(ltrim(offset_text, '0')) < 19 OR ltrim(offset_text, '0') <= '9223372036854775807')
             THEN CAST(offset_text AS INTEGER)
         ELSE NULL
     END

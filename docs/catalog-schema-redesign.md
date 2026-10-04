@@ -827,7 +827,7 @@ both native payload branches; no catalog-wide software union is materialized.
 The existing provenance retains list/title/part/area ownership. The public
 `catalog_software` pages include complete native title/part scalar, info,
 feature, switch and area metadata. The new
-`mame-softwarelist-declared-text-compat-v2` interpretation retains all 36 pinned
+`mame-softwarelist-declared-text-compat-v3` interpretation retains all 36 pinned
 attributes, plus the compatibility wrapper's `build`, in 13 native position-only
 child tables. Each row belongs to its actual numeric native owner and stores a
 closed field code, source ordinal and decoded QName line/column; attribute values
@@ -837,17 +837,24 @@ still has a lexical position, independently of usable digest evidence. Omitted
 defaults have no synthetic position. Typed metadata and media APIs hydrate these
 vectors from SQLite without the original document, and history compares
 recognized attribute ranks without treating vendor gaps or physical formatting
-as changes. GPT-6.1 Sol medium review/fix/re-review is clear. A full-gate
+as changes. The earlier attribute-provenance milestone's GPT-6.1 Sol medium
+review/fix/re-review is clear. A full-gate
 follow-up restores native-area error precedence while retaining complete
 lexical-witness checks; all 30 focused area, attribute and history tests pass.
-The complete devenv gate passes 1,306 tests with one existing ignored test;
-all-feature nextest passes 1,309 tests with three existing optional skips.
-Strict Clippy and warning-denied all-feature documentation also pass.
-Executable loading recipes and full-corpus acceptance remain separate
-unfinished work.
+The v3 checked numeric contract rejects signs anywhere and keeps those raw
+literals with absent virtual area/ROM/offset numbers. Borrowed executable
+recipes and their separate verification/progress/read sizes are described in
+[the approved loading contract](software-list-loading.md); that cut has its
+own behavioral tests and acceptance evidence, not the earlier v2 proof.
+That earlier v2 milestone's complete devenv gate passed 1,306 tests with one
+existing ignored test; all-feature nextest passed 1,309 tests with three existing
+optional skips. Strict Clippy and warning-denied all-feature documentation also
+passed. Catalog-backed recipes have separate implementation evidence;
+full-corpus acceptance remains unfinished.
 The [pinned loader decision table](software-list-loading.md) separates observed
-MAME 0.289 behavior from the proposed checked Rust interpretation. Approval and
-the executable interpretation remain separate gates; retaining source facts
+MAME 0.289 behavior from the approved checked Rust interpretation. The user
+approved warning-and-processing for partial groups on 2026-10-03. Executable
+implementation has its own acceptance gate; retaining source facts
 never depends on whether their loading recipe can be executed.
 
 Pin the upstream 0.289 `hash/softwarelist.dtd`, independently from machine XML.

@@ -253,8 +253,13 @@ parser-internal representations the public contract.
   row. Names and source coordinates belong to that detail only; disk areas
   have no data-size/width/endianness columns. Native entry FKs and insertion
   guards require the appropriate area subtype, and publication checks complete
-  one-to-one ownership and cross-family source order. Full lexical witnesses
-  and executable software loading remain open.
+  one-to-one ownership and cross-family source order. Closed native attribute
+  witnesses retain exact source order and QName positions. `software_loading`
+  derives checked borrowed data-area recipes from these native query results;
+  an opaque bound-source state validates required reads before region writes.
+  Verification, progress and read sizes are separate; no ROM data or redundant
+  recipe projection is persisted. Generic matching qualification, emulator
+  integration and full-format acceptance remain open.
 - There are no mutable `data_files`, `games`, `roms` or `archive_files`
   catalog tables. Scanned-file inventory has no foreign key assigning observed
   bytes to one expected ROM. Whole-file hash candidate counts are derived from

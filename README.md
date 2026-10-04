@@ -285,14 +285,20 @@ once. Software areas have compact owners and separate data-area/disk-area
 detail tables: disk areas store no size, width or endianness placeholders.
 Publication requires exactly one matching detail row; source order stays with
 that detail and remains unique across data/disk areas in the same part.
-The `mame-softwarelist-declared-text-compat-v2` interpretation retains all 36
+The `mame-softwarelist-declared-text-compat-v3` interpretation retains all 36
 pinned software-list attributes and the compatibility wrapper's `build`
 attribute in 13 position-only native child tables. Public metadata and media
 results expose closed, typed attribute-position vectors without reading the
 source document. Positions identify the attribute QName in decoded XML;
 omitted defaults have no synthetic position. History compares recognized
 attribute order, ignoring vendor gaps and physical formatting. Executable
-loading interpretation and full-format acceptance remain open.
+loading recipes are available through `software_loading`: a checked plan
+borrows complete native data-area occurrences, binds declaration-keyed source
+bytes, and only then permits region writes. Partial groups warn and process
+as in the [approved MAME 0.289 contract](docs/software-list-loading.md).
+First-run verification, maximum-run progress and actual read lengths remain
+distinct. No ROM bytes or recipe projections are stored in SQLite. Generic
+matching, emulator integration and full-format acceptance remain open.
 Results distinguish the immutable source-issued UUID from its current canonical
 UUID. Published reviews also version cursors: after another review, restart
 pagination rather than silently skip newly merged members.

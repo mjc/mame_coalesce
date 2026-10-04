@@ -692,7 +692,7 @@ fn direct_publication_requires_all_native_positions_even_with_foreign_keys_off()
         INSERT INTO publishing_sources(source_key,display_name) VALUES('position-draft','Positions');
         INSERT INTO catalogs(catalog_key,source_key,display_name) VALUES('position-draft','position-draft','Positions');
         INSERT INTO documents(document_key,format_hint) VALUES('position-draft','mame-softwarelist-xml');
-        INSERT INTO parser_interpretations(interpretation_key,format,parser_name,parser_version,rules_version) VALUES('position-draft','mame-softwarelist-xml','fixture','1','mame-softwarelist-declared-text-compat-v2');
+        INSERT INTO parser_interpretations(interpretation_key,format,parser_name,parser_version,rules_version) VALUES('position-draft','mame-softwarelist-xml','fixture','1','mame-softwarelist-declared-text-compat-v3');
         INSERT INTO catalog_coverage(coverage_id,kind) VALUES(9876,'complete');
         INSERT INTO catalog_snapshots(snapshot_key,catalog_key,document_key,interpretation_key,coverage_id) VALUES('position-draft','position-draft','position-draft','position-draft',9876);
         INSERT INTO software_documents(snapshot_key,envelope_kind) VALUES('position-draft','single_list');

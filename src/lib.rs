@@ -21,6 +21,7 @@ mod private_temp;
 pub mod reconciliation;
 pub mod resolution;
 pub mod serving;
+pub mod software_loading;
 pub(crate) mod sources;
 mod storage;
 pub(crate) mod xml_reader;

@@ -1139,7 +1139,11 @@ fn parse_optional_number(node: &Element, name: &str) -> Option<u64> {
         .and_then(|value| parse_number(value).ok())
 }
 
-fn parse_number(value: &str) -> crate::Result<u64> {
+pub fn parse_number(value: &str) -> crate::Result<u64> {
+    let invalid = || crate::Error::XmlValidation(format!("invalid unsigned integer {value:?}"));
+    if value.contains('+') {
+        return Err(invalid());
+    }
     let parsed = match value
         .strip_prefix("0x")
         .or_else(|| value.strip_prefix("0X"))
@@ -1148,11 +1152,28 @@ fn parse_number(value: &str) -> crate::Result<u64> {
         None if value.len() > 1 && value.starts_with('0') => u64::from_str_radix(value, 8),
         None => value.parse(),
     }
-    .map_err(|_| crate::Error::XmlValidation(format!("invalid unsigned integer {value:?}")))?;
+    .map_err(|_| invalid())?;
     i64::try_from(parsed).map_err(|_| {
         crate::Error::XmlValidation(format!("integer exceeds supported storage range {value:?}"))
     })?;
     Ok(parsed)
+}
+
+#[cfg(test)]
+mod unsigned_number_tests {
+    use super::parse_number;
+
+    #[test]
+    fn unsigned_numbers_reject_signs_before_and_after_radix_prefixes() {
+        for value in [
+            "+010", "+08", "+2", "+0x2", "0x+2", "0X+2", "0+2", "-0", "-2", "0x-2",
+        ] {
+            assert!(
+                parse_number(value).is_err(),
+                "signed token {value:?} must remain unresolved"
+            );
+        }
+    }
 }
 
 fn parse_digest<const N: usize>(node: &Element, field: &str) -> Option<[u8; N]> {
