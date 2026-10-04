@@ -455,6 +455,7 @@ Each interned `catalog_relationship_targets` identity has one closed subtype:
 | `no_intro_archive_targets` | Actual database-export archive FK, independent of repeated publisher numbers. |
 | `shared_file_targets` | Existing issued 16-byte file UUID FK; redirects do not rewrite the issued endpoint. |
 | `declared_digest_targets` | Interned binary digest FK, explicitly unscoped and not an observed-file identity. |
+| `observed_digest_targets` | Interned binary digest FK in a separate whole-file observed-byte namespace. It is not a catalog UUID, unscoped declaration, scan ID or physical location. |
 | `unresolved_catalog_targets` | Snapshot plus a closed set/software/media literal shape; named fields preserve absent versus empty values. Names and ordinals do not resolve an owner. |
 | `external_catalog_targets` | Declared external namespace and key, distinct from catalog owners. |
 

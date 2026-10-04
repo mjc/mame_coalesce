@@ -58,7 +58,7 @@ in {
       description = "Run unit, property, integration and doc tests";
       showOutput = true;
       after = ["project:format"];
-      exec = "cargo test --locked";
+      exec = "cargo test --locked && cargo test --locked --examples";
     };
     "project:clippy" = {
       description = "Check all targets and features with the existing strict lint policy";

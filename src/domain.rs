@@ -387,6 +387,27 @@ impl std::fmt::Display for SnapshotKey {
     }
 }
 
+/// Parse an exact canonical snapshot key without rebuilding its catalog facts.
+///
+/// This checks only the key's wire shape. A native query independently requires
+/// the requested snapshot and its publication to exist in that database.
+impl std::str::FromStr for SnapshotKey {
+    type Err = crate::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let digest = value.strip_prefix("sha256:").ok_or_else(|| {
+            crate::Error::InvalidHash("snapshot key must start with `sha256:`".into())
+        })?;
+        DocumentDigest::from_hex(digest)?;
+        if digest.bytes().any(|byte| byte.is_ascii_uppercase()) {
+            return Err(crate::Error::InvalidHash(
+                "snapshot key must use lowercase hexadecimal".into(),
+            ));
+        }
+        Ok(Self(value.to_owned()))
+    }
+}
+
 impl ImportRunKey {
     #[must_use]
     pub fn fresh() -> Self {
@@ -945,6 +966,41 @@ impl<'de> Deserialize<'de> for ContentIdentity {
     }
 }
 
+/// A digest asserted to describe observed whole-file bytes, not a catalog claim.
+///
+/// The enclosing relationship records assertion origin and evidence. This identity
+/// alone does not certify a scan, verification, physical location, or strong hash.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ObservedContentIdentity(ContentIdentity);
+
+impl ObservedContentIdentity {
+    /// Whole-file bytes, using the inventory's existing whole-asset spelling.
+    pub const SCOPE: EvidenceScope = EvidenceScope::WholeAsset;
+
+    /// Explicitly label a checked algorithm/digest as observed whole-file content.
+    pub fn new(
+        algorithm: ContentDigestAlgorithm,
+        digest: impl Into<String>,
+    ) -> crate::Result<Self> {
+        ContentIdentity::new(algorithm, digest).map(Self)
+    }
+
+    #[must_use]
+    pub const fn algorithm(&self) -> ContentDigestAlgorithm {
+        self.0.algorithm()
+    }
+
+    #[must_use]
+    pub fn digest(&self) -> &str {
+        self.0.digest()
+    }
+
+    pub(crate) const fn identity(&self) -> &ContentIdentity {
+        &self.0
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct ExternalRecordRef {
     pub namespace: String,
@@ -967,6 +1023,8 @@ pub enum RelationshipEndpoint {
     CatalogRecord(CatalogRecordRef),
     /// An unscoped declared digest, not a verified observation or catalog UUID.
     ContentObject(ContentIdentity),
+    /// A whole-file observed digest, separate from source assertions and UUIDs.
+    ObservedContent(ObservedContentIdentity),
     /// An issued expected-file identity; redirects do not rewrite this issued ID.
     SharedCatalogFile(CatalogContentId),
     ExternalRecord(ExternalRecordRef),

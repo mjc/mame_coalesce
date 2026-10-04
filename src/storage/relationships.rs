@@ -6,10 +6,11 @@ use std::collections::HashMap;
 
 use crate::domain::{
     CatalogContentId, CatalogRecordKind, CatalogRecordRef, CatalogSetId, ContentDigestAlgorithm,
-    ContentIdentity, DocumentLocation, ExternalRecordRef, MergeMediaKind, RelationshipAssertionKey,
-    RelationshipClaim, RelationshipEndpoint, RelationshipEvidence, RelationshipExplanation,
-    RelationshipOrigin, RelationshipReview, RelationshipReviewDecision, RelationshipReviewEvent,
-    RelationshipRule, RelationshipSourceProvenance, RelationshipType, SnapshotKey,
+    ContentIdentity, DocumentLocation, ExternalRecordRef, MergeMediaKind, ObservedContentIdentity,
+    RelationshipAssertionKey, RelationshipClaim, RelationshipEndpoint, RelationshipEvidence,
+    RelationshipExplanation, RelationshipOrigin, RelationshipReview, RelationshipReviewDecision,
+    RelationshipReviewEvent, RelationshipRule, RelationshipSourceProvenance, RelationshipType,
+    SnapshotKey,
 };
 
 use super::db::Pool;
@@ -1120,7 +1121,7 @@ fn typed_endpoint(
                 third,
             )
         }
-        "content_object" => {
+        "content_object" | "observed_content" => {
             let algorithm = match first.as_str() {
                 "crc32" => ContentDigestAlgorithm::Crc32,
                 "md5" => ContentDigestAlgorithm::Md5,
@@ -1130,9 +1131,15 @@ fn typed_endpoint(
             };
             let digest = second
                 .ok_or_else(|| crate::Error::InvalidPath("content object has no digest".into()))?;
-            Ok(RelationshipEndpoint::ContentObject(ContentIdentity::new(
-                algorithm, digest,
-            )?))
+            if kind == "observed_content" {
+                Ok(RelationshipEndpoint::ObservedContent(
+                    ObservedContentIdentity::new(algorithm, digest)?,
+                ))
+            } else {
+                Ok(RelationshipEndpoint::ContentObject(ContentIdentity::new(
+                    algorithm, digest,
+                )?))
+            }
         }
         "external_record" => Ok(RelationshipEndpoint::ExternalRecord(
             ExternalRecordRef::new(

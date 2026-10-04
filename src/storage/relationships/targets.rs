@@ -6,8 +6,8 @@ use diesel::{
 };
 
 use crate::domain::{
-    CatalogContentId, CatalogRecordKind, CatalogRecordRef, CatalogSetId, NoIntroArchiveId,
-    OccurrenceId, RelationshipEndpoint, RelationshipRule, SnapshotKey,
+    CatalogContentId, CatalogRecordKind, CatalogRecordRef, CatalogSetId, ContentIdentity,
+    NoIntroArchiveId, OccurrenceId, RelationshipEndpoint, RelationshipRule, SnapshotKey,
 };
 
 #[derive(QueryableByName)]
@@ -55,6 +55,65 @@ enum IntegerOwner {
     Set(CatalogSetId),
     Media(OccurrenceId),
     Archive(NoIntroArchiveId),
+}
+
+#[derive(Clone, Copy)]
+enum DigestTarget {
+    Declared,
+    Observed,
+}
+
+impl DigestTarget {
+    const fn kind(self) -> &'static str {
+        match self {
+            Self::Declared => "declared_digest",
+            Self::Observed => "observed_content",
+        }
+    }
+
+    const fn table(self) -> &'static str {
+        match self {
+            Self::Declared => "declared_digest_targets",
+            Self::Observed => "observed_digest_targets",
+        }
+    }
+
+    fn lookup_sql(self) -> String {
+        format!(
+            "SELECT target_id AS value FROM {} WHERE digest_id=?",
+            self.table()
+        )
+    }
+}
+
+fn digest_target(
+    conn: &mut SqliteConnection,
+    identity: &ContentIdentity,
+    owner: DigestTarget,
+) -> crate::Result<TargetId> {
+    let digest = hex::decode(identity.digest())
+        .map_err(|error| crate::Error::InvalidHash(error.to_string()))?;
+    let digest_id = crate::storage::catalog_content::intern_digest(
+        conn,
+        identity.algorithm().as_str(),
+        &digest,
+    )?;
+    let table = owner.table();
+    if let Some(row) = sql_query(owner.lookup_sql())
+        .bind::<BigInt, _>(digest_id)
+        .get_result::<Identifier>(conn)
+        .optional()?
+    {
+        return Ok(TargetId(row.value));
+    }
+    let target = create_target(conn, owner.kind())?;
+    sql_query(format!(
+        "INSERT INTO {table}(target_id,digest_id) VALUES(?,?)"
+    ))
+    .bind::<BigInt, _>(target)
+    .bind::<BigInt, _>(digest_id)
+    .execute(conn)?;
+    Ok(TargetId(target))
 }
 
 impl IntegerOwner {
@@ -297,28 +356,10 @@ pub(super) fn insert(
             Ok(TargetId(target))
         }
         RelationshipEndpoint::ContentObject(identity) => {
-            let digest = hex::decode(identity.digest())
-                .map_err(|error| crate::Error::InvalidHash(error.to_string()))?;
-            let digest_id = crate::storage::catalog_content::intern_digest(
-                conn,
-                identity.algorithm().as_str(),
-                &digest,
-            )?;
-            if let Some(row) = sql_query(
-                "SELECT target_id AS value FROM declared_digest_targets WHERE digest_id=?",
-            )
-            .bind::<BigInt, _>(digest_id)
-            .get_result::<Identifier>(conn)
-            .optional()?
-            {
-                return Ok(TargetId(row.value));
-            }
-            let target = create_target(conn, "declared_digest")?;
-            sql_query("INSERT INTO declared_digest_targets(target_id,digest_id) VALUES(?,?)")
-                .bind::<BigInt, _>(target)
-                .bind::<BigInt, _>(digest_id)
-                .execute(conn)?;
-            Ok(TargetId(target))
+            digest_target(conn, identity, DigestTarget::Declared)
+        }
+        RelationshipEndpoint::ObservedContent(identity) => {
+            digest_target(conn, identity.identity(), DigestTarget::Observed)
         }
         RelationshipEndpoint::CatalogMergeReference { .. }
         | RelationshipEndpoint::NoIntroArchiveReference { .. }
@@ -356,3 +397,6 @@ pub(super) fn load_rule(
         .get_result::<RuleRow>(conn)?;
     RelationshipRule::new(row.rule_key, row.revision, row.description)
 }
+
+#[cfg(test)]
+mod digest_plan_tests;

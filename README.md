@@ -108,6 +108,16 @@ Backup/restore preserves the
 database-wide registry generation; a fresh rebuild starts a new generation.
 UUID interchange uses 32 hexadecimal characters without dashes.
 
+Relationship endpoints distinguish an unscoped declared digest (`ContentObject`),
+an explicitly asserted observed whole-file digest (`ObservedContentIdentity`),
+and an issued expected-file UUID (`SharedCatalogFile`). Equal digest bytes can
+share one binary dictionary row without sharing these endpoint identities.
+Observed endpoints never allocate or redirect catalog UUIDs. Relationship origin
+and evidence describe the assertion; the endpoint alone does not certify a scan,
+verification or physical location. CRC/MD5 observations do not become strong
+catalog identity evidence. Both digest endpoint namespaces use the same checked
+algorithm/byte-length predicate for insertion and publication.
+
 Logiqx imports retain the original size/checksum spelling, empty declarations,
 and text boundary spaces in native catalog fields. Uninterpretable declarations
 remain queryable but are not usable matching evidence and cannot assign a shared
@@ -283,6 +293,25 @@ and digest registries. It is not a replacement for global integrity checking:
 native ROMs have no independent game key after their shared occurrence is
 completely erased, and global descendant totals do not identify which game
 lost a fully erased collection.
+
+`examples/no_intro_dat_verify.rs` compares one source XML document with the
+public pages of an exact published DAT snapshot:
+
+```sh
+cargo run --locked --profile profiling --example no_intro_dat_verify -- /path/catalog.sqlite sha256:SNAPSHOT_HEX /path/source.dat
+```
+
+Run this inside the repository's devenv environment. Snapshot keys parse through
+the checked `SnapshotKey` API; parsing proves their canonical shape, not that
+they exist. The verifier compares supported header/game/ROM values, presence,
+defaults, mixed-child order, declared positions and digest scope through EOF.
+It retains one parsed game and one 64-game query page; original/decoded source
+buffers and coordinate bookkeeping remain input-dependent. It does not import or update catalog
+facts; normal database opening still takes the application lock and validates
+the schema. Verification is a same-parser storage/query round trip, not an
+independent producer-specification check. Valid hash spelling/case, root QName,
+schemaLocation attribute QName/position and ignored vendor content are outside
+the native query contract. A mismatch or incomplete source exits unsuccessfully.
 
 `catalog_no_intro_database::games_for_snapshot` reads an exact published export
 without opening its original document. A checked page limit bounds games;

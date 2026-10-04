@@ -10,7 +10,7 @@ CREATE TABLE catalog_relationship_targets (
     target_id INTEGER PRIMARY KEY NOT NULL CHECK (typeof(target_id) = 'integer'),
     kind TEXT NOT NULL CHECK (kind IN (
         'catalog_set', 'catalog_media_entry', 'shared_file', 'no_intro_archive',
-        'unresolved_catalog', 'external_record', 'declared_digest'
+        'unresolved_catalog', 'external_record', 'declared_digest', 'observed_content'
     )),
     UNIQUE (target_id, kind)
 );
@@ -65,6 +65,18 @@ CREATE TABLE declared_digest_targets (
     target_id INTEGER PRIMARY KEY NOT NULL,
     kind TEXT NOT NULL DEFAULT 'declared_digest' CHECK (kind = 'declared_digest'),
     digest_id INTEGER NOT NULL UNIQUE REFERENCES digest_values(digest_id) ON DELETE RESTRICT,
+    FOREIGN KEY (target_id, kind)
+        REFERENCES catalog_relationship_targets(target_id, kind) ON DELETE RESTRICT
+) WITHOUT ROWID;
+
+-- Whole-file observed-byte identities have a separate namespace from unscoped
+-- declarations and expected-file UUIDs, even when the digest dictionary is shared.
+-- Origin/evidence describe the assertion, not a claimant, scan or physical location.
+CREATE TABLE observed_digest_targets (
+    target_id INTEGER PRIMARY KEY NOT NULL CHECK (typeof(target_id) = 'integer'),
+    kind TEXT NOT NULL DEFAULT 'observed_content' CHECK (kind = 'observed_content'),
+    digest_id INTEGER NOT NULL UNIQUE REFERENCES digest_values(digest_id) ON DELETE RESTRICT
+        CHECK (typeof(digest_id) = 'integer'),
     FOREIGN KEY (target_id, kind)
         REFERENCES catalog_relationship_targets(target_id, kind) ON DELETE RESTRICT
 ) WITHOUT ROWID;
@@ -148,6 +160,15 @@ CREATE INDEX manual_relationship_to_target
 
 -- This projection derives all display values and owning snapshots from actual
 -- catalog rows. Target subtypes contain only the native identity they reference.
+-- Publication and insertion use the same checked dictionary facts, even after
+-- corruption bypasses SQLite CHECK constraints. This is a view, not a copy.
+CREATE VIEW relationship_digest_values AS
+SELECT digest_id, algorithm, digest FROM digest_values
+WHERE typeof(digest_id)='integer' AND typeof(algorithm)='text' AND typeof(digest)='blob'
+  AND length(digest)=CASE algorithm
+      WHEN 'crc32' THEN 4 WHEN 'md5' THEN 16
+      WHEN 'sha1' THEN 20 WHEN 'sha256' THEN 32 ELSE -1 END;
+
 CREATE VIEW catalog_relationship_target_details AS
 SELECT target.target_id, target.kind,
        CASE target.kind
@@ -162,6 +183,7 @@ SELECT target.target_id, target.kind,
          WHEN 'shared_file' THEN lower(hex(shared.content_uuid))
          WHEN 'external_record' THEN external.namespace
          WHEN 'declared_digest' THEN digest.algorithm
+         WHEN 'observed_content' THEN digest.algorithm
          WHEN 'unresolved_catalog' THEN CASE unresolved.record_kind
              WHEN 'catalog_set' THEN unresolved.declared_name
              WHEN 'software_item' THEN unresolved.declared_list_name
@@ -170,6 +192,7 @@ SELECT target.target_id, target.kind,
          WHEN 'catalog_set' THEN CASE WHEN groups.kind='software_list' THEN sets.set_name END
          WHEN 'external_record' THEN external.declared_key
          WHEN 'declared_digest' THEN lower(hex(digest.digest))
+         WHEN 'observed_content' THEN lower(hex(digest.digest))
          WHEN 'unresolved_catalog' THEN CASE WHEN unresolved.record_kind IN ('software_item','asset_requirement') THEN unresolved.declared_name END END AS endpoint_b,
        CASE target.kind
          WHEN 'catalog_media_entry' THEN occurrence.occurrence_id
@@ -186,9 +209,10 @@ LEFT JOIN catalog_contents AS shared_owner ON shared_owner.content_uuid=shared.c
 LEFT JOIN no_intro_archive_targets AS archive_target ON archive_target.target_id=target.target_id AND target.kind='no_intro_archive'
 LEFT JOIN external_catalog_targets AS external ON external.target_id=target.target_id AND target.kind='external_record'
 LEFT JOIN declared_digest_targets AS digest_target ON digest_target.target_id=target.target_id AND target.kind='declared_digest'
+LEFT JOIN observed_digest_targets AS observed_target ON observed_target.target_id=target.target_id AND target.kind='observed_content'
 LEFT JOIN unresolved_catalog_targets AS unresolved ON unresolved.target_id=target.target_id AND target.kind='unresolved_catalog'
 LEFT JOIN catalog_snapshots AS unresolved_snapshot ON unresolved_snapshot.snapshot_key=unresolved.snapshot_key
-LEFT JOIN digest_values AS digest ON digest.digest_id=digest_target.digest_id
+LEFT JOIN relationship_digest_values AS digest ON digest.digest_id=COALESCE(digest_target.digest_id,observed_target.digest_id)
 LEFT JOIN asset_occurrences AS occurrence ON occurrence.occurrence_id=media_target.occurrence_id
 LEFT JOIN no_intro_archive_descriptions AS archive ON archive.archive_id=archive_target.archive_id
 LEFT JOIN catalog_sets AS sets ON sets.set_id=COALESCE(set_target.set_id,occurrence.record_id,archive.set_id)
@@ -203,6 +227,9 @@ WHERE CASE target.kind
   WHEN 'no_intro_archive' THEN archive.archive_id IS NOT NULL AND groups.snapshot_key IS NOT NULL
   WHEN 'external_record' THEN external.target_id IS NOT NULL
   WHEN 'declared_digest' THEN digest.digest_id IS NOT NULL
+  WHEN 'observed_content' THEN digest.digest_id IS NOT NULL
+    AND typeof(observed_target.kind)='text' AND observed_target.kind='observed_content'
+    AND typeof(observed_target.digest_id)='integer'
   WHEN 'unresolved_catalog' THEN unresolved_snapshot.snapshot_key IS NOT NULL
   ELSE 0 END;
 
@@ -429,7 +456,7 @@ BEGIN SELECT RAISE(ABORT, 'catalog relationship targets are immutable'); END;
 CREATE TRIGGER declared_digest_targets_validate_insert
 BEFORE INSERT ON declared_digest_targets
 WHEN NOT EXISTS (SELECT 1 FROM catalog_relationship_targets WHERE target_id=NEW.target_id AND kind='declared_digest')
- OR NOT EXISTS (SELECT 1 FROM digest_values WHERE digest_id=NEW.digest_id)
+ OR NOT EXISTS (SELECT 1 FROM relationship_digest_values WHERE digest_id=NEW.digest_id)
  OR EXISTS (SELECT 1 FROM declared_digest_targets WHERE target_id=NEW.target_id OR digest_id=NEW.digest_id)
  OR EXISTS (SELECT 1 FROM inferred_catalog_relationships WHERE from_target_id=NEW.target_id OR to_target_id=NEW.target_id)
  OR EXISTS (SELECT 1 FROM manual_catalog_relationships WHERE from_target_id=NEW.target_id OR to_target_id=NEW.target_id)
@@ -437,6 +464,20 @@ BEGIN SELECT RAISE(ABORT, 'declared digest target must reference one interned di
 CREATE TRIGGER declared_digest_targets_immutable_update BEFORE UPDATE ON declared_digest_targets
 BEGIN SELECT RAISE(ABORT, 'catalog relationship targets are immutable'); END;
 CREATE TRIGGER declared_digest_targets_immutable_delete BEFORE DELETE ON declared_digest_targets
+BEGIN SELECT RAISE(ABORT, 'catalog relationship targets are immutable'); END;
+
+CREATE TRIGGER observed_digest_targets_validate_insert
+BEFORE INSERT ON observed_digest_targets
+WHEN typeof(NEW.kind)<>'text' OR NEW.kind<>'observed_content'
+ OR NOT EXISTS (SELECT 1 FROM catalog_relationship_targets WHERE target_id=NEW.target_id AND kind='observed_content')
+ OR NOT EXISTS (SELECT 1 FROM relationship_digest_values WHERE digest_id=NEW.digest_id)
+ OR EXISTS (SELECT 1 FROM observed_digest_targets WHERE target_id=NEW.target_id OR digest_id=NEW.digest_id)
+ OR EXISTS (SELECT 1 FROM inferred_catalog_relationships WHERE from_target_id=NEW.target_id OR to_target_id=NEW.target_id)
+ OR EXISTS (SELECT 1 FROM manual_catalog_relationships WHERE from_target_id=NEW.target_id OR to_target_id=NEW.target_id)
+BEGIN SELECT RAISE(ABORT, 'observed content target must reference one interned whole-file digest'); END;
+CREATE TRIGGER observed_digest_targets_immutable_update BEFORE UPDATE ON observed_digest_targets
+BEGIN SELECT RAISE(ABORT, 'catalog relationship targets are immutable'); END;
+CREATE TRIGGER observed_digest_targets_immutable_delete BEFORE DELETE ON observed_digest_targets
 BEGIN SELECT RAISE(ABORT, 'catalog relationship targets are immutable'); END;
 
 CREATE TRIGGER unresolved_catalog_targets_validate_insert
