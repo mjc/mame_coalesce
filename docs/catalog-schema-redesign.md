@@ -1043,10 +1043,25 @@ The old partial `cmp_rom_facts` copy is removed. Publication requires a native
 claim for every CMP ROM occurrence and a position for every present declaration.
 Native raw hashes and normalized source assertions must agree in both directions;
 computed evidence cannot stand in for a source field. Linked UUIDs require an
-unambiguous matching source SHA-1 in the native whole-file scope and no native
+unambiguous matching source SHA-1 in the native WholeAsset or WholeFile scope and no native
 declaration conflicts. Native claims and positions cannot be appended after
 publication. History keeps raw spelling and relative native-field order while
 ignoring vendor-only gaps and reindentation.
+
+`catalog_clrmamepro::sets_for_snapshot` exposes a source-free native page over
+these existing owners. Document/header fields and lexical comments accompany
+all selected sets' scalar fields, issued unresolved parent references and mixed
+ROM/sample entries. Header placement may be before, between or after sets.
+`ClrMameProFilePayload` is the one public ROM/sample payload model, hydrated on
+the caller's connection for both metadata and `catalog_files`. Its ROM variant
+retains all raw declarations, independent flags, exact typed positions and the
+sole native merge registry/literal. No additional value tables or source bytes
+are stored. Size grammar/range and all native/digest/registry/position owners are
+checked rather than trusted to SQLite casts or cross-format COALESCE. Paging
+bounds sets only, not comments or selected descendants. Existing document seals
+cover header presence/comment count, not a total set/media count; readers do
+not invent proof of wholly erased unseen owners. Full current-corpus/query and
+per-format CPU/heap acceptance remain separate.
 
 Header values and directives have fixed native columns with fifteen closed
 `cmp_header_field_positions` codes. Set scalar positions use twelve closed

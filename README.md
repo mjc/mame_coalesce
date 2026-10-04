@@ -157,6 +157,19 @@ provenance; size and declared digests remain unknown and it cannot receive a
 file UUID. Samples are not ROM build requirements. The full format witness
 matrix remains unfinished.
 
+The native `catalog_clrmamepro::sets_for_snapshot` API reads an exact published
+CMP edition without opening its original. Set pages retain the optional header,
+all fifteen ordered header fields and effective directives, document-owned
+semicolon comments, and complete selected sets with mixed scalar/parent/ROM/sample
+children. Three shared closed field ledgers preserve existing codes. ROM and
+sample references embed the same native `ClrMameProFilePayload` models exposed by
+`catalog_files`, including keyword spelling, quotation and actual token positions.
+Valid raw size text is checked independently of SQLite's virtual cast; raw hashes,
+CRC aliases and conflicting dump declarations remain distinct. Cursor anchors
+are tied to actual owners, snapshot and registry generation. A set limit does not
+truncate its children. The current schema has no sealed total set/media count;
+the reader does not claim to discover wholly erased unseen owners from it.
+
 MAME machine XML stores ROM size/hash/offset declaration text without losing
 missing, empty, leading-zero or uninterpretable values. Numeric size is a checked
 virtual decimal projection; offset queries follow MAME's hexadecimal spelling.

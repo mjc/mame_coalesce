@@ -117,6 +117,7 @@ fn row_owner(area_id: i64) -> SoftwareAssetOwner {
 
 fn software_occurrence(kind: OccurrenceKind) -> CatalogFileOccurrence {
     CatalogFileOccurrence {
+        clrmamepro_file: None,
         occurrence_id: OccurrenceId::from_database(42),
         content_id: None,
         canonical_content_id: None,

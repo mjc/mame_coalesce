@@ -23,12 +23,20 @@ struct RegistryRow {
 }
 
 /// Identity-registry generation preserved by paired database backups.
+///
+/// # Errors
+/// Rejects missing generations and values that are not sixteen-byte SQLite BLOBs.
 pub fn registry_id(connection: &mut SqliteConnection) -> crate::Result<CatalogRegistryId> {
-    let row = sql_query("SELECT registry_uuid FROM file_id_registries WHERE registry_id = 1")
-        .get_result::<RegistryRow>(connection)
-        .map_err(|error| {
-            crate::Error::DatabaseSchema(format!("missing identity registry generation: {error}"))
-        })?;
+    let row = sql_query(
+        "SELECT registry_uuid FROM file_id_registries WHERE registry_id = 1
+         AND typeof(registry_uuid) = 'blob' AND length(registry_uuid) = 16",
+    )
+    .get_result::<RegistryRow>(connection)
+    .map_err(|error| {
+        crate::Error::DatabaseSchema(format!(
+            "missing or invalid identity registry generation: {error}"
+        ))
+    })?;
     let bytes = row.registry_uuid.try_into().map_err(|bytes: Vec<u8>| {
         crate::Error::DatabaseSchema(format!(
             "registry UUID contains {} bytes; expected 16",

@@ -1,5 +1,6 @@
 pub mod backup;
 pub mod build_catalog;
+pub mod catalog_clrmamepro;
 pub mod catalog_content;
 pub mod catalog_coverage;
 pub mod catalog_files;
@@ -11,6 +12,7 @@ pub mod catalog_no_intro_dat;
 pub mod catalog_no_intro_database;
 pub mod catalog_reconciliation;
 pub mod catalog_software;
+mod clrmamepro_fields;
 pub mod db;
 pub mod documents;
 pub mod file_match_reviews;

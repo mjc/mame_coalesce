@@ -22,9 +22,19 @@ pub use crate::no_intro_pc_xml::RomAttribute as NoIntroPcRomAttribute;
 pub use crate::storage::catalog_identity::OccurrenceId;
 pub use crate::storage::no_intro_dat_fields::NoIntroDatEvidenceScope;
 
+mod clrmamepro;
 mod logiqx;
 mod mame;
 mod software;
+pub use super::clrmamepro_fields::{
+    ClrMameProEvidenceScope, ClrMameProFieldPosition, ClrMameProPositionedField,
+    ClrMameProRelationshipId, ClrMameProRomField,
+};
+pub(crate) use clrmamepro::clrmamepro_file_payloads;
+pub use clrmamepro::{
+    ClrMameProDumpStatus, ClrMameProFilePayload, ClrMameProMergeReference, ClrMameProRomPayload,
+    ClrMameProSamplePayload,
+};
 pub use logiqx::{
     LogiqxDiskPayload, LogiqxDumpStatus, LogiqxFilePayload, LogiqxRomPayload, LogiqxSamplePayload,
 };
@@ -175,6 +185,8 @@ pub struct CatalogFileOccurrence {
     pub mame_file: Option<MameFilePayload>,
     /// Native declared Logiqx fields and exact recognized attribute positions.
     pub logiqx_file: Option<LogiqxFilePayload>,
+    /// Complete native CMP ROM or scalar sample, on the same read transaction.
+    pub clrmamepro_file: Option<ClrMameProFilePayload>,
 }
 
 /// Native ROM declaration in the application's synthetic P/C dialect.
@@ -453,6 +465,10 @@ pub enum CatalogFilesError {
     MissingMameFilePayload(i64),
     #[error("MAME file occurrence {0} has a mismatched native owner or type")]
     MismatchedMameFileOwner(i64),
+    #[error("CMP file occurrence {0} has no native payload")]
+    MissingClrMameProFilePayload(i64),
+    #[error("CMP file occurrence {0} has a mismatched native owner or type")]
+    MismatchedClrMameProFileOwner(i64),
     #[error("page size cannot be represented by SQLite")]
     PageLimitOverflow,
     #[error("bulk request contains {requested} occurrence IDs; maximum is {maximum}")]
@@ -1122,6 +1138,7 @@ fn assemble_occurrences(
     attach_no_intro_database_file_payloads(connection, &mut occurrences)?;
     mame::attach_payloads(connection, &mut occurrences)?;
     software::attach_payloads(connection, &mut occurrences)?;
+    clrmamepro::attach_payloads(connection, &mut occurrences)?;
     let digests = sql_query(digest_select()).load::<DigestRow>(connection)?;
     for row in digests {
         let algorithm = parse_algorithm(row.algorithm)?;
@@ -1889,6 +1906,7 @@ fn try_occurrence(row: OccurrenceRow) -> Result<CatalogFileOccurrence, CatalogFi
         no_intro_database_file: None,
         mame_file: None,
         logiqx_file: None,
+        clrmamepro_file: None,
     })
 }
 

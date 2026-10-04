@@ -6,44 +6,11 @@ use diesel::{
 use crate::{
     clrmamepro::{AssetFacts, FieldValue, Header, HeaderDirectives, SetFacts},
     domain::{CatalogSetId, SnapshotKey},
+    storage::clrmamepro_fields::{
+        ClrMameProHeaderField as HeaderField, ClrMameProRomField as RomField,
+        ClrMameProSetField as SetField,
+    },
 };
-
-#[derive(Clone, Copy)]
-#[repr(i64)]
-enum HeaderField {
-    Name = 0,
-    Description = 1,
-    Version = 2,
-    Date = 3,
-    Author = 4,
-    Email = 5,
-    Homepage = 6,
-    Url = 7,
-    Comment = 8,
-    Category = 9,
-    HeaderDefinition = 10,
-    ForceMerging = 11,
-    ForceZipping = 12,
-    ForcePacking = 13,
-    ForceNoDump = 14,
-}
-
-#[derive(Clone, Copy)]
-#[repr(i64)]
-enum SetField {
-    Name = 0,
-    CloneOf = 1,
-    Description = 2,
-    Year = 3,
-    Manufacturer = 4,
-    RebuildTo = 5,
-    SampleOf = 6,
-    Region = 7,
-    ReleaseYear = 8,
-    ReleaseMonth = 9,
-    ReleaseDay = 10,
-    Serial = 11,
-}
 
 #[derive(Clone, Copy)]
 struct SourcePosition<'a> {
@@ -252,23 +219,6 @@ fn insert_set_position(
     )
     .execute(conn)?;
     Ok(())
-}
-
-#[derive(Clone, Copy)]
-#[repr(i64)]
-enum RomField {
-    Name,
-    Size,
-    Crc,
-    Crc32,
-    Md5,
-    Sha1,
-    Merge,
-    Date,
-    Serial,
-    Status,
-    NoDump,
-    BadDump,
 }
 
 pub(super) fn insert_rom_claim(

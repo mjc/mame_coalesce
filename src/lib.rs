@@ -33,6 +33,7 @@ pub use storage::backup::{
     BackupOutcome, IntegrityReport, RestoreOutcome, RestorePolicy, check_integrity, create_backup,
     restore_backup,
 };
+pub use storage::catalog_clrmamepro;
 pub use storage::catalog_files;
 pub use storage::catalog_logiqx;
 pub use storage::catalog_machines;
