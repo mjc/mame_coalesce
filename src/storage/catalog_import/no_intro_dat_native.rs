@@ -12,6 +12,11 @@ use crate::{
             record_occurrence_digest_assertions, resolve_content_identity,
         },
         catalog_identity::OccurrenceId,
+        no_intro_dat_fields::{
+            NoIntroDatClrMameProField as ClrMameProField, NoIntroDatGameField as GameField,
+            NoIntroDatHeaderField as HeaderField, NoIntroDatRomCenterField as RomCenterField,
+            NoIntroDatRomField as RomField,
+        },
     },
     xml_reader::DeclaredText,
 };
@@ -25,13 +30,9 @@ const MODES: [&str; 4] = [
     "no-intro-dat-v4-compatible",
 ];
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum DigestScope {
-    WholeFile,
-    Unknown,
-}
+pub(super) use crate::storage::no_intro_dat_fields::NoIntroDatEvidenceScope;
 
-impl DigestScope {
+impl NoIntroDatEvidenceScope {
     #[must_use]
     pub(super) fn from_document(document: &Document) -> Self {
         if document
@@ -45,69 +46,6 @@ impl DigestScope {
             Self::WholeFile
         }
     }
-
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::WholeFile => "whole_file",
-            Self::Unknown => "unknown",
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-#[repr(i64)]
-enum HeaderField {
-    Id = 0,
-    Name = 1,
-    Description = 2,
-    Version = 3,
-    Date = 4,
-    Author = 5,
-    Homepage = 6,
-    Url = 7,
-    Trademarks = 8,
-    Piracy = 9,
-    Subset = 10,
-    Comment = 11,
-}
-
-#[derive(Clone, Copy)]
-#[repr(i64)]
-enum ClrMameProField {
-    ForceNoDump = 0,
-    Header = 1,
-}
-
-#[derive(Clone, Copy)]
-#[repr(i64)]
-enum RomCenterField {
-    Plugin = 0,
-}
-
-#[derive(Clone, Copy)]
-#[repr(i64)]
-enum GameField {
-    Name = 0,
-    Id = 1,
-    CloneOf = 2,
-    CloneOfId = 3,
-    Description = 4,
-}
-
-#[derive(Clone, Copy)]
-#[repr(i64)]
-enum RomField {
-    Name = 0,
-    Size = 1,
-    Crc = 2,
-    Md5 = 3,
-    Sha1 = 4,
-    Sha256 = 5,
-    Status = 6,
-    Serial = 7,
-    Header = 8,
-    Date = 9,
-    Mia = 10,
 }
 
 #[derive(Clone, Copy)]
@@ -353,7 +291,7 @@ pub(super) fn insert_game(
     conn: &mut SqliteConnection,
     snapshot_key: &SnapshotKey,
     game: &Game,
-    digest_scope: DigestScope,
+    digest_scope: NoIntroDatEvidenceScope,
 ) -> crate::Result<()> {
     ensure_root_group(conn, snapshot_key)?;
     let group = sql_query(
@@ -550,15 +488,15 @@ fn insert_rom(
     set_id: i64,
     order: usize,
     rom: &Rom,
-    document_scope: DigestScope,
+    document_scope: NoIntroDatEvidenceScope,
 ) -> crate::Result<()> {
     let size = rom.size.as_ref().and_then(|field| parse_size(&field.value));
     let crc = digest_bytes(rom.crc.as_ref(), 4);
     let md5 = digest_bytes(rom.md5.as_ref(), 16);
     let sha1 = digest_bytes(rom.sha1.as_ref(), 20);
     let sha256 = digest_bytes(rom.sha256.as_ref(), 32);
-    let scope = if rom.header.is_some() || document_scope == DigestScope::Unknown {
-        DigestScope::Unknown.as_str()
+    let scope = if rom.header.is_some() || document_scope == NoIntroDatEvidenceScope::Unknown {
+        NoIntroDatEvidenceScope::Unknown.as_str()
     } else {
         document_scope.as_str()
     };

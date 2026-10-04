@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use diesel::{
     Connection, QueryableByName, RunQueryDsl, SqliteConnection, sql_query,
-    sql_types::{BigInt, Binary, Nullable, Text},
+    sql_types::{BigInt, Binary, Bool, Nullable, Text},
 };
 use thiserror::Error;
 
@@ -14,11 +14,13 @@ use crate::{
 };
 
 use super::db::Pool;
+use super::no_intro_dat_fields::NoIntroDatRomField;
 pub use crate::domain::ContentDigestAlgorithm as DigestAlgorithm;
 pub use crate::domain::media::SourceLoadInstruction as SoftwareLoadInstruction;
 pub use crate::mame_softwarelist::DumpStatus as SoftwareDumpStatus;
 pub use crate::no_intro_pc_xml::RomAttribute as NoIntroPcRomAttribute;
 pub use crate::storage::catalog_identity::OccurrenceId;
+pub use crate::storage::no_intro_dat_fields::NoIntroDatEvidenceScope;
 
 mod logiqx;
 mod mame;
@@ -42,6 +44,8 @@ mod tests;
 const MAX_PAGE_SIZE: usize = 500;
 const MAX_BULK_OCCURRENCES: usize = 10_000;
 const REQUEST_TABLE: &str = "temp.catalog_files_requested_occurrences";
+const DAT_REQUEST_NAME: &str = "catalog_files_requested_occurrences";
+const DAT_PAYLOAD_BATCH_SIZE: usize = 400;
 
 /// The namespace that owns an occurrence: either a catalog root or a software list.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -363,6 +367,9 @@ pub enum NoIntroDatabaseEvidenceScope {
 pub struct NoIntroDatRomPayload {
     pub name: String,
     pub size_text: Option<String>,
+    /// Checked native virtual projection; the original declaration remains in `size_text`.
+    pub size: Option<i64>,
+    pub evidence_scope: NoIntroDatEvidenceScope,
     pub crc_text: Option<String>,
     pub md5_text: Option<String>,
     pub sha1_text: Option<String>,
@@ -567,14 +574,10 @@ struct NoIntroDatRomRow {
     name: String,
     #[diesel(sql_type = Nullable<Text>)]
     size_text: Option<String>,
-    #[diesel(sql_type = Nullable<Text>)]
-    crc_text: Option<String>,
-    #[diesel(sql_type = Nullable<Text>)]
-    md5_text: Option<String>,
-    #[diesel(sql_type = Nullable<Text>)]
-    sha1_text: Option<String>,
-    #[diesel(sql_type = Nullable<Text>)]
-    sha256_text: Option<String>,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    size: Option<i64>,
+    #[diesel(sql_type = Text)]
+    evidence_scope: String,
     #[diesel(sql_type = Nullable<Text>)]
     status_text: Option<String>,
     #[diesel(sql_type = Nullable<Text>)]
@@ -591,6 +594,44 @@ struct NoIntroDatRomRow {
     source_line: i64,
     #[diesel(sql_type = BigInt)]
     source_column: i64,
+    #[diesel(sql_type = Bool)]
+    valid_storage: bool,
+    #[diesel(sql_type = Bool)]
+    valid_owner: bool,
+    #[diesel(sql_type = Bool)]
+    valid_assertions: bool,
+}
+
+#[derive(QueryableByName)]
+struct NoIntroDatDigestRow {
+    #[diesel(sql_type = BigInt)]
+    occurrence_id: i64,
+    #[diesel(sql_type = BigInt)]
+    field_kind: i64,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    digest_id: Option<i64>,
+    #[diesel(sql_type = Nullable<Text>)]
+    invalid_text: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    algorithm: Option<String>,
+    #[diesel(sql_type = Nullable<Binary>)]
+    digest: Option<Vec<u8>>,
+    #[diesel(sql_type = Bool)]
+    valid_storage: bool,
+    #[diesel(sql_type = Bool)]
+    valid_assertion: bool,
+}
+
+#[derive(QueryableByName)]
+struct NoIntroDatPositionRow {
+    #[diesel(sql_type = BigInt)]
+    occurrence_id: i64,
+    #[diesel(sql_type = BigInt)]
+    field_kind: i64,
+    #[diesel(sql_type = BigInt)]
+    source_order: i64,
+    #[diesel(sql_type = Bool)]
+    valid_storage: bool,
 }
 
 #[derive(QueryableByName)]
@@ -1116,32 +1157,11 @@ fn attach_no_intro_dat_rom_payloads(
     connection: &mut SqliteConnection,
     occurrences: &mut [CatalogFileOccurrence],
 ) -> Result<(), CatalogFilesError> {
-    let mut native_dat_roms = sql_query(no_intro_dat_rom_select())
-        .load::<NoIntroDatRomRow>(connection)?
-        .into_iter()
-        .map(|row| {
-            let occurrence_id = row.occurrence_id;
-            let payload = NoIntroDatRomPayload {
-                name: row.name,
-                size_text: row.size_text,
-                crc_text: row.crc_text,
-                md5_text: row.md5_text,
-                sha1_text: row.sha1_text,
-                sha256_text: row.sha256_text,
-                status_text: row.status_text,
-                serial_text: row.serial_text,
-                header_text: row.header_text,
-                date_text: row.date_text,
-                mia_text: row.mia_text,
-                source_order: row.source_order,
-                location: SourceLocation {
-                    line: row.source_line,
-                    column: row.source_column,
-                },
-            };
-            (occurrence_id, payload)
-        })
-        .collect::<BTreeMap<_, _>>();
+    let ids = occurrences
+        .iter()
+        .map(|occurrence| occurrence.occurrence_id)
+        .collect::<Vec<_>>();
+    let mut native_dat_roms = no_intro_dat_rom_payloads(connection, &ids)?;
     for occurrence in occurrences {
         let occurrence_id = occurrence.occurrence_id.database_value();
         if occurrence.provenance.occurrence_kind == OccurrenceKind::NoIntroDatRom {
@@ -1150,20 +1170,253 @@ fn attach_no_intro_dat_rom_payloads(
                     occurrence_id,
                 ));
             }
-            let payload = native_dat_roms.remove(&occurrence_id).ok_or(
+            let payload = native_dat_roms.remove(&occurrence.occurrence_id).ok_or(
                 CatalogFilesError::MissingNoIntroDatRomPayload(occurrence_id),
             )?;
             occurrence.provenance.asset_name = Some(payload.name.clone());
             occurrence.provenance.native_occurrence_location = Some(payload.location);
             occurrence.no_intro_dat_rom = Some(payload);
-        } else if native_dat_roms.contains_key(&occurrence_id) {
+        } else if native_dat_roms.contains_key(&occurrence.occurrence_id) {
             return Err(CatalogFilesError::MismatchedNoIntroDatRomOwner(
                 occurrence_id,
             ));
         }
     }
     if let Some((occurrence_id, _)) = native_dat_roms.first_key_value() {
-        return Err(CatalogFilesError::MissingOccurrenceOwner(*occurrence_id));
+        return Err(CatalogFilesError::MissingOccurrenceOwner(
+            occurrence_id.database_value(),
+        ));
+    }
+    Ok(())
+}
+
+/// Hydrate native DAT declarations on the caller's connection and read transaction.
+/// The caller must keep a read transaction open across this call. This helper neither acquires
+/// another connection nor starts a second transaction; every batch uses that same transaction.
+/// Non-DAT IDs have no entry; callers expecting DAT ROMs must require their entries.
+pub(crate) fn no_intro_dat_rom_payloads(
+    connection: &mut SqliteConnection,
+    ids: &[OccurrenceId],
+) -> Result<BTreeMap<OccurrenceId, NoIntroDatRomPayload>, CatalogFilesError> {
+    let ids = ids.iter().copied().collect::<BTreeSet<_>>();
+    if let Some(id) = ids.iter().find(|id| id.database_value() <= 0) {
+        return Err(invalid_value(
+            "No-Intro DAT occurrence ID",
+            id.database_value().to_string(),
+        ));
+    }
+    let ids = ids.into_iter().collect::<Vec<_>>();
+    let mut payloads = BTreeMap::new();
+    for batch in ids.chunks(DAT_PAYLOAD_BATCH_SIZE) {
+        let requested = no_intro_dat_requested_cte(batch);
+        let rows = sql_query(format!("{requested}{}", no_intro_dat_rom_select()))
+            .load::<NoIntroDatRomRow>(connection)?;
+        let mut batch_payloads = rows
+            .into_iter()
+            .map(no_intro_dat_rom_payload)
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
+        let digests = sql_query(format!("{requested}{}", no_intro_dat_digest_select()))
+            .load::<NoIntroDatDigestRow>(connection)?;
+        attach_no_intro_dat_digests(&mut batch_payloads, digests)?;
+        let positions = sql_query(format!("{requested}{}", no_intro_dat_position_select()))
+            .load::<NoIntroDatPositionRow>(connection)?;
+        validate_no_intro_dat_positions(&batch_payloads, positions)?;
+        payloads.append(&mut batch_payloads);
+    }
+    Ok(payloads)
+}
+
+fn no_intro_dat_requested_cte(ids: &[OccurrenceId]) -> String {
+    // This statement-local CTE shadows the general reader's TEMP request table without
+    // changing it. The loader validates integer IDs; source strings never enter the SQL text.
+    let values = ids
+        .iter()
+        .map(|id| format!("({})", id.database_value()))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("WITH {DAT_REQUEST_NAME}(occurrence_id) AS (VALUES {values}) ")
+}
+
+fn no_intro_dat_rom_payload(
+    row: NoIntroDatRomRow,
+) -> Result<(OccurrenceId, NoIntroDatRomPayload), CatalogFilesError> {
+    if !row.valid_owner {
+        return Err(CatalogFilesError::MismatchedNoIntroDatRomOwner(
+            row.occurrence_id,
+        ));
+    }
+    if !row.valid_storage || !row.valid_assertions {
+        return Err(invalid_value(
+            "No-Intro DAT ROM storage",
+            row.occurrence_id.to_string(),
+        ));
+    }
+    let evidence_scope = match row.evidence_scope.as_str() {
+        "whole_file" => NoIntroDatEvidenceScope::WholeFile,
+        "unknown" => NoIntroDatEvidenceScope::Unknown,
+        _ => {
+            return Err(invalid_value(
+                "No-Intro DAT evidence scope",
+                row.evidence_scope,
+            ));
+        }
+    };
+    Ok((
+        OccurrenceId::from_database(row.occurrence_id),
+        NoIntroDatRomPayload {
+            name: row.name,
+            size_text: row.size_text,
+            size: row.size,
+            evidence_scope,
+            crc_text: None,
+            md5_text: None,
+            sha1_text: None,
+            sha256_text: None,
+            status_text: row.status_text,
+            serial_text: row.serial_text,
+            header_text: row.header_text,
+            date_text: row.date_text,
+            mia_text: row.mia_text,
+            source_order: row.source_order,
+            location: SourceLocation {
+                line: row.source_line,
+                column: row.source_column,
+            },
+        },
+    ))
+}
+
+fn attach_no_intro_dat_digests(
+    payloads: &mut BTreeMap<OccurrenceId, NoIntroDatRomPayload>,
+    rows: Vec<NoIntroDatDigestRow>,
+) -> Result<(), CatalogFilesError> {
+    for row in rows {
+        let id = OccurrenceId::from_database(row.occurrence_id);
+        let payload =
+            payloads
+                .get_mut(&id)
+                .ok_or(CatalogFilesError::MissingNoIntroDatRomPayload(
+                    row.occurrence_id,
+                ))?;
+        let field = NoIntroDatRomField::from_code(row.field_kind).ok_or_else(|| {
+            invalid_value("No-Intro DAT digest field", row.field_kind.to_string())
+        })?;
+        let (slot, algorithm) = match field {
+            NoIntroDatRomField::Crc => (&mut payload.crc_text, DigestAlgorithm::Crc32),
+            NoIntroDatRomField::Md5 => (&mut payload.md5_text, DigestAlgorithm::Md5),
+            NoIntroDatRomField::Sha1 => (&mut payload.sha1_text, DigestAlgorithm::Sha1),
+            NoIntroDatRomField::Sha256 => (&mut payload.sha256_text, DigestAlgorithm::Sha256),
+            _ => {
+                return Err(invalid_value(
+                    "No-Intro DAT digest field",
+                    row.field_kind.to_string(),
+                ));
+            }
+        };
+        if slot.is_some() {
+            return Err(invalid_value(
+                "duplicate No-Intro DAT digest field",
+                row.occurrence_id.to_string(),
+            ));
+        }
+        *slot = Some(no_intro_dat_digest_text(row, algorithm)?);
+    }
+    Ok(())
+}
+
+fn no_intro_dat_digest_text(
+    row: NoIntroDatDigestRow,
+    algorithm: DigestAlgorithm,
+) -> Result<String, CatalogFilesError> {
+    if !row.valid_storage || !row.valid_assertion {
+        return Err(invalid_value(
+            "No-Intro DAT digest storage",
+            row.occurrence_id.to_string(),
+        ));
+    }
+    match (row.digest_id, row.invalid_text, row.algorithm, row.digest) {
+        (Some(_), None, Some(stored_algorithm), Some(bytes))
+            if stored_algorithm == algorithm.as_str() =>
+        {
+            if bytes.len() != algorithm.byte_length() {
+                return Err(CatalogFilesError::DigestLengthMismatch {
+                    occurrence_id: row.occurrence_id,
+                    algorithm,
+                    actual: bytes.len(),
+                    expected: algorithm.byte_length(),
+                });
+            }
+            Ok(hex::encode(bytes))
+        }
+        (None, Some(literal), None, None)
+            if literal.len() != algorithm.byte_length() * 2
+                || !literal.as_bytes().iter().all(u8::is_ascii_hexdigit) =>
+        {
+            Ok(literal)
+        }
+        _ => Err(invalid_value(
+            "No-Intro DAT digest value",
+            row.occurrence_id.to_string(),
+        )),
+    }
+}
+
+fn no_intro_dat_present_fields(payload: &NoIntroDatRomPayload) -> BTreeSet<i64> {
+    let fields = [
+        (NoIntroDatRomField::Name, true),
+        (NoIntroDatRomField::Size, payload.size_text.is_some()),
+        (NoIntroDatRomField::Crc, payload.crc_text.is_some()),
+        (NoIntroDatRomField::Md5, payload.md5_text.is_some()),
+        (NoIntroDatRomField::Sha1, payload.sha1_text.is_some()),
+        (NoIntroDatRomField::Sha256, payload.sha256_text.is_some()),
+        (NoIntroDatRomField::Status, payload.status_text.is_some()),
+        (NoIntroDatRomField::Serial, payload.serial_text.is_some()),
+        (NoIntroDatRomField::Header, payload.header_text.is_some()),
+        (NoIntroDatRomField::Date, payload.date_text.is_some()),
+        (NoIntroDatRomField::Mia, payload.mia_text.is_some()),
+    ];
+    fields
+        .into_iter()
+        .filter(|(_, present)| *present)
+        .map(|(field, _)| field as i64)
+        .collect()
+}
+
+fn validate_no_intro_dat_positions(
+    payloads: &BTreeMap<OccurrenceId, NoIntroDatRomPayload>,
+    rows: Vec<NoIntroDatPositionRow>,
+) -> Result<(), CatalogFilesError> {
+    let mut present = BTreeMap::<OccurrenceId, (BTreeSet<i64>, BTreeSet<i64>)>::new();
+    for row in rows {
+        let id = OccurrenceId::from_database(row.occurrence_id);
+        if !payloads.contains_key(&id) {
+            return Err(CatalogFilesError::MissingNoIntroDatRomPayload(
+                row.occurrence_id,
+            ));
+        }
+        if !row.valid_storage || NoIntroDatRomField::from_code(row.field_kind).is_none() {
+            return Err(invalid_value(
+                "No-Intro DAT field position",
+                row.occurrence_id.to_string(),
+            ));
+        }
+        let (fields, orders) = present.entry(id).or_default();
+        if !fields.insert(row.field_kind) || !orders.insert(row.source_order) {
+            return Err(invalid_value(
+                "duplicate No-Intro DAT field position",
+                row.occurrence_id.to_string(),
+            ));
+        }
+    }
+    for (id, payload) in payloads {
+        if present.remove(id).map(|(fields, _)| fields)
+            != Some(no_intro_dat_present_fields(payload))
+        {
+            return Err(invalid_value(
+                "No-Intro DAT field presence",
+                id.database_value().to_string(),
+            ));
+        }
     }
     Ok(())
 }
@@ -1408,40 +1661,170 @@ fn native_digest(
 
 fn no_intro_dat_rom_select() -> String {
     // Keep the bounded request as the outer loop, not a catalog-wide ROM scan.
+    let storage = no_intro_dat_rom_storage_check();
+    let owner = no_intro_dat_rom_owner_check();
+    let assertions = no_intro_dat_assertion_check();
     format!(
-        "SELECT rom.occurrence_id, rom.name, rom.size_text, \
-                CASE WHEN crc_field.occurrence_id IS NULL THEN NULL \
-                     WHEN crc_value.digest_id IS NOT NULL THEN lower(hex(crc_value.digest)) \
-                     ELSE crc_field.invalid_text END AS crc_text, \
-                CASE WHEN md5_field.occurrence_id IS NULL THEN NULL \
-                     WHEN md5_value.digest_id IS NOT NULL THEN lower(hex(md5_value.digest)) \
-                     ELSE md5_field.invalid_text END AS md5_text, \
-                CASE WHEN sha1_field.occurrence_id IS NULL THEN NULL \
-                     WHEN sha1_value.digest_id IS NOT NULL THEN lower(hex(sha1_value.digest)) \
-                     ELSE sha1_field.invalid_text END AS sha1_text, \
-                CASE WHEN sha256_field.occurrence_id IS NULL THEN NULL \
-                     WHEN sha256_value.digest_id IS NOT NULL THEN lower(hex(sha256_value.digest)) \
-                     ELSE sha256_field.invalid_text END AS sha256_text, \
+        "SELECT rom.occurrence_id, rom.name, rom.size_text, rom.size, rom.evidence_scope, \
                 rom.status_text, rom.serial_text, \
                 rom.header_text, rom.date_text, rom.mia_text, rom.source_order, \
-                rom.source_line, rom.source_column \
-         FROM {REQUEST_TABLE} AS requested \
+                rom.source_line, rom.source_column, \
+                COALESCE(({storage}), 0) AS valid_storage, \
+                COALESCE(({owner}), 0) AS valid_owner, \
+                ({assertions}) AS valid_assertions \
+         FROM {DAT_REQUEST_NAME} AS requested \
          CROSS JOIN no_intro_dat_rom_claims AS rom \
-         LEFT JOIN no_intro_dat_rom_digest_fields AS crc_field \
-           ON crc_field.occurrence_id = rom.occurrence_id AND crc_field.field_kind = 2 \
-         LEFT JOIN digest_values AS crc_value ON crc_value.digest_id = crc_field.digest_id \
-         LEFT JOIN no_intro_dat_rom_digest_fields AS md5_field \
-           ON md5_field.occurrence_id = rom.occurrence_id AND md5_field.field_kind = 3 \
-         LEFT JOIN digest_values AS md5_value ON md5_value.digest_id = md5_field.digest_id \
-         LEFT JOIN no_intro_dat_rom_digest_fields AS sha1_field \
-           ON sha1_field.occurrence_id = rom.occurrence_id AND sha1_field.field_kind = 4 \
-         LEFT JOIN digest_values AS sha1_value ON sha1_value.digest_id = sha1_field.digest_id \
-         LEFT JOIN no_intro_dat_rom_digest_fields AS sha256_field \
-           ON sha256_field.occurrence_id = rom.occurrence_id AND sha256_field.field_kind = 5 \
-         LEFT JOIN digest_values AS sha256_value ON sha256_value.digest_id = sha256_field.digest_id \
+         LEFT JOIN asset_occurrences AS occurrence ON occurrence.occurrence_id = rom.occurrence_id \
+         LEFT JOIN catalog_sets AS sets ON sets.set_id = occurrence.record_id \
+         LEFT JOIN no_intro_dat_games AS game ON game.set_id = sets.set_id \
+         LEFT JOIN catalog_set_groups AS groups ON groups.set_group_id = sets.set_group_id \
+         LEFT JOIN catalog_snapshots AS snapshot ON snapshot.snapshot_key = groups.snapshot_key \
+         LEFT JOIN parser_interpretations AS interpretation \
+           ON interpretation.interpretation_key = snapshot.interpretation_key \
+         LEFT JOIN no_intro_dat_documents AS document ON document.snapshot_key = snapshot.snapshot_key \
+         LEFT JOIN snapshot_publications AS publication ON publication.snapshot_key = snapshot.snapshot_key \
          WHERE rom.occurrence_id = requested.occurrence_id \
          ORDER BY rom.occurrence_id"
     )
+}
+
+fn no_intro_dat_rom_storage_check() -> String {
+    let optional_text = [
+        "size_text",
+        "status_text",
+        "serial_text",
+        "header_text",
+        "date_text",
+        "mia_text",
+    ]
+    .into_iter()
+    .map(|column| format!("typeof(rom.{column}) IN ('null','text')"))
+    .collect::<Vec<_>>()
+    .join(" AND ");
+    format!(
+        "typeof(rom.occurrence_id) = 'integer' AND rom.occurrence_id > 0 \
+         AND typeof(rom.claim_kind) = 'text' AND rom.claim_kind = 'no_intro_dat_rom' \
+         AND typeof(rom.name) = 'text' AND {optional_text} \
+         AND (typeof(rom.size) = 'null' OR (typeof(rom.size) = 'integer' AND rom.size >= 0)) \
+         AND typeof(rom.evidence_scope) = 'text' \
+         AND typeof(rom.evidence_provenance) = 'text' AND rom.evidence_provenance = 'source_declared' \
+         AND typeof(rom.source_order) = 'integer' AND rom.source_order >= 0 \
+         AND typeof(rom.source_line) = 'integer' AND rom.source_line > 0 \
+         AND typeof(rom.source_column) = 'integer' AND rom.source_column > 0"
+    )
+}
+
+const fn no_intro_dat_rom_owner_check() -> &'static str {
+    "typeof(occurrence.occurrence_id) = 'integer' AND occurrence.occurrence_id > 0
+     AND typeof(occurrence.record_id) = 'integer' AND occurrence.record_id > 0
+     AND typeof(occurrence.occurrence_order) = 'integer' AND occurrence.occurrence_order >= 0
+     AND typeof(occurrence.claim_kind) = 'text' AND occurrence.claim_kind = 'no_intro_dat_rom'
+     AND (typeof(occurrence.content_uuid) = 'null'
+          OR (typeof(occurrence.content_uuid) = 'blob' AND length(occurrence.content_uuid) = 16))
+     AND (occurrence.content_uuid IS NULL OR (rom.evidence_scope = 'whole_file'
+          AND (rom.size_text IS NULL OR rom.size IS NOT NULL)
+          AND NOT EXISTS (SELECT 1 FROM no_intro_dat_rom_digest_fields AS invalid_field
+              WHERE invalid_field.occurrence_id = rom.occurrence_id AND invalid_field.invalid_text IS NOT NULL)
+          AND EXISTS (SELECT 1 FROM occurrence_digest_assertions AS eligible
+              JOIN digest_values AS identity_digest USING (digest_id)
+              WHERE eligible.occurrence_id = occurrence.occurrence_id
+                AND eligible.provenance = 'source_declared' AND eligible.scope = 'whole_file'
+                AND identity_digest.algorithm IN ('sha1','sha256'))))
+     AND typeof(sets.set_id) = 'integer' AND sets.set_id > 0
+     AND typeof(sets.set_group_id) = 'integer' AND sets.set_group_id > 0
+     AND typeof(sets.source_element_kind) = 'text' AND sets.source_element_kind = 'no_intro_dat_game'
+     AND typeof(sets.list_order) = 'integer' AND sets.list_order >= 0
+     AND typeof(sets.set_name) = 'text'
+     AND typeof(sets.source_line) = 'integer' AND sets.source_line > 0
+     AND typeof(sets.source_column) = 'integer' AND sets.source_column > 0
+     AND typeof(game.set_id) = 'integer' AND game.set_id = sets.set_id
+     AND typeof(game.source_element_kind) = 'text' AND game.source_element_kind = 'no_intro_dat_game'
+     AND typeof(game.source_order) = 'integer' AND game.source_order >= 0
+     AND typeof(groups.set_group_id) = 'integer' AND groups.set_group_id > 0
+     AND typeof(groups.kind) = 'text' AND groups.kind = 'root'
+     AND typeof(groups.list_order) = 'integer' AND groups.list_order = 0
+     AND typeof(groups.snapshot_key) = 'text'
+     AND rom.evidence_scope = CASE
+         WHEN rom.header_text IS NOT NULL OR EXISTS (
+             SELECT 1 FROM no_intro_dat_clrmamepro_options AS options
+             WHERE options.snapshot_key = groups.snapshot_key AND options.header_text IS NOT NULL
+         ) THEN 'unknown' ELSE 'whole_file' END
+     AND NOT EXISTS (
+         SELECT 1 FROM no_intro_dat_clrmamepro_options AS options
+         WHERE options.snapshot_key = groups.snapshot_key AND typeof(options.header_text) NOT IN ('null','text')
+     )
+     AND typeof(snapshot.snapshot_key) = 'text'
+     AND typeof(interpretation.format) = 'text'
+     AND interpretation.format IN ('no-intro-dat-v3-strict','no-intro-dat-v3-compatible',
+                                  'no-intro-dat-v4-strict','no-intro-dat-v4-compatible')
+     AND typeof(document.snapshot_key) = 'text'
+     AND typeof(publication.snapshot_key) = 'text'
+     AND publication.catalog_key = snapshot.catalog_key
+     AND publication.document_key = snapshot.document_key
+     AND publication.interpretation_key = snapshot.interpretation_key"
+}
+
+const fn no_intro_dat_assertion_check() -> &'static str {
+    "NOT EXISTS (
+        SELECT 1 FROM occurrence_digest_assertions AS assertion
+        LEFT JOIN digest_values AS digest ON digest.digest_id = assertion.digest_id
+        WHERE assertion.occurrence_id = rom.occurrence_id AND NOT COALESCE((
+            typeof(assertion.occurrence_id) = 'integer'
+            AND typeof(assertion.digest_id) = 'integer' AND assertion.digest_id > 0
+            AND typeof(assertion.scope) = 'text' AND length(assertion.scope) > 0
+            AND typeof(assertion.provenance) = 'text'
+            AND assertion.provenance IN ('source_declared','computed','unknown')
+            AND typeof(digest.digest_id) = 'integer' AND digest.digest_id > 0
+            AND typeof(digest.algorithm) = 'text' AND typeof(digest.digest) = 'blob'
+            AND length(digest.digest) = CASE digest.algorithm
+                WHEN 'crc32' THEN 4 WHEN 'md5' THEN 16 WHEN 'sha1' THEN 20 WHEN 'sha256' THEN 32 END
+            AND (assertion.provenance <> 'source_declared'
+                 OR (assertion.scope = rom.evidence_scope AND EXISTS (
+                     SELECT 1 FROM no_intro_dat_rom_digest_fields AS field
+                     WHERE field.occurrence_id = rom.occurrence_id AND field.digest_id = assertion.digest_id
+                 )))
+        ), 0)
+    )"
+}
+
+const fn no_intro_dat_digest_select() -> &'static str {
+    "SELECT field.occurrence_id, field.field_kind, field.digest_id, field.invalid_text,
+            digest.algorithm, digest.digest,
+            COALESCE((typeof(field.occurrence_id) = 'integer' AND field.occurrence_id > 0
+                AND typeof(field.field_kind) = 'integer'
+                AND ((typeof(field.digest_id) = 'integer' AND field.digest_id > 0
+                      AND typeof(field.invalid_text) = 'null'
+                      AND typeof(digest.digest_id) = 'integer' AND digest.digest_id > 0
+                      AND typeof(digest.algorithm) = 'text' AND typeof(digest.digest) = 'blob')
+                     OR (typeof(field.digest_id) = 'null' AND typeof(field.invalid_text) = 'text'))
+            ), 0) AS valid_storage,
+            (field.digest_id IS NULL OR EXISTS (
+                SELECT 1 FROM occurrence_digest_assertions AS assertion
+                WHERE assertion.occurrence_id = field.occurrence_id AND assertion.digest_id = field.digest_id
+                  AND assertion.scope = rom.evidence_scope AND assertion.provenance = 'source_declared'
+                  AND typeof(assertion.occurrence_id) = 'integer' AND typeof(assertion.digest_id) = 'integer'
+                  AND typeof(assertion.scope) = 'text' AND typeof(assertion.provenance) = 'text'
+            )) AS valid_assertion
+     FROM catalog_files_requested_occurrences AS requested
+     CROSS JOIN no_intro_dat_rom_digest_fields AS field
+     LEFT JOIN digest_values AS digest ON digest.digest_id = field.digest_id
+     LEFT JOIN no_intro_dat_rom_claims AS rom ON rom.occurrence_id = field.occurrence_id
+     WHERE field.occurrence_id = requested.occurrence_id
+     ORDER BY field.occurrence_id, field.field_kind"
+}
+
+const fn no_intro_dat_position_select() -> &'static str {
+    "SELECT position.occurrence_id, position.field_kind, position.source_order,
+            COALESCE((typeof(position.occurrence_id) = 'integer' AND position.occurrence_id > 0
+                AND typeof(position.field_kind) = 'integer'
+                AND typeof(position.source_order) = 'integer' AND position.source_order >= 0
+                AND typeof(position.source_line) = 'integer' AND position.source_line > 0
+                AND typeof(position.source_column) = 'integer' AND position.source_column > 0
+            ), 0) AS valid_storage
+     FROM catalog_files_requested_occurrences AS requested
+     CROSS JOIN no_intro_dat_rom_field_positions AS position
+     WHERE position.occurrence_id = requested.occurrence_id
+     ORDER BY position.occurrence_id, position.source_order"
 }
 
 fn digest_select() -> String {
@@ -1604,4 +1987,347 @@ fn parse_provenance(value: String) -> Result<DigestProvenance, CatalogFilesError
 
 const fn invalid_value(field: &'static str, value: String) -> CatalogFilesError {
     CatalogFilesError::InvalidStoredValue { field, value }
+}
+
+#[cfg(test)]
+mod no_intro_dat_payload_plans {
+    use diesel::connection::SimpleConnection;
+
+    use super::*;
+    use crate::storage::no_intro_dat_fields::{
+        NoIntroDatClrMameProField, NoIntroDatGameField, NoIntroDatHeaderField,
+    };
+
+    type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
+    #[derive(QueryableByName)]
+    struct ExplainRow {
+        #[diesel(sql_type = BigInt)]
+        parent: i64,
+        #[diesel(sql_type = Text)]
+        detail: String,
+    }
+
+    #[derive(QueryableByName)]
+    struct CountRow {
+        #[diesel(sql_type = BigInt)]
+        count: i64,
+    }
+
+    fn seed_provenance(connection: &mut SqliteConnection) -> TestResult {
+        connection.batch_execute(
+            "INSERT INTO publishing_sources(source_key,display_name) VALUES ('dat-plan-source','DAT plans');
+             INSERT INTO catalogs(catalog_key,source_key,display_name)
+                 VALUES ('dat-plan-catalog','dat-plan-source','DAT plans');
+             INSERT INTO catalog_coverage(coverage_id,kind) VALUES (1,'complete');",
+        )?;
+        Ok(())
+    }
+
+    fn seed_header(connection: &mut SqliteConnection, snapshot: &str) -> TestResult {
+        sql_query(
+            "INSERT INTO no_intro_dat_headers
+             (snapshot_key,source_order,source_line,source_column,id_text,name,description,version_text)
+             VALUES (?,0,1,1,'1','Plan fixture','Plan fixture','1')",
+        )
+        .bind::<Text, _>(snapshot)
+        .execute(connection)?;
+        for field in [
+            NoIntroDatHeaderField::Id,
+            NoIntroDatHeaderField::Name,
+            NoIntroDatHeaderField::Description,
+            NoIntroDatHeaderField::Version,
+        ] {
+            sql_query(
+                "INSERT INTO no_intro_dat_header_field_positions
+                 (snapshot_key,field_kind,source_order,source_line,source_column) VALUES (?,?,?,1,1)",
+            )
+            .bind::<Text, _>(snapshot)
+            .bind::<BigInt, _>(field as i64)
+            .bind::<BigInt, _>(field as i64)
+            .execute(connection)?;
+        }
+        sql_query(
+            "INSERT INTO no_intro_dat_clrmamepro_options
+             (snapshot_key,source_order,source_line,source_column,forcenodump_text) VALUES (?,4,1,1,'ignore')",
+        )
+        .bind::<Text, _>(snapshot)
+        .execute(connection)?;
+        sql_query(
+            "INSERT INTO no_intro_dat_clrmamepro_field_positions
+             (snapshot_key,field_kind,source_order,source_line,source_column) VALUES (?,?,0,1,1)",
+        )
+        .bind::<Text, _>(snapshot)
+        .bind::<BigInt, _>(NoIntroDatClrMameProField::ForceNoDump as i64)
+        .execute(connection)?;
+        Ok(())
+    }
+
+    fn seed_rom(connection: &mut SqliteConnection, id: i64) -> TestResult {
+        sql_query(
+            "INSERT INTO asset_occurrences(occurrence_id,record_id,occurrence_order,claim_kind)
+             VALUES (?,?,0,'no_intro_dat_rom')",
+        )
+        .bind::<BigInt, _>(id)
+        .bind::<BigInt, _>(id)
+        .execute(connection)?;
+        sql_query(
+            "INSERT INTO no_intro_dat_rom_claims
+             (occurrence_id,name,size_text,evidence_scope,source_order,source_line,source_column)
+             VALUES (?,'rom.bin','0004','whole_file',1,1,1)",
+        )
+        .bind::<BigInt, _>(id)
+        .execute(connection)?;
+        sql_query("INSERT INTO digest_values(digest_id,algorithm,digest) VALUES (?,'crc32',?)")
+            .bind::<BigInt, _>(id)
+            .bind::<Binary, _>(u32::try_from(id)?.to_be_bytes().as_slice())
+            .execute(connection)?;
+        sql_query(
+            "INSERT INTO occurrence_digest_assertions(occurrence_id,digest_id,scope,provenance)
+             VALUES (?,?,'whole_file','source_declared')",
+        )
+        .bind::<BigInt, _>(id)
+        .bind::<BigInt, _>(id)
+        .execute(connection)?;
+        sql_query(
+            "INSERT INTO no_intro_dat_rom_digest_fields(occurrence_id,field_kind,digest_id) VALUES (?,?,?)",
+        )
+        .bind::<BigInt, _>(id)
+        .bind::<BigInt, _>(NoIntroDatRomField::Crc as i64)
+        .bind::<BigInt, _>(id)
+        .execute(connection)?;
+        sql_query(
+            "INSERT INTO no_intro_dat_rom_digest_fields(occurrence_id,field_kind,invalid_text)
+             VALUES (?,?,'invalid-md5')",
+        )
+        .bind::<BigInt, _>(id)
+        .bind::<BigInt, _>(NoIntroDatRomField::Md5 as i64)
+        .execute(connection)?;
+        for (field, order) in [
+            (NoIntroDatRomField::Name, 0),
+            (NoIntroDatRomField::Size, 1),
+            (NoIntroDatRomField::Crc, 3),
+            (NoIntroDatRomField::Md5, 5),
+        ] {
+            sql_query(
+                "INSERT INTO no_intro_dat_rom_field_positions
+                 (occurrence_id,field_kind,source_order,source_line,source_column) VALUES (?,?,?,1,1)",
+            )
+            .bind::<BigInt, _>(id)
+            .bind::<BigInt, _>(field as i64)
+            .bind::<BigInt, _>(order)
+            .execute(connection)?;
+        }
+        Ok(())
+    }
+
+    fn seed_snapshot(
+        connection: &mut SqliteConnection,
+        group: i64,
+        first_id: i64,
+        games: i64,
+    ) -> TestResult {
+        let snapshot = format!("dat-plan-snapshot-{group}");
+        let document = format!("dat-plan-document-{group}");
+        let interpretation = format!("dat-plan-parser-{group}");
+        seed_snapshot_registry(connection, group, &snapshot, &document, &interpretation)?;
+        for order in 0..games {
+            seed_game(connection, group, first_id + order, order)?;
+        }
+        publish_snapshot(connection, &snapshot, &document, &interpretation, games)
+    }
+
+    fn seed_snapshot_registry(
+        connection: &mut SqliteConnection,
+        group: i64,
+        snapshot: &str,
+        document: &str,
+        interpretation: &str,
+    ) -> TestResult {
+        sql_query(
+            "INSERT INTO parser_interpretations(interpretation_key,format)
+             VALUES (?,'no-intro-dat-v4-compatible')",
+        )
+        .bind::<Text, _>(interpretation)
+        .execute(connection)?;
+        sql_query("INSERT INTO documents(document_key) VALUES (?)")
+            .bind::<Text, _>(document)
+            .execute(connection)?;
+        sql_query(
+            "INSERT INTO catalog_snapshots
+             (snapshot_key,catalog_key,document_key,interpretation_key,coverage_id)
+             VALUES (?,'dat-plan-catalog',?,?,1)",
+        )
+        .bind::<Text, _>(snapshot)
+        .bind::<Text, _>(document)
+        .bind::<Text, _>(interpretation)
+        .execute(connection)?;
+        sql_query(
+            "INSERT INTO catalog_set_groups(set_group_id,snapshot_key,kind,list_order) VALUES (?,?,'root',0)",
+        )
+        .bind::<BigInt, _>(group)
+        .bind::<Text, _>(snapshot)
+        .execute(connection)?;
+        sql_query(
+            "INSERT INTO no_intro_dat_documents(snapshot_key,source_line,source_column) VALUES (?,1,1)",
+        )
+        .bind::<Text, _>(snapshot)
+        .execute(connection)?;
+        seed_header(connection, snapshot)
+    }
+
+    fn seed_game(connection: &mut SqliteConnection, group: i64, id: i64, order: i64) -> TestResult {
+        sql_query(
+            "INSERT INTO catalog_sets
+             (set_id,set_group_id,source_element_kind,list_order,set_name,source_line,source_column)
+             VALUES (?,?,'no_intro_dat_game',?,'game',1,1)",
+        )
+        .bind::<BigInt, _>(id)
+        .bind::<BigInt, _>(group)
+        .bind::<BigInt, _>(order)
+        .execute(connection)?;
+        sql_query(
+            "INSERT INTO no_intro_dat_games(set_id,source_order,description_text) VALUES (?,?,'Plan game')",
+        )
+        .bind::<BigInt, _>(id)
+        .bind::<BigInt, _>(order + 1)
+        .execute(connection)?;
+        for field in [NoIntroDatGameField::Name, NoIntroDatGameField::Description] {
+            sql_query(
+                "INSERT INTO no_intro_dat_game_field_positions
+                 (set_id,field_kind,source_order,source_line,source_column) VALUES (?,?,0,1,1)",
+            )
+            .bind::<BigInt, _>(id)
+            .bind::<BigInt, _>(field as i64)
+            .execute(connection)?;
+        }
+        seed_rom(connection, id)
+    }
+
+    fn publish_snapshot(
+        connection: &mut SqliteConnection,
+        snapshot: &str,
+        document: &str,
+        interpretation: &str,
+        games: i64,
+    ) -> TestResult {
+        sql_query(
+            "INSERT INTO no_intro_dat_parse_counts
+             (snapshot_key,game_count,rom_count,category_count,identifier_count,release_count,
+              clrmamepro_option_count,romcenter_option_count,header_field_count,clrmamepro_field_count,
+              romcenter_field_count,game_field_count,rom_field_count)
+             VALUES (?,?,?,0,0,0,1,0,4,1,0,?,?)",
+        )
+        .bind::<Text, _>(snapshot)
+        .bind::<BigInt, _>(games)
+        .bind::<BigInt, _>(games)
+        .bind::<BigInt, _>(games * 2)
+        .bind::<BigInt, _>(games * 4)
+        .execute(connection)?;
+        sql_query(
+            "INSERT INTO snapshot_publications(catalog_key,document_key,interpretation_key,snapshot_key)
+             VALUES ('dat-plan-catalog',?,?,?)",
+        )
+        .bind::<Text, _>(document)
+        .bind::<Text, _>(interpretation)
+        .bind::<Text, _>(snapshot)
+        .execute(connection)?;
+        Ok(())
+    }
+
+    fn seed_corpus(connection: &mut SqliteConnection) -> TestResult {
+        seed_provenance(connection)?;
+        seed_snapshot(connection, 1, 1, 3)?;
+        seed_snapshot(connection, 2, 1000, 512)?;
+        for group in 3..=130 {
+            seed_snapshot(connection, group, 10_000 + group, 1)?;
+        }
+        for table in [
+            "catalog_set_groups",
+            "catalog_snapshots",
+            "parser_interpretations",
+            "snapshot_publications",
+        ] {
+            let row = sql_query(format!("SELECT count(*) AS count FROM {table}"))
+                .get_result::<CountRow>(connection)?;
+            assert_eq!(row.count, 130, "registry population incomplete: {table}");
+        }
+        Ok(())
+    }
+
+    fn assert_requested_owner_plan(rows: &[ExplainRow], alias: &str) {
+        let requested = rows
+            .iter()
+            .position(|row| row.parent == 0 && row.detail == "scan requested");
+        let owner = rows.iter().position(|row| {
+            row.parent == 0
+                && row.detail.starts_with(&format!("search {alias} using "))
+                && row.detail.contains("(occurrence_id=?)")
+        });
+        let details = rows
+            .iter()
+            .map(|row| row.detail.as_str())
+            .collect::<Vec<_>>();
+        assert!(
+            requested
+                .zip(owner)
+                .is_some_and(|(requested, owner)| requested < owner),
+            "requested IDs must precede indexed {alias} lookup: {details:?}"
+        );
+        for row in rows {
+            assert!(
+                !row.detail.starts_with("scan ")
+                    || row.detail == "scan requested"
+                    || row.detail.contains("constant row"),
+                "whole-catalog scan in native DAT payload query: {details:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn populated_shared_dat_payload_ctes_seek_requested_native_owners() -> TestResult {
+        let pool = crate::storage::db::create_db_pool(":memory:")?;
+        let mut connection = pool.get()?;
+        connection.transaction::<_, Box<dyn std::error::Error>, _>(|connection| {
+            seed_corpus(connection)?;
+            connection.batch_execute("ANALYZE")?;
+            let analyzed =
+                sql_query("SELECT count(*) AS count FROM sqlite_stat1 WHERE stat IS NOT NULL")
+                    .get_result::<CountRow>(connection)?;
+            assert!(
+                analyzed.count > 0,
+                "ANALYZE must populate planner statistics"
+            );
+            let ids = [
+                OccurrenceId::from_database(1),
+                OccurrenceId::from_database(3),
+            ];
+            let requested = no_intro_dat_requested_cte(&ids);
+            for (query, alias) in [
+                (no_intro_dat_rom_select(), "rom"),
+                (no_intro_dat_digest_select().to_owned(), "field"),
+                (no_intro_dat_position_select().to_owned(), "position"),
+            ] {
+                let mut rows = sql_query(format!("EXPLAIN QUERY PLAN {requested}{query}"))
+                    .load::<ExplainRow>(connection)?;
+                for row in &mut rows {
+                    row.detail.make_ascii_lowercase();
+                }
+                assert_requested_owner_plan(&rows, alias);
+            }
+            let payloads = no_intro_dat_rom_payloads(connection, &ids)?;
+            assert_eq!(payloads.len(), ids.len());
+            for id in ids {
+                let payload = payloads
+                    .get(&id)
+                    .ok_or("requested native DAT ROM missing")?;
+                assert_eq!(payload.size, Some(4));
+                assert_eq!(payload.evidence_scope, NoIntroDatEvidenceScope::WholeFile);
+                assert_eq!(payload.md5_text.as_deref(), Some("invalid-md5"));
+                let crc = hex::encode(u32::try_from(id.database_value())?.to_be_bytes());
+                assert_eq!(payload.crc_text.as_deref(), Some(crc.as_str()));
+            }
+            Ok(())
+        })
+    }
 }

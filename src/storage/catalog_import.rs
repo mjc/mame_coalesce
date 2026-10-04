@@ -1068,7 +1068,7 @@ fn finish_streaming_import(
 struct NoIntroDatImport<'a> {
     import: StreamingImport<'a>,
     counts: no_intro_dat_native::ImportCounts,
-    digest_scope: no_intro_dat_native::DigestScope,
+    digest_scope: no_intro_dat_native::NoIntroDatEvidenceScope,
 }
 
 fn import_no_intro_dat(
@@ -1096,7 +1096,8 @@ fn import_no_intro_dat(
                 )
                 .map_err(StreamingImportError::Storage)?;
                 let counts = no_intro_dat_native::ImportCounts::from_document(&document);
-                let digest_scope = no_intro_dat_native::DigestScope::from_document(&document);
+                let digest_scope =
+                    no_intro_dat_native::NoIntroDatEvidenceScope::from_document(&document);
                 if let SnapshotPublication::Pending(key) = &import.publication {
                     no_intro_dat_native::insert_document(import.conn, key, &document)
                         .map_err(StreamingImportError::Storage)?;

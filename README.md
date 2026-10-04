@@ -252,6 +252,25 @@ has a singular reported version only when exactly one version child exists.
 Repeated header declarations remain ordered native facts. Full corpus and
 producer-grammar acceptance remain open.
 
+`catalog_no_intro_dat::games_for_snapshot` reads an exact published flat DAT
+in its actual v3/v4 strict or compatible mode, without opening original XML.
+A checked `1..=500` game limit returns the complete native header and selected
+games: ordered header text/directives, declared parent references, repeated
+categories and publisher IDs, releases and ROM references. Raw sibling and
+attribute ordinals retain vendor/namespace gaps; list and per-family orders
+remain separate. Missing fields differ from present-empty fields, and the
+effective `forcenodump` default never replaces the declared text. ROM references
+embed the same payload used by `catalog_files`, loaded in the same read
+transaction. That payload exposes stored evidence scope and the existing
+virtual numeric size alongside the original size text. No new persistent
+projection or source bytes are added. Snapshot/registry-pinned cursors validate
+their actual native anchors; paired backups preserve them.
+The bounded reader checks available native ownership, positions, sealed counts
+and digest registries. It is not a replacement for global integrity checking:
+native ROMs have no independent game key after their shared occurrence is
+completely erased, and global descendant totals do not identify which game
+lost a fully erased collection.
+
 `catalog_no_intro_database::games_for_snapshot` reads an exact published export
 without opening its original document. A checked page limit bounds games;
 every selected game's archive, dump-source and release histories are complete,

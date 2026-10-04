@@ -469,6 +469,11 @@ fn public_occurrence_query_returns_lossless_native_rom_payloads_in_bulk() -> Tes
         .ok_or("first native ROM payload missing")?;
     assert_eq!(first.name, "repeat.bin");
     assert_eq!(first.size_text.as_deref(), Some("0004"));
+    assert_eq!(first.size, Some(4));
+    assert_eq!(
+        first.evidence_scope,
+        catalog_files::NoIntroDatEvidenceScope::WholeFile
+    );
     assert_eq!(first.crc_text.as_deref(), Some("aabbccdd"));
     assert_eq!(
         first.md5_text.as_deref(),
@@ -496,6 +501,11 @@ fn public_occurrence_query_returns_lossless_native_rom_payloads_in_bulk() -> Tes
         .as_ref()
         .ok_or("second native ROM payload missing")?;
     assert_eq!(second.size_text.as_deref(), Some(""));
+    assert_eq!(second.size, None);
+    assert_eq!(
+        second.evidence_scope,
+        catalog_files::NoIntroDatEvidenceScope::Unknown
+    );
     assert_eq!(second.crc_text.as_deref(), Some(""));
     assert_eq!(second.md5_text, None);
     assert_eq!(second.sha1_text, None);

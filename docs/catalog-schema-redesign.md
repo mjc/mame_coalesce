@@ -1177,6 +1177,28 @@ an explicit verified identity relation. A `<file>` row's `crc32` and SHA-256 are
 not the same source fields as a flat DAT's `crc` and SHA-256, even where a
 normalized digest projection can expose equivalent algorithms.
 
+The separate flat-DAT `catalog_no_intro_dat::games_for_snapshot` query retains
+the actual v3/v4 strict or compatible interpretation and a required native
+document/header owner, including zero-game and compatible present-empty
+header field declarations. Header text and optional directives form a mixed source-ordered
+sequence; game descriptions, repeated categories/IDs, releases and ROMs do
+likewise. Parent literals retain their actual reported relationship IDs,
+without name/number resolution. Release identity is the native composite
+`(CatalogSetId, release_order)`, not a database-export release ID. Five closed
+field ledgers are shared with the writer without renumbering their codes.
+
+ROM references embed the existing occurrence API payload on the same connection
+and read transaction. Stored whole-file/unknown scope is a flat-DAT enum shared
+with the writer; numeric size is read from the existing virtual column, never
+another persistent copy. Header filters, including present-empty filters,
+remain unknown-scope evidence and cannot acquire a whole-file UUID by inference.
+Raw ordinals may have vendor/namespace gaps in compatible mode; dense game,
+ROM and per-family ranks are distinct from those raw positions. The bounded
+page verifies available native anchors, parent/digest registries and field
+presence/position companions. Fully erased associations cannot be inferred
+from global counts or recovered by reopening originals; global integrity
+checks retain that separate role.
+
 The native `catalog_no_intro_database::games_for_snapshot` query returns
 document framing, import mode, ordered optional headers and complete selected
 game histories directly from these owners. Typed archive/source/release IDs

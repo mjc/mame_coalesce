@@ -1,18 +1,6 @@
 //! Closed native field-code ledgers shared by No-Intro database import and query.
 
-macro_rules! field_enum {
-    ($name:ident { $($field:ident = $code:literal),+ $(,)? }) => {
-        #[repr(i64)]
-        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-        pub enum $name { $($field = $code),+ }
-
-        impl $name {
-            pub(crate) const fn from_code(code: i64) -> Option<Self> {
-                match code { $($code => Some(Self::$field),)+ _ => None }
-            }
-        }
-    };
-}
+use super::native_fields::field_enum;
 
 field_enum!(NoIntroDatabaseArchiveField {
     Additional=0, Adult=1, Aftermarket=2, Alt=3, Bios=4, Categories=5, Complete=6,
