@@ -252,6 +252,26 @@ has a singular reported version only when exactly one version child exists.
 Repeated header declarations remain ordered native facts. Full corpus and
 producer-grammar acceptance remain open.
 
+`catalog_no_intro_database::games_for_snapshot` reads an exact published export
+without opening its original document. A checked page limit bounds games;
+every selected game's archive, dump-source and release histories are complete,
+including optional details/serials, file references and typed attribute positions.
+The native metadata API and existing `catalog_files` payloads together expose
+all 129 attributes in the observed export ledger. File references use the same
+occurrence IDs and preserve both game-wide file order and each history owner's
+mixed details/serials/file order. Empty, absent and repeated declarations remain
+distinct. Continuations belong to the exact snapshot and database registry;
+paired backups retain them, while fresh rebuilds reject them. Namespace
+declarations may leave gaps in lexical attribute ordinals; header and child
+ordering rules still apply. This API does not promote unknown-scope export
+hashes to whole-file evidence or establish a producer grammar.
+Saved game/header counts and dense mixed child/file order are checked before
+returning a page. File ownership is checked from both the selected game's
+occurrences and native files; two game-keyed indexes keep those reverse checks
+bounded. Archive links must retain their reported relationship provenance.
+Missing owners, dangling digest IDs and unknown digest field codes are errors,
+not omitted metadata.
+
 `examples/no_intro_database_profile.rs` exercises that reader with the
 `no-intro-database-xml-compatible` or `no-intro-database-xml-nul-compatible`
 interpretation and XML paths. It reports complete record counts and recovery

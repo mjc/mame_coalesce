@@ -223,6 +223,20 @@ impl NoIntroDumpSourceId {
     }
 }
 
+impl TryFrom<i64> for NoIntroDumpSourceId {
+    type Error = crate::Error;
+
+    fn try_from(value: i64) -> crate::Result<Self> {
+        if value > 0 {
+            Ok(Self(value))
+        } else {
+            Err(crate::Error::InvalidPath(
+                "No-Intro dump source ID must be positive".into(),
+            ))
+        }
+    }
+}
+
 /// Stable row identity for a native No-Intro release.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NoIntroReleaseId(i64);
@@ -231,6 +245,20 @@ impl NoIntroReleaseId {
     #[must_use]
     pub const fn as_i64(self) -> i64 {
         self.0
+    }
+}
+
+impl TryFrom<i64> for NoIntroReleaseId {
+    type Error = crate::Error;
+
+    fn try_from(value: i64) -> crate::Result<Self> {
+        if value > 0 {
+            Ok(Self(value))
+        } else {
+            Err(crate::Error::InvalidPath(
+                "No-Intro release ID must be positive".into(),
+            ))
+        }
     }
 }
 

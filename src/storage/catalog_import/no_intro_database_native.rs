@@ -13,6 +13,12 @@ use crate::{
     storage::{
         catalog_content::{ContentDigestAssertions, record_occurrence_digest_assertions},
         catalog_identity::OccurrenceId,
+        no_intro_database_fields::{
+            NoIntroDatabaseArchiveField, NoIntroDatabaseDumpDetailsField,
+            NoIntroDatabaseDumpFileField, NoIntroDatabaseDumpSerialsField,
+            NoIntroDatabaseReleaseDetailsField, NoIntroDatabaseReleaseFileField,
+            NoIntroDatabaseReleaseSerialsField,
+        },
     },
     xml_reader::DeclaredText,
 };
@@ -81,11 +87,7 @@ macro_rules! field_value {
 
 macro_rules! native_fields {
     ($function:ident, $enum:ident, $model:ty, $count:literal;
-     $($variant:ident = $code:literal: $storage:ident $field:ident => $column:literal),+ $(,)?) => {
-        #[derive(Clone, Copy)]
-        #[repr(i64)]
-        enum $enum { $($variant = $code),+ }
-
+     $($variant:ident: $storage:ident $field:ident => $column:literal),+ $(,)?) => {
         const fn $function(owner: &$model) -> [Field<'_>; $count] {
             [$(Field {
                 kind: $enum::$variant as i64,
@@ -95,82 +97,82 @@ macro_rules! native_fields {
     };
 }
 
-native_fields!(archive_fields, ArchiveField, ArchiveDescription, 32;
-    Additional=0:text additional=>"additional", Adult=1:text adult=>"adult",
-    Aftermarket=2:text aftermarket=>"aftermarket", Alt=3:text alt=>"alt", Bios=4:text bios=>"bios",
-    Categories=5:text categories=>"categories", Complete=6:text complete=>"complete",
-    Dat=7:text dat=>"dat", DatterNote=8:text datter_note=>"datter_note",
-    Description=9:text description=>"description", Devstatus=10:text devstatus=>"devstatus",
-    GameId1=11:text gameid1=>"gameid1", GameId2=12:text gameid2=>"gameid2",
-    Langchecked=13:text langchecked=>"langchecked", Languages=14:text languages=>"languages",
-    Licensed=15:text licensed=>"licensed", Listed=16:text listed=>"listed",
-    Mergename=17:text mergename=>"mergename", Name=18:text name=>"name",
-    NameAlt=19:text name_alt=>"name_alt", Number=20:text number=>"number",
-    Physical=21:text physical=>"physical", Region=22:text region=>"region",
-    Regparent=23:text regparent=>"regparent", Showlang=24:text showlang=>"showlang",
-    Special1=25:text special1=>"special1", Special2=26:text special2=>"special2",
-    StickyNote=27:text sticky_note=>"sticky_note", Version1=28:text version1=>"version1",
-    Version2=29:text version2=>"version2", Clone=30:clone clone=>"clone",
-    MergeOf=31:link mergeof=>"mergeof"
+native_fields!(archive_fields, NoIntroDatabaseArchiveField, ArchiveDescription, 32;
+    Additional:text additional=>"additional", Adult:text adult=>"adult",
+    Aftermarket:text aftermarket=>"aftermarket", Alt:text alt=>"alt", Bios:text bios=>"bios",
+    Categories:text categories=>"categories", Complete:text complete=>"complete",
+    Dat:text dat=>"dat", DatterNote:text datter_note=>"datter_note",
+    Description:text description=>"description", Devstatus:text devstatus=>"devstatus",
+    GameId1:text gameid1=>"gameid1", GameId2:text gameid2=>"gameid2",
+    Langchecked:text langchecked=>"langchecked", Languages:text languages=>"languages",
+    Licensed:text licensed=>"licensed", Listed:text listed=>"listed",
+    Mergename:text mergename=>"mergename", Name:text name=>"name",
+    NameAlt:text name_alt=>"name_alt", Number:text number=>"number",
+    Physical:text physical=>"physical", Region:text region=>"region",
+    Regparent:text regparent=>"regparent", Showlang:text showlang=>"showlang",
+    Special1:text special1=>"special1", Special2:text special2=>"special2",
+    StickyNote:text sticky_note=>"sticky_note", Version1:text version1=>"version1",
+    Version2:text version2=>"version2", Clone:clone clone=>"clone",
+    MergeOf:link mergeof=>"mergeof"
 );
 
-native_fields!(dump_details_fields, DumpDetailsField, SourceDetails, 20;
-    Comment1=0:text comment1=>"comment1", Comment2=1:text comment2=>"comment2",
-    DumpDate=2:text d_date=>"d_date", DumpDateInfo=3:text d_date_info=>"d_date_info",
-    Dumper=4:text dumper=>"dumper", Id=5:text id=>"id", Link1=6:text link1=>"link1",
-    Link2=7:text link2=>"link2", Link3=8:text link3=>"link3", MediaTitle=9:text media_title=>"media_title",
-    NoDump=10:text nodump=>"nodump", Origin=11:text origin=>"origin",
-    OriginalFormat=12:text originalformat=>"originalformat", Project=13:text project=>"project",
-    ReleaseDate=14:text r_date=>"r_date", ReleaseDateInfo=15:text r_date_info=>"r_date_info",
-    Region=16:text region=>"region", RomInfo=17:text rominfo=>"rominfo",
-    Section=18:text section=>"section", Tool=19:text tool=>"tool"
+native_fields!(dump_details_fields, NoIntroDatabaseDumpDetailsField, SourceDetails, 20;
+    Comment1:text comment1=>"comment1", Comment2:text comment2=>"comment2",
+    DumpDate:text d_date=>"d_date", DumpDateInfo:text d_date_info=>"d_date_info",
+    Dumper:text dumper=>"dumper", Id:text id=>"id", Link1:text link1=>"link1",
+    Link2:text link2=>"link2", Link3:text link3=>"link3", MediaTitle:text media_title=>"media_title",
+    NoDump:text nodump=>"nodump", Origin:text origin=>"origin",
+    OriginalFormat:text originalformat=>"originalformat", Project:text project=>"project",
+    ReleaseDate:text r_date=>"r_date", ReleaseDateInfo:text r_date_info=>"r_date_info",
+    Region:text region=>"region", RomInfo:text rominfo=>"rominfo",
+    Section:text section=>"section", Tool:text tool=>"tool"
 );
 
-native_fields!(dump_serials_fields, DumpSerialsField, SourceSerials, 14;
-    BoxBarcode=0:text box_barcode=>"box_barcode", BoxSerial=1:text box_serial=>"box_serial",
-    ChipSerial=2:text chip_serial=>"chip_serial", DigitalSerial1=3:text digital_serial1=>"digital_serial1",
-    DigitalSerial2=4:text digital_serial2=>"digital_serial2", LockoutSerial=5:text lockout_serial=>"lockout_serial",
-    MediaSerial1=6:text media_serial1=>"media_serial1", MediaSerial2=7:text media_serial2=>"media_serial2",
-    MediaSerial3=8:text media_serial3=>"media_serial3", MediaStamp=9:text mediastamp=>"mediastamp",
-    PcbSerial=10:text pcb_serial=>"pcb_serial", RomChipSerial1=11:text romchip_serial1=>"romchip_serial1",
-    RomChipSerial2=12:text romchip_serial2=>"romchip_serial2", SaveChipSerial=13:text savechip_serial=>"savechip_serial"
+native_fields!(dump_serials_fields, NoIntroDatabaseDumpSerialsField, SourceSerials, 14;
+    BoxBarcode:text box_barcode=>"box_barcode", BoxSerial:text box_serial=>"box_serial",
+    ChipSerial:text chip_serial=>"chip_serial", DigitalSerial1:text digital_serial1=>"digital_serial1",
+    DigitalSerial2:text digital_serial2=>"digital_serial2", LockoutSerial:text lockout_serial=>"lockout_serial",
+    MediaSerial1:text media_serial1=>"media_serial1", MediaSerial2:text media_serial2=>"media_serial2",
+    MediaSerial3:text media_serial3=>"media_serial3", MediaStamp:text mediastamp=>"mediastamp",
+    PcbSerial:text pcb_serial=>"pcb_serial", RomChipSerial1:text romchip_serial1=>"romchip_serial1",
+    RomChipSerial2:text romchip_serial2=>"romchip_serial2", SaveChipSerial:text savechip_serial=>"savechip_serial"
 );
 
-native_fields!(dump_file_fields, DumpFileField, SourceFile, 23;
-    Bad=0:text bad=>"bad", Crc32=1:digest crc32=>"crc32", Date=2:text date=>"date",
-    Extension=3:text extension=>"extension", Filter=4:text filter=>"filter",
-    ForceName=5:text forcename=>"forcename", ForceSceneName=6:text forcescenename=>"forcescenename",
-    Format=7:text format=>"format", Header=8:text header=>"header", Id=9:text id=>"id",
-    Item=10:text item=>"item", Md5=11:digest md5=>"md5", Mia=12:text mia=>"mia",
-    Note=13:text note=>"note", OriginSha256=14:digest origin_sha256=>"origin_sha256",
-    OriginSize=15:text origin_size=>"origin_size", Serial=16:text serial=>"serial",
-    Sha1=17:digest sha1=>"sha1", Sha256=18:digest sha256=>"sha256", Size=19:text size=>"source_size",
-    Unique=20:text unique=>"unique", UpdateType=21:text update_type=>"update_type", Version=22:text version=>"version"
+native_fields!(dump_file_fields, NoIntroDatabaseDumpFileField, SourceFile, 23;
+    Bad:text bad=>"bad", Crc32:digest crc32=>"crc32", Date:text date=>"date",
+    Extension:text extension=>"extension", Filter:text filter=>"filter",
+    ForceName:text forcename=>"forcename", ForceSceneName:text forcescenename=>"forcescenename",
+    Format:text format=>"format", Header:text header=>"header", Id:text id=>"id",
+    Item:text item=>"item", Md5:digest md5=>"md5", Mia:text mia=>"mia",
+    Note:text note=>"note", OriginSha256:digest origin_sha256=>"origin_sha256",
+    OriginSize:text origin_size=>"origin_size", Serial:text serial=>"serial",
+    Sha1:digest sha1=>"sha1", Sha256:digest sha256=>"sha256", Size:text size=>"source_size",
+    Unique:text unique=>"unique", UpdateType:text update_type=>"update_type", Version:text version=>"version"
 );
 
-native_fields!(release_details_fields, ReleaseDetailsField, ReleaseDetails, 17;
-    ArchiveName=0:text archivename=>"archivename", Category=1:text category=>"category",
-    Comment=2:text comment=>"comment", Date=3:text date=>"date", Directory=4:text dirname=>"dirname",
-    Group=5:text group=>"group", Id=6:text id=>"id", NfoCrc32=7:digest nfo_crc32=>"nfo_crc32",
-    NfoSize=8:text nfo_size=>"nfo_size", NfoCrc=9:digest nfocrc=>"nfocrc",
-    NfoName=10:text nfoname=>"nfoname", NfoLegacySize=11:text nfosize=>"nfosize",
-    Origin=12:text origin=>"origin", OriginalFormat=13:text originalformat=>"originalformat",
-    Region=14:text region=>"region", RomInfo=15:text rominfo=>"rominfo", Tool=16:text tool=>"tool"
+native_fields!(release_details_fields, NoIntroDatabaseReleaseDetailsField, ReleaseDetails, 17;
+    ArchiveName:text archivename=>"archivename", Category:text category=>"category",
+    Comment:text comment=>"comment", Date:text date=>"date", Directory:text dirname=>"dirname",
+    Group:text group=>"group", Id:text id=>"id", NfoCrc32:digest nfo_crc32=>"nfo_crc32",
+    NfoSize:text nfo_size=>"nfo_size", NfoCrc:digest nfocrc=>"nfocrc",
+    NfoName:text nfoname=>"nfoname", NfoLegacySize:text nfosize=>"nfosize",
+    Origin:text origin=>"origin", OriginalFormat:text originalformat=>"originalformat",
+    Region:text region=>"region", RomInfo:text rominfo=>"rominfo", Tool:text tool=>"tool"
 );
 
-native_fields!(release_serials_fields, ReleaseSerialsField, ReleaseSerials, 6;
-    BoxBarcode=0:text box_barcode=>"box_barcode", BoxSerial=1:text box_serial=>"box_serial",
-    MediaSerial1=2:text media_serial1=>"media_serial1", MediaStamp=3:text mediastamp=>"mediastamp",
-    PcbSerial=4:text pcb_serial=>"pcb_serial", RomChipSerial1=5:text romchip_serial1=>"romchip_serial1"
+native_fields!(release_serials_fields, NoIntroDatabaseReleaseSerialsField, ReleaseSerials, 6;
+    BoxBarcode:text box_barcode=>"box_barcode", BoxSerial:text box_serial=>"box_serial",
+    MediaSerial1:text media_serial1=>"media_serial1", MediaStamp:text mediastamp=>"mediastamp",
+    PcbSerial:text pcb_serial=>"pcb_serial", RomChipSerial1:text romchip_serial1=>"romchip_serial1"
 );
 
-native_fields!(release_file_fields, ReleaseFileField, ReleaseFile, 17;
-    Bad=0:text bad=>"bad", Crc32=1:digest crc32=>"crc32", Extension=2:text extension=>"extension",
-    ForceName=3:text forcename=>"forcename", ForceSceneName=4:text forcescenename=>"forcescenename",
-    Format=5:text format=>"format", Header=6:text header=>"header", Id=7:text id=>"id",
-    Item=8:text item=>"item", Md5=9:digest md5=>"md5", Note=10:text note=>"note",
-    Serial=11:text serial=>"serial", Sha1=12:digest sha1=>"sha1", Sha256=13:digest sha256=>"sha256",
-    Size=14:text size=>"source_size", UpdateType=15:text update_type=>"update_type", Version=16:text version=>"version"
+native_fields!(release_file_fields, NoIntroDatabaseReleaseFileField, ReleaseFile, 17;
+    Bad:text bad=>"bad", Crc32:digest crc32=>"crc32", Extension:text extension=>"extension",
+    ForceName:text forcename=>"forcename", ForceSceneName:text forcescenename=>"forcescenename",
+    Format:text format=>"format", Header:text header=>"header", Id:text id=>"id",
+    Item:text item=>"item", Md5:digest md5=>"md5", Note:text note=>"note",
+    Serial:text serial=>"serial", Sha1:digest sha1=>"sha1", Sha256:digest sha256=>"sha256",
+    Size:text size=>"source_size", UpdateType:text update_type=>"update_type", Version:text version=>"version"
 );
 
 #[derive(Clone, Copy)]

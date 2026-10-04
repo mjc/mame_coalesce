@@ -847,62 +847,12 @@ CREATE TRIGGER no_intro_database_reject_missing_field_orders BEFORE INSERT ON sn
 WHEN EXISTS (SELECT 1 FROM catalog_snapshots s JOIN parser_interpretations p USING(interpretation_key)
             WHERE s.snapshot_key=NEW.snapshot_key
               AND p.format IN ('no-intro-database-xml-compatible','no-intro-database-xml-nul-compatible'))
- AND (
-    EXISTS (SELECT 1 FROM no_intro_header_fields WHERE snapshot_key=NEW.snapshot_key
-            GROUP BY snapshot_key HAVING MIN(source_order)<>0 OR MAX(source_order)<>COUNT(*)-1)
-    OR EXISTS (
-        SELECT 1
-        FROM (
-            SELECT c.snapshot_key,'archive' owner_kind,p.archive_id owner_id,p.source_order
-            FROM no_intro_archive_field_positions p
-            JOIN no_intro_archive_descriptions a USING(archive_id)
-            JOIN catalog_sets s USING(set_id)
-            JOIN catalog_set_groups c USING(set_group_id)
-            UNION ALL
-            SELECT c.snapshot_key,'dump_details',p.dump_source_id,p.source_order
-            FROM no_intro_dump_details_field_positions p
-            JOIN no_intro_dump_sources d USING(dump_source_id)
-            JOIN catalog_sets s USING(set_id)
-            JOIN catalog_set_groups c USING(set_group_id)
-            UNION ALL
-            SELECT c.snapshot_key,'dump_serials',p.dump_source_id,p.source_order
-            FROM no_intro_dump_serials_field_positions p
-            JOIN no_intro_dump_sources d USING(dump_source_id)
-            JOIN catalog_sets s USING(set_id)
-            JOIN catalog_set_groups c USING(set_group_id)
-            UNION ALL
-            SELECT c.snapshot_key,'dump_file',p.occurrence_id,p.source_order
-            FROM no_intro_dump_file_field_positions p
-            JOIN no_intro_dump_files f USING(occurrence_id)
-            JOIN catalog_sets s ON s.set_id=f.set_id
-            JOIN catalog_set_groups c USING(set_group_id)
-            UNION ALL
-            SELECT c.snapshot_key,'release_details',p.release_id,p.source_order
-            FROM no_intro_release_details_field_positions p
-            JOIN no_intro_release_details d USING(release_id)
-            JOIN no_intro_releases r USING(release_id)
-            JOIN catalog_sets s ON s.set_id=r.set_id
-            JOIN catalog_set_groups c USING(set_group_id)
-            UNION ALL
-            SELECT c.snapshot_key,'release_serials',p.release_id,p.source_order
-            FROM no_intro_release_serials_field_positions p
-            JOIN no_intro_release_serials r USING(release_id)
-            JOIN no_intro_releases o USING(release_id)
-            JOIN catalog_sets s ON s.set_id=o.set_id
-            JOIN catalog_set_groups c USING(set_group_id)
-            UNION ALL
-            SELECT c.snapshot_key,'release_file',p.occurrence_id,p.source_order
-            FROM no_intro_release_file_field_positions p
-            JOIN no_intro_release_files f USING(occurrence_id)
-            JOIN catalog_sets s ON s.set_id=f.set_id
-            JOIN catalog_set_groups c USING(set_group_id)
-        ) positions
-        WHERE snapshot_key=NEW.snapshot_key
-        GROUP BY snapshot_key,owner_kind,owner_id
-        HAVING MIN(source_order)<>0 OR MAX(source_order)<>COUNT(*)-1
-    )
- )
-BEGIN SELECT RAISE(ABORT,'No-Intro snapshot has missing or noncontiguous field positions'); END;
+ -- Header children are dense. Attribute positions are lexical ordinals that
+ -- also count namespace declarations; the native presence/uniqueness guards
+ -- establish their completeness without requiring dense recognized ordinals.
+ AND EXISTS (SELECT 1 FROM no_intro_header_fields WHERE snapshot_key=NEW.snapshot_key
+             GROUP BY snapshot_key HAVING MIN(source_order)<>0 OR MAX(source_order)<>COUNT(*)-1)
+BEGIN SELECT RAISE(ABORT,'No-Intro snapshot has missing or noncontiguous header fields'); END;
 
 CREATE TRIGGER no_intro_dump_file_digests_require_algorithm BEFORE INSERT ON no_intro_dump_file_digests
 WHEN NEW.digest_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM digest_values d WHERE d.digest_id=NEW.digest_id AND d.algorithm=CASE NEW.field_kind WHEN 0 THEN 'crc32' WHEN 1 THEN 'md5' WHEN 2 THEN 'sha1' WHEN 3 THEN 'sha256' WHEN 4 THEN 'sha256' END)

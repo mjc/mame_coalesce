@@ -1177,6 +1177,28 @@ an explicit verified identity relation. A `<file>` row's `crc32` and SHA-256 are
 not the same source fields as a flat DAT's `crc` and SHA-256, even where a
 normalized digest projection can expose equivalent algorithms.
 
+The native `catalog_no_intro_database::games_for_snapshot` query returns
+document framing, import mode, ordered optional headers and complete selected
+game histories directly from these owners. Typed archive/source/release IDs
+are actual database identities, not publisher numbers or title-derived keys.
+All 89 archive/details/serial attributes have metadata query shapes; the 40
+file attributes use the existing occurrence payload API, with typed position
+companions on the page's file references. Release NFO CRC aliases are independent
+companion metadata, including equal values and invalid literals; they do not
+create ROM occurrences or shared file UUIDs. No query opens an external source
+or adds a persistent projection. Pagination bounds games rather than silently
+capping their descendants; requested-owner batches stay within SQLite bind
+limits. The source-free API does not establish whole-file hash scope or prove
+every producer dialect.
+The reader checks sealed game/header counts, dense mixed history order and
+game-wide file traversal. Selected-game ownership checks start independently
+from shared occurrences and native files, using two `(set_id, occurrence_id)`
+indexes for the latter direction. Archive links retain their reported registry
+and snapshot provenance. Digest validation includes every stored field code
+and rejects dangling dictionary references rather than accepting SQL NULL as
+validity. Populated production-DDL query-plan tests exercise the actual archive,
+child-union, NFO and bidirectional file-ownership SQL builders.
+
 The Nintendo example has 408 games, one archive per game, 1,546 sources and
 1,579 files. Other exports include games with only an archive and zero sources.
 All archive `clone` values are either the `P` parent marker or a

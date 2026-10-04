@@ -228,6 +228,14 @@ CREATE TABLE no_intro_release_files (
         REFERENCES asset_occurrences(occurrence_id, claim_kind) ON DELETE RESTRICT
 );
 
+-- Selected-game query closure must also find native files after their shared
+-- occurrence or parent history has been damaged. The occurrence-first owner
+-- constraints cannot seek this reverse path by game.
+CREATE INDEX no_intro_dump_files_game_lookup
+    ON no_intro_dump_files(set_id, occurrence_id);
+CREATE INDEX no_intro_release_files_game_lookup
+    ON no_intro_release_files(set_id, occurrence_id);
+
 -- Closed archive attribute codes are 0..29 in the approved ledger order;
 -- clone is 30 and mergeof is 31. Digest rows reference these positions via
 -- generated mappings, so digest source order/location exists once per field.

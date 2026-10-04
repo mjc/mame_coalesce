@@ -36,6 +36,7 @@ pub use storage::backup::{
 pub use storage::catalog_files;
 pub use storage::catalog_logiqx;
 pub use storage::catalog_machines;
+pub use storage::catalog_no_intro_database;
 pub use storage::catalog_software;
 pub use storage::documents::{
     AcquisitionMetadata, DocumentStore, RetainedDocument, TransportHeader,
