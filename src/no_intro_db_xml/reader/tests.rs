@@ -848,6 +848,108 @@ fn detail_opening_ranges_own_only_warnings_inside_multiline_tags() {
     assert_eq!(detail_opening_ranges(&gzip), ranges);
 }
 
+#[test]
+fn transport_bom_does_not_shift_recovered_warning_scalar_coordinates() {
+    let text = "<datafile><game name='é😀\u{feff}\0'><source><details comment1='x\0'/></source></game></datafile>";
+    let bom_text = format!("\u{feff}{text}");
+    for bytes in [bom_text.as_bytes().to_vec(), utf16le_with_bom(text)] {
+        let parsed = read_with::<_, Error>(
+            &bytes,
+            NoIntroDatabaseMode::NullRecoveryCompatible,
+            |document| Ok((document, Vec::<DatabaseGame>::new())),
+            |state, game| {
+                state.1.push(game);
+                Ok(())
+            },
+        )
+        .expect("BOM-prefixed recovery document parses");
+        let actual = parsed
+            .recovery_warnings()
+            .map(|warning| warning.location)
+            .collect::<Vec<_>>();
+        let expected = [
+            "<datafile><game name='é😀\u{feff}",
+            "<datafile><game name='é😀\u{feff}\0'><source><details comment1='x",
+        ]
+        .map(|prefix| RecordLocation {
+            line: 1,
+            column: i64::try_from(prefix.chars().count() + 1).expect("small fixture"),
+        });
+        assert_eq!(actual, expected, "transport BOM is not a text column");
+    }
+}
+
+#[test]
+fn transport_bom_does_not_shift_details_opening_boundaries() {
+    let text = detail_opening_ranges_xml();
+    let bom_text = format!("\u{feff}{text}");
+    let ranges = detail_opening_ranges(bom_text.as_bytes());
+    assert_detail_opening_end_locations(text, ranges);
+    assert_eq!(ranges, detail_opening_ranges(&utf16le_with_bom(text)));
+}
+
+#[test]
+fn decoded_leading_feff_is_a_scalar_after_utf16_transport_bom() {
+    let text = "\u{feff}<datafile><game name='é😀\0'><source><details comment1='x\0'/></source></game></datafile>";
+    let bytes = utf16le_with_bom(text);
+    let parsed = read_with::<_, Error>(
+        &bytes,
+        NoIntroDatabaseMode::NullRecoveryCompatible,
+        |document| Ok((document, Vec::<DatabaseGame>::new())),
+        |state, game| {
+            state.1.push(game);
+            Ok(())
+        },
+    )
+    .expect("existing leading decoded-scalar compatibility parses");
+    for (warning, (offset, _)) in parsed.recovery_warnings().zip(text.match_indices('\0')) {
+        let prefix = text.get(..offset).expect("known character boundary");
+        assert_eq!(
+            warning.location,
+            RecordLocation {
+                line: 1,
+                column: i64::try_from(prefix.chars().count() + 1).expect("small fixture"),
+            }
+        );
+        let encoded_offset = 2 + prefix.encode_utf16().count() * 2;
+        let excerpt = warning.excerpt.expect("exact encoded NUL evidence");
+        assert_eq!(excerpt.bytes(), [0, 0]);
+        assert_eq!(
+            excerpt.source_problem(),
+            ByteRange::new(encoded_offset, encoded_offset + 2)
+        );
+    }
+    let (document, games) = parsed.into_inner();
+    assert_eq!(document.location, RecordLocation { line: 1, column: 2 });
+    let SourceOrRelease::Source(source) = &games[0].source_or_release[0] else {
+        panic!("source retained");
+    };
+    let details = source.details.as_ref().expect("details retained");
+    let (prefix, _) = text.split_once("/>").expect("details empty end");
+    assert_eq!(
+        details.opening_end,
+        RecordLocation {
+            line: 1,
+            column: i64::try_from(prefix.chars().count() + 3).expect("small fixture"),
+        }
+    );
+}
+
+#[test]
+fn nul_recovery_does_not_remove_a_second_utf8_feff_before_the_root() {
+    let text = "\u{feff}\u{feff}<datafile><game name='x\0'/></datafile>";
+    let parsed = read_with::<_, Error>(
+        text.as_bytes(),
+        NoIntroDatabaseMode::NullRecoveryCompatible,
+        |_| Ok(()),
+        |(), _| Ok(()),
+    );
+    assert!(
+        parsed.is_err(),
+        "a second prefix is non-whitespace outside the root, not another transport BOM"
+    );
+}
+
 fn detail_opening_ranges_xml() -> &'static str {
     concat!(
         "<datafile>\r\n",

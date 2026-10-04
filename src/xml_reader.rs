@@ -24,6 +24,14 @@ const MAX_ATTRIBUTES: usize = 1024;
 const MAX_ATTRIBUTE_BYTES: usize = 1024 * 1024;
 pub const MAX_TEXT_BYTES: usize = 1024 * 1024;
 
+const fn utf8_bom_length(bytes: &[u8]) -> usize {
+    if matches!(bytes, [0xef, 0xbb, 0xbf, ..]) {
+        3
+    } else {
+        0
+    }
+}
+
 mod attributes;
 pub use attributes::XmlAttributes;
 pub(crate) use attributes::attribute_fields;
@@ -256,6 +264,23 @@ pub struct PositionMap<'a> {
     position: SourcePosition,
 }
 
+/// Provenance of a leading U+FEFF in the decoded reader buffer. quick-xml
+/// removes that prefix in either case; only a transport BOM is column-free.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BomOrigin {
+    Transport,
+    DecodedScalar,
+}
+
+impl BomOrigin {
+    fn content(self, text: &str) -> &str {
+        match self {
+            Self::Transport => text.strip_prefix('\u{feff}').unwrap_or(text),
+            Self::DecodedScalar => text,
+        }
+    }
+}
+
 /// Original decoded-document coordinates, following XML's line-ending rules.
 pub struct SourcePosition {
     location: RecordLocation,
@@ -304,12 +329,12 @@ impl SourcePosition {
 
 impl<'a> PositionMap<'a> {
     /// Locate a borrowed opening tag without allocating an extension tree.
-    pub(crate) fn start_location(&mut self, start: &BytesStart<'_>) -> RecordLocation {
-        let offset = (start.as_ref().as_ptr() as usize)
-            .saturating_sub(self.bytes.as_ptr() as usize)
-            .saturating_sub(1);
-        let (line, column) = self.at(u64::try_from(offset).unwrap_or(u64::MAX));
-        RecordLocation { line, column }
+    pub(crate) fn start_location(&mut self, start: &BytesStart<'_>) -> Result<RecordLocation> {
+        let offset = self
+            .checked_slice_offset(start.as_ref().as_bytes())?
+            .checked_sub(1)
+            .ok_or_else(|| Error::XmlValidation("XML opening tag has no source prefix".into()))?;
+        self.source_location(offset)
     }
 
     /// Locate an attribute at the first byte of its qualified name.
@@ -319,34 +344,36 @@ impl<'a> PositionMap<'a> {
     ) -> Result<RecordLocation> {
         let name = attribute.key.as_ref();
         let offset = self.checked_slice_offset(name.as_bytes())?;
-        self.checked_location_at(offset)
+        self.source_location(offset)
     }
 
     fn checked_slice_offset(&self, slice: &[u8]) -> Result<usize> {
         let base = self.bytes.as_ptr() as usize;
         let start = (slice.as_ptr() as usize).checked_sub(base).ok_or_else(|| {
-            Error::XmlValidation("XML attribute name is outside the input".into())
+            Error::XmlValidation("XML borrowed source is outside the input".into())
         })?;
         let end = start
             .checked_add(slice.len())
-            .ok_or_else(|| Error::XmlValidation("XML attribute name offset overflow".into()))?;
+            .ok_or_else(|| Error::XmlValidation("XML borrowed source offset overflow".into()))?;
         if slice.is_empty() || end > self.bytes.len() {
             return Err(Error::XmlValidation(
-                "XML attribute name is outside the input".into(),
+                "XML borrowed source is outside the input".into(),
             ));
         }
         Ok(start)
     }
 
-    fn checked_location_at(&mut self, offset: usize) -> Result<RecordLocation> {
+    /// Locate a boundary in the retained parse buffer, including its BOM bytes.
+    pub(crate) fn source_location(&mut self, offset: usize) -> Result<RecordLocation> {
         if offset < self.cursor {
             return Err(Error::XmlValidation(
-                "XML attribute location precedes the current source position".into(),
+                "XML source location precedes the current source position".into(),
             ));
         }
-        let text = self.bytes.get(self.cursor..offset).ok_or_else(|| {
-            Error::XmlValidation("XML attribute offset is outside the input".into())
-        })?;
+        let text = self
+            .bytes
+            .get(self.cursor..offset)
+            .ok_or_else(|| Error::XmlValidation("XML source offset is outside the input".into()))?;
         let text = std::str::from_utf8(text).map_err(|error| {
             Error::XmlValidation(format!("invalid UTF-8 source position: {error}"))
         })?;
@@ -357,39 +384,33 @@ impl<'a> PositionMap<'a> {
         Ok(self.position.location())
     }
 
-    const fn new(bytes: &'a [u8]) -> Self {
+    const fn new(bytes: &'a [u8], bom_origin: BomOrigin) -> Self {
+        let prefix_length = utf8_bom_length(bytes);
+        let mut position = SourcePosition::new();
+        if prefix_length != 0 && matches!(bom_origin, BomOrigin::DecodedScalar) {
+            position.advance('\u{feff}');
+        }
         Self {
             bytes,
-            // The transport BOM is not a decoded-text column. Keep offsets in
-            // the original buffer so borrowed tags and attribute names still
-            // address the correct bytes; an interior U+FEFF remains text.
-            cursor: if matches!(bytes, [0xef, 0xbb, 0xbf, ..]) {
-                3
-            } else {
-                0
-            },
-            position: SourcePosition::new(),
+            // Borrowed slices still address the original parse buffer. Match
+            // the reader-skipped byte prefix without erasing a decoded scalar.
+            cursor: prefix_length,
+            position,
         }
     }
 
-    pub fn at(&mut self, offset: u64) -> (i64, i64) {
-        let end = usize::try_from(offset)
-            .unwrap_or(usize::MAX)
-            .min(self.bytes.len());
-        if end < self.cursor {
-            let location = self.position.location();
-            return (location.line, location.column);
-        }
-        let Ok(text) = std::str::from_utf8(&self.bytes[self.cursor..end]) else {
-            let location = self.position.location();
-            return (location.line, location.column);
-        };
-        for character in text.chars() {
-            self.position.advance(character);
-        }
-        self.cursor = end;
-        let location = self.position.location();
-        (location.line, location.column)
+    /// Translate quick-xml's BOM-excluding offset to the retained parse buffer.
+    fn event_source_offset(&self, offset: u64) -> Result<usize> {
+        usize::try_from(offset)
+            .ok()
+            .and_then(|offset| offset.checked_add(utf8_bom_length(self.bytes)))
+            .filter(|&offset| offset <= self.bytes.len())
+            .ok_or_else(|| Error::XmlValidation("invalid XML event source offset".into()))
+    }
+
+    /// Locate a quick-xml event boundary; borrowed-slice offsets use `source_location`.
+    pub(crate) fn event_location(&mut self, offset: u64) -> Result<RecordLocation> {
+        self.source_location(self.event_source_offset(offset)?)
     }
 }
 
@@ -402,32 +423,44 @@ pub fn with_reader<T, E: From<Error>>(
     let source = document_input::decode_xml(bytes)?;
     let view = input_view(bytes);
     let xml = decode_text(&source, view)?;
-    validate_xml10_characters(&xml, Some((&source, view)))?;
-    parse_decoded(&xml, parse)
+    let bom_origin = if utf16_encoding(&source).is_some() {
+        BomOrigin::DecodedScalar
+    } else {
+        BomOrigin::Transport
+    };
+    validate_xml10_characters(&xml, Some((&source, view)), bom_origin)?;
+    parse_decoded(&xml, bom_origin, parse)
 }
 
 /// Read text decoded once by an adapter with a format-specific recovery policy.
 pub fn with_decoded_reader<T, E: From<Error>>(
     xml: &str,
+    bom_origin: BomOrigin,
     parse: impl FnOnce(&mut XmlReader<'_>, &mut PositionMap<'_>) -> std::result::Result<T, E>,
 ) -> std::result::Result<T, E> {
-    validate_xml10_characters(xml, None)?;
-    parse_decoded(xml, parse)
+    validate_xml10_characters(xml, None, bom_origin)?;
+    parse_decoded(xml, bom_origin, parse)
 }
 
 fn parse_decoded<T, E: From<Error>>(
     xml: &str,
+    bom_origin: BomOrigin,
     parse: impl FnOnce(&mut XmlReader<'_>, &mut PositionMap<'_>) -> std::result::Result<T, E>,
 ) -> std::result::Result<T, E> {
-    let mut positions = PositionMap::new(xml.as_bytes());
+    let mut positions = PositionMap::new(xml.as_bytes(), bom_origin);
     let mut reader = XmlReader::new(xml.as_bytes());
     parse(&mut reader, &mut positions)
 }
 
-fn validate_xml10_characters(xml: &str, source: Option<(&[u8], ExcerptView)>) -> Result<()> {
+fn validate_xml10_characters(
+    xml: &str,
+    source: Option<(&[u8], ExcerptView)>,
+    bom_origin: BomOrigin,
+) -> Result<()> {
     let mut position = SourcePosition::new();
     let utf16 = source.and_then(|(bytes, _)| utf16_encoding(bytes));
-    let mut source_offset = utf16.map_or(0, |(_, skip)| skip);
+    let mut source_offset = utf16.map_or_else(|| utf8_bom_length(xml.as_bytes()), |(_, skip)| skip);
+    let xml = bom_origin.content(xml);
 
     for character in xml.chars() {
         let codepoint = u32::from(character);
@@ -480,9 +513,22 @@ impl<'a> DecodedRecoveryInput<'a> {
         }
     }
 
-    pub(crate) const fn initial_offset(&self) -> usize {
+    /// Decoded characters excluding only a UTF-8 transport BOM. UTF-16 decoding
+    /// already removed the encoded transport BOM.
+    pub(crate) fn content(&self) -> &str {
+        self.bom_origin().content(self.text())
+    }
+
+    pub(crate) const fn bom_origin(&self) -> BomOrigin {
         match self {
-            Self::Utf8 { .. } => 0,
+            Self::Utf8 { .. } => BomOrigin::Transport,
+            Self::Utf16 { .. } => BomOrigin::DecodedScalar,
+        }
+    }
+
+    pub(crate) fn initial_offset(&self) -> usize {
+        match self {
+            Self::Utf8 { text, .. } => utf8_bom_length(text.as_bytes()),
             Self::Utf16 { skip, .. } => *skip,
         }
     }
@@ -509,8 +555,9 @@ impl<'a> DecodedRecoveryInput<'a> {
     }
 
     pub(crate) fn into_parts(self) -> (Cow<'a, str>, Option<Cow<'a, [u8]>>, ExcerptView, usize) {
+        let initial_offset = self.initial_offset();
         match self {
-            Self::Utf8 { text, view } => (text, None, view, 0),
+            Self::Utf8 { text, view } => (text, None, view, initial_offset),
             Self::Utf16 {
                 text,
                 encoded,
@@ -732,15 +779,18 @@ pub fn next<'a>(
         Ok(event) => event,
         Err(error) => {
             let offset = reader.reader.error_position();
-            let (line, column) = positions.at(offset);
+            // An error can point behind an already visited attribute. Keep the
+            // actual parse error, but never invent a location from that cursor.
+            let location = positions.event_location(offset).ok();
             return Err(Error::CatalogParse {
                 message: error.to_string(),
                 record_kind: Some("document".into()),
                 record_name: None,
-                line: Some(line),
-                column: Some(column),
+                line: location.map(|location| location.line),
+                column: location.map(|location| location.column),
                 excerpt: None,
-                coordinates: Some(crate::diagnostics::CoordinateConvention::XmlUnicodeScalars),
+                coordinates: location
+                    .map(|_| crate::diagnostics::CoordinateConvention::XmlUnicodeScalars),
             });
         }
     };
@@ -803,19 +853,8 @@ pub fn next<'a>(
 fn validate_doctype_opening(positions: &PositionMap<'_>, start: u64, end: u64) -> Result<()> {
     // quick-xml excludes the transport BOM from both buffer offsets; the
     // retained decoded source keeps it for source-position reconstruction.
-    let bom_length = if positions.bytes.starts_with(&[0xef, 0xbb, 0xbf]) {
-        3
-    } else {
-        0
-    };
-    let source_offset = |offset| {
-        usize::try_from(offset)
-            .ok()
-            .and_then(|offset| offset.checked_add(bom_length))
-            .ok_or_else(|| Error::XmlValidation("invalid DOCTYPE source offset".into()))
-    };
-    let start = source_offset(start)?;
-    let end = source_offset(end)?;
+    let start = positions.event_source_offset(start)?;
+    let end = positions.event_source_offset(end)?;
     let source = positions
         .bytes
         .get(start..end)
@@ -1053,7 +1092,7 @@ pub fn element_from_start(
 ) -> Result<Element> {
     budget.include(depth)?;
     let name = expanded_name(namespace, start.local_name().as_ref());
-    let location = positions.start_location(start);
+    let location = positions.start_location(start)?;
     let mut attributes = XmlAttributes::default();
     let mut has_namespace_declarations = false;
     for (source_order, attribute) in start.attributes().enumerate() {
@@ -1515,13 +1554,19 @@ mod tests {
             Ok((
                 name,
                 namespace,
-                positions.at(reader.buffer_position()),
+                positions.event_location(reader.buffer_position())?,
                 attribute,
             ))
         })?;
         assert_eq!(name, "root");
         assert_eq!(namespace, "urn:test");
-        assert_eq!(position, (2, 25));
+        assert_eq!(
+            position,
+            RecordLocation {
+                line: 2,
+                column: 25
+            }
+        );
         assert_eq!(attribute, "a&b");
         Ok(())
     }
@@ -1619,7 +1664,7 @@ mod tests {
                     loop {
                         match next(reader, positions)?.1 {
                             Event::Empty(start) => {
-                                let location = positions.start_location(&start);
+                                let location = positions.start_location(&start)?;
                                 assert_eq!((location.line, location.column), (2, 2), "{ending:?}");
                             }
                             Event::Eof => break,
@@ -1634,14 +1679,208 @@ mod tests {
     }
 
     #[test]
-    fn source_positions_keep_crlf_state_between_offsets_and_count_unicode_scalars() {
-        let mut positions = PositionMap::new("\r\né💿\rZ".as_bytes());
-        assert_eq!(positions.at(1), (2, 1));
-        assert_eq!(positions.at(2), (2, 1));
-        assert_eq!(positions.at(4), (2, 2));
-        assert_eq!(positions.at(8), (2, 3));
-        assert_eq!(positions.at(9), (3, 1));
-        assert_eq!(positions.at(10), (3, 2));
+    fn source_positions_keep_crlf_state_between_offsets_and_count_unicode_scalars() -> Result<()> {
+        let mut positions = PositionMap::new("\r\né💿\rZ".as_bytes(), BomOrigin::Transport);
+        for (offset, line, column) in [
+            (1, 2, 1),
+            (2, 2, 1),
+            (4, 2, 2),
+            (8, 2, 3),
+            (9, 3, 1),
+            (10, 3, 2),
+        ] {
+            assert_eq!(
+                positions.source_location(offset)?,
+                RecordLocation { line, column }
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn source_boundaries_reject_backwards_out_of_buffer_and_split_utf8() -> Result<()> {
+        let mut positions = PositionMap::new("\u{feff}é😀".as_bytes(), BomOrigin::Transport);
+        for offset in [0, 2, 4, 6, 7, 8, 10, usize::MAX] {
+            assert!(
+                positions.source_location(offset).is_err(),
+                "offset {offset}"
+            );
+        }
+        assert_eq!(
+            positions.source_location(5)?,
+            RecordLocation { line: 1, column: 2 }
+        );
+        assert!(positions.source_location(3).is_err());
+        assert_eq!(
+            positions.source_location(9)?,
+            RecordLocation { line: 1, column: 3 }
+        );
+        assert!(positions.event_location(u64::MAX).is_err());
+        assert!(positions.event_location(7).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn event_boundaries_translate_bom_once_and_include_closing_tags() -> Result<()> {
+        let text = "<root>é😀\r\n<child a='\u{feff}'/></root>";
+        let bom_text = format!("\u{feff}{text}");
+        let mut utf16 = vec![0xff, 0xfe];
+        utf16.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
+        for input in [text.as_bytes(), bom_text.as_bytes(), utf16.as_slice()] {
+            with_reader(input, |reader, positions| {
+                let mut boundaries = Vec::new();
+                loop {
+                    match next(reader, positions)?.1 {
+                        Event::Start(start) | Event::Empty(start) => {
+                            let start_location = positions.start_location(&start)?;
+                            let end = positions.event_location(reader.buffer_position())?;
+                            boundaries.push((start_location, end));
+                        }
+                        Event::End(_) => {
+                            let end = positions.event_location(reader.buffer_position())?;
+                            boundaries.push((end, end));
+                        }
+                        Event::Eof => {
+                            let end = positions.event_location(reader.buffer_position())?;
+                            assert_eq!(
+                                end,
+                                RecordLocation {
+                                    line: 2,
+                                    column: 22
+                                }
+                            );
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+                assert_eq!(
+                    boundaries,
+                    vec![
+                        (
+                            RecordLocation { line: 1, column: 1 },
+                            RecordLocation { line: 1, column: 7 }
+                        ),
+                        (
+                            RecordLocation { line: 2, column: 1 },
+                            RecordLocation {
+                                line: 2,
+                                column: 15
+                            }
+                        ),
+                        (
+                            RecordLocation {
+                                line: 2,
+                                column: 22
+                            },
+                            RecordLocation {
+                                line: 2,
+                                column: 22
+                            }
+                        ),
+                    ]
+                );
+                Ok::<_, Error>(())
+            })?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn transport_bom_does_not_shift_invalid_character_coordinates() -> Result<()> {
+        let text = "<root>é😀\u{feff}\0</root>";
+        let utf8 = format!("\u{feff}{text}");
+        let mut utf16 = vec![0xff, 0xfe];
+        utf16.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
+        for (input, offset, width) in [(utf8.as_bytes(), 18, 1), (utf16.as_slice(), 22, 2)] {
+            let error = with_reader(input, |_, _| Ok::<_, Error>(()));
+            let Err(Error::CatalogParse {
+                line,
+                column,
+                excerpt: Some(excerpt),
+                ..
+            }) = error
+            else {
+                return Err(Error::XmlValidation(
+                    "expected forbidden-character evidence".into(),
+                ));
+            };
+            assert_eq!((line, column), (Some(1), Some(10)));
+            assert_eq!(
+                excerpt.source_problem(),
+                ByteRange::new(offset, offset + width)
+            );
+            assert_eq!(excerpt.bytes(), vec![0; width]);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn decoded_scalar_prefix_counts_at_opening_and_document_end() -> Result<()> {
+        let text = "\u{feff}<root/>";
+        for little_endian in [true, false] {
+            let mut input = if little_endian {
+                vec![0xff, 0xfe]
+            } else {
+                vec![0xfe, 0xff]
+            };
+            for unit in text.encode_utf16() {
+                input.extend(if little_endian {
+                    unit.to_le_bytes()
+                } else {
+                    unit.to_be_bytes()
+                });
+            }
+            with_reader(&input, |reader, positions| {
+                let Event::Empty(start) = next(reader, positions)?.1 else {
+                    return Err(Error::XmlValidation("expected empty root".into()));
+                };
+                assert_eq!(
+                    positions.start_location(&start)?,
+                    RecordLocation { line: 1, column: 2 }
+                );
+                assert_eq!(
+                    positions.event_location(reader.buffer_position())?,
+                    RecordLocation { line: 1, column: 9 }
+                );
+                assert_eq!(next(reader, positions)?.1, Event::Eof);
+                assert_eq!(
+                    positions.event_location(reader.buffer_position())?,
+                    RecordLocation { line: 1, column: 9 }
+                );
+                Ok::<_, Error>(())
+            })?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_end_tag_coordinates_translate_reader_bom_offsets() -> Result<()> {
+        let text = "<root>é😀</bad>";
+        let bom_text = format!("\u{feff}{text}");
+        let mut utf16 = vec![0xff, 0xfe];
+        utf16.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
+        for input in [text.as_bytes(), bom_text.as_bytes(), utf16.as_slice()] {
+            let error = with_reader(input, |reader, positions| {
+                while next(reader, positions)?.1 != Event::Eof {}
+                Ok::<_, Error>(())
+            });
+            let Err(Error::CatalogParse {
+                line,
+                column,
+                coordinates,
+                ..
+            }) = error
+            else {
+                return Err(Error::XmlValidation("expected malformed end tag".into()));
+            };
+            assert_eq!((line, column), (Some(1), Some(9)));
+            assert_eq!(
+                coordinates,
+                Some(crate::diagnostics::CoordinateConvention::XmlUnicodeScalars)
+            );
+        }
+        Ok(())
     }
 
     #[test]

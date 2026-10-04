@@ -16,6 +16,9 @@ use mame_coalesce::{
 };
 use std::io::Write;
 
+#[path = "support/import_warning_fixture.rs"]
+mod import_warning_fixture;
+
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 #[derive(QueryableByName)]
@@ -427,4 +430,93 @@ fn a_non_nul_forbidden_character_cannot_publish_in_recovery_mode() -> TestResult
         1
     );
     Ok(())
+}
+
+#[test]
+fn recovered_nuls_cover_every_native_owner_and_keep_exact_source_evidence() -> TestResult {
+    let xml = import_warning_fixture::native_owner_nul_document();
+    let directory = tempfile::tempdir()?;
+    let path = camino::Utf8PathBuf::try_from(directory.path().join("catalog.sqlite"))?;
+    let document = camino::Utf8PathBuf::try_from(directory.path().join("export.xml"))?;
+    std::fs::write(&document, xml.as_bytes())?;
+
+    let database = Database::open(&path)?;
+    let report = app::import_catalog(
+        &database,
+        &request(document, NoIntroDatabaseMode::NullRecoveryCompatible),
+    )?;
+    assert_eq!(report.status, CatalogImportStatus::Succeeded);
+    assert_eq!(report.diagnostic_count, 14);
+
+    let mut connection = SqliteConnection::establish(path.as_str())?;
+    let warnings = sql_query(
+        "SELECT source_excerpt,excerpt_view,excerpt_start_byte,problem_start_byte,\
+         problem_end_byte,source_problem_start_byte,source_problem_end_byte,\
+         original_problem_start_byte,original_problem_end_byte,source_line,source_column \
+         FROM import_diagnostics WHERE severity='warning' \
+         ORDER BY source_problem_start_byte",
+    )
+    .load::<WarningSpan>(&mut connection)?;
+    let nul_offsets = xml
+        .match_indices('\0')
+        .map(|(offset, _)| offset)
+        .collect::<Vec<_>>();
+    assert_eq!(nul_offsets.len(), 14);
+    assert_eq!(warnings.len(), nul_offsets.len());
+
+    for (warning, offset) in warnings.iter().zip(nul_offsets) {
+        let offset = i64::try_from(offset)?;
+        assert_eq!(warning.source_excerpt, [0]);
+        assert_eq!(warning.excerpt_view, "retained_original_bytes");
+        assert_eq!(warning.excerpt_start_byte, offset);
+        assert_eq!(
+            (warning.problem_start_byte, warning.problem_end_byte),
+            (0, 1)
+        );
+        assert_eq!(
+            (
+                warning.source_problem_start_byte,
+                warning.source_problem_end_byte
+            ),
+            (offset, offset + 1)
+        );
+        assert_eq!(warning.original_problem_start_byte, Some(offset));
+        assert_eq!(warning.original_problem_end_byte, Some(offset + 1));
+        assert_eq!(
+            (warning.source_line, warning.source_column),
+            independent_scalar_position(&xml, usize::try_from(offset)?)
+        );
+    }
+    Ok(())
+}
+
+fn independent_scalar_position(xml: &str, byte_offset: usize) -> (i64, i64) {
+    let mut line = 1_i64;
+    let mut column = 1_i64;
+    let mut previous_was_carriage_return = false;
+
+    for (_, character) in xml
+        .char_indices()
+        .take_while(|(offset, _)| *offset < byte_offset)
+    {
+        match character {
+            '\r' => {
+                line += 1;
+                column = 1;
+                previous_was_carriage_return = true;
+            }
+            '\n' => {
+                if !previous_was_carriage_return {
+                    line += 1;
+                }
+                column = 1;
+                previous_was_carriage_return = false;
+            }
+            _ => {
+                column += 1;
+                previous_was_carriage_return = false;
+            }
+        }
+    }
+    (line, column)
 }

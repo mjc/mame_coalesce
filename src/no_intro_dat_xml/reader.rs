@@ -178,7 +178,7 @@ impl Parser {
         positions: &mut PositionMap<'_>,
     ) -> Result<StartInfo> {
         self.nodes.include(depth)?;
-        let location = positions.start_location(start);
+        let location = positions.start_location(start)?;
         let local = start.local_name().as_ref().to_owned();
         let mut attributes = Vec::new();
 

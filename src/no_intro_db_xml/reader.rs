@@ -73,8 +73,13 @@ pub struct RecoverySource<'a> {
 
 impl RecoverySource<'_> {
     pub(crate) fn warnings(&self) -> RecoveryWarnings<'_> {
+        let content = if self.encoded.is_none() {
+            self.text.strip_prefix('\u{feff}').unwrap_or(&self.text)
+        } else {
+            &self.text
+        };
         RecoveryWarnings {
-            characters: self.text.chars(),
+            characters: content.chars(),
             position: SourcePosition::new(),
             bytes: self
                 .encoded
@@ -166,7 +171,14 @@ pub fn read_with<S, E: From<Error>>(
 
     {
         let decoded_text = decoded.text();
+        let transport_prefix_length = decoded_text.len() - decoded.content().len();
         for (offset, character) in decoded_text.char_indices() {
+            // Skip transport metadata in scalar/encoded advancement, but keep
+            // it in any sanitized buffer so the reader cannot strip a second
+            // leading U+FEFF as though it were the original transport BOM.
+            if offset < transport_prefix_length {
+                continue;
+            }
             let encoded_width = decoded.encoded_width(character);
             if character == '\0' {
                 let location = position.location();
@@ -178,9 +190,12 @@ pub fn read_with<S, E: From<Error>>(
                     }
                     return Err(error.into());
                 }
+                let prefix = decoded_text
+                    .get(..offset)
+                    .ok_or_else(|| xml_error("invalid recovery source boundary"))?;
                 let view = sanitized.get_or_insert_with(|| {
                     let mut view = String::with_capacity(decoded_text.len());
-                    view.push_str(&decoded_text[..offset]);
+                    view.push_str(prefix);
                     view
                 });
                 view.push('\u{fffd}');
@@ -195,9 +210,11 @@ pub fn read_with<S, E: From<Error>>(
         decoded.discard_encoded_source();
     }
     let parse_xml = sanitized.as_deref().unwrap_or_else(|| decoded.text());
-    let state = xml_reader::with_decoded_reader::<_, E>(parse_xml, |reader, positions| {
-        parse_document(reader, positions, mode, begin, consume)
-    })?;
+    let state = xml_reader::with_decoded_reader::<_, E>(
+        parse_xml,
+        decoded.bom_origin(),
+        |reader, positions| parse_document(reader, positions, mode, begin, consume),
+    )?;
     let recovery_source = if sanitized.is_some() {
         let (text, encoded, view, initial_offset) = decoded.into_parts();
         Some(RecoverySource {
@@ -479,7 +496,7 @@ impl Parser {
         positions: &mut PositionMap<'_>,
     ) -> Result<StartInfo> {
         self.nodes.include(depth)?;
-        let location = positions.start_location(start);
+        let location = positions.start_location(start)?;
         let mut attributes = Vec::new();
         for (ordinal, attribute) in start.attributes().enumerate() {
             let attribute = attribute.map_err(|error| Error::XmlValidation(error.to_string()))?;
@@ -510,8 +527,7 @@ impl Parser {
                 location: positions.attribute_location(&attribute)?,
             });
         }
-        let (line, column) = positions.at(reader.buffer_position());
-        let opening_end = RecordLocation { line, column };
+        let opening_end = positions.event_location(reader.buffer_position())?;
         Ok(StartInfo {
             namespace,
             local: start.local_name().as_ref().to_owned(),
