@@ -390,17 +390,11 @@ pub fn record_content_identity_conflict(
         .bind::<Binary, _>(candidate.as_bytes().as_slice())
         .bind::<BigInt, _>(occurrence.database_value())
         .execute(connection)?;
-        sql_query(format!(
-            "{FILE_COMPONENT_SQL} INSERT INTO occurrence_content_conflict_sizes \
-             (occurrence_id, candidate_content_uuid, evidence_occurrence_id, size_field, role) \
-             SELECT ?, ?, sizes.occurrence_id, sizes.size_field, 'candidate' \
-             FROM component CROSS JOIN asset_occurrences AS entry ON entry.content_uuid = component.content_uuid \
-             CROSS JOIN accepted_file_size_assertions AS sizes ON sizes.occurrence_id = entry.occurrence_id",
-        ))
-        .bind::<Binary, _>(candidate.as_bytes().as_slice())
-        .bind::<BigInt, _>(occurrence.database_value())
-        .bind::<Binary, _>(candidate.as_bytes().as_slice())
-        .execute(connection)?;
+        sql_query(candidate_size_evidence_insert())
+            .bind::<Binary, _>(candidate.as_bytes().as_slice())
+            .bind::<BigInt, _>(occurrence.database_value())
+            .bind::<Binary, _>(candidate.as_bytes().as_slice())
+            .execute(connection)?;
     }
     Ok(())
 }
@@ -420,20 +414,13 @@ fn compatible_identity(
     size: Option<i64>,
     assertions: ContentDigestAssertions<'_>,
 ) -> crate::Result<bool> {
-    if let Some(incoming) = size {
-        let facts = sql_query(format!(
-            "{FILE_COMPONENT_SQL} SELECT sizes.size FROM component \
-             CROSS JOIN asset_occurrences AS entry ON entry.content_uuid = component.content_uuid \
-             CROSS JOIN accepted_file_size_assertions AS sizes ON sizes.occurrence_id = entry.occurrence_id \
-             WHERE sizes.size <> ? LIMIT 1",
-        ))
+    let facts = sql_query(identity_size_select())
         .bind::<Binary, _>(content_id.as_bytes().as_slice())
-        .bind::<BigInt, _>(incoming)
-        .get_result::<ContentFactsRow>(connection)
-        .optional()?;
-        if facts.is_some_and(|fact| fact.size != incoming) {
-            return Ok(false);
-        }
+        .load::<ContentFactsRow>(connection)?;
+    if facts.len() > 1
+        || size.is_some_and(|incoming| facts.first().is_some_and(|fact| fact.size != incoming))
+    {
+        return Ok(false);
     }
 
     let stored = sql_query(format!(
@@ -464,6 +451,30 @@ fn compatible_identity(
             .is_none_or(|value| value.as_slice() == assertion.value)
     }))
 }
+
+fn identity_size_select() -> String {
+    format!(
+        "{FILE_COMPONENT_SQL} SELECT DISTINCT \
+         (SELECT sizes.size FROM accepted_file_size_assertions AS sizes \
+          WHERE sizes.occurrence_id = entry.occurrence_id) AS size FROM component \
+         CROSS JOIN asset_occurrences AS entry ON entry.content_uuid = component.content_uuid \
+         WHERE size IS NOT NULL \
+         LIMIT 2"
+    )
+}
+
+fn candidate_size_evidence_insert() -> String {
+    format!(
+        "{FILE_COMPONENT_SQL} INSERT INTO occurrence_content_conflict_sizes \
+         (occurrence_id, candidate_content_uuid, evidence_occurrence_id, size_field, role) \
+         SELECT ?, ?, sizes.occurrence_id, sizes.size_field, 'candidate' \
+         FROM component CROSS JOIN asset_occurrences AS entry ON entry.content_uuid = component.content_uuid \
+         CROSS JOIN accepted_file_size_assertions AS sizes ON sizes.occurrence_id = entry.occurrence_id"
+    )
+}
+
+#[cfg(test)]
+mod size_tests;
 
 fn content_id(bytes: Vec<u8>) -> crate::Result<CatalogContentId> {
     let bytes: [u8; 16] = bytes.try_into().map_err(|bytes: Vec<u8>| {
@@ -552,6 +563,25 @@ mod tests {
     struct CountRow {
         #[diesel(sql_type = BigInt)]
         count: i64,
+    }
+
+    #[test]
+    fn unknown_incoming_size_cannot_link_an_inconsistent_candidate() -> crate::Result<()> {
+        let mut connection = registry_connection()?;
+        let digest = [0x11; 20];
+        let assertions =
+            ContentDigestAssertions::new("whole_file", None, None, Some(&digest), None);
+        let candidate = resolve_content_identity(&mut connection, Some(8), assertions)?;
+        support_identity(&mut connection, &candidate, Some(8), assertions)?;
+        support_identity(&mut connection, &candidate, Some(4), assertions)?;
+        assert!(matches!(
+            resolve_content_identity(&mut connection, None, assertions)?,
+            ContentIdentityResolution::Conflict {
+                reason: ContentIdentityConflict::ContradictoryAssertions,
+                ..
+            }
+        ));
+        Ok(())
     }
 
     fn support_identity(

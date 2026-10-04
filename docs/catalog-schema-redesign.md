@@ -827,7 +827,7 @@ both native payload branches; no catalog-wide software union is materialized.
 The existing provenance retains list/title/part/area ownership. The public
 `catalog_software` pages include complete native title/part scalar, info,
 feature, switch and area metadata. The new
-`mame-softwarelist-declared-text-compat-v3` interpretation retains all 36 pinned
+`mame-softwarelist-declared-text-compat-v4` interpretation retains all 36 pinned
 attributes, plus the compatibility wrapper's `build`, in 13 native position-only
 child tables. Each row belongs to its actual numeric native owner and stores a
 closed field code, source ordinal and decoded QName line/column; attribute values

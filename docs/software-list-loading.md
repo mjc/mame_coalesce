@@ -57,7 +57,7 @@ MAME's historical loader has additional edge behavior that should not be mistake
 
 ## Catalog-backed recipe API
 
-The `mame-softwarelist-declared-text-compat-v3` numeric contract accepts only
+The `mame-softwarelist-declared-text-compat-v4` numeric contract accepts only
 unsigned ASCII digits in decimal, leading-zero octal, or `0x`/`0X` hexadecimal.
 It rejects signs anywhere, whitespace, trailing junk and values above SQLite's
 signed-integer range. Raw CDATA remains stored even when its numeric projection
@@ -76,8 +76,24 @@ bytes. Disk areas are not ROM byte-placement recipes.
 Each `SoftwareLoadFile` identifies its actual declaration occurrence, not just
 a filename. `expected_length` is the first-run sum, `progress_length` is the
 maximum run sum, and `read_length` is the greatest actual read cursor. These
-are transient derived facts, not duplicate SQLite columns or an automatic
-promotion of segment lengths into generic whole-file matching evidence.
+are transient derived facts, not duplicate SQLite columns. Matching derives
+`software_rom_file_size` from the complete first base/continue/ignore run in
+the native tables, not an individual segment or maximum reload run. Invalid
+consumed lengths, overflow, gaps or broken owner/use links leave it unknown.
+Reload and fill stop that first run before their lengths are considered.
+Destination geometry does not determine whole-file size evidence; a valid
+named non-nodump base hash may remain usable when size is unknown. This is
+source-declared expected content, not observed-byte verification. Fill clears
+file ownership even when its own value or placement cannot execute.
+
+The importer resolves each immutable declaration using its complete source
+first run and finishes that file group's native facts and conflict evidence
+before considering the next declaration. Size conflicts and reviews point to
+the declaration, from which the original ordered entries remain reachable.
+Reviewed size rejection affects matching without deleting or rewriting those
+entries. The former NULL-only declaration-size placeholder is removed, not
+filled with a cached calculation. The v4 reading-rules identity qualifies
+these size/chain semantics separately from earlier immutable interpretations.
 
 `bind` borrows physical files keyed by declaration. It validates all required
 reads before returning the opaque `ReadySoftwareLoad` state. Whole-file

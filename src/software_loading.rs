@@ -3,7 +3,10 @@
 //! Recipes borrow catalog facts. ROM bytes and destination regions are never
 //! stored in SQLite, and an invalid recipe does not alter imported facts.
 
+mod file_lengths;
 mod layout;
+
+pub(crate) use file_lengths::file_verification_length;
 
 pub use layout::{ByteLayout, BytePlacement, LayoutError};
 

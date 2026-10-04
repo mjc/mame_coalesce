@@ -85,6 +85,21 @@ SELECT sizes.* FROM catalog_file_size_assertions AS sizes WHERE NOT EXISTS (
       AND review.size_field = sizes.size_field AND review.disposition = 'reject'
 );
 
+-- Source qualification is shared by linked native-format publication guards.
+CREATE VIEW source_file_size_assertions AS
+SELECT size.* FROM accepted_file_size_assertions AS size
+JOIN asset_occurrences AS occurrence USING (occurrence_id)
+WHERE CASE occurrence.claim_kind
+    WHEN 'mame_rom' THEN EXISTS (SELECT 1 FROM mame_rom_claims WHERE occurrence_id = size.occurrence_id AND evidence_provenance = 'source_declared')
+    WHEN 'logiqx_rom' THEN EXISTS (SELECT 1 FROM logiqx_rom_claims WHERE occurrence_id = size.occurrence_id AND evidence_provenance = 'source_declared')
+    WHEN 'cmp_rom' THEN EXISTS (SELECT 1 FROM cmp_rom_claims WHERE occurrence_id = size.occurrence_id AND evidence_provenance = 'source_declared')
+    WHEN 'no_intro_pc_file' THEN EXISTS (SELECT 1 FROM no_intro_pc_file_claims WHERE occurrence_id = size.occurrence_id AND evidence_provenance = 'source_declared')
+    WHEN 'no_intro_dat_rom' THEN EXISTS (SELECT 1 FROM no_intro_dat_rom_claims WHERE occurrence_id = size.occurrence_id AND evidence_provenance = 'source_declared')
+    WHEN 'no_intro_database_source_file' THEN EXISTS (SELECT 1 FROM no_intro_dump_files WHERE occurrence_id = size.occurrence_id AND evidence_provenance = 'source_declared')
+    WHEN 'no_intro_database_release_file' THEN EXISTS (SELECT 1 FROM no_intro_release_files WHERE occurrence_id = size.occurrence_id AND evidence_provenance = 'source_declared')
+    WHEN 'software_rom_entry' THEN 1
+    ELSE 0 END;
+
 CREATE TRIGGER file_match_conflict_review_owner BEFORE INSERT ON file_match_decision_conflicts
 WHEN NOT EXISTS (
     SELECT 1 FROM file_match_decisions AS decision

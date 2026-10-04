@@ -74,6 +74,8 @@ pub enum SizeField {
     NoIntroDatRom,
     NoIntroDatabaseSourceFile,
     NoIntroDatabaseReleaseFile,
+    /// First verification run of a native software ROM file declaration.
+    SoftwareRomFile,
 }
 
 impl SizeField {
@@ -86,6 +88,7 @@ impl SizeField {
             Self::NoIntroDatRom => "no_intro_dat_rom_size",
             Self::NoIntroDatabaseSourceFile => "no_intro_database_source_file_size",
             Self::NoIntroDatabaseReleaseFile => "no_intro_database_release_file_size",
+            Self::SoftwareRomFile => "software_rom_file_size",
         }
     }
 }

@@ -53,6 +53,7 @@ struct RomSource<'a> {
     status: &'a str,
     scope: &'a str,
     instruction: Option<&'a str>,
+    size: &'a str,
 }
 
 impl Default for RomSource<'_> {
@@ -62,6 +63,7 @@ impl Default for RomSource<'_> {
             status: "good",
             scope: "whole_asset",
             instruction: None,
+            size: "1",
         }
     }
 }
@@ -348,7 +350,7 @@ fn add_rom_source(
          (occurrence_id, record_id, area_id, component_order, source_order, name, evidence_scope, \
           size_text, offset_text, value, crc_text, sha1_text, dump_status, status_specified, \
           load_instruction, source_line, source_column) \
-         VALUES (?, ?, ?, ?, 0, ?, ?, '1', NULL, NULL, ?, ?, ?, ?, ?, 1, 1)",
+         VALUES (?, ?, ?, ?, 0, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, 1, 1)",
     )
     .bind::<BigInt, _>(occurrence_id)
     .bind::<BigInt, _>(candidate.record_id)
@@ -356,6 +358,7 @@ fn add_rom_source(
     .bind::<BigInt, _>(fixture.occurrence_order)
     .bind::<Text, _>(source.name)
     .bind::<Text, _>(source.scope)
+    .bind::<Text, _>(source.size)
     .bind::<Nullable<Text>, _>(fixture.crc_text)
     .bind::<Nullable<Text>, _>(fixture.sha1_text)
     .bind::<Text, _>(source.status)
@@ -382,8 +385,8 @@ fn add_rom_source(
     )?;
     if fixture.declare_file {
         sql_query(
-            "INSERT INTO software_file_declarations(occurrence_id, record_id, declared_size) \
-             VALUES (?, ?, NULL)",
+            "INSERT INTO software_file_declarations(occurrence_id, record_id) \
+             VALUES (?, ?)",
         )
         .bind::<BigInt, _>(occurrence_id)
         .bind::<BigInt, _>(candidate.record_id)
@@ -455,6 +458,7 @@ fn publication_rejects_unproved_rom_scopes_and_uuids_with_foreign_keys_disabled(
                     status,
                     scope,
                     instruction,
+                    size: "1",
                 },
             )?;
             add_use(
@@ -478,6 +482,76 @@ fn publication_rejects_unproved_rom_scopes_and_uuids_with_foreign_keys_disabled(
                 allowed,
                 "publication {case}/{variant}: {result:?}"
             );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn software_size_publication_rejects_only_linked_known_contradictions() -> TestResult {
+    const SHA1: &str = "1111111111111111111111111111111111111111";
+    for foreign_keys in [false, true] {
+        let seed = seed()?;
+        let mut connection = connect(&seed, foreign_keys)?;
+        let uuid = [0x66_u8; 16];
+        sql_query("INSERT INTO catalog_contents(content_uuid) VALUES (?)")
+            .bind::<diesel::sql_types::Binary, _>(uuid.as_slice())
+            .execute(&mut connection)?;
+        for (suffix, size, linked, allowed) in [
+            ("known-size", "1", true, true),
+            ("contradictory-size", "2", true, false),
+            ("unknown-size", "invalid", true, true),
+            ("unlinked-size", "2", false, true),
+        ] {
+            let owner = candidate(
+                &mut connection,
+                &seed.snapshot_key,
+                suffix,
+                true,
+                None,
+                true,
+            )?;
+            let area = add_area(&mut connection, &owner, "rom", "data", 0, 0)?;
+            let rom = add_rom_source(
+                &mut connection,
+                &owner,
+                area,
+                RomFixture {
+                    occurrence_order: 0,
+                    claim_kind: "software_rom_entry",
+                    crc_text: None,
+                    sha1_text: Some(SHA1),
+                    declare_file: true,
+                },
+                linked.then_some(uuid.as_slice()),
+                &RomSource {
+                    size,
+                    ..RomSource::default()
+                },
+            )?;
+            add_use(&mut connection, &owner, rom, Some(rom), "load")?;
+            add_assertion(
+                &mut connection,
+                rom,
+                "sha1",
+                &hex::decode(SHA1)?,
+                "whole_asset",
+                "source_declared",
+            )?;
+            let publication = publish(&mut connection, &owner.snapshot_key);
+            if allowed {
+                publication?;
+            } else {
+                let error = publication
+                    .err()
+                    .ok_or("contradictory linked length must fail")?;
+                assert!(
+                    error
+                        .to_string()
+                        .contains("contradictory source whole-file lengths"),
+                    "unexpected failure: {error}"
+                );
+            }
         }
     }
     Ok(())

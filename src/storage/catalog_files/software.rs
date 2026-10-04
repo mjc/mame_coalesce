@@ -30,6 +30,42 @@ pub enum SoftwareFileOperation {
     Fill,
 }
 
+impl SoftwareFileOperation {
+    pub(crate) const fn from_instruction(instruction: Option<SoftwareLoadInstruction>) -> Self {
+        use SoftwareLoadInstruction as Load;
+        match instruction {
+            Some(Load::Continue) => Self::Continue,
+            Some(Load::Reload) => Self::Reload,
+            Some(Load::ReloadPlain) => Self::ReloadPlain,
+            Some(Load::Ignore) => Self::Ignore,
+            Some(Load::Fill) => Self::Fill,
+            Some(
+                Load::Load16Byte
+                | Load::Load16Word
+                | Load::Load16WordSwap
+                | Load::Load32Byte
+                | Load::Load32Word
+                | Load::Load32WordSwap
+                | Load::Load32Dword
+                | Load::Load64Word
+                | Load::Load64WordSwap,
+            )
+            | None => Self::Load,
+        }
+    }
+
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Load => "load",
+            Self::Continue => "continue",
+            Self::Reload => "reload",
+            Self::ReloadPlain => "reload_plain",
+            Self::Ignore => "ignore",
+            Self::Fill => "fill",
+        }
+    }
+}
+
 /// Native metadata for a ROM entry or ROM operation in a software list.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SoftwareRomPayload {
@@ -456,25 +492,7 @@ fn rom_payload(row: RomRow) -> Result<SoftwareRomPayload, CatalogFilesError> {
         .as_deref()
         .map(parse_load_instruction)
         .transpose()?;
-    let instruction_operation = match load_instruction {
-        Some(SoftwareLoadInstruction::Continue) => SoftwareFileOperation::Continue,
-        Some(SoftwareLoadInstruction::Reload) => SoftwareFileOperation::Reload,
-        Some(SoftwareLoadInstruction::ReloadPlain) => SoftwareFileOperation::ReloadPlain,
-        Some(SoftwareLoadInstruction::Ignore) => SoftwareFileOperation::Ignore,
-        Some(SoftwareLoadInstruction::Fill) => SoftwareFileOperation::Fill,
-        Some(
-            SoftwareLoadInstruction::Load16Byte
-            | SoftwareLoadInstruction::Load16Word
-            | SoftwareLoadInstruction::Load16WordSwap
-            | SoftwareLoadInstruction::Load32Byte
-            | SoftwareLoadInstruction::Load32Word
-            | SoftwareLoadInstruction::Load32WordSwap
-            | SoftwareLoadInstruction::Load32Dword
-            | SoftwareLoadInstruction::Load64Word
-            | SoftwareLoadInstruction::Load64WordSwap,
-        )
-        | None => SoftwareFileOperation::Load,
-    };
+    let instruction_operation = SoftwareFileOperation::from_instruction(load_instruction);
     if operation != instruction_operation {
         return Err(CatalogFilesError::MismatchedSoftwareFileOwner(
             row.occurrence_id,

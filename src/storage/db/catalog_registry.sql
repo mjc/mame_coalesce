@@ -40,26 +40,28 @@ WHERE occurrence.content_uuid IS NOT NULL
 -- Only lengths whose native meaning is a complete file participate. Software
 -- loading-step lengths and logical disks do not become whole-file lengths.
 CREATE VIEW catalog_file_size_assertions AS
-SELECT occurrence_id, 'mame_rom_size' AS size_field, size
-FROM mame_rom_claims WHERE size IS NOT NULL AND evidence_scope IN ('whole_asset', 'whole_file')
-UNION ALL
-SELECT occurrence_id, 'logiqx_rom_size', size
-FROM logiqx_rom_claims WHERE size IS NOT NULL AND evidence_scope IN ('whole_asset', 'whole_file')
-UNION ALL
-SELECT occurrence_id, 'cmp_rom_size', size
-FROM cmp_rom_claims WHERE size IS NOT NULL AND evidence_scope IN ('whole_asset', 'whole_file')
-UNION ALL
-SELECT occurrence_id, 'no_intro_pc_file_size', size
-FROM no_intro_pc_file_claims WHERE size IS NOT NULL AND evidence_scope IN ('whole_asset', 'whole_file')
-UNION ALL
-SELECT occurrence_id, 'no_intro_dat_rom_size', size
-FROM no_intro_dat_rom_claims WHERE size IS NOT NULL AND evidence_scope = 'whole_file'
-UNION ALL
-SELECT occurrence_id, 'no_intro_database_source_file_size', size
-FROM no_intro_dump_files WHERE size IS NOT NULL AND evidence_scope='whole_file'
-UNION ALL
-SELECT occurrence_id, 'no_intro_database_release_file_size', size
-FROM no_intro_release_files WHERE size IS NOT NULL AND evidence_scope='whole_file';
+SELECT occurrence.occurrence_id,
+    CASE occurrence.claim_kind
+        WHEN 'mame_rom' THEN 'mame_rom_size'
+        WHEN 'logiqx_rom' THEN 'logiqx_rom_size'
+        WHEN 'cmp_rom' THEN 'cmp_rom_size'
+        WHEN 'no_intro_pc_file' THEN 'no_intro_pc_file_size'
+        WHEN 'no_intro_dat_rom' THEN 'no_intro_dat_rom_size'
+        WHEN 'no_intro_database_source_file' THEN 'no_intro_database_source_file_size'
+        WHEN 'no_intro_database_release_file' THEN 'no_intro_database_release_file_size'
+        WHEN 'software_rom_entry' THEN 'software_rom_file_size'
+    END AS size_field,
+    CASE occurrence.claim_kind
+        WHEN 'mame_rom' THEN (SELECT size FROM mame_rom_claims WHERE occurrence_id=occurrence.occurrence_id AND evidence_scope IN ('whole_asset','whole_file'))
+        WHEN 'logiqx_rom' THEN (SELECT size FROM logiqx_rom_claims WHERE occurrence_id=occurrence.occurrence_id AND evidence_scope IN ('whole_asset','whole_file'))
+        WHEN 'cmp_rom' THEN (SELECT size FROM cmp_rom_claims WHERE occurrence_id=occurrence.occurrence_id AND evidence_scope IN ('whole_asset','whole_file'))
+        WHEN 'no_intro_pc_file' THEN (SELECT size FROM no_intro_pc_file_claims WHERE occurrence_id=occurrence.occurrence_id AND evidence_scope IN ('whole_asset','whole_file'))
+        WHEN 'no_intro_dat_rom' THEN (SELECT size FROM no_intro_dat_rom_claims WHERE occurrence_id=occurrence.occurrence_id AND evidence_scope='whole_file')
+        WHEN 'no_intro_database_source_file' THEN (SELECT size FROM no_intro_dump_files WHERE occurrence_id=occurrence.occurrence_id AND evidence_scope='whole_file')
+        WHEN 'no_intro_database_release_file' THEN (SELECT size FROM no_intro_release_files WHERE occurrence_id=occurrence.occurrence_id AND evidence_scope='whole_file')
+        WHEN 'software_rom_entry' THEN (SELECT size FROM software_file_size_assertions WHERE occurrence_id=occurrence.occurrence_id)
+    END AS size
+FROM asset_occurrences AS occurrence WHERE size IS NOT NULL;
 
 CREATE TABLE occurrence_content_conflict_hashes (
     occurrence_id INTEGER NOT NULL,
@@ -80,7 +82,7 @@ CREATE TABLE occurrence_content_conflict_sizes (
     occurrence_id INTEGER NOT NULL,
     candidate_content_uuid BLOB NOT NULL,
     evidence_occurrence_id INTEGER NOT NULL REFERENCES asset_occurrences(occurrence_id) ON DELETE RESTRICT,
-    size_field TEXT NOT NULL CHECK (size_field IN ('mame_rom_size', 'logiqx_rom_size', 'cmp_rom_size', 'no_intro_pc_file_size', 'no_intro_dat_rom_size', 'no_intro_database_source_file_size', 'no_intro_database_release_file_size')),
+    size_field TEXT NOT NULL CHECK (size_field IN ('mame_rom_size', 'logiqx_rom_size', 'cmp_rom_size', 'no_intro_pc_file_size', 'no_intro_dat_rom_size', 'no_intro_database_source_file_size', 'no_intro_database_release_file_size', 'software_rom_file_size')),
     role TEXT NOT NULL CHECK (role IN ('incoming', 'candidate')),
     PRIMARY KEY (occurrence_id, candidate_content_uuid, evidence_occurrence_id, size_field, role),
     FOREIGN KEY (occurrence_id, candidate_content_uuid)

@@ -541,7 +541,7 @@ fn named_hash_bearing_rom_operations_keep_their_own_assertions_without_identity(
         assert_eq!(row.evidence_scope, "unknown");
         assert_eq!(
             row.declaration_occurrence_id,
-            if operation == "fill" {
+            if matches!(operation, "fill" | "reload_plain" | "ignore") {
                 None
             } else {
                 Some(rows[0].occurrence_id)

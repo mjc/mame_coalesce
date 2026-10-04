@@ -201,9 +201,9 @@ fn software_segment_sizes_do_not_split_whole_file_identity_across_lists()
     assert_eq!(steps.segment_sizes, "4,4,8");
 
     let sized_declarations = sql_query(
-        "SELECT COUNT(*) AS value FROM software_file_declarations WHERE declared_size IS NOT NULL",
+        "SELECT COUNT(*) AS value FROM catalog_file_size_assertions WHERE size_field = 'software_rom_file_size' AND size = 8",
     )
     .get_result::<CountRow>(&mut connection)?;
-    assert_eq!(sized_declarations.value, 0);
+    assert_eq!(sized_declarations.value, 2);
     Ok(())
 }

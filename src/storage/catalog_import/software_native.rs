@@ -23,6 +23,7 @@ use crate::{
             ContentDigestAssertions, ContentIdentityResolution, record_content_identity_conflict,
             record_occurrence_digest_assertions, resolve_content_identity,
         },
+        catalog_files::SoftwareFileOperation,
         catalog_identity::{AllocatedOccurrence, OccurrenceId},
         software_rom_evidence::RomEvidence,
     },
@@ -56,6 +57,21 @@ struct PartIdRow {
 struct AreaIdRow {
     #[diesel(sql_type = BigInt)]
     area_id: i64,
+}
+
+struct PendingFileIdentity {
+    occurrence: OccurrenceId,
+    resolution: ContentIdentityResolution,
+}
+
+fn finish_file_identity(
+    conn: &mut SqliteConnection,
+    pending: Option<PendingFileIdentity>,
+) -> crate::Result<()> {
+    if let Some(pending) = pending {
+        record_content_identity_conflict(conn, pending.occurrence, &pending.resolution)?;
+    }
+    Ok(())
 }
 
 /// Import software list records and their source occurrences into the native catalog model.
@@ -473,47 +489,101 @@ fn insert_area(
             ));
         }
     }
-    let mut declaration = None;
+    insert_area_components(conn, record, area_id, area, occurrence_order)
+}
+
+struct AreaImport<'a> {
+    record: CatalogSetId,
+    area_id: i64,
+    occurrence_order: &'a mut i64,
+    declaration: Option<OccurrenceId>,
+}
+
+fn insert_area_components(
+    conn: &mut SqliteConnection,
+    record: CatalogSetId,
+    area_id: i64,
+    area: &SoftwareArea,
+    occurrence_order: &mut i64,
+) -> crate::Result<()> {
+    let mut context = AreaImport {
+        record,
+        area_id,
+        occurrence_order,
+        declaration: None,
+    };
+    let mut pending = None;
     for (component_order, component) in area.components.iter().enumerate() {
-        insert_component(
+        if !matches!(component, SoftwareComponent::Rom(rom) if !matches!(
+            SoftwareFileOperation::from_instruction(rom.load),
+            SoftwareFileOperation::Load | SoftwareFileOperation::Fill
+        )) {
+            // The previous declaration's complete native first run must exist
+            // before capturing its evidence or resolving another candidate.
+            finish_file_identity(conn, pending.take())?;
+        }
+        let file_size = crate::software_loading::file_verification_length(
+            area.components
+                .iter()
+                .skip(component_order)
+                .map(|component| match component {
+                    SoftwareComponent::Rom(rom) => (
+                        rom.load,
+                        rom.size_text
+                            .as_deref()
+                            .and_then(|text| crate::mame_softwarelist::parse_number(text).ok()),
+                    ),
+                    SoftwareComponent::Disk(_) => (Some(LoadInstruction::Fill), None),
+                }),
+        )
+        .and_then(|size| i64::try_from(size).ok());
+        let identity = insert_component(
             conn,
-            record,
-            area_id,
+            &mut context,
             component,
             checked_order(component_order, "software area components")?,
-            occurrence_order,
-            &mut declaration,
+            file_size,
         )?;
+        if identity.is_some() {
+            pending = identity;
+        }
     }
+    finish_file_identity(conn, pending)?;
     Ok(())
 }
 
 fn insert_component(
     conn: &mut SqliteConnection,
-    record: CatalogSetId,
-    area_id: i64,
+    context: &mut AreaImport<'_>,
     component: &SoftwareComponent,
     component_order: i64,
-    occurrence_order: &mut i64,
-    declaration: &mut Option<OccurrenceId>,
-) -> crate::Result<()> {
-    let current_order = *occurrence_order;
-    *occurrence_order = occurrence_order
+    file_size: Option<i64>,
+) -> crate::Result<Option<PendingFileIdentity>> {
+    let current_order = *context.occurrence_order;
+    *context.occurrence_order = context
+        .occurrence_order
         .checked_add(1)
         .ok_or_else(|| crate::Error::InvalidPath("too many software occurrences".into()))?;
 
     match component {
         SoftwareComponent::Rom(rom) => insert_rom_component(
             conn,
-            record,
-            area_id,
+            context,
             rom,
             component_order,
             current_order,
-            declaration,
+            file_size,
         ),
         SoftwareComponent::Disk(disk) => {
-            insert_disk_component(conn, record, area_id, disk, component_order, current_order)
+            insert_disk_component(
+                conn,
+                context.record,
+                context.area_id,
+                disk,
+                component_order,
+                current_order,
+            )?;
+            Ok(None)
         }
     }
 }
@@ -556,9 +626,10 @@ fn allocate_occurrence(
     claim: SoftwareClaim,
     source_hashes_usable: bool,
     digests: ContentDigestAssertions<'_>,
+    file_size: Option<i64>,
 ) -> crate::Result<(OccurrenceId, ContentIdentityResolution)> {
     let resolution = if claim.identity_eligible() && source_hashes_usable {
-        resolve_content_identity(conn, None, digests)?
+        resolve_content_identity(conn, file_size, digests)?
     } else {
         ContentIdentityResolution::NoEligibleEvidence
     };
@@ -581,26 +652,20 @@ fn allocate_occurrence(
 
 fn insert_rom_component(
     conn: &mut SqliteConnection,
-    record: CatalogSetId,
-    area_id: i64,
+    context: &mut AreaImport<'_>,
     rom: &SoftwareRom,
     component_order: i64,
     occurrence_order: i64,
-    declaration: &mut Option<OccurrenceId>,
-) -> crate::Result<()> {
-    let claim = if matches!(
-        rom.load,
-        Some(
-            crate::mame_softwarelist::LoadInstruction::Reload
-                | crate::mame_softwarelist::LoadInstruction::Fill
-                | crate::mame_softwarelist::LoadInstruction::Continue
-                | crate::mame_softwarelist::LoadInstruction::ReloadPlain
-                | crate::mame_softwarelist::LoadInstruction::Ignore
-        )
-    ) {
-        SoftwareClaim::RomOperation
-    } else {
+    file_size: Option<i64>,
+) -> crate::Result<Option<PendingFileIdentity>> {
+    let record = context.record;
+    let area_id = context.area_id;
+    let declaration = &mut context.declaration;
+    let claim = if SoftwareFileOperation::from_instruction(rom.load) == SoftwareFileOperation::Load
+    {
         SoftwareClaim::RomDeclaration
+    } else {
+        SoftwareClaim::RomOperation
     };
     let is_declaration = claim.is_rom_declaration();
     let evidence = RomEvidence::classify(
@@ -627,6 +692,7 @@ fn insert_rom_component(
         claim,
         source_hashes_usable,
         digests,
+        file_size,
     )?;
     insert_rom_entry(
         conn,
@@ -643,6 +709,7 @@ fn insert_rom_component(
         rom.load,
         Some(crate::mame_softwarelist::LoadInstruction::Fill)
     ) {
+        *declaration = None;
         None
     } else if is_declaration {
         Some(occurrence)
@@ -651,8 +718,11 @@ fn insert_rom_component(
     };
     insert_rom_use(conn, record, occurrence, rom, use_declaration)?;
 
-    record_occurrence_identity_evidence(conn, occurrence, digests, &resolution)?;
-    Ok(())
+    record_occurrence_digest_assertions(conn, occurrence, digests, "source_declared")?;
+    Ok(is_declaration.then_some(PendingFileIdentity {
+        occurrence,
+        resolution,
+    }))
 }
 
 fn record_occurrence_identity_evidence(
@@ -723,8 +793,8 @@ fn update_rom_declaration(
         return Ok(());
     }
     sql_query(
-        "INSERT INTO software_file_declarations (occurrence_id, record_id, declared_size) \
-         VALUES (?, ?, NULL)",
+        "INSERT INTO software_file_declarations (occurrence_id, record_id) \
+         VALUES (?, ?)",
     )
     .bind::<BigInt, _>(occurrence.database_value())
     .bind::<BigInt, _>(record.as_i64())
@@ -748,7 +818,7 @@ fn insert_rom_use(
     .bind::<BigInt, _>(occurrence.database_value())
     .bind::<BigInt, _>(record.as_i64())
     .bind::<Nullable<BigInt>, _>(declaration.map(OccurrenceId::database_value))
-    .bind::<Text, _>(rom_operation(rom.load))
+    .bind::<Text, _>(SoftwareFileOperation::from_instruction(rom.load).as_str())
     .execute(conn)?;
     Ok(())
 }
@@ -780,6 +850,7 @@ fn insert_disk_component(
         SoftwareClaim::DiskEntry,
         source_hashes_usable,
         digests,
+        None,
     )?;
 
     sql_query(
@@ -820,31 +891,6 @@ fn insert_disk_component(
 
     record_occurrence_identity_evidence(conn, occurrence, digests, &resolution)?;
     Ok(())
-}
-
-const fn rom_operation(
-    instruction: Option<crate::mame_softwarelist::LoadInstruction>,
-) -> &'static str {
-    use crate::mame_softwarelist::LoadInstruction as Load;
-    match instruction {
-        Some(Load::Continue) => "continue",
-        Some(Load::Reload) => "reload",
-        Some(Load::ReloadPlain) => "reload_plain",
-        Some(Load::Ignore) => "ignore",
-        Some(Load::Fill) => "fill",
-        Some(
-            Load::Load16Byte
-            | Load::Load16Word
-            | Load::Load16WordSwap
-            | Load::Load32Byte
-            | Load::Load32Word
-            | Load::Load32WordSwap
-            | Load::Load32Dword
-            | Load::Load64Word
-            | Load::Load64WordSwap,
-        )
-        | None => "load",
-    }
 }
 
 fn checked_order(order: usize, kind: &str) -> crate::Result<i64> {

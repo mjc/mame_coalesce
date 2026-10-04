@@ -1166,7 +1166,6 @@ CREATE TABLE software_disk_entries (
 CREATE TABLE software_file_declarations (
     occurrence_id INTEGER PRIMARY KEY NOT NULL,
     record_id     INTEGER NOT NULL,
-    declared_size INTEGER CHECK (declared_size IS NULL),
     UNIQUE (occurrence_id, record_id),
     FOREIGN KEY (occurrence_id, record_id)
         REFERENCES asset_occurrences (occurrence_id, record_id) ON DELETE RESTRICT

@@ -85,17 +85,6 @@ BEGIN SELECT RAISE(ABORT, 'No-Intro DAT release requires an unpublished native g
 
 -- Linking requires agreement with applicable source evidence on every owner of
 -- the UUID. Computed hashes and hashes of unknown scope do not contradict it.
-CREATE VIEW no_intro_dat_source_file_size_assertions AS
-SELECT size.occurrence_id, size.size
-FROM accepted_file_size_assertions AS size
-JOIN (
-    SELECT occurrence_id, evidence_provenance FROM mame_rom_claims
-    UNION ALL SELECT occurrence_id, evidence_provenance FROM logiqx_rom_claims
-    UNION ALL SELECT occurrence_id, evidence_provenance FROM cmp_rom_claims
-    UNION ALL SELECT occurrence_id, evidence_provenance FROM no_intro_pc_file_claims
-    UNION ALL SELECT occurrence_id, evidence_provenance FROM no_intro_dat_rom_claims
-) AS provenance ON provenance.occurrence_id = size.occurrence_id
-WHERE provenance.evidence_provenance = 'source_declared';
 
 -- Check disputes when a linked claim first supplies its source hash. A later
 -- claim can dispute an earlier association in the same streaming import; that
@@ -151,7 +140,7 @@ WHEN EXISTS (
             )
             SELECT 1 FROM component
             CROSS JOIN asset_occurrences AS known_owner ON known_owner.content_uuid = component.content_uuid
-            CROSS JOIN no_intro_dat_source_file_size_assertions AS known_size ON known_size.occurrence_id = known_owner.occurrence_id
+            CROSS JOIN source_file_size_assertions AS known_size ON known_size.occurrence_id = known_owner.occurrence_id
             WHERE claim.evidence_scope = 'whole_file' AND claim.size IS NOT NULL
               AND claim.evidence_provenance = 'source_declared'
               AND known_size.size <> claim.size
