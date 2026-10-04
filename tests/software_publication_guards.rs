@@ -503,6 +503,7 @@ fn software_size_publication_rejects_only_linked_known_contradictions() -> TestR
             ("unknown-size", "invalid", true, true),
             ("unlinked-size", "2", false, true),
         ] {
+            sql_query("SAVEPOINT publication_case").execute(&mut connection)?;
             let owner = candidate(
                 &mut connection,
                 &seed.snapshot_key,
@@ -551,10 +552,115 @@ fn software_size_publication_rejects_only_linked_known_contradictions() -> TestR
                         .contains("contradictory source whole-file lengths"),
                     "unexpected failure: {error}"
                 );
+                // Match the public import's rollback instead of leaving a
+                // contradictory unpublished candidate in the shared component.
+                sql_query("ROLLBACK TO publication_case").execute(&mut connection)?;
             }
+            sql_query("RELEASE publication_case").execute(&mut connection)?;
         }
     }
     Ok(())
+}
+
+#[test]
+fn unknown_software_length_cannot_publish_an_inconsistent_candidate() -> TestResult {
+    for foreign_keys in [false, true] {
+        let seed = seed()?;
+        let mut connection = connect(&seed, foreign_keys)?;
+        let uuid = [0x77_u8; 16];
+        sql_query("INSERT INTO catalog_contents(content_uuid) VALUES (?)")
+            .bind::<diesel::sql_types::Binary, _>(uuid.as_slice())
+            .execute(&mut connection)?;
+        let old_guard = sql_query(
+            "SELECT sql AS value FROM sqlite_schema \
+             WHERE type='trigger' AND name='catalog_linked_file_size_publication'",
+        )
+        .get_result::<GuardSql>(&mut connection)?
+        .value;
+        sql_query("DROP TRIGGER catalog_linked_file_size_publication").execute(&mut connection)?;
+        for (suffix, size) in [("known-one", "1"), ("known-two", "2")] {
+            let owner = size_linked_software_owner(&mut connection, &seed, suffix, size, &uuid)?;
+            assert_eq!(publish(&mut connection, &owner.snapshot_key)?, 1);
+        }
+        diesel::connection::SimpleConnection::batch_execute(&mut connection, &old_guard)?;
+        let incoming =
+            size_linked_software_owner(&mut connection, &seed, "unknown", "invalid", &uuid)?;
+        let error = publish(&mut connection, &incoming.snapshot_key)
+            .err()
+            .ok_or("unknown size must not bypass inconsistent retained whole-file lengths")?;
+        assert!(
+            error
+                .to_string()
+                .contains("contradictory source whole-file lengths"),
+            "unexpected rejection: {error}"
+        );
+    }
+    Ok(())
+}
+
+#[derive(QueryableByName)]
+struct GuardSql {
+    #[diesel(sql_type = Text)]
+    value: String,
+}
+
+#[test]
+fn publication_requires_an_issued_file_uuid_with_foreign_keys_disabled() -> TestResult {
+    let seed = seed()?;
+    let mut connection = connect(&seed, false)?;
+    let uuid = [0x88_u8; 16];
+    let owner = size_linked_software_owner(&mut connection, &seed, "unissued", "1", &uuid)?;
+    let error = publish(&mut connection, &owner.snapshot_key)
+        .err()
+        .ok_or("a valid-looking but unissued UUID must not publish")?;
+    assert!(
+        error.to_string().contains("issued file UUID"),
+        "unexpected rejection: {error}"
+    );
+    sql_query("INSERT INTO catalog_contents(content_uuid) VALUES (?)")
+        .bind::<diesel::sql_types::Binary, _>(uuid.as_slice())
+        .execute(&mut connection)?;
+    assert_eq!(publish(&mut connection, &owner.snapshot_key)?, 1);
+    Ok(())
+}
+
+fn size_linked_software_owner(
+    connection: &mut SqliteConnection,
+    seed: &Seed,
+    suffix: &str,
+    size: &str,
+    uuid: &[u8; 16],
+) -> TestResult<Candidate> {
+    const SHA1: &str = "1111111111111111111111111111111111111111";
+    let owner = candidate(connection, &seed.snapshot_key, suffix, true, None, true)?;
+    let area = add_area(connection, &owner, "rom", "data", 0, 0)?;
+    let rom = add_rom_source(
+        connection,
+        &owner,
+        area,
+        RomFixture {
+            occurrence_order: 0,
+            claim_kind: "software_rom_entry",
+            crc_text: None,
+            sha1_text: Some(SHA1),
+            declare_file: true,
+        },
+        Some(uuid),
+        &RomSource {
+            size,
+            ..RomSource::default()
+        },
+    )?;
+    add_use(connection, &owner, rom, Some(rom), "load")?;
+    add_assertion(
+        connection,
+        rom,
+        "sha1",
+        &hex::decode(SHA1)?,
+        "whole_asset",
+        "source_declared",
+    )?;
+    Ok(owner)
 }
 
 #[test]

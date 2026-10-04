@@ -37,6 +37,8 @@ pub const SCHEMA: &str = concat!(
     "\n",
     include_str!("file_match_reviews.sql"),
     "\n",
+    include_str!("catalog_file_sizes.sql"),
+    "\n",
     include_str!("no_intro_dat.sql"),
     "\n",
     include_str!("no_intro_dat_guards.sql"),

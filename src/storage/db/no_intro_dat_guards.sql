@@ -130,20 +130,6 @@ WHEN EXISTS (
               AND incoming.provenance = 'source_declared' AND incoming.scope IN ('whole_asset', 'whole_file')
               AND incoming_digest.algorithm = known_digest.algorithm
               AND incoming_digest.digest <> known_digest.digest
-        ) OR EXISTS (
-            WITH RECURSIVE component(content_uuid) AS (
-                SELECT canonical.content_uuid
-                UNION
-                SELECT redirect.old_content_uuid FROM component
-                JOIN merged_file_ids AS redirect ON redirect.kept_content_uuid = component.content_uuid
-                JOIN file_match_decision_publications USING (decision_id)
-            )
-            SELECT 1 FROM component
-            CROSS JOIN asset_occurrences AS known_owner ON known_owner.content_uuid = component.content_uuid
-            CROSS JOIN source_file_size_assertions AS known_size ON known_size.occurrence_id = known_owner.occurrence_id
-            WHERE claim.evidence_scope = 'whole_file' AND claim.size IS NOT NULL
-              AND claim.evidence_provenance = 'source_declared'
-              AND known_size.size <> claim.size
         )
       )
 )

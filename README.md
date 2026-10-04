@@ -308,6 +308,16 @@ Results distinguish the immutable source-issued UUID from its current canonical
 UUID. Published reviews also version cursors: after another review, restart
 pagination rather than silently skip newly merged members.
 
+Snapshot publication verifies that linked source and canonical UUIDs were
+actually issued. All eight native whole-file roles share the same source-size
+consistency check, including declarations whose own length is unknown.
+Published redirects combine retained source facts; only an exact published
+size rejection excludes a length. Equal lengths, unknown-only components and
+unlinked conflicting source entries remain publishable. No identity stores a
+copied size or a cached consistency flag.
+This does not upgrade unknown-scope database-export declarations to whole-file
+evidence or establish the synthetic P/C parser's producer conformance.
+
 Relationship evidence uses a closed Rust enum and native relational owners,
 not a generic JSON tree. User/rule rationales and ordered comparison-field
 assessments have separate typed tables; comparisons do not copy expected

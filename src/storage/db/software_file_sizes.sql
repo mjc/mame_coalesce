@@ -70,28 +70,3 @@ WHERE occurrence.claim_kind = 'software_rom_entry'
   AND base.name IS NOT NULL AND base.name <> '' AND base.dump_status <> 'nodump'
   AND base.evidence_scope IN ('whole_asset', 'whole_file')
   AND (base.load_instruction IS NULL OR base.load_instruction NOT IN ('continue', 'ignore', 'reload', 'reload_plain', 'fill'));
-
-CREATE TRIGGER software_linked_file_size_publication BEFORE INSERT ON snapshot_publications
-WHEN EXISTS (
-    SELECT 1 FROM catalog_set_groups AS groups
-    CROSS JOIN catalog_sets AS sets ON sets.set_group_id = groups.set_group_id
-    CROSS JOIN asset_occurrences AS occurrence ON occurrence.record_id = sets.set_id
-    JOIN canonical_occurrence_content AS canonical USING (occurrence_id)
-    JOIN source_file_size_assertions AS incoming USING (occurrence_id)
-    WHERE groups.snapshot_key = NEW.snapshot_key
-      AND occurrence.claim_kind = 'software_rom_entry'
-      AND EXISTS (
-          WITH RECURSIVE component(content_uuid) AS (
-              SELECT canonical.content_uuid
-              UNION
-              SELECT redirect.old_content_uuid FROM component
-              JOIN merged_file_ids AS redirect ON redirect.kept_content_uuid = component.content_uuid
-              JOIN file_match_decision_publications USING (decision_id)
-          )
-          SELECT 1 FROM component
-          CROSS JOIN asset_occurrences AS known ON known.content_uuid = component.content_uuid
-          CROSS JOIN source_file_size_assertions AS size ON size.occurrence_id = known.occurrence_id
-          WHERE size.size <> incoming.size
-      )
-)
-BEGIN SELECT RAISE(ABORT, 'software UUID has contradictory source whole-file lengths'); END;

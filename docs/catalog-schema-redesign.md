@@ -84,6 +84,16 @@ another accept cannot restore it. Settling one conflict never settles another.
 Incoming entries remain unlinked: reviewing their evidence is not a new source
 declaration or observed-byte proof.
 
+Shared snapshot publication independently requires issued source/canonical
+UUIDs and source-size consistency for every touched canonical component,
+including unknown-length incoming declarations. One occurrence-keyed native
+predicate covers all eight whole-file roles; it stores no calculated size or
+consistency flag. Draft redirects/rejections have no effect, while other staged
+source facts in the same component remain visible to validation. Unlinked
+conflicting entries and unrelated components do not block publication.
+The two database-export branches apply only to explicitly qualified whole-file
+facts; current public imports retain unknown scope and do not receive UUIDs.
+
 Bulk occurrence results expose immutable source-issued and derived canonical
 UUIDs separately. Keyset pages accept any issued ID, seek its reverse redirect
 component, and pin the requested ID, registry generation and review revision.

@@ -80,32 +80,52 @@ fn identity_size_lookup_seeks_native_successors_with_unrelated_software_present(
     .bind::<Binary, _>(uuid.as_bytes().as_slice())
     .load::<PlanRow>(&mut connection)?;
     assert_native_seeks(&capture);
-    let guard = software_size_guard_query()?;
-    let publication = sql_query(format!("EXPLAIN QUERY PLAN SELECT EXISTS ({guard})"))
-        .bind::<Text, _>(
-            report
-                .snapshot_key
-                .as_ref()
-                .ok_or_else(|| crate::Error::InvalidPath("snapshot missing".into()))?
-                .as_str(),
-        )
-        .load::<PlanRow>(&mut connection)?;
+    let snapshot = report
+        .snapshot_key
+        .as_ref()
+        .ok_or_else(|| crate::Error::InvalidPath("snapshot missing".into()))?;
+    let publication = catalog_guard_plan(
+        &mut connection,
+        snapshot.as_str(),
+        "catalog_linked_file_size_publication",
+    )?;
     assert_native_seeks(&publication);
+    let issuance = catalog_guard_plan(
+        &mut connection,
+        snapshot.as_str(),
+        "catalog_linked_file_uuid_publication",
+    )?;
+    assert_scoped_owner_seeks(&issuance);
     Ok(())
 }
 
-fn software_size_guard_query() -> crate::Result<String> {
-    include_str!("../db/software_file_sizes.sql")
-        .split("WHEN EXISTS (")
+fn catalog_guard_plan(
+    connection: &mut SqliteConnection,
+    snapshot: &str,
+    trigger: &str,
+) -> crate::Result<Vec<PlanRow>> {
+    let guard = catalog_guard_query(trigger)?;
+    Ok(
+        sql_query(format!("EXPLAIN QUERY PLAN SELECT EXISTS ({guard})"))
+            .bind::<Text, _>(snapshot)
+            .load::<PlanRow>(connection)?,
+    )
+}
+
+fn catalog_guard_query(trigger: &str) -> crate::Result<String> {
+    include_str!("../db/catalog_file_sizes.sql")
+        .split(&format!("CREATE TRIGGER {trigger} "))
         .nth(1)
+        .and_then(|body| body.split("WHEN EXISTS (").nth(1))
         .and_then(|body| body.split("\n)\nBEGIN").next())
         .map(|body| body.replace("NEW.snapshot_key", "?"))
         .ok_or_else(|| {
-            crate::Error::InvalidPath("missing actual software size publication predicate".into())
+            crate::Error::InvalidPath("missing actual catalog size publication predicate".into())
         })
 }
 
 fn assert_native_seeks(plans: &[PlanRow]) {
+    assert_scoped_owner_seeks(plans);
     let details = plans
         .iter()
         .map(|row| row.detail.as_str())
@@ -119,14 +139,21 @@ fn assert_native_seeks(plans: &[PlanRow]) {
     assert!(
         !details
             .iter()
-            .any(|detail| detail.contains("MATERIALIZE catalog_file_size_assertions")),
-        "global size materialization: {details:#?}"
+            .any(|detail| detail.contains("SEARCH next") && !detail.contains("component_order=?")),
+        "area-only recursive successor search: {details:#?}"
     );
+}
+
+fn assert_scoped_owner_seeks(plans: &[PlanRow]) {
+    let details = plans
+        .iter()
+        .map(|row| row.detail.as_str())
+        .collect::<Vec<_>>();
     assert!(
         !details
             .iter()
-            .any(|detail| detail.contains("SEARCH next") && !detail.contains("component_order=?")),
-        "area-only recursive successor search: {details:#?}"
+            .any(|detail| detail.contains("MATERIALIZE catalog_file_size_assertions")),
+        "global size materialization: {details:#?}"
     );
     for alias in [
         "declaration",
@@ -144,6 +171,13 @@ fn assert_native_seeks(plans: &[PlanRow]) {
         "no_intro_dat_rom_claims",
         "no_intro_dump_files",
         "no_intro_release_files",
+        "identity",
+        "known",
+        "entry",
+        "occurrence",
+        "sets",
+        "groups",
+        "issued",
     ] {
         assert!(
             !details
