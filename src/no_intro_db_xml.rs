@@ -16,4 +16,5 @@ mod reader;
 
 pub use crate::xml_reader::DeclaredText;
 pub use model::*;
+pub(crate) use reader::{RecoveryCursor, read_with_recovery};
 pub use reader::{RecoveryWarnings, ValidatedNoIntroDatabase, read_with};

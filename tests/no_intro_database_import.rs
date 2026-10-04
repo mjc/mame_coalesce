@@ -215,7 +215,7 @@ fn recovered_owner_database()
 #[test]
 fn an_unowned_diagnostic_cannot_replace_owned_evidence_through_update() -> TestResult {
     let (_directory, _database, mut connection) = recovered_owner_database()?;
-    connection.batch_execute("INSERT INTO import_diagnostics(diagnostic_key,run_key,document_key,code,message) SELECT 'unowned-diagnostic',run_key,document_key,'parse_failed','unowned' FROM import_runs LIMIT 1")?;
+    connection.batch_execute("INSERT INTO import_diagnostics(diagnostic_key,run_key,diagnostic_order,document_key,code,message) SELECT 'unowned-diagnostic',r.run_key,(SELECT COUNT(*) FROM import_diagnostics d WHERE d.run_key=r.run_key),r.document_key,'parse_failed','unowned' FROM import_runs r LIMIT 1")?;
     let replacement = connection.batch_execute("UPDATE OR REPLACE import_diagnostics SET diagnostic_key=(SELECT diagnostic_key FROM no_intro_dump_details_diagnostics LIMIT 1) WHERE diagnostic_key='unowned-diagnostic'");
     assert!(
         replacement.is_err(),
@@ -262,11 +262,11 @@ fn diagnostic_owner_links_reject_wrong_imports_and_evidence_rewrites() -> TestRe
         ("no_intro_release_details_diagnostics", "release_id"),
     ] {
         // A fresh unlinked copy avoids a duplicate-PK failure masking the owner guard.
-        sql_query(format!("INSERT INTO import_diagnostics(diagnostic_key,run_key,document_key,severity,code,message,source_line,source_column,coordinate_view,column_convention) SELECT ?,d.run_key,d.document_key,d.severity,d.code,d.message,d.source_line,d.source_column,d.coordinate_view,d.column_convention FROM import_diagnostics d JOIN {table} l USING(diagnostic_key) WHERE d.run_key=?"))
+        sql_query(format!("INSERT INTO import_diagnostics(diagnostic_key,run_key,diagnostic_order,document_key,severity,code,message,source_line,source_column,coordinate_view,column_convention) SELECT ?,d.run_key,(SELECT COUNT(*) FROM import_diagnostics existing WHERE existing.run_key=d.run_key),d.document_key,d.severity,d.code,d.message,d.source_line,d.source_column,d.coordinate_view,d.column_convention FROM import_diagnostics d JOIN {table} l USING(diagnostic_key) WHERE d.run_key=?"))
             .bind::<Text, _>(table)
             .bind::<Text, _>(first.run_key.to_string())
             .execute(&mut connection)?;
-        let wrong_import = sql_query(format!("INSERT INTO {table}(diagnostic_key,run_key,{owner}) SELECT ?,?,{owner} FROM {table} WHERE run_key=?"))
+        let wrong_import = sql_query(format!("INSERT INTO {table}(diagnostic_key,run_key,snapshot_key,{owner}) SELECT ?,?,snapshot_key,{owner} FROM {table} WHERE run_key=?"))
             .bind::<Text, _>(table)
             .bind::<Text, _>(first.run_key.to_string())
             .bind::<Text, _>(second.run_key.to_string())
@@ -276,7 +276,7 @@ fn diagnostic_owner_links_reject_wrong_imports_and_evidence_rewrites() -> TestRe
             "equal coordinates do not establish source ownership"
         );
         // The same evidence can be linked to its actual owner.
-        sql_query(format!("INSERT INTO {table}(diagnostic_key,run_key,{owner}) SELECT ?,run_key,{owner} FROM {table} WHERE run_key=?"))
+        sql_query(format!("INSERT INTO {table}(diagnostic_key,run_key,snapshot_key,{owner}) SELECT ?,run_key,snapshot_key,{owner} FROM {table} WHERE run_key=?"))
             .bind::<Text, _>(table)
             .bind::<Text, _>(first.run_key.to_string())
             .execute(&mut connection)?;

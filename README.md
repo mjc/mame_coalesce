@@ -442,9 +442,21 @@ not claim compressed-file offsets. Unknown ranges stay absent. The schema
 checks paired integer bounds and links each diagnostic to its run and source
 document; failed catalog facts still roll back. Database-export NUL recovery
 persists the original encoded bytes and exact excerpt-relative ranges after
-validated EOF. Warnings inside a details opening tag link to that actual dump
-source or release through a foreign key. Additional token/field highlights and
-other native diagnostic owners remain open.
+validated EOF. Its warnings link to the most specific stored XML element:
+document, header, header field, game, archive, dump source or release, and
+their details, serials or file declarations. Each link uses the actual native
+record's foreign key and complete element range. Failed imports retain their
+error diagnostic, without links to rolled-back catalog records.
+
+`import_diagnostics::for_run` reads persisted run metadata, ordered diagnostics,
+optional saved excerpts and typed native owners without opening the source
+document. Pages contain 1–500 diagnostic rows; continuation cursors are bound
+to the actual run and database registry. A page limit does not truncate an
+excerpt or discard owner links. Unknown byte anchors and highlights remain
+unknown when saved evidence is loaded or clipped. The run summary comes from
+its first diagnostic; there is no duplicate message in the run table.
+Additional semantic token/field highlights and other formats' native diagnostic
+owners remain open.
 
 Format version 1 is marked in the SQLite header and includes the cache database,
 acquisitions, catalog snapshots, assertions, reviews, diagnostics, and

@@ -829,9 +829,7 @@ fn start_streaming_import<'a>(
         interpretation,
         acquisition_key,
         &run_key,
-        Some(publication.key()),
-        "succeeded",
-        None,
+        CompletedRun::Succeeded(publication.key()),
     )?;
     Ok(StreamingImport {
         conn,
@@ -1147,6 +1145,8 @@ fn publish_no_intro_dat_import(
 struct NoIntroDatabaseImport<'a> {
     import: StreamingImport<'a>,
     counts: no_intro_database_native::ImportCounts,
+    diagnostic_count: usize,
+    extent: crate::no_intro_db_xml::XmlSourceExtent,
 }
 
 fn import_no_intro_database(
@@ -1161,10 +1161,10 @@ fn import_no_intro_database(
     let mut conn = pool.get()?;
     let result = conn.immediate_transaction::<_, StreamingImportError, _>(|conn| {
         ensure_identities(conn, request, &interpretation).map_err(StreamingImportError::Storage)?;
-        let validated = crate::no_intro_db_xml::read_with::<_, StreamingImportError>(
+        let validated = crate::no_intro_db_xml::read_with_recovery::<_, StreamingImportError>(
             bytes,
             mode,
-            |document| {
+            |document, warnings| {
                 let import = start_streaming_import(
                     conn,
                     request,
@@ -1175,43 +1175,62 @@ fn import_no_intro_database(
                 .map_err(StreamingImportError::Storage)?;
                 let counts = no_intro_database_native::ImportCounts::from_document(&document)
                     .map_err(StreamingImportError::Storage)?;
-                if let SnapshotPublication::Pending(key) = &import.publication {
-                    no_intro_database_native::insert_document(import.conn, key, &document)
-                        .map_err(StreamingImportError::Storage)?;
+                let mut diagnostic_count = 0;
+                no_intro_database_native::WarningWriter {
+                    conn: import.conn,
+                    publication: &import.publication,
+                    run: &import.run_key,
+                    document: &document_key,
+                    count: &mut diagnostic_count,
                 }
-                Ok(NoIntroDatabaseImport { import, counts })
+                .document(&document, warnings)
+                .map_err(StreamingImportError::Storage)?;
+                Ok(NoIntroDatabaseImport {
+                    import,
+                    counts,
+                    diagnostic_count,
+                    extent: document.extent,
+                })
             },
-            |sink, game| {
+            |sink, game, warnings| {
                 sink.counts
                     .include_game(&game)
                     .map_err(StreamingImportError::Storage)?;
-                if let SnapshotPublication::Pending(key) = &sink.import.publication {
-                    no_intro_database_native::insert_game(sink.import.conn, key, &game)
-                        .map_err(StreamingImportError::Storage)?;
+                no_intro_database_native::WarningWriter {
+                    conn: sink.import.conn,
+                    publication: &sink.import.publication,
+                    run: &sink.import.run_key,
+                    document: &document_key,
+                    count: &mut sink.diagnostic_count,
+                }
+                .game(&game, sink.extent, warnings)
+                .map_err(StreamingImportError::Storage)?;
+                Ok(())
+            },
+            |sink, warnings| {
+                let owner = super::import_diagnostics::NoIntroDiagnosticOwner::ExportDocument {
+                    snapshot: sink.import.publication.key().clone(),
+                    extent: sink.extent,
+                };
+                no_intro_database_native::WarningWriter {
+                    conn: sink.import.conn,
+                    publication: &sink.import.publication,
+                    run: &sink.import.run_key,
+                    document: &document_key,
+                    count: &mut sink.diagnostic_count,
+                }
+                .emit_before(warnings, sink.extent.end(), &owner)
+                .map_err(StreamingImportError::Storage)?;
+                if warnings.peek().is_some() {
+                    return Err(StreamingImportError::Storage(crate::Error::DatabaseSchema(
+                        "unassociated warning after document end".into(),
+                    )));
                 }
                 Ok(())
             },
         )?;
-        let (sink, recovery) = validated.into_parts();
-        let mut diagnostic_count = 0_usize;
-        if let Some(recovery) = &recovery {
-            for warning in recovery.warnings() {
-                let diagnostic = super::import_diagnostics::insert_recovery_warning(
-                    sink.import.conn,
-                    &sink.import.run_key,
-                    &document_key,
-                    &warning,
-                )
-                .map_err(StreamingImportError::Storage)?;
-                super::import_diagnostics::link_no_intro_details(sink.import.conn, &diagnostic)
-                    .map_err(StreamingImportError::Storage)?;
-                diagnostic_count = diagnostic_count.checked_add(1).ok_or_else(|| {
-                    StreamingImportError::Storage(crate::Error::DatabaseSchema(
-                        "diagnostic count overflow".into(),
-                    ))
-                })?;
-            }
-        }
+        let sink = validated.into_inner();
+        let diagnostic_count = sink.diagnostic_count;
         if let SnapshotPublication::Pending(key) = &sink.import.publication {
             no_intro_database_native::seal_document(sink.import.conn, key, &sink.counts)
                 .map_err(StreamingImportError::Storage)?;
@@ -1242,7 +1261,6 @@ fn record_failed_import(
 ) -> crate::Result<CatalogImportReport> {
     let interpretation = interpretation(request);
     let run_key = ImportRunKey::fresh();
-    let diagnostic = error.to_string();
     let mut conn = pool.get()?;
     conn.immediate_transaction::<_, crate::Error, _>(|conn| {
         ensure_identities(conn, request, &interpretation)?;
@@ -1253,9 +1271,7 @@ fn record_failed_import(
             &interpretation,
             acquisition_key,
             &run_key,
-            None,
-            "failed",
-            Some(&diagnostic),
+            CompletedRun::Failed,
         )?;
         super::import_diagnostics::insert_parse_error(conn, &run_key, &document_key, error)?;
         Ok(CatalogImportReport {
@@ -1295,9 +1311,7 @@ fn publish_snapshot(
             &interpretation,
             acquisition_key,
             &run_key,
-            Some(&snapshot_key),
-            "succeeded",
-            None,
+            CompletedRun::Succeeded(&snapshot_key),
         )?;
         Ok(CatalogImportReport {
             snapshot_key: Some(snapshot_key.clone()),
@@ -1449,7 +1463,12 @@ fn ensure_identities(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[derive(Clone, Copy)]
+enum CompletedRun<'a> {
+    Succeeded(&'a SnapshotKey),
+    Failed,
+}
+
 fn insert_import_run(
     conn: &mut SqliteConnection,
     request: &CatalogImportRequest,
@@ -1457,24 +1476,25 @@ fn insert_import_run(
     interpretation: &ParserInterpretationKey,
     acquisition_key: &str,
     run_key: &ImportRunKey,
-    snapshot_key: Option<&SnapshotKey>,
-    status: &str,
-    diagnostic: Option<&str>,
+    outcome: CompletedRun<'_>,
 ) -> diesel::QueryResult<usize> {
+    let (snapshot_key, status) = match outcome {
+        CompletedRun::Succeeded(snapshot) => (Some(snapshot.as_str()), "succeeded"),
+        CompletedRun::Failed => (None, "failed"),
+    };
     sql_query(
         "INSERT INTO import_runs \
          (run_key, catalog_key, document_key, interpretation_key, acquisition_key, snapshot_key, \
-          status, started_at, finished_at, diagnostic) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?)",
+          status, started_at, finished_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
     )
     .bind::<Text, _>(run_key.to_string())
     .bind::<Text, _>(request.catalog_key.as_str())
     .bind::<Text, _>(document_key.to_string())
     .bind::<Text, _>(interpretation.as_str())
     .bind::<Nullable<Text>, _>(Some(acquisition_key.to_owned()))
-    .bind::<Nullable<Text>, _>(snapshot_key.map(|key| key.as_str().to_owned()))
+    .bind::<Nullable<Text>, _>(snapshot_key)
     .bind::<Text, _>(status)
-    .bind::<Nullable<Text>, _>(diagnostic.map(str::to_owned))
     .execute(conn)
 }
 

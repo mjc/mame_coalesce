@@ -1,5 +1,15 @@
 //! Persist parser evidence independently of rolled-back catalog facts.
 
+mod model;
+mod reader;
+pub use model::{
+    DiagnosticCatalog, DiagnosticCode, DiagnosticCursor, DiagnosticDocument,
+    DiagnosticInterpretation, DiagnosticKey, DiagnosticOrder, DiagnosticPage, DiagnosticPageLimit,
+    DiagnosticQueryError, DiagnosticRun, DiagnosticSeverity, DiagnosticSnapshot, DiagnosticSource,
+    DocumentRetention, ImportDiagnostic, ImportRunStatus, NoIntroDiagnosticOwner,
+};
+pub use reader::for_run;
+
 use crate::{
     diagnostics::{ByteRange, SourceExcerpt},
     domain::{DocumentKey, ImportRunKey},
@@ -65,8 +75,9 @@ pub(super) fn insert_parse_error(
         run,
         document,
         Diagnostic {
-            severity: Severity::Error,
-            code: "parse_failed",
+            order: DiagnosticOrder::FIRST,
+            severity: DiagnosticSeverity::Error,
+            code: DiagnosticCode::ParseFailed,
             message: &error.to_string(),
             kind,
             name,
@@ -79,14 +90,11 @@ pub(super) fn insert_parse_error(
     .map(|_| ())
 }
 
-enum Severity {
-    Error,
-    Warning,
-}
-
+#[derive(Clone, Copy)]
 struct Diagnostic<'a> {
-    severity: Severity,
-    code: &'a str,
+    order: DiagnosticOrder,
+    severity: DiagnosticSeverity,
+    code: DiagnosticCode,
     message: &'a str,
     kind: Option<&'a str>,
     name: Option<&'a str>,
@@ -100,6 +108,7 @@ pub(super) fn insert_recovery_warning(
     conn: &mut SqliteConnection,
     run: &ImportRunKey,
     document: &DocumentKey,
+    order: DiagnosticOrder,
     warning: &crate::no_intro_db_xml::RecoveryWarning,
 ) -> crate::Result<DiagnosticKey> {
     insert(
@@ -107,8 +116,9 @@ pub(super) fn insert_recovery_warning(
         run,
         document,
         Diagnostic {
-            severity: Severity::Warning,
-            code: "xml_nul_recovered",
+            order,
+            severity: DiagnosticSeverity::Warning,
+            code: DiagnosticCode::XmlNulRecovered,
             message: "Replaced XML-forbidden U+0000 with U+FFFD in the parse view; original bytes unchanged",
             kind: Some("document"),
             name: None,
@@ -120,18 +130,49 @@ pub(super) fn insert_recovery_warning(
     )
 }
 
-pub(super) struct DiagnosticKey(String);
-
-pub(super) fn link_no_intro_details(
+pub(super) fn link_no_intro_owner(
     conn: &mut SqliteConnection,
     key: &DiagnosticKey,
+    run: &ImportRunKey,
+    snapshot: &crate::domain::SnapshotKey,
+    owner: &NoIntroDiagnosticOwner,
 ) -> crate::Result<()> {
-    for sql in [
-        "INSERT INTO no_intro_dump_details_diagnostics(diagnostic_key,run_key,dump_source_id) SELECT d.diagnostic_key,d.run_key,p.dump_source_id FROM import_diagnostics d JOIN import_runs r USING(run_key) JOIN catalog_set_groups g ON g.snapshot_key=r.snapshot_key JOIN catalog_sets s USING(set_group_id) JOIN no_intro_dump_sources o USING(set_id) JOIN no_intro_dump_details p USING(dump_source_id) WHERE d.diagnostic_key=? AND (d.source_line>p.source_line OR (d.source_line=p.source_line AND d.source_column>=p.source_column)) AND (d.source_line<p.opening_end_line OR (d.source_line=p.opening_end_line AND d.source_column<p.opening_end_column))",
-        "INSERT INTO no_intro_release_details_diagnostics(diagnostic_key,run_key,release_id) SELECT d.diagnostic_key,d.run_key,p.release_id FROM import_diagnostics d JOIN import_runs r USING(run_key) JOIN catalog_set_groups g ON g.snapshot_key=r.snapshot_key JOIN catalog_sets s USING(set_group_id) JOIN no_intro_releases o USING(set_id) JOIN no_intro_release_details p USING(release_id) WHERE d.diagnostic_key=? AND (d.source_line>p.source_line OR (d.source_line=p.source_line AND d.source_column>=p.source_column)) AND (d.source_line<p.opening_end_line OR (d.source_line=p.opening_end_line AND d.source_column<p.opening_end_column))",
-    ] {
-        sql_query(sql).bind::<Text, _>(&key.0).execute(conn)?;
+    use model::NativeDiagnosticOwnerKey as Key;
+    let link = owner.link();
+    let table = link.relation;
+    let extra = match link.key {
+        Key::Snapshot(ref actual)
+        | Key::HeaderField {
+            snapshot: ref actual,
+            ..
+        } if actual != snapshot => {
+            return Err(crate::Error::DatabaseSchema(
+                "diagnostic owner belongs to another snapshot".into(),
+            ));
+        }
+        Key::Snapshot(_) => None,
+        Key::HeaderField { source_order, .. } => Some(("source_order", source_order)),
+        Key::Game(id) => Some(("set_id", id.as_i64())),
+        Key::ArchiveDescription(id) => Some(("archive_id", id.as_i64())),
+        Key::DumpSource(id) => Some(("dump_source_id", id.as_i64())),
+        Key::DumpFile(id) | Key::ReleaseFile(id) => Some(("occurrence_id", id.database_value())),
+        Key::Release(id) => Some(("release_id", id.as_i64())),
+    };
+    let sql = match extra {
+        Some((column, _)) => format!(
+            "INSERT INTO {table}(diagnostic_key,run_key,snapshot_key,{column}) VALUES(?,?,?,?)"
+        ),
+        None => format!("INSERT INTO {table}(diagnostic_key,run_key,snapshot_key) VALUES(?,?,?)"),
+    };
+    let mut query = sql_query(sql)
+        .into_boxed::<diesel::sqlite::Sqlite>()
+        .bind::<Text, _>(key.as_str())
+        .bind::<Text, _>(run.to_string())
+        .bind::<Text, _>(snapshot.as_str());
+    if let Some((_, value)) = extra {
+        query = query.bind::<BigInt, _>(value);
     }
+    query.execute(conn)?;
     Ok(())
 }
 
@@ -142,6 +183,7 @@ fn insert(
     diagnostic: Diagnostic<'_>,
 ) -> crate::Result<DiagnosticKey> {
     let Diagnostic {
+        order,
         severity,
         code,
         message,
@@ -156,22 +198,24 @@ fn insert(
     let source_problem = StoredRange::new(excerpt.and_then(SourceExcerpt::source_problem))?;
     let original_problem = StoredRange::new(excerpt.and_then(SourceExcerpt::original_problem))?;
     let excerpt_start = excerpt
-        .map(|excerpt| stored_offset(excerpt.start_byte()))
+        .and_then(SourceExcerpt::start_byte)
+        .map(stored_offset)
         .transpose()?;
-    let key = DiagnosticKey(uuid::Uuid::new_v4().to_string());
+    let key = DiagnosticKey::new();
     sql_query(
         "INSERT INTO import_diagnostics \
-         (diagnostic_key, run_key, document_key, severity, code, message, record_kind, record_name, source_line, source_column, \
+         (diagnostic_key, run_key, diagnostic_order, document_key, severity, code, message, record_kind, record_name, source_line, source_column, \
           source_excerpt, excerpt_view, excerpt_start_byte, problem_start_byte, problem_end_byte, \
           source_problem_start_byte, source_problem_end_byte, original_problem_start_byte, original_problem_end_byte, \
           coordinate_view, column_convention) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
-    .bind::<Text, _>(&key.0)
+    .bind::<Text, _>(key.as_str())
     .bind::<Text, _>(run.to_string())
+    .bind::<BigInt, _>(order.get())
     .bind::<Text, _>(document.to_string())
-    .bind::<Text, _>(match severity { Severity::Error => "error", Severity::Warning => "warning" })
-    .bind::<Text, _>(code)
+    .bind::<Text, _>(match severity { DiagnosticSeverity::Error => "error", DiagnosticSeverity::Warning => "warning" })
+    .bind::<Text, _>(match code { DiagnosticCode::ParseFailed => "parse_failed", DiagnosticCode::XmlNulRecovered => "xml_nul_recovered" })
     .bind::<Text, _>(message)
     .bind::<Nullable<Text>, _>(kind)
     .bind::<Nullable<Text>, _>(name)

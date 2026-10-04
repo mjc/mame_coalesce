@@ -4,15 +4,21 @@ use diesel::{
 };
 
 use crate::{
-    domain::{CatalogSetId, NoIntroArchiveId, NoIntroArchiveReferenceField, SnapshotKey},
+    domain::{
+        CatalogSetId, DocumentKey, ImportRunKey, NoIntroArchiveId, NoIntroArchiveReferenceField,
+        SnapshotKey,
+    },
+    logiqx::RecordLocation,
     no_intro_db_xml::{
-        ArchiveClone, ArchiveDescription, DatabaseDigest, DatabaseGame, DatabaseRelease,
-        DumpSource, EnvelopeKind, HeaderFieldKind, NoIntroDatabaseDocument, ReleaseDetails,
-        ReleaseFile, ReleaseSerials, SourceDetails, SourceFile, SourceOrRelease, SourceSerials,
+        ArchiveClone, ArchiveDescription, DatabaseDigest, DatabaseGame, EnvelopeKind,
+        HeaderFieldKind, NoIntroDatabaseDocument, RecoveryCursor, ReleaseDetails, ReleaseFile,
+        ReleaseSerials, SourceDetails, SourceFile, SourceOrRelease, SourceSerials, XmlSourceExtent,
     },
     storage::{
         catalog_content::{ContentDigestAssertions, record_occurrence_digest_assertions},
+        catalog_files::{NoIntroDumpSourceId, NoIntroReleaseId},
         catalog_identity::OccurrenceId,
+        import_diagnostics::{self, DiagnosticOrder, NoIntroDiagnosticOwner},
         no_intro_database_fields::{
             NoIntroDatabaseArchiveField, NoIntroDatabaseDumpDetailsField,
             NoIntroDatabaseDumpFileField, NoIntroDatabaseDumpSerialsField,
@@ -23,12 +29,10 @@ use crate::{
     xml_reader::DeclaredText,
 };
 
-use super::reported_relationships::{ReferenceOwner, insert_reference};
-
-#[derive(Clone, Copy)]
-struct DumpSourceId(i64);
-#[derive(Clone, Copy)]
-struct ReleaseId(i64);
+use super::{
+    SnapshotPublication,
+    reported_relationships::{ReferenceOwner, insert_reference},
+};
 
 #[derive(Clone, Copy)]
 enum FileTable {
@@ -222,20 +226,26 @@ impl NativeTable {
 
     const fn keys(self) -> &'static str {
         match self {
-            Self::Archive => "set_id,source_order,source_line,source_column",
+            Self::Archive => {
+                "set_id,source_order,source_line,source_column,source_end_line,source_end_column"
+            }
             Self::DumpDetails => {
-                "dump_source_id,source_order,source_line,source_column,opening_end_line,opening_end_column"
+                "dump_source_id,source_order,source_line,source_column,source_end_line,source_end_column,opening_end_line,opening_end_column"
             }
-            Self::DumpSerials => "dump_source_id,source_order,source_line,source_column",
+            Self::DumpSerials => {
+                "dump_source_id,source_order,source_line,source_column,source_end_line,source_end_column"
+            }
             Self::ReleaseDetails => {
-                "release_id,source_order,source_line,source_column,opening_end_line,opening_end_column"
+                "release_id,source_order,source_line,source_column,source_end_line,source_end_column,opening_end_line,opening_end_column"
             }
-            Self::ReleaseSerials => "release_id,source_order,source_line,source_column",
+            Self::ReleaseSerials => {
+                "release_id,source_order,source_line,source_column,source_end_line,source_end_column"
+            }
             Self::DumpFile => {
-                "occurrence_id,dump_source_id,set_id,source_order,source_line,source_column"
+                "occurrence_id,dump_source_id,set_id,source_order,source_line,source_column,source_end_line,source_end_column"
             }
             Self::ReleaseFile => {
-                "occurrence_id,release_id,set_id,source_order,source_line,source_column"
+                "occurrence_id,release_id,set_id,source_order,source_line,source_column,source_end_line,source_end_column"
             }
         }
     }
@@ -424,12 +434,14 @@ pub(super) fn insert_document(
     snapshot: &SnapshotKey,
     document: &NoIntroDatabaseDocument,
 ) -> crate::Result<()> {
-    sql_query("INSERT INTO no_intro_exports(snapshot_key,envelope_kind,header_present,source_line,source_column) VALUES(?,?,?,?,?)")
+    sql_query("INSERT INTO no_intro_exports(snapshot_key,envelope_kind,header_present,source_line,source_column,document_end_line,document_end_column) VALUES(?,?,?,?,?,?,?)")
         .bind::<Text,_>(snapshot.as_str()).bind::<Text,_>(match document.envelope { EnvelopeKind::SingleDatafile=>"single_datafile", EnvelopeKind::SiblingHeaderDatafile=>"sibling_header_datafile" })
-        .bind::<BigInt,_>(i64::from(document.header.is_some())).bind::<BigInt,_>(document.location.line).bind::<BigInt,_>(document.location.column).execute(conn)?;
+        .bind::<BigInt,_>(i64::from(document.header.is_some())).bind::<BigInt,_>(document.location.line).bind::<BigInt,_>(document.location.column)
+        .bind::<BigInt,_>(document.extent.end().line).bind::<BigInt,_>(document.extent.end().column).execute(conn)?;
     if let Some(header) = &document.header {
-        sql_query("INSERT INTO no_intro_export_headers(snapshot_key,source_line,source_column) VALUES(?,?,?)")
-            .bind::<Text,_>(snapshot.as_str()).bind::<BigInt,_>(header.location.line).bind::<BigInt,_>(header.location.column).execute(conn)?;
+        sql_query("INSERT INTO no_intro_export_headers(snapshot_key,source_line,source_column,source_end_line,source_end_column) VALUES(?,?,?,?,?)")
+            .bind::<Text,_>(snapshot.as_str()).bind::<BigInt,_>(header.extent.start().line).bind::<BigInt,_>(header.extent.start().column)
+            .bind::<BigInt,_>(header.extent.end().line).bind::<BigInt,_>(header.extent.end().column).execute(conn)?;
         for field in &header.fields {
             let kind = match field.kind {
                 HeaderFieldKind::Author => 0,
@@ -438,9 +450,10 @@ pub(super) fn insert_document(
                 HeaderFieldKind::Url => 3,
                 HeaderFieldKind::Version => 4,
             };
-            sql_query("INSERT INTO no_intro_header_fields(snapshot_key,source_order,field_kind,value,source_line,source_column) VALUES(?,?,?,?,?,?)")
-                .bind::<Text,_>(snapshot.as_str()).bind::<BigInt,_>(ordinal(field.value.source_order)?)
-                .bind::<BigInt,_>(kind).bind::<Text,_>(field.value.as_str()).bind::<BigInt,_>(field.value.location.line).bind::<BigInt,_>(field.value.location.column).execute(conn)?;
+            sql_query("INSERT INTO no_intro_header_fields(snapshot_key,source_order,field_kind,value,source_line,source_column,source_end_line,source_end_column) VALUES(?,?,?,?,?,?,?,?)")
+                .bind::<Text,_>(snapshot.as_str()).bind::<BigInt,_>(ordinal(field.source_order)?)
+                .bind::<BigInt,_>(kind).bind::<Text,_>(field.value.as_str()).bind::<BigInt,_>(field.extent.start().line).bind::<BigInt,_>(field.extent.start().column)
+                .bind::<BigInt,_>(field.extent.end().line).bind::<BigInt,_>(field.extent.end().column).execute(conn)?;
         }
     }
     sql_query("INSERT INTO catalog_set_groups(snapshot_key,kind,list_order) VALUES(?,'root',0)")
@@ -462,211 +475,713 @@ pub(super) fn seal_document(
     Ok(())
 }
 
-pub(super) fn insert_game(
-    conn: &mut SqliteConnection,
-    snapshot: &SnapshotKey,
-    game: &DatabaseGame,
-) -> crate::Result<()> {
-    let set = sql_query("INSERT INTO catalog_sets(set_group_id,source_element_kind,list_order,set_name,source_line,source_column) SELECT set_group_id,'no_intro_database_game',?,?,?,? FROM catalog_set_groups WHERE snapshot_key=? AND kind='root' RETURNING set_id AS value")
-        .bind::<BigInt,_>(ordinal(game.list_order)?).bind::<Text,_>(game.name.as_str())
-        .bind::<BigInt,_>(game.location.line).bind::<BigInt,_>(game.location.column).bind::<Text,_>(snapshot.as_str()).get_result::<Id>(conn)?.value;
-    let set = CatalogSetId::from_database(set);
-    sql_query("INSERT INTO no_intro_database_games(set_id,name_source_order,name_source_line,name_source_column) VALUES(?,?,?,?)")
-        .bind::<BigInt,_>(set.as_i64()).bind::<BigInt,_>(ordinal(game.name.source_order)?)
-        .bind::<BigInt,_>(game.name.location.line).bind::<BigInt,_>(game.name.location.column).execute(conn)?;
-    for archive in &game.archives {
-        let id = NoIntroArchiveId::try_from(insert_fields(
-            conn,
-            NativeTable::Archive,
-            &[
-                set.as_i64(),
-                ordinal(archive.source_order)?,
-                archive.location.line,
-                archive.location.column,
-            ],
-            &archive_fields(archive),
-        )?)?;
-        insert_archive_links(conn, snapshot, id, archive)?;
+/// Import-local SQL state; never borrows the decoded XML or owns warning events.
+pub(super) struct WarningWriter<'a> {
+    pub(super) conn: &'a mut SqliteConnection,
+    pub(super) publication: &'a SnapshotPublication,
+    pub(super) run: &'a ImportRunKey,
+    pub(super) document: &'a DocumentKey,
+    pub(super) count: &'a mut usize,
+}
+
+impl WarningWriter<'_> {
+    const fn pending(&self) -> bool {
+        matches!(self.publication, SnapshotPublication::Pending(_))
     }
-    let mut file_order = 0;
-    for child in &game.source_or_release {
-        match child {
+
+    pub(super) fn emit_before(
+        &mut self,
+        warnings: &mut RecoveryCursor<'_>,
+        boundary: crate::logiqx::RecordLocation,
+        owner: &NoIntroDiagnosticOwner,
+    ) -> crate::Result<()> {
+        let extent = owner.link().extent;
+        while warnings.peek().is_some_and(|warning| {
+            (warning.location.line, warning.location.column) < (boundary.line, boundary.column)
+        }) {
+            let warning = warnings
+                .next()
+                .ok_or_else(|| invalid_native("warning cursor lost its peek"))?;
+            if !extent.contains(warning.location) {
+                return Err(invalid_native(
+                    "warning lies outside its actual catalog owner",
+                ));
+            }
+            let order = DiagnosticOrder::new(ordinal(*self.count)?)
+                .ok_or_else(|| invalid_native("negative diagnostic order"))?;
+            let key = import_diagnostics::insert_recovery_warning(
+                self.conn,
+                self.run,
+                self.document,
+                order,
+                &warning,
+            )?;
+            import_diagnostics::link_no_intro_owner(
+                self.conn,
+                &key,
+                self.run,
+                self.publication.key(),
+                owner,
+            )?;
+            *self.count = self
+                .count
+                .checked_add(1)
+                .ok_or_else(|| invalid_native("diagnostic count overflow"))?;
+        }
+        Ok(())
+    }
+
+    fn row(
+        &mut self,
+        table: NativeTable,
+        parent: (&str, i64),
+        source_order: usize,
+        extent: XmlSourceExtent,
+        keys: &[i64],
+        fields: &[Field<'_>],
+    ) -> crate::Result<i64> {
+        if self.pending() {
+            return insert_fields(self.conn, table, keys, fields);
+        }
+        self.seek_row(
+            table.table(),
+            table.owner_column(),
+            parent,
+            source_order,
+            extent,
+        )
+    }
+
+    fn seek_row(
+        &mut self,
+        table: &str,
+        id_column: &str,
+        parent: (&str, i64),
+        source_order: usize,
+        extent: XmlSourceExtent,
+    ) -> crate::Result<i64> {
+        let (parent_column, parent_id) = parent;
+        let sql = format!(
+            "SELECT {id_column} AS value FROM {table} WHERE {parent_column}=? AND source_order=? AND typeof({id_column})='integer' AND {id_column}>0 AND typeof({parent_column})='integer' AND typeof(source_order)='integer' AND typeof(source_line)='integer' AND typeof(source_column)='integer' AND typeof(source_end_line)='integer' AND typeof(source_end_column)='integer' AND source_line=? AND source_column=? AND source_end_line=? AND source_end_column=?"
+        );
+        Ok(sql_query(sql)
+            .bind::<BigInt, _>(parent_id)
+            .bind::<BigInt, _>(ordinal(source_order)?)
+            .bind::<BigInt, _>(extent.start().line)
+            .bind::<BigInt, _>(extent.start().column)
+            .bind::<BigInt, _>(extent.end().line)
+            .bind::<BigInt, _>(extent.end().column)
+            .get_result::<Id>(self.conn)?
+            .value)
+    }
+
+    pub(super) fn document(
+        &mut self,
+        document: &NoIntroDatabaseDocument,
+        warnings: &mut RecoveryCursor<'_>,
+    ) -> crate::Result<()> {
+        let snapshot = self.publication.key().clone();
+        if self.pending() {
+            insert_document(self.conn, &snapshot, document)?;
+        } else {
+            sql_query("SELECT 1 AS value FROM no_intro_exports WHERE snapshot_key=? AND typeof(snapshot_key)='text' AND typeof(source_line)='integer' AND typeof(source_column)='integer' AND typeof(document_end_line)='integer' AND typeof(document_end_column)='integer' AND typeof(header_present)='integer' AND source_line=? AND source_column=? AND document_end_line=? AND document_end_column=? AND header_present=? AND envelope_kind=?")
+                .bind::<Text,_>(snapshot.as_str()).bind::<BigInt,_>(document.location.line).bind::<BigInt,_>(document.location.column)
+                .bind::<BigInt,_>(document.extent.end().line).bind::<BigInt,_>(document.extent.end().column)
+                .bind::<BigInt,_>(i64::from(document.header.is_some()))
+                .bind::<Text,_>(match document.envelope { EnvelopeKind::SingleDatafile=>"single_datafile", EnvelopeKind::SiblingHeaderDatafile=>"sibling_header_datafile" })
+                .get_result::<Id>(self.conn)?;
+        }
+        let export = NoIntroDiagnosticOwner::ExportDocument {
+            snapshot: snapshot.clone(),
+            extent: document.extent,
+        };
+        if let Some(header) = &document.header {
+            let owner = NoIntroDiagnosticOwner::ExportHeader {
+                snapshot: snapshot.clone(),
+                extent: header.extent,
+            };
+            if !self.pending() {
+                self.validate_snapshot_extent(
+                    "no_intro_export_headers",
+                    &snapshot,
+                    None,
+                    header.extent,
+                )?;
+            }
+            self.emit_before(warnings, header.extent.start(), &export)?;
+            for field in &header.fields {
+                if !self.pending() {
+                    self.validate_snapshot_extent(
+                        "no_intro_header_fields",
+                        &snapshot,
+                        Some(ordinal(field.source_order)?),
+                        field.extent,
+                    )?;
+                }
+                self.emit_before(warnings, field.extent.start(), &owner)?;
+                let field_owner = NoIntroDiagnosticOwner::HeaderField {
+                    snapshot: snapshot.clone(),
+                    source_order: ordinal(field.source_order)?,
+                    extent: field.extent,
+                };
+                self.emit_before(warnings, field.extent.end(), &field_owner)?;
+            }
+            self.emit_before(warnings, header.extent.end(), &owner)?;
+        }
+        Ok(())
+    }
+
+    fn validate_snapshot_extent(
+        &mut self,
+        table: &str,
+        snapshot: &SnapshotKey,
+        order: Option<i64>,
+        extent: XmlSourceExtent,
+    ) -> crate::Result<()> {
+        let order_clause = if order.is_some() {
+            " AND typeof(source_order)='integer' AND source_order=?"
+        } else {
+            ""
+        };
+        let mut query = sql_query(format!("SELECT 1 AS value FROM {table} WHERE typeof(snapshot_key)='text' AND snapshot_key=? AND typeof(source_line)='integer' AND typeof(source_column)='integer' AND typeof(source_end_line)='integer' AND typeof(source_end_column)='integer' AND source_line=? AND source_column=? AND source_end_line=? AND source_end_column=?{order_clause}"))
+            .into_boxed::<diesel::sqlite::Sqlite>().bind::<Text,_>(snapshot.as_str())
+            .bind::<BigInt,_>(extent.start().line).bind::<BigInt,_>(extent.start().column)
+            .bind::<BigInt,_>(extent.end().line).bind::<BigInt,_>(extent.end().column);
+        if let Some(order) = order {
+            query = query.bind::<BigInt, _>(order);
+        }
+        query.get_result::<Id>(self.conn)?;
+        Ok(())
+    }
+
+    pub(super) fn game(
+        &mut self,
+        game: &DatabaseGame,
+        envelope: XmlSourceExtent,
+        warnings: &mut RecoveryCursor<'_>,
+    ) -> crate::Result<()> {
+        let snapshot = self.publication.key().clone();
+        let export = NoIntroDiagnosticOwner::ExportDocument {
+            snapshot: snapshot.clone(),
+            extent: envelope,
+        };
+        self.emit_before(warnings, game.extent.start(), &export)?;
+        let set = if self.pending() {
+            let set = sql_query("INSERT INTO catalog_sets(set_group_id,source_element_kind,list_order,set_name,source_line,source_column) SELECT set_group_id,'no_intro_database_game',?,?,?,? FROM catalog_set_groups WHERE snapshot_key=? AND kind='root' RETURNING set_id AS value")
+                .bind::<BigInt,_>(ordinal(game.list_order)?).bind::<Text,_>(game.name.as_str())
+                .bind::<BigInt,_>(game.extent.start().line).bind::<BigInt,_>(game.extent.start().column)
+                .bind::<Text,_>(snapshot.as_str()).get_result::<Id>(self.conn)?.value;
+            sql_query("INSERT INTO no_intro_database_games(set_id,name_source_order,name_source_line,name_source_column,source_end_line,source_end_column) VALUES(?,?,?,?,?,?)")
+                .bind::<BigInt,_>(set).bind::<BigInt,_>(ordinal(game.name.source_order)?)
+                .bind::<BigInt,_>(game.name.location.line).bind::<BigInt,_>(game.name.location.column)
+                .bind::<BigInt,_>(game.extent.end().line).bind::<BigInt,_>(game.extent.end().column).execute(self.conn)?;
+            set
+        } else {
+            sql_query("SELECT s.set_id AS value FROM catalog_set_groups g JOIN catalog_sets s USING(set_group_id) JOIN no_intro_database_games n USING(set_id) WHERE g.snapshot_key=? AND g.kind='root' AND s.source_element_kind='no_intro_database_game' AND typeof(s.set_id)='integer' AND s.set_id>0 AND typeof(s.list_order)='integer' AND s.list_order=? AND typeof(s.source_line)='integer' AND typeof(s.source_column)='integer' AND typeof(n.source_end_line)='integer' AND typeof(n.source_end_column)='integer' AND s.source_line=? AND s.source_column=? AND n.source_end_line=? AND n.source_end_column=?")
+                .bind::<Text,_>(snapshot.as_str()).bind::<BigInt,_>(ordinal(game.list_order)?)
+                .bind::<BigInt,_>(game.extent.start().line).bind::<BigInt,_>(game.extent.start().column)
+                .bind::<BigInt,_>(game.extent.end().line).bind::<BigInt,_>(game.extent.end().column).get_result::<Id>(self.conn)?.value
+        };
+        let set = CatalogSetId::from_database(set);
+        let owner = NoIntroDiagnosticOwner::Game {
+            id: set,
+            extent: game.extent,
+        };
+        let mut archives = game.archives.iter().peekable();
+        let mut histories = game.source_or_release.iter().peekable();
+        let mut file_order = 0;
+        while archives.peek().is_some() || histories.peek().is_some() {
+            if archives.peek().is_some_and(|archive| {
+                histories
+                    .peek()
+                    .is_none_or(|history| archive.source_order < history.source_order())
+            }) {
+                let archive = archives
+                    .next()
+                    .ok_or_else(|| invalid_native("archive iterator lost its peek"))?;
+                self.emit_before(warnings, archive.extent.start(), &owner)?;
+                let id = NoIntroArchiveId::try_from(self.row(
+                    NativeTable::Archive,
+                    ("set_id", set.as_i64()),
+                    archive.source_order,
+                    archive.extent,
+                    &[
+                        set.as_i64(),
+                        ordinal(archive.source_order)?,
+                        archive.extent.start().line,
+                        archive.extent.start().column,
+                        archive.extent.end().line,
+                        archive.extent.end().column,
+                    ],
+                    &archive_fields(archive),
+                )?)?;
+                if self.pending() {
+                    insert_archive_links(self.conn, &snapshot, id, archive)?;
+                }
+                self.emit_before(
+                    warnings,
+                    archive.extent.end(),
+                    &NoIntroDiagnosticOwner::ArchiveDescription {
+                        id,
+                        extent: archive.extent,
+                    },
+                )?;
+            } else {
+                let history = histories
+                    .next()
+                    .ok_or_else(|| invalid_native("history iterator lost its peek"))?;
+                self.history(set, history, &owner, &mut file_order, warnings)?;
+            }
+        }
+        self.emit_before(warnings, game.extent.end(), &owner)
+    }
+
+    fn history(
+        &mut self,
+        set: CatalogSetId,
+        history: &SourceOrRelease,
+        game: &NoIntroDiagnosticOwner,
+        file_order: &mut usize,
+        warnings: &mut RecoveryCursor<'_>,
+    ) -> crate::Result<()> {
+        match history {
             SourceOrRelease::Source(source) => {
-                insert_dump_source(conn, set, source, &mut file_order)?;
+                self.emit_before(warnings, source.extent.start(), game)?;
+                let id = NoIntroDumpSourceId::try_from(self.history_id(
+                    "no_intro_dump_sources",
+                    "dump_source_id",
+                    set,
+                    source.source_order,
+                    source.extent,
+                )?)?;
+                let owner = NoIntroDiagnosticOwner::DumpSource {
+                    id,
+                    extent: source.extent,
+                };
+                let children = ordered_history_children(
+                    source.details.as_ref().map(HistoryChild::DumpDetails),
+                    source.serials.as_ref().map(HistoryChild::DumpSerials),
+                    source.files.iter().map(HistoryChild::DumpFile),
+                );
+                self.history_children(set, id.as_i64(), &owner, children, file_order, warnings)?;
+                self.emit_before(warnings, source.extent.end(), &owner)
             }
             SourceOrRelease::Release(release) => {
-                insert_release(conn, set, release, &mut file_order)?;
+                self.emit_before(warnings, release.extent.start(), game)?;
+                let id = NoIntroReleaseId::try_from(self.history_id(
+                    "no_intro_releases",
+                    "release_id",
+                    set,
+                    release.source_order,
+                    release.extent,
+                )?)?;
+                let owner = NoIntroDiagnosticOwner::Release {
+                    id,
+                    extent: release.extent,
+                };
+                let children = ordered_history_children(
+                    release.details.as_ref().map(HistoryChild::ReleaseDetails),
+                    release.serials.as_ref().map(HistoryChild::ReleaseSerials),
+                    release.files.iter().map(HistoryChild::ReleaseFile),
+                );
+                self.history_children(set, id.as_i64(), &owner, children, file_order, warnings)?;
+                self.emit_before(warnings, release.extent.end(), &owner)
             }
         }
     }
-    Ok(())
-}
 
-fn insert_dump_source(
-    conn: &mut SqliteConnection,
-    set: CatalogSetId,
-    source: &DumpSource,
-    file_order: &mut usize,
-) -> crate::Result<()> {
-    let id = DumpSourceId(sql_query("INSERT INTO no_intro_dump_sources(set_id,source_order,source_line,source_column) VALUES(?,?,?,?) RETURNING dump_source_id AS value")
-        .bind::<BigInt,_>(set.as_i64()).bind::<BigInt,_>(ordinal(source.source_order)?)
-        .bind::<BigInt,_>(source.location.line).bind::<BigInt,_>(source.location.column).get_result::<Id>(conn)?.value);
-    if let Some(details) = &source.details {
-        insert_fields(
-            conn,
+    fn history_id(
+        &mut self,
+        table: &str,
+        key: &str,
+        set: CatalogSetId,
+        order: usize,
+        extent: XmlSourceExtent,
+    ) -> crate::Result<i64> {
+        if !self.pending() {
+            return self.seek_row(table, key, ("set_id", set.as_i64()), order, extent);
+        }
+        Ok(sql_query(format!("INSERT INTO {table}(set_id,source_order,source_line,source_column,source_end_line,source_end_column) VALUES(?,?,?,?,?,?) RETURNING {key} AS value"))
+            .bind::<BigInt,_>(set.as_i64()).bind::<BigInt,_>(ordinal(order)?)
+            .bind::<BigInt,_>(extent.start().line).bind::<BigInt,_>(extent.start().column)
+            .bind::<BigInt,_>(extent.end().line).bind::<BigInt,_>(extent.end().column).get_result::<Id>(self.conn)?.value)
+    }
+
+    fn history_children<'a>(
+        &mut self,
+        set: CatalogSetId,
+        history_id: i64,
+        parent: &NoIntroDiagnosticOwner,
+        children: impl Iterator<Item = HistoryChild<'a>>,
+        file_order: &mut usize,
+        warnings: &mut RecoveryCursor<'_>,
+    ) -> crate::Result<()> {
+        for child in children {
+            let (order, extent) = child.position();
+            self.emit_before(warnings, extent.start(), parent)?;
+            let owner = self.child(set, history_id, child, file_order)?;
+            debug_assert_eq!(owner.link().extent, extent);
+            debug_assert_eq!(order, child.position().0);
+            self.emit_before(warnings, extent.end(), &owner)?;
+        }
+        Ok(())
+    }
+
+    fn child(
+        &mut self,
+        set: CatalogSetId,
+        id: i64,
+        child: HistoryChild<'_>,
+        file_order: &mut usize,
+    ) -> crate::Result<NoIntroDiagnosticOwner> {
+        let (order, extent) = child.position();
+        let common = [
+            id,
+            ordinal(order)?,
+            extent.start().line,
+            extent.start().column,
+            extent.end().line,
+            extent.end().column,
+        ];
+        match child {
+            HistoryChild::DumpDetails(details) => self.dump_details(id, details, common),
+            HistoryChild::DumpSerials(serials) => {
+                self.row(
+                    NativeTable::DumpSerials,
+                    ("dump_source_id", id),
+                    order,
+                    extent,
+                    &common,
+                    &dump_serials_fields(serials),
+                )?;
+                Ok(NoIntroDiagnosticOwner::DumpSerials {
+                    id: NoIntroDumpSourceId::try_from(id)?,
+                    extent,
+                })
+            }
+            HistoryChild::ReleaseDetails(details) => self.release_details(id, details, common),
+            HistoryChild::ReleaseSerials(serials) => {
+                self.row(
+                    NativeTable::ReleaseSerials,
+                    ("release_id", id),
+                    order,
+                    extent,
+                    &common,
+                    &release_serials_fields(serials),
+                )?;
+                Ok(NoIntroDiagnosticOwner::ReleaseSerials {
+                    id: NoIntroReleaseId::try_from(id)?,
+                    extent,
+                })
+            }
+            HistoryChild::DumpFile(file) => {
+                let occurrence = self.dump_file(
+                    FilePlacement {
+                        parent: ("dump_source_id", id),
+                        set,
+                        source_order: order,
+                        extent,
+                        occurrence_order: *file_order,
+                    },
+                    file,
+                )?;
+                *file_order = file_order
+                    .checked_add(1)
+                    .ok_or_else(|| invalid_native("file order overflow"))?;
+                Ok(NoIntroDiagnosticOwner::DumpFile {
+                    id: occurrence,
+                    extent,
+                })
+            }
+            HistoryChild::ReleaseFile(file) => {
+                let occurrence = self.release_file(
+                    FilePlacement {
+                        parent: ("release_id", id),
+                        set,
+                        source_order: order,
+                        extent,
+                        occurrence_order: *file_order,
+                    },
+                    file,
+                )?;
+                *file_order = file_order
+                    .checked_add(1)
+                    .ok_or_else(|| invalid_native("file order overflow"))?;
+                Ok(NoIntroDiagnosticOwner::ReleaseFile {
+                    id: occurrence,
+                    extent,
+                })
+            }
+        }
+    }
+
+    fn dump_details(
+        &mut self,
+        id: i64,
+        details: &SourceDetails,
+        common: [i64; 6],
+    ) -> crate::Result<NoIntroDiagnosticOwner> {
+        self.row(
             NativeTable::DumpDetails,
-            &[
-                id.0,
-                ordinal(details.source_order)?,
-                details.location.line,
-                details.location.column,
-                details.opening_end.line,
-                details.opening_end.column,
-            ],
+            ("dump_source_id", id),
+            details.source_order,
+            details.extent,
+            &details_keys(common, details.opening_end),
             &dump_details_fields(details),
         )?;
+        self.validate_opening_end(NativeTable::DumpDetails, id, details.opening_end)?;
+        Ok(NoIntroDiagnosticOwner::DumpDetails {
+            id: NoIntroDumpSourceId::try_from(id)?,
+            extent: details.extent,
+        })
     }
-    if let Some(serials) = &source.serials {
-        insert_fields(
-            conn,
-            NativeTable::DumpSerials,
-            &[
-                id.0,
-                ordinal(serials.source_order)?,
-                serials.location.line,
-                serials.location.column,
-            ],
-            &dump_serials_fields(serials),
-        )?;
-    }
-    for file in &source.files {
-        let occurrence =
-            insert_occurrence(conn, set, *file_order, "no_intro_database_source_file")?;
-        insert_fields(
-            conn,
-            NativeTable::DumpFile,
-            &[
-                occurrence.database_value(),
-                id.0,
-                set.as_i64(),
-                ordinal(file.source_order)?,
-                file.location.line,
-                file.location.column,
-            ],
-            &dump_file_fields(file),
-        )?;
-        insert_file_hashes(
-            conn,
-            FileTable::Dump,
-            occurrence,
-            [
-                file.crc32.as_ref(),
-                file.md5.as_ref(),
-                file.sha1.as_ref(),
-                file.sha256.as_ref(),
-            ],
-        )?;
-        if let Some(origin) = &file.origin_sha256 {
-            let hash = insert_digest(conn, "sha256", origin)?;
-            insert_file_digest_row(conn, FileTable::Dump, occurrence, 4, hash, origin)?;
-            record_occurrence_digest_assertions(
-                conn,
-                occurrence,
-                ContentDigestAssertions::new(
-                    "source_origin",
-                    None,
-                    None,
-                    None,
-                    origin.value.as_deref(),
-                ),
-                "source_declared",
-            )?;
-        }
-        *file_order += 1;
-    }
-    Ok(())
-}
 
-fn insert_release(
-    conn: &mut SqliteConnection,
-    set: CatalogSetId,
-    release: &DatabaseRelease,
-    file_order: &mut usize,
-) -> crate::Result<()> {
-    let id = ReleaseId(sql_query("INSERT INTO no_intro_releases(set_id,source_order,source_line,source_column) VALUES(?,?,?,?) RETURNING release_id AS value")
-        .bind::<BigInt,_>(set.as_i64()).bind::<BigInt,_>(ordinal(release.source_order)?)
-        .bind::<BigInt,_>(release.location.line).bind::<BigInt,_>(release.location.column).get_result::<Id>(conn)?.value);
-    if let Some(details) = &release.details {
-        insert_fields(
-            conn,
+    fn release_details(
+        &mut self,
+        id: i64,
+        details: &ReleaseDetails,
+        common: [i64; 6],
+    ) -> crate::Result<NoIntroDiagnosticOwner> {
+        self.row(
             NativeTable::ReleaseDetails,
-            &[
-                id.0,
-                ordinal(details.source_order)?,
-                details.location.line,
-                details.location.column,
-                details.opening_end.line,
-                details.opening_end.column,
-            ],
+            ("release_id", id),
+            details.source_order,
+            details.extent,
+            &details_keys(common, details.opening_end),
             &release_details_fields(details),
         )?;
-        for (name, digest) in [
-            ("nfo_crc32", details.nfo_crc32.as_ref()),
-            ("nfocrc", details.nfocrc.as_ref()),
-        ] {
-            if let Some(digest) = digest {
-                let hash = insert_digest(conn, "crc32", digest)?;
-                sql_query("INSERT INTO no_intro_release_nfo_hashes(release_id,source_hash_field,hash_id,presence,scope,invalid_literal) VALUES(?,?,?,'present','nfo_companion',?)")
-                    .bind::<BigInt,_>(id.0).bind::<Text,_>(name).bind::<Nullable<BigInt>,_>(hash)
-                    .bind::<Nullable<Text>,_>(hash.is_none().then_some(digest.source.as_str())).execute(conn)?;
+        self.validate_opening_end(NativeTable::ReleaseDetails, id, details.opening_end)?;
+        if self.pending() {
+            insert_nfo_hashes(self.conn, id, details)?;
+        }
+        Ok(NoIntroDiagnosticOwner::ReleaseDetails {
+            id: NoIntroReleaseId::try_from(id)?,
+            extent: details.extent,
+        })
+    }
+
+    fn dump_file(
+        &mut self,
+        placement: FilePlacement,
+        file: &SourceFile,
+    ) -> crate::Result<OccurrenceId> {
+        let occurrence = self.file(NativeTable::DumpFile, placement, &dump_file_fields(file))?;
+        if self.pending() {
+            insert_file_hashes(
+                self.conn,
+                FileTable::Dump,
+                occurrence,
+                [
+                    file.crc32.as_ref(),
+                    file.md5.as_ref(),
+                    file.sha1.as_ref(),
+                    file.sha256.as_ref(),
+                ],
+            )?;
+            if let Some(origin) = &file.origin_sha256 {
+                let hash = insert_digest(self.conn, "sha256", origin)?;
+                insert_file_digest_row(self.conn, FileTable::Dump, occurrence, 4, hash, origin)?;
+                record_occurrence_digest_assertions(
+                    self.conn,
+                    occurrence,
+                    ContentDigestAssertions::new(
+                        "source_origin",
+                        None,
+                        None,
+                        None,
+                        origin.value.as_deref(),
+                    ),
+                    "source_declared",
+                )?;
             }
         }
+        Ok(occurrence)
     }
-    if let Some(serials) = &release.serials {
-        insert_fields(
-            conn,
-            NativeTable::ReleaseSerials,
-            &[
-                id.0,
-                ordinal(serials.source_order)?,
-                serials.location.line,
-                serials.location.column,
-            ],
-            &release_serials_fields(serials),
-        )?;
-    }
-    for file in &release.files {
-        let occurrence =
-            insert_occurrence(conn, set, *file_order, "no_intro_database_release_file")?;
-        insert_fields(
-            conn,
+
+    fn release_file(
+        &mut self,
+        placement: FilePlacement,
+        file: &ReleaseFile,
+    ) -> crate::Result<OccurrenceId> {
+        let occurrence = self.file(
             NativeTable::ReleaseFile,
-            &[
-                occurrence.database_value(),
-                id.0,
-                set.as_i64(),
-                ordinal(file.source_order)?,
-                file.location.line,
-                file.location.column,
-            ],
+            placement,
             &release_file_fields(file),
         )?;
-        insert_file_hashes(
-            conn,
-            FileTable::Release,
-            occurrence,
-            [
-                file.crc32.as_ref(),
-                file.md5.as_ref(),
-                file.sha1.as_ref(),
-                file.sha256.as_ref(),
-            ],
-        )?;
-        *file_order += 1;
+        if self.pending() {
+            insert_file_hashes(
+                self.conn,
+                FileTable::Release,
+                occurrence,
+                [
+                    file.crc32.as_ref(),
+                    file.md5.as_ref(),
+                    file.sha1.as_ref(),
+                    file.sha256.as_ref(),
+                ],
+            )?;
+        }
+        Ok(occurrence)
+    }
+
+    fn file(
+        &mut self,
+        table: NativeTable,
+        placement: FilePlacement,
+        fields: &[Field<'_>],
+    ) -> crate::Result<OccurrenceId> {
+        let FilePlacement {
+            parent,
+            set,
+            source_order: order,
+            extent,
+            occurrence_order: file_order,
+        } = placement;
+        let kind = match table {
+            NativeTable::DumpFile => "no_intro_database_source_file",
+            NativeTable::ReleaseFile => "no_intro_database_release_file",
+            _ => return Err(invalid_native("not a native file table")),
+        };
+        let occurrence = if self.pending() {
+            let occurrence = insert_occurrence(self.conn, set, file_order, kind)?;
+            self.row(
+                table,
+                parent,
+                order,
+                extent,
+                &[
+                    occurrence.database_value(),
+                    parent.1,
+                    set.as_i64(),
+                    ordinal(order)?,
+                    extent.start().line,
+                    extent.start().column,
+                    extent.end().line,
+                    extent.end().column,
+                ],
+                fields,
+            )?;
+            occurrence
+        } else {
+            OccurrenceId::try_from(self.seek_row(
+                table.table(),
+                table.owner_column(),
+                parent,
+                order,
+                extent,
+            )?)?
+        };
+        sql_query("SELECT 1 AS value FROM asset_occurrences WHERE typeof(occurrence_id)='integer' AND occurrence_id=? AND typeof(record_id)='integer' AND record_id=? AND typeof(occurrence_order)='integer' AND occurrence_order=? AND typeof(claim_kind)='text' AND claim_kind=?")
+            .bind::<BigInt,_>(occurrence.database_value()).bind::<BigInt,_>(set.as_i64()).bind::<BigInt,_>(ordinal(file_order)?).bind::<Text,_>(kind).get_result::<Id>(self.conn)?;
+        sql_query(format!("SELECT 1 AS value FROM {} WHERE occurrence_id=? AND typeof(set_id)='integer' AND set_id=?", table.table()))
+            .bind::<BigInt,_>(occurrence.database_value()).bind::<BigInt,_>(set.as_i64()).get_result::<Id>(self.conn)?;
+        Ok(occurrence)
+    }
+
+    fn validate_opening_end(
+        &mut self,
+        table: NativeTable,
+        id: i64,
+        end: crate::logiqx::RecordLocation,
+    ) -> crate::Result<()> {
+        sql_query(format!("SELECT 1 AS value FROM {} WHERE {}=? AND typeof(opening_end_line)='integer' AND typeof(opening_end_column)='integer' AND opening_end_line=? AND opening_end_column=?", table.table(), table.owner_column()))
+            .bind::<BigInt,_>(id).bind::<BigInt,_>(end.line).bind::<BigInt,_>(end.column).get_result::<Id>(self.conn)?;
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy)]
+struct FilePlacement {
+    parent: (&'static str, i64),
+    set: CatalogSetId,
+    source_order: usize,
+    extent: XmlSourceExtent,
+    occurrence_order: usize,
+}
+
+const fn details_keys(common: [i64; 6], opening_end: RecordLocation) -> [i64; 8] {
+    [
+        common[0],
+        common[1],
+        common[2],
+        common[3],
+        common[4],
+        common[5],
+        opening_end.line,
+        opening_end.column,
+    ]
+}
+
+fn invalid_native(message: &str) -> crate::Error {
+    crate::Error::DatabaseSchema(message.into())
+}
+
+#[derive(Clone, Copy)]
+enum HistoryChild<'a> {
+    DumpDetails(&'a SourceDetails),
+    DumpSerials(&'a SourceSerials),
+    DumpFile(&'a SourceFile),
+    ReleaseDetails(&'a ReleaseDetails),
+    ReleaseSerials(&'a ReleaseSerials),
+    ReleaseFile(&'a ReleaseFile),
+}
+
+impl HistoryChild<'_> {
+    const fn position(self) -> (usize, XmlSourceExtent) {
+        match self {
+            Self::DumpDetails(value) => (value.source_order, value.extent),
+            Self::DumpSerials(value) => (value.source_order, value.extent),
+            Self::DumpFile(value) => (value.source_order, value.extent),
+            Self::ReleaseDetails(value) => (value.source_order, value.extent),
+            Self::ReleaseSerials(value) => (value.source_order, value.extent),
+            Self::ReleaseFile(value) => (value.source_order, value.extent),
+        }
+    }
+}
+
+fn ordered_history_children<'a>(
+    mut details: Option<HistoryChild<'a>>,
+    mut serials: Option<HistoryChild<'a>>,
+    files: impl Iterator<Item = HistoryChild<'a>>,
+) -> impl Iterator<Item = HistoryChild<'a>> {
+    let mut files = files.peekable();
+    std::iter::from_fn(move || {
+        let orders = [
+            details.map(|child| child.position().0),
+            serials.map(|child| child.position().0),
+            files.peek().map(|child| child.position().0),
+        ];
+        let next = orders
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, order)| order.map(|order| (index, order)))
+            .min_by_key(|(_, order)| *order)?;
+        match next.0 {
+            0 => details.take(),
+            1 => serials.take(),
+            _ => files.next(),
+        }
+    })
+}
+
+fn insert_nfo_hashes(
+    conn: &mut SqliteConnection,
+    id: i64,
+    details: &ReleaseDetails,
+) -> crate::Result<()> {
+    for (name, digest) in [
+        ("nfo_crc32", details.nfo_crc32.as_ref()),
+        ("nfocrc", details.nfocrc.as_ref()),
+    ] {
+        if let Some(digest) = digest {
+            let hash = insert_digest(conn, "crc32", digest)?;
+            sql_query("INSERT INTO no_intro_release_nfo_hashes(release_id,source_hash_field,hash_id,presence,scope,invalid_literal) VALUES(?,?,?,'present','nfo_companion',?)")
+                .bind::<BigInt,_>(id).bind::<Text,_>(name).bind::<Nullable<BigInt>,_>(hash)
+                .bind::<Nullable<Text>,_>(hash.is_none().then_some(digest.source.as_str())).execute(conn)?;
+        }
     }
     Ok(())
 }
-
 fn insert_occurrence(
     conn: &mut SqliteConnection,
     set: CatalogSetId,

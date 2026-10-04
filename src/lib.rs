@@ -44,6 +44,7 @@ pub use storage::documents::{
     AcquisitionMetadata, DocumentStore, RetainedDocument, TransportHeader,
 };
 pub use storage::file_match_reviews;
+pub use storage::import_diagnostics;
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[cfg(test)]

@@ -153,10 +153,10 @@ fn native_empty_export_document_is_queryable_without_source_objects() -> TestRes
         ])
         .enumerate()
     {
-        assert_eq!(field.value.source_order, order);
-        assert_eq!(field.value.location.line, 1);
+        assert_eq!(field.source_order, order);
+        assert_eq!(field.extent.start().line, 1);
         assert_eq!(
-            field.value.location.column,
+            field.extent.start().column,
             i64::try_from(xml.find(marker).ok_or("missing header child")? + 1)?
         );
     }

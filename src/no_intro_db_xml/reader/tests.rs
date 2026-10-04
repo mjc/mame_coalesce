@@ -46,7 +46,7 @@ fn all_ledger_fields_are_typed_and_retain_presence_order_and_digest_state() {
     assert_eq!(document.envelope, EnvelopeKind::SingleDatafile);
     let header = document.header.expect("header retained");
     assert_eq!(header.fields.len(), 6);
-    assert_eq!(header.fields[1].value.value, "");
+    assert_eq!(header.fields[1].value, "");
     let game = &games[0];
     assert_eq!(
         game.archives[0]
@@ -452,9 +452,9 @@ fn assert_distinct_header(document: NoIntroDatabaseDocument) {
         .enumerate()
     {
         assert_eq!(field.kind, kind);
-        assert_eq!(field.value.source_order, ordinal);
+        assert_eq!(field.source_order, ordinal);
         assert_eq!(
-            field.value.value,
+            field.value,
             names!(author, piracy, trademarks, url, version)[ordinal]
         );
     }
@@ -686,8 +686,8 @@ fn header_field_ordinals_are_zero_based() {
         .expect("observed sibling envelope parses")
         .into_inner();
     let fields = document.header.expect("header retained").fields;
-    assert_eq!(fields[0].value.source_order, 0);
-    assert_eq!(fields[1].value.source_order, 1);
+    assert_eq!(fields[0].source_order, 0);
+    assert_eq!(fields[1].source_order, 1);
 }
 
 #[test]
@@ -711,7 +711,7 @@ fn scalar_cdata_preserves_text_without_resolving_literal_references() {
             .expect("CDATA inside a text field is well-formed character content")
             .into_inner();
     assert_eq!(
-        document.header.expect("header").fields[0].value.value,
+        document.header.expect("header").fields[0].value,
         "a &amp; b"
     );
 }
@@ -1045,8 +1045,8 @@ fn detail_opening_ranges(input: &[u8]) -> [(RecordLocation, RecordLocation); 2] 
     let source_details = source.details.as_ref().expect("source details retained");
     let release_details = release.details.as_ref().expect("release details retained");
     [
-        (source_details.location, source_details.opening_end),
-        (release_details.location, release_details.opening_end),
+        (source_details.extent.start(), source_details.opening_end),
+        (release_details.extent.start(), release_details.opening_end),
     ]
 }
 
@@ -1065,7 +1065,7 @@ fn recovery_warnings_retain_exact_utf8_utf16_and_gzip_byte_excerpts() {
     let excerpt = warning.excerpt.expect("warning retains exact byte excerpt");
     assert_eq!(excerpt.bytes(), b"\0");
     assert_eq!(excerpt.view(), ExcerptView::RetainedOriginalBytes);
-    assert_eq!(excerpt.start_byte(), nul);
+    assert_eq!(excerpt.start_byte(), Some(nul));
     assert_eq!(excerpt.problem(), ByteRange::new(0, 1));
     assert_eq!(excerpt.original_problem(), ByteRange::new(nul, nul + 1));
 
@@ -1086,7 +1086,7 @@ fn recovery_warnings_retain_exact_utf8_utf16_and_gzip_byte_excerpts() {
         .expect("UTF-16 warning retains bytes");
     assert_eq!(excerpt.bytes(), &[0, 0]);
     assert_eq!(excerpt.view(), ExcerptView::RetainedOriginalBytes);
-    assert_eq!(excerpt.start_byte(), encoded_nul);
+    assert_eq!(excerpt.start_byte(), Some(encoded_nul));
     assert_eq!(excerpt.problem(), ByteRange::new(0, 2));
     assert_eq!(
         excerpt.original_problem(),
@@ -1098,7 +1098,7 @@ fn recovery_warnings_retain_exact_utf8_utf16_and_gzip_byte_excerpts() {
         .clip(ByteRange::new(0, 1).expect("ordered clip range"))
         .expect("partial byte clip retained");
     assert_eq!(clipped.bytes(), &[0]);
-    assert_eq!(clipped.start_byte(), encoded_nul);
+    assert_eq!(clipped.start_byte(), Some(encoded_nul));
     assert_eq!(clipped.problem(), None);
     assert_eq!(clipped.source_problem(), excerpt.source_problem());
 
@@ -1122,7 +1122,7 @@ fn recovery_warnings_retain_exact_utf8_utf16_and_gzip_byte_excerpts() {
         .expect("gzip warning retains decoded bytes");
     assert_eq!(excerpt.bytes(), b"\0");
     assert_eq!(excerpt.view(), ExcerptView::TransportDecodedXmlBytes);
-    assert_eq!(excerpt.start_byte(), nul);
+    assert_eq!(excerpt.start_byte(), Some(nul));
     assert_eq!(excerpt.original_problem(), None);
 }
 
@@ -1148,7 +1148,7 @@ fn strict_nul_error_retains_the_exact_encoded_excerpt() {
         panic!("strict NUL error carries coordinates and an excerpt")
     };
     assert_eq!(excerpt.bytes(), b"\0");
-    assert_eq!(excerpt.start_byte(), nul);
+    assert_eq!(excerpt.start_byte(), Some(nul));
     assert_eq!(excerpt.original_problem(), ByteRange::new(nul, nul + 1));
 
     let utf16 = utf16le_with_bom(xml);
@@ -1172,7 +1172,7 @@ fn strict_nul_error_retains_the_exact_encoded_excerpt() {
         panic!("UTF-16 strict NUL error carries Unicode coordinates and an excerpt")
     };
     assert_eq!(excerpt.bytes(), &[0, 0]);
-    assert_eq!(excerpt.start_byte(), encoded_nul);
+    assert_eq!(excerpt.start_byte(), Some(encoded_nul));
     assert_eq!(
         excerpt.original_problem(),
         ByteRange::new(encoded_nul, encoded_nul + 2)
@@ -1227,4 +1227,179 @@ fn failure_after_a_consumed_game_never_returns_an_eof_proof() {
     assert_eq!(consumed.get(), 1);
     assert!(read("<datafile><game name=\"g\"><source><details comment1=\"\u{1}\"/></source></game></datafile>").is_err(),
         "XML-forbidden characters other than NUL are never recovered");
+}
+
+#[test]
+fn native_extents_cover_actual_elements_and_the_whole_sibling_envelope() {
+    let xml = "<!--before--><header><author>é😀</author></header>\r\n<datafile><game name='g'><source><details><!--inside--></details><serials/><file/></source><archive/><release><file/><serials/><details/></release></game></datafile><!--after-->";
+    let (document, games) = read(xml).expect("sibling fixture parses").into_inner();
+    let point = |offset: usize| independent_location_at(xml, offset);
+    let check = |extent: super::super::XmlSourceExtent, opening: &str, closing: &str| {
+        assert_eq!(
+            extent.start(),
+            point(xml.find(opening).expect("opening exists"))
+        );
+        assert_eq!(
+            extent.end(),
+            point(xml.find(closing).expect("closing exists") + closing.len())
+        );
+        assert!(extent.contains(extent.start()));
+        assert!(!extent.contains(extent.end()));
+    };
+    assert_eq!(
+        document.extent.start(),
+        RecordLocation { line: 1, column: 1 }
+    );
+    assert_eq!(document.extent.end(), point(xml.len()));
+    let header = document.header.expect("sibling header");
+    check(header.extent, "<header>", "</header>");
+    check(header.fields[0].extent, "<author>", "</author>");
+    let game = &games[0];
+    check(game.extent, "<game ", "</game>");
+    check(game.archives[0].extent, "<archive/>", "<archive/>");
+    let SourceOrRelease::Source(source) = &game.source_or_release[0] else {
+        panic!("source");
+    };
+    check(source.extent, "<source>", "</source>");
+    check(
+        source.details.as_ref().expect("details").extent,
+        "<details>",
+        "</details>",
+    );
+    check(
+        source.serials.as_ref().expect("serials").extent,
+        "<serials/>",
+        "<serials/>",
+    );
+    check(source.files[0].extent, "<file/>", "<file/>");
+    let SourceOrRelease::Release(release) = &game.source_or_release[1] else {
+        panic!("release");
+    };
+    check(release.extent, "<release>", "</release>");
+    let release_xml = xml.find("<release>").expect("release");
+    for (extent, tag) in [
+        (release.files[0].extent, "<file/>"),
+        (
+            release.serials.as_ref().expect("serials").extent,
+            "<serials/>",
+        ),
+        (
+            release.details.as_ref().expect("details").extent,
+            "<details/>",
+        ),
+    ] {
+        let start = release_xml + xml[release_xml..].find(tag).expect("release child");
+        assert_eq!(extent.start(), point(start));
+        assert_eq!(extent.end(), point(start + tag.len()));
+    }
+}
+
+#[test]
+fn element_ends_and_borrowed_recovery_stay_in_original_scalar_coordinates() {
+    let xml = "<!--\0é😀-->\r\n<header><author>A\0</author></header>\r\n<datafile><game name='G\0'><source><details><!--\0--></details></source></game></datafile><!--\0-->";
+    let game_start = independent_location_at(xml, xml.find("<game ").expect("game"));
+    let game_end = independent_location_at(
+        xml,
+        xml.find("</game>").expect("game end") + "</game>".len(),
+    );
+    let doc_end = independent_location_at(xml, xml.len());
+    let mut utf8_bom = vec![0xef, 0xbb, 0xbf];
+    utf8_bom.extend_from_slice(xml.as_bytes());
+    let mut utf16_be = vec![0xfe, 0xff];
+    for unit in xml.encode_utf16() {
+        utf16_be.extend_from_slice(&unit.to_be_bytes());
+    }
+    let mut gzip = GzEncoder::new(Vec::new(), Compression::default());
+    gzip.write_all(xml.as_bytes()).expect("gzip writes");
+    for bytes in [
+        xml.as_bytes().to_vec(),
+        utf8_bom,
+        utf16le_with_bom(xml),
+        utf16_be,
+        gzip.finish().expect("gzip finishes"),
+    ] {
+        let finished = std::cell::Cell::new(false);
+        let parsed = read_with_recovery::<_, Error>(
+            &bytes,
+            NoIntroDatabaseMode::NullRecoveryCompatible,
+            |document, warnings| {
+                assert_eq!(document.extent.end(), doc_end);
+                assert_eq!(
+                    warnings.peek().expect("first warning").location,
+                    RecordLocation { line: 1, column: 5 }
+                );
+                let mut recovered = 0;
+                while warnings.peek().is_some_and(|warning| {
+                    (warning.location.line, warning.location.column)
+                        < (game_start.line, game_start.column)
+                }) {
+                    let _warning = warnings.next().expect("peeked warning");
+                    recovered += 1;
+                }
+                Ok(recovered)
+            },
+            |recovered, game, warnings| {
+                assert_eq!(game.extent.start(), game_start);
+                assert_eq!(game.extent.end(), game_end);
+                while warnings.peek().is_some_and(|warning| {
+                    (warning.location.line, warning.location.column)
+                        < (game_end.line, game_end.column)
+                }) {
+                    let _warning = warnings.next().expect("peeked game warning");
+                    *recovered += 1;
+                }
+                Ok(())
+            },
+            |recovered, warnings| {
+                *recovered += warnings.count();
+                finished.set(true);
+                Ok(())
+            },
+        )
+        .expect("all transport forms recover");
+        assert_eq!(parsed.into_inner(), 5);
+        assert!(finished.get());
+    }
+}
+
+#[test]
+fn borrowed_recovery_finish_is_not_called_before_actual_valid_eof() {
+    let finished = std::cell::Cell::new(false);
+    let consumed = std::cell::Cell::new(false);
+    let result = read_with_recovery::<_, Error>(
+        b"<datafile><game name='g\0'/></datafile><stray/>",
+        NoIntroDatabaseMode::NullRecoveryCompatible,
+        |_document, _warnings| Ok(()),
+        |(), _game, warnings| {
+            assert!(warnings.next().is_some());
+            consumed.set(true);
+            Ok(())
+        },
+        |(), _warnings| {
+            finished.set(true);
+            Ok(())
+        },
+    );
+    assert!(result.is_err());
+    assert!(consumed.get());
+    assert!(!finished.get());
+}
+
+fn independent_location_at(xml: &str, offset: usize) -> RecordLocation {
+    let normalized = xml[..offset].replace("\r\n", "\n").replace('\r', "\n");
+    RecordLocation {
+        line: i64::try_from(normalized.bytes().filter(|&byte| byte == b'\n').count())
+            .expect("fixture line fits")
+            + 1,
+        column: i64::try_from(
+            normalized
+                .rsplit('\n')
+                .next()
+                .expect("at least one line")
+                .chars()
+                .count(),
+        )
+        .expect("fixture column fits")
+            + 1,
+    }
 }

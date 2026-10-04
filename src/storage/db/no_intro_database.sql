@@ -7,7 +7,10 @@ CREATE TABLE no_intro_exports (
     envelope_kind TEXT NOT NULL CHECK (envelope_kind IN ('single_datafile', 'sibling_header_datafile')),
     header_present INTEGER NOT NULL CHECK (typeof(header_present) = 'integer' AND header_present IN (0, 1)),
     source_line INTEGER NOT NULL CHECK (typeof(source_line) = 'integer' AND source_line > 0),
-    source_column INTEGER NOT NULL CHECK (typeof(source_column) = 'integer' AND source_column > 0)
+    source_column INTEGER NOT NULL CHECK (typeof(source_column) = 'integer' AND source_column > 0),
+    document_end_line INTEGER NOT NULL CHECK (typeof(document_end_line) = 'integer' AND document_end_line > 0),
+    document_end_column INTEGER NOT NULL CHECK (typeof(document_end_column) = 'integer' AND document_end_column > 0),
+    CHECK (document_end_line > 1 OR (document_end_line = 1 AND document_end_column > 1))
 ) WITHOUT ROWID;
 
 -- The optional tag is a separate XML element from the datafile element.
@@ -16,7 +19,10 @@ CREATE TABLE no_intro_export_headers (
     snapshot_key TEXT PRIMARY KEY NOT NULL
         REFERENCES no_intro_exports(snapshot_key) ON DELETE RESTRICT,
     source_line INTEGER NOT NULL CHECK (typeof(source_line) = 'integer' AND source_line > 0),
-    source_column INTEGER NOT NULL CHECK (typeof(source_column) = 'integer' AND source_column > 0)
+    source_column INTEGER NOT NULL CHECK (typeof(source_column) = 'integer' AND source_column > 0),
+    source_end_line INTEGER NOT NULL CHECK (typeof(source_end_line) = 'integer' AND source_end_line > 0),
+    source_end_column INTEGER NOT NULL CHECK (typeof(source_end_column) = 'integer' AND source_end_column > 0),
+    CHECK (source_end_line > source_line OR (source_end_line = source_line AND source_end_column > source_column))
 ) WITHOUT ROWID;
 
 CREATE TABLE no_intro_database_games (
@@ -26,6 +32,8 @@ CREATE TABLE no_intro_database_games (
     name_source_order INTEGER NOT NULL CHECK (typeof(name_source_order) = 'integer' AND name_source_order >= 0),
     name_source_line INTEGER NOT NULL CHECK (typeof(name_source_line) = 'integer' AND name_source_line > 0),
     name_source_column INTEGER NOT NULL CHECK (typeof(name_source_column) = 'integer' AND name_source_column > 0),
+    source_end_line INTEGER NOT NULL CHECK (typeof(source_end_line) = 'integer' AND source_end_line > 0),
+    source_end_column INTEGER NOT NULL CHECK (typeof(source_end_column) = 'integer' AND source_end_column > 0),
     FOREIGN KEY (set_id, source_element_kind)
         REFERENCES catalog_sets(set_id, source_element_kind) ON DELETE RESTRICT
 ) WITHOUT ROWID;
@@ -37,7 +45,10 @@ CREATE TABLE no_intro_header_fields (
     value TEXT NOT NULL,
     source_line INTEGER NOT NULL CHECK (typeof(source_line) = 'integer' AND source_line > 0),
     source_column INTEGER NOT NULL CHECK (typeof(source_column) = 'integer' AND source_column > 0),
-    PRIMARY KEY (snapshot_key, source_order)
+    source_end_line INTEGER NOT NULL CHECK (typeof(source_end_line) = 'integer' AND source_end_line > 0),
+    source_end_column INTEGER NOT NULL CHECK (typeof(source_end_column) = 'integer' AND source_end_column > 0),
+    PRIMARY KEY (snapshot_key, source_order),
+    CHECK (source_end_line > source_line OR (source_end_line = source_line AND source_end_column > source_column))
 ) WITHOUT ROWID;
 
 CREATE TABLE no_intro_archive_descriptions (
@@ -47,13 +58,16 @@ CREATE TABLE no_intro_archive_descriptions (
     source_order INTEGER NOT NULL CHECK (typeof(source_order) = 'integer' AND source_order >= 0),
     source_line INTEGER NOT NULL CHECK (typeof(source_line) = 'integer' AND source_line > 0),
     source_column INTEGER NOT NULL CHECK (typeof(source_column) = 'integer' AND source_column > 0),
+    source_end_line INTEGER NOT NULL CHECK (typeof(source_end_line) = 'integer' AND source_end_line > 0),
+    source_end_column INTEGER NOT NULL CHECK (typeof(source_end_column) = 'integer' AND source_end_column > 0),
     additional TEXT, adult TEXT, aftermarket TEXT, alt TEXT, bios TEXT, categories TEXT,
     complete TEXT, dat TEXT, datter_note TEXT, description TEXT, devstatus TEXT,
     gameid1 TEXT, gameid2 TEXT, langchecked TEXT, languages TEXT, licensed TEXT,
     listed TEXT, mergename TEXT, name TEXT, name_alt TEXT, number TEXT,
     physical TEXT, region TEXT, regparent TEXT, showlang TEXT, special1 TEXT,
     special2 TEXT, sticky_note TEXT, version1 TEXT, version2 TEXT,
-    UNIQUE (set_id, source_order)
+    UNIQUE (set_id, source_order),
+    CHECK (source_end_line > source_line OR (source_end_line = source_line AND source_end_column > source_column))
 );
 
 CREATE TABLE no_intro_archive_clone_markers (
@@ -90,8 +104,11 @@ CREATE TABLE no_intro_dump_sources (
     source_order INTEGER NOT NULL CHECK (typeof(source_order) = 'integer' AND source_order >= 0),
     source_line INTEGER NOT NULL CHECK (typeof(source_line) = 'integer' AND source_line > 0),
     source_column INTEGER NOT NULL CHECK (typeof(source_column) = 'integer' AND source_column > 0),
+    source_end_line INTEGER NOT NULL CHECK (typeof(source_end_line) = 'integer' AND source_end_line > 0),
+    source_end_column INTEGER NOT NULL CHECK (typeof(source_end_column) = 'integer' AND source_end_column > 0),
     UNIQUE (dump_source_id, set_id),
-    UNIQUE (set_id, source_order)
+    UNIQUE (set_id, source_order),
+    CHECK (source_end_line > source_line OR (source_end_line = source_line AND source_end_column > source_column))
 );
 
 CREATE TABLE no_intro_dump_details (
@@ -100,13 +117,16 @@ CREATE TABLE no_intro_dump_details (
     source_order INTEGER NOT NULL CHECK (typeof(source_order) = 'integer' AND source_order >= 0),
     source_line INTEGER NOT NULL CHECK (typeof(source_line) = 'integer' AND source_line > 0),
     source_column INTEGER NOT NULL CHECK (typeof(source_column) = 'integer' AND source_column > 0),
+    source_end_line INTEGER NOT NULL CHECK (typeof(source_end_line) = 'integer' AND source_end_line > 0),
+    source_end_column INTEGER NOT NULL CHECK (typeof(source_end_column) = 'integer' AND source_end_column > 0),
     opening_end_line INTEGER NOT NULL CHECK (typeof(opening_end_line)='integer' AND opening_end_line>0),
     opening_end_column INTEGER NOT NULL CHECK (typeof(opening_end_column)='integer' AND opening_end_column>0),
     comment1 TEXT, comment2 TEXT, d_date TEXT, d_date_info TEXT, dumper TEXT,
     id TEXT, link1 TEXT, link2 TEXT, link3 TEXT, media_title TEXT, nodump TEXT,
     origin TEXT, originalformat TEXT, project TEXT, r_date TEXT, r_date_info TEXT,
     region TEXT, rominfo TEXT, section TEXT, tool TEXT,
-    CHECK (opening_end_line>source_line OR (opening_end_line=source_line AND opening_end_column>source_column))
+    CHECK (opening_end_line>source_line OR (opening_end_line=source_line AND opening_end_column>source_column)),
+    CHECK (source_end_line > opening_end_line OR (source_end_line = opening_end_line AND source_end_column >= opening_end_column))
 ) WITHOUT ROWID;
 
 CREATE TABLE no_intro_dump_serials (
@@ -115,10 +135,13 @@ CREATE TABLE no_intro_dump_serials (
     source_order INTEGER NOT NULL CHECK (typeof(source_order) = 'integer' AND source_order >= 0),
     source_line INTEGER NOT NULL CHECK (typeof(source_line) = 'integer' AND source_line > 0),
     source_column INTEGER NOT NULL CHECK (typeof(source_column) = 'integer' AND source_column > 0),
+    source_end_line INTEGER NOT NULL CHECK (typeof(source_end_line) = 'integer' AND source_end_line > 0),
+    source_end_column INTEGER NOT NULL CHECK (typeof(source_end_column) = 'integer' AND source_end_column > 0),
     box_barcode TEXT, box_serial TEXT, chip_serial TEXT, digital_serial1 TEXT,
     digital_serial2 TEXT, lockout_serial TEXT, media_serial1 TEXT, media_serial2 TEXT,
     media_serial3 TEXT, mediastamp TEXT, pcb_serial TEXT, romchip_serial1 TEXT,
-    romchip_serial2 TEXT, savechip_serial TEXT
+    romchip_serial2 TEXT, savechip_serial TEXT,
+    CHECK (source_end_line > source_line OR (source_end_line = source_line AND source_end_column > source_column))
 ) WITHOUT ROWID;
 
 CREATE TABLE no_intro_releases (
@@ -127,8 +150,11 @@ CREATE TABLE no_intro_releases (
     source_order INTEGER NOT NULL CHECK (typeof(source_order) = 'integer' AND source_order >= 0),
     source_line INTEGER NOT NULL CHECK (typeof(source_line) = 'integer' AND source_line > 0),
     source_column INTEGER NOT NULL CHECK (typeof(source_column) = 'integer' AND source_column > 0),
+    source_end_line INTEGER NOT NULL CHECK (typeof(source_end_line) = 'integer' AND source_end_line > 0),
+    source_end_column INTEGER NOT NULL CHECK (typeof(source_end_column) = 'integer' AND source_end_column > 0),
     UNIQUE (release_id, set_id),
-    UNIQUE (set_id, source_order)
+    UNIQUE (set_id, source_order),
+    CHECK (source_end_line > source_line OR (source_end_line = source_line AND source_end_column > source_column))
 );
 
 CREATE TABLE no_intro_release_details (
@@ -136,12 +162,15 @@ CREATE TABLE no_intro_release_details (
     source_order INTEGER NOT NULL CHECK (typeof(source_order) = 'integer' AND source_order >= 0),
     source_line INTEGER NOT NULL CHECK (typeof(source_line) = 'integer' AND source_line > 0),
     source_column INTEGER NOT NULL CHECK (typeof(source_column) = 'integer' AND source_column > 0),
+    source_end_line INTEGER NOT NULL CHECK (typeof(source_end_line) = 'integer' AND source_end_line > 0),
+    source_end_column INTEGER NOT NULL CHECK (typeof(source_end_column) = 'integer' AND source_end_column > 0),
     opening_end_line INTEGER NOT NULL CHECK (typeof(opening_end_line)='integer' AND opening_end_line>0),
     opening_end_column INTEGER NOT NULL CHECK (typeof(opening_end_column)='integer' AND opening_end_column>0),
     archivename TEXT, category TEXT, comment TEXT, date TEXT, dirname TEXT, "group" TEXT,
     id TEXT, nfo_size TEXT, nfoname TEXT, nfosize TEXT, origin TEXT,
     originalformat TEXT, region TEXT, rominfo TEXT, tool TEXT,
-    CHECK (opening_end_line>source_line OR (opening_end_line=source_line AND opening_end_column>source_column))
+    CHECK (opening_end_line>source_line OR (opening_end_line=source_line AND opening_end_column>source_column)),
+    CHECK (source_end_line > opening_end_line OR (source_end_line = opening_end_line AND source_end_column >= opening_end_column))
 ) WITHOUT ROWID;
 
 CREATE TABLE no_intro_release_serials (
@@ -149,8 +178,11 @@ CREATE TABLE no_intro_release_serials (
     source_order INTEGER NOT NULL CHECK (typeof(source_order) = 'integer' AND source_order >= 0),
     source_line INTEGER NOT NULL CHECK (typeof(source_line) = 'integer' AND source_line > 0),
     source_column INTEGER NOT NULL CHECK (typeof(source_column) = 'integer' AND source_column > 0),
+    source_end_line INTEGER NOT NULL CHECK (typeof(source_end_line) = 'integer' AND source_end_line > 0),
+    source_end_column INTEGER NOT NULL CHECK (typeof(source_end_column) = 'integer' AND source_end_column > 0),
     box_barcode TEXT, box_serial TEXT, media_serial1 TEXT, mediastamp TEXT,
-    pcb_serial TEXT, romchip_serial1 TEXT
+    pcb_serial TEXT, romchip_serial1 TEXT,
+    CHECK (source_end_line > source_line OR (source_end_line = source_line AND source_end_column > source_column))
 ) WITHOUT ROWID;
 
 -- A source/release file is the actual asset occurrence. The repeated set_id
@@ -167,6 +199,8 @@ CREATE TABLE no_intro_dump_files (
     source_order INTEGER NOT NULL CHECK (typeof(source_order) = 'integer' AND source_order >= 0),
     source_line INTEGER NOT NULL CHECK (typeof(source_line) = 'integer' AND source_line > 0),
     source_column INTEGER NOT NULL CHECK (typeof(source_column) = 'integer' AND source_column > 0),
+    source_end_line INTEGER NOT NULL CHECK (typeof(source_end_line) = 'integer' AND source_end_line > 0),
+    source_end_column INTEGER NOT NULL CHECK (typeof(source_end_column) = 'integer' AND source_end_column > 0),
     bad TEXT, date TEXT, extension TEXT, filter TEXT, forcename TEXT,
     forcescenename TEXT, format TEXT, header TEXT, id TEXT, item TEXT,
     mia TEXT, note TEXT, origin_size TEXT, serial TEXT, source_size TEXT,
@@ -188,6 +222,7 @@ CREATE TABLE no_intro_dump_files (
         REFERENCES no_intro_dump_sources(dump_source_id, set_id) ON DELETE RESTRICT,
     FOREIGN KEY (occurrence_id, set_id)
         REFERENCES asset_occurrences(occurrence_id, record_id) ON DELETE RESTRICT,
+    CHECK (source_end_line > source_line OR (source_end_line = source_line AND source_end_column > source_column)),
     FOREIGN KEY (occurrence_id, claim_kind)
         REFERENCES asset_occurrences(occurrence_id, claim_kind) ON DELETE RESTRICT
 );
@@ -204,6 +239,8 @@ CREATE TABLE no_intro_release_files (
     source_order INTEGER NOT NULL CHECK (typeof(source_order) = 'integer' AND source_order >= 0),
     source_line INTEGER NOT NULL CHECK (typeof(source_line) = 'integer' AND source_line > 0),
     source_column INTEGER NOT NULL CHECK (typeof(source_column) = 'integer' AND source_column > 0),
+    source_end_line INTEGER NOT NULL CHECK (typeof(source_end_line) = 'integer' AND source_end_line > 0),
+    source_end_column INTEGER NOT NULL CHECK (typeof(source_end_column) = 'integer' AND source_end_column > 0),
     bad TEXT, extension TEXT, forcename TEXT, forcescenename TEXT, format TEXT,
     header TEXT, id TEXT, item TEXT, note TEXT, serial TEXT, source_size TEXT,
     size INTEGER GENERATED ALWAYS AS (
@@ -224,6 +261,7 @@ CREATE TABLE no_intro_release_files (
         REFERENCES no_intro_releases(release_id, set_id) ON DELETE RESTRICT,
     FOREIGN KEY (occurrence_id, set_id)
         REFERENCES asset_occurrences(occurrence_id, record_id) ON DELETE RESTRICT,
+    CHECK (source_end_line > source_line OR (source_end_line = source_line AND source_end_column > source_column)),
     FOREIGN KEY (occurrence_id, claim_kind)
         REFERENCES asset_occurrences(occurrence_id, claim_kind) ON DELETE RESTRICT
 );
@@ -373,20 +411,184 @@ CREATE TABLE no_intro_database_parse_counts (
     release_file_field_count INTEGER NOT NULL CHECK (typeof(release_file_field_count) = 'integer' AND release_file_field_count >= 0)
 ) WITHOUT ROWID;
 
+CREATE TABLE no_intro_export_diagnostics (
+    diagnostic_key TEXT NOT NULL,
+    run_key TEXT NOT NULL,
+    snapshot_key TEXT NOT NULL,
+    PRIMARY KEY (diagnostic_key, snapshot_key),
+    FOREIGN KEY (diagnostic_key, run_key)
+        REFERENCES import_diagnostics(diagnostic_key, run_key) ON DELETE RESTRICT,
+    FOREIGN KEY (run_key, snapshot_key)
+        REFERENCES import_runs(run_key, snapshot_key) ON DELETE RESTRICT,
+    FOREIGN KEY (snapshot_key)
+        REFERENCES no_intro_exports(snapshot_key) ON DELETE RESTRICT
+) WITHOUT ROWID;
+
+CREATE TABLE no_intro_export_header_diagnostics (
+    diagnostic_key TEXT NOT NULL,
+    run_key TEXT NOT NULL,
+    snapshot_key TEXT NOT NULL,
+    PRIMARY KEY (diagnostic_key, snapshot_key),
+    FOREIGN KEY (diagnostic_key, run_key)
+        REFERENCES import_diagnostics(diagnostic_key, run_key) ON DELETE RESTRICT,
+    FOREIGN KEY (run_key, snapshot_key)
+        REFERENCES import_runs(run_key, snapshot_key) ON DELETE RESTRICT,
+    FOREIGN KEY (snapshot_key)
+        REFERENCES no_intro_export_headers(snapshot_key) ON DELETE RESTRICT
+) WITHOUT ROWID;
+
+CREATE TABLE no_intro_header_field_diagnostics (
+    diagnostic_key TEXT NOT NULL,
+    run_key TEXT NOT NULL,
+    snapshot_key TEXT NOT NULL,
+    source_order INTEGER NOT NULL CHECK (typeof(source_order) = 'integer' AND source_order >= 0),
+    PRIMARY KEY (diagnostic_key, snapshot_key, source_order),
+    FOREIGN KEY (diagnostic_key, run_key)
+        REFERENCES import_diagnostics(diagnostic_key, run_key) ON DELETE RESTRICT,
+    FOREIGN KEY (run_key, snapshot_key)
+        REFERENCES import_runs(run_key, snapshot_key) ON DELETE RESTRICT,
+    FOREIGN KEY (snapshot_key, source_order)
+        REFERENCES no_intro_header_fields(snapshot_key, source_order) ON DELETE RESTRICT
+) WITHOUT ROWID;
+
+CREATE TABLE no_intro_game_diagnostics (
+    diagnostic_key TEXT NOT NULL,
+    run_key TEXT NOT NULL,
+    snapshot_key TEXT NOT NULL,
+    set_id INTEGER NOT NULL CHECK (typeof(set_id) = 'integer' AND set_id > 0),
+    PRIMARY KEY (diagnostic_key, set_id),
+    FOREIGN KEY (diagnostic_key, run_key)
+        REFERENCES import_diagnostics(diagnostic_key, run_key) ON DELETE RESTRICT,
+    FOREIGN KEY (run_key, snapshot_key)
+        REFERENCES import_runs(run_key, snapshot_key) ON DELETE RESTRICT,
+    FOREIGN KEY (set_id)
+        REFERENCES no_intro_database_games(set_id) ON DELETE RESTRICT
+) WITHOUT ROWID;
+
+CREATE TABLE no_intro_archive_diagnostics (
+    diagnostic_key TEXT NOT NULL,
+    run_key TEXT NOT NULL,
+    snapshot_key TEXT NOT NULL,
+    archive_id INTEGER NOT NULL CHECK (typeof(archive_id) = 'integer' AND archive_id > 0),
+    PRIMARY KEY (diagnostic_key, archive_id),
+    FOREIGN KEY (diagnostic_key, run_key)
+        REFERENCES import_diagnostics(diagnostic_key, run_key) ON DELETE RESTRICT,
+    FOREIGN KEY (run_key, snapshot_key)
+        REFERENCES import_runs(run_key, snapshot_key) ON DELETE RESTRICT,
+    FOREIGN KEY (archive_id)
+        REFERENCES no_intro_archive_descriptions(archive_id) ON DELETE RESTRICT
+) WITHOUT ROWID;
+
+CREATE TABLE no_intro_dump_source_diagnostics (
+    diagnostic_key TEXT NOT NULL,
+    run_key TEXT NOT NULL,
+    snapshot_key TEXT NOT NULL,
+    dump_source_id INTEGER NOT NULL CHECK (typeof(dump_source_id) = 'integer' AND dump_source_id > 0),
+    PRIMARY KEY (diagnostic_key, dump_source_id),
+    FOREIGN KEY (diagnostic_key, run_key)
+        REFERENCES import_diagnostics(diagnostic_key, run_key) ON DELETE RESTRICT,
+    FOREIGN KEY (run_key, snapshot_key)
+        REFERENCES import_runs(run_key, snapshot_key) ON DELETE RESTRICT,
+    FOREIGN KEY (dump_source_id)
+        REFERENCES no_intro_dump_sources(dump_source_id) ON DELETE RESTRICT
+) WITHOUT ROWID;
+
 CREATE TABLE no_intro_dump_details_diagnostics (
     diagnostic_key TEXT NOT NULL,
     run_key TEXT NOT NULL,
-    dump_source_id INTEGER NOT NULL REFERENCES no_intro_dump_details(dump_source_id) ON DELETE RESTRICT,
-    PRIMARY KEY(diagnostic_key),
-    FOREIGN KEY(diagnostic_key,run_key) REFERENCES import_diagnostics(diagnostic_key,run_key) ON DELETE RESTRICT
+    snapshot_key TEXT NOT NULL,
+    dump_source_id INTEGER NOT NULL CHECK (typeof(dump_source_id) = 'integer' AND dump_source_id > 0),
+    PRIMARY KEY (diagnostic_key, dump_source_id),
+    FOREIGN KEY (diagnostic_key, run_key)
+        REFERENCES import_diagnostics(diagnostic_key, run_key) ON DELETE RESTRICT,
+    FOREIGN KEY (run_key, snapshot_key)
+        REFERENCES import_runs(run_key, snapshot_key) ON DELETE RESTRICT,
+    FOREIGN KEY (dump_source_id)
+        REFERENCES no_intro_dump_details(dump_source_id) ON DELETE RESTRICT
+) WITHOUT ROWID;
+
+CREATE TABLE no_intro_dump_serials_diagnostics (
+    diagnostic_key TEXT NOT NULL,
+    run_key TEXT NOT NULL,
+    snapshot_key TEXT NOT NULL,
+    dump_source_id INTEGER NOT NULL CHECK (typeof(dump_source_id) = 'integer' AND dump_source_id > 0),
+    PRIMARY KEY (diagnostic_key, dump_source_id),
+    FOREIGN KEY (diagnostic_key, run_key)
+        REFERENCES import_diagnostics(diagnostic_key, run_key) ON DELETE RESTRICT,
+    FOREIGN KEY (run_key, snapshot_key)
+        REFERENCES import_runs(run_key, snapshot_key) ON DELETE RESTRICT,
+    FOREIGN KEY (dump_source_id)
+        REFERENCES no_intro_dump_serials(dump_source_id) ON DELETE RESTRICT
+) WITHOUT ROWID;
+
+CREATE TABLE no_intro_dump_file_diagnostics (
+    diagnostic_key TEXT NOT NULL,
+    run_key TEXT NOT NULL,
+    snapshot_key TEXT NOT NULL,
+    occurrence_id INTEGER NOT NULL CHECK (typeof(occurrence_id) = 'integer' AND occurrence_id > 0),
+    PRIMARY KEY (diagnostic_key, occurrence_id),
+    FOREIGN KEY (diagnostic_key, run_key)
+        REFERENCES import_diagnostics(diagnostic_key, run_key) ON DELETE RESTRICT,
+    FOREIGN KEY (run_key, snapshot_key)
+        REFERENCES import_runs(run_key, snapshot_key) ON DELETE RESTRICT,
+    FOREIGN KEY (occurrence_id)
+        REFERENCES no_intro_dump_files(occurrence_id) ON DELETE RESTRICT
+) WITHOUT ROWID;
+
+CREATE TABLE no_intro_release_diagnostics (
+    diagnostic_key TEXT NOT NULL,
+    run_key TEXT NOT NULL,
+    snapshot_key TEXT NOT NULL,
+    release_id INTEGER NOT NULL CHECK (typeof(release_id) = 'integer' AND release_id > 0),
+    PRIMARY KEY (diagnostic_key, release_id),
+    FOREIGN KEY (diagnostic_key, run_key)
+        REFERENCES import_diagnostics(diagnostic_key, run_key) ON DELETE RESTRICT,
+    FOREIGN KEY (run_key, snapshot_key)
+        REFERENCES import_runs(run_key, snapshot_key) ON DELETE RESTRICT,
+    FOREIGN KEY (release_id)
+        REFERENCES no_intro_releases(release_id) ON DELETE RESTRICT
 ) WITHOUT ROWID;
 
 CREATE TABLE no_intro_release_details_diagnostics (
     diagnostic_key TEXT NOT NULL,
     run_key TEXT NOT NULL,
-    release_id INTEGER NOT NULL REFERENCES no_intro_release_details(release_id) ON DELETE RESTRICT,
-    PRIMARY KEY(diagnostic_key),
-    FOREIGN KEY(diagnostic_key,run_key) REFERENCES import_diagnostics(diagnostic_key,run_key) ON DELETE RESTRICT
+    snapshot_key TEXT NOT NULL,
+    release_id INTEGER NOT NULL CHECK (typeof(release_id) = 'integer' AND release_id > 0),
+    PRIMARY KEY (diagnostic_key, release_id),
+    FOREIGN KEY (diagnostic_key, run_key)
+        REFERENCES import_diagnostics(diagnostic_key, run_key) ON DELETE RESTRICT,
+    FOREIGN KEY (run_key, snapshot_key)
+        REFERENCES import_runs(run_key, snapshot_key) ON DELETE RESTRICT,
+    FOREIGN KEY (release_id)
+        REFERENCES no_intro_release_details(release_id) ON DELETE RESTRICT
+) WITHOUT ROWID;
+
+CREATE TABLE no_intro_release_serials_diagnostics (
+    diagnostic_key TEXT NOT NULL,
+    run_key TEXT NOT NULL,
+    snapshot_key TEXT NOT NULL,
+    release_id INTEGER NOT NULL CHECK (typeof(release_id) = 'integer' AND release_id > 0),
+    PRIMARY KEY (diagnostic_key, release_id),
+    FOREIGN KEY (diagnostic_key, run_key)
+        REFERENCES import_diagnostics(diagnostic_key, run_key) ON DELETE RESTRICT,
+    FOREIGN KEY (run_key, snapshot_key)
+        REFERENCES import_runs(run_key, snapshot_key) ON DELETE RESTRICT,
+    FOREIGN KEY (release_id)
+        REFERENCES no_intro_release_serials(release_id) ON DELETE RESTRICT
+) WITHOUT ROWID;
+
+CREATE TABLE no_intro_release_file_diagnostics (
+    diagnostic_key TEXT NOT NULL,
+    run_key TEXT NOT NULL,
+    snapshot_key TEXT NOT NULL,
+    occurrence_id INTEGER NOT NULL CHECK (typeof(occurrence_id) = 'integer' AND occurrence_id > 0),
+    PRIMARY KEY (diagnostic_key, occurrence_id),
+    FOREIGN KEY (diagnostic_key, run_key)
+        REFERENCES import_diagnostics(diagnostic_key, run_key) ON DELETE RESTRICT,
+    FOREIGN KEY (run_key, snapshot_key)
+        REFERENCES import_runs(run_key, snapshot_key) ON DELETE RESTRICT,
+    FOREIGN KEY (occurrence_id)
+        REFERENCES no_intro_release_files(occurrence_id) ON DELETE RESTRICT
 ) WITHOUT ROWID;
 
 -- The source version is owned by each format's native header. Keep this as a

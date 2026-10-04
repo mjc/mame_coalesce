@@ -37,10 +37,10 @@ impl Fixture {
                  VALUES ('parser', 'logiqx');
              INSERT INTO import_runs(
                  run_key, catalog_key, document_key, interpretation_key,
-                 status, diagnostic
+                 status
              ) VALUES
-                 ('run-a', 'catalog', 'document-a', 'parser', 'failed', 'seeded failure'),
-                 ('run-b', 'catalog', 'document-b', 'parser', 'failed', 'seeded failure');",
+                 ('run-a', 'catalog', 'document-a', 'parser', 'failed'),
+                 ('run-b', 'catalog', 'document-b', 'parser', 'failed');",
         )?;
         Ok(Self {
             _directory: directory,
@@ -59,9 +59,9 @@ impl Fixture {
     ) -> diesel::QueryResult<()> {
         let statement = format!(
             "INSERT INTO import_diagnostics(
-                 diagnostic_key, run_key, document_key, code, message{extra_columns}
+                 diagnostic_key, run_key, diagnostic_order, document_key, code, message{extra_columns}
              ) VALUES (
-                 '{key}', '{run_key}', '{document_key}', 'test', 'test'{extra_values}
+                 '{key}', '{run_key}', (SELECT COUNT(*) FROM import_diagnostics WHERE run_key='{run_key}'), '{document_key}', 'test', 'test'{extra_values}
              )"
         );
         self.connection.batch_execute(&statement)
@@ -303,7 +303,7 @@ fn clipped_excerpt_keeps_full_source_span_without_original_mapping() -> TestResu
     let excerpt_values = format!(
         ", x'636465666768696a', '{}', {}, {}, {}",
         excerpt.view().as_str(),
-        excerpt.start_byte(),
+        excerpt.start_byte().ok_or("missing captured anchor")?,
         source_problem.start(),
         source_problem.end(),
     );

@@ -863,7 +863,7 @@ mod tests {
             Err(crate::Error::CatalogParse { message, excerpt: Some(excerpt), .. })
                 if message.contains("malformed UTF-16")
                     && excerpt.bytes() == b"<"
-                    && excerpt.start_byte() == 2
+                    && excerpt.start_byte() == Some(2)
                     && excerpt.problem().is_some_and(|range| range.start() == 0 && range.end() == 1)
         ));
     }

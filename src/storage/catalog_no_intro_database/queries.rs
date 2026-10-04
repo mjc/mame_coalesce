@@ -153,20 +153,58 @@ pub(super) fn archive_rows(count: usize) -> String {
 }
 
 pub(super) fn child_rows(count: usize) -> String {
+    sibling_rows(count, SiblingParent::Game)
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum SiblingParent {
+    Game,
+    DumpSource,
+    Release,
+}
+
+pub(super) fn sibling_rows(count: usize, parent: SiblingParent) -> String {
     let values = requested_values(count);
-    let branches = [
-        ("no_intro_archive_descriptions", "archive_id", "archive"),
-        ("no_intro_dump_sources", "dump_source_id", "dump_source"),
-        ("no_intro_releases", "release_id", "release"),
-    ]
+    let (parent_column, tables) = match parent {
+        SiblingParent::Game => (
+            "set_id",
+            [
+                ("no_intro_archive_descriptions", "archive_id", "archive"),
+                ("no_intro_dump_sources", "dump_source_id", "dump_source"),
+                ("no_intro_releases", "release_id", "release"),
+            ],
+        ),
+        SiblingParent::DumpSource => (
+            "dump_source_id",
+            [
+                ("no_intro_dump_details", "dump_source_id", "details"),
+                ("no_intro_dump_serials", "dump_source_id", "serials"),
+                ("no_intro_dump_files", "occurrence_id", "file"),
+            ],
+        ),
+        SiblingParent::Release => (
+            "release_id",
+            [
+                ("no_intro_release_details", "release_id", "details"),
+                ("no_intro_release_serials", "release_id", "serials"),
+                ("no_intro_release_files", "occurrence_id", "file"),
+            ],
+        ),
+    };
+    let branches = tables
     .map(|(table, owner, kind)| {
         format!(
-            "SELECT native.set_id AS game_id, '{kind}' AS child_kind, native.{owner} AS child_id, \
-                native.source_order, native.source_line AS line, native.source_column AS column, \
-                typeof(native.set_id)='integer' AND typeof(native.{owner})='integer' \
+            "SELECT native.{parent_column} AS game_id, '{kind}' AS child_kind, native.{owner} AS child_id, \
+                native.source_order, \
+                CASE WHEN typeof(native.source_line)='integer' THEN native.source_line ELSE 0 END AS line, \
+                CASE WHEN typeof(native.source_column)='integer' THEN native.source_column ELSE 0 END AS column, \
+                CASE WHEN typeof(native.source_end_line)='integer' THEN native.source_end_line ELSE 0 END AS end_line, \
+                CASE WHEN typeof(native.source_end_column)='integer' THEN native.source_end_column ELSE 0 END AS end_column, \
+                typeof(native.{parent_column})='integer' AND typeof(native.{owner})='integer' \
                 AND typeof(native.source_order)='integer' AND typeof(native.source_line)='integer' \
-                AND typeof(native.source_column)='integer' AS valid \
-         FROM requested CROSS JOIN {table} AS native WHERE native.set_id=requested.game_id"
+                AND typeof(native.source_column)='integer' AND typeof(native.source_end_line)='integer' \
+                AND typeof(native.source_end_column)='integer' AS valid \
+         FROM requested CROSS JOIN {table} AS native WHERE native.{parent_column}=requested.game_id"
         )
     })
     .join(" UNION ALL ");
@@ -535,41 +573,41 @@ mod tests {
                 .bind::<BigInt, _>(set_id)
                 .bind::<BigInt, _>(set_id)
                 .execute(connection)?;
-                sql_query("INSERT INTO no_intro_database_games(set_id,name_source_order,name_source_line,name_source_column) VALUES(?,0,1,1)")
+                sql_query("INSERT INTO no_intro_database_games(set_id,name_source_order,name_source_line,name_source_column,source_end_line,source_end_column) VALUES(?,0,1,1,1,100)")
                 .bind::<BigInt, _>(set_id)
                 .execute(connection)?;
-                sql_query("INSERT INTO no_intro_archive_descriptions(archive_id,set_id,source_order,source_line,source_column) VALUES(?,?,0,1,1)")
+                sql_query("INSERT INTO no_intro_archive_descriptions(archive_id,set_id,source_order,source_line,source_column,source_end_line,source_end_column) VALUES(?,?,0,1,1,1,3)")
                 .bind::<BigInt, _>(set_id)
                 .bind::<BigInt, _>(set_id)
                 .execute(connection)?;
                 sql_query("INSERT INTO no_intro_archive_field_positions(archive_id,field_kind,source_order,source_line,source_column) VALUES(?,0,1,1,1)")
                 .bind::<BigInt, _>(set_id)
                 .execute(connection)?;
-                sql_query("INSERT INTO no_intro_dump_sources(dump_source_id,set_id,source_order,source_line,source_column) VALUES(?,?,0,1,1)")
+                sql_query("INSERT INTO no_intro_dump_sources(dump_source_id,set_id,source_order,source_line,source_column,source_end_line,source_end_column) VALUES(?,?,0,1,1,1,3)")
                 .bind::<BigInt, _>(set_id)
                 .bind::<BigInt, _>(set_id)
                 .execute(connection)?;
-                sql_query("INSERT INTO no_intro_dump_details(dump_source_id,source_order,source_line,source_column,opening_end_line,opening_end_column) VALUES(?,0,1,1,1,2)")
+                sql_query("INSERT INTO no_intro_dump_details(dump_source_id,source_order,source_line,source_column,opening_end_line,opening_end_column,source_end_line,source_end_column) VALUES(?,0,1,1,1,2,1,3)")
                 .bind::<BigInt, _>(set_id)
                 .execute(connection)?;
-                sql_query("INSERT INTO no_intro_dump_serials(dump_source_id,source_order,source_line,source_column) VALUES(?,0,1,1)")
+                sql_query("INSERT INTO no_intro_dump_serials(dump_source_id,source_order,source_line,source_column,source_end_line,source_end_column) VALUES(?,0,1,1,1,3)")
                 .bind::<BigInt, _>(set_id)
                 .execute(connection)?;
-                sql_query("INSERT INTO no_intro_releases(release_id,set_id,source_order,source_line,source_column) VALUES(?,?,1,1,1)")
+                sql_query("INSERT INTO no_intro_releases(release_id,set_id,source_order,source_line,source_column,source_end_line,source_end_column) VALUES(?,?,1,1,1,1,3)")
                 .bind::<BigInt, _>(set_id)
                 .bind::<BigInt, _>(set_id)
                 .execute(connection)?;
-                sql_query("INSERT INTO no_intro_release_details(release_id,source_order,source_line,source_column,opening_end_line,opening_end_column) VALUES(?,0,1,1,1,2)")
+                sql_query("INSERT INTO no_intro_release_details(release_id,source_order,source_line,source_column,opening_end_line,opening_end_column,source_end_line,source_end_column) VALUES(?,0,1,1,1,2,1,3)")
                 .bind::<BigInt, _>(set_id)
                 .execute(connection)?;
-                sql_query("INSERT INTO no_intro_release_serials(release_id,source_order,source_line,source_column) VALUES(?,0,1,1)")
+                sql_query("INSERT INTO no_intro_release_serials(release_id,source_order,source_line,source_column,source_end_line,source_end_column) VALUES(?,0,1,1,1,3)")
                 .bind::<BigInt, _>(set_id)
                 .execute(connection)?;
                 sql_query("INSERT INTO asset_occurrences(occurrence_id,record_id,occurrence_order,claim_kind) VALUES(?,?,0,'no_intro_database_source_file')")
                 .bind::<BigInt, _>(set_id * 2)
                 .bind::<BigInt, _>(set_id)
                 .execute(connection)?;
-                sql_query("INSERT INTO no_intro_dump_files(occurrence_id,dump_source_id,set_id,source_order,source_line,source_column) VALUES(?,?,?,0,1,1)")
+                sql_query("INSERT INTO no_intro_dump_files(occurrence_id,dump_source_id,set_id,source_order,source_line,source_column,source_end_line,source_end_column) VALUES(?,?,?,0,1,1,1,3)")
                 .bind::<BigInt, _>(set_id * 2)
                 .bind::<BigInt, _>(set_id)
                 .bind::<BigInt, _>(set_id)
@@ -581,7 +619,7 @@ mod tests {
                 .bind::<BigInt, _>(set_id * 2 + 1)
                 .bind::<BigInt, _>(set_id)
                 .execute(connection)?;
-                sql_query("INSERT INTO no_intro_release_files(occurrence_id,release_id,set_id,source_order,source_line,source_column) VALUES(?,?,?,0,1,1)")
+                sql_query("INSERT INTO no_intro_release_files(occurrence_id,release_id,set_id,source_order,source_line,source_column,source_end_line,source_end_column) VALUES(?,?,?,0,1,1,1,3)")
                 .bind::<BigInt, _>(set_id * 2 + 1)
                 .bind::<BigInt, _>(set_id)
                 .bind::<BigInt, _>(set_id)
@@ -619,7 +657,7 @@ mod tests {
                 .bind::<Text, _>(&snapshot)
                 .bind::<Text, _>(&interpretation)
                 .execute(connection)?;
-            sql_query("INSERT INTO no_intro_exports(snapshot_key,envelope_kind,header_present,source_line,source_column) VALUES(?,'single_datafile',0,1,1)")
+            sql_query("INSERT INTO no_intro_exports(snapshot_key,envelope_kind,header_present,source_line,source_column,document_end_line,document_end_column) VALUES(?,'single_datafile',0,1,1,1,101)")
                 .bind::<Text, _>(&snapshot)
                 .execute(connection)?;
             populate_archive_registry(connection, set_id, &snapshot)?;
@@ -758,6 +796,21 @@ mod tests {
             3,
             "every child UNION branch must seek its game index: {child_plan:?}"
         );
+        for parent in [
+            super::SiblingParent::DumpSource,
+            super::SiblingParent::Release,
+        ] {
+            let sql = super::sibling_rows(2, parent);
+            assert_indexed_seek(&mut connection, &sql, 2, "native")?;
+            let plan = explain(&mut connection, &sql, 2)?;
+            assert_eq!(
+                plan.iter()
+                    .filter(|step| step.starts_with("SEARCH native "))
+                    .count(),
+                3,
+                "every history sibling branch must seek its actual parent index: {plan:?}",
+            );
+        }
         let nfo_sql = super::nfo_hashes(2);
         for alias in ["native", "digests"] {
             assert_indexed_seek(&mut connection, &nfo_sql, 2, alias)?;

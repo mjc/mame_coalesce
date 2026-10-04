@@ -1,4 +1,4 @@
-use std::{borrow::Cow, str::Chars};
+use std::{borrow::Cow, iter::Peekable, str::Chars};
 
 use quick_xml::{
     events::{BytesStart, Event},
@@ -16,7 +16,7 @@ use super::model::{
     ArchiveClone, ArchiveDescription, DatabaseDigest, DatabaseGame, DatabaseHeader,
     DatabaseRelease, DumpSource, EnvelopeKind, HeaderField, HeaderFieldKind,
     NoIntroDatabaseDocument, NoIntroDatabaseMode, RecoveryWarning, ReleaseDetails, ReleaseFile,
-    ReleaseSerials, SourceDetails, SourceFile, SourceOrRelease, SourceSerials,
+    ReleaseSerials, SourceDetails, SourceFile, SourceOrRelease, SourceSerials, XmlSourceExtent,
 };
 
 #[cfg(test)]
@@ -54,12 +54,6 @@ impl<'a, S> ValidatedNoIntroDatabase<'a, S> {
         self.recovery_source
             .as_ref()
             .map_or_else(RecoveryWarnings::empty, RecoverySource::warnings)
-    }
-
-    /// Return the EOF-validated state and lazy recovery source for persistence.
-    #[must_use]
-    pub(crate) fn into_parts(self) -> (S, Option<RecoverySource<'a>>) {
-        (self.inner, self.recovery_source)
     }
 }
 
@@ -162,7 +156,26 @@ pub fn read_with<S, E: From<Error>>(
     bytes: &[u8],
     mode: NoIntroDatabaseMode,
     begin: impl FnOnce(NoIntroDatabaseDocument) -> std::result::Result<S, E>,
-    consume: impl FnMut(&mut S, DatabaseGame) -> std::result::Result<(), E>,
+    mut consume: impl FnMut(&mut S, DatabaseGame) -> std::result::Result<(), E>,
+) -> std::result::Result<ValidatedNoIntroDatabase<'_, S>, E> {
+    read_with_recovery(
+        bytes,
+        mode,
+        |document, _warnings| begin(document),
+        |state, game, _warnings| consume(state, game),
+        |_state, _warnings| Ok(()),
+    )
+}
+
+pub type RecoveryCursor<'a> = Peekable<RecoveryWarnings<'a>>;
+
+/// Stage warning association by borrowed cursor; finish runs only at valid EOF.
+pub fn read_with_recovery<S, E: From<Error>>(
+    bytes: &[u8],
+    mode: NoIntroDatabaseMode,
+    begin: impl FnOnce(NoIntroDatabaseDocument, &mut RecoveryCursor<'_>) -> std::result::Result<S, E>,
+    consume: impl FnMut(&mut S, DatabaseGame, &mut RecoveryCursor<'_>) -> std::result::Result<(), E>,
+    finish: impl FnOnce(&mut S, &mut RecoveryCursor<'_>) -> std::result::Result<(), E>,
 ) -> std::result::Result<ValidatedNoIntroDatabase<'_, S>, E> {
     let mut decoded = xml_reader::decode_recovery_input(bytes)?;
     let mut position = SourcePosition::new();
@@ -209,40 +222,51 @@ pub fn read_with<S, E: From<Error>>(
     if sanitized.is_none() {
         decoded.discard_encoded_source();
     }
-    let parse_xml = sanitized.as_deref().unwrap_or_else(|| decoded.text());
-    let state = xml_reader::with_decoded_reader::<_, E>(
-        parse_xml,
-        decoded.bom_origin(),
-        |reader, positions| parse_document(reader, positions, mode, begin, consume),
-    )?;
-    let recovery_source = if sanitized.is_some() {
-        let (text, encoded, view, initial_offset) = decoded.into_parts();
-        Some(RecoverySource {
-            text,
-            encoded,
-            view,
-            initial_offset,
-        })
-    } else {
-        None
+    let bom_origin = decoded.bom_origin();
+    let (text, encoded, view, initial_offset) = decoded.into_parts();
+    let source = RecoverySource {
+        text,
+        encoded,
+        view,
+        initial_offset,
     };
+    let parse_xml = sanitized.as_deref().unwrap_or(&source.text);
+    let warnings = if sanitized.is_some() {
+        source.warnings()
+    } else {
+        RecoveryWarnings::empty()
+    };
+    let document_extent =
+        XmlSourceExtent::new(RecordLocation { line: 1, column: 1 }, position.location())
+            .ok_or_else(|| xml_error("invalid XML document extent"))?;
+    let state =
+        xml_reader::with_decoded_reader::<_, E>(parse_xml, bom_origin, |reader, positions| {
+            parse_document(
+                reader,
+                positions,
+                mode,
+                document_extent,
+                Callbacks::new(begin, consume, finish, warnings.peekable()),
+            )
+        })?;
+    let recovery_source = sanitized.is_some().then_some(source);
     Ok(ValidatedNoIntroDatabase::after_eof(state, recovery_source))
 }
 
-fn parse_document<S, E, B, C>(
+fn parse_document<S, E, B, C, F>(
     reader: &mut XmlReader<'_>,
     positions: &mut PositionMap<'_>,
     mode: NoIntroDatabaseMode,
-    begin: B,
-    consume: C,
+    document_extent: XmlSourceExtent,
+    mut callbacks: Callbacks<'_, S, B, C, F>,
 ) -> std::result::Result<S, E>
 where
     E: From<Error>,
-    B: FnOnce(NoIntroDatabaseDocument) -> std::result::Result<S, E>,
-    C: FnMut(&mut S, DatabaseGame) -> std::result::Result<(), E>,
+    B: FnOnce(NoIntroDatabaseDocument, &mut RecoveryCursor<'_>) -> std::result::Result<S, E>,
+    C: FnMut(&mut S, DatabaseGame, &mut RecoveryCursor<'_>) -> std::result::Result<(), E>,
+    F: FnOnce(&mut S, &mut RecoveryCursor<'_>) -> std::result::Result<(), E>,
 {
     let mut parser = Parser::new();
-    let mut callbacks = Callbacks::new(begin, consume);
     let mut external_header = None;
     let mut envelope = None;
     let mut root_order = 0;
@@ -292,6 +316,7 @@ where
                             envelope: kind,
                             mode,
                             location: info.location,
+                            extent: document_extent,
                         };
                         if let Some(header) = external_header.take() {
                             callbacks.start_if_needed(context, Some(header))?;
@@ -320,9 +345,7 @@ where
                 if !datafile_seen {
                     return Err(xml_error("required <datafile> root is missing").into());
                 }
-                return callbacks
-                    .state
-                    .ok_or_else(|| xml_error("document callback was not started").into());
+                return callbacks.complete();
             }
             Event::DocType(_) => return Err(Error::XmlEntityNotAllowed.into()),
             Event::CData(_) => {
@@ -341,19 +364,19 @@ where
     }
 }
 
-fn parse_datafile<S, E, B, C>(
+fn parse_datafile<S, E, B, C, F>(
     parser: &mut Parser,
     reader: &mut XmlReader<'_>,
     positions: &mut PositionMap<'_>,
     root: &StartInfo,
     empty: bool,
     context: DatafileContext,
-    callbacks: &mut Callbacks<S, B, C>,
+    callbacks: &mut Callbacks<'_, S, B, C, F>,
 ) -> std::result::Result<(), E>
 where
     E: From<Error>,
-    B: FnOnce(NoIntroDatabaseDocument) -> std::result::Result<S, E>,
-    C: FnMut(&mut S, DatabaseGame) -> std::result::Result<(), E>,
+    B: FnOnce(NoIntroDatabaseDocument, &mut RecoveryCursor<'_>) -> std::result::Result<S, E>,
+    C: FnMut(&mut S, DatabaseGame, &mut RecoveryCursor<'_>) -> std::result::Result<(), E>,
 {
     Parser::validate_attributes(root, &[])?;
     if empty {
@@ -421,20 +444,25 @@ struct DatafileContext {
     envelope: EnvelopeKind,
     mode: NoIntroDatabaseMode,
     location: RecordLocation,
+    extent: XmlSourceExtent,
 }
 
-struct Callbacks<S, B, C> {
+struct Callbacks<'a, S, B, C, F> {
     state: Option<S>,
     begin: Option<B>,
     consume: C,
+    finish: F,
+    warnings: RecoveryCursor<'a>,
 }
 
-impl<S, B, C> Callbacks<S, B, C> {
-    const fn new(begin: B, consume: C) -> Self {
+impl<'a, S, B, C, F> Callbacks<'a, S, B, C, F> {
+    const fn new(begin: B, consume: C, finish: F, warnings: RecoveryCursor<'a>) -> Self {
         Self {
             state: None,
             begin: Some(begin),
             consume,
+            finish,
+            warnings,
         }
     }
 
@@ -445,7 +473,7 @@ impl<S, B, C> Callbacks<S, B, C> {
     ) -> std::result::Result<(), E>
     where
         E: From<Error>,
-        B: FnOnce(NoIntroDatabaseDocument) -> std::result::Result<S, E>,
+        B: FnOnce(NoIntroDatabaseDocument, &mut RecoveryCursor<'_>) -> std::result::Result<S, E>,
     {
         if self.state.is_some() {
             return Ok(());
@@ -454,24 +482,39 @@ impl<S, B, C> Callbacks<S, B, C> {
             .begin
             .take()
             .ok_or_else(|| xml_error("document callback was already used"))?;
-        self.state = Some(callback(NoIntroDatabaseDocument {
-            envelope: context.envelope,
-            mode: context.mode,
-            location: context.location,
-            header,
-        })?);
+        self.state = Some(callback(
+            NoIntroDatabaseDocument {
+                envelope: context.envelope,
+                mode: context.mode,
+                location: context.location,
+                extent: context.extent,
+                header,
+            },
+            &mut self.warnings,
+        )?);
         Ok(())
     }
 
     fn consume_game<E>(&mut self, game: DatabaseGame) -> std::result::Result<(), E>
     where
         E: From<Error>,
-        C: FnMut(&mut S, DatabaseGame) -> std::result::Result<(), E>,
+        C: FnMut(&mut S, DatabaseGame, &mut RecoveryCursor<'_>) -> std::result::Result<(), E>,
     {
         let Some(state) = self.state.as_mut() else {
             return Err(xml_error("document callback did not initialize state").into());
         };
-        (self.consume)(state, game)
+        (self.consume)(state, game, &mut self.warnings)
+    }
+
+    fn complete<E: From<Error>>(mut self) -> std::result::Result<S, E>
+    where
+        F: FnOnce(&mut S, &mut RecoveryCursor<'_>) -> std::result::Result<(), E>,
+    {
+        let mut state = self
+            .state
+            .ok_or_else(|| xml_error("document callback was not started"))?;
+        (self.finish)(&mut state, &mut self.warnings)?;
+        Ok(state)
     }
 }
 
@@ -575,6 +618,16 @@ struct StartInfo {
 }
 
 impl StartInfo {
+    fn extent(
+        &self,
+        reader: &XmlReader<'_>,
+        positions: &mut PositionMap<'_>,
+    ) -> Result<XmlSourceExtent> {
+        let end = positions.event_location(reader.buffer_position())?;
+        XmlSourceExtent::new(self.location, end)
+            .ok_or_else(|| invalid(self, "element", "invalid XML element extent"))
+    }
+
     fn attribute(&self, key: &str) -> Option<DeclaredText> {
         self.attributes
             .iter()
@@ -596,17 +649,13 @@ fn parse_header(
     depth: usize,
 ) -> Result<DatabaseHeader> {
     Parser::validate_attributes(info, &[])?;
-    let mut header = DatabaseHeader {
-        location: info.location,
-        fields: Vec::new(),
-    };
-    if empty {
-        return Ok(header);
-    }
+    let mut fields = Vec::new();
     let mut order = 0;
-    while let Some((child, child_empty)) =
+    while let Some((child, child_empty)) = if empty {
+        None
+    } else {
         next_child(parser, reader, positions, info, "header", depth, &mut order)?
-    {
+    } {
         let kind = match (child.namespace.as_deref(), child.local.as_str()) {
             (None, "author") => HeaderFieldKind::Author,
             (None, "piracy") => HeaderFieldKind::Piracy,
@@ -631,9 +680,17 @@ fn parse_header(
             depth + 1,
             "header field",
         )?;
-        header.fields.push(HeaderField { kind, value });
+        fields.push(HeaderField {
+            kind,
+            value: value.value,
+            source_order: value.source_order,
+            extent: child.extent(reader, positions)?,
+        });
     }
-    Ok(header)
+    Ok(DatabaseHeader {
+        extent: info.extent(reader, positions)?,
+        fields,
+    })
 }
 
 fn parse_game(
@@ -649,22 +706,16 @@ fn parse_game(
     let name = info
         .attribute("name")
         .ok_or_else(|| invalid(info, "game", "required game name is missing"))?;
-    let mut game = DatabaseGame {
-        list_order,
-        location: info.location,
-        name,
-        archives: Vec::new(),
-        source_or_release: Vec::new(),
-    };
-    if empty {
-        return Ok(game);
-    }
+    let mut archives = Vec::new();
+    let mut source_or_release = Vec::new();
     let mut order = 0;
-    while let Some((child, child_empty)) =
+    while let Some((child, child_empty)) = if empty {
+        None
+    } else {
         next_child(parser, reader, positions, info, "game", depth, &mut order)?
-    {
+    } {
         match (child.namespace.as_deref(), child.local.as_str()) {
-            (None, "archive") => game.archives.push(parse_archive(
+            (None, "archive") => archives.push(parse_archive(
                 parser,
                 reader,
                 positions,
@@ -672,26 +723,18 @@ fn parse_game(
                 child_empty,
                 depth + 1,
             )?),
-            (None, "source") => game
-                .source_or_release
-                .push(SourceOrRelease::Source(Box::new(parse_source(
+            (None, "source") => source_or_release.push(SourceOrRelease::Source(Box::new(
+                parse_source(parser, reader, positions, &child, child_empty, depth + 1)?,
+            ))),
+            (None, "release") => {
+                source_or_release.push(SourceOrRelease::Release(Box::new(parse_release(
                     parser,
                     reader,
                     positions,
                     &child,
                     child_empty,
                     depth + 1,
-                )?))),
-            (None, "release") => {
-                game.source_or_release
-                    .push(SourceOrRelease::Release(Box::new(parse_release(
-                        parser,
-                        reader,
-                        positions,
-                        &child,
-                        child_empty,
-                        depth + 1,
-                    )?)));
+                )?)));
             }
             _ => {
                 return Err(invalid(
@@ -702,7 +745,13 @@ fn parse_game(
             }
         }
     }
-    Ok(game)
+    Ok(DatabaseGame {
+        list_order,
+        extent: info.extent(reader, positions)?,
+        name,
+        archives,
+        source_or_release,
+    })
 }
 
 fn parse_archive(
@@ -755,9 +804,10 @@ fn parse_archive(
             ArchiveClone::OtherValue(value)
         }
     });
+    consume_empty(parser, reader, positions, info, empty, depth, "archive")?;
     let archive = ArchiveDescription {
         source_order: info.source_order,
-        location: info.location,
+        extent: info.extent(reader, positions)?,
         additional: info.attribute("additional"),
         adult: info.attribute("adult"),
         aftermarket: info.attribute("aftermarket"),
@@ -791,7 +841,6 @@ fn parse_archive(
         clone,
         mergeof: info.attribute("mergeof"),
     };
-    consume_empty(parser, reader, positions, info, empty, depth, "archive")?;
     Ok(archive)
 }
 
@@ -804,13 +853,7 @@ fn parse_source(
     depth: usize,
 ) -> Result<DumpSource> {
     Parser::validate_attributes(info, &[])?;
-    let mut source = DumpSource {
-        source_order: info.source_order,
-        location: info.location,
-        details: None,
-        serials: None,
-        files: Vec::new(),
-    };
+    let mut children = HistoryChildren::new();
     parse_owner_children(
         parser,
         reader,
@@ -818,9 +861,15 @@ fn parse_source(
         info,
         empty,
         depth,
-        Owner::Source(&mut source),
+        Owner::Source(&mut children),
     )?;
-    Ok(source)
+    Ok(DumpSource {
+        source_order: info.source_order,
+        extent: info.extent(reader, positions)?,
+        details: children.details,
+        serials: children.serials,
+        files: children.files,
+    })
 }
 
 fn parse_release(
@@ -832,13 +881,7 @@ fn parse_release(
     depth: usize,
 ) -> Result<DatabaseRelease> {
     Parser::validate_attributes(info, &[])?;
-    let mut release = DatabaseRelease {
-        source_order: info.source_order,
-        location: info.location,
-        details: None,
-        serials: None,
-        files: Vec::new(),
-    };
+    let mut children = HistoryChildren::new();
     parse_owner_children(
         parser,
         reader,
@@ -846,14 +889,36 @@ fn parse_release(
         info,
         empty,
         depth,
-        Owner::Release(&mut release),
+        Owner::Release(&mut children),
     )?;
-    Ok(release)
+    Ok(DatabaseRelease {
+        source_order: info.source_order,
+        extent: info.extent(reader, positions)?,
+        details: children.details,
+        serials: children.serials,
+        files: children.files,
+    })
+}
+
+struct HistoryChildren<D, S, F> {
+    details: Option<D>,
+    serials: Option<S>,
+    files: Vec<F>,
+}
+
+impl<D, S, F> HistoryChildren<D, S, F> {
+    const fn new() -> Self {
+        Self {
+            details: None,
+            serials: None,
+            files: Vec::new(),
+        }
+    }
 }
 
 enum Owner<'a> {
-    Source(&'a mut DumpSource),
-    Release(&'a mut DatabaseRelease),
+    Source(&'a mut HistoryChildren<SourceDetails, SourceSerials, SourceFile>),
+    Release(&'a mut HistoryChildren<ReleaseDetails, ReleaseSerials, ReleaseFile>),
 }
 
 fn parse_owner_children(
@@ -1024,7 +1089,7 @@ fn parse_source_details(
     consume_empty(parser, reader, positions, info, empty, depth, "details")?;
     Ok(SourceDetails {
         source_order: info.source_order,
-        location: info.location,
+        extent: info.extent(reader, positions)?,
         opening_end: info.opening_end,
         comment1,
         comment2,
@@ -1095,7 +1160,7 @@ fn parse_release_details(
     consume_empty(parser, reader, positions, info, empty, depth, "details")?;
     Ok(ReleaseDetails {
         source_order: info.source_order,
-        location: info.location,
+        extent: info.extent(reader, positions)?,
         opening_end: info.opening_end,
         archivename,
         category,
@@ -1161,7 +1226,7 @@ fn parse_source_serials(
     consume_empty(parser, reader, positions, info, empty, depth, "serials")?;
     Ok(SourceSerials {
         source_order: info.source_order,
-        location: info.location,
+        extent: info.extent(reader, positions)?,
         box_barcode,
         box_serial,
         chip_serial,
@@ -1200,7 +1265,7 @@ fn parse_release_serials(
     consume_empty(parser, reader, positions, info, empty, depth, "serials")?;
     Ok(ReleaseSerials {
         source_order: info.source_order,
-        location: info.location,
+        extent: info.extent(reader, positions)?,
         box_barcode,
         box_serial,
         media_serial1,
@@ -1264,9 +1329,10 @@ fn parse_source_file(
         update_type,
         version,
     ) = text_attrs!(info; bad, date, extension, filter, forcename, forcescenename, format, header, id, item, mia, note, origin_size, serial, size, unique, update_type, version);
+    consume_empty(parser, reader, positions, info, empty, depth, "file")?;
     let file = SourceFile {
         source_order: info.source_order,
-        location: info.location,
+        extent: info.extent(reader, positions)?,
         bad,
         crc32: digest(info, "crc32", 4),
         date,
@@ -1291,7 +1357,6 @@ fn parse_source_file(
         update_type,
         version,
     };
-    consume_empty(parser, reader, positions, info, empty, depth, "file")?;
     Ok(file)
 }
 
@@ -1338,9 +1403,10 @@ fn parse_release_file(
         update_type,
         version,
     ) = text_attrs!(info; bad, extension, forcename, forcescenename, format, header, id, item, note, serial, size, update_type, version);
+    consume_empty(parser, reader, positions, info, empty, depth, "file")?;
     let file = ReleaseFile {
         source_order: info.source_order,
-        location: info.location,
+        extent: info.extent(reader, positions)?,
         bad,
         crc32: digest(info, "crc32", 4),
         extension,
@@ -1359,7 +1425,6 @@ fn parse_release_file(
         update_type,
         version,
     };
-    consume_empty(parser, reader, positions, info, empty, depth, "file")?;
     Ok(file)
 }
 

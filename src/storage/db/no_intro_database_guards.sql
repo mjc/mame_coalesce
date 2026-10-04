@@ -1,81 +1,419 @@
 -- Guard native owners even for clients that disable SQLite FK checking.
 -- Parse-count insertion seals one unpublished snapshot after all parser rows.
-CREATE TRIGGER no_intro_dump_details_diagnostics_require_matching_run BEFORE INSERT ON no_intro_dump_details_diagnostics
-WHEN NOT EXISTS (
-    SELECT 1 FROM import_diagnostics d JOIN import_runs r USING(run_key)
-    JOIN catalog_set_groups g ON g.snapshot_key=r.snapshot_key JOIN catalog_sets s USING(set_group_id)
-    JOIN catalog_snapshots edition ON edition.snapshot_key=g.snapshot_key AND edition.document_key=r.document_key
-      AND edition.catalog_key=r.catalog_key AND edition.interpretation_key=r.interpretation_key
-    JOIN no_intro_dump_sources o USING(set_id) JOIN no_intro_dump_details p USING(dump_source_id)
-    WHERE d.diagnostic_key=NEW.diagnostic_key AND d.run_key=NEW.run_key
-      AND p.dump_source_id=NEW.dump_source_id AND r.status='succeeded'
-      AND d.document_key=r.document_key AND d.severity='warning' AND d.code='xml_nul_recovered'
-      AND d.coordinate_view='transport_decoded_xml_text' AND d.column_convention='unicode_scalar_1based'
-      AND (d.source_line>p.source_line OR (d.source_line=p.source_line AND d.source_column>=p.source_column))
-      AND (d.source_line<p.opening_end_line OR (d.source_line=p.opening_end_line AND d.source_column<p.opening_end_column))
-)
- OR EXISTS(SELECT 1 FROM no_intro_release_details_diagnostics WHERE diagnostic_key=NEW.diagnostic_key)
-BEGIN SELECT RAISE(ABORT,'diagnostic needs its own import and proven dump-details range'); END;
 
-CREATE TRIGGER no_intro_release_details_diagnostics_require_matching_run BEFORE INSERT ON no_intro_release_details_diagnostics
-WHEN NOT EXISTS (
-    SELECT 1 FROM import_diagnostics d JOIN import_runs r USING(run_key)
-    JOIN catalog_set_groups g ON g.snapshot_key=r.snapshot_key JOIN catalog_sets s USING(set_group_id)
-    JOIN catalog_snapshots edition ON edition.snapshot_key=g.snapshot_key AND edition.document_key=r.document_key
-      AND edition.catalog_key=r.catalog_key AND edition.interpretation_key=r.interpretation_key
-    JOIN no_intro_releases o USING(set_id) JOIN no_intro_release_details p USING(release_id)
-    WHERE d.diagnostic_key=NEW.diagnostic_key AND d.run_key=NEW.run_key
-      AND p.release_id=NEW.release_id AND r.status='succeeded'
-      AND d.document_key=r.document_key AND d.severity='warning' AND d.code='xml_nul_recovered'
-      AND d.coordinate_view='transport_decoded_xml_text' AND d.column_convention='unicode_scalar_1based'
-      AND (d.source_line>p.source_line OR (d.source_line=p.source_line AND d.source_column>=p.source_column))
-      AND (d.source_line<p.opening_end_line OR (d.source_line=p.opening_end_line AND d.source_column<p.opening_end_column))
-)
- OR EXISTS(SELECT 1 FROM no_intro_dump_details_diagnostics WHERE diagnostic_key=NEW.diagnostic_key)
-BEGIN SELECT RAISE(ABORT,'diagnostic needs its own import and proven release-details range'); END;
+-- Run immutability must seek native links directly, including orphan evidence
+-- left by FK-off clients whose diagnostic or import-run rows are missing.
+CREATE INDEX no_intro_export_diagnostics_by_run
+    ON no_intro_export_diagnostics(run_key);
+CREATE INDEX no_intro_export_header_diagnostics_by_run
+    ON no_intro_export_header_diagnostics(run_key);
+CREATE INDEX no_intro_header_field_diagnostics_by_run
+    ON no_intro_header_field_diagnostics(run_key);
+CREATE INDEX no_intro_game_diagnostics_by_run
+    ON no_intro_game_diagnostics(run_key);
+CREATE INDEX no_intro_archive_diagnostics_by_run
+    ON no_intro_archive_diagnostics(run_key);
+CREATE INDEX no_intro_dump_source_diagnostics_by_run
+    ON no_intro_dump_source_diagnostics(run_key);
+CREATE INDEX no_intro_dump_details_diagnostics_by_run
+    ON no_intro_dump_details_diagnostics(run_key);
+CREATE INDEX no_intro_dump_serials_diagnostics_by_run
+    ON no_intro_dump_serials_diagnostics(run_key);
+CREATE INDEX no_intro_dump_file_diagnostics_by_run
+    ON no_intro_dump_file_diagnostics(run_key);
+CREATE INDEX no_intro_release_diagnostics_by_run
+    ON no_intro_release_diagnostics(run_key);
+CREATE INDEX no_intro_release_details_diagnostics_by_run
+    ON no_intro_release_details_diagnostics(run_key);
+CREATE INDEX no_intro_release_serials_diagnostics_by_run
+    ON no_intro_release_serials_diagnostics(run_key);
+CREATE INDEX no_intro_release_file_diagnostics_by_run
+    ON no_intro_release_file_diagnostics(run_key);
+
+CREATE TRIGGER import_diagnostics_validate_storage BEFORE INSERT ON import_diagnostics
+WHEN typeof(NEW.diagnostic_key)<>'text' OR typeof(NEW.run_key)<>'text'
+ OR typeof(NEW.document_key)<>'text' OR typeof(NEW.severity)<>'text'
+ OR typeof(NEW.code)<>'text' OR typeof(NEW.message)<>'text'
+ OR (NEW.record_kind IS NOT NULL AND typeof(NEW.record_kind)<>'text')
+ OR (NEW.record_name IS NOT NULL AND typeof(NEW.record_name)<>'text')
+ OR (NEW.field_name IS NOT NULL AND typeof(NEW.field_name)<>'text')
+ OR (NEW.offending_text IS NOT NULL AND typeof(NEW.offending_text)<>'text')
+ OR (NEW.source_line IS NOT NULL AND typeof(NEW.source_line)<>'integer')
+ OR (NEW.source_column IS NOT NULL AND typeof(NEW.source_column)<>'integer')
+BEGIN SELECT RAISE(ABORT,'diagnostic fields have invalid SQLite storage classes'); END;
+
+-- This view centralizes the run/document/catalog/interpretation contract. It
+-- contains no owner discriminator or persisted copy of any native key.
+CREATE VIEW no_intro_valid_recovery_diagnostics AS
+SELECT d.diagnostic_key, d.run_key, r.snapshot_key, d.source_line, d.source_column
+FROM import_diagnostics d
+JOIN import_runs r ON r.run_key=d.run_key AND r.document_key=d.document_key
+JOIN catalog_snapshots s ON s.snapshot_key=r.snapshot_key
+    AND s.catalog_key=r.catalog_key AND s.document_key=r.document_key
+    AND s.interpretation_key=r.interpretation_key
+JOIN parser_interpretations p ON p.interpretation_key=s.interpretation_key
+JOIN no_intro_exports e ON e.snapshot_key=s.snapshot_key
+WHERE typeof(d.diagnostic_key)='text' AND typeof(d.run_key)='text'
+  AND typeof(d.document_key)='text' AND typeof(d.code)='text'
+  AND typeof(d.message)='text' AND d.severity='warning'
+  AND d.code='xml_nul_recovered' AND r.status='succeeded'
+  AND p.format IN ('no-intro-database-xml-compatible',
+                   'no-intro-database-xml-nul-compatible')
+  AND d.coordinate_view='transport_decoded_xml_text'
+  AND d.column_convention='unicode_scalar_1based'
+  AND typeof(d.source_line)='integer' AND d.source_line>0
+  AND typeof(d.source_column)='integer' AND d.source_column>0;
+
+CREATE VIEW no_intro_diagnostic_link_keys AS
+SELECT diagnostic_key, run_key FROM no_intro_export_diagnostics
+UNION ALL SELECT diagnostic_key, run_key FROM no_intro_export_header_diagnostics
+UNION ALL SELECT diagnostic_key, run_key FROM no_intro_header_field_diagnostics
+UNION ALL SELECT diagnostic_key, run_key FROM no_intro_game_diagnostics
+UNION ALL SELECT diagnostic_key, run_key FROM no_intro_archive_diagnostics
+UNION ALL SELECT diagnostic_key, run_key FROM no_intro_dump_source_diagnostics
+UNION ALL SELECT diagnostic_key, run_key FROM no_intro_dump_details_diagnostics
+UNION ALL SELECT diagnostic_key, run_key FROM no_intro_dump_serials_diagnostics
+UNION ALL SELECT diagnostic_key, run_key FROM no_intro_dump_file_diagnostics
+UNION ALL SELECT diagnostic_key, run_key FROM no_intro_release_diagnostics
+UNION ALL SELECT diagnostic_key, run_key FROM no_intro_release_details_diagnostics
+UNION ALL SELECT diagnostic_key, run_key FROM no_intro_release_serials_diagnostics
+UNION ALL SELECT diagnostic_key, run_key FROM no_intro_release_file_diagnostics;
 
 CREATE TRIGGER no_intro_owned_diagnostics_immutable_update BEFORE UPDATE ON import_diagnostics
-WHEN EXISTS(SELECT 1 FROM no_intro_dump_details_diagnostics WHERE diagnostic_key=OLD.diagnostic_key)
- OR EXISTS(SELECT 1 FROM no_intro_release_details_diagnostics WHERE diagnostic_key=OLD.diagnostic_key)
- OR EXISTS(SELECT 1 FROM no_intro_dump_details_diagnostics WHERE diagnostic_key=NEW.diagnostic_key)
- OR EXISTS(SELECT 1 FROM no_intro_release_details_diagnostics WHERE diagnostic_key=NEW.diagnostic_key)
+WHEN EXISTS(SELECT 1 FROM no_intro_diagnostic_link_keys WHERE diagnostic_key=OLD.diagnostic_key)
+ OR EXISTS(SELECT 1 FROM no_intro_diagnostic_link_keys WHERE diagnostic_key=NEW.diagnostic_key)
 BEGIN SELECT RAISE(ABORT,'diagnostic evidence with a native owner is immutable'); END;
 CREATE TRIGGER no_intro_owned_diagnostics_immutable_delete BEFORE DELETE ON import_diagnostics
-WHEN EXISTS(SELECT 1 FROM no_intro_dump_details_diagnostics WHERE diagnostic_key=OLD.diagnostic_key)
- OR EXISTS(SELECT 1 FROM no_intro_release_details_diagnostics WHERE diagnostic_key=OLD.diagnostic_key)
+WHEN EXISTS(SELECT 1 FROM no_intro_diagnostic_link_keys WHERE diagnostic_key=OLD.diagnostic_key)
 BEGIN SELECT RAISE(ABORT,'diagnostic evidence with a native owner is immutable'); END;
 CREATE TRIGGER no_intro_owned_diagnostics_reject_replace BEFORE INSERT ON import_diagnostics
-WHEN EXISTS(SELECT 1 FROM no_intro_dump_details_diagnostics WHERE diagnostic_key=NEW.diagnostic_key)
- OR EXISTS(SELECT 1 FROM no_intro_release_details_diagnostics WHERE diagnostic_key=NEW.diagnostic_key)
+WHEN EXISTS(SELECT 1 FROM no_intro_diagnostic_link_keys WHERE diagnostic_key=NEW.diagnostic_key)
+ OR EXISTS(
+    SELECT 1 FROM import_diagnostics old
+    JOIN no_intro_diagnostic_link_keys linked
+      ON linked.diagnostic_key=old.diagnostic_key AND linked.run_key=old.run_key
+    WHERE old.run_key=NEW.run_key AND old.diagnostic_order=NEW.diagnostic_order
+ )
 BEGIN SELECT RAISE(ABORT,'diagnostic evidence with a native owner is immutable'); END;
+
 CREATE TRIGGER no_intro_owned_diagnostic_runs_immutable_update BEFORE UPDATE ON import_runs
-WHEN EXISTS(SELECT 1 FROM no_intro_dump_details_diagnostics WHERE run_key=OLD.run_key)
- OR EXISTS(SELECT 1 FROM no_intro_release_details_diagnostics WHERE run_key=OLD.run_key)
- OR EXISTS(SELECT 1 FROM no_intro_dump_details_diagnostics WHERE run_key=NEW.run_key)
- OR EXISTS(SELECT 1 FROM no_intro_release_details_diagnostics WHERE run_key=NEW.run_key)
+WHEN EXISTS(SELECT 1 FROM no_intro_diagnostic_link_keys WHERE run_key=OLD.run_key)
+ OR EXISTS(SELECT 1 FROM no_intro_diagnostic_link_keys WHERE run_key=NEW.run_key)
 BEGIN SELECT RAISE(ABORT,'import runs with native diagnostic evidence are immutable'); END;
 CREATE TRIGGER no_intro_owned_diagnostic_runs_immutable_delete BEFORE DELETE ON import_runs
-WHEN EXISTS(SELECT 1 FROM no_intro_dump_details_diagnostics WHERE run_key=OLD.run_key)
- OR EXISTS(SELECT 1 FROM no_intro_release_details_diagnostics WHERE run_key=OLD.run_key)
+WHEN EXISTS(SELECT 1 FROM no_intro_diagnostic_link_keys WHERE run_key=OLD.run_key)
 BEGIN SELECT RAISE(ABORT,'import runs with native diagnostic evidence are immutable'); END;
 CREATE TRIGGER no_intro_owned_diagnostic_runs_reject_replace BEFORE INSERT ON import_runs
-WHEN EXISTS(SELECT 1 FROM no_intro_dump_details_diagnostics WHERE run_key=NEW.run_key)
- OR EXISTS(SELECT 1 FROM no_intro_release_details_diagnostics WHERE run_key=NEW.run_key)
+WHEN EXISTS(SELECT 1 FROM no_intro_diagnostic_link_keys WHERE run_key=NEW.run_key)
 BEGIN SELECT RAISE(ABORT,'import runs with native diagnostic evidence are immutable'); END;
+
+CREATE TRIGGER no_intro_export_diagnostics_require_matching_owner BEFORE INSERT ON no_intro_export_diagnostics
+WHEN NOT EXISTS (
+    SELECT 1 FROM no_intro_valid_recovery_diagnostics d
+    JOIN no_intro_exports owner ON owner.snapshot_key=d.snapshot_key
+    WHERE d.diagnostic_key=NEW.diagnostic_key AND d.run_key=NEW.run_key
+      AND d.snapshot_key=NEW.snapshot_key
+      AND (d.source_line>1 OR (d.source_line=1 AND d.source_column>=1))
+      AND (d.source_line<owner.document_end_line
+           OR (d.source_line=owner.document_end_line AND d.source_column<owner.document_end_column))
+)
+BEGIN SELECT RAISE(ABORT,'diagnostic does not belong to this export document extent'); END;
+
+CREATE TRIGGER no_intro_export_header_diagnostics_require_matching_owner BEFORE INSERT ON no_intro_export_header_diagnostics
+WHEN NOT EXISTS (
+    SELECT 1 FROM no_intro_valid_recovery_diagnostics d
+    JOIN no_intro_export_headers owner ON owner.snapshot_key=d.snapshot_key
+    WHERE d.diagnostic_key=NEW.diagnostic_key AND d.run_key=NEW.run_key
+      AND d.snapshot_key=NEW.snapshot_key
+      AND (d.source_line>owner.source_line OR (d.source_line=owner.source_line AND d.source_column>=owner.source_column))
+      AND (d.source_line<owner.source_end_line OR (d.source_line=owner.source_end_line AND d.source_column<owner.source_end_column))
+)
+BEGIN SELECT RAISE(ABORT,'diagnostic does not belong to this export header extent'); END;
+
+CREATE TRIGGER no_intro_header_field_diagnostics_require_matching_owner BEFORE INSERT ON no_intro_header_field_diagnostics
+WHEN NOT EXISTS (
+    SELECT 1 FROM no_intro_valid_recovery_diagnostics d
+    JOIN no_intro_header_fields owner ON owner.snapshot_key=d.snapshot_key
+      AND owner.source_order=NEW.source_order
+    JOIN no_intro_export_headers header ON header.snapshot_key=owner.snapshot_key
+    WHERE d.diagnostic_key=NEW.diagnostic_key AND d.run_key=NEW.run_key
+      AND d.snapshot_key=NEW.snapshot_key
+      AND (d.source_line>owner.source_line OR (d.source_line=owner.source_line AND d.source_column>=owner.source_column))
+      AND (d.source_line<owner.source_end_line OR (d.source_line=owner.source_end_line AND d.source_column<owner.source_end_column))
+)
+BEGIN SELECT RAISE(ABORT,'diagnostic does not belong to this export header field extent'); END;
+
+CREATE TRIGGER no_intro_game_diagnostics_require_matching_owner BEFORE INSERT ON no_intro_game_diagnostics
+WHEN NOT EXISTS (
+    SELECT 1 FROM no_intro_valid_recovery_diagnostics d
+    JOIN no_intro_database_games owner ON owner.set_id=NEW.set_id
+    JOIN catalog_sets game ON game.set_id=owner.set_id
+    JOIN catalog_set_groups parent ON parent.set_group_id=game.set_group_id
+      AND parent.snapshot_key=d.snapshot_key AND parent.kind='root'
+    WHERE d.diagnostic_key=NEW.diagnostic_key AND d.run_key=NEW.run_key
+      AND d.snapshot_key=NEW.snapshot_key
+      AND game.source_element_kind='no_intro_database_game'
+      AND (d.source_line>game.source_line OR (d.source_line=game.source_line AND d.source_column>=game.source_column))
+      AND (d.source_line<owner.source_end_line OR (d.source_line=owner.source_end_line AND d.source_column<owner.source_end_column))
+)
+BEGIN SELECT RAISE(ABORT,'diagnostic does not belong to this No-Intro game extent'); END;
+
+CREATE TRIGGER no_intro_archive_diagnostics_require_matching_owner BEFORE INSERT ON no_intro_archive_diagnostics
+WHEN NOT EXISTS (
+    SELECT 1 FROM no_intro_valid_recovery_diagnostics d
+    JOIN no_intro_archive_descriptions owner ON owner.archive_id=NEW.archive_id
+    JOIN no_intro_database_games game ON game.set_id=owner.set_id
+    JOIN catalog_sets native ON native.set_id=game.set_id
+    JOIN catalog_set_groups parent ON parent.set_group_id=native.set_group_id
+      AND parent.snapshot_key=d.snapshot_key AND parent.kind='root'
+    WHERE d.diagnostic_key=NEW.diagnostic_key AND d.run_key=NEW.run_key
+      AND d.snapshot_key=NEW.snapshot_key
+      AND native.source_element_kind='no_intro_database_game'
+      AND (d.source_line>owner.source_line OR (d.source_line=owner.source_line AND d.source_column>=owner.source_column))
+      AND (d.source_line<owner.source_end_line OR (d.source_line=owner.source_end_line AND d.source_column<owner.source_end_column))
+)
+BEGIN SELECT RAISE(ABORT,'diagnostic does not belong to this archive description extent'); END;
+
+CREATE TRIGGER no_intro_dump_source_diagnostics_require_matching_owner BEFORE INSERT ON no_intro_dump_source_diagnostics
+WHEN NOT EXISTS (
+    SELECT 1 FROM no_intro_valid_recovery_diagnostics d
+    JOIN no_intro_dump_sources owner ON owner.dump_source_id=NEW.dump_source_id
+    JOIN no_intro_database_games game ON game.set_id=owner.set_id
+    JOIN catalog_sets native ON native.set_id=game.set_id
+    JOIN catalog_set_groups parent ON parent.set_group_id=native.set_group_id
+      AND parent.snapshot_key=d.snapshot_key AND parent.kind='root'
+    WHERE d.diagnostic_key=NEW.diagnostic_key AND d.run_key=NEW.run_key
+      AND d.snapshot_key=NEW.snapshot_key
+      AND native.source_element_kind='no_intro_database_game'
+      AND (d.source_line>owner.source_line OR (d.source_line=owner.source_line AND d.source_column>=owner.source_column))
+      AND (d.source_line<owner.source_end_line OR (d.source_line=owner.source_end_line AND d.source_column<owner.source_end_column))
+)
+BEGIN SELECT RAISE(ABORT,'diagnostic does not belong to this No-Intro dump source extent'); END;
+
+CREATE TRIGGER no_intro_dump_details_diagnostics_require_matching_owner BEFORE INSERT ON no_intro_dump_details_diagnostics
+WHEN NOT EXISTS (
+    SELECT 1 FROM no_intro_valid_recovery_diagnostics d
+    JOIN no_intro_dump_details owner ON owner.dump_source_id=NEW.dump_source_id
+    JOIN no_intro_dump_sources parent_owner USING(dump_source_id)
+    JOIN no_intro_database_games game ON game.set_id=parent_owner.set_id
+    JOIN catalog_sets native ON native.set_id=game.set_id
+    JOIN catalog_set_groups parent ON parent.set_group_id=native.set_group_id
+      AND parent.snapshot_key=d.snapshot_key AND parent.kind='root'
+    WHERE d.diagnostic_key=NEW.diagnostic_key AND d.run_key=NEW.run_key
+      AND d.snapshot_key=NEW.snapshot_key
+      AND native.source_element_kind='no_intro_database_game'
+      AND (d.source_line>owner.source_line OR (d.source_line=owner.source_line AND d.source_column>=owner.source_column))
+      AND (d.source_line<owner.source_end_line OR (d.source_line=owner.source_end_line AND d.source_column<owner.source_end_column))
+)
+BEGIN SELECT RAISE(ABORT,'diagnostic does not belong to this No-Intro dump details extent'); END;
+
+CREATE TRIGGER no_intro_dump_serials_diagnostics_require_matching_owner BEFORE INSERT ON no_intro_dump_serials_diagnostics
+WHEN NOT EXISTS (
+    SELECT 1 FROM no_intro_valid_recovery_diagnostics d
+    JOIN no_intro_dump_serials owner ON owner.dump_source_id=NEW.dump_source_id
+    JOIN no_intro_dump_sources parent_owner USING(dump_source_id)
+    JOIN no_intro_database_games game ON game.set_id=parent_owner.set_id
+    JOIN catalog_sets native ON native.set_id=game.set_id
+    JOIN catalog_set_groups parent ON parent.set_group_id=native.set_group_id
+      AND parent.snapshot_key=d.snapshot_key AND parent.kind='root'
+    WHERE d.diagnostic_key=NEW.diagnostic_key AND d.run_key=NEW.run_key
+      AND d.snapshot_key=NEW.snapshot_key
+      AND native.source_element_kind='no_intro_database_game'
+      AND (d.source_line>owner.source_line OR (d.source_line=owner.source_line AND d.source_column>=owner.source_column))
+      AND (d.source_line<owner.source_end_line OR (d.source_line=owner.source_end_line AND d.source_column<owner.source_end_column))
+)
+BEGIN SELECT RAISE(ABORT,'diagnostic does not belong to this No-Intro dump serials extent'); END;
+
+CREATE TRIGGER no_intro_dump_file_diagnostics_require_matching_owner BEFORE INSERT ON no_intro_dump_file_diagnostics
+WHEN NOT EXISTS (
+    SELECT 1 FROM no_intro_valid_recovery_diagnostics d
+    JOIN no_intro_dump_files owner ON owner.occurrence_id=NEW.occurrence_id
+    JOIN no_intro_dump_sources parent_owner
+      ON parent_owner.dump_source_id=owner.dump_source_id AND parent_owner.set_id=owner.set_id
+    JOIN no_intro_database_games game ON game.set_id=parent_owner.set_id
+    JOIN catalog_sets native ON native.set_id=game.set_id
+    JOIN catalog_set_groups parent ON parent.set_group_id=native.set_group_id
+      AND parent.snapshot_key=d.snapshot_key AND parent.kind='root'
+    WHERE d.diagnostic_key=NEW.diagnostic_key AND d.run_key=NEW.run_key
+      AND d.snapshot_key=NEW.snapshot_key
+      AND native.source_element_kind='no_intro_database_game'
+      AND owner.claim_kind='no_intro_database_source_file'
+      AND (d.source_line>owner.source_line OR (d.source_line=owner.source_line AND d.source_column>=owner.source_column))
+      AND (d.source_line<owner.source_end_line OR (d.source_line=owner.source_end_line AND d.source_column<owner.source_end_column))
+)
+BEGIN SELECT RAISE(ABORT,'diagnostic does not belong to this No-Intro dump file extent'); END;
+
+CREATE TRIGGER no_intro_release_diagnostics_require_matching_owner BEFORE INSERT ON no_intro_release_diagnostics
+WHEN NOT EXISTS (
+    SELECT 1 FROM no_intro_valid_recovery_diagnostics d
+    JOIN no_intro_releases owner ON owner.release_id=NEW.release_id
+    JOIN no_intro_database_games game ON game.set_id=owner.set_id
+    JOIN catalog_sets native ON native.set_id=game.set_id
+    JOIN catalog_set_groups parent ON parent.set_group_id=native.set_group_id
+      AND parent.snapshot_key=d.snapshot_key AND parent.kind='root'
+    WHERE d.diagnostic_key=NEW.diagnostic_key AND d.run_key=NEW.run_key
+      AND d.snapshot_key=NEW.snapshot_key
+      AND native.source_element_kind='no_intro_database_game'
+      AND (d.source_line>owner.source_line OR (d.source_line=owner.source_line AND d.source_column>=owner.source_column))
+      AND (d.source_line<owner.source_end_line OR (d.source_line=owner.source_end_line AND d.source_column<owner.source_end_column))
+)
+BEGIN SELECT RAISE(ABORT,'diagnostic does not belong to this No-Intro release extent'); END;
+
+CREATE TRIGGER no_intro_release_details_diagnostics_require_matching_owner BEFORE INSERT ON no_intro_release_details_diagnostics
+WHEN NOT EXISTS (
+    SELECT 1 FROM no_intro_valid_recovery_diagnostics d
+    JOIN no_intro_release_details owner ON owner.release_id=NEW.release_id
+    JOIN no_intro_releases parent_owner USING(release_id)
+    JOIN no_intro_database_games game ON game.set_id=parent_owner.set_id
+    JOIN catalog_sets native ON native.set_id=game.set_id
+    JOIN catalog_set_groups parent ON parent.set_group_id=native.set_group_id
+      AND parent.snapshot_key=d.snapshot_key AND parent.kind='root'
+    WHERE d.diagnostic_key=NEW.diagnostic_key AND d.run_key=NEW.run_key
+      AND d.snapshot_key=NEW.snapshot_key
+      AND native.source_element_kind='no_intro_database_game'
+      AND (d.source_line>owner.source_line OR (d.source_line=owner.source_line AND d.source_column>=owner.source_column))
+      AND (d.source_line<owner.source_end_line OR (d.source_line=owner.source_end_line AND d.source_column<owner.source_end_column))
+)
+BEGIN SELECT RAISE(ABORT,'diagnostic does not belong to this No-Intro release details extent'); END;
+
+CREATE TRIGGER no_intro_release_serials_diagnostics_require_matching_owner BEFORE INSERT ON no_intro_release_serials_diagnostics
+WHEN NOT EXISTS (
+    SELECT 1 FROM no_intro_valid_recovery_diagnostics d
+    JOIN no_intro_release_serials owner ON owner.release_id=NEW.release_id
+    JOIN no_intro_releases parent_owner USING(release_id)
+    JOIN no_intro_database_games game ON game.set_id=parent_owner.set_id
+    JOIN catalog_sets native ON native.set_id=game.set_id
+    JOIN catalog_set_groups parent ON parent.set_group_id=native.set_group_id
+      AND parent.snapshot_key=d.snapshot_key AND parent.kind='root'
+    WHERE d.diagnostic_key=NEW.diagnostic_key AND d.run_key=NEW.run_key
+      AND d.snapshot_key=NEW.snapshot_key
+      AND native.source_element_kind='no_intro_database_game'
+      AND (d.source_line>owner.source_line OR (d.source_line=owner.source_line AND d.source_column>=owner.source_column))
+      AND (d.source_line<owner.source_end_line OR (d.source_line=owner.source_end_line AND d.source_column<owner.source_end_column))
+)
+BEGIN SELECT RAISE(ABORT,'diagnostic does not belong to this No-Intro release serials extent'); END;
+
+CREATE TRIGGER no_intro_release_file_diagnostics_require_matching_owner BEFORE INSERT ON no_intro_release_file_diagnostics
+WHEN NOT EXISTS (
+    SELECT 1 FROM no_intro_valid_recovery_diagnostics d
+    JOIN no_intro_release_files owner ON owner.occurrence_id=NEW.occurrence_id
+    JOIN no_intro_releases parent_owner
+      ON parent_owner.release_id=owner.release_id AND parent_owner.set_id=owner.set_id
+    JOIN no_intro_database_games game ON game.set_id=parent_owner.set_id
+    JOIN catalog_sets native ON native.set_id=game.set_id
+    JOIN catalog_set_groups parent ON parent.set_group_id=native.set_group_id
+      AND parent.snapshot_key=d.snapshot_key AND parent.kind='root'
+    WHERE d.diagnostic_key=NEW.diagnostic_key AND d.run_key=NEW.run_key
+      AND d.snapshot_key=NEW.snapshot_key
+      AND native.source_element_kind='no_intro_database_game'
+      AND owner.claim_kind='no_intro_database_release_file'
+      AND (d.source_line>owner.source_line OR (d.source_line=owner.source_line AND d.source_column>=owner.source_column))
+      AND (d.source_line<owner.source_end_line OR (d.source_line=owner.source_end_line AND d.source_column<owner.source_end_column))
+)
+BEGIN SELECT RAISE(ABORT,'diagnostic does not belong to this No-Intro release file extent'); END;
+
+CREATE TRIGGER no_intro_export_diagnostics_immutable_update BEFORE UPDATE ON no_intro_export_diagnostics
+BEGIN SELECT RAISE(ABORT,'native diagnostic links are immutable'); END;
+CREATE TRIGGER no_intro_export_diagnostics_immutable_delete BEFORE DELETE ON no_intro_export_diagnostics
+BEGIN SELECT RAISE(ABORT,'native diagnostic links are immutable'); END;
+CREATE TRIGGER no_intro_export_diagnostics_reject_replace BEFORE INSERT ON no_intro_export_diagnostics
+WHEN EXISTS(SELECT 1 FROM no_intro_export_diagnostics WHERE diagnostic_key=NEW.diagnostic_key AND snapshot_key=NEW.snapshot_key)
+BEGIN SELECT RAISE(ABORT,'native diagnostic links are immutable'); END;
+
+CREATE TRIGGER no_intro_export_header_diagnostics_immutable_update BEFORE UPDATE ON no_intro_export_header_diagnostics
+BEGIN SELECT RAISE(ABORT,'native diagnostic links are immutable'); END;
+CREATE TRIGGER no_intro_export_header_diagnostics_immutable_delete BEFORE DELETE ON no_intro_export_header_diagnostics
+BEGIN SELECT RAISE(ABORT,'native diagnostic links are immutable'); END;
+CREATE TRIGGER no_intro_export_header_diagnostics_reject_replace BEFORE INSERT ON no_intro_export_header_diagnostics
+WHEN EXISTS(SELECT 1 FROM no_intro_export_header_diagnostics WHERE diagnostic_key=NEW.diagnostic_key AND snapshot_key=NEW.snapshot_key)
+BEGIN SELECT RAISE(ABORT,'native diagnostic links are immutable'); END;
+
+CREATE TRIGGER no_intro_header_field_diagnostics_immutable_update BEFORE UPDATE ON no_intro_header_field_diagnostics
+BEGIN SELECT RAISE(ABORT,'native diagnostic links are immutable'); END;
+CREATE TRIGGER no_intro_header_field_diagnostics_immutable_delete BEFORE DELETE ON no_intro_header_field_diagnostics
+BEGIN SELECT RAISE(ABORT,'native diagnostic links are immutable'); END;
+CREATE TRIGGER no_intro_header_field_diagnostics_reject_replace BEFORE INSERT ON no_intro_header_field_diagnostics
+WHEN EXISTS(SELECT 1 FROM no_intro_header_field_diagnostics WHERE diagnostic_key=NEW.diagnostic_key AND snapshot_key=NEW.snapshot_key AND source_order=NEW.source_order)
+BEGIN SELECT RAISE(ABORT,'native diagnostic links are immutable'); END;
+
+CREATE TRIGGER no_intro_game_diagnostics_immutable_update BEFORE UPDATE ON no_intro_game_diagnostics
+BEGIN SELECT RAISE(ABORT,'native diagnostic links are immutable'); END;
+CREATE TRIGGER no_intro_game_diagnostics_immutable_delete BEFORE DELETE ON no_intro_game_diagnostics
+BEGIN SELECT RAISE(ABORT,'native diagnostic links are immutable'); END;
+CREATE TRIGGER no_intro_game_diagnostics_reject_replace BEFORE INSERT ON no_intro_game_diagnostics
+WHEN EXISTS(SELECT 1 FROM no_intro_game_diagnostics WHERE diagnostic_key=NEW.diagnostic_key AND set_id=NEW.set_id)
+BEGIN SELECT RAISE(ABORT,'native diagnostic links are immutable'); END;
+
+CREATE TRIGGER no_intro_archive_diagnostics_immutable_update BEFORE UPDATE ON no_intro_archive_diagnostics
+BEGIN SELECT RAISE(ABORT,'native diagnostic links are immutable'); END;
+CREATE TRIGGER no_intro_archive_diagnostics_immutable_delete BEFORE DELETE ON no_intro_archive_diagnostics
+BEGIN SELECT RAISE(ABORT,'native diagnostic links are immutable'); END;
+CREATE TRIGGER no_intro_archive_diagnostics_reject_replace BEFORE INSERT ON no_intro_archive_diagnostics
+WHEN EXISTS(SELECT 1 FROM no_intro_archive_diagnostics WHERE diagnostic_key=NEW.diagnostic_key AND archive_id=NEW.archive_id)
+BEGIN SELECT RAISE(ABORT,'native diagnostic links are immutable'); END;
+
+CREATE TRIGGER no_intro_dump_source_diagnostics_immutable_update BEFORE UPDATE ON no_intro_dump_source_diagnostics
+BEGIN SELECT RAISE(ABORT,'native diagnostic links are immutable'); END;
+CREATE TRIGGER no_intro_dump_source_diagnostics_immutable_delete BEFORE DELETE ON no_intro_dump_source_diagnostics
+BEGIN SELECT RAISE(ABORT,'native diagnostic links are immutable'); END;
+CREATE TRIGGER no_intro_dump_source_diagnostics_reject_replace BEFORE INSERT ON no_intro_dump_source_diagnostics
+WHEN EXISTS(SELECT 1 FROM no_intro_dump_source_diagnostics WHERE diagnostic_key=NEW.diagnostic_key AND dump_source_id=NEW.dump_source_id)
+BEGIN SELECT RAISE(ABORT,'native diagnostic links are immutable'); END;
 
 CREATE TRIGGER no_intro_dump_details_diagnostics_immutable_update BEFORE UPDATE ON no_intro_dump_details_diagnostics
 BEGIN SELECT RAISE(ABORT,'native diagnostic links are immutable'); END;
 CREATE TRIGGER no_intro_dump_details_diagnostics_immutable_delete BEFORE DELETE ON no_intro_dump_details_diagnostics
 BEGIN SELECT RAISE(ABORT,'native diagnostic links are immutable'); END;
 CREATE TRIGGER no_intro_dump_details_diagnostics_reject_replace BEFORE INSERT ON no_intro_dump_details_diagnostics
-WHEN EXISTS(SELECT 1 FROM no_intro_dump_details_diagnostics WHERE diagnostic_key=NEW.diagnostic_key)
+WHEN EXISTS(SELECT 1 FROM no_intro_dump_details_diagnostics WHERE diagnostic_key=NEW.diagnostic_key AND dump_source_id=NEW.dump_source_id)
 BEGIN SELECT RAISE(ABORT,'native diagnostic links are immutable'); END;
+
+CREATE TRIGGER no_intro_dump_serials_diagnostics_immutable_update BEFORE UPDATE ON no_intro_dump_serials_diagnostics
+BEGIN SELECT RAISE(ABORT,'native diagnostic links are immutable'); END;
+CREATE TRIGGER no_intro_dump_serials_diagnostics_immutable_delete BEFORE DELETE ON no_intro_dump_serials_diagnostics
+BEGIN SELECT RAISE(ABORT,'native diagnostic links are immutable'); END;
+CREATE TRIGGER no_intro_dump_serials_diagnostics_reject_replace BEFORE INSERT ON no_intro_dump_serials_diagnostics
+WHEN EXISTS(SELECT 1 FROM no_intro_dump_serials_diagnostics WHERE diagnostic_key=NEW.diagnostic_key AND dump_source_id=NEW.dump_source_id)
+BEGIN SELECT RAISE(ABORT,'native diagnostic links are immutable'); END;
+
+CREATE TRIGGER no_intro_dump_file_diagnostics_immutable_update BEFORE UPDATE ON no_intro_dump_file_diagnostics
+BEGIN SELECT RAISE(ABORT,'native diagnostic links are immutable'); END;
+CREATE TRIGGER no_intro_dump_file_diagnostics_immutable_delete BEFORE DELETE ON no_intro_dump_file_diagnostics
+BEGIN SELECT RAISE(ABORT,'native diagnostic links are immutable'); END;
+CREATE TRIGGER no_intro_dump_file_diagnostics_reject_replace BEFORE INSERT ON no_intro_dump_file_diagnostics
+WHEN EXISTS(SELECT 1 FROM no_intro_dump_file_diagnostics WHERE diagnostic_key=NEW.diagnostic_key AND occurrence_id=NEW.occurrence_id)
+BEGIN SELECT RAISE(ABORT,'native diagnostic links are immutable'); END;
+
+CREATE TRIGGER no_intro_release_diagnostics_immutable_update BEFORE UPDATE ON no_intro_release_diagnostics
+BEGIN SELECT RAISE(ABORT,'native diagnostic links are immutable'); END;
+CREATE TRIGGER no_intro_release_diagnostics_immutable_delete BEFORE DELETE ON no_intro_release_diagnostics
+BEGIN SELECT RAISE(ABORT,'native diagnostic links are immutable'); END;
+CREATE TRIGGER no_intro_release_diagnostics_reject_replace BEFORE INSERT ON no_intro_release_diagnostics
+WHEN EXISTS(SELECT 1 FROM no_intro_release_diagnostics WHERE diagnostic_key=NEW.diagnostic_key AND release_id=NEW.release_id)
+BEGIN SELECT RAISE(ABORT,'native diagnostic links are immutable'); END;
+
 CREATE TRIGGER no_intro_release_details_diagnostics_immutable_update BEFORE UPDATE ON no_intro_release_details_diagnostics
 BEGIN SELECT RAISE(ABORT,'native diagnostic links are immutable'); END;
 CREATE TRIGGER no_intro_release_details_diagnostics_immutable_delete BEFORE DELETE ON no_intro_release_details_diagnostics
 BEGIN SELECT RAISE(ABORT,'native diagnostic links are immutable'); END;
 CREATE TRIGGER no_intro_release_details_diagnostics_reject_replace BEFORE INSERT ON no_intro_release_details_diagnostics
-WHEN EXISTS(SELECT 1 FROM no_intro_release_details_diagnostics WHERE diagnostic_key=NEW.diagnostic_key)
+WHEN EXISTS(SELECT 1 FROM no_intro_release_details_diagnostics WHERE diagnostic_key=NEW.diagnostic_key AND release_id=NEW.release_id)
+BEGIN SELECT RAISE(ABORT,'native diagnostic links are immutable'); END;
+
+CREATE TRIGGER no_intro_release_serials_diagnostics_immutable_update BEFORE UPDATE ON no_intro_release_serials_diagnostics
+BEGIN SELECT RAISE(ABORT,'native diagnostic links are immutable'); END;
+CREATE TRIGGER no_intro_release_serials_diagnostics_immutable_delete BEFORE DELETE ON no_intro_release_serials_diagnostics
+BEGIN SELECT RAISE(ABORT,'native diagnostic links are immutable'); END;
+CREATE TRIGGER no_intro_release_serials_diagnostics_reject_replace BEFORE INSERT ON no_intro_release_serials_diagnostics
+WHEN EXISTS(SELECT 1 FROM no_intro_release_serials_diagnostics WHERE diagnostic_key=NEW.diagnostic_key AND release_id=NEW.release_id)
+BEGIN SELECT RAISE(ABORT,'native diagnostic links are immutable'); END;
+
+CREATE TRIGGER no_intro_release_file_diagnostics_immutable_update BEFORE UPDATE ON no_intro_release_file_diagnostics
+BEGIN SELECT RAISE(ABORT,'native diagnostic links are immutable'); END;
+CREATE TRIGGER no_intro_release_file_diagnostics_immutable_delete BEFORE DELETE ON no_intro_release_file_diagnostics
+BEGIN SELECT RAISE(ABORT,'native diagnostic links are immutable'); END;
+CREATE TRIGGER no_intro_release_file_diagnostics_reject_replace BEFORE INSERT ON no_intro_release_file_diagnostics
+WHEN EXISTS(SELECT 1 FROM no_intro_release_file_diagnostics WHERE diagnostic_key=NEW.diagnostic_key AND occurrence_id=NEW.occurrence_id)
 BEGIN SELECT RAISE(ABORT,'native diagnostic links are immutable'); END;
 CREATE TRIGGER no_intro_exports_require_database_format BEFORE INSERT ON no_intro_exports
 WHEN NOT EXISTS (SELECT 1 FROM catalog_snapshots s JOIN parser_interpretations p USING(interpretation_key) WHERE s.snapshot_key=NEW.snapshot_key AND p.format IN ('no-intro-database-xml-compatible','no-intro-database-xml-nul-compatible') AND NOT EXISTS (SELECT 1 FROM snapshot_publications WHERE snapshot_key=NEW.snapshot_key))
@@ -84,6 +422,17 @@ BEGIN SELECT RAISE(ABORT,'No-Intro export requires an unpublished database-expor
 CREATE TRIGGER no_intro_database_games_require_native_identity BEFORE INSERT ON no_intro_database_games
 WHEN NOT EXISTS (SELECT 1 FROM catalog_sets s JOIN catalog_set_groups c USING(set_group_id) JOIN no_intro_exports e USING(snapshot_key) WHERE s.set_id=NEW.set_id AND s.source_element_kind='no_intro_database_game' AND c.kind='root' AND NOT EXISTS (SELECT 1 FROM snapshot_publications WHERE snapshot_key=(SELECT c.snapshot_key FROM catalog_sets s JOIN catalog_set_groups c USING(set_group_id) WHERE s.set_id=NEW.set_id)) AND NOT EXISTS (SELECT 1 FROM no_intro_database_parse_counts WHERE snapshot_key=(SELECT c.snapshot_key FROM catalog_sets s JOIN catalog_set_groups c USING(set_group_id) WHERE s.set_id=NEW.set_id)))
 BEGIN SELECT RAISE(ABORT,'No-Intro database game requires a real unpublished catalog set'); END;
+
+CREATE TRIGGER no_intro_database_games_require_ordered_extent BEFORE INSERT ON no_intro_database_games
+WHEN NOT EXISTS (
+    SELECT 1 FROM catalog_sets source
+    WHERE source.set_id=NEW.set_id
+      AND typeof(source.source_line)='integer' AND typeof(source.source_column)='integer'
+      AND typeof(NEW.source_end_line)='integer' AND typeof(NEW.source_end_column)='integer'
+      AND (NEW.source_end_line>source.source_line
+           OR (NEW.source_end_line=source.source_line AND NEW.source_end_column>source.source_column))
+)
+BEGIN SELECT RAISE(ABORT,'No-Intro game end must follow its inherited source start'); END;
 
 CREATE TRIGGER no_intro_header_fields_requires_open_native_owner BEFORE INSERT ON no_intro_header_fields
 WHEN NOT EXISTS (SELECT 1 FROM no_intro_export_headers h JOIN no_intro_exports e USING(snapshot_key) WHERE h.snapshot_key=NEW.snapshot_key AND e.header_present=1)

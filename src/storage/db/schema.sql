@@ -188,6 +188,7 @@ CREATE TABLE documents (
 CREATE TABLE import_diagnostics (
     diagnostic_key TEXT PRIMARY KEY NOT NULL,
     run_key TEXT NOT NULL REFERENCES import_runs (run_key) ON DELETE RESTRICT,
+    diagnostic_order INTEGER NOT NULL CHECK (typeof(diagnostic_order) = 'integer' AND diagnostic_order >= 0),
     document_key TEXT NOT NULL REFERENCES documents (document_key) ON DELETE RESTRICT,
     severity TEXT NOT NULL DEFAULT 'error' CHECK (severity IN ('warning', 'error')),
     code TEXT NOT NULL,
@@ -210,6 +211,7 @@ CREATE TABLE import_diagnostics (
     coordinate_view TEXT CHECK (coordinate_view IN ('transport_decoded_xml_text', 'decoded_dat_text')),
     column_convention TEXT CHECK (column_convention = 'unicode_scalar_1based'),
     UNIQUE (diagnostic_key, run_key),
+    UNIQUE (run_key, diagnostic_order),
     FOREIGN KEY (run_key, document_key) REFERENCES import_runs(run_key, document_key) ON DELETE RESTRICT,
     CHECK ((source_excerpt IS NULL AND excerpt_view IS NULL AND excerpt_start_byte IS NULL)
         OR (typeof(source_excerpt) = 'blob' AND excerpt_view IS NOT NULL
@@ -250,8 +252,8 @@ CREATE TABLE import_runs (
     status              TEXT NOT NULL CHECK (status IN ('pending', 'running', 'succeeded', 'failed')),
     started_at          DATETIME,
     finished_at         DATETIME,
-    diagnostic          TEXT,
     UNIQUE (run_key, document_key),
+    UNIQUE (run_key, snapshot_key),
     CHECK (finished_at IS NULL OR started_at IS NULL OR finished_at >= started_at),
     FOREIGN KEY (snapshot_key, catalog_key, document_key, interpretation_key)
         REFERENCES catalog_snapshots

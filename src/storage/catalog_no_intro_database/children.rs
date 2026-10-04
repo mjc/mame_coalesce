@@ -10,11 +10,13 @@ use crate::{
     logiqx::RecordLocation,
     no_intro_db_xml::{
         ArchiveClone, ArchiveDescription, ReleaseSerials, SourceDetails, SourceSerials,
+        XmlSourceExtent,
     },
     storage::catalog_files::{NoIntroDumpSourceId, NoIntroReleaseId},
 };
 
 use super::positions::{location, require_integer};
+use super::reader::{advance_extent, checked_extent, contains_extent};
 use super::{
     NoIntroDatabaseArchive, NoIntroDatabaseArchiveField, NoIntroDatabaseDumpDetailsField,
     NoIntroDatabaseDumpFileField, NoIntroDatabaseDumpSerialsField, NoIntroDatabaseDumpSource,
@@ -24,6 +26,122 @@ use super::{
 };
 
 type QueryResult<T> = Result<T, NoIntroDatabaseQueryError>;
+
+#[derive(QueryableByName)]
+struct NativeExtentRow {
+    #[diesel(sql_type = BigInt)]
+    owner_id: i64,
+    #[diesel(sql_type = BigInt)]
+    parent_id: i64,
+    #[diesel(sql_type = BigInt)]
+    line: i64,
+    #[diesel(sql_type = BigInt)]
+    column: i64,
+    #[diesel(sql_type = BigInt)]
+    end_line: i64,
+    #[diesel(sql_type = BigInt)]
+    end_column: i64,
+    #[diesel(sql_type = BigInt)]
+    valid: i64,
+}
+
+fn native_extents(
+    connection: &mut SqliteConnection,
+    table: &'static str,
+    owner_column: &'static str,
+    parent_column: &'static str,
+    parent_ids: &[i64],
+) -> QueryResult<BTreeMap<i64, (i64, XmlSourceExtent)>> {
+    let mut result = BTreeMap::new();
+    for batch in parent_ids.chunks(400) {
+        if batch.is_empty() {
+            continue;
+        }
+        let values = std::iter::repeat_n("(?)", batch.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "WITH requested(parent_id) AS (VALUES {values}) \
+             SELECT native.{owner_column} AS owner_id, native.{parent_column} AS parent_id, \
+                    CASE WHEN typeof(native.source_line)='integer' THEN native.source_line ELSE 0 END AS line, \
+                    CASE WHEN typeof(native.source_column)='integer' THEN native.source_column ELSE 0 END AS column, \
+                    CASE WHEN typeof(native.source_end_line)='integer' THEN native.source_end_line ELSE 0 END AS end_line, \
+                    CASE WHEN typeof(native.source_end_column)='integer' THEN native.source_end_column ELSE 0 END AS end_column, \
+                    typeof(native.{owner_column})='integer' AND typeof(native.{parent_column})='integer' \
+                    AND typeof(native.source_line)='integer' AND typeof(native.source_column)='integer' \
+                    AND typeof(native.source_end_line)='integer' AND typeof(native.source_end_column)='integer' AS valid \
+             FROM requested CROSS JOIN {table} AS native \
+             WHERE native.{parent_column}=requested.parent_id ORDER BY native.{owner_column}"
+        );
+        let mut query = sql_query(sql).into_boxed::<diesel::sqlite::Sqlite>();
+        for id in batch {
+            query = query.bind::<BigInt, _>(*id);
+        }
+        for row in query.load::<NativeExtentRow>(connection)? {
+            require_integer(row.valid, row.owner_id)?;
+            let extent = checked_extent(
+                location(row.line, row.column, row.owner_id)?,
+                location(row.end_line, row.end_column, row.owner_id)?,
+                row.owner_id,
+            )?;
+            if result
+                .insert(row.owner_id, (row.parent_id, extent))
+                .is_some()
+            {
+                return Err(NoIntroDatabaseQueryError::MismatchedOwner(row.owner_id));
+            }
+        }
+    }
+    Ok(result)
+}
+
+fn validate_parent_extents(
+    children: &BTreeMap<i64, (i64, XmlSourceExtent)>,
+    parents: &BTreeMap<i64, XmlSourceExtent>,
+) -> QueryResult<()> {
+    for (owner, (parent_id, extent)) in children {
+        let parent = parents
+            .get(parent_id)
+            .ok_or(NoIntroDatabaseQueryError::MismatchedOwner(*owner))?;
+        if !contains_extent(*parent, *extent) {
+            return Err(NoIntroDatabaseQueryError::InvalidPositions(*owner));
+        }
+    }
+    Ok(())
+}
+
+fn take_child_extent(
+    extents: &mut BTreeMap<i64, (i64, XmlSourceExtent)>,
+    owner: i64,
+    start: RecordLocation,
+    opening_end: Option<RecordLocation>,
+) -> QueryResult<XmlSourceExtent> {
+    let (_, extent) = extents
+        .remove(&owner)
+        .ok_or(NoIntroDatabaseQueryError::MismatchedOwner(owner))?;
+    if extent.start() != start
+        || opening_end.is_some_and(|point| !extent_contains_point_inclusive_end(extent, point))
+    {
+        return Err(NoIntroDatabaseQueryError::InvalidPositions(owner));
+    }
+    Ok(extent)
+}
+
+fn extent_contains_point_inclusive_end(extent: XmlSourceExtent, point: RecordLocation) -> bool {
+    let start = extent.start();
+    let end = extent.end();
+    point.line > 0
+        && point.column > 0
+        && (point.line, point.column) > (start.line, start.column)
+        && (point.line, point.column) <= (end.line, end.column)
+}
+
+fn ensure_consumed_extents(extents: &BTreeMap<i64, (i64, XmlSourceExtent)>) -> QueryResult<()> {
+    if let Some(owner) = extents.keys().next() {
+        return Err(NoIntroDatabaseQueryError::MismatchedOwner(*owner));
+    }
+    Ok(())
+}
 
 // Every declaration uses the same checked presence/position conversion. The
 // explicit field-to-enum pairs remain visible beside each native row shape.
@@ -52,6 +170,10 @@ struct ChildRow {
     line: i64,
     #[diesel(sql_type = BigInt)]
     column: i64,
+    #[diesel(sql_type = BigInt)]
+    end_line: i64,
+    #[diesel(sql_type = BigInt)]
+    end_column: i64,
     #[diesel(sql_type = BigInt)]
     valid: i64,
 }
@@ -400,6 +522,7 @@ pub(super) fn validate_selected_file_owners(
 pub(super) fn hydrate(
     connection: &mut SqliteConnection,
     mut games: Vec<NoIntroDatabaseGame>,
+    game_extents: &BTreeMap<i64, XmlSourceExtent>,
 ) -> QueryResult<Vec<NoIntroDatabaseGame>> {
     let indexes = games
         .iter()
@@ -411,39 +534,30 @@ pub(super) fn hydrate(
         validate_selected_file_owners(connection, ids)?;
         rows.extend(load_child_rows(connection, ids)?);
     }
-    let mut orders = BTreeMap::new();
+    validate_sibling_rows(&rows)?;
     for row in &rows {
-        require_integer(row.valid, row.child_id)?;
-        if row.child_id <= 0 || row.source_order < 0 {
-            return Err(NoIntroDatabaseQueryError::InvalidMetadata(row.child_id));
-        }
         if !indexes.contains_key(&row.game_id) {
             return Err(NoIntroDatabaseQueryError::MismatchedOwner(row.child_id));
         }
-        advance_order(
-            row.source_order,
-            orders.entry(row.game_id).or_insert(0),
-            row.game_id,
-        )?;
     }
     let archive_ids = rows
         .iter()
         .filter(|row| row.child_kind == "archive")
         .map(|row| row.child_id)
         .collect::<Vec<_>>();
-    let mut archives = load_archives(connection, &archive_ids)?;
+    let mut archives = load_archives(connection, &archive_ids, game_extents)?;
     let dump_ids = rows
         .iter()
         .filter(|row| row.child_kind == "dump_source")
         .map(|row| row.child_id)
         .collect::<Vec<_>>();
-    let mut dump_sources = load_dump_sources(connection, &dump_ids)?;
+    let mut dump_sources = load_dump_sources(connection, &dump_ids, game_extents)?;
     let release_ids = rows
         .iter()
         .filter(|row| row.child_kind == "release")
         .map(|row| row.child_id)
         .collect::<Vec<_>>();
-    let mut releases = load_releases(connection, &release_ids)?;
+    let mut releases = load_releases(connection, &release_ids, game_extents)?;
     let mut file_orders = BTreeMap::new();
     for row in rows {
         let game_index = *indexes
@@ -593,7 +707,16 @@ fn history_orders<Field>(
 fn load_archives(
     connection: &mut SqliteConnection,
     ids: &[i64],
+    game_extents: &BTreeMap<i64, XmlSourceExtent>,
 ) -> QueryResult<BTreeMap<i64, NoIntroDatabaseArchive>> {
+    let mut extents = native_extents(
+        connection,
+        "no_intro_archive_descriptions",
+        "archive_id",
+        "set_id",
+        &game_extents.keys().copied().collect::<Vec<_>>(),
+    )?;
+    validate_parent_extents(&extents, game_extents)?;
     let mut result = BTreeMap::new();
     for batch in ids.chunks(400) {
         let mut query = sql_query(super::queries::archive_rows(batch.len()))
@@ -618,7 +741,10 @@ fn load_archives(
                 .remove(&row.archive_id)
                 .ok_or(NoIntroDatabaseQueryError::InvalidPositions(row.archive_id))?;
             let archive_id = row.archive_id;
-            let record = archive(row, position)?;
+            let (_, extent) = extents
+                .remove(&archive_id)
+                .ok_or(NoIntroDatabaseQueryError::MismatchedOwner(archive_id))?;
+            let record = archive(row, position, extent)?;
             if result.insert(archive_id, record).is_some() {
                 return Err(NoIntroDatabaseQueryError::MismatchedOwner(archive_id));
             }
@@ -697,6 +823,7 @@ fn archive_clone(
 fn archive(
     row: ArchiveRow,
     positions: positions::OwnerPositions<NoIntroDatabaseArchiveField>,
+    extent: XmlSourceExtent,
 ) -> QueryResult<NoIntroDatabaseArchive> {
     let position = &positions;
     if row.set_id <= 0 {
@@ -716,6 +843,9 @@ fn archive(
     positions::validate_presence(position, &expected, row.archive_id)?;
     let clone = archive_clone(row.clone_marker, row.clone_target, position, row.archive_id)?;
     let location = location(row.line, row.column, row.archive_id)?;
+    if extent.start() != location {
+        return Err(NoIntroDatabaseQueryError::InvalidPositions(row.archive_id));
+    }
     let description = declared_record!(ArchiveDescription, row, position, row.archive_id, NoIntroDatabaseArchiveField;
         additional => Additional,
         adult => Adult,
@@ -750,7 +880,7 @@ fn archive(
         mergeof => MergeOf;
         source_order: usize::try_from(row.source_order)
             .map_err(|_| NoIntroDatabaseQueryError::InvalidMetadata(row.archive_id))?,
-        location: location,
+        extent: extent,
         clone: clone
     );
     Ok(NoIntroDatabaseArchive {
@@ -767,15 +897,22 @@ fn archive(
 fn load_dump_sources(
     connection: &mut SqliteConnection,
     ids: &[i64],
+    game_extents: &BTreeMap<i64, XmlSourceExtent>,
 ) -> QueryResult<BTreeMap<i64, NoIntroDatabaseDumpSource>> {
-    let base_rows = load_dump_source_rows(connection, ids)?;
-    let mut details = load_dump_details(connection, ids)?;
-    let mut serials = load_dump_serials(connection, ids)?;
+    validate_history_siblings(connection, ids, super::queries::SiblingParent::DumpSource)?;
+    let base_rows = load_dump_source_rows(connection, ids, game_extents)?;
+    let parent_extents = base_rows
+        .iter()
+        .map(|(id, base)| (*id, base.extent))
+        .collect::<BTreeMap<_, _>>();
+    let mut details = load_dump_details(connection, ids, &parent_extents)?;
+    let mut serials = load_dump_serials(connection, ids, &parent_extents)?;
     let mut files = load_file_refs(
         connection,
         ids,
         super::queries::FileOwner::DumpSource,
         NoIntroDatabaseDumpFileField::from_code,
+        &parent_extents,
     )?;
     let mut result = BTreeMap::new();
     for id in ids {
@@ -822,13 +959,23 @@ struct OwnerRow {
 struct OwnerBase {
     source_order: i64,
     location: RecordLocation,
+    extent: XmlSourceExtent,
 }
 
 fn load_dump_source_rows(
     connection: &mut SqliteConnection,
     ids: &[i64],
+    game_extents: &BTreeMap<i64, XmlSourceExtent>,
 ) -> QueryResult<BTreeMap<i64, OwnerBase>> {
     let mut result = BTreeMap::new();
+    let mut extents = native_extents(
+        connection,
+        "no_intro_dump_sources",
+        "dump_source_id",
+        "set_id",
+        &game_extents.keys().copied().collect::<Vec<_>>(),
+    )?;
+    validate_parent_extents(&extents, game_extents)?;
     for batch in ids.chunks(400) {
         if batch.is_empty() {
             continue;
@@ -849,13 +996,21 @@ fn load_dump_source_rows(
         }
         for row in query.load::<OwnerRow>(connection)? {
             require_integer(row.valid, row.owner_id)?;
+            let (_, extent) = extents
+                .remove(&row.owner_id)
+                .ok_or(NoIntroDatabaseQueryError::MismatchedOwner(row.owner_id))?;
+            let record_location = location(row.line, row.column, row.owner_id)?;
+            if extent.start() != record_location {
+                return Err(NoIntroDatabaseQueryError::InvalidPositions(row.owner_id));
+            }
             if row.source_order < 0
                 || result
                     .insert(
                         row.owner_id,
                         OwnerBase {
                             source_order: row.source_order,
-                            location: location(row.line, row.column, row.owner_id)?,
+                            location: record_location,
+                            extent,
                         },
                     )
                     .is_some()
@@ -875,8 +1030,17 @@ fn load_file_refs<Field: Copy>(
     owner_ids: &[i64],
     owner: super::queries::FileOwner,
     decode: fn(i64) -> Option<Field>,
+    parent_extents: &BTreeMap<i64, XmlSourceExtent>,
 ) -> QueryResult<BTreeMap<i64, Vec<NoIntroDatabaseFileReference<Field>>>> {
     let shape = owner.shape();
+    let mut extents = native_extents(
+        connection,
+        shape.table,
+        "occurrence_id",
+        shape.owner_column,
+        owner_ids,
+    )?;
+    validate_parent_extents(&extents, parent_extents)?;
     let mut result = owner_ids
         .iter()
         .copied()
@@ -934,6 +1098,14 @@ fn load_file_refs<Field: Copy>(
                 .collect::<Vec<_>>();
             positions::validate_presence(positions, &expected, row.occurrence_id)?;
             let location = positions::location(row.line, row.column, row.occurrence_id)?;
+            let (_, extent) = extents.remove(&row.occurrence_id).ok_or(
+                NoIntroDatabaseQueryError::MismatchedOwner(row.occurrence_id),
+            )?;
+            if extent.start() != location {
+                return Err(NoIntroDatabaseQueryError::InvalidPositions(
+                    row.occurrence_id,
+                ));
+            }
             let occurrence_id = crate::domain::OccurrenceId::try_from(row.occurrence_id)?;
             let reference = NoIntroDatabaseFileReference {
                 occurrence_id,
@@ -953,12 +1125,14 @@ fn load_file_refs<Field: Copy>(
     for references in result.values_mut() {
         references.sort_by_key(|reference| reference.source_order);
     }
+    ensure_consumed_extents(&extents)?;
     Ok(result)
 }
 
 fn load_dump_details(
     connection: &mut SqliteConnection,
     ids: &[i64],
+    parent_extents: &BTreeMap<i64, XmlSourceExtent>,
 ) -> QueryResult<
     BTreeMap<
         i64,
@@ -968,6 +1142,14 @@ fn load_dump_details(
         ),
     >,
 > {
+    let mut extents = native_extents(
+        connection,
+        "no_intro_dump_details",
+        "dump_source_id",
+        "dump_source_id",
+        ids,
+    )?;
+    validate_parent_extents(&extents, parent_extents)?;
     let mut rows = Vec::new();
     for batch in ids.chunks(400) {
         let select = "native.source_order, native.source_line AS line, native.source_column AS column, \
@@ -1002,9 +1184,8 @@ fn load_dump_details(
     let mut result = BTreeMap::new();
     for row in rows {
         require_integer(row.valid, row.owner_id)?;
-        if row.source_order < 0 {
-            return Err(NoIntroDatabaseQueryError::InvalidMetadata(row.owner_id));
-        }
+        let source_order = usize::try_from(row.source_order)
+            .map_err(|_| NoIntroDatabaseQueryError::InvalidMetadata(row.owner_id))?;
         let attribute_positions = positions_map
             .get(&row.owner_id)
             .ok_or(NoIntroDatabaseQueryError::InvalidPositions(row.owner_id))?;
@@ -1012,10 +1193,12 @@ fn load_dump_details(
         positions::validate_presence(attribute_positions, &expected, row.owner_id)?;
         let source_location = location(row.line, row.column, row.owner_id)?;
         let opening_end = location(row.opening_end_line, row.opening_end_column, row.owner_id)?;
-        if (opening_end.line, opening_end.column) <= (source_location.line, source_location.column)
-        {
-            return Err(NoIntroDatabaseQueryError::InvalidPositions(row.owner_id));
-        }
+        let extent = take_child_extent(
+            &mut extents,
+            row.owner_id,
+            source_location,
+            Some(opening_end),
+        )?;
         let details = declared_record!(SourceDetails, row, attribute_positions, row.owner_id, NoIntroDatabaseDumpDetailsField;
             comment1 => Comment1,
             comment2 => Comment2,
@@ -1037,9 +1220,8 @@ fn load_dump_details(
             rominfo => RomInfo,
             section => Section,
             tool => Tool;
-            source_order: usize::try_from(row.source_order)
-                .map_err(|_| NoIntroDatabaseQueryError::InvalidMetadata(row.owner_id))?,
-            location: source_location,
+            source_order: source_order,
+            extent: extent,
             opening_end: opening_end
         );
         if result
@@ -1057,6 +1239,7 @@ fn load_dump_details(
             positions::validate_presence(positions, &[], *id)?;
         }
     }
+    ensure_consumed_extents(&extents)?;
     Ok(result)
 }
 
@@ -1088,6 +1271,7 @@ const fn dump_details_presence(row: &DumpDetailsRow) -> [bool; 20] {
 fn load_dump_serials(
     connection: &mut SqliteConnection,
     ids: &[i64],
+    parent_extents: &BTreeMap<i64, XmlSourceExtent>,
 ) -> QueryResult<
     BTreeMap<
         i64,
@@ -1097,6 +1281,14 @@ fn load_dump_serials(
         ),
     >,
 > {
+    let mut extents = native_extents(
+        connection,
+        "no_intro_dump_serials",
+        "dump_source_id",
+        "dump_source_id",
+        ids,
+    )?;
+    validate_parent_extents(&extents, parent_extents)?;
     let mut rows = Vec::new();
     for batch in ids.chunks(400) {
         let select = "native.source_order, native.source_line AS line, native.source_column AS column, \
@@ -1135,23 +1327,15 @@ fn load_dump_serials(
         let attribute_positions = positions_map
             .get(&row.owner_id)
             .ok_or(NoIntroDatabaseQueryError::InvalidPositions(row.owner_id))?;
-        let expected = [
-            row.box_barcode.is_some(),
-            row.box_serial.is_some(),
-            row.chip_serial.is_some(),
-            row.digital_serial1.is_some(),
-            row.digital_serial2.is_some(),
-            row.lockout_serial.is_some(),
-            row.media_serial1.is_some(),
-            row.media_serial2.is_some(),
-            row.media_serial3.is_some(),
-            row.mediastamp.is_some(),
-            row.pcb_serial.is_some(),
-            row.romchip_serial1.is_some(),
-            row.romchip_serial2.is_some(),
-            row.savechip_serial.is_some(),
-        ];
+        let expected = dump_serials_presence(&row);
         positions::validate_presence(attribute_positions, &expected, row.owner_id)?;
+        let (_, extent) = extents
+            .remove(&row.owner_id)
+            .ok_or(NoIntroDatabaseQueryError::MismatchedOwner(row.owner_id))?;
+        let record_location = location(row.line, row.column, row.owner_id)?;
+        if extent.start() != record_location {
+            return Err(NoIntroDatabaseQueryError::InvalidPositions(row.owner_id));
+        }
         let serials = declared_record!(SourceSerials, row, attribute_positions, row.owner_id, NoIntroDatabaseDumpSerialsField;
             box_barcode => BoxBarcode,
             box_serial => BoxSerial,
@@ -1169,7 +1353,7 @@ fn load_dump_serials(
             savechip_serial => SaveChipSerial;
             source_order: usize::try_from(row.source_order)
                 .map_err(|_| NoIntroDatabaseQueryError::InvalidMetadata(row.owner_id))?,
-            location: location(row.line, row.column, row.owner_id)?
+            extent: extent
         );
         if result
             .insert(row.owner_id, (serials, attribute_positions.clone()))
@@ -1186,21 +1370,48 @@ fn load_dump_serials(
             positions::validate_presence(positions, &[], *id)?;
         }
     }
+    ensure_consumed_extents(&extents)?;
     Ok(result)
+}
+
+const fn dump_serials_presence(row: &DumpSerialsRow) -> [bool; 14] {
+    [
+        row.box_barcode.is_some(),
+        row.box_serial.is_some(),
+        row.chip_serial.is_some(),
+        row.digital_serial1.is_some(),
+        row.digital_serial2.is_some(),
+        row.lockout_serial.is_some(),
+        row.media_serial1.is_some(),
+        row.media_serial2.is_some(),
+        row.media_serial3.is_some(),
+        row.mediastamp.is_some(),
+        row.pcb_serial.is_some(),
+        row.romchip_serial1.is_some(),
+        row.romchip_serial2.is_some(),
+        row.savechip_serial.is_some(),
+    ]
 }
 
 fn load_releases(
     connection: &mut SqliteConnection,
     ids: &[i64],
+    game_extents: &BTreeMap<i64, XmlSourceExtent>,
 ) -> QueryResult<BTreeMap<i64, NoIntroDatabaseRelease>> {
-    let bases = load_release_rows(connection, ids)?;
-    let mut details = load_release_details(connection, ids)?;
-    let mut serials = load_release_serials(connection, ids)?;
+    validate_history_siblings(connection, ids, super::queries::SiblingParent::Release)?;
+    let bases = load_release_rows(connection, ids, game_extents)?;
+    let parent_extents = bases
+        .iter()
+        .map(|(id, base)| (*id, base.extent))
+        .collect::<BTreeMap<_, _>>();
+    let mut details = load_release_details(connection, ids, &parent_extents)?;
+    let mut serials = load_release_serials(connection, ids, &parent_extents)?;
     let mut files = load_file_refs(
         connection,
         ids,
         super::queries::FileOwner::Release,
         NoIntroDatabaseReleaseFileField::from_code,
+        &parent_extents,
     )?;
     let mut result = BTreeMap::new();
     for id in ids {
@@ -1231,8 +1442,17 @@ fn load_releases(
 fn load_release_rows(
     connection: &mut SqliteConnection,
     ids: &[i64],
+    game_extents: &BTreeMap<i64, XmlSourceExtent>,
 ) -> QueryResult<BTreeMap<i64, OwnerBase>> {
     let mut result = BTreeMap::new();
+    let mut extents = native_extents(
+        connection,
+        "no_intro_releases",
+        "release_id",
+        "set_id",
+        &game_extents.keys().copied().collect::<Vec<_>>(),
+    )?;
+    validate_parent_extents(&extents, game_extents)?;
     for batch in ids.chunks(400) {
         if batch.is_empty() {
             continue;
@@ -1253,13 +1473,21 @@ fn load_release_rows(
         }
         for row in query.load::<OwnerRow>(connection)? {
             require_integer(row.valid, row.owner_id)?;
+            let (_, extent) = extents
+                .remove(&row.owner_id)
+                .ok_or(NoIntroDatabaseQueryError::MismatchedOwner(row.owner_id))?;
+            let record_location = location(row.line, row.column, row.owner_id)?;
+            if extent.start() != record_location {
+                return Err(NoIntroDatabaseQueryError::InvalidPositions(row.owner_id));
+            }
             if row.source_order < 0
                 || result
                     .insert(
                         row.owner_id,
                         OwnerBase {
                             source_order: row.source_order,
-                            location: location(row.line, row.column, row.owner_id)?,
+                            location: record_location,
+                            extent,
                         },
                     )
                     .is_some()
@@ -1277,7 +1505,16 @@ fn load_release_rows(
 fn load_release_details(
     connection: &mut SqliteConnection,
     ids: &[i64],
+    parent_extents: &BTreeMap<i64, XmlSourceExtent>,
 ) -> QueryResult<BTreeMap<i64, super::NoIntroDatabaseReleaseDetails>> {
+    let mut extents = native_extents(
+        connection,
+        "no_intro_release_details",
+        "release_id",
+        "release_id",
+        ids,
+    )?;
+    validate_parent_extents(&extents, parent_extents)?;
     let mut result = BTreeMap::new();
     for batch in ids.chunks(400) {
         if batch.is_empty() {
@@ -1318,7 +1555,15 @@ fn load_release_details(
                 .remove(&owner_id)
                 .ok_or(NoIntroDatabaseQueryError::InvalidPositions(owner_id))?;
             let hash_rows = hashes.remove(&owner_id).unwrap_or_default();
-            let details = release_details_from_row(row, attribute_positions, hash_rows)?;
+            let details = release_details_from_row(
+                row,
+                attribute_positions,
+                hash_rows,
+                extents
+                    .remove(&owner_id)
+                    .ok_or(NoIntroDatabaseQueryError::MismatchedOwner(owner_id))?
+                    .1,
+            )?;
             if result.insert(owner_id, details).is_some() {
                 return Err(NoIntroDatabaseQueryError::MismatchedOwner(owner_id));
             }
@@ -1330,6 +1575,7 @@ fn load_release_details(
             return Err(NoIntroDatabaseQueryError::InvalidMetadata(owner_id));
         }
     }
+    ensure_consumed_extents(&extents)?;
     Ok(result)
 }
 
@@ -1337,6 +1583,7 @@ fn release_details_from_row(
     row: ReleaseDetailsRow,
     attribute_positions: positions::OwnerPositions<NoIntroDatabaseReleaseDetailsField>,
     mut hash_rows: BTreeMap<String, crate::storage::catalog_files::NoIntroDatabaseDigestValue>,
+    extent: XmlSourceExtent,
 ) -> QueryResult<super::NoIntroDatabaseReleaseDetails> {
     require_integer(row.valid, row.owner_id)?;
     if row.source_order < 0 {
@@ -1368,7 +1615,9 @@ fn release_details_from_row(
         .map_err(|_| NoIntroDatabaseQueryError::InvalidMetadata(row.owner_id))?;
     let source_location = location(row.line, row.column, row.owner_id)?;
     let opening_end = location(row.opening_end_line, row.opening_end_column, row.owner_id)?;
-    if (opening_end.line, opening_end.column) <= (source_location.line, source_location.column) {
+    if extent.start() != source_location
+        || !extent_contains_point_inclusive_end(extent, opening_end)
+    {
         return Err(NoIntroDatabaseQueryError::InvalidPositions(row.owner_id));
     }
     Ok(super::NoIntroDatabaseReleaseDetails {
@@ -1460,6 +1709,7 @@ fn load_nfo_hashes(
 fn load_release_serials(
     connection: &mut SqliteConnection,
     ids: &[i64],
+    parent_extents: &BTreeMap<i64, XmlSourceExtent>,
 ) -> QueryResult<
     BTreeMap<
         i64,
@@ -1469,6 +1719,14 @@ fn load_release_serials(
         ),
     >,
 > {
+    let mut extents = native_extents(
+        connection,
+        "no_intro_release_serials",
+        "release_id",
+        "release_id",
+        ids,
+    )?;
+    validate_parent_extents(&extents, parent_extents)?;
     let mut result = BTreeMap::new();
     for batch in ids.chunks(400) {
         if batch.is_empty() {
@@ -1503,7 +1761,11 @@ fn load_release_serials(
             let position = positions_map
                 .remove(&owner_id)
                 .ok_or(NoIntroDatabaseQueryError::InvalidPositions(owner_id))?;
-            let serials = release_serials_from_row(row, &position)?;
+            let extent = extents
+                .remove(&owner_id)
+                .ok_or(NoIntroDatabaseQueryError::MismatchedOwner(owner_id))?
+                .1;
+            let serials = release_serials_from_row(row, &position, extent)?;
             if result.insert(owner_id, (serials, position)).is_some() {
                 return Err(NoIntroDatabaseQueryError::MismatchedOwner(owner_id));
             }
@@ -1512,12 +1774,14 @@ fn load_release_serials(
             positions::validate_presence(&position, &[], owner_id)?;
         }
     }
+    ensure_consumed_extents(&extents)?;
     Ok(result)
 }
 
 fn release_serials_from_row(
     row: ReleaseSerialsRow,
     position: &positions::OwnerPositions<NoIntroDatabaseReleaseSerialsField>,
+    extent: XmlSourceExtent,
 ) -> QueryResult<ReleaseSerials> {
     require_integer(row.valid, row.owner_id)?;
     if row.source_order < 0 {
@@ -1535,10 +1799,14 @@ fn release_serials_from_row(
         ],
         row.owner_id,
     )?;
+    let record_location = location(row.line, row.column, row.owner_id)?;
+    if extent.start() != record_location {
+        return Err(NoIntroDatabaseQueryError::InvalidPositions(row.owner_id));
+    }
     Ok(ReleaseSerials {
         source_order: usize::try_from(row.source_order)
             .map_err(|_| NoIntroDatabaseQueryError::InvalidMetadata(row.owner_id))?,
-        location: location(row.line, row.column, row.owner_id)?,
+        extent,
         box_barcode: declared(
             row.box_barcode,
             position,
@@ -1601,6 +1869,41 @@ fn declared<Field: Copy + PartialEq>(
             })
         })
         .transpose()
+}
+
+fn validate_sibling_rows(rows: &[ChildRow]) -> QueryResult<()> {
+    let mut parents = BTreeMap::new();
+    for row in rows {
+        require_integer(row.valid, row.child_id)?;
+        if row.child_id <= 0 || row.game_id <= 0 {
+            return Err(NoIntroDatabaseQueryError::InvalidMetadata(row.child_id));
+        }
+        let (order, previous_end) = parents.entry(row.game_id).or_insert((0, None));
+        advance_order(row.source_order, order, row.child_id)?;
+        let extent = checked_extent(
+            location(row.line, row.column, row.child_id)?,
+            location(row.end_line, row.end_column, row.child_id)?,
+            row.child_id,
+        )?;
+        advance_extent(previous_end, extent, row.child_id)?;
+    }
+    Ok(())
+}
+
+fn validate_history_siblings(
+    connection: &mut SqliteConnection,
+    ids: &[i64],
+    parent: super::queries::SiblingParent,
+) -> QueryResult<()> {
+    for batch in ids.chunks(400) {
+        let mut query = sql_query(super::queries::sibling_rows(batch.len(), parent))
+            .into_boxed::<diesel::sqlite::Sqlite>();
+        for id in batch {
+            query = query.bind::<BigInt, _>(*id);
+        }
+        validate_sibling_rows(&query.load::<ChildRow>(connection)?)?;
+    }
+    Ok(())
 }
 
 fn load_child_rows(connection: &mut SqliteConnection, ids: &[i64]) -> QueryResult<Vec<ChildRow>> {

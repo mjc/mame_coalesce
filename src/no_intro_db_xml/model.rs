@@ -1,5 +1,52 @@
 use crate::{diagnostics::SourceExcerpt, logiqx::RecordLocation, xml_reader::DeclaredText};
 
+/// A nonempty, half-open XML extent in one-based Unicode-scalar coordinates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct XmlSourceExtent {
+    start: RecordLocation,
+    end: RecordLocation,
+}
+
+impl XmlSourceExtent {
+    /// Reject nonpositive coordinates, empty extents, and reversed boundaries.
+    #[must_use]
+    pub const fn new(start: RecordLocation, end: RecordLocation) -> Option<Self> {
+        if start.line > 0
+            && start.column > 0
+            && end.line > 0
+            && end.column > 0
+            && (start.line < end.line || (start.line == end.line && start.column < end.column))
+        {
+            Some(Self { start, end })
+        } else {
+            None
+        }
+    }
+
+    /// Position of the opening `<`, or (1,1) for a whole document envelope.
+    #[must_use]
+    pub const fn start(self) -> RecordLocation {
+        self.start
+    }
+
+    /// Position immediately after the element or whole document envelope.
+    #[must_use]
+    pub const fn end(self) -> RecordLocation {
+        self.end
+    }
+
+    /// Whether a scalar lies inside this extent, excluding its end boundary.
+    #[must_use]
+    pub const fn contains(self, point: RecordLocation) -> bool {
+        point.line > 0
+            && point.column > 0
+            && (point.line > self.start.line
+                || (point.line == self.start.line && point.column >= self.start.column))
+            && (point.line < self.end.line
+                || (point.line == self.end.line && point.column < self.end.column))
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 /// Selects an observed-compatible No-Intro database-export interpretation.
 pub enum NoIntroDatabaseMode {
@@ -51,6 +98,8 @@ pub struct NoIntroDatabaseDocument {
     pub mode: NoIntroDatabaseMode,
     /// Location of the `<datafile>` root.
     pub location: RecordLocation,
+    /// Complete imported envelope, including a sibling header and outer comments.
+    pub extent: XmlSourceExtent,
     /// Optional header with repeated fields retained in source order.
     pub header: Option<DatabaseHeader>,
 }
@@ -58,8 +107,8 @@ pub struct NoIntroDatabaseDocument {
 #[derive(Debug, PartialEq, Eq)]
 /// Optional export header and its ordered, repeatable text fields.
 pub struct DatabaseHeader {
-    /// Location of the `<header>` element.
-    pub location: RecordLocation,
+    /// Complete `<header>` element.
+    pub extent: XmlSourceExtent,
     /// Header children in source order, including repeated and empty values.
     pub fields: Vec<HeaderField>,
 }
@@ -84,8 +133,12 @@ pub enum HeaderFieldKind {
 pub struct HeaderField {
     /// Recognized literal element name.
     pub kind: HeaderFieldKind,
-    /// Decoded text, child ordinal, and element location.
-    pub value: DeclaredText,
+    /// Decoded text, including a present empty value.
+    pub value: String,
+    /// Raw ordinal among header children.
+    pub source_order: usize,
+    /// Complete scalar element, not a range in its normalized text.
+    pub extent: XmlSourceExtent,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -95,8 +148,8 @@ pub struct HeaderField {
 pub struct DatabaseGame {
     /// Zero-based position among game elements in the datafile.
     pub list_order: usize,
-    /// Location of the `<game>` element.
-    pub location: RecordLocation,
+    /// Complete `<game>` element.
+    pub extent: XmlSourceExtent,
     /// Required `name` attribute, including a present empty spelling.
     pub name: DeclaredText,
     /// Repeatable game-owned archive descriptions.
@@ -114,8 +167,8 @@ pub struct DatabaseGame {
 pub struct ArchiveDescription {
     /// Raw ordinal among the game's child elements.
     pub source_order: usize,
-    /// Location of the `<archive>` element.
-    pub location: RecordLocation,
+    /// Complete `<archive>` element.
+    pub extent: XmlSourceExtent,
     /// Optional source attribute `additional`.
     pub additional: Option<DeclaredText>,
     pub adult: Option<DeclaredText>,
@@ -185,8 +238,8 @@ impl SourceOrRelease {
 pub struct DumpSource {
     /// Raw ordinal among the game children.
     pub source_order: usize,
-    /// Location of the `<source>` element.
-    pub location: RecordLocation,
+    /// Complete `<source>` element.
+    pub extent: XmlSourceExtent,
     /// Optional singleton source details element; `Some` preserves an empty element.
     pub details: Option<SourceDetails>,
     /// Optional singleton source serials element; `Some` preserves an empty element.
@@ -200,7 +253,7 @@ pub struct DumpSource {
 /// Every optional field is the literal XML attribute; absence differs from empty text.
 pub struct SourceDetails {
     pub source_order: usize,
-    pub location: RecordLocation,
+    pub extent: XmlSourceExtent,
     /// Exclusive position immediately after the complete `<details>` opening tag.
     pub opening_end: RecordLocation,
     pub comment1: Option<DeclaredText>,
@@ -230,7 +283,7 @@ pub struct SourceDetails {
 /// fields map directly to the same-named attributes and preserve presence.
 pub struct SourceSerials {
     pub source_order: usize,
-    pub location: RecordLocation,
+    pub extent: XmlSourceExtent,
     pub box_barcode: Option<DeclaredText>,
     pub box_serial: Option<DeclaredText>,
     pub chip_serial: Option<DeclaredText>,
@@ -251,7 +304,7 @@ pub struct SourceSerials {
 /// One release-history owner with its distinct details, serials, and repeatable files.
 pub struct DatabaseRelease {
     pub source_order: usize,
-    pub location: RecordLocation,
+    pub extent: XmlSourceExtent,
     pub details: Option<ReleaseDetails>,
     pub serials: Option<ReleaseSerials>,
     pub files: Vec<ReleaseFile>,
@@ -262,7 +315,7 @@ pub struct DatabaseRelease {
 /// the same-named attributes, and the NFO CRC aliases remain separate.
 pub struct ReleaseDetails {
     pub source_order: usize,
-    pub location: RecordLocation,
+    pub extent: XmlSourceExtent,
     /// Exclusive position immediately after the complete `<details>` opening tag.
     pub opening_end: RecordLocation,
     pub archivename: Option<DeclaredText>,
@@ -289,7 +342,7 @@ pub struct ReleaseDetails {
 /// serials. Optional fields map directly to the same-named attributes.
 pub struct ReleaseSerials {
     pub source_order: usize,
-    pub location: RecordLocation,
+    pub extent: XmlSourceExtent,
     pub box_barcode: Option<DeclaredText>,
     pub box_serial: Option<DeclaredText>,
     pub media_serial1: Option<DeclaredText>,
@@ -303,7 +356,7 @@ pub struct ReleaseSerials {
 /// to same-named attributes; the origin digest and size remain separate facts.
 pub struct SourceFile {
     pub source_order: usize,
-    pub location: RecordLocation,
+    pub extent: XmlSourceExtent,
     pub bad: Option<DeclaredText>,
     pub crc32: Option<DatabaseDigest>,
     pub date: Option<DeclaredText>,
@@ -334,7 +387,7 @@ pub struct SourceFile {
 /// same-named attributes and remain distinct from source-file fields.
 pub struct ReleaseFile {
     pub source_order: usize,
-    pub location: RecordLocation,
+    pub extent: XmlSourceExtent,
     pub bad: Option<DeclaredText>,
     pub crc32: Option<DatabaseDigest>,
     pub extension: Option<DeclaredText>,

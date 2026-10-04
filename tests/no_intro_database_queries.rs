@@ -2,7 +2,10 @@
 
 use camino::Utf8PathBuf;
 use diesel::{
-    Connection, QueryableByName, RunQueryDsl, SqliteConnection, sql_query, sql_types::BigInt,
+    Connection, QueryableByName, RunQueryDsl, SqliteConnection,
+    connection::SimpleConnection,
+    sql_query,
+    sql_types::{BigInt, Text},
 };
 use mame_coalesce::{
     app::{self, CatalogDocumentFormat, CatalogImportRequest, CatalogImportStatus},
@@ -10,8 +13,9 @@ use mame_coalesce::{
         NoIntroDatabaseDigestValue, NoIntroDatabaseEvidenceScope, NoIntroDatabaseFilePayload,
         OccurrenceId, OccurrenceKind, occurrences_for_ids,
     },
+    catalog_no_intro_database::{self, NoIntroDatabasePageLimit},
     database::Database,
-    domain::{CatalogKey, CatalogScope, PublishingSourceKey},
+    domain::{CatalogKey, CatalogScope, PublishingSourceKey, SnapshotKey},
     no_intro_db_xml::NoIntroDatabaseMode,
 };
 
@@ -35,6 +39,164 @@ struct NativeOwnerRow {
     source_line: i64,
     #[diesel(sql_type = BigInt)]
     source_column: i64,
+}
+
+#[derive(QueryableByName)]
+struct TriggerDefinition {
+    #[diesel(sql_type = Text)]
+    name: String,
+    #[diesel(sql_type = Text)]
+    sql: String,
+}
+
+fn reject_corrupt_archive_extent(update: &str, key: &str) -> TestResult {
+    reject_corrupt_extent(
+        "<datafile><game name='g'><archive name='a'/><archive name='b'/></game></datafile>",
+        "no_intro_archive_descriptions",
+        update,
+        key,
+    )
+}
+
+fn reject_corrupt_extent(xml: &str, table: &str, update: &str, key: &str) -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let database_path = Utf8PathBuf::try_from(directory.path().join("catalog.sqlite"))?;
+    let document_path = Utf8PathBuf::try_from(directory.path().join("export.xml"))?;
+    std::fs::write(&document_path, xml)?;
+    let database = Database::open(&database_path)?;
+    let report = app::import_catalog(
+        &database,
+        &CatalogImportRequest {
+            document_path,
+            format: CatalogDocumentFormat::NoIntroDatabase(NoIntroDatabaseMode::ObservedCompatible),
+            source_key: PublishingSourceKey::new(key),
+            source_display_name: "Extent corruption witness".into(),
+            catalog_key: CatalogKey::new(key),
+            catalog_display_name: "Extent corruption witness".into(),
+            scope: CatalogScope::Complete,
+        },
+    )?;
+    assert_eq!(report.status, CatalogImportStatus::Succeeded);
+    let snapshot: SnapshotKey = report.snapshot_key.ok_or("missing published snapshot")?;
+    let mut connection = SqliteConnection::establish(database_path.as_str())?;
+    let triggers = sql_query(
+        "SELECT name, sql FROM sqlite_schema WHERE type='trigger' AND tbl_name=? ORDER BY name",
+    )
+    .bind::<Text, _>(table)
+    .load::<TriggerDefinition>(&mut connection)?;
+    assert!(!triggers.is_empty(), "native extent owner must be guarded");
+    connection.batch_execute("PRAGMA ignore_check_constraints=ON; PRAGMA foreign_keys=OFF;")?;
+    for trigger in &triggers {
+        connection.batch_execute(&format!("DROP TRIGGER \"{}\"", trigger.name))?;
+    }
+    let update_result = connection.batch_execute(update);
+    for trigger in &triggers {
+        connection.batch_execute(&trigger.sql)?;
+    }
+    connection.batch_execute("PRAGMA ignore_check_constraints=OFF; PRAGMA foreign_keys=ON;")?;
+    update_result?;
+
+    assert!(
+        catalog_no_intro_database::games_for_snapshot(
+            &database,
+            &snapshot,
+            None,
+            NoIntroDatabasePageLimit::new(1)?,
+        )
+        .is_err(),
+        "reader accepted corrupt extent: {update}"
+    );
+    Ok(())
+}
+
+#[test]
+fn native_extent_reader_checks_storage_classes_parentage_and_order() -> TestResult {
+    for (key, update) in [
+        (
+            "extent-fractional",
+            "UPDATE no_intro_archive_descriptions SET source_end_column=source_end_column + 0.5",
+        ),
+        (
+            "extent-text",
+            "UPDATE no_intro_archive_descriptions SET source_end_line='not-a-line'",
+        ),
+        (
+            "extent-blob",
+            "UPDATE no_intro_archive_descriptions SET source_end_column=x'02'",
+        ),
+        (
+            "extent-outside-parent",
+            "UPDATE no_intro_archive_descriptions SET source_end_line=(SELECT source_end_line FROM no_intro_database_games WHERE set_id=no_intro_archive_descriptions.set_id), source_end_column=(SELECT source_end_column + 1 FROM no_intro_database_games WHERE set_id=no_intro_archive_descriptions.set_id)",
+        ),
+        (
+            "extent-siblings-out-of-order",
+            "UPDATE no_intro_archive_descriptions SET source_end_line=(SELECT later.source_end_line FROM no_intro_archive_descriptions AS later WHERE later.set_id=no_intro_archive_descriptions.set_id AND later.source_order=1), source_end_column=(SELECT later.source_end_column FROM no_intro_archive_descriptions AS later WHERE later.set_id=no_intro_archive_descriptions.set_id AND later.source_order=1) WHERE source_order=0",
+        ),
+    ] {
+        reject_corrupt_archive_extent(update, key)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn sibling_extents_are_checked_across_mixed_native_families() -> TestResult {
+    let xml = "<datafile><header><author>A</author><version>V</version></header><game name='g'><archive/><source><details/><serials/><file/></source><release><details/><serials/><file/></release></game></datafile>";
+    for (table, later, parent_column, first_order) in [
+        (
+            "no_intro_archive_descriptions",
+            "no_intro_dump_sources",
+            "set_id",
+            0,
+        ),
+        ("no_intro_dump_sources", "no_intro_releases", "set_id", 1),
+        (
+            "no_intro_dump_details",
+            "no_intro_dump_serials",
+            "dump_source_id",
+            0,
+        ),
+        (
+            "no_intro_dump_serials",
+            "no_intro_dump_files",
+            "dump_source_id",
+            1,
+        ),
+        (
+            "no_intro_release_details",
+            "no_intro_release_serials",
+            "release_id",
+            0,
+        ),
+        (
+            "no_intro_release_serials",
+            "no_intro_release_files",
+            "release_id",
+            1,
+        ),
+        (
+            "no_intro_header_fields",
+            "no_intro_header_fields",
+            "snapshot_key",
+            0,
+        ),
+    ] {
+        let later_order = first_order + 1;
+        let update = format!(
+            "UPDATE {table} SET source_end_line=(SELECT later.source_end_line FROM {later} AS later WHERE later.{parent_column}={table}.{parent_column} AND later.source_order={later_order}), source_end_column=(SELECT later.source_end_column FROM {later} AS later WHERE later.{parent_column}={table}.{parent_column} AND later.source_order={later_order}) WHERE source_order={first_order}"
+        );
+        reject_corrupt_extent(xml, table, &update, table)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn a_game_page_rejects_overlap_with_its_lookahead_game() -> TestResult {
+    reject_corrupt_extent(
+        "<datafile><game name='a'/><game name='b'/></datafile>",
+        "no_intro_database_games",
+        "UPDATE no_intro_database_games SET source_end_line=(SELECT later.source_end_line FROM no_intro_database_games AS later JOIN catalog_sets AS sets ON sets.set_id=later.set_id WHERE sets.list_order=1), source_end_column=(SELECT later.source_end_column FROM no_intro_database_games AS later JOIN catalog_sets AS sets ON sets.set_id=later.set_id WHERE sets.list_order=1) WHERE set_id=(SELECT set_id FROM catalog_sets WHERE list_order=0)",
+        "game-overlap",
+    )
 }
 
 fn assert_source_payload(

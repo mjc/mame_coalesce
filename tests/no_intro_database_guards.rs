@@ -25,19 +25,24 @@ fn fresh_database(header_present: bool) -> TestResult<SqliteConnection> {
     )?;
     let header_present = i32::from(header_present);
     connection.batch_execute(&format!(
-        "INSERT INTO no_intro_exports(snapshot_key,envelope_kind,header_present,source_line,source_column)
-         VALUES('snapshot','single_datafile',{header_present},1,1);"
+        "INSERT INTO no_intro_exports(
+             snapshot_key,envelope_kind,header_present,source_line,source_column,
+             document_end_line,document_end_column)
+         VALUES('snapshot','single_datafile',{header_present},1,1,30,1);"
     ))?;
     connection.batch_execute(
         "INSERT INTO catalog_sets(set_id,set_group_id,source_element_kind,list_order,set_name,source_line,source_column)
              VALUES(1,1,'no_intro_database_game',0,'game-a',2,1),
-                   (2,1,'no_intro_database_game',1,'game-b',3,1);
-         INSERT INTO no_intro_database_games(set_id,name_source_order,name_source_line,name_source_column)
-             VALUES(1,0,2,1),(2,0,3,1);
-         INSERT INTO no_intro_dump_sources(dump_source_id,set_id,source_order,source_line,source_column)
-             VALUES(10,1,0,4,1);
-         INSERT INTO no_intro_releases(release_id,set_id,source_order,source_line,source_column)
-             VALUES(20,1,1,5,1);",
+                   (2,1,'no_intro_database_game',1,'game-b',20,1);
+         INSERT INTO no_intro_database_games(
+             set_id,name_source_order,name_source_line,name_source_column,source_end_line,source_end_column)
+             VALUES(1,0,2,1,15,1),(2,0,20,1,25,1);
+         INSERT INTO no_intro_dump_sources(
+             dump_source_id,set_id,source_order,source_line,source_column,source_end_line,source_end_column)
+             VALUES(10,1,0,4,1,9,1);
+         INSERT INTO no_intro_releases(
+             release_id,set_id,source_order,source_line,source_column,source_end_line,source_end_column)
+             VALUES(20,1,1,9,1,12,1);",
     )?;
     Ok(connection)
 }
@@ -66,8 +71,8 @@ fn add_source_file(connection: &mut SqliteConnection, claim_kind: &str) -> TestR
     diesel::sql_query(
         "INSERT INTO no_intro_dump_files(
              occurrence_id,claim_kind,evidence_provenance,dump_source_id,set_id,
-             source_order,source_line,source_column)
-         VALUES(100,?,'source_declared',10,1,0,6,1)",
+             source_order,source_line,source_column,source_end_line,source_end_column)
+         VALUES(100,?,'source_declared',10,1,0,6,1,7,1)",
     )
     .bind::<diesel::sql_types::Text, _>(claim_kind)
     .execute(connection)?;
@@ -78,8 +83,8 @@ fn add_release_file(connection: &mut SqliteConnection, claim_kind: &str) -> Test
     diesel::sql_query(
         "INSERT INTO no_intro_release_files(
              occurrence_id,claim_kind,evidence_scope,evidence_provenance,release_id,set_id,
-             source_order,source_line,source_column)
-         VALUES(102,?,'unknown','source_declared',20,1,0,6,1)",
+             source_order,source_line,source_column,source_end_line,source_end_column)
+         VALUES(102,?,'unknown','source_declared',20,1,0,10,1,11,1)",
     )
     .bind::<diesel::sql_types::Text, _>(claim_kind)
     .execute(connection)?;
@@ -88,10 +93,11 @@ fn add_release_file(connection: &mut SqliteConnection, claim_kind: &str) -> Test
 
 fn add_archive_and_clone_identity(connection: &mut SqliteConnection) -> TestResult {
     connection.batch_execute(
-        "INSERT INTO no_intro_archive_descriptions(archive_id,set_id,source_order,source_line,source_column)
-             VALUES(30,1,2,7,1);
+        "INSERT INTO no_intro_archive_descriptions(
+             archive_id,set_id,source_order,source_line,source_column,source_end_line,source_end_column)
+             VALUES(30,1,2,12,1,14,1);
          INSERT INTO no_intro_archive_field_positions(archive_id,field_kind,source_order,source_line,source_column)
-             VALUES(30,30,0,7,2);
+             VALUES(30,30,0,12,2);
          INSERT INTO catalog_relationships(relationship_id,assertion_key,origin,snapshot_key)
              VALUES(40,'clone-assertion','source','snapshot');
          INSERT INTO reported_catalog_relationships(relationship_id,source_reference_kind)
@@ -157,13 +163,15 @@ fn direct_sql_accepts_the_distinct_release_file_owner() -> TestResult {
 fn direct_sql_rejects_an_unknown_header_field_code() -> TestResult {
     let mut connection = fresh_database(true)?;
     connection.batch_execute(
-        "INSERT INTO no_intro_export_headers(snapshot_key,source_line,source_column)
-             VALUES('snapshot',1,12);",
+        "INSERT INTO no_intro_export_headers(
+             snapshot_key,source_line,source_column,source_end_line,source_end_column)
+             VALUES('snapshot',1,12,2,1);",
     )?;
 
     let result = connection.batch_execute(
-        "INSERT INTO no_intro_header_fields(snapshot_key,source_order,field_kind,value,source_line,source_column)
-             VALUES('snapshot',0,5,'unexpected',1,13);",
+        "INSERT INTO no_intro_header_fields(
+             snapshot_key,source_order,field_kind,value,source_line,source_column,source_end_line,source_end_column)
+             VALUES('snapshot',0,5,'unexpected',1,13,1,14);",
     );
     assert!(
         result.is_err(),
@@ -212,10 +220,11 @@ fn archive_references_reject_wrong_owner_field_and_snapshot_even_without_foreign
     }
     connection.batch_execute("INSERT INTO no_intro_archive_clone_links(archive_id,declared_target_number,relationship_id) VALUES(30,'0007',40)")?;
     connection.batch_execute(
-        "INSERT INTO no_intro_archive_descriptions(archive_id,set_id,source_order,source_line,source_column)
-             VALUES(31,2,0,8,1);
+        "INSERT INTO no_intro_archive_descriptions(
+             archive_id,set_id,source_order,source_line,source_column,source_end_line,source_end_column)
+             VALUES(31,2,0,21,1,22,1);
          INSERT INTO no_intro_archive_field_positions(archive_id,field_kind,source_order,source_line,source_column)
-             VALUES(31,30,0,8,2),(31,31,1,8,3);
+             VALUES(31,30,0,21,2),(31,31,1,21,3);
          INSERT INTO catalog_relationships(relationship_id,assertion_key,origin,snapshot_key)
              VALUES(41,'merge-assertion','source','snapshot');
          INSERT INTO reported_catalog_relationships(relationship_id,source_reference_kind)
@@ -241,8 +250,9 @@ fn archive_references_reject_wrong_owner_field_and_snapshot_even_without_foreign
 fn empty_header_element_keeps_its_own_location_and_publishes() -> TestResult {
     let mut connection = fresh_database(true)?;
     connection.batch_execute(
-        "INSERT INTO no_intro_export_headers(snapshot_key,source_line,source_column)
-             VALUES('snapshot',1,12);
+        "INSERT INTO no_intro_export_headers(
+             snapshot_key,source_line,source_column,source_end_line,source_end_column)
+             VALUES('snapshot',1,12,2,1);
          INSERT INTO no_intro_database_parse_counts(
              snapshot_key,game_count,archive_count,dump_source_count,dump_details_count,
              dump_serials_count,dump_file_count,release_count,release_details_count,
@@ -260,8 +270,9 @@ fn empty_header_element_keeps_its_own_location_and_publishes() -> TestResult {
 fn absent_header_rejects_a_header_owner_row() -> TestResult {
     let mut connection = fresh_database(false)?;
     let result = connection.batch_execute(
-        "INSERT INTO no_intro_export_headers(snapshot_key,source_line,source_column)
-             VALUES('snapshot',1,12);",
+        "INSERT INTO no_intro_export_headers(
+             snapshot_key,source_line,source_column,source_end_line,source_end_column)
+             VALUES('snapshot',1,12,2,1);",
     );
     assert!(
         result.is_err(),
@@ -274,10 +285,12 @@ fn absent_header_rejects_a_header_owner_row() -> TestResult {
 fn publication_rejects_a_gap_in_header_field_order() -> TestResult {
     let mut connection = fresh_database(true)?;
     connection.batch_execute(
-        "INSERT INTO no_intro_export_headers(snapshot_key,source_line,source_column)
-             VALUES('snapshot',1,12);
-         INSERT INTO no_intro_header_fields(snapshot_key,source_order,field_kind,value,source_line,source_column)
-             VALUES('snapshot',0,0,'author',1,13),('snapshot',2,1,'piracy',1,14);
+        "INSERT INTO no_intro_export_headers(
+             snapshot_key,source_line,source_column,source_end_line,source_end_column)
+             VALUES('snapshot',1,12,2,1);
+         INSERT INTO no_intro_header_fields(
+             snapshot_key,source_order,field_kind,value,source_line,source_column,source_end_line,source_end_column)
+             VALUES('snapshot',0,0,'author',1,13,1,14),('snapshot',2,1,'piracy',1,14,1,15);
          INSERT INTO no_intro_database_parse_counts(
              snapshot_key,game_count,archive_count,dump_source_count,dump_details_count,
              dump_serials_count,dump_file_count,release_count,release_details_count,
@@ -303,8 +316,8 @@ fn direct_sql_rejects_a_file_attached_to_another_games_source() -> TestResult {
     let result = diesel::sql_query(
         "INSERT INTO no_intro_dump_files(
              occurrence_id,claim_kind,evidence_scope,evidence_provenance,dump_source_id,set_id,
-             source_order,source_line,source_column)
-         VALUES(100,'no_intro_database_source_file','unknown','source_declared',10,2,0,6,1)",
+             source_order,source_line,source_column,source_end_line,source_end_column)
+         VALUES(100,'no_intro_database_source_file','unknown','source_declared',10,2,0,6,1,7,1)",
     )
     .execute(&mut connection);
     assert!(
@@ -334,8 +347,8 @@ fn direct_sql_rejects_replace_on_an_existing_native_file() -> TestResult {
     let result = diesel::sql_query(
         "INSERT OR REPLACE INTO no_intro_dump_files(
              occurrence_id,claim_kind,evidence_scope,evidence_provenance,dump_source_id,set_id,
-             source_order,source_line,source_column)
-         VALUES(100,'no_intro_database_source_file','whole_file','source_declared',10,1,0,6,1)",
+             source_order,source_line,source_column,source_end_line,source_end_column)
+         VALUES(100,'no_intro_database_source_file','whole_file','source_declared',10,1,0,6,1,7,1)",
     )
     .execute(&mut connection);
     assert!(
@@ -350,12 +363,12 @@ fn archive_primary_key_collision_cannot_replace_another_games_owner() -> TestRes
     let mut connection = fresh_database(false)?;
     add_archive_and_clone_identity(&mut connection)?;
     connection.batch_execute("PRAGMA foreign_keys=OFF; PRAGMA recursive_triggers=OFF")?;
-    let replacement = connection.batch_execute("INSERT OR REPLACE INTO no_intro_archive_descriptions(archive_id,set_id,source_order,source_line,source_column) VALUES(30,2,0,8,1)");
+    let replacement = connection.batch_execute("INSERT OR REPLACE INTO no_intro_archive_descriptions(archive_id,set_id,source_order,source_line,source_column,source_end_line,source_end_column) VALUES(30,2,0,21,1,22,1)");
     assert!(
         replacement.is_err(),
         "archive PK collisions cannot bypass owner immutability"
     );
-    connection.batch_execute("INSERT INTO no_intro_archive_descriptions(archive_id,set_id,source_order,source_line,source_column) VALUES(31,2,1,8,1)")?;
+    connection.batch_execute("INSERT INTO no_intro_archive_descriptions(archive_id,set_id,source_order,source_line,source_column,source_end_line,source_end_column) VALUES(31,2,1,22,1,23,1)")?;
     Ok(())
 }
 

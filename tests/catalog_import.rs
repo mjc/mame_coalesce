@@ -2869,7 +2869,7 @@ fn failed_late_mame_eof_does_not_publish_streamed_records() -> Result<(), Box<dy
         );
     }
     let run_diagnostic = sql_query(
-        "SELECT diagnostic AS value FROM import_runs WHERE run_key = ? AND status = 'failed'",
+        "SELECT d.message AS value FROM import_diagnostics d JOIN import_runs r USING(run_key) WHERE r.run_key = ? AND r.status = 'failed' ORDER BY d.diagnostic_order LIMIT 1",
     )
     .bind::<Text, _>(failed.run_key.to_string())
     .get_result::<NullableTextRow>(&mut connection)?;
@@ -5988,7 +5988,7 @@ fn malformed_record_creates_failed_run_without_hiding_prior_snapshot()
             .to_string()
     );
     let diagnostic =
-        sql_query("SELECT diagnostic AS value FROM import_runs WHERE status = 'failed'")
+        sql_query("SELECT d.message AS value FROM import_diagnostics d JOIN import_runs r USING(run_key) WHERE r.status = 'failed' ORDER BY d.diagnostic_order LIMIT 1")
             .get_result::<NullableTextRow>(&mut connection)?;
     assert!(
         diagnostic.value.is_some_and(|value| {
