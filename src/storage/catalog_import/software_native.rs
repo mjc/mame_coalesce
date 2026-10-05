@@ -15,8 +15,9 @@ use diesel::{
 use crate::{
     domain::{CatalogSetId, SnapshotKey},
     mame_softwarelist::{
-        AreaKind, LoadInstruction, SoftwareArea, SoftwareComponent, SoftwareDisk, SoftwareItem,
-        SoftwareList, SoftwareListCatalog, SoftwarePart, SoftwareRom, SoftwareTextPosition,
+        AreaKind, LoadInstruction, SoftwareArea, SoftwareComponent, SoftwareDisk,
+        SoftwareDocumentHeader, SoftwareItem, SoftwareListHeader, SoftwareListMetadata,
+        SoftwarePart, SoftwareRom, SoftwareTextPosition,
     },
     storage::{
         catalog_content::{
@@ -74,40 +75,37 @@ fn finish_file_identity(
     Ok(())
 }
 
-/// Import software list records and their source occurrences into the native catalog model.
-pub(super) fn insert(
+/// Insert the immutable envelope owner from the source's opening element.
+pub(super) fn insert_document(
     conn: &mut SqliteConnection,
     snapshot_key: &SnapshotKey,
-    catalog: &SoftwareListCatalog,
+    header: &SoftwareDocumentHeader,
 ) -> crate::Result<()> {
     sql_query("INSERT INTO software_documents(snapshot_key, envelope_kind) VALUES (?, ?)")
         .bind::<Text, _>(snapshot_key.as_str())
-        .bind::<Text, _>(catalog.root_kind.as_str())
+        .bind::<Text, _>(header.root_kind.as_str())
         .execute(conn)?;
-    if catalog.root_kind.as_str() == "plural_lists" {
+    if header.root_kind == crate::mame_softwarelist::SoftwareListRootKind::PluralLists {
         let wrapper = sql_query("INSERT INTO software_wrapper_headers(snapshot_key, build) VALUES (?, ?) RETURNING wrapper_id")
             .bind::<Text, _>(snapshot_key.as_str())
-            .bind::<Nullable<Text>, _>(catalog.build.as_deref())
+            .bind::<Nullable<Text>, _>(header.build.as_deref())
             .get_result::<WrapperIdRow>(conn)?.wrapper_id;
         positions::insert(
             conn,
             PositionOwner::Wrapper(wrapper),
-            &catalog.attribute_positions,
+            &header.attribute_positions,
             SoftwareWrapperAttribute::code,
         )?;
-    }
-    for (list_order, list) in catalog.lists.iter().enumerate() {
-        insert_list(conn, snapshot_key, list, list_order)?;
     }
     Ok(())
 }
 
-fn insert_list(
+/// Allocate a list group before any item callbacks for that source list.
+pub(super) fn insert_list_group(
     conn: &mut SqliteConnection,
     snapshot_key: &SnapshotKey,
-    list: &SoftwareList,
     list_order: usize,
-) -> crate::Result<()> {
+) -> crate::Result<i64> {
     let namespace = sql_query(
         "INSERT INTO catalog_set_groups (snapshot_key, kind, list_order) \
          VALUES (?, 'software_list', ?) RETURNING set_group_id AS namespace_id",
@@ -116,27 +114,36 @@ fn insert_list(
     .bind::<BigInt, _>(checked_order(list_order, "software lists")?)
     .get_result::<NamespaceIdRow>(conn)?
     .namespace_id;
+    Ok(namespace)
+}
 
+/// Insert final list facts and positions once late notes are known.
+pub(super) fn insert_list_details(
+    conn: &mut SqliteConnection,
+    namespace: i64,
+    header: &SoftwareListHeader,
+    metadata: &SoftwareListMetadata,
+) -> crate::Result<()> {
     sql_query(
         "INSERT INTO software_lists \
          (namespace_id, source_order, name, description, notes, source_line, source_column) \
          VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
     .bind::<BigInt, _>(namespace)
-    .bind::<BigInt, _>(checked_order(list.source_order, "software lists")?)
-    .bind::<Text, _>(list.name.as_str())
-    .bind::<Nullable<Text>, _>(list.description.as_deref())
-    .bind::<Nullable<Text>, _>(list.notes.as_deref())
-    .bind::<BigInt, _>(list.location.line)
-    .bind::<BigInt, _>(list.location.column)
+    .bind::<BigInt, _>(checked_order(header.source_order, "software lists")?)
+    .bind::<Text, _>(header.name.as_str())
+    .bind::<Nullable<Text>, _>(header.description.as_deref())
+    .bind::<Nullable<Text>, _>(metadata.notes.as_deref())
+    .bind::<BigInt, _>(header.location.line)
+    .bind::<BigInt, _>(header.location.column)
     .execute(conn)?;
     positions::insert(
         conn,
         PositionOwner::List(namespace),
-        &list.attribute_positions,
+        &metadata.attribute_positions,
         SoftwareListAttribute::code,
     )?;
-    for position in &list.text_positions {
+    for position in &metadata.text_positions {
         sql_query(
             "INSERT INTO software_list_text_positions \
                    (namespace_id, field_kind, source_order, source_line, source_column) \
@@ -152,14 +159,10 @@ fn insert_list(
         .bind::<BigInt, _>(position.location.column)
         .execute(conn)?;
     }
-
-    for (item_order, item) in list.items.iter().enumerate() {
-        insert_item(conn, snapshot_key, namespace, item, item_order)?;
-    }
     Ok(())
 }
 
-fn insert_item(
+pub(super) fn insert_item(
     conn: &mut SqliteConnection,
     snapshot_key: &SnapshotKey,
     namespace_id: i64,

@@ -222,6 +222,69 @@ fn candidate(
     })
 }
 
+fn candidate_without_list_details(
+    connection: &mut SqliteConnection,
+    base_snapshot: &str,
+    suffix: &str,
+) -> TestResult<String> {
+    let base = sql_query(
+        "SELECT snapshot_key, catalog_key FROM snapshot_publications \
+         WHERE snapshot_key = ?",
+    )
+    .bind::<Text, _>(base_snapshot)
+    .get_result::<BaseSnapshotRow>(connection)?;
+    let catalog_key = format!("software-publication-guards-{suffix}");
+    let snapshot_key = format!("software-publication-guards-snapshot-{suffix}");
+    sql_query(
+        "INSERT INTO catalogs(catalog_key, source_key, display_name) \
+         SELECT ?, source_key, display_name FROM catalogs WHERE catalog_key = ?",
+    )
+    .bind::<Text, _>(&catalog_key)
+    .bind::<Text, _>(&base.catalog_key)
+    .execute(connection)?;
+    sql_query(
+        "INSERT INTO catalog_snapshots \
+         (snapshot_key, catalog_key, document_key, interpretation_key, acquisition_key, \
+          coverage_id, parent_snapshot_key) \
+         SELECT ?, ?, document_key, interpretation_key, acquisition_key, \
+                coverage_id, NULL FROM catalog_snapshots WHERE snapshot_key = ?",
+    )
+    .bind::<Text, _>(&snapshot_key)
+    .bind::<Text, _>(&catalog_key)
+    .bind::<Text, _>(&base.snapshot_key)
+    .execute(connection)?;
+    sql_query(
+        "INSERT INTO software_documents(snapshot_key, envelope_kind) VALUES (?, 'single_list')",
+    )
+    .bind::<Text, _>(&snapshot_key)
+    .execute(connection)?;
+    let group_id = sql_query(
+        "INSERT INTO catalog_set_groups(snapshot_key, kind, list_order) \
+         VALUES (?, 'software_list', 0) RETURNING set_group_id AS id",
+    )
+    .bind::<Text, _>(&snapshot_key)
+    .get_result::<IdRow>(connection)?
+    .id;
+    let record_id = sql_query(
+        "INSERT INTO catalog_sets \
+         (set_group_id, source_element_kind, list_order, set_name, source_line, source_column) \
+         VALUES (?, 'software_item', 0, 'game', 1, 1) RETURNING set_id AS id",
+    )
+    .bind::<BigInt, _>(group_id)
+    .get_result::<IdRow>(connection)?
+    .id;
+    sql_query(
+        "INSERT INTO software_items \
+         (record_id, source_order, supported, supported_specified, \
+          description, year, publisher, notes) \
+         VALUES (?, 0, 'yes', 0, 'Game', '2000', 'Test', NULL)",
+    )
+    .bind::<BigInt, _>(record_id)
+    .execute(connection)?;
+    seed_item_positions(connection, record_id, None)?;
+    Ok(snapshot_key)
+}
+
 fn seed_item_positions(
     connection: &mut SqliteConnection,
     record_id: i64,
@@ -884,6 +947,27 @@ fn publication_requires_native_item_and_scalar_positions_with_foreign_keys_disab
         )?;
         publish(&mut connection, &valid.snapshot_key)?;
     }
+    Ok(())
+}
+
+#[test]
+fn publication_rejects_a_software_list_group_without_final_details() -> TestResult {
+    let seed = seed()?;
+    let mut connection = connect(&seed, false)?;
+    let snapshot_key = candidate_without_list_details(
+        &mut connection,
+        &seed.snapshot_key,
+        "missing-list-details",
+    )?;
+
+    let Err(error) = publish(&mut connection, &snapshot_key) else {
+        return Err("publication accepted a software-list group with no final details".into());
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("software list snapshot is incomplete")
+    );
     Ok(())
 }
 

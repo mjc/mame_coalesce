@@ -4,6 +4,35 @@ pub(super) const TITLE_INFO: &str = "SELECT native.record_id AS owner_id, native
 
 pub(super) const TITLE_SHARED_FEATURES: &str = "SELECT native.record_id AS owner_id, native.value_order AS row_order, native.source_order, native.name, native.value, native.source_line AS line, native.source_column AS column FROM temp.catalog_software_requested_owners AS requested CROSS JOIN software_item_shared_features AS native WHERE native.record_id = requested.owner_id ORDER BY native.record_id, native.value_order";
 
+// Inspect every occurrence for the selected titles, including foreign claim kinds.
+// Subtypes join by occurrence ID alone so a second, wrongly owned subtype remains
+// visible. LIMIT bounds returned errors, not the number of validated children.
+pub(super) const INVALID_OCCURRENCE_OWNER: &str = "
+SELECT occurrence.occurrence_id
+FROM temp.catalog_software_requested_owners AS requested
+CROSS JOIN asset_occurrences AS occurrence
+LEFT JOIN software_rom_entries AS rom ON rom.occurrence_id = occurrence.occurrence_id
+LEFT JOIN software_disk_entries AS disk ON disk.occurrence_id = occurrence.occurrence_id
+LEFT JOIN software_areas AS area ON area.area_id = COALESCE(rom.area_id, disk.area_id)
+LEFT JOIN software_parts AS part ON part.part_id = area.part_id
+LEFT JOIN software_data_areas AS data_area ON data_area.area_id = area.area_id
+LEFT JOIN software_disk_areas AS disk_area ON disk_area.area_id = area.area_id
+WHERE occurrence.record_id = requested.owner_id AND (
+    area.record_id IS NOT requested.owner_id
+    OR part.record_id IS NOT requested.owner_id
+    OR NOT (
+        (occurrence.claim_kind IN ('software_rom_entry', 'software_rom_operation')
+         AND rom.occurrence_id IS NOT NULL AND disk.occurrence_id IS NULL
+         AND rom.record_id IS requested.owner_id AND area.area_kind IS 'data'
+         AND data_area.area_id IS area.area_id AND disk_area.area_id IS NULL)
+        OR (occurrence.claim_kind = 'software_disk_entry'
+            AND disk.occurrence_id IS NOT NULL AND rom.occurrence_id IS NULL
+            AND disk.record_id IS requested.owner_id AND area.area_kind IS 'disk'
+            AND disk_area.area_id IS area.area_id AND data_area.area_id IS NULL)
+    )
+)
+LIMIT 1";
+
 pub(super) const NEXT_LIST_PAGE: &str = "SELECT groups.set_group_id AS id, lists.namespace_id AS native_id, lists.name, lists.description, lists.notes, groups.list_order AS order_value, lists.source_order, lists.source_line AS line, lists.source_column AS column, 1 AS group_snapshot_ok, groups.kind AS group_kind FROM catalog_set_groups AS groups LEFT JOIN software_lists AS lists ON lists.namespace_id = groups.set_group_id WHERE groups.snapshot_key = ? AND groups.kind = 'software_list' AND (groups.list_order, groups.set_group_id) > (?, ?) ORDER BY groups.list_order, groups.set_group_id LIMIT ?";
 
 pub(super) const FIRST_LIST_PAGE: &str = "SELECT groups.set_group_id AS id, lists.namespace_id AS native_id, lists.name, lists.description, lists.notes, groups.list_order AS order_value, lists.source_order, lists.source_line AS line, lists.source_column AS column, 1 AS group_snapshot_ok, groups.kind AS group_kind FROM catalog_set_groups AS groups LEFT JOIN software_lists AS lists ON lists.namespace_id = groups.set_group_id WHERE groups.snapshot_key = ? AND groups.kind = 'software_list' ORDER BY groups.list_order, groups.set_group_id LIMIT ?";

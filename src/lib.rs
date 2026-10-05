@@ -11,7 +11,7 @@ pub mod hashes;
 pub mod logiqx;
 pub mod machine_dependencies;
 pub mod mame;
-pub(crate) mod mame_softwarelist;
+pub mod mame_softwarelist;
 pub mod mount;
 pub mod no_intro_dat_xml;
 pub mod no_intro_db_xml;

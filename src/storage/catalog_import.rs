@@ -11,7 +11,7 @@ use crate::{
     },
     logiqx::{DocumentMetadata, Game, LocatedGame, ValidatedLogiqx},
     mame::{self, MameRecord, ValidatedMame},
-    mame_softwarelist::SoftwareListCatalog,
+    mame_softwarelist,
     no_intro_pc_xml::Catalog as NoIntroCatalog,
     storage::{
         catalog_content::{
@@ -103,7 +103,6 @@ struct CatalogIdentityRow {
 
 struct SnapshotData {
     sets: Vec<SnapshotSet>,
-    software_lists: Option<SoftwareListCatalog>,
     cmp_header_facts: Option<crate::clrmamepro::Header>,
     cmp_comments: Option<Vec<crate::clrmamepro::Comment>>,
     no_intro_document: Option<no_intro_pc_native::DocumentFacts>,
@@ -344,16 +343,6 @@ fn interpretation(request: &CatalogImportRequest) -> ParserInterpretationKey {
 }
 
 impl SnapshotData {
-    const fn from_mame_softwarelist(catalog: SoftwareListCatalog) -> Self {
-        Self {
-            sets: Vec::new(),
-            software_lists: Some(catalog),
-            cmp_header_facts: None,
-            cmp_comments: None,
-            no_intro_document: None,
-        }
-    }
-
     fn from_clrmamepro(catalog: ClrMameProCatalog) -> Self {
         let sets =
             catalog
@@ -418,7 +407,6 @@ impl SnapshotData {
                 .collect();
         Self {
             sets,
-            software_lists: None,
             cmp_header_facts: catalog.header,
             cmp_comments: Some(catalog.comments),
             no_intro_document: None,
@@ -475,7 +463,6 @@ impl SnapshotData {
             .collect();
         Self {
             sets,
-            software_lists: None,
             cmp_header_facts: None,
             cmp_comments: None,
             no_intro_document: Some(no_intro_pc_native::DocumentFacts {
@@ -739,7 +726,13 @@ pub fn import(pool: &Pool, request: &CatalogImportRequest) -> crate::Result<Cata
             );
         }
         CatalogDocumentFormat::MameSoftwareListXml => {
-            SoftwareListCatalog::parse(&bytes).map(SnapshotData::from_mame_softwarelist)
+            return import_mame_softwarelist(
+                pool,
+                request,
+                retained.document_key,
+                &retained.acquisition_key.to_string(),
+                &bytes,
+            );
         }
         CatalogDocumentFormat::ClrMamePro => {
             ClrMameProCatalog::parse(&bytes).map(SnapshotData::from_clrmamepro)
@@ -810,6 +803,18 @@ struct StreamingImport<'a> {
     conn: &'a mut SqliteConnection,
     publication: SnapshotPublication,
     run_key: ImportRunKey,
+}
+
+struct SoftwareListImport<'a> {
+    import: StreamingImport<'a>,
+    next_list_order: usize,
+    current_list: Option<CurrentSoftwareList>,
+}
+
+struct CurrentSoftwareList {
+    header: mame_softwarelist::SoftwareListHeader,
+    namespace: Option<i64>,
+    next_item_order: usize,
 }
 
 fn start_streaming_import<'a>(
@@ -974,6 +979,80 @@ impl StreamingImport<'_> {
     }
 }
 
+impl SoftwareListImport<'_> {
+    fn start_list(&mut self, header: mame_softwarelist::SoftwareListHeader) -> crate::Result<()> {
+        if self.current_list.is_some() {
+            return Err(crate::Error::InvalidPath(
+                "software-list reader started a list before ending the previous list".into(),
+            ));
+        }
+        let namespace = if let SnapshotPublication::Pending(key) = &self.import.publication {
+            Some(software_native::insert_list_group(
+                self.import.conn,
+                key,
+                self.next_list_order,
+            )?)
+        } else {
+            None
+        };
+        self.next_list_order = checked_order(self.next_list_order, "software lists")?
+            .checked_add(1)
+            .and_then(|order| usize::try_from(order).ok())
+            .ok_or_else(|| crate::Error::InvalidPath("too many software lists".into()))?;
+        self.current_list = Some(CurrentSoftwareList {
+            header,
+            namespace,
+            next_item_order: 0,
+        });
+        Ok(())
+    }
+
+    fn insert_item(&mut self, item: &mame_softwarelist::SoftwareItem) -> crate::Result<()> {
+        let current_list = self.current_list.as_mut().ok_or_else(|| {
+            crate::Error::InvalidPath("software-list reader emitted an item outside a list".into())
+        })?;
+        let order = current_list.next_item_order;
+        current_list.next_item_order = checked_order(order, "software items")?
+            .checked_add(1)
+            .and_then(|order| usize::try_from(order).ok())
+            .ok_or_else(|| crate::Error::InvalidPath("too many software items".into()))?;
+        if let SnapshotPublication::Pending(key) = &self.import.publication {
+            let namespace = current_list.namespace.ok_or_else(|| {
+                crate::Error::InvalidPath(
+                    "pending software-list item has no allocated list group".into(),
+                )
+            })?;
+            software_native::insert_item(self.import.conn, key, namespace, item, order)?;
+        }
+        Ok(())
+    }
+
+    fn finish_list(
+        &mut self,
+        metadata: &mame_softwarelist::SoftwareListMetadata,
+    ) -> crate::Result<()> {
+        let current_list = self.current_list.take().ok_or_else(|| {
+            crate::Error::InvalidPath(
+                "software-list reader ended a list that was not started".into(),
+            )
+        })?;
+        if let SnapshotPublication::Pending(_) = &self.import.publication {
+            let namespace = current_list.namespace.ok_or_else(|| {
+                crate::Error::InvalidPath(
+                    "pending software-list detail has no allocated list group".into(),
+                )
+            })?;
+            software_native::insert_list_details(
+                self.import.conn,
+                namespace,
+                &current_list.header,
+                metadata,
+            )?;
+        }
+        Ok(())
+    }
+}
+
 fn import_mame(
     pool: &Pool,
     request: &CatalogImportRequest,
@@ -1009,6 +1088,69 @@ fn import_mame(
             .map_err(StreamingImportError::Storage)
     });
     // Release the connection before recording a failure in a separate transaction.
+    drop(conn);
+    finish_streaming_result(result, pool, request, document_key, acquisition_key)
+}
+
+fn import_mame_softwarelist(
+    pool: &Pool,
+    request: &CatalogImportRequest,
+    document_key: DocumentKey,
+    acquisition_key: &str,
+    bytes: &[u8],
+) -> crate::Result<CatalogImportReport> {
+    let interpretation = interpretation(request);
+    let mut conn = pool.get()?;
+    let result = conn.immediate_transaction::<_, StreamingImportError, _>(|conn| {
+        ensure_identities(conn, request, &interpretation).map_err(StreamingImportError::Storage)?;
+        let validated = mame_softwarelist::read_with::<_, StreamingImportError>(
+            bytes,
+            |header| {
+                let import = start_streaming_import(
+                    conn,
+                    request,
+                    &document_key,
+                    acquisition_key,
+                    &interpretation,
+                )
+                .map_err(StreamingImportError::Storage)?;
+                if let SnapshotPublication::Pending(key) = &import.publication {
+                    software_native::insert_document(import.conn, key, &header)
+                        .map_err(StreamingImportError::Storage)?;
+                }
+                Ok(SoftwareListImport {
+                    import,
+                    next_list_order: 0,
+                    current_list: None,
+                })
+            },
+            |sink, header| {
+                sink.start_list(header)
+                    .map_err(StreamingImportError::Storage)
+            },
+            |sink, item| {
+                sink.insert_item(&item)
+                    .map_err(StreamingImportError::Storage)
+            },
+            |sink, metadata| {
+                sink.finish_list(&metadata)
+                    .map_err(StreamingImportError::Storage)
+            },
+            |_sink, extension| {
+                // As before, vendor-only software-list data remains in the external original.
+                drop(extension);
+                Ok(())
+            },
+        )?;
+        finish_streaming_import(
+            validated.into_inner().import,
+            request,
+            &document_key,
+            &interpretation,
+        )
+        .map_err(StreamingImportError::Storage)
+    });
+    // Parser failures are recorded only after rolling back and releasing the write connection.
     drop(conn);
     finish_streaming_result(result, pool, request, document_key, acquisition_key)
 }
@@ -1509,9 +1651,6 @@ fn insert_snapshot_contents(
         insert_snapshot_set(conn, snapshot_key, set)?;
     }
 
-    if let Some(catalog) = &snapshot_data.software_lists {
-        software_native::insert(conn, snapshot_key, catalog)?;
-    }
     if let Some(header) = &snapshot_data.cmp_header_facts {
         cmp_native::insert_header_facts(conn, snapshot_key, header)?;
     }

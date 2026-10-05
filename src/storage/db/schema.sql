@@ -1656,7 +1656,6 @@ WHEN EXISTS (SELECT 1 FROM software_clone_links
     FROM software_items AS native
     JOIN catalog_sets AS sets ON sets.set_id = native.record_id
     JOIN catalog_set_groups AS groups ON groups.set_group_id = sets.set_group_id
-    JOIN software_lists AS list ON list.namespace_id = groups.set_group_id
     JOIN catalog_snapshots AS snapshot ON snapshot.snapshot_key = groups.snapshot_key
     JOIN parser_interpretations AS interpretation
       ON interpretation.interpretation_key = snapshot.interpretation_key

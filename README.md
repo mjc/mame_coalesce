@@ -340,6 +340,29 @@ device references retain element locations and mixed-child order separately
 from their family ordinal and name-attribute QName positions; history detects
 crossings while ignoring reindentation and vendor-only ordinal gaps.
 
+The software-list verifier compares one original with its exact published edition:
+
+```sh
+cargo run --locked --profile profiling --example mame_softwarelist_native_verify -- /path/catalog.sqlite sha256:SNAPSHOT_HEX /path/software-list.xml
+```
+
+It uses the same existing-database safeguards and the software-list streaming
+reader, without collecting a source catalog. Checks cover bare/plural envelopes,
+wrapper build presence, all 36 recognized attributes and five text placements,
+effective defaults and explicit presence, raw numeric/hash spelling, checked
+numeric values, qualified normalized digest assertions, and native parent/order/
+position provenance. ROM declaration and control-operation links are compared;
+CHD-header hashes are not treated as whole-container UUID evidence. List notes
+can appear after software items and are compared at list end. Actual trailing EOF
+and complete list/title/media exhaustion are required.
+
+Memory includes the original/decoded buffers and coordinate bookkeeping, one
+complete source item, a 64-list page, and a 64-title page with complete children.
+Media queries use 256-ID batches without dropping or capping an item's entries.
+Vendor extensions are counted and reported, not compared as catalog fields.
+This is a source-to-storage/query round trip, not independent producer-grammar,
+ROM-byte, or executable-loader proof.
+
 `catalog_no_intro_database::games_for_snapshot` reads an exact published export
 without opening its original document. A checked page limit bounds games;
 every selected game's archive, dump-source and release histories are complete,

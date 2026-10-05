@@ -22,7 +22,7 @@ mod tests;
 use std::collections::BTreeMap;
 
 use diesel::{
-    Connection, QueryableByName, RunQueryDsl, SqliteConnection,
+    Connection, OptionalExtension, QueryableByName, RunQueryDsl, SqliteConnection,
     connection::SimpleConnection,
     sql_query,
     sql_types::{BigInt, Binary, Nullable, Text},
@@ -588,6 +588,12 @@ struct EntryRow {
     area_kind: String,
 }
 
+#[derive(QueryableByName)]
+struct OccurrenceOwnerViolation {
+    #[diesel(sql_type = BigInt)]
+    occurrence_id: i64,
+}
+
 /// Return one bounded page of lists from an exact published software-list edition.
 pub fn lists_for_snapshot(
     database: &Database,
@@ -695,6 +701,7 @@ pub fn titles_for_list(
             .collect::<QueryResult<Vec<_>>>()?;
         create_requested_titles(connection)?;
         insert_requested_titles(connection, &titles)?;
+        validate_occurrence_owners(connection)?;
         load_title_children(connection, &mut titles)?;
         drop_requested_titles(connection)?;
         let next_cursor = if has_more {
@@ -964,6 +971,18 @@ fn drop_requested_titles(connection: &mut SqliteConnection) -> QueryResult<()> {
 
 fn drop_owner_request_table(connection: &mut SqliteConnection) -> QueryResult<()> {
     drop_requested_titles(connection)
+}
+
+fn validate_occurrence_owners(connection: &mut SqliteConnection) -> QueryResult<()> {
+    // Start from shared occurrences, independently of the native area traversal.
+    // A selected title with no surviving parts must not hide orphan occurrences.
+    if let Some(violation) = sql_query(queries::INVALID_OCCURRENCE_OWNER)
+        .get_result::<OccurrenceOwnerViolation>(connection)
+        .optional()?
+    {
+        return Err(SoftwareQueryError::MismatchedOwner(violation.occurrence_id));
+    }
+    Ok(())
 }
 
 fn load_title_children(

@@ -7,8 +7,9 @@ use diesel::{
 
 use super::{
     queries::{
-        AREAS, DIP_SWITCHES, DIP_VALUES, DISK_ENTRIES, LIST_TEXT_POSITIONS, PART_FEATURES, PARTS,
-        ROM_ENTRIES, TITLE_INFO, TITLE_SHARED_FEATURES, TITLE_TEXT_POSITIONS,
+        AREAS, DIP_SWITCHES, DIP_VALUES, DISK_ENTRIES, INVALID_OCCURRENCE_OWNER,
+        LIST_TEXT_POSITIONS, PART_FEATURES, PARTS, ROM_ENTRIES, TITLE_INFO, TITLE_SHARED_FEATURES,
+        TITLE_TEXT_POSITIONS,
     },
     *,
 };
@@ -379,6 +380,69 @@ fn rom_entry_record_and_claim_kind_must_match_the_native_owner() -> TestResult {
 }
 
 #[test]
+fn occurrences_require_reachable_single_native_subtypes() -> TestResult {
+    for attack in [
+        "DROP TRIGGER software_parts_immutable_delete; DELETE FROM software_parts WHERE part_id={part}",
+        "DROP TRIGGER software_areas_immutable_delete; DELETE FROM software_areas WHERE area_id={area}",
+        "DROP TRIGGER software_data_areas_immutable_delete; DELETE FROM software_data_areas WHERE area_id={area}",
+        "DROP TRIGGER software_disk_entries_immutable_update; UPDATE software_disk_entries SET occurrence_id={rom} WHERE occurrence_id={disk}",
+        "DROP TRIGGER software_parts_immutable_update; UPDATE software_parts SET record_id=900001 WHERE part_id={part}",
+        "DROP TRIGGER software_rom_entries_immutable_update; UPDATE software_rom_entries SET area_id=900001 WHERE occurrence_id={rom}",
+    ] {
+        let fixture = fixture()?;
+        let sql = attack
+            .replace("{part}", &fixture.part.to_string())
+            .replace("{area}", &fixture.data_area.to_string())
+            .replace("{rom}", &fixture.rom_occurrence.to_string())
+            .replace("{disk}", &fixture.disk_occurrence.to_string());
+        corrupt(&fixture, &sql)?;
+        let error = titles_for_list(
+            &fixture.database,
+            &fixture.snapshot,
+            fixture.list,
+            SoftwarePageLimit::new(10)?,
+            None,
+        )
+        .err()
+        .ok_or("disconnected or duplicate subtype was accepted")?;
+        assert!(
+            matches!(error, SoftwareQueryError::MismatchedOwner(_)),
+            "wrong failure for {sql}: {error}"
+        );
+        assert_owner_table_absent(&fixture.database)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn every_selected_occurrence_is_checked_even_with_a_foreign_claim_kind() -> TestResult {
+    let fixture = fixture()?;
+    let sql = format!(
+        "DROP TRIGGER occurrences_require_unpublished_snapshot; \
+         DROP TRIGGER occurrences_require_native_record; \
+         INSERT INTO asset_occurrences(record_id,occurrence_order,claim_kind) \
+         VALUES ({},2,'mame_rom');",
+        fixture.title.as_i64()
+    );
+    corrupt(&fixture, &sql)?;
+    let error = titles_for_list(
+        &fixture.database,
+        &fixture.snapshot,
+        fixture.list,
+        SoftwarePageLimit::new(10)?,
+        None,
+    )
+    .err()
+    .ok_or("foreign-kind orphan occurrence was hidden")?;
+    assert!(
+        matches!(error, SoftwareQueryError::MismatchedOwner(_)),
+        "wrong failure: {error}"
+    );
+    assert_owner_table_absent(&fixture.database)?;
+    Ok(())
+}
+
+#[test]
 fn orphan_dip_values_are_errors() -> TestResult {
     let dip_fixture = fixture()?;
     corrupt(
@@ -495,6 +559,7 @@ fn populated_owner_queries_use_requested_rows_in_the_query_plan() -> TestResult 
         ("item positions", TITLE_TEXT_POSITIONS),
         ("item info", TITLE_INFO),
         ("shared features", TITLE_SHARED_FEATURES),
+        ("occurrence owner closure", INVALID_OCCURRENCE_OWNER),
         ("parts", PARTS),
         ("part features", PART_FEATURES),
         ("dip switches", DIP_SWITCHES),

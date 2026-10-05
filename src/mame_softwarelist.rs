@@ -140,6 +140,7 @@ pub enum SoftwareListRootKind {
 }
 
 impl SoftwareListRootKind {
+    #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::SingleList => "single_list",
@@ -262,6 +263,7 @@ pub enum AreaKind {
 }
 
 impl AreaKind {
+    #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Data => "data",
@@ -362,279 +364,527 @@ impl DumpStatus {
 
 impl SoftwareListCatalog {
     pub fn parse(bytes: &[u8]) -> crate::Result<Self> {
-        xml_reader::with_reader(bytes, |reader, positions| {
-            let mut budget = NodeBudget::with_limit(xml_reader::MAX_MAME_XML_NODES);
-            let (namespace, event) = loop {
-                let (namespace, event) = xml_reader::next(reader, positions)?;
-                if matches!(event, Event::Start(_) | Event::Empty(_)) {
-                    break (namespace, event);
-                }
-                if event == Event::Eof {
-                    return Err(crate::Error::XmlValidation("missing document root".into()));
-                }
-            };
-            let (root, empty) = match event {
-                Event::Start(start) if start.local_name().as_ref() == "softwarelist" => {
-                    let mut extensions = Vec::new();
-                    let (list, _) = parse_list_events(
-                        reader,
-                        positions,
-                        namespace,
-                        &start,
-                        &mut budget,
-                        &mut extensions,
-                        0,
-                    )?;
-                    finish_softwarelist_document(reader, positions)?;
-                    return Ok(Self {
-                        attribute_positions: Vec::new(),
-                        root_kind: SoftwareListRootKind::SingleList,
-                        build: None,
-                        lists: vec![list],
-                        extensions,
-                    });
-                }
-                Event::Empty(start) if start.local_name().as_ref() == "softwarelist" => {
-                    let node = xml_reader::element_from_start(
-                        reader,
-                        namespace,
-                        &start,
-                        &mut budget,
-                        0,
-                        positions,
-                    )?;
-                    let mut extensions = Vec::new();
-                    let _ = parse_empty_list(&node, &mut extensions, 0)?;
-                    unreachable!("empty software lists have no items")
-                }
-                Event::Start(start) => (
-                    xml_reader::element_from_start(
-                        reader,
-                        namespace,
-                        &start,
-                        &mut budget,
-                        0,
-                        positions,
-                    )?,
-                    false,
-                ),
-                Event::Empty(start) => (
-                    xml_reader::element_from_start(
-                        reader,
-                        namespace,
-                        &start,
-                        &mut budget,
-                        0,
-                        positions,
-                    )?,
-                    true,
-                ),
-                _ => unreachable!(),
-            };
-            parse_softwarelists(reader, positions, &root, empty, &mut budget)
-        })
+        struct Collector {
+            catalog: SoftwareListCatalog,
+            current_list: Option<SoftwareList>,
+        }
+
+        let validated = read_with::<_, crate::Error>(
+            bytes,
+            |header| {
+                Ok(Collector {
+                    catalog: Self {
+                        attribute_positions: header.attribute_positions,
+                        root_kind: header.root_kind,
+                        build: header.build,
+                        lists: Vec::new(),
+                        extensions: Vec::new(),
+                    },
+                    current_list: None,
+                })
+            },
+            |collector, header| {
+                collector.current_list = Some(SoftwareList {
+                    attribute_positions: Vec::new(),
+                    name: header.name,
+                    description: header.description,
+                    notes: None,
+                    text_positions: Vec::new(),
+                    source_order: header.source_order,
+                    location: header.location,
+                    items: Vec::new(),
+                });
+                Ok(())
+            },
+            |collector, item| {
+                collector
+                    .current_list
+                    .as_mut()
+                    .ok_or_else(|| {
+                        crate::Error::XmlValidation(
+                            "software-list item arrived without an active list".into(),
+                        )
+                    })?
+                    .items
+                    .push(item);
+                Ok(())
+            },
+            |collector, metadata| {
+                let mut list = collector.current_list.take().ok_or_else(|| {
+                    crate::Error::XmlValidation(
+                        "software-list metadata arrived without an active list".into(),
+                    )
+                })?;
+                list.attribute_positions = metadata.attribute_positions;
+                list.notes = metadata.notes;
+                list.text_positions = metadata.text_positions;
+                collector.catalog.lists.push(list);
+                Ok(())
+            },
+            |collector, extension| {
+                collector.catalog.extensions.push(extension);
+                Ok(())
+            },
+        )?;
+        Ok(validated.into_inner().catalog)
     }
 }
 
-fn parse_softwarelists(
-    reader: &mut crate::xml_reader::XmlReader<'_>,
-    positions: &mut xml_reader::PositionMap<'_>,
-    root: &Element,
-    empty: bool,
-    budget: &mut NodeBudget,
-) -> crate::Result<SoftwareListCatalog> {
-    if root.name != "softwarelists" {
-        return Err(crate::Error::XmlValidation(format!(
-            "expected <softwarelist> or <softwarelists>, found <{}>",
-            root.name
-        )));
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SoftwareDocumentHeader {
+    pub root_kind: SoftwareListRootKind,
+    pub build: Option<String>,
+    pub attribute_positions: Vec<AttributePosition<SoftwareWrapperAttribute>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SoftwareListHeader {
+    pub name: SoftwareListName,
+    pub description: Option<String>,
+    pub source_order: usize,
+    pub location: RecordLocation,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SoftwareListMetadata {
+    pub attribute_positions: Vec<AttributePosition<SoftwareListAttribute>>,
+    pub notes: Option<String>,
+    pub text_positions: Vec<SoftwareTextPosition>,
+}
+
+/// Produced only after the source reader has validated trailing actual EOF.
+pub struct ValidatedSoftwareList<S>(S);
+
+impl<S> ValidatedSoftwareList<S> {
+    /// Consume the reader-owned valid-EOF proof and return its completed sink.
+    #[must_use]
+    pub fn into_inner(self) -> S {
+        self.0
     }
-    let build = root.attributes.get("build").cloned();
-    let mut extensions = Vec::new();
-    retain_unknown_attributes(root, &["build"], "document", None, &mut extensions);
-    let mut lists = Vec::new();
-    let mut child_order = 0;
-    if !empty {
-        loop {
+}
+
+struct SoftwareListCallbacks<'callbacks, S, E> {
+    list_start: &'callbacks mut dyn FnMut(&mut S, SoftwareListHeader) -> std::result::Result<(), E>,
+    item: &'callbacks mut dyn FnMut(&mut S, SoftwareItem) -> std::result::Result<(), E>,
+    list_end: &'callbacks mut dyn FnMut(&mut S, SoftwareListMetadata) -> std::result::Result<(), E>,
+    extension: &'callbacks mut dyn FnMut(&mut S, XmlExtension) -> std::result::Result<(), E>,
+}
+
+struct SoftwareListParser<'callbacks, 'reader_input, 'position_input, S, E> {
+    reader: &'callbacks mut crate::xml_reader::XmlReader<'reader_input>,
+    positions: &'callbacks mut xml_reader::PositionMap<'position_input>,
+    budget: &'callbacks mut NodeBudget,
+    sink: S,
+    callbacks: SoftwareListCallbacks<'callbacks, S, E>,
+}
+
+/// Stream one software-list document, transferring each complete item to its consumer.
+pub fn read_with<S, E: From<crate::Error>>(
+    bytes: &[u8],
+    start: impl FnOnce(SoftwareDocumentHeader) -> std::result::Result<S, E>,
+    mut list_start: impl FnMut(&mut S, SoftwareListHeader) -> std::result::Result<(), E>,
+    mut item: impl FnMut(&mut S, SoftwareItem) -> std::result::Result<(), E>,
+    mut list_end: impl FnMut(&mut S, SoftwareListMetadata) -> std::result::Result<(), E>,
+    mut extension_callback: impl FnMut(&mut S, XmlExtension) -> std::result::Result<(), E>,
+) -> std::result::Result<ValidatedSoftwareList<S>, E> {
+    xml_reader::with_reader(bytes, |reader, positions| {
+        let mut budget = NodeBudget::with_limit(xml_reader::MAX_MAME_XML_NODES);
+        let (namespace, event) = loop {
             let (namespace, event) = xml_reader::next(reader, positions)?;
-            let source_order = if matches!(&event, Event::Start(_) | Event::Empty(_)) {
-                let order = child_order;
-                child_order += 1;
-                Some(order)
-            } else {
-                None
+            if matches!(event, Event::Start(_) | Event::Empty(_)) {
+                break (namespace, event);
+            }
+            if event == Event::Eof {
+                return Err(crate::Error::XmlValidation("missing document root".into()).into());
+            }
+        };
+        let (root, empty) = match event {
+            Event::Start(start) => (
+                xml_reader::element_from_start(
+                    reader,
+                    namespace,
+                    &start,
+                    &mut budget,
+                    0,
+                    positions,
+                )?,
+                false,
+            ),
+            Event::Empty(start) => (
+                xml_reader::element_from_start(
+                    reader,
+                    namespace,
+                    &start,
+                    &mut budget,
+                    0,
+                    positions,
+                )?,
+                true,
+            ),
+            _ => {
+                return Err(crate::Error::XmlValidation(
+                    "software-list document root was not an opening element".into(),
+                )
+                .into());
+            }
+        };
+
+        let document_header = software_document_header(&root)?;
+        let sink = start(document_header)?;
+        let sink = {
+            let mut parser = SoftwareListParser {
+                reader,
+                positions,
+                budget: &mut budget,
+                sink,
+                callbacks: SoftwareListCallbacks {
+                    list_start: &mut list_start,
+                    item: &mut item,
+                    list_end: &mut list_end,
+                    extension: &mut extension_callback,
+                },
+            };
+            parser.read_root(&root, empty)?;
+            parser.sink
+        };
+        finish_softwarelist_document(reader, positions)?;
+        Ok(ValidatedSoftwareList(sink))
+    })
+}
+
+struct SoftwareListProgress {
+    notes: Option<String>,
+    text_positions: Vec<SoftwareTextPosition>,
+    saw_item: bool,
+}
+
+impl SoftwareListProgress {
+    const fn new() -> Self {
+        Self {
+            notes: None,
+            text_positions: Vec::new(),
+            saw_item: false,
+        }
+    }
+}
+
+impl<S, E: From<crate::Error>> SoftwareListParser<'_, '_, '_, S, E> {
+    fn read_root(&mut self, root: &Element, empty: bool) -> std::result::Result<(), E> {
+        match root.name.as_str() {
+            "softwarelist" => self.parse_list(root, empty, 0),
+            "softwarelists" => self.parse_plural_root(root, empty),
+            _ => Err(crate::Error::XmlValidation(format!(
+                "expected <softwarelist> or <softwarelists>, found <{}>",
+                root.name
+            ))
+            .into()),
+        }
+    }
+
+    fn parse_plural_root(&mut self, root: &Element, empty: bool) -> std::result::Result<(), E> {
+        let mut extensions = Vec::new();
+        retain_unknown_attributes(root, &["build"], "document", None, &mut extensions);
+        self.emit_extensions(extensions)?;
+        if !empty {
+            self.parse_plural_lists()?;
+        }
+        Ok(())
+    }
+
+    fn parse_plural_lists(&mut self) -> std::result::Result<(), E> {
+        let mut source_order = 0;
+        loop {
+            let (namespace, event) = xml_reader::next(self.reader, self.positions)?;
+            let child_order = match &event {
+                Event::Start(_) | Event::Empty(_) => {
+                    let order = source_order;
+                    source_order += 1;
+                    Some(order)
+                }
+                _ => None,
             };
             match event {
                 Event::Start(start) if start.local_name().as_ref() == "softwarelist" => {
-                    let (list, _) = parse_list_events(
-                        reader,
-                        positions,
+                    let order = child_order.ok_or_else(|| {
+                        crate::Error::XmlValidation("software-list order was not assigned".into())
+                    })?;
+                    let node = xml_reader::element_from_start(
+                        self.reader,
                         namespace,
                         &start,
-                        budget,
-                        &mut extensions,
-                        source_order.unwrap_or_default(),
+                        self.budget,
+                        1,
+                        self.positions,
                     )?;
-                    lists.push(list);
+                    self.parse_list(&node, false, order)?;
                 }
                 Event::Empty(start) if start.local_name().as_ref() == "softwarelist" => {
+                    let order = child_order.ok_or_else(|| {
+                        crate::Error::XmlValidation("software-list order was not assigned".into())
+                    })?;
                     let node = xml_reader::element_from_start(
-                        reader, namespace, &start, budget, 1, positions,
+                        self.reader,
+                        namespace,
+                        &start,
+                        self.budget,
+                        1,
+                        self.positions,
                     )?;
-                    lists.push(parse_empty_list(
-                        &node,
-                        &mut extensions,
-                        source_order.unwrap_or_default(),
-                    )?);
+                    self.parse_list(&node, true, order)?;
                 }
                 Event::Start(start) => {
-                    let node =
-                        xml_reader::read_element(reader, namespace, &start, budget, 1, positions)?;
-                    extensions.push(extension("document", None, &node)?);
+                    let node = xml_reader::read_element(
+                        self.reader,
+                        namespace,
+                        &start,
+                        self.budget,
+                        1,
+                        self.positions,
+                    )?;
+                    self.emit_extensions(vec![extension("document", None, &node)?])?;
                 }
                 Event::Empty(start) => {
                     let node = xml_reader::element_from_start(
-                        reader, namespace, &start, budget, 1, positions,
+                        self.reader,
+                        namespace,
+                        &start,
+                        self.budget,
+                        1,
+                        self.positions,
                     )?;
-                    extensions.push(extension("document", None, &node)?);
+                    self.emit_extensions(vec![extension("document", None, &node)?])?;
                 }
-                Event::End(_) => break,
+                Event::End(_) => return Ok(()),
                 Event::Eof => {
                     return Err(crate::Error::XmlValidation(
                         "unexpected end of input inside <softwarelists>".into(),
-                    ));
+                    )
+                    .into());
                 }
                 _ => {}
             }
         }
     }
-    finish_softwarelist_document(reader, positions)?;
-    Ok(SoftwareListCatalog {
-        attribute_positions: root
-            .attributes
-            .positions(SoftwareWrapperAttribute::from_name)
-            .collect(),
-        root_kind: SoftwareListRootKind::PluralLists,
-        build,
-        lists,
-        extensions,
-    })
-}
 
-fn parse_empty_list(
-    node: &Element,
-    extensions: &mut Vec<XmlExtension>,
-    source_order: usize,
-) -> crate::Result<SoftwareList> {
-    let name = SoftwareListName::new(required(node, "name")?);
-    retain_unknown_attributes(
-        node,
-        &["name", "description"],
-        "software_list",
-        Some(name.as_str()),
-        extensions,
-    );
-    parse_list_parts(node, name, Vec::new(), None, Vec::new(), source_order)
-}
+    fn parse_list(
+        &mut self,
+        node: &Element,
+        empty: bool,
+        source_order: usize,
+    ) -> std::result::Result<(), E> {
+        let name = SoftwareListName::new(required(node, "name")?);
+        (self.callbacks.list_start)(
+            &mut self.sink,
+            SoftwareListHeader {
+                name: name.clone(),
+                description: node.attributes.get("description").cloned(),
+                source_order,
+                location: node.location,
+            },
+        )?;
+        let mut extensions = Vec::new();
+        retain_unknown_attributes(
+            node,
+            &["name", "description"],
+            "software_list",
+            Some(name.as_str()),
+            &mut extensions,
+        );
+        self.emit_extensions(extensions)?;
+        let mut progress = SoftwareListProgress::new();
+        if !empty {
+            self.parse_list_children(&name, &mut progress)?;
+        }
+        if !progress.saw_item {
+            return Err(crate::Error::XmlValidation(format!(
+                "software list {:?} has no software items",
+                name.as_str()
+            ))
+            .into());
+        }
+        (self.callbacks.list_end)(
+            &mut self.sink,
+            SoftwareListMetadata {
+                attribute_positions: node
+                    .attributes
+                    .positions(SoftwareListAttribute::from_name)
+                    .collect(),
+                notes: progress.notes,
+                text_positions: progress.text_positions,
+            },
+        )
+    }
 
-fn parse_list_events(
-    reader: &mut crate::xml_reader::XmlReader<'_>,
-    positions: &mut xml_reader::PositionMap<'_>,
-    namespace: Option<String>,
-    start: &quick_xml::events::BytesStart<'_>,
-    budget: &mut NodeBudget,
-    extensions: &mut Vec<XmlExtension>,
-    source_order: usize,
-) -> crate::Result<(SoftwareList, Option<String>)> {
-    let node = xml_reader::element_from_start(reader, namespace, start, budget, 1, positions)?;
-    let name = SoftwareListName::new(required(&node, "name")?);
-    retain_unknown_attributes(
-        &node,
-        &["name", "description"],
-        "software_list",
-        Some(name.as_str()),
-        extensions,
-    );
-    let mut items = Vec::new();
-    let mut notes = None;
-    let mut text_positions = Vec::new();
-    let mut child_order = 0;
-    loop {
-        let (namespace, event) = xml_reader::next(reader, positions)?;
-        let element_order = if matches!(&event, Event::Start(_) | Event::Empty(_)) {
-            let order = child_order;
-            child_order += 1;
-            Some(order)
-        } else {
-            None
-        };
-        let item_node = match event {
-            Event::Start(start) if matches!(start.local_name().as_ref(), "software" | "notes") => {
-                Some(xml_reader::read_element(
-                    reader, namespace, &start, budget, 2, positions,
-                )?)
-            }
-            Event::Empty(start) if matches!(start.local_name().as_ref(), "software" | "notes") => {
-                Some(xml_reader::element_from_start(
-                    reader, namespace, &start, budget, 2, positions,
-                )?)
-            }
-            Event::Start(start) => {
-                let unknown =
-                    xml_reader::read_element(reader, namespace, &start, budget, 2, positions)?;
-                extensions.push(extension("software_list", Some(name.as_str()), &unknown)?);
-                continue;
-            }
-            Event::Empty(start) => {
-                let unknown = xml_reader::element_from_start(
-                    reader, namespace, &start, budget, 2, positions,
-                )?;
-                extensions.push(extension("software_list", Some(name.as_str()), &unknown)?);
-                continue;
-            }
-            Event::End(_) => break,
-            Event::Eof => {
-                return Err(crate::Error::XmlValidation(
-                    "unexpected end of input inside <softwarelist>".into(),
-                ));
-            }
-            _ => continue,
-        };
-        if let Some(item_node) = item_node {
-            if item_node.name == "notes" {
-                retain_unknown_node_content(
-                    &item_node,
-                    &[],
-                    "software_list_notes",
-                    Some(name.as_str()),
-                    extensions,
-                )?;
-                if notes.replace(item_node.direct_text()).is_some() {
-                    return Err(crate::Error::XmlValidation(format!(
-                        "duplicate software-list notes for {:?}",
-                        name.as_str()
-                    )));
+    fn parse_list_children(
+        &mut self,
+        list: &SoftwareListName,
+        progress: &mut SoftwareListProgress,
+    ) -> std::result::Result<(), E> {
+        let mut child_order = 0;
+        loop {
+            let (namespace, event) = xml_reader::next(self.reader, self.positions)?;
+            let element_order = match &event {
+                Event::Start(_) | Event::Empty(_) => {
+                    let order = child_order;
+                    child_order += 1;
+                    Some(order)
                 }
-                text_positions.push(SoftwareTextPosition {
-                    field: SoftwareTextField::Notes,
-                    source_order: element_order.unwrap_or_default(),
-                    location: item_node.location,
-                });
-                continue;
+                _ => None,
+            };
+            match event {
+                Event::Start(start)
+                    if matches!(start.local_name().as_ref(), "software" | "notes") =>
+                {
+                    let order = element_order.ok_or_else(|| {
+                        crate::Error::XmlValidation(
+                            "software-list child order was not assigned".into(),
+                        )
+                    })?;
+                    let node = xml_reader::read_element(
+                        self.reader,
+                        namespace,
+                        &start,
+                        self.budget,
+                        2,
+                        self.positions,
+                    )?;
+                    self.consume_list_child(&node, list, order, progress)?;
+                }
+                Event::Empty(start)
+                    if matches!(start.local_name().as_ref(), "software" | "notes") =>
+                {
+                    let order = element_order.ok_or_else(|| {
+                        crate::Error::XmlValidation(
+                            "software-list child order was not assigned".into(),
+                        )
+                    })?;
+                    let node = xml_reader::element_from_start(
+                        self.reader,
+                        namespace,
+                        &start,
+                        self.budget,
+                        2,
+                        self.positions,
+                    )?;
+                    self.consume_list_child(&node, list, order, progress)?;
+                }
+                Event::Start(start) => {
+                    let node = xml_reader::read_element(
+                        self.reader,
+                        namespace,
+                        &start,
+                        self.budget,
+                        2,
+                        self.positions,
+                    )?;
+                    self.emit_extensions(vec![extension(
+                        "software_list",
+                        Some(list.as_str()),
+                        &node,
+                    )?])?;
+                }
+                Event::Empty(start) => {
+                    let node = xml_reader::element_from_start(
+                        self.reader,
+                        namespace,
+                        &start,
+                        self.budget,
+                        2,
+                        self.positions,
+                    )?;
+                    self.emit_extensions(vec![extension(
+                        "software_list",
+                        Some(list.as_str()),
+                        &node,
+                    )?])?;
+                }
+                Event::End(_) => return Ok(()),
+                Event::Eof => {
+                    return Err(crate::Error::XmlValidation(
+                        "unexpected end of input inside <softwarelist>".into(),
+                    )
+                    .into());
+                }
+                _ => {}
             }
-            items.push(parse_item(
-                &item_node,
-                &name,
-                extensions,
-                element_order.unwrap_or_default(),
-            )?);
         }
     }
-    let build = node.attributes.get("build").cloned();
-    Ok((
-        parse_list_parts(&node, name, items, notes, text_positions, source_order)?,
-        build,
-    ))
+
+    fn consume_list_child(
+        &mut self,
+        node: &Element,
+        list: &SoftwareListName,
+        source_order: usize,
+        progress: &mut SoftwareListProgress,
+    ) -> std::result::Result<(), E> {
+        if node.name == "notes" {
+            let mut extensions = Vec::new();
+            retain_unknown_node_content(
+                node,
+                &[],
+                "software_list_notes",
+                Some(list.as_str()),
+                &mut extensions,
+            )?;
+            if progress.notes.replace(node.direct_text()).is_some() {
+                return Err(crate::Error::XmlValidation(format!(
+                    "duplicate software-list notes for {:?}",
+                    list.as_str()
+                ))
+                .into());
+            }
+            progress.text_positions.push(SoftwareTextPosition {
+                field: SoftwareTextField::Notes,
+                source_order,
+                location: node.location,
+            });
+            self.emit_extensions(extensions)?;
+            return Ok(());
+        }
+
+        let mut extensions = Vec::new();
+        let software = parse_item(node, list, &mut extensions, source_order)?;
+        progress.saw_item = true;
+        (self.callbacks.item)(&mut self.sink, software)?;
+        self.emit_extensions(extensions)
+    }
+
+    fn emit_extensions(&mut self, extensions: Vec<XmlExtension>) -> std::result::Result<(), E> {
+        emit_extensions(&mut self.sink, extensions, self.callbacks.extension)
+    }
+}
+
+fn software_document_header(root: &Element) -> crate::Result<SoftwareDocumentHeader> {
+    match root.name.as_str() {
+        "softwarelist" => Ok(SoftwareDocumentHeader {
+            root_kind: SoftwareListRootKind::SingleList,
+            build: None,
+            attribute_positions: Vec::new(),
+        }),
+        "softwarelists" => Ok(SoftwareDocumentHeader {
+            root_kind: SoftwareListRootKind::PluralLists,
+            build: root.attributes.get("build").cloned(),
+            attribute_positions: root
+                .attributes
+                .positions(SoftwareWrapperAttribute::from_name)
+                .collect(),
+        }),
+        _ => Err(crate::Error::XmlValidation(format!(
+            "expected <softwarelist> or <softwarelists>, found <{}>",
+            root.name
+        ))),
+    }
+}
+
+fn emit_extensions<S, E>(
+    sink: &mut S,
+    extensions: Vec<XmlExtension>,
+    callback: &mut (impl FnMut(&mut S, XmlExtension) -> std::result::Result<(), E> + ?Sized),
+) -> std::result::Result<(), E> {
+    for extension in extensions {
+        callback(sink, extension)?;
+    }
+    Ok(())
 }
 
 fn finish_softwarelist_document(
@@ -653,35 +903,6 @@ fn finish_softwarelist_document(
             }
         }
     }
-}
-
-fn parse_list_parts(
-    node: &Element,
-    name: SoftwareListName,
-    items: Vec<SoftwareItem>,
-    notes: Option<String>,
-    text_positions: Vec<SoftwareTextPosition>,
-    source_order: usize,
-) -> crate::Result<SoftwareList> {
-    if items.is_empty() {
-        return Err(crate::Error::XmlValidation(format!(
-            "software list {:?} has no software items",
-            name.as_str()
-        )));
-    }
-    Ok(SoftwareList {
-        attribute_positions: node
-            .attributes
-            .positions(SoftwareListAttribute::from_name)
-            .collect(),
-        name,
-        description: node.attributes.get("description").cloned(),
-        notes,
-        text_positions,
-        source_order,
-        location: node.location,
-        items,
-    })
 }
 
 fn parse_item(
