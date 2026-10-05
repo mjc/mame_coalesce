@@ -1,5 +1,60 @@
 # Catalog import profiling
 
+## History SQL compilation fix, 2026-10-04
+
+This is a history-reader optimization, not an import-writer or release-profile
+benchmark. Diagnosis used signed main `3973183` and the real public software
+import/diff APIs. A 14,537-byte relationship-review query took
+0.337447–0.379859 seconds to prepare with actual published fixture keys, versus
+0.000246–0.000887 seconds to execute with no reviews. A separate direct-SQLite
+experiment showed that MAME history's temporary-table creation/deletion caused
+a cached statement to reprepare. The raw SQL, sources and logs are preserved
+in `/tmp/mame-coalesce-verification-perf.5eB68T/`.
+
+Review hydration now starts from the selected numeric relationship owners,
+looks up published review IDs, and applies the unchanged readiness checks only
+to those IDs. Every 128-ID parameter batch and its tail is processed; this is
+not an event cap. Owner/review deduplication preserves chronological events.
+MAME attribute history uses snapshot-bound materialized owner CTEs instead of
+temporary-schema DDL, and skips family queries when no MAME owners exist.
+No stored facts, source positions, publication guards or schema are removed.
+
+The unchanged `every_native_software_family_changes_history` case checks all
+31 software field variants. Frozen all-feature debug executables ran with
+`--test-threads=1`, alternating before/after, with no concurrent project build
+or profiler. All six runs passed. GNU time includes process startup:
+
+| Pair | Before wall seconds | After wall seconds | Before / after peak RSS, KiB |
+| --- | ---: | ---: | ---: |
+| 1 | 50.14 | 13.94 | 249,664 / 35,720 |
+| 2 | 47.69 | 10.91 | 249,976 / 35,028 |
+| 3 | 46.71 | 11.99 | 249,664 / 35,816 |
+
+Median wall time is 47.69 versus 11.99 seconds, about 4.0 times faster for this
+case. Other host workloads remained active. Earlier isolated baseline runs
+were 20.76/21.70/20.83 seconds; they are not mixed into these paired medians.
+Do not extrapolate a fixed factor to optimized imports or other formats. RSS
+is whole-process memory, not heaptrack's live allocation measure.
+
+The before executable SHA-256 is
+`f94b7962d9eb1d14715d11801906f578dcd34c85089e2a96acfc936b002921df`;
+after is `c80018dd650ce37c51b76bb2bb6c9a3d9c3d2b016eca219508eff8f83e577371`,
+from reviewed source tree `9812eb4793a44e20eb425b947e13fcbf18b2c2d6`.
+Frozen executables and paired logs remain beside the diagnosis artifacts.
+
+Four observed RED regressions now pass. Additional checks cover all 32 actual
+MAME family owner-query plans, stable temporary schema on repeated reads,
+successful retry after an invalid owner read, and 641 published review events
+across batch tails, preserving drafts/readiness and replacement chronology.
+The 32 selected history/relationship integration tests also pass. Sol medium
+adversarial review found no actionable issues in the production/test cut.
+
+MAME rematerializes selected owners for each family; bounded indexed plans do
+not prove a net MAME speedup. Raw import SQL is still uncached, and repeated
+software hydration remains open. Fresh diagnostic perf caller graphs were
+invalid (unknown or missing worker chains), so they are not used as CPU proof.
+Existing optimized import profiles below retain their original provenance.
+
 ## Streaming native Logiqx checkpoint, 2026-10-03
 
 This capture uses the optimized, symbolized `profiling` build and the native

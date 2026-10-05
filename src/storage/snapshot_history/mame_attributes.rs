@@ -3,9 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use diesel::{
-    OptionalExtension, QueryableByName, RunQueryDsl, SqliteConnection,
-    connection::SimpleConnection,
-    sql_query,
+    OptionalExtension, QueryableByName, RunQueryDsl, SqliteConnection, sql_query,
     sql_types::{BigInt, Bool, Nullable, Text},
 };
 
@@ -109,6 +107,12 @@ struct Row {
     media_name: Option<String>,
 }
 
+#[derive(QueryableByName)]
+struct OwnerPresence {
+    #[diesel(sql_type = Bool)]
+    has_owners: bool,
+}
+
 struct OwnerOrder {
     order: [i64; 3],
     tokens: Vec<(i64, bool, i64)>,
@@ -124,21 +128,34 @@ pub(super) struct History {
     pub(super) media: BTreeMap<i64, MediaOrders>,
 }
 
+#[cfg(test)]
+mod tests;
+
 pub(super) fn records(
     conn: &mut SqliteConnection,
     key: &SnapshotKey,
     child_ranks: &BTreeMap<i64, BTreeMap<i64, i64>>,
 ) -> crate::Result<History> {
-    conn.batch_execute("CREATE TEMP TABLE mame_attribute_history_owners(owner_id INTEGER PRIMARY KEY) WITHOUT ROWID")?;
-    let owner_count = sql_query("INSERT INTO temp.mame_attribute_history_owners SELECT sets.set_id FROM catalog_set_groups AS groups JOIN catalog_sets AS sets USING(set_group_id) WHERE groups.snapshot_key=? AND groups.kind='root' AND sets.source_element_kind='mame_machine'")
-        .bind::<Text,_>(key.as_str()).execute(conn)?;
-    if owner_count == 0 {
-        conn.batch_execute("DROP TABLE temp.mame_attribute_history_owners")?;
+    let has_owners = sql_query(
+        "SELECT EXISTS (SELECT 1 FROM catalog_set_groups AS groups \
+         JOIN catalog_sets AS sets USING (set_group_id) \
+         WHERE groups.snapshot_key=? AND groups.kind='root' \
+         AND sets.source_element_kind='mame_machine') AS has_owners",
+    )
+    .bind::<Text, _>(key.as_str())
+    .get_result::<OwnerPresence>(conn)?
+    .has_owners;
+    if !has_owners {
         return Ok(History::default());
     }
     let mut owners = BTreeMap::<(i64, Family, [i64; 4]), OwnerOrder>::new();
+    // Each family statement rematerializes its bounded owner CTE; this avoids
+    // temp-schema churn but repeats owner selection instead of reusing scratch state.
     for family in FAMILIES {
-        for row in sql_query(query(family)).load::<Row>(conn)? {
+        for row in sql_query(query(family))
+            .bind::<Text, _>(key.as_str())
+            .load::<Row>(conn)?
+        {
             let field = field_code(family, row.field_kind).ok_or_else(invalid)?;
             let semantic_order = if family.keys().contains(&"element_order") {
                 child_ranks
@@ -169,7 +186,6 @@ pub(super) fn records(
                 .push((row.source_order, family != native_family(family), field));
         }
     }
-    conn.batch_execute("DROP TABLE temp.mame_attribute_history_owners")?;
     let mut result = History::default();
     let mut media_orders = BTreeMap::<_, BTreeMap<i64, AttributeOrder>>::new();
     for ((set_id, family, _), mut owner) in owners {
@@ -255,7 +271,7 @@ fn query(family: Family) -> String {
             semantic_order,
             "NULL",
             format!(
-                "FROM temp.mame_attribute_history_owners AS requested CROSS JOIN {} AS position WHERE position.set_id=requested.owner_id",
+                "FROM requested_owners AS requested CROSS JOIN {} AS position WHERE position.set_id=requested.owner_id",
                 family.table()
             ),
         )
@@ -265,13 +281,18 @@ fn query(family: Family) -> String {
             "occurrence.occurrence_order".to_owned(),
             "native.name",
             format!(
-                "FROM temp.mame_attribute_history_owners AS requested CROSS JOIN asset_occurrences AS occurrence CROSS JOIN {table} AS native CROSS JOIN {} AS position WHERE occurrence.record_id=requested.owner_id AND native.occurrence_id=occurrence.occurrence_id AND position.occurrence_id=occurrence.occurrence_id",
+                "FROM requested_owners AS requested CROSS JOIN asset_occurrences AS occurrence CROSS JOIN {table} AS native CROSS JOIN {} AS position WHERE occurrence.record_id=requested.owner_id AND native.occurrence_id=occurrence.occurrence_id AND position.occurrence_id=occurrence.occurrence_id",
                 family.table()
             ),
         )
     });
     format!(
-        "SELECT {owner} AS set_id,{columns},{semantic_order} AS semantic_order,position.field_kind,position.source_order,{media_name} AS media_name {scope} ORDER BY owner_a,owner_b,owner_c,owner_d,position.source_order"
+        "WITH requested_owners(owner_id) AS MATERIALIZED ( \
+         SELECT sets.set_id FROM catalog_set_groups AS groups \
+         JOIN catalog_sets AS sets USING (set_group_id) \
+         WHERE groups.snapshot_key=? AND groups.kind='root' \
+         AND sets.source_element_kind='mame_machine' \
+         ) SELECT {owner} AS set_id,{columns},{semantic_order} AS semantic_order,position.field_kind,position.source_order,{media_name} AS media_name {scope} ORDER BY owner_a,owner_b,owner_c,owner_d,position.source_order"
     )
 }
 

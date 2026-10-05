@@ -17,13 +17,14 @@ use super::db::Pool;
 
 mod evidence;
 mod publication;
+mod reviews;
 mod targets;
 
 /// Local registry owner; external relationship keys are interchange identities.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct RelationshipId(i64);
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct RelationshipReviewId(i64);
 
 #[derive(QueryableByName)]
@@ -446,12 +447,13 @@ impl ExplanationScope {
     }
 
     fn query(self) -> String {
-        let cte = self.scoped_assertions_cte().unwrap_or_default();
-        let from = if self.scoped_assertions_cte().is_some() {
+        let scoped = self.scoped_assertions_cte();
+        let from = if scoped.is_some() {
             "scoped_assertions a"
         } else {
             "relationship_assertion_explanations a"
         };
+        let cte = scoped.unwrap_or_default();
         let merge_name = "COALESCE(mame_rom_merge.merge_name,mame_disk_merge.merge_name,logiqx_merge.merge_name,cmp_merge.merge_name)";
         let occurrence_id =
             "COALESCE(native_source_occurrence.occurrence_id,source_occurrence.occurrence_id)";
@@ -527,45 +529,12 @@ impl ExplanationScope {
                   a.generic_target_a, a.generic_target_b, a.generic_target_c, a.assertion_key"
         )
     }
-
-    fn review_query(self) -> String {
-        let (cte, requested) = self.scoped_assertions_cte().map_or_else(
-            || {
-                (
-                    "WITH ".to_owned(),
-                    "SELECT review_id FROM catalog_relationship_reviews",
-                )
-            },
-            |cte| {
-                (
-                    format!("{cte}, "),
-                    "SELECT review.review_id FROM scoped_assertions scoped \
-                CROSS JOIN catalog_relationships owner USING(assertion_key) \
-                CROSS JOIN catalog_relationship_reviews review USING(relationship_id)",
-                )
-            },
-        );
-        format!(
-            "{cte} requested_reviews(review_id) AS MATERIALIZED ({requested}), \
-             review_readiness AS ({REVIEW_READINESS_SQL}) \
-             SELECT owner.assertion_key, review.decision, review.note, \
-                    successor.assertion_key AS superseded_by_assertion_key, \
-                    review.reviewed_at AS created_at \
-             FROM requested_reviews request \
-             CROSS JOIN catalog_relationship_reviews review USING(review_id) \
-             JOIN catalog_relationships owner USING(relationship_id) \
-             JOIN review_readiness ready ON ready.review_id=review.review_id \
-             LEFT JOIN replaced_catalog_relationships replacement ON replacement.review_id=review.review_id \
-             LEFT JOIN catalog_relationships successor ON successor.relationship_id=replacement.replacement_relationship_id \
-             WHERE ready.is_complete AND ready.is_published ORDER BY review.review_id"
-        )
-    }
 }
 
 pub fn explain_all(pool: &Pool) -> crate::Result<Vec<RelationshipExplanation>> {
     let mut conn = pool.get()?;
     let rows = sql_query(ExplanationScope::All.query()).load::<ExplanationRow>(&mut conn)?;
-    let reviews = sql_query(ExplanationScope::All.review_query()).load::<ReviewRow>(&mut conn)?;
+    let reviews = reviews::load(&mut conn, &rows)?;
     build_explanations(&mut conn, rows, reviews)
 }
 
@@ -585,14 +554,7 @@ pub fn explain_catalog_sets_for_snapshots(
         .bind::<Text, _>(previous.as_str())
         .bind::<Text, _>(current.as_str())
         .load::<ExplanationRow>(conn)?;
-    let reviews = sql_query(ExplanationScope::CatalogSets.review_query())
-        .bind::<Text, _>(previous.as_str())
-        .bind::<Text, _>(current.as_str())
-        .bind::<Text, _>(previous.as_str())
-        .bind::<Text, _>(current.as_str())
-        .bind::<Text, _>(previous.as_str())
-        .bind::<Text, _>(current.as_str())
-        .load::<ReviewRow>(conn)?;
+    let reviews = reviews::load(conn, &rows)?;
     build_explanations(conn, rows, reviews)
 }
 
@@ -689,14 +651,7 @@ pub fn explain_for_snapshots(
         .bind::<Text, _>(left.as_str())
         .bind::<Text, _>(right.as_str())
         .load::<ExplanationRow>(conn)?;
-    let reviews = sql_query(ExplanationScope::Snapshots.review_query())
-        .bind::<Text, _>(left.as_str())
-        .bind::<Text, _>(right.as_str())
-        .bind::<Text, _>(left.as_str())
-        .bind::<Text, _>(right.as_str())
-        .bind::<Text, _>(left.as_str())
-        .bind::<Text, _>(right.as_str())
-        .load::<ReviewRow>(conn)?;
+    let reviews = reviews::load(conn, &rows)?;
     build_explanations(conn, rows, reviews)
 }
 
@@ -1197,6 +1152,124 @@ mod query_plan_tests {
         detail: String,
     }
 
+    fn small_history_sql_catalogs(
+        database: &crate::database::Database,
+    ) -> crate::Result<Vec<SnapshotKey>> {
+        let directory = tempfile::tempdir()?;
+        let path = camino::Utf8PathBuf::from_path_buf(directory.path().join("catalog.dat"))
+            .map_err(|_| crate::Error::InvalidPath("non-UTF-8 test path".into()))?;
+        std::fs::write(
+            &path,
+            "<datafile><game name='parent'><description>Parent</description></game><game name='child' cloneof='parent'><description>Child</description></game></datafile>",
+        )?;
+        ["left", "right", "unrelated"]
+            .into_iter()
+            .map(|name| {
+                let report = crate::app::import_catalog(
+                    database,
+                    &CatalogImportRequest {
+                        document_path: path.clone(),
+                        format: CatalogDocumentFormat::Logiqx(
+                            crate::logiqx::LogiqxMode::ObservedCompatible,
+                        ),
+                        source_key: PublishingSourceKey::new(name),
+                        source_display_name: name.into(),
+                        catalog_key: CatalogKey::new(name),
+                        catalog_display_name: name.into(),
+                        scope: CatalogScope::Complete,
+                    },
+                )?;
+                assert_eq!(report.status, CatalogImportStatus::Succeeded);
+                report
+                    .snapshot_key
+                    .ok_or_else(|| crate::Error::InvalidPath("missing fixture snapshot".into()))
+            })
+            .collect()
+    }
+
+    #[test]
+    #[expect(
+        clippy::expect_used,
+        reason = "Test instrumentation and fixture invariants must fail loudly"
+    )]
+    fn history_sql_unreviewed_native_assertions_skip_review_readiness() -> crate::Result<()> {
+        use diesel::{Connection as _, connection::InstrumentationEvent};
+        use std::sync::{Arc, Mutex};
+
+        let database = crate::database::Database::in_memory()?;
+        let snapshots = small_history_sql_catalogs(&database)?;
+        let queries = Arc::new(Mutex::new(Vec::<String>::new()));
+        let captured = Arc::clone(&queries);
+        let mut conn = database.pool().get()?;
+        conn.set_instrumentation(move |event: InstrumentationEvent<'_>| {
+            if let InstrumentationEvent::StartQuery { query, .. } = event {
+                captured
+                    .lock()
+                    .expect("query capture lock")
+                    .push(query.to_string());
+            }
+        });
+        for scope in [ExplanationScope::CatalogSets, ExplanationScope::Snapshots] {
+            let explanations = match scope {
+                ExplanationScope::CatalogSets => {
+                    explain_catalog_sets_for_snapshots(&mut conn, &snapshots[0], &snapshots[1])?
+                }
+                ExplanationScope::Snapshots => {
+                    explain_for_snapshots(&mut conn, &snapshots[0], &snapshots[1])?
+                }
+                ExplanationScope::All => unreachable!("scoped fixture cases"),
+            };
+            assert_eq!(explanations.len(), 2);
+            assert!(explanations.iter().all(|row| row.review_history.is_empty()));
+        }
+        drop(conn);
+        assert_eq!(explain_all(database.pool())?.len(), 3);
+        assert!(
+            queries
+                .lock()
+                .expect("query capture lock")
+                .iter()
+                .all(|query| !query.contains("review_readiness AS")),
+            "unreviewed native assertions must not compile the review-readiness pipeline"
+        );
+        let unrelated =
+            explain_for_snapshots(&mut *database.pool().get()?, &snapshots[2], &snapshots[2])?
+                .into_iter()
+                .next()
+                .expect("unrelated source assertion");
+        review_claim(
+            database.pool(),
+            &unrelated.assertion_key,
+            &RelationshipReview {
+                decision: RelationshipReviewDecision::Accepted,
+                note: "unrelated published review".into(),
+                superseded_by: None,
+            },
+        )?;
+        queries.lock().expect("query capture lock").clear();
+        let scoped =
+            explain_for_snapshots(&mut *database.pool().get()?, &snapshots[0], &snapshots[1])?;
+        assert_eq!(scoped.len(), 2);
+        assert!(scoped.iter().all(|row| row.review_history.is_empty()));
+        assert!(
+            queries
+                .lock()
+                .expect("query capture lock")
+                .iter()
+                .all(|query| !query.contains("review_readiness AS")),
+            "unrelated published reviews must not trigger selected-owner review compilation"
+        );
+        let all = explain_all(database.pool())?;
+        assert_eq!(all.len(), 3);
+        assert_eq!(
+            all.iter()
+                .map(|row| row.review_history.len())
+                .sum::<usize>(),
+            1
+        );
+        Ok(())
+    }
+
     fn import_review_plan_catalogs(
         database: &crate::database::Database,
     ) -> crate::Result<Vec<SnapshotKey>> {
@@ -1325,6 +1398,10 @@ mod query_plan_tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep owner-plan and chronological batch witnesses on the same populated fixture"
+    )]
     fn populated_scoped_review_and_support_plans_stay_owner_bounded() -> crate::Result<()> {
         let database = crate::database::Database::in_memory()?;
         let snapshots = import_review_plan_catalogs(&database)?;
@@ -1364,14 +1441,20 @@ mod query_plan_tests {
                 .any(|row| row.detail.starts_with("SEARCH evidence USING PRIMARY KEY")),
             "support owner seek missing"
         );
-        for scope in [ExplanationScope::CatalogSets, ExplanationScope::Snapshots] {
-            let details = sql_query(format!("EXPLAIN QUERY PLAN {}", scope.review_query()))
-                .bind::<Text, _>(snapshots[0].as_str())
-                .bind::<Text, _>(snapshots[1].as_str())
-                .bind::<Text, _>(snapshots[0].as_str())
-                .bind::<Text, _>(snapshots[1].as_str())
-                .bind::<Text, _>(snapshots[0].as_str())
-                .bind::<Text, _>(snapshots[1].as_str())
+        for (query, id, expected_seek) in [
+            (
+                reviews::candidates_query(1),
+                identities[0].0,
+                "SEARCH review USING COVERING INDEX catalog_relationship_reviews_owner_latest",
+            ),
+            (
+                reviews::readiness_query(1),
+                cycle_draft.0.0,
+                "SEARCH review USING INTEGER PRIMARY KEY",
+            ),
+        ] {
+            let details = sql_query(format!("EXPLAIN QUERY PLAN {query}"))
+                .bind::<BigInt, _>(id)
                 .load::<PlanRow>(&mut conn)?
                 .into_iter()
                 .map(|row| row.detail)
@@ -1396,12 +1479,33 @@ mod query_plan_tests {
                 "scoped review hydration scans unrelated owners: {details:?}"
             );
             assert!(
-                details.iter().any(|detail| detail.starts_with(
-                    "SEARCH review USING COVERING INDEX catalog_relationship_reviews_owner_latest"
-                )),
+                details
+                    .iter()
+                    .any(|detail| detail.starts_with(expected_seek)),
                 "review history must start from indexed selected owners: {details:?}"
             );
         }
+        let scoped = explain_for_snapshots(&mut conn, &snapshots[0], &snapshots[1])?;
+        assert!(scoped.iter().all(|row| row.review_history.is_empty()));
+        drop(conn);
+        let all = explain_all(database.pool())?;
+        assert_eq!(
+            all.iter()
+                .map(|row| row.review_history.len())
+                .sum::<usize>(),
+            641,
+            "all published review events must survive both owner and review-ID batches; drafts stay hidden"
+        );
+        assert_eq!(
+            all.iter()
+                .filter(|row| row
+                    .latest_review
+                    .as_ref()
+                    .is_some_and(|review| review.note == "bounded active chain witness"))
+                .count(),
+            3,
+            "late replacement reviews must remain the latest events across review batches"
+        );
         Ok(())
     }
 
