@@ -326,36 +326,34 @@ pub(super) fn insert_document_facts(
     conn: &mut SqliteConnection,
     snapshot_key: &SnapshotKey,
     header_present: bool,
-    comments: &[crate::clrmamepro::Comment],
+    comment_count: usize,
 ) -> crate::Result<()> {
     sql_query(
         "INSERT INTO cmp_documents (snapshot_key, header_present, comment_count) VALUES (?, ?, ?)",
     )
     .bind::<Text, _>(snapshot_key.as_str())
     .bind::<Bool, _>(header_present)
-    .bind::<BigInt, _>(checked_order(comments.len())?)
+    .bind::<BigInt, _>(checked_order(comment_count)?)
     .execute(conn)?;
-
-    insert_comments(conn, snapshot_key, comments)
+    Ok(())
 }
 
-fn insert_comments(
+pub(super) fn insert_comment(
     conn: &mut SqliteConnection,
     snapshot_key: &SnapshotKey,
-    comments: &[crate::clrmamepro::Comment],
+    comment_order: usize,
+    comment: &crate::clrmamepro::Comment,
 ) -> crate::Result<()> {
-    for (comment_order, comment) in comments.iter().enumerate() {
-        sql_query(
-            "INSERT INTO cmp_comments (snapshot_key, comment_order, text, source_line, source_column)
-             VALUES (?, ?, ?, ?, ?)",
-        )
-        .bind::<Text, _>(snapshot_key.as_str())
-        .bind::<BigInt, _>(checked_order(comment_order)?)
-        .bind::<Text, _>(&comment.text)
-        .bind::<BigInt, _>(comment.location.line)
-        .bind::<BigInt, _>(comment.location.column)
-        .execute(conn)?;
-    }
+    sql_query(
+        "INSERT INTO cmp_comments (snapshot_key, comment_order, text, source_line, source_column)
+         VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind::<Text, _>(snapshot_key.as_str())
+    .bind::<BigInt, _>(checked_order(comment_order)?)
+    .bind::<Text, _>(&comment.text)
+    .bind::<BigInt, _>(comment.location.line)
+    .bind::<BigInt, _>(comment.location.column)
+    .execute(conn)?;
     Ok(())
 }
 

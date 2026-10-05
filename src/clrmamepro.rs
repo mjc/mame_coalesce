@@ -4,8 +4,8 @@ use serde_json::{Value, json};
 
 use crate::logiqx::RecordLocation;
 
-const MAX_TOKENS: usize = 1_000_000;
-const MAX_FORM_DEPTH: usize = 128;
+mod reader;
+pub use reader::{EofSeal, Event, EventConsumer, read_with};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Catalog {
@@ -188,88 +188,58 @@ struct Form<'a> {
     raw: &'a str,
 }
 
-struct Lexer<'a> {
-    input: &'a str,
-    offset: usize,
-    line: i64,
-    column: i64,
+impl Catalog {
+    /// Parse a complete `ClrMamePro` document into an owned catalog.
+    ///
+    /// This collecting adapter uses the same incremental reader as [`read_with`].
+    pub fn parse(bytes: &[u8]) -> crate::Result<Self> {
+        let mut collector = CatalogCollector::default();
+        let eof = reader::read_with(bytes, &mut collector)?;
+        Ok(collector.finish(eof))
+    }
 }
 
-impl Catalog {
-    pub(crate) fn parse(bytes: &[u8]) -> crate::Result<Self> {
-        let input = std::str::from_utf8(bytes).map_err(|error| {
-            parse_error(
-                format!("DAT is not valid UTF-8: {error}"),
-                "document",
-                None,
-                None,
-            )
-        })?;
-        let input = input.strip_prefix('\u{feff}').unwrap_or(input);
-        let tokens = Lexer::new(input).tokenize()?;
-        let mut parser = Parser::new(input, tokens);
-        let forms = parser.parse_document()?;
-        let mut headers = forms
-            .iter()
-            .enumerate()
-            .filter(|(_, form)| form.tag.word_eq("clrmamepro"));
-        let header = headers.next();
-        if headers.next().is_some() {
-            return Err(parse_error(
-                "multiple clrmamepro headers are ambiguous",
-                "document",
-                None,
-                header.map(|(_, form)| form.tag.location),
-            ));
+#[derive(Default)]
+struct CatalogCollector {
+    header: Option<Header>,
+    sets: Vec<Set>,
+    header_extensions: Vec<Extension>,
+    document_extensions: Vec<Extension>,
+    comments: Vec<Comment>,
+}
+
+impl reader::EventConsumer for CatalogCollector {
+    type Error = crate::Error;
+
+    fn consume(&mut self, event: reader::Event) -> crate::Result<()> {
+        match event {
+            reader::Event::Comment(comment) => self.comments.push(comment),
+            reader::Event::Header(header, extensions) => {
+                self.header = Some(header);
+                self.header_extensions = extensions;
+            }
+            reader::Event::Set(set) => self.sets.push(set),
+            reader::Event::Extension(extension) => self.document_extensions.push(extension),
         }
-        let native_header = header
-            .map(|(order, form)| parse_header(form, order))
-            .transpose()?;
-        let version = native_header
+        Ok(())
+    }
+}
+
+impl CatalogCollector {
+    fn finish(mut self, _eof: reader::EofSeal) -> Catalog {
+        self.header_extensions.extend(self.document_extensions);
+        let version = self
+            .header
             .as_ref()
             .and_then(|header| header.version.as_ref())
             .map(|field| field.value.clone());
-
-        let mut sets = Vec::new();
-        let comments = parser
-            .comments
-            .into_iter()
-            .map(|token| Comment {
-                text: token.raw.to_owned(),
-                location: token.location,
-            })
-            .collect::<Vec<_>>();
-        let mut extensions = header
-            .map(|(_, form)| header_extensions(form))
-            .unwrap_or_default();
-        for (document_order, form) in forms.iter().enumerate() {
-            if form.tag.word_eq("game") || form.tag.word_eq("set") {
-                sets.push(parse_set(form, document_order)?);
-            } else if !form.tag.word_eq("clrmamepro") {
-                extensions.push(Extension {
-                    record_kind: "document".into(),
-                    record_name: None,
-                    field_name: format!("form:{}", form.tag.value()),
-                    value: json!({"raw_tokens": form.raw}),
-                    location: form.tag.location,
-                });
-            }
-        }
-        if sets.is_empty() {
-            return Err(parse_error(
-                "DAT contains no set/game records",
-                "document",
-                None,
-                None,
-            ));
-        }
-        Ok(Self {
+        Catalog {
             version,
-            header: native_header,
-            sets,
-            extensions,
-            comments,
-        })
+            header: self.header,
+            sets: self.sets,
+            extensions: self.header_extensions,
+            comments: self.comments,
+        }
     }
 }
 
@@ -302,309 +272,6 @@ fn header_extensions(form: &Form<'_>) -> Vec<Extension> {
             FormItem::Form(child) => Some(form_extension("clrmamepro", "", child)),
         })
         .collect()
-}
-
-impl<'a> Lexer<'a> {
-    const fn new(input: &'a str) -> Self {
-        Self {
-            input,
-            offset: 0,
-            line: 1,
-            column: 1,
-        }
-    }
-
-    fn tokenize(mut self) -> crate::Result<Vec<Token<'a>>> {
-        let mut tokens = Vec::new();
-        while let Some(character) = self.peek() {
-            if character.is_whitespace() {
-                self.bump();
-                continue;
-            }
-            let start = self.offset;
-            let location = self.location();
-            let kind = match character {
-                '(' => {
-                    self.bump();
-                    TokenKind::LeftParen
-                }
-                ')' => {
-                    self.bump();
-                    TokenKind::RightParen
-                }
-                ';' => {
-                    while self.peek().is_some_and(|next| next != '\n') {
-                        self.bump();
-                    }
-                    TokenKind::Comment
-                }
-                '"' => TokenKind::Quoted(self.quoted_value(location)?),
-                _ => {
-                    while self.peek().is_some_and(|next| {
-                        !next.is_whitespace() && !matches!(next, '(' | ')' | ';')
-                    }) {
-                        self.bump();
-                    }
-                    TokenKind::Word
-                }
-            };
-            let raw = self.input.get(start..self.offset).ok_or_else(|| {
-                parse_error("invalid token boundary", "document", None, Some(location))
-            })?;
-            tokens.push(Token {
-                kind,
-                raw,
-                start,
-                end: self.offset,
-                location,
-            });
-            if tokens.len() > MAX_TOKENS {
-                return Err(parse_error(
-                    format!("DAT exceeds the {MAX_TOKENS}-token limit"),
-                    "document",
-                    None,
-                    Some(location),
-                ));
-            }
-        }
-        Ok(tokens)
-    }
-
-    fn quoted_value(&mut self, location: RecordLocation) -> crate::Result<String> {
-        self.bump();
-        let mut value = String::new();
-        loop {
-            match self.bump() {
-                Some('"') => return Ok(value),
-                Some('\\') if self.peek() == Some('"') => {
-                    self.bump();
-                    value.push('"');
-                }
-                Some(character) => value.push(character),
-                None => {
-                    return Err(parse_error(
-                        "unterminated quoted value",
-                        "document",
-                        None,
-                        Some(location),
-                    ));
-                }
-            }
-        }
-    }
-
-    fn peek(&self) -> Option<char> {
-        self.input.get(self.offset..)?.chars().next()
-    }
-
-    fn bump(&mut self) -> Option<char> {
-        let character = self.peek()?;
-        self.offset += character.len_utf8();
-        if character == '\n' {
-            self.line += 1;
-            self.column = 1;
-        } else {
-            self.column += 1;
-        }
-        Some(character)
-    }
-
-    const fn location(&self) -> RecordLocation {
-        RecordLocation {
-            line: self.line,
-            column: self.column,
-        }
-    }
-}
-
-struct Parser<'a> {
-    input: &'a str,
-    tokens: Vec<Token<'a>>,
-    comments: Vec<Token<'a>>,
-    cursor: usize,
-}
-
-impl<'a> Parser<'a> {
-    fn new(input: &'a str, tokens: Vec<Token<'a>>) -> Self {
-        let comments = tokens
-            .iter()
-            .filter(|token| matches!(token.kind, TokenKind::Comment))
-            .cloned()
-            .collect();
-        Self {
-            input,
-            tokens,
-            comments,
-            cursor: 0,
-        }
-    }
-
-    fn parse_document(&mut self) -> crate::Result<Vec<Form<'a>>> {
-        let mut forms = Vec::new();
-        loop {
-            self.skip_comments();
-            if self.cursor == self.tokens.len() {
-                return Ok(forms);
-            }
-            forms.push(self.parse_form(0)?);
-        }
-    }
-
-    fn parse_form(&mut self, depth: usize) -> crate::Result<Form<'a>> {
-        if depth >= MAX_FORM_DEPTH {
-            return Err(parse_error(
-                format!("DAT nesting exceeds {MAX_FORM_DEPTH} forms"),
-                "document",
-                None,
-                self.peek_token().map(|token| token.location),
-            ));
-        }
-        self.skip_comments();
-        let tag = self.take_word("expected a form name")?;
-        let start = tag.start;
-        self.take_left_paren("expected '(' after form name")?;
-        let mut items = Vec::new();
-        loop {
-            self.skip_comments();
-            match self.peek_token() {
-                Some(Token {
-                    kind: TokenKind::RightParen,
-                    ..
-                }) => {
-                    let close = self.take_token().ok_or_else(|| {
-                        parse_error("missing ')'", "document", None, Some(tag.location))
-                    })?;
-                    let raw = self.input.get(start..close.end).ok_or_else(|| {
-                        parse_error(
-                            "invalid form token range",
-                            "document",
-                            None,
-                            Some(tag.location),
-                        )
-                    })?;
-                    return Ok(Form { tag, items, raw });
-                }
-                None => {
-                    return Err(parse_error(
-                        format!("unterminated {} form", tag.value()),
-                        tag.value(),
-                        None,
-                        Some(tag.location),
-                    ));
-                }
-                Some(_) => {}
-            }
-            let item_start = self.cursor;
-            let key = self.take_word("expected a keyword or nested form")?;
-            self.skip_comments();
-            if matches!(
-                self.peek_token().map(|token| &token.kind),
-                Some(TokenKind::LeftParen)
-            ) {
-                self.cursor = item_start;
-                items.push(FormItem::Form(self.parse_form(depth + 1)?));
-            } else if key.word_eq("nodump") || key.word_eq("baddump") {
-                items.push(FormItem::Flag(key));
-            } else if let Some(next) = self.peek_token() {
-                if matches!(next.kind, TokenKind::RightParen) {
-                    if is_value_keyword(&tag, &key) {
-                        let record_name = form_record_name(&items);
-                        return Err(parse_error(
-                            format!("keyword {} has no value", key.value()),
-                            tag.value(),
-                            record_name,
-                            Some(key.location),
-                        ));
-                    }
-                    items.push(FormItem::Flag(key));
-                } else if !is_value_keyword(&tag, &key) && is_value_keyword(&tag, next) {
-                    items.push(FormItem::Flag(key));
-                } else if let Some(value) = self.take_value() {
-                    items.push(FormItem::Field(Field { key, value }));
-                } else {
-                    return Err(parse_error(
-                        format!("keyword {} has no value", key.value()),
-                        tag.value(),
-                        form_record_name(&items),
-                        Some(key.location),
-                    ));
-                }
-            } else {
-                return Err(parse_error(
-                    format!("keyword {} has no value", key.value()),
-                    tag.value(),
-                    form_record_name(&items),
-                    Some(key.location),
-                ));
-            }
-        }
-    }
-
-    fn take_word(&mut self, message: &str) -> crate::Result<Token<'a>> {
-        self.skip_comments();
-        match self.peek_token() {
-            Some(Token {
-                kind: TokenKind::Word,
-                ..
-            }) => self
-                .take_token()
-                .ok_or_else(|| parse_error(message, "document", None, None)),
-            token => Err(parse_error(
-                message,
-                "document",
-                None,
-                token.map(|token| token.location),
-            )),
-        }
-    }
-
-    fn take_value(&mut self) -> Option<Token<'a>> {
-        if matches!(
-            self.peek_token().map(|token| &token.kind),
-            Some(TokenKind::Word | TokenKind::Quoted(_))
-        ) {
-            self.take_token()
-        } else {
-            None
-        }
-    }
-
-    fn take_left_paren(&mut self, message: &str) -> crate::Result<()> {
-        self.skip_comments();
-        if matches!(
-            self.peek_token().map(|token| &token.kind),
-            Some(TokenKind::LeftParen)
-        ) {
-            self.cursor += 1;
-            Ok(())
-        } else {
-            Err(parse_error(
-                message,
-                "document",
-                None,
-                self.peek_token().map(|token| token.location),
-            ))
-        }
-    }
-
-    fn skip_comments(&mut self) {
-        while matches!(
-            self.peek_token().map(|token| &token.kind),
-            Some(TokenKind::Comment)
-        ) {
-            self.cursor += 1;
-        }
-    }
-
-    fn peek_token(&self) -> Option<&Token<'a>> {
-        self.tokens.get(self.cursor)
-    }
-
-    fn take_token(&mut self) -> Option<Token<'a>> {
-        let token = self.tokens.get(self.cursor)?.clone();
-        self.cursor += 1;
-        Some(token)
-    }
 }
 
 fn is_value_keyword(form: &Token<'_>, keyword: &Token<'_>) -> bool {
@@ -1193,6 +860,22 @@ mod tests {
                     && extension.value["raw_token"] == "mysteryflag")
         );
         assert_eq!(set.assets[0].crc, Some(vec![0x12, 0x34, 0x56, 0x78]));
+        Ok(())
+    }
+
+    #[test]
+    fn collecting_adapter_keeps_header_extensions_before_document_extensions() -> crate::Result<()>
+    {
+        let catalog = Catalog::parse(
+            b"outside () game ( name first ) clrmamepro ( name late future value ) after ()",
+        )?;
+
+        let extension_names = catalog
+            .extensions
+            .iter()
+            .map(|extension| extension.field_name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(extension_names, ["future", "form:outside", "form:after"]);
         Ok(())
     }
 

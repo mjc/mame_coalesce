@@ -5,7 +5,7 @@ use diesel::{
 
 use crate::{
     app::{CatalogDocumentFormat, CatalogImportReport, CatalogImportRequest, CatalogImportStatus},
-    clrmamepro::Catalog as ClrMameProCatalog,
+    clrmamepro,
     domain::{
         CatalogSetId, DocumentKey, ImportRunKey, OccurrenceId, ParserInterpretationKey, SnapshotKey,
     },
@@ -103,8 +103,6 @@ struct CatalogIdentityRow {
 
 struct SnapshotData {
     sets: Vec<SnapshotSet>,
-    cmp_header_facts: Option<crate::clrmamepro::Header>,
-    cmp_comments: Option<Vec<crate::clrmamepro::Comment>>,
     no_intro_document: Option<no_intro_pc_native::DocumentFacts>,
 }
 
@@ -343,76 +341,6 @@ fn interpretation(request: &CatalogImportRequest) -> ParserInterpretationKey {
 }
 
 impl SnapshotData {
-    fn from_clrmamepro(catalog: ClrMameProCatalog) -> Self {
-        let sets =
-            catalog
-                .sets
-                .into_iter()
-                .map(|mut set| {
-                    let mut media =
-                        set.assets
-                            .into_iter()
-                            .map(|asset| {
-                                (
-                                    asset.native.set_order,
-                                    SnapshotAsset {
-                                        name: asset.name,
-                                        role: "rom",
-                                        size: asset.size,
-                                        crc: asset.crc,
-                                        md5: asset.md5,
-                                        sha1: asset.sha1,
-                                        evidence_scope: "whole_asset",
-                                        merge: asset.merge,
-                                        dump_status: asset.status,
-                                        serial: None,
-                                        date: None,
-                                        native: NativeAssetFacts::CmpRom(Box::new(asset.native)),
-                                        location: asset.location,
-                                    },
-                                )
-                            })
-                            .chain(std::mem::take(&mut set.native.samples).into_iter().map(
-                                |sample| {
-                                    (
-                                        sample.order,
-                                        SnapshotAsset::filename_only(
-                                            sample.value.clone(),
-                                            sample.location,
-                                            NativeAssetFacts::CmpSample(sample),
-                                        ),
-                                    )
-                                },
-                            ))
-                            .collect::<Vec<_>>();
-                    media.sort_by_key(|(order, _)| *order);
-                    let assets = media.into_iter().map(|(_, asset)| asset).collect();
-                    SnapshotSet {
-                        name: set.name,
-                        parent: set.parent,
-                        runtime_dependencies: Vec::new(),
-                        location: set.location,
-                        assets,
-                        switches: Vec::new(),
-                        bios_sets: Vec::new(),
-                        specification: Vec::new(),
-                        mame_facts: None,
-                        no_intro_facts: None,
-                        logiqx_facts: None,
-                        logiqx_details: None,
-                        cmp_facts: Some(set.native),
-                        machine_dependencies: Vec::new(),
-                    }
-                })
-                .collect();
-        Self {
-            sets,
-            cmp_header_facts: catalog.header,
-            cmp_comments: Some(catalog.comments),
-            no_intro_document: None,
-        }
-    }
-
     fn from_no_intro(catalog: NoIntroCatalog) -> Self {
         let sets = catalog
             .entries
@@ -463,13 +391,67 @@ impl SnapshotData {
             .collect();
         Self {
             sets,
-            cmp_header_facts: None,
-            cmp_comments: None,
             no_intro_document: Some(no_intro_pc_native::DocumentFacts {
                 location: catalog.document_location,
                 header: catalog.header,
             }),
         }
+    }
+}
+
+fn snapshot_set_from_clrmamepro(mut set: crate::clrmamepro::Set) -> SnapshotSet {
+    let samples = std::mem::take(&mut set.native.samples);
+    let mut media = set
+        .assets
+        .into_iter()
+        .map(|asset| {
+            (
+                asset.native.set_order,
+                SnapshotAsset {
+                    name: asset.name,
+                    role: "rom",
+                    size: asset.size,
+                    crc: asset.crc,
+                    md5: asset.md5,
+                    sha1: asset.sha1,
+                    evidence_scope: "whole_asset",
+                    merge: asset.merge,
+                    dump_status: asset.status,
+                    serial: None,
+                    date: None,
+                    native: NativeAssetFacts::CmpRom(Box::new(asset.native)),
+                    location: asset.location,
+                },
+            )
+        })
+        .chain(samples.into_iter().map(|sample| {
+            (
+                sample.order,
+                SnapshotAsset::filename_only(
+                    sample.value.clone(),
+                    sample.location,
+                    NativeAssetFacts::CmpSample(sample),
+                ),
+            )
+        }))
+        .collect::<Vec<_>>();
+    media.sort_by_key(|(order, _)| *order);
+    let assets = media.into_iter().map(|(_, asset)| asset).collect();
+    SnapshotSet {
+        name: set.name,
+        parent: set.parent,
+        runtime_dependencies: Vec::new(),
+        location: set.location,
+        assets,
+        switches: Vec::new(),
+        bios_sets: Vec::new(),
+        specification: Vec::new(),
+        mame_facts: None,
+        no_intro_facts: None,
+        logiqx_facts: None,
+        logiqx_details: None,
+        cmp_facts: Some(set.native),
+        machine_dependencies: Vec::new(),
     }
 }
 
@@ -680,7 +662,29 @@ fn machine_assets(assets: Vec<crate::mame::MachineAsset>) -> Vec<(i64, SnapshotA
         .collect()
 }
 
+fn retain_and_import_clrmamepro(
+    pool: &Pool,
+    request: &CatalogImportRequest,
+) -> crate::Result<CatalogImportReport> {
+    ensure_source(pool, request)?;
+    let documents = DocumentStore::from_pool(pool.clone())?;
+    let retained =
+        documents.retain_path_clrmamepro(request.source_key.clone(), &request.document_path)?;
+    let bytes = documents.load(&retained.document_key)?;
+    import_clrmamepro(
+        pool,
+        request,
+        retained.document_key,
+        &retained.acquisition_key.to_string(),
+        &bytes,
+    )
+}
+
 pub fn import(pool: &Pool, request: &CatalogImportRequest) -> crate::Result<CatalogImportReport> {
+    if request.format == CatalogDocumentFormat::ClrMamePro {
+        return retain_and_import_clrmamepro(pool, request);
+    }
+
     ensure_source(pool, request)?;
     let documents = DocumentStore::from_pool(pool.clone())?;
     let retained = match request.format {
@@ -692,9 +696,7 @@ pub fn import(pool: &Pool, request: &CatalogImportRequest) -> crate::Result<Cata
         }
         CatalogDocumentFormat::MameSoftwareListXml => documents
             .retain_path_mame_softwarelist(request.source_key.clone(), &request.document_path)?,
-        CatalogDocumentFormat::ClrMamePro => {
-            documents.retain_path_clrmamepro(request.source_key.clone(), &request.document_path)?
-        }
+        CatalogDocumentFormat::ClrMamePro => unreachable!("ClrMamePro import is dispatched above"),
         CatalogDocumentFormat::NoIntroPcXml => documents
             .retain_path_no_intro_pc_xml(request.source_key.clone(), &request.document_path)?,
         CatalogDocumentFormat::NoIntroDat(_) => documents
@@ -734,9 +736,7 @@ pub fn import(pool: &Pool, request: &CatalogImportRequest) -> crate::Result<Cata
                 &bytes,
             );
         }
-        CatalogDocumentFormat::ClrMamePro => {
-            ClrMameProCatalog::parse(&bytes).map(SnapshotData::from_clrmamepro)
-        }
+        CatalogDocumentFormat::ClrMamePro => unreachable!("ClrMamePro import is dispatched above"),
         CatalogDocumentFormat::NoIntroPcXml => {
             NoIntroCatalog::parse(&bytes).map(SnapshotData::from_no_intro)
         }
@@ -803,6 +803,46 @@ struct StreamingImport<'a> {
     conn: &'a mut SqliteConnection,
     publication: SnapshotPublication,
     run_key: ImportRunKey,
+}
+
+struct ClrMameProImport<'a> {
+    import: StreamingImport<'a>,
+    header: Option<crate::clrmamepro::Header>,
+    next_comment_order: usize,
+}
+
+impl crate::clrmamepro::EventConsumer for ClrMameProImport<'_> {
+    type Error = StreamingImportError;
+
+    fn consume(&mut self, event: crate::clrmamepro::Event) -> std::result::Result<(), Self::Error> {
+        match event {
+            crate::clrmamepro::Event::Comment(comment) => {
+                let comment_order = self.next_comment_order;
+                self.next_comment_order =
+                    self.next_comment_order.checked_add(1).ok_or_else(|| {
+                        StreamingImportError::Storage(crate::Error::InvalidPath(
+                            "too many ClrMamePro comments".into(),
+                        ))
+                    })?;
+                if let SnapshotPublication::Pending(snapshot) = &self.import.publication {
+                    cmp_native::insert_comment(self.import.conn, snapshot, comment_order, &comment)
+                        .map_err(StreamingImportError::Storage)?;
+                }
+            }
+            crate::clrmamepro::Event::Header(header, _extensions) => {
+                self.header = Some(header);
+            }
+            crate::clrmamepro::Event::Set(set) => {
+                if let SnapshotPublication::Pending(snapshot) = &self.import.publication {
+                    let set = snapshot_set_from_clrmamepro(set);
+                    insert_snapshot_set(self.import.conn, snapshot, &set)
+                        .map_err(StreamingImportError::Storage)?;
+                }
+            }
+            crate::clrmamepro::Event::Extension(extension) => drop(extension),
+        }
+        Ok(())
+    }
 }
 
 struct SoftwareListImport<'a> {
@@ -1088,6 +1128,64 @@ fn import_mame(
             .map_err(StreamingImportError::Storage)
     });
     // Release the connection before recording a failure in a separate transaction.
+    drop(conn);
+    finish_streaming_result(result, pool, request, document_key, acquisition_key)
+}
+
+fn import_clrmamepro(
+    pool: &Pool,
+    request: &CatalogImportRequest,
+    document_key: DocumentKey,
+    acquisition_key: &str,
+    bytes: &[u8],
+) -> crate::Result<CatalogImportReport> {
+    let interpretation = interpretation(request);
+    let mut conn = pool.get()?;
+    let result = conn.immediate_transaction::<_, StreamingImportError, _>(|conn| {
+        ensure_identities(conn, request, &interpretation).map_err(StreamingImportError::Storage)?;
+        let import = start_streaming_import(
+            conn,
+            request,
+            &document_key,
+            acquisition_key,
+            &interpretation,
+        )
+        .map_err(StreamingImportError::Storage)?;
+        let mut cmp = ClrMameProImport {
+            import,
+            header: None,
+            next_comment_order: 0,
+        };
+        let eof = clrmamepro::read_with(bytes, &mut cmp)?;
+        if cmp.next_comment_order != eof.comment_count()
+            || cmp.header.is_some() != eof.header_present()
+        {
+            return Err(StreamingImportError::Storage(crate::Error::InvalidPath(
+                "ClrMamePro reader seal does not match streamed document facts".into(),
+            )));
+        }
+
+        let ClrMameProImport {
+            import,
+            header,
+            next_comment_order,
+        } = cmp;
+        if let SnapshotPublication::Pending(snapshot) = &import.publication {
+            if let Some(header) = &header {
+                cmp_native::insert_header_facts(import.conn, snapshot, header)
+                    .map_err(StreamingImportError::Storage)?;
+            }
+            cmp_native::insert_document_facts(
+                import.conn,
+                snapshot,
+                eof.header_present(),
+                next_comment_order,
+            )
+            .map_err(StreamingImportError::Storage)?;
+        }
+        finish_streaming_import(import, request, &document_key, &interpretation)
+            .map_err(StreamingImportError::Storage)
+    });
     drop(conn);
     finish_streaming_result(result, pool, request, document_key, acquisition_key)
 }
@@ -1649,18 +1747,6 @@ fn insert_snapshot_contents(
     }
     for set in &snapshot_data.sets {
         insert_snapshot_set(conn, snapshot_key, set)?;
-    }
-
-    if let Some(header) = &snapshot_data.cmp_header_facts {
-        cmp_native::insert_header_facts(conn, snapshot_key, header)?;
-    }
-    if let Some(comments) = &snapshot_data.cmp_comments {
-        cmp_native::insert_document_facts(
-            conn,
-            snapshot_key,
-            snapshot_data.cmp_header_facts.is_some(),
-            comments,
-        )?;
     }
 
     Ok(())

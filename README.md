@@ -363,6 +363,23 @@ Vendor extensions are counted and reported, not compared as catalog fields.
 This is a source-to-storage/query round trip, not independent producer-grammar,
 ROM-byte, or executable-loader proof.
 
+The ClrMamePro verifier compares all 39 declared header/set/ROM fields, lexical
+comments, mixed ROM/sample order, quotation and source positions:
+
+```sh
+cargo run --locked --profile profiling --example clrmamepro_native_verify -- /path/catalog.sqlite sha256:SNAPSHOT_HEX /path/source.dat
+```
+
+It streams the supplied source through validated EOF and requires complete native
+page exhaustion. Header placement, absent/empty values, raw checksum aliases,
+normalized declared digests, effective directives and ineligible UUID links are
+checked separately. Queries do not open the retained original. The original
+buffer, one complete source form/set, document comments and selected sets' full
+children remain input-dependent; native reads use 64-set pages and 256-ID media
+batches without truncation. Unsupported vendor extensions are counted, not
+compared. This is a same-parser storage/query check, not independent producer
+grammar or observed ROM-byte verification.
+
 `catalog_no_intro_database::games_for_snapshot` reads an exact published export
 without opening its original document. A checked page limit bounds games;
 every selected game's archive, dump-source and release histories are complete,

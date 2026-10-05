@@ -1,6 +1,6 @@
 pub mod app;
 pub mod build;
-mod clrmamepro;
+pub mod clrmamepro;
 pub mod database;
 pub mod diagnostics;
 pub mod disk;
