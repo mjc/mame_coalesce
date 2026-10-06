@@ -1,6 +1,10 @@
 use diesel::{
-    RunQueryDsl, SqliteConnection, sql_query,
+    RunQueryDsl, SqliteConnection,
+    query_builder::{AstPass, QueryFragment, QueryId},
+    query_dsl::methods::ExecuteDsl,
+    sql_query,
     sql_types::{BigInt, Bool, Nullable, Text},
+    sqlite::Sqlite,
 };
 
 use crate::{
@@ -28,37 +32,148 @@ enum PositionOwner<'a> {
     Sample(OccurrenceId),
 }
 
-impl PositionOwner<'_> {
-    const fn table_and_keys(&self) -> (&'static str, &'static str, &'static str) {
-        match self {
-            Self::Document(_) => ("logiqx_document_attribute_positions", "snapshot_key", "?"),
-            Self::ClrMamePro(_) => ("logiqx_clrmamepro_attribute_positions", "snapshot_key", "?"),
-            Self::RomCenter(_) => ("logiqx_romcenter_attribute_positions", "snapshot_key", "?"),
-            Self::Game(_) => ("logiqx_game_attribute_positions", "set_id", "?"),
-            Self::Release(..) => (
-                "logiqx_release_attribute_positions",
-                "set_id,release_order",
-                "?,?",
-            ),
-            Self::Bios(..) => (
-                "logiqx_bios_attribute_positions",
-                "set_id,bios_order",
-                "?,?",
-            ),
-            Self::Archive(..) => (
-                "logiqx_archive_attribute_positions",
-                "set_id,archive_order",
-                "?,?",
-            ),
-            Self::Device(..) => (
-                "logiqx_device_reference_attribute_positions",
-                "set_id,reference_order",
-                "?,?",
-            ),
-            Self::Rom(_) => ("logiqx_rom_attribute_positions", "occurrence_id", "?"),
-            Self::Disk(_) => ("logiqx_disk_attribute_positions", "occurrence_id", "?"),
-            Self::Sample(_) => ("logiqx_sample_attribute_positions", "occurrence_id", "?"),
+trait PositionOwnerBinds: Copy {
+    fn push<'b>(&'b self, pass: &mut AstPass<'_, 'b, Sqlite>) -> diesel::QueryResult<()>;
+}
+
+impl PositionOwnerBinds for &str {
+    fn push<'b>(&'b self, pass: &mut AstPass<'_, 'b, Sqlite>) -> diesel::QueryResult<()> {
+        pass.push_bind_param::<Text, _>(self)
+    }
+}
+
+impl PositionOwnerBinds for i64 {
+    fn push<'b>(&'b self, pass: &mut AstPass<'_, 'b, Sqlite>) -> diesel::QueryResult<()> {
+        pass.push_bind_param::<BigInt, _>(self)
+    }
+}
+
+impl PositionOwnerBinds for (i64, i64) {
+    fn push<'b>(&'b self, pass: &mut AstPass<'_, 'b, Sqlite>) -> diesel::QueryResult<()> {
+        pass.push_bind_param::<BigInt, _>(&self.0)?;
+        pass.push_sql(", ");
+        pass.push_bind_param::<BigInt, _>(&self.1)
+    }
+}
+
+trait PositionShape: 'static {
+    type Owner<'a>: PositionOwnerBinds
+    where
+        Self: 'a;
+
+    const TABLE: &'static str;
+    const OWNER_COLUMNS: &'static str;
+}
+
+macro_rules! position_shape {
+    ($name:ident, $owner:ty, $table:literal, $columns:literal) => {
+        struct $name;
+
+        impl PositionShape for $name {
+            type Owner<'a> = $owner;
+            const TABLE: &'static str = $table;
+            const OWNER_COLUMNS: &'static str = $columns;
         }
+    };
+}
+
+position_shape!(
+    DocumentPositionShape,
+    &'a str,
+    "logiqx_document_attribute_positions",
+    "snapshot_key"
+);
+position_shape!(
+    ClrMameProPositionShape,
+    &'a str,
+    "logiqx_clrmamepro_attribute_positions",
+    "snapshot_key"
+);
+position_shape!(
+    RomCenterPositionShape,
+    &'a str,
+    "logiqx_romcenter_attribute_positions",
+    "snapshot_key"
+);
+position_shape!(
+    GamePositionShape,
+    i64,
+    "logiqx_game_attribute_positions",
+    "set_id"
+);
+position_shape!(
+    ReleasePositionShape,
+    (i64, i64),
+    "logiqx_release_attribute_positions",
+    "set_id,release_order"
+);
+position_shape!(
+    BiosPositionShape,
+    (i64, i64),
+    "logiqx_bios_attribute_positions",
+    "set_id,bios_order"
+);
+position_shape!(
+    ArchivePositionShape,
+    (i64, i64),
+    "logiqx_archive_attribute_positions",
+    "set_id,archive_order"
+);
+position_shape!(
+    DevicePositionShape,
+    (i64, i64),
+    "logiqx_device_reference_attribute_positions",
+    "set_id,reference_order"
+);
+position_shape!(
+    RomPositionShape,
+    i64,
+    "logiqx_rom_attribute_positions",
+    "occurrence_id"
+);
+position_shape!(
+    DiskPositionShape,
+    i64,
+    "logiqx_disk_attribute_positions",
+    "occurrence_id"
+);
+position_shape!(
+    SamplePositionShape,
+    i64,
+    "logiqx_sample_attribute_positions",
+    "occurrence_id"
+);
+
+struct PositionInsert<'a, Shape: PositionShape> {
+    owner: Shape::Owner<'a>,
+    field_kind: i64,
+    source_order: i64,
+    source_line: i64,
+    source_column: i64,
+}
+
+impl<Shape: PositionShape> QueryId for PositionInsert<'_, Shape> {
+    type QueryId = Shape;
+}
+
+impl<Shape: PositionShape> QueryFragment<Sqlite> for PositionInsert<'_, Shape> {
+    fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, Sqlite>) -> diesel::QueryResult<()> {
+        pass.push_sql("INSERT INTO ");
+        pass.push_sql(Shape::TABLE);
+        pass.push_sql("(");
+        pass.push_sql(Shape::OWNER_COLUMNS);
+        pass.push_sql(",field_kind,source_order,source_line,source_column) VALUES (");
+        self.owner.push(&mut pass)?;
+        pass.push_sql(", ");
+        pass.push_bind_param::<BigInt, _>(&self.field_kind)?;
+        pass.push_sql(", ");
+        pass.push_bind_param::<BigInt, _>(&self.source_order)?;
+        pass.push_sql(", ");
+        pass.push_bind_param::<BigInt, _>(&self.source_line)?;
+        pass.push_sql(", ");
+        pass.push_bind_param::<BigInt, _>(&self.source_column)?;
+        pass.push_sql(")");
+        Ok(())
     }
 }
 
@@ -68,35 +183,90 @@ fn insert_positions<Field: Copy>(
     positions: &[AttributePosition<Field>],
     field_code: impl Fn(Field) -> i64,
 ) -> crate::Result<()> {
-    let (table, keys, placeholders) = owner.table_and_keys();
-    let statement = format!(
-        "INSERT INTO {table} ({keys},field_kind,source_order,source_line,source_column) VALUES ({placeholders},?,?,?,?)"
-    );
+    match owner {
+        PositionOwner::Document(snapshot) => insert_position_rows::<DocumentPositionShape, _>(
+            conn,
+            snapshot.as_str(),
+            positions,
+            &field_code,
+        ),
+        PositionOwner::ClrMamePro(snapshot) => insert_position_rows::<ClrMameProPositionShape, _>(
+            conn,
+            snapshot.as_str(),
+            positions,
+            &field_code,
+        ),
+        PositionOwner::RomCenter(snapshot) => insert_position_rows::<RomCenterPositionShape, _>(
+            conn,
+            snapshot.as_str(),
+            positions,
+            &field_code,
+        ),
+        PositionOwner::Game(set) => {
+            insert_position_rows::<GamePositionShape, _>(conn, set.as_i64(), positions, &field_code)
+        }
+        PositionOwner::Release(set, order) => insert_position_rows::<ReleasePositionShape, _>(
+            conn,
+            (set.as_i64(), order),
+            positions,
+            &field_code,
+        ),
+        PositionOwner::Bios(set, order) => insert_position_rows::<BiosPositionShape, _>(
+            conn,
+            (set.as_i64(), order),
+            positions,
+            &field_code,
+        ),
+        PositionOwner::Archive(set, order) => insert_position_rows::<ArchivePositionShape, _>(
+            conn,
+            (set.as_i64(), order),
+            positions,
+            &field_code,
+        ),
+        PositionOwner::Device(set, order) => insert_position_rows::<DevicePositionShape, _>(
+            conn,
+            (set.as_i64(), order),
+            positions,
+            &field_code,
+        ),
+        PositionOwner::Rom(occurrence) => insert_position_rows::<RomPositionShape, _>(
+            conn,
+            occurrence.database_value(),
+            positions,
+            &field_code,
+        ),
+        PositionOwner::Disk(occurrence) => insert_position_rows::<DiskPositionShape, _>(
+            conn,
+            occurrence.database_value(),
+            positions,
+            &field_code,
+        ),
+        PositionOwner::Sample(occurrence) => insert_position_rows::<SamplePositionShape, _>(
+            conn,
+            occurrence.database_value(),
+            positions,
+            &field_code,
+        ),
+    }
+}
+
+fn insert_position_rows<Shape: PositionShape, Field: Copy>(
+    conn: &mut SqliteConnection,
+    owner: Shape::Owner<'_>,
+    positions: &[AttributePosition<Field>],
+    field_code: &impl Fn(Field) -> i64,
+) -> crate::Result<()> {
     for position in positions {
-        let mut query = sql_query(&statement).into_boxed::<diesel::sqlite::Sqlite>();
-        query = match owner {
-            PositionOwner::Document(snapshot)
-            | PositionOwner::ClrMamePro(snapshot)
-            | PositionOwner::RomCenter(snapshot) => query.bind::<Text, _>(snapshot.as_str()),
-            PositionOwner::Game(set) => query.bind::<BigInt, _>(set.as_i64()),
-            PositionOwner::Release(set, order)
-            | PositionOwner::Bios(set, order)
-            | PositionOwner::Archive(set, order)
-            | PositionOwner::Device(set, order) => query
-                .bind::<BigInt, _>(set.as_i64())
-                .bind::<BigInt, _>(order),
-            PositionOwner::Rom(occurrence)
-            | PositionOwner::Disk(occurrence)
-            | PositionOwner::Sample(occurrence) => {
-                query.bind::<BigInt, _>(occurrence.database_value())
-            }
-        };
-        query
-            .bind::<BigInt, _>(field_code(position.field))
-            .bind::<BigInt, _>(checked_family_order(position.source_order, "attributes")?)
-            .bind::<BigInt, _>(position.location.line)
-            .bind::<BigInt, _>(position.location.column)
-            .execute(conn)?;
+        ExecuteDsl::execute(
+            PositionInsert::<Shape> {
+                owner,
+                field_kind: field_code(position.field),
+                source_order: checked_family_order(position.source_order, "attributes")?,
+                source_line: position.location.line,
+                source_column: position.location.column,
+            },
+            conn,
+        )?;
     }
     Ok(())
 }
@@ -680,4 +850,136 @@ fn checked_source_order(order: Option<usize>, family: &str) -> crate::Result<i64
     })?;
     i64::try_from(order)
         .map_err(|_| crate::Error::InvalidPath("too many Logiqx game children".into()))
+}
+
+#[cfg(test)]
+mod prepared_statement_tests {
+    use std::{
+        any::TypeId,
+        collections::BTreeSet,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+    };
+
+    use diesel::{
+        Connection,
+        connection::{InstrumentationEvent, SimpleConnection},
+        sqlite::SqliteConnection,
+    };
+
+    use super::{
+        ArchivePositionShape, BiosPositionShape, ClrMameProPositionShape, DevicePositionShape,
+        DiskPositionShape, DocumentPositionShape, GamePositionShape, PositionInsert, PositionOwner,
+        ReleasePositionShape, RomCenterPositionShape, RomPositionShape, SamplePositionShape,
+        insert_positions,
+    };
+    use crate::{
+        domain::{CatalogSetId, SnapshotKey},
+        xml_reader::{AttributeLocation, AttributePosition},
+    };
+
+    #[test]
+    #[expect(
+        clippy::expect_used,
+        reason = "SQLite fixture setup and cache assertions must fail loudly"
+    )]
+    fn document_attribute_positions_reuse_the_prepared_statement() {
+        let mut conn = SqliteConnection::establish(":memory:").expect("open in-memory SQLite");
+        conn.batch_execute(
+            "CREATE TABLE logiqx_document_attribute_positions (
+                snapshot_key TEXT NOT NULL,
+                field_kind INTEGER NOT NULL,
+                source_order INTEGER NOT NULL,
+                source_line INTEGER NOT NULL,
+                source_column INTEGER NOT NULL
+            );
+            CREATE TABLE logiqx_game_attribute_positions (
+                set_id INTEGER NOT NULL,
+                field_kind INTEGER NOT NULL,
+                source_order INTEGER NOT NULL,
+                source_line INTEGER NOT NULL,
+                source_column INTEGER NOT NULL
+            );
+            CREATE TABLE logiqx_release_attribute_positions (
+                set_id INTEGER NOT NULL,
+                release_order INTEGER NOT NULL,
+                field_kind INTEGER NOT NULL,
+                source_order INTEGER NOT NULL,
+                source_line INTEGER NOT NULL,
+                source_column INTEGER NOT NULL
+            )",
+        )
+        .expect("create position table");
+
+        let cached_queries = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&cached_queries);
+        conn.set_instrumentation(move |event: InstrumentationEvent<'_>| {
+            if matches!(event, InstrumentationEvent::CacheQuery { .. }) {
+                observed.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+
+        let key = SnapshotKey::from_persisted("snapshot".to_owned());
+        let positions = [
+            AttributePosition {
+                field: 1_u8,
+                source_order: 0,
+                location: AttributeLocation { line: 1, column: 2 },
+            },
+            AttributePosition {
+                field: 2_u8,
+                source_order: 1,
+                location: AttributeLocation { line: 1, column: 9 },
+            },
+        ];
+
+        insert_positions(
+            &mut conn,
+            PositionOwner::Document(&key),
+            &positions,
+            i64::from,
+        )
+        .expect("insert document positions");
+
+        let set = CatalogSetId::try_from(17).expect("valid set ID");
+        insert_positions(&mut conn, PositionOwner::Game(set), &positions, i64::from)
+            .expect("insert game positions");
+        insert_positions(
+            &mut conn,
+            PositionOwner::Release(set, 2),
+            &positions,
+            i64::from,
+        )
+        .expect("insert release positions");
+
+        assert_eq!(cached_queries.load(Ordering::Relaxed), 3);
+    }
+
+    #[test]
+    #[expect(
+        clippy::expect_used,
+        reason = "a missing static query ID invalidates the cache-safety contract"
+    )]
+    fn every_logiqx_position_sql_shape_has_a_distinct_static_cache_id() {
+        let ids = [
+            <PositionInsert<'static, DocumentPositionShape> as diesel::query_builder::QueryId>::query_id(),
+            <PositionInsert<'static, ClrMameProPositionShape> as diesel::query_builder::QueryId>::query_id(),
+            <PositionInsert<'static, RomCenterPositionShape> as diesel::query_builder::QueryId>::query_id(),
+            <PositionInsert<'static, GamePositionShape> as diesel::query_builder::QueryId>::query_id(),
+            <PositionInsert<'static, ReleasePositionShape> as diesel::query_builder::QueryId>::query_id(),
+            <PositionInsert<'static, BiosPositionShape> as diesel::query_builder::QueryId>::query_id(),
+            <PositionInsert<'static, ArchivePositionShape> as diesel::query_builder::QueryId>::query_id(),
+            <PositionInsert<'static, DevicePositionShape> as diesel::query_builder::QueryId>::query_id(),
+            <PositionInsert<'static, RomPositionShape> as diesel::query_builder::QueryId>::query_id(),
+            <PositionInsert<'static, DiskPositionShape> as diesel::query_builder::QueryId>::query_id(),
+            <PositionInsert<'static, SamplePositionShape> as diesel::query_builder::QueryId>::query_id(),
+        ];
+        let ids: BTreeSet<TypeId> = ids
+            .into_iter()
+            .map(|id| id.expect("static query ID"))
+            .collect();
+        assert_eq!(ids.len(), 11);
+    }
 }

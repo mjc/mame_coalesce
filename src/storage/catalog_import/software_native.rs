@@ -8,8 +8,12 @@ use crate::mame_softwarelist::{
 use positions::PositionOwner;
 
 use diesel::{
-    QueryableByName, RunQueryDsl, SqliteConnection, sql_query,
+    QueryableByName, RunQueryDsl, SqliteConnection,
+    query_builder::{AstPass, QueryFragment, QueryId},
+    query_dsl::methods::ExecuteDsl,
+    sql_query,
     sql_types::{BigInt, Binary, Nullable, Text},
+    sqlite::Sqlite,
 };
 
 use crate::{
@@ -738,6 +742,79 @@ fn record_occurrence_identity_evidence(
     record_content_identity_conflict(conn, occurrence, resolution)
 }
 
+/// The fixed software-ROM insert shape. Its unique query ID is safe because
+/// this fragment always emits the same SQL and bind types in the same order.
+struct InsertRomEntry<'a> {
+    occurrence_id: i64,
+    record_id: i64,
+    area_id: i64,
+    component_order: i64,
+    source_order: i64,
+    name: Option<&'a str>,
+    evidence_scope: &'a str,
+    size_text: Option<&'a str>,
+    offset_text: Option<&'a str>,
+    value: Option<&'a str>,
+    crc_text: Option<&'a str>,
+    sha1_text: Option<&'a str>,
+    dump_status: Option<&'a str>,
+    status_specified: i64,
+    load_instruction: Option<&'a str>,
+    source_line: i64,
+    source_column: i64,
+}
+
+impl QueryId for InsertRomEntry<'_> {
+    type QueryId = InsertRomEntry<'static>;
+}
+
+impl QueryFragment<Sqlite> for InsertRomEntry<'_> {
+    fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, Sqlite>) -> diesel::QueryResult<()> {
+        pass.push_sql(
+            "INSERT INTO software_rom_entries \
+             (occurrence_id, record_id, area_id, component_order, source_order, name, evidence_scope, \
+              size_text, offset_text, value, crc_text, sha1_text, dump_status, status_specified, \
+              load_instruction, source_line, source_column) \
+             VALUES (",
+        );
+        pass.push_bind_param::<BigInt, _>(&self.occurrence_id)?;
+        pass.push_sql(", ");
+        pass.push_bind_param::<BigInt, _>(&self.record_id)?;
+        pass.push_sql(", ");
+        pass.push_bind_param::<BigInt, _>(&self.area_id)?;
+        pass.push_sql(", ");
+        pass.push_bind_param::<BigInt, _>(&self.component_order)?;
+        pass.push_sql(", ");
+        pass.push_bind_param::<BigInt, _>(&self.source_order)?;
+        pass.push_sql(", ");
+        pass.push_bind_param::<Nullable<Text>, _>(&self.name)?;
+        pass.push_sql(", ");
+        pass.push_bind_param::<Text, _>(&self.evidence_scope)?;
+        pass.push_sql(", ");
+        pass.push_bind_param::<Nullable<Text>, _>(&self.size_text)?;
+        pass.push_sql(", ");
+        pass.push_bind_param::<Nullable<Text>, _>(&self.offset_text)?;
+        pass.push_sql(", ");
+        pass.push_bind_param::<Nullable<Text>, _>(&self.value)?;
+        pass.push_sql(", ");
+        pass.push_bind_param::<Nullable<Text>, _>(&self.crc_text)?;
+        pass.push_sql(", ");
+        pass.push_bind_param::<Nullable<Text>, _>(&self.sha1_text)?;
+        pass.push_sql(", ");
+        pass.push_bind_param::<Nullable<Text>, _>(&self.dump_status)?;
+        pass.push_sql(", ");
+        pass.push_bind_param::<BigInt, _>(&self.status_specified)?;
+        pass.push_sql(", ");
+        pass.push_bind_param::<Nullable<Text>, _>(&self.load_instruction)?;
+        pass.push_sql(", ");
+        pass.push_bind_param::<BigInt, _>(&self.source_line)?;
+        pass.push_sql(", ");
+        pass.push_bind_param::<BigInt, _>(&self.source_column)?;
+        pass.push_sql(")");
+        Ok(())
+    }
+}
+
 fn insert_rom_entry(
     conn: &mut SqliteConnection,
     record: CatalogSetId,
@@ -747,35 +824,31 @@ fn insert_rom_entry(
     rom: &SoftwareRom,
     evidence: RomEvidence,
 ) -> crate::Result<()> {
-    sql_query(
-        "INSERT INTO software_rom_entries \
-         (occurrence_id, record_id, area_id, component_order, source_order, name, evidence_scope, \
-          size_text, offset_text, value, crc_text, sha1_text, dump_status, status_specified, \
-          load_instruction, source_line, source_column) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind::<BigInt, _>(occurrence.database_value())
-    .bind::<BigInt, _>(record.as_i64())
-    .bind::<BigInt, _>(area_id)
-    .bind::<BigInt, _>(component_order)
-    .bind::<BigInt, _>(checked_order(rom.source_order, "software ROM entries")?)
-    .bind::<Nullable<Text>, _>(
-        rom.name
-            .as_ref()
-            .map(crate::mame_softwarelist::ComponentName::as_str),
-    )
-    .bind::<Text, _>(evidence.scope())
-    .bind::<Nullable<Text>, _>(rom.size_text.as_deref())
-    .bind::<Nullable<Text>, _>(rom.offset_text.as_deref())
-    .bind::<Nullable<Text>, _>(rom.value.as_deref())
-    .bind::<Nullable<Text>, _>(rom.crc_text.as_deref())
-    .bind::<Nullable<Text>, _>(rom.sha1_text.as_deref())
-    .bind::<Nullable<Text>, _>(Some(rom.status.unwrap_or_default().as_str()))
-    .bind::<BigInt, _>(i64::from(rom.status_specified))
-    .bind::<Nullable<Text>, _>(rom.load.as_ref().map(LoadInstruction::as_str))
-    .bind::<BigInt, _>(rom.location.line)
-    .bind::<BigInt, _>(rom.location.column)
-    .execute(conn)?;
+    ExecuteDsl::execute(
+        InsertRomEntry {
+            occurrence_id: occurrence.database_value(),
+            record_id: record.as_i64(),
+            area_id,
+            component_order,
+            source_order: checked_order(rom.source_order, "software ROM entries")?,
+            name: rom
+                .name
+                .as_ref()
+                .map(crate::mame_softwarelist::ComponentName::as_str),
+            evidence_scope: evidence.scope(),
+            size_text: rom.size_text.as_deref(),
+            offset_text: rom.offset_text.as_deref(),
+            value: rom.value.as_deref(),
+            crc_text: rom.crc_text.as_deref(),
+            sha1_text: rom.sha1_text.as_deref(),
+            dump_status: Some(rom.status.unwrap_or_default().as_str()),
+            status_specified: i64::from(rom.status_specified),
+            load_instruction: rom.load.as_ref().map(LoadInstruction::as_str),
+            source_line: rom.location.line,
+            source_column: rom.location.column,
+        },
+        conn,
+    )?;
     positions::insert(
         conn,
         PositionOwner::Rom(occurrence.database_value()),
@@ -898,4 +971,106 @@ fn insert_disk_component(
 
 fn checked_order(order: usize, kind: &str) -> crate::Result<i64> {
     i64::try_from(order).map_err(|_| crate::Error::InvalidPath(format!("too many {kind}")))
+}
+
+#[cfg(test)]
+mod prepared_statement_tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    use diesel::{
+        Connection, QueryableByName, RunQueryDsl,
+        connection::{InstrumentationEvent, SimpleConnection},
+        query_dsl::methods::ExecuteDsl,
+        sql_query,
+        sql_types::{BigInt, Nullable, Text},
+        sqlite::SqliteConnection,
+    };
+
+    use super::InsertRomEntry;
+
+    #[derive(QueryableByName)]
+    struct StoredEntry {
+        #[diesel(sql_type = BigInt)]
+        source_order: i64,
+        #[diesel(sql_type = Nullable<Text>)]
+        name: Option<String>,
+    }
+
+    fn entry(source_order: i64, name: Option<&str>) -> InsertRomEntry<'_> {
+        InsertRomEntry {
+            occurrence_id: source_order + 1,
+            record_id: 3,
+            area_id: 4,
+            component_order: 5,
+            source_order,
+            name,
+            evidence_scope: "whole_asset",
+            size_text: None,
+            offset_text: None,
+            value: None,
+            crc_text: None,
+            sha1_text: None,
+            dump_status: Some("good"),
+            status_specified: 1,
+            load_instruction: None,
+            source_line: 9,
+            source_column: 12,
+        }
+    }
+
+    #[test]
+    #[expect(
+        clippy::expect_used,
+        reason = "the SQLite fixture and rebound values must fail loudly"
+    )]
+    fn software_rom_entries_reuse_the_statement_with_fresh_nullable_binds() {
+        let mut conn = SqliteConnection::establish(":memory:").expect("open in-memory SQLite");
+        conn.batch_execute(
+            "CREATE TABLE software_rom_entries (
+                occurrence_id INTEGER NOT NULL,
+                record_id INTEGER NOT NULL,
+                area_id INTEGER NOT NULL,
+                component_order INTEGER NOT NULL,
+                source_order INTEGER NOT NULL,
+                name TEXT,
+                evidence_scope TEXT NOT NULL,
+                size_text TEXT,
+                offset_text TEXT,
+                value TEXT,
+                crc_text TEXT,
+                sha1_text TEXT,
+                dump_status TEXT,
+                status_specified INTEGER NOT NULL,
+                load_instruction TEXT,
+                source_line INTEGER NOT NULL,
+                source_column INTEGER NOT NULL
+            )",
+        )
+        .expect("create software entry table");
+
+        let cached_queries = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&cached_queries);
+        conn.set_instrumentation(move |event: InstrumentationEvent<'_>| {
+            if matches!(event, InstrumentationEvent::CacheQuery { .. }) {
+                observed.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+
+        ExecuteDsl::execute(entry(1, Some("first")), &mut conn).expect("insert first entry");
+        ExecuteDsl::execute(entry(2, None), &mut conn).expect("insert second entry");
+
+        assert_eq!(cached_queries.load(Ordering::Relaxed), 1);
+        let rows =
+            sql_query("SELECT source_order, name FROM software_rom_entries ORDER BY source_order")
+                .load::<StoredEntry>(&mut conn)
+                .expect("read inserted entries");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].source_order, 1);
+        assert_eq!(rows[0].name.as_deref(), Some("first"));
+        assert_eq!(rows[1].source_order, 2);
+        assert_eq!(rows[1].name, None);
+    }
 }
