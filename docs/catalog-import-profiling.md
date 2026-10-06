@@ -55,6 +55,26 @@ software hydration remains open. Fresh diagnostic perf caller graphs were
 invalid (unknown or missing worker chains), so they are not used as CPU proof.
 Existing optimized import profiles below retain their original provenance.
 
+## Partial writer prepared-cache cut, 2026-10-06
+
+Signed/pushed main commit `6a10ebd` replaces two repeated raw-SQL writer shapes:
+Logiqx attribute positions (11 fixed owner/table layouts) and software ROM
+entries (one fixed 17-bind layout) now use typed Diesel ASTs with static query
+IDs. Tests observe prepared-statement cache hits for text, one-integer,
+two-integer and software-ROM statements; they also check all 11 Logiqx IDs are
+distinct and that a changed value and a nullable-to-NULL bind reach SQLite.
+Existing importer, field, publication, rollback and source-order tests pass.
+
+All-feature nextest passed 1,588 tests with three existing skips. The complete
+`devenv test` gate passed, including strict Clippy and CLI smoke checks. Sol
+medium's adversarial review found no concrete issue.
+
+This is cache-admission evidence, not an import-performance result: no completed
+corpus, profiling-mode before/after run, CPU capture or heaptrack comparison was
+performed. Other per-record native writes and relationship inserts/lookups are
+still outside this cache cut. MAMEC-53 remains open and blocked on shared-schema
+acceptance; recheck these writer shapes after MAMEC-55 / PLAN-3 step #1895.
+
 ## Streaming native Logiqx checkpoint, 2026-10-03
 
 This capture uses the optimized, symbolized `profiling` build and the native
