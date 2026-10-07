@@ -4,8 +4,12 @@ use crate::{
     storage::catalog_files::{SourceLocation, XmlAttributePosition},
 };
 use diesel::{
-    OptionalExtension, QueryableByName, RunQueryDsl, SqliteConnection, sql_query,
+    OptionalExtension, QueryableByName, RunQueryDsl, SqliteConnection,
+    query_builder::{AstPass, QueryFragment, QueryId},
+    query_dsl::methods::ExecuteDsl,
+    sql_query,
     sql_types::{BigInt, Bool, Text},
+    sqlite::Sqlite,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -44,6 +48,102 @@ pub(super) enum Family {
     MachineCompatibility,
     RomCompatibility,
     DiskCompatibility,
+}
+
+trait PositionShape: 'static {
+    const FAMILY: Family;
+}
+
+macro_rules! position_shapes {
+    ($($shape:ident => $family:ident),+ $(,)?) => {
+        $(
+            struct $shape;
+
+            impl PositionShape for $shape {
+                const FAMILY: Family = Family::$family;
+            }
+        )+
+    };
+}
+
+position_shapes!(
+    DocumentPositionShape => Document,
+    MachinePositionShape => Machine,
+    BiosPositionShape => Bios,
+    RomPositionShape => Rom,
+    DiskPositionShape => Disk,
+    DeviceReferencePositionShape => DeviceReference,
+    SamplePositionShape => Sample,
+    ChipPositionShape => Chip,
+    DisplayPositionShape => Display,
+    SoundPositionShape => Sound,
+    InputPositionShape => Input,
+    ControlPositionShape => Control,
+    SwitchPositionShape => Switch,
+    SwitchLocationPositionShape => SwitchLocation,
+    SwitchValuePositionShape => SwitchValue,
+    SwitchConditionPositionShape => SwitchCondition,
+    SwitchValueConditionPositionShape => SwitchValueCondition,
+    AdjusterConditionPositionShape => AdjusterCondition,
+    PortPositionShape => Port,
+    AnalogPositionShape => Analog,
+    AdjusterPositionShape => Adjuster,
+    DriverPositionShape => Driver,
+    FeaturePositionShape => Feature,
+    DevicePositionShape => Device,
+    InstancePositionShape => Instance,
+    ExtensionPositionShape => Extension,
+    SlotPositionShape => Slot,
+    SlotOptionPositionShape => SlotOption,
+    SoftwareListPositionShape => SoftwareList,
+    RamOptionPositionShape => RamOption,
+    MachineCompatibilityPositionShape => MachineCompatibility,
+    RomCompatibilityPositionShape => RomCompatibility,
+    DiskCompatibilityPositionShape => DiskCompatibility,
+);
+
+struct AttributePositionInsert<'a, Shape: PositionShape> {
+    key: &'a [i64],
+    field_kind: i64,
+    source_order: i64,
+    source_line: i64,
+    source_column: i64,
+    shape: std::marker::PhantomData<Shape>,
+}
+
+impl<Shape: PositionShape> QueryId for AttributePositionInsert<'_, Shape> {
+    type QueryId = Shape;
+}
+
+impl<Shape: PositionShape> QueryFragment<Sqlite> for AttributePositionInsert<'_, Shape> {
+    fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, Sqlite>) -> diesel::QueryResult<()> {
+        pass.push_sql("INSERT INTO ");
+        pass.push_sql(Shape::FAMILY.table());
+        pass.push_sql(" (");
+        for (index, key) in Shape::FAMILY.keys().iter().enumerate() {
+            if index != 0 {
+                pass.push_sql(",");
+            }
+            pass.push_sql(key);
+        }
+        pass.push_sql(",field_kind,source_order,source_line,source_column) VALUES (");
+        for (index, key) in self.key.iter().enumerate() {
+            if index != 0 {
+                pass.push_sql(", ");
+            }
+            pass.push_bind_param::<BigInt, _>(key)?;
+        }
+        pass.push_sql(", ");
+        pass.push_bind_param::<BigInt, _>(&self.field_kind)?;
+        pass.push_sql(", ");
+        pass.push_bind_param::<BigInt, _>(&self.source_order)?;
+        pass.push_sql(", ");
+        pass.push_bind_param::<BigInt, _>(&self.source_line)?;
+        pass.push_sql(", ");
+        pass.push_bind_param::<BigInt, _>(&self.source_column)?;
+        pass.push_sql(")");
+        Ok(())
+    }
 }
 
 impl Family {
@@ -323,54 +423,67 @@ pub(super) fn insert<Field: Copy>(
     if key.len() != family.keys().len() {
         return Err(invalid());
     }
-    let statement = format!(
-        "INSERT INTO {} ({},field_kind,source_order,source_line,source_column) VALUES ({})",
-        family.table(),
-        family.keys().join(","),
-        std::iter::repeat_n("?", key.len() + 4)
-            .collect::<Vec<_>>()
-            .join(",")
-    );
+    macro_rules! insert_shape {
+        ($shape:ty) => {
+            insert_position_rows::<$shape, _>(conn, key, positions, code)
+        };
+    }
+    match family {
+        Family::Document => insert_shape!(DocumentPositionShape),
+        Family::Machine => insert_shape!(MachinePositionShape),
+        Family::Bios => insert_shape!(BiosPositionShape),
+        Family::Rom => insert_shape!(RomPositionShape),
+        Family::Disk => insert_shape!(DiskPositionShape),
+        Family::DeviceReference => insert_shape!(DeviceReferencePositionShape),
+        Family::Sample => insert_shape!(SamplePositionShape),
+        Family::Chip => insert_shape!(ChipPositionShape),
+        Family::Display => insert_shape!(DisplayPositionShape),
+        Family::Sound => insert_shape!(SoundPositionShape),
+        Family::Input => insert_shape!(InputPositionShape),
+        Family::Control => insert_shape!(ControlPositionShape),
+        Family::Switch => insert_shape!(SwitchPositionShape),
+        Family::SwitchLocation => insert_shape!(SwitchLocationPositionShape),
+        Family::SwitchValue => insert_shape!(SwitchValuePositionShape),
+        Family::SwitchCondition => insert_shape!(SwitchConditionPositionShape),
+        Family::SwitchValueCondition => insert_shape!(SwitchValueConditionPositionShape),
+        Family::AdjusterCondition => insert_shape!(AdjusterConditionPositionShape),
+        Family::Port => insert_shape!(PortPositionShape),
+        Family::Analog => insert_shape!(AnalogPositionShape),
+        Family::Adjuster => insert_shape!(AdjusterPositionShape),
+        Family::Driver => insert_shape!(DriverPositionShape),
+        Family::Feature => insert_shape!(FeaturePositionShape),
+        Family::Device => insert_shape!(DevicePositionShape),
+        Family::Instance => insert_shape!(InstancePositionShape),
+        Family::Extension => insert_shape!(ExtensionPositionShape),
+        Family::Slot => insert_shape!(SlotPositionShape),
+        Family::SlotOption => insert_shape!(SlotOptionPositionShape),
+        Family::SoftwareList => insert_shape!(SoftwareListPositionShape),
+        Family::RamOption => insert_shape!(RamOptionPositionShape),
+        Family::MachineCompatibility => insert_shape!(MachineCompatibilityPositionShape),
+        Family::RomCompatibility => insert_shape!(RomCompatibilityPositionShape),
+        Family::DiskCompatibility => insert_shape!(DiskCompatibilityPositionShape),
+    }
+}
+
+fn insert_position_rows<Shape: PositionShape, Field: Copy>(
+    conn: &mut SqliteConnection,
+    key: &[i64],
+    positions: &[crate::xml_reader::AttributePosition<Field>],
+    code: fn(Field) -> i64,
+) -> crate::Result<()> {
     for position in positions {
         let source_order = i64::try_from(position.source_order).map_err(|_| invalid())?;
-        let query = sql_query(&statement);
-        match key {
-            [a] => query
-                .bind::<BigInt, _>(*a)
-                .bind::<BigInt, _>(code(position.field))
-                .bind::<BigInt, _>(source_order)
-                .bind::<BigInt, _>(position.location.line)
-                .bind::<BigInt, _>(position.location.column)
-                .execute(conn)?,
-            [a, b] => query
-                .bind::<BigInt, _>(*a)
-                .bind::<BigInt, _>(*b)
-                .bind::<BigInt, _>(code(position.field))
-                .bind::<BigInt, _>(source_order)
-                .bind::<BigInt, _>(position.location.line)
-                .bind::<BigInt, _>(position.location.column)
-                .execute(conn)?,
-            [a, b, c] => query
-                .bind::<BigInt, _>(*a)
-                .bind::<BigInt, _>(*b)
-                .bind::<BigInt, _>(*c)
-                .bind::<BigInt, _>(code(position.field))
-                .bind::<BigInt, _>(source_order)
-                .bind::<BigInt, _>(position.location.line)
-                .bind::<BigInt, _>(position.location.column)
-                .execute(conn)?,
-            [a, b, c, d] => query
-                .bind::<BigInt, _>(*a)
-                .bind::<BigInt, _>(*b)
-                .bind::<BigInt, _>(*c)
-                .bind::<BigInt, _>(*d)
-                .bind::<BigInt, _>(code(position.field))
-                .bind::<BigInt, _>(source_order)
-                .bind::<BigInt, _>(position.location.line)
-                .bind::<BigInt, _>(position.location.column)
-                .execute(conn)?,
-            _ => return Err(invalid()),
-        };
+        ExecuteDsl::execute(
+            AttributePositionInsert::<Shape> {
+                key,
+                field_kind: code(position.field),
+                source_order,
+                source_line: position.location.line,
+                source_column: position.location.column,
+                shape: std::marker::PhantomData,
+            },
+            conn,
+        )?;
     }
     Ok(())
 }

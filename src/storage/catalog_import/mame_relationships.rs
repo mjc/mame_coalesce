@@ -1,8 +1,11 @@
 //! Native MAME declarations own literals; the shared registry owns review identity.
 
 use diesel::{
-    RunQueryDsl, SqliteConnection, sql_query,
+    SqliteConnection,
+    query_builder::{AstPass, QueryFragment, QueryId},
+    query_dsl::methods::ExecuteDsl,
     sql_types::{BigInt, Text},
+    sqlite::Sqlite,
 };
 
 use crate::domain::{CatalogSetId, SnapshotKey};
@@ -11,6 +14,86 @@ use super::reported_relationships::{
     self, ReportedReferenceKind, XmlReferenceKind as ReferenceKind,
 };
 use super::{SnapshotSet, checked_order};
+
+struct MachineLinkQuery;
+
+struct MachineLinkInsert<'a> {
+    set_id: i64,
+    kind: &'a str,
+    target_name: &'a str,
+    relationship_id: i64,
+    source_line: i64,
+    source_column: i64,
+}
+
+impl QueryId for MachineLinkInsert<'_> {
+    type QueryId = MachineLinkQuery;
+}
+
+impl QueryFragment<Sqlite> for MachineLinkInsert<'_> {
+    fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, Sqlite>) -> diesel::QueryResult<()> {
+        pass.push_sql(
+            "INSERT INTO mame_machine_links \
+             (set_id,link_kind,target_name,relationship_id,source_line,source_column) VALUES (",
+        );
+        pass.push_bind_param::<BigInt, _>(&self.set_id)?;
+        pass.push_sql(",");
+        pass.push_bind_param::<Text, _>(&self.kind)?;
+        pass.push_sql(",");
+        pass.push_bind_param::<Text, _>(&self.target_name)?;
+        pass.push_sql(",");
+        pass.push_bind_param::<BigInt, _>(&self.relationship_id)?;
+        pass.push_sql(",");
+        pass.push_bind_param::<BigInt, _>(&self.source_line)?;
+        pass.push_sql(",");
+        pass.push_bind_param::<BigInt, _>(&self.source_column)?;
+        pass.push_sql(")");
+        Ok(())
+    }
+}
+
+struct DeviceReferenceQuery;
+
+struct DeviceReferenceInsert<'a> {
+    set_id: i64,
+    reference_order: i64,
+    name: &'a str,
+    tag: &'a str,
+    source_order: i64,
+    relationship_id: i64,
+    source_line: i64,
+    source_column: i64,
+}
+
+impl QueryId for DeviceReferenceInsert<'_> {
+    type QueryId = DeviceReferenceQuery;
+}
+
+impl QueryFragment<Sqlite> for DeviceReferenceInsert<'_> {
+    fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, Sqlite>) -> diesel::QueryResult<()> {
+        pass.push_sql(
+            "INSERT INTO mame_device_references \
+             (set_id,reference_order,name,tag,source_order,relationship_id,source_line,source_column) VALUES (",
+        );
+        pass.push_bind_param::<BigInt, _>(&self.set_id)?;
+        pass.push_sql(",");
+        pass.push_bind_param::<BigInt, _>(&self.reference_order)?;
+        pass.push_sql(",");
+        pass.push_bind_param::<Text, _>(&self.name)?;
+        pass.push_sql(",");
+        pass.push_bind_param::<Text, _>(&self.tag)?;
+        pass.push_sql(",");
+        pass.push_bind_param::<BigInt, _>(&self.source_order)?;
+        pass.push_sql(",");
+        pass.push_bind_param::<BigInt, _>(&self.relationship_id)?;
+        pass.push_sql(",");
+        pass.push_bind_param::<BigInt, _>(&self.source_line)?;
+        pass.push_sql(",");
+        pass.push_bind_param::<BigInt, _>(&self.source_column)?;
+        pass.push_sql(")");
+        Ok(())
+    }
+}
 
 fn register(
     connection: &mut SqliteConnection,
@@ -29,18 +112,17 @@ fn insert_link(
     location: crate::logiqx::RecordLocation,
 ) -> crate::Result<()> {
     let relationship = register(connection, snapshot, kind)?;
-    sql_query(
-        "INSERT INTO mame_machine_links \
-         (set_id,link_kind,target_name,relationship_id,source_line,source_column) \
-         VALUES (?,?,?,?,?,?)",
-    )
-    .bind::<BigInt, _>(owner.as_i64())
-    .bind::<Text, _>(kind.field())
-    .bind::<Text, _>(target)
-    .bind::<BigInt, _>(relationship.database_value())
-    .bind::<BigInt, _>(location.line)
-    .bind::<BigInt, _>(location.column)
-    .execute(connection)?;
+    ExecuteDsl::execute(
+        MachineLinkInsert {
+            set_id: owner.as_i64(),
+            kind: kind.field(),
+            target_name: target,
+            relationship_id: relationship.database_value(),
+            source_line: location.line,
+            source_column: location.column,
+        },
+        connection,
+    )?;
     Ok(())
 }
 
@@ -88,20 +170,19 @@ pub(super) fn insert(
                     )
                 })?;
                 let relationship = register(connection, snapshot, ReferenceKind::DeviceReference)?;
-                sql_query(
-                    "INSERT INTO mame_device_references \
-                     (set_id,reference_order,name,tag,source_order,relationship_id,source_line,source_column) \
-                     VALUES (?,?,?,?,?,?,?,?)",
-                )
-                .bind::<BigInt, _>(owner.as_i64())
-                .bind::<BigInt, _>(checked_order(reference_order, "device references")?)
-                .bind::<Text, _>(&dependency.target_name)
-                .bind::<Text, _>(tag)
-                .bind::<BigInt, _>(source_order)
-                .bind::<BigInt, _>(relationship.database_value())
-                .bind::<BigInt, _>(dependency.location.line)
-                .bind::<BigInt, _>(dependency.location.column)
-                .execute(connection)?;
+                ExecuteDsl::execute(
+                    DeviceReferenceInsert {
+                        set_id: owner.as_i64(),
+                        reference_order: checked_order(reference_order, "device references")?,
+                        name: &dependency.target_name,
+                        tag,
+                        source_order,
+                        relationship_id: relationship.database_value(),
+                        source_line: dependency.location.line,
+                        source_column: dependency.location.column,
+                    },
+                    connection,
+                )?;
                 reference_order += 1;
             }
             kind => {

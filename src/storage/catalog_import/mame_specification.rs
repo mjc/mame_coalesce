@@ -1,12 +1,15 @@
 use diesel::{
-    RunQueryDsl, SqliteConnection, sql_query,
+    RunQueryDsl, SqliteConnection,
     sql_types::{BigInt, Nullable, Text},
 };
 
 use super::{SnapshotSet, checked_order};
 use crate::{
     mame,
-    storage::mame_attributes::{self, Family},
+    storage::{
+        cached_sql::cached_sql,
+        mame_attributes::{self, Family},
+    },
 };
 
 #[derive(Clone, Copy)]
@@ -23,16 +26,21 @@ pub(super) fn insert(
     set_id: i64,
     set: &SnapshotSet,
 ) -> crate::Result<()> {
+    macro_rules! placeholder {
+        ($column:literal) => {
+            "?"
+        };
+    }
     macro_rules! insert_record {
         ($table:literal, $order:expr, $location:expr; $( $column:literal : $sql_type:ty = $value:expr ),* $(,)?) => {{
-            let columns = [$( $column ),*].join(", ");
-            let placeholders = vec!["?"; [$( stringify!($column) ),*].len()].join(", ");
-            let statement = format!(
-                "INSERT INTO {} (set_id, element_order, source_line, source_column, {columns}) \
-                 VALUES (?, ?, ?, ?, {placeholders})",
-                $table
-            );
-            sql_query(statement)
+            cached_sql(concat!(
+                "INSERT INTO ", $table,
+                " (set_id, element_order, source_line, source_column",
+                $( ", ", $column, )*
+                ") VALUES (?, ?, ?, ?",
+                $( ", ", placeholder!($column), )*
+                ")"
+            ))
                 .bind::<BigInt, _>(set_id)
                 .bind::<BigInt, _>($order)
                 .bind::<BigInt, _>($location.line)
@@ -83,7 +91,7 @@ pub(super) fn insert(
                     "players": Text = &value.players,
                     "coins": Nullable<Text> = value.coins.as_deref());
                 for (control_order, control) in value.controls.iter().enumerate() {
-                    sql_query(
+                    cached_sql(
                         "INSERT INTO mame_machine_input_controls \
                          (set_id, element_order, control_order, control_type, player, buttons, \
                           minimum, maximum, sensitivity, keydelta, reverse, reverse_specified, ways, ways2, ways3, source_line, source_column) \
@@ -113,7 +121,7 @@ pub(super) fn insert(
                 insert_record!("mame_machine_ports", order, value.location;
                     "tag": Text = &value.tag);
                 for (analog_order, analog) in value.analogs.iter().enumerate() {
-                    sql_query(
+                    cached_sql(
                         "INSERT INTO mame_machine_analogs \
                          (set_id, element_order, analog_order, mask, source_line, source_column) \
                          VALUES (?, ?, ?, ?, ?, ?)",
@@ -165,7 +173,7 @@ pub(super) fn insert(
                     "mandatory": Nullable<Text> = value.mandatory.as_deref(),
                     "interface": Nullable<Text> = value.interface.as_deref());
                 if let Some(instance) = &value.instance {
-                    sql_query(
+                    cached_sql(
                         "INSERT INTO mame_machine_device_instances \
                          (set_id, element_order, name, brief_name, source_line, source_column) \
                          VALUES (?, ?, ?, ?, ?, ?)",
@@ -179,7 +187,7 @@ pub(super) fn insert(
                     .execute(conn)?;
                 }
                 for (extension_order, extension) in value.extensions.iter().enumerate() {
-                    sql_query(
+                    cached_sql(
                         "INSERT INTO mame_machine_device_extensions \
                          (set_id, element_order, extension_order, name, source_line, source_column) \
                          VALUES (?, ?, ?, ?, ?, ?)",
@@ -197,7 +205,7 @@ pub(super) fn insert(
                 insert_record!("mame_machine_slots", order, value.location;
                     "name": Text = &value.name);
                 for (option_order, option) in value.options.iter().enumerate() {
-                    sql_query(
+                    cached_sql(
                         "INSERT INTO mame_machine_slot_options \
                          (set_id, element_order, option_order, name, devname, is_default, default_specified, source_line, source_column) \
                          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -384,7 +392,7 @@ fn insert_condition(
 ) -> crate::Result<()> {
     match owner {
         MameConditionOwner::Adjuster { order } => {
-            sql_query(
+            cached_sql(
                 "INSERT INTO mame_machine_adjuster_conditions \
                  (set_id, element_order, condition_order, tag, mask, relation, value, source_line, source_column) \
                  VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?)",
@@ -407,7 +415,7 @@ fn insert_condition(
             )?;
         }
         MameConditionOwner::Switch { order } => {
-            sql_query(
+            cached_sql(
                 "INSERT INTO machine_switch_conditions \
                  (set_id, switch_order, condition_order, tag, mask, relation, value, source_line, source_column) \
                  VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?)",
@@ -433,7 +441,7 @@ fn insert_condition(
             switch_order,
             value_order,
         } => {
-            sql_query(
+            cached_sql(
                 "INSERT INTO machine_switch_value_conditions \
                  (set_id, switch_order, value_order, condition_order, tag, mask, relation, value, source_line, source_column) \
                  VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?)",
@@ -492,4 +500,68 @@ pub(super) fn insert_switch_value_condition(
         },
         condition,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use diesel::{
+        Connection, RunQueryDsl, SqliteConnection,
+        connection::{InstrumentationEvent, SimpleConnection},
+        sql_query,
+    };
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    #[derive(diesel::QueryableByName)]
+    struct OptionRow {
+        #[diesel(sql_type = diesel::sql_types::BigInt)]
+        option_order: i64,
+        #[diesel(sql_type = diesel::sql_types::Text)]
+        name: String,
+        #[diesel(sql_type = diesel::sql_types::BigInt)]
+        default_specified: i64,
+    }
+
+    #[test]
+    fn slot_options_reuse_one_statement_without_losing_order_or_presence()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let catalog = crate::mame::MameCatalog::parse(br#"<mame mameconfig="10"><machine name="test"><description>Test</description><slot name="cart"><slotoption name="first" devname="device1"/><slotoption name="second" devname="device2" default="no"/><slotoption name="third" devname="device3" default="yes"/></slot></machine></mame>"#)?;
+        let machine = catalog
+            .machines
+            .into_iter()
+            .next()
+            .ok_or("missing machine")?;
+        let set = super::super::machine_contents(machine);
+        let mut conn = SqliteConnection::establish(":memory:")?;
+        conn.batch_execute("CREATE TABLE mame_machine_slots(set_id INTEGER,element_order INTEGER,source_line INTEGER,source_column INTEGER,name TEXT);
+            CREATE TABLE mame_machine_slot_options(set_id INTEGER,element_order INTEGER,option_order INTEGER,name TEXT,devname TEXT,is_default INTEGER,default_specified INTEGER,source_line INTEGER,source_column INTEGER);
+            CREATE TABLE mame_machine_slots_attribute_positions(set_id INTEGER,element_order INTEGER,field_kind INTEGER,source_order INTEGER,source_line INTEGER,source_column INTEGER);
+            CREATE TABLE mame_machine_slot_options_attribute_positions(set_id INTEGER,element_order INTEGER,option_order INTEGER,field_kind INTEGER,source_order INTEGER,source_line INTEGER,source_column INTEGER);")?;
+        let preparations = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&preparations);
+        conn.set_instrumentation(move |event: InstrumentationEvent<'_>| {
+            if let InstrumentationEvent::CacheQuery { sql, .. } = event
+                && sql.starts_with("INSERT INTO mame_machine_slot_options ")
+            {
+                observed.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+        super::insert(&mut conn, 1, &set)?;
+        super::insert(&mut conn, 2, &set)?;
+        let rows = sql_query("SELECT option_order,name,default_specified FROM mame_machine_slot_options WHERE set_id=2 ORDER BY option_order").load::<OptionRow>(&mut conn)?;
+        assert_eq!(
+            rows.into_iter()
+                .map(|row| (row.option_order, row.name, row.default_specified))
+                .collect::<Vec<_>>(),
+            vec![
+                (0, "first".into(), 0),
+                (1, "second".into(), 1),
+                (2, "third".into(), 1)
+            ]
+        );
+        assert_eq!(preparations.load(Ordering::Relaxed), 1);
+        Ok(())
+    }
 }

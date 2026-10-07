@@ -688,3 +688,73 @@ allocation SVG rather than treating that failed analysis as measurement proof.
 Prepared-statement reuse is the measured next optimization, but no speedup or
 allocation reduction is claimed here. Exact loader interpretation, complete
 field/query witnesses and full-corpus acceptance remain open.
+
+## Bounded MAME writer investigation — 2026-10-07
+
+Repeated full-file runs were stopped after the initial bulk-write patch and two
+later intermediate builds each exceeded the 600-second limit. None establishes
+successful full-file acceptance. Their existing artifacts remain under
+`target/profiling/mame-bulk-import-20261007`, `-r2`, and `-r3`.
+
+The investigation now uses the existing 1,000-machine sample at
+`target/profiling/xml-ownership-2026-09-29/machines-1000.xml` (7,891,100 bytes,
+SHA-256 `ff487b3d16d2df04be01285e1936c09bfaec48e369b26b85d8140160ca3f09b6`).
+Optional `CATALOG_SQL_TIMINGS=1` on the profiling example records query count,
+aggregate duration and average duration by SQL shape, reporting the top twenty.
+This diagnostic adds formatting/aggregation overhead; disable it for elapsed-time
+comparisons. Times overlap transaction boundaries and must not simply be summed.
+
+A diagnostic debug run before the final specification-writer cache conversion
+completed in 23.131 seconds. The leading statements were publication (5.393s,
+one call), identity size checks (1.512s, 6,012 calls), and slot-option inserts
+(1.489s, 37,980 calls). Full output is retained in
+`target/profiling/sql-1000-20261007.log`.
+
+The optimized intermediate executable before cached recursive identity, size and
+digest lookups exceeded 30 seconds on this sample. After those changes and fixed
+MAME specification/root-set statement reuse, the optimized profiling executable
+completed in **13.252 seconds for import, 13.489 seconds including startup**.
+Both used fresh databases and no diagnostic instrumentation. These are two
+intermediate working-tree cuts, not repeatable committed-revision medians; the
+older executable was not frozen, so this is bounded diagnostic evidence only.
+The successful measured executable has SHA-256
+`4e04287fb34962cb3e461d9fb1feab0b3db6e84e7b4bceb0e3cc808b02ef12fe`.
+Database `target/profiling/sql-release-after-1000-20261007.sqlite3` contains
+1,000 machines, 11,157 occurrences and one publication; SQLite `quick_check`
+returns `ok`, with no foreign-key violations.
+
+Changes reuse prepared statements for native MAME attributes, claims,
+relationships and identity lookups; remove a redundant per-asset source-kind
+lookup; and batch switches, locations and values in groups of 64. A shared
+private fixed-SQL adapter keys statements by SQL text and binds values afresh.
+Specification insert SQL is constructed at compile time, not per record.
+Runtime regressions cover cache admission, changed nullable values, distinct SQL
+shapes, bind counts, native row/order/default-presence fidelity and bounded batch
+statement counts. No schema, guard or catalog-fact removal is involved.
+
+The next measured algorithmic fix changes two publication predicates, not the
+data model: materialize distinct touched canonical UUIDs before component-wide
+size validation, and force snapshot/native-owner qualification before recursive
+No-Intro identity checks. This preserves the same source evidence, published
+redirects/review exclusions, and separate issued-UUID guard. A query-plan
+regression fails on the old per-occurrence size guard and checks both identity
+deduplication and native-owner-first ordering/scoped seeks in the replacement.
+The trigger definitions change the bundled schema digest; measurements after
+this cut must use fresh databases, not silently upgrade an existing cache.
+
+With both publication fixes, a fresh optimized run with no other project checks
+running completed in **10.227 seconds for import, 10.452 seconds including
+startup** (9.31s user, 0.99s system, 98% CPU). It produced the same 1,000 machines,
+11,157 occurrences and one publication, with clean SQLite quick/FK checks.
+Artifacts are `target/profiling/sql-release-publication-idle-1000-20261007.sqlite3`
+and frozen executable `target/profiling/mame-importer-publication-20261007`
+(SHA-256 `09ab8ebd816936d12f42f74f4407a821a7ebeb766a241979f6031bb48c3030f4`).
+An earlier run of this same executable overlapping compilation took 19.690s
+wall time (60% CPU); it is retained at
+`target/profiling/sql-release-publication-after-1000-20261007.sqlite3` but is not
+used as a comparable latency measurement. These remain individual sample runs,
+not committed-revision benchmark medians or full-file acceptance.
+
+Full-file latency, current-corpus CPU/heap evidence, publication cost and
+repeated-identity scaling remain open. Do not extrapolate this sample into a
+claim that the full 326,688,140-byte input meets the ten-minute ceiling.

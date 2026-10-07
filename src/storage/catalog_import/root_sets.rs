@@ -1,9 +1,12 @@
 use diesel::{
-    QueryableByName, RunQueryDsl, SqliteConnection, sql_query,
+    QueryableByName, RunQueryDsl, SqliteConnection,
     sql_types::{BigInt, Text},
 };
 
-use crate::domain::{CatalogSetId, SnapshotKey};
+use crate::{
+    domain::{CatalogSetId, SnapshotKey},
+    storage::cached_sql::cached_sql,
+};
 
 use super::SnapshotSet;
 
@@ -54,14 +57,14 @@ pub(super) fn insert(
     snapshot: &SnapshotKey,
     set: &SnapshotSet,
 ) -> crate::Result<CatalogSetId> {
-    let format = sql_query(
+    let format = cached_sql(
         "SELECT format FROM catalog_snapshots JOIN parser_interpretations USING (interpretation_key) \
          WHERE snapshot_key = ?",
     )
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<Format>(conn)?;
     let kind = RootSetKind::from_format(&format.format)?;
-    sql_query(
+    cached_sql(
         "INSERT INTO catalog_set_groups(snapshot_key,kind,list_order) \
          SELECT ?,'root',0 WHERE NOT EXISTS (SELECT 1 FROM catalog_set_groups \
              WHERE snapshot_key=? AND kind='root')",
@@ -69,12 +72,12 @@ pub(super) fn insert(
     .bind::<Text, _>(snapshot.as_str())
     .bind::<Text, _>(snapshot.as_str())
     .execute(conn)?;
-    let group = sql_query(
+    let group = cached_sql(
         "SELECT set_group_id AS value FROM catalog_set_groups WHERE snapshot_key = ? AND kind = 'root'",
     )
     .bind::<Text, _>(snapshot.as_str())
     .get_result::<Id>(conn)?;
-    let id = sql_query(
+    let id = cached_sql(
         "INSERT INTO catalog_sets(set_group_id,source_element_kind,list_order,set_name,source_line,source_column) \
          VALUES (?, ?, (SELECT COALESCE(MAX(list_order),-1)+1 FROM catalog_sets WHERE set_group_id = ?), ?, ?, ?) \
          RETURNING set_id AS value",

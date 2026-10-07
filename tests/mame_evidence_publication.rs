@@ -28,6 +28,20 @@ struct UuidRow {
     value: Vec<u8>,
 }
 
+#[derive(QueryableByName)]
+struct DigestAssertionRow {
+    #[diesel(sql_type = BigInt)]
+    digest_id: i64,
+    #[diesel(sql_type = Text)]
+    algorithm: String,
+    #[diesel(sql_type = Binary)]
+    digest: Vec<u8>,
+    #[diesel(sql_type = Text)]
+    scope: String,
+    #[diesel(sql_type = Text)]
+    provenance: String,
+}
+
 fn request(path: Utf8PathBuf) -> CatalogImportRequest {
     CatalogImportRequest {
         document_path: path,
@@ -38,6 +52,51 @@ fn request(path: Utf8PathBuf) -> CatalogImportRequest {
         catalog_display_name: "MAME evidence publication test".into(),
         scope: CatalogScope::Complete,
     }
+}
+
+#[test]
+fn mame_import_deduplicates_equal_digest_values_and_maps_changed_values() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let path = Utf8PathBuf::try_from(directory.path().join("catalog.sqlite"))?;
+    let database = Database::open(&path)?;
+    let document = Utf8PathBuf::try_from(directory.path().join("catalog.xml"))?;
+    std::fs::write(
+        &document,
+        format!(
+            "<mame mameconfig='10'><machine name='digests'><description>Digests</description><rom name='first.bin' size='16' sha1='{SHA1}'/><rom name='duplicate.bin' size='16' sha1='{SHA1}'/><rom name='changed.bin' size='16' sha1='{OTHER_SHA1}'/></machine></mame>"
+        ),
+    )?;
+
+    let report = app::import_catalog(&database, &request(document))?;
+    assert_eq!(report.status, CatalogImportStatus::Succeeded);
+
+    let mut connection = SqliteConnection::establish(path.as_str())?;
+    let assertions = sql_query(
+        "SELECT assertion.digest_id, digest.algorithm, digest.digest, assertion.scope, \
+         assertion.provenance FROM occurrence_digest_assertions AS assertion \
+         JOIN digest_values AS digest USING (digest_id) \
+         JOIN mame_rom_claims AS rom USING (occurrence_id) \
+         WHERE rom.name IN ('first.bin','duplicate.bin','changed.bin') \
+         ORDER BY CASE rom.name WHEN 'first.bin' THEN 0 WHEN 'duplicate.bin' THEN 1 ELSE 2 END",
+    )
+    .load::<DigestAssertionRow>(&mut connection)?;
+    assert_eq!(assertions.len(), 3);
+    assert_eq!(assertions[0].digest, hex::decode(SHA1)?);
+    assert_eq!(assertions[1].digest, hex::decode(SHA1)?);
+    assert_eq!(assertions[0].digest_id, assertions[1].digest_id);
+    assert_ne!(assertions[1].digest_id, assertions[2].digest_id);
+    assert_eq!(assertions[2].digest, hex::decode(OTHER_SHA1)?);
+    for assertion in &assertions {
+        assert_eq!(assertion.algorithm, "sha1");
+        assert_eq!(assertion.scope, "whole_asset");
+        assert_eq!(assertion.provenance, "source_declared");
+    }
+
+    let dictionary_rows = sql_query("SELECT COUNT(*) AS value FROM digest_values")
+        .get_result::<IdRow>(&mut connection)?
+        .value;
+    assert_eq!(dictionary_rows, 2);
+    Ok(())
 }
 
 #[test]

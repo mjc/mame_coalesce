@@ -1,10 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use diesel::{
-    SqliteConnection,
+    RunQueryDsl, SqliteConnection,
     prelude::*,
+    query_builder::{AstPass, Query, QueryFragment, QueryId},
+    query_dsl::methods::ExecuteDsl,
     sql_query,
     sql_types::{BigInt, Binary, Text},
+    sqlite::Sqlite,
 };
 
 use super::catalog_identity::OccurrenceId;
@@ -128,6 +131,90 @@ pub enum ContentIdentityResolution {
     },
 }
 
+struct DigestValueInsertQuery;
+
+struct DigestValueInsert<'a> {
+    algorithm: &'a str,
+    bytes: &'a [u8],
+}
+
+impl QueryId for DigestValueInsert<'_> {
+    type QueryId = DigestValueInsertQuery;
+}
+
+impl QueryFragment<Sqlite> for DigestValueInsert<'_> {
+    fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, Sqlite>) -> diesel::QueryResult<()> {
+        pass.push_sql("INSERT OR IGNORE INTO digest_values (algorithm, digest) VALUES (");
+        pass.push_bind_param::<Text, _>(&self.algorithm)?;
+        pass.push_sql(", ");
+        pass.push_bind_param::<Binary, _>(&self.bytes)?;
+        pass.push_sql(")");
+        Ok(())
+    }
+}
+
+impl RunQueryDsl<SqliteConnection> for DigestValueInsert<'_> {}
+
+struct DigestValueSelectQuery;
+
+struct DigestValueSelect<'a> {
+    algorithm: &'a str,
+    bytes: &'a [u8],
+}
+
+impl QueryId for DigestValueSelect<'_> {
+    type QueryId = DigestValueSelectQuery;
+}
+
+impl Query for DigestValueSelect<'_> {
+    type SqlType = BigInt;
+}
+
+impl QueryFragment<Sqlite> for DigestValueSelect<'_> {
+    fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, Sqlite>) -> diesel::QueryResult<()> {
+        pass.push_sql("SELECT digest_id FROM digest_values WHERE algorithm = ");
+        pass.push_bind_param::<Text, _>(&self.algorithm)?;
+        pass.push_sql(" AND digest = ");
+        pass.push_bind_param::<Binary, _>(&self.bytes)?;
+        Ok(())
+    }
+}
+
+impl RunQueryDsl<SqliteConnection> for DigestValueSelect<'_> {}
+
+struct OccurrenceDigestAssertionInsertQuery;
+
+struct OccurrenceDigestAssertionInsert<'a> {
+    occurrence_id: i64,
+    digest_id: i64,
+    scope: &'a str,
+    provenance: &'a str,
+}
+
+impl QueryId for OccurrenceDigestAssertionInsert<'_> {
+    type QueryId = OccurrenceDigestAssertionInsertQuery;
+}
+
+impl QueryFragment<Sqlite> for OccurrenceDigestAssertionInsert<'_> {
+    fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, Sqlite>) -> diesel::QueryResult<()> {
+        pass.push_sql(
+            "INSERT OR IGNORE INTO occurrence_digest_assertions \
+             (occurrence_id, digest_id, scope, provenance) VALUES (",
+        );
+        pass.push_bind_param::<BigInt, _>(&self.occurrence_id)?;
+        pass.push_sql(", ");
+        pass.push_bind_param::<BigInt, _>(&self.digest_id)?;
+        pass.push_sql(", ");
+        pass.push_bind_param::<Text, _>(&self.scope)?;
+        pass.push_sql(", ");
+        pass.push_bind_param::<Text, _>(&self.provenance)?;
+        pass.push_sql(")");
+        Ok(())
+    }
+}
+
+impl RunQueryDsl<SqliteConnection> for OccurrenceDigestAssertionInsert<'_> {}
+
 pub fn record_occurrence_digest_assertions(
     connection: &mut SqliteConnection,
     occurrence: OccurrenceId,
@@ -135,16 +222,17 @@ pub fn record_occurrence_digest_assertions(
     provenance: &str,
 ) -> crate::Result<()> {
     for assertion in assertions.iter() {
-        let digest_id = intern_digest(connection, assertion.algorithm.as_str(), assertion.value)?;
-        sql_query(
-            "INSERT OR IGNORE INTO occurrence_digest_assertions \
-             (occurrence_id, digest_id, scope, provenance) VALUES (?, ?, ?, ?)",
-        )
-        .bind::<BigInt, _>(occurrence.database_value())
-        .bind::<BigInt, _>(digest_id)
-        .bind::<Text, _>(assertion.scope)
-        .bind::<Text, _>(provenance)
-        .execute(connection)?;
+        let algorithm = assertion.algorithm.as_str();
+        let digest_id = intern_digest(connection, algorithm, assertion.value)?;
+        ExecuteDsl::execute(
+            OccurrenceDigestAssertionInsert {
+                occurrence_id: occurrence.database_value(),
+                digest_id,
+                scope: assertion.scope,
+                provenance,
+            },
+            connection,
+        )?;
     }
     Ok(())
 }
@@ -155,17 +243,8 @@ pub fn intern_digest(
     algorithm: &str,
     bytes: &[u8],
 ) -> crate::Result<i64> {
-    sql_query("INSERT OR IGNORE INTO digest_values (algorithm, digest) VALUES (?, ?)")
-        .bind::<Text, _>(algorithm)
-        .bind::<Binary, _>(bytes)
-        .execute(connection)?;
-    Ok(
-        sql_query("SELECT digest_id FROM digest_values WHERE algorithm = ? AND digest = ?")
-            .bind::<Text, _>(algorithm)
-            .bind::<Binary, _>(bytes)
-            .get_result::<DigestIdRow>(connection)?
-            .digest_id,
-    )
+    ExecuteDsl::execute(DigestValueInsert { algorithm, bytes }, connection)?;
+    Ok(DigestValueSelect { algorithm, bytes }.get_result::<i64>(connection)?)
 }
 
 impl ContentIdentityResolution {
@@ -191,31 +270,180 @@ struct ContentUuidRow {
     content_uuid: Vec<u8>,
 }
 
+struct ContentIdentityLookupQuery;
+
+struct ContentIdentityLookup<'a> {
+    algorithm: &'a str,
+    digest: &'a [u8],
+}
+
+impl QueryId for ContentIdentityLookup<'_> {
+    type QueryId = ContentIdentityLookupQuery;
+}
+
+impl Query for ContentIdentityLookup<'_> {
+    type SqlType = (Binary, BigInt);
+}
+
+impl RunQueryDsl<SqliteConnection> for ContentIdentityLookup<'_> {}
+
+impl QueryFragment<Sqlite> for ContentIdentityLookup<'_> {
+    fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, Sqlite>) -> diesel::QueryResult<()> {
+        pass.push_sql(
+            "SELECT DISTINCT assertion.content_uuid AS content_uuid, 0 AS disputed \
+             FROM catalog_content_digest_assertions AS assertion \
+             JOIN digest_values AS digest USING (digest_id) \
+             WHERE digest.algorithm = ",
+        );
+        pass.push_bind_param::<Text, _>(&self.algorithm)?;
+        pass.push_sql(" AND digest.digest = ");
+        pass.push_bind_param::<Binary, _>(&self.digest)?;
+        pass.push_sql(
+            " UNION ALL \
+             SELECT DISTINCT dispute.candidate_content_uuid AS content_uuid, 1 AS disputed \
+             FROM disputed_file_hashes AS dispute \
+             JOIN digest_values AS digest USING (digest_id) \
+             WHERE digest.algorithm = ",
+        );
+        pass.push_bind_param::<Text, _>(&self.algorithm)?;
+        pass.push_sql(" AND digest.digest = ");
+        pass.push_bind_param::<Binary, _>(&self.digest)?;
+        Ok(())
+    }
+}
+
+struct CatalogContentInsertQuery;
+
+struct CatalogContentInsert(CatalogContentId);
+
+impl QueryId for CatalogContentInsert {
+    type QueryId = CatalogContentInsertQuery;
+}
+
+impl RunQueryDsl<SqliteConnection> for CatalogContentInsert {}
+
+impl QueryFragment<Sqlite> for CatalogContentInsert {
+    fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, Sqlite>) -> diesel::QueryResult<()> {
+        pass.push_sql("INSERT INTO catalog_contents (content_uuid) VALUES (");
+        let bytes = self.0.as_bytes();
+        pass.push_bind_param::<Binary, _>(bytes)?;
+        pass.push_sql(")");
+        Ok(())
+    }
+}
+
+struct IssuedContentResolutionQuery;
+
+struct IssuedContentResolution<'a>(&'a [u8]);
+
+impl QueryId for IssuedContentResolution<'_> {
+    type QueryId = IssuedContentResolutionQuery;
+}
+
+impl Query for IssuedContentResolution<'_> {
+    type SqlType = Binary;
+}
+
+impl RunQueryDsl<SqliteConnection> for IssuedContentResolution<'_> {}
+
+impl QueryFragment<Sqlite> for IssuedContentResolution<'_> {
+    fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, Sqlite>) -> diesel::QueryResult<()> {
+        pass.push_sql(
+            "WITH RECURSIVE path(content_uuid) AS ( \
+             SELECT content_uuid FROM catalog_contents WHERE content_uuid = ",
+        );
+        pass.push_bind_param::<Binary, _>(&self.0)?;
+        pass.push_sql(
+            " UNION SELECT redirect.kept_content_uuid FROM path \
+             JOIN merged_file_ids AS redirect ON redirect.old_content_uuid = path.content_uuid \
+             JOIN file_match_decision_publications USING (decision_id)) \
+             SELECT content_uuid FROM path WHERE NOT EXISTS ( \
+             SELECT 1 FROM merged_file_ids AS redirect \
+             JOIN file_match_decision_publications USING (decision_id) \
+             WHERE redirect.old_content_uuid = path.content_uuid)",
+        );
+        Ok(())
+    }
+}
+
+struct ContentIdentitySizesQuery;
+
+struct ContentIdentitySizes<'a>(&'a [u8]);
+
+impl QueryId for ContentIdentitySizes<'_> {
+    type QueryId = ContentIdentitySizesQuery;
+}
+
+impl Query for ContentIdentitySizes<'_> {
+    type SqlType = BigInt;
+}
+
+impl RunQueryDsl<SqliteConnection> for ContentIdentitySizes<'_> {}
+
+impl QueryFragment<Sqlite> for ContentIdentitySizes<'_> {
+    fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, Sqlite>) -> diesel::QueryResult<()> {
+        pass.push_sql("WITH RECURSIVE component(content_uuid) AS ( SELECT ");
+        pass.push_bind_param::<Binary, _>(&self.0)?;
+        pass.push_sql(
+            " UNION SELECT redirect.old_content_uuid FROM component \
+             JOIN merged_file_ids AS redirect ON redirect.kept_content_uuid = component.content_uuid \
+             JOIN file_match_decision_publications USING (decision_id)) \
+             SELECT DISTINCT (SELECT sizes.size FROM accepted_file_size_assertions AS sizes \
+             WHERE sizes.occurrence_id = entry.occurrence_id) AS size FROM component \
+             CROSS JOIN asset_occurrences AS entry ON entry.content_uuid = component.content_uuid \
+             WHERE size IS NOT NULL LIMIT 2",
+        );
+        Ok(())
+    }
+}
+
+struct ContentIdentityDigestsQuery;
+
+struct ContentIdentityDigests<'a>(&'a [u8]);
+
+impl QueryId for ContentIdentityDigests<'_> {
+    type QueryId = ContentIdentityDigestsQuery;
+}
+
+impl Query for ContentIdentityDigests<'_> {
+    type SqlType = (Text, Binary);
+}
+
+impl RunQueryDsl<SqliteConnection> for ContentIdentityDigests<'_> {}
+
+impl QueryFragment<Sqlite> for ContentIdentityDigests<'_> {
+    fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, Sqlite>) -> diesel::QueryResult<()> {
+        pass.push_sql("WITH RECURSIVE component(content_uuid) AS ( SELECT ");
+        pass.push_bind_param::<Binary, _>(&self.0)?;
+        pass.push_sql(
+            " UNION SELECT redirect.old_content_uuid FROM component \
+             JOIN merged_file_ids AS redirect ON redirect.kept_content_uuid = component.content_uuid \
+             JOIN file_match_decision_publications USING (decision_id)) \
+             SELECT DISTINCT digest.algorithm, digest.digest FROM component \
+             CROSS JOIN asset_occurrences AS entry ON entry.content_uuid = component.content_uuid \
+             CROSS JOIN catalog_content_digest_assertions AS assertion \
+                 ON assertion.occurrence_id = entry.occurrence_id \
+             CROSS JOIN digest_values AS digest ON digest.digest_id = assertion.digest_id",
+        );
+        Ok(())
+    }
+}
+
 /// Follow published redirects from one issued UUID using primary-key seeks.
 pub fn resolve_issued_id(
     connection: &mut SqliteConnection,
     issued: CatalogContentId,
 ) -> crate::Result<CatalogContentId> {
-    let rows = sql_query(
-        "WITH RECURSIVE path(content_uuid) AS ( \
-         SELECT content_uuid FROM catalog_contents WHERE content_uuid = ? \
-         UNION SELECT redirect.kept_content_uuid FROM path \
-         JOIN merged_file_ids AS redirect ON redirect.old_content_uuid = path.content_uuid \
-         JOIN file_match_decision_publications USING (decision_id)) \
-         SELECT content_uuid FROM path WHERE NOT EXISTS ( \
-         SELECT 1 FROM merged_file_ids AS redirect JOIN file_match_decision_publications USING (decision_id) \
-         WHERE redirect.old_content_uuid = path.content_uuid)",
-    )
-    .bind::<Binary, _>(issued.as_bytes().as_slice())
-    .load::<ContentUuidRow>(connection)?;
+    let rows = IssuedContentResolution(issued.as_bytes()).load::<Vec<u8>>(connection)?;
     match rows.as_slice() {
-        [row] => content_id(row.content_uuid.clone()),
+        [row] => content_id(row.clone()),
         [] => {
             let known =
                 sql_query("SELECT content_uuid FROM catalog_contents WHERE content_uuid = ?")
                     .bind::<Binary, _>(issued.as_bytes().as_slice())
                     .get_result::<ContentUuidRow>(connection)
-                    .optional()?;
+                    .optional()?
+                    .map(|row| row.content_uuid);
             Err(if known.is_some() {
                 super::file_match_reviews::ReviewError::CorruptRedirects
             } else {
@@ -227,24 +455,11 @@ pub fn resolve_issued_id(
     }
 }
 
+#[cfg(test)]
 #[derive(diesel::QueryableByName)]
 struct ContentFactsRow {
     #[diesel(sql_type = BigInt)]
     size: i64,
-}
-
-#[derive(diesel::QueryableByName)]
-struct DigestIdRow {
-    #[diesel(sql_type = BigInt)]
-    digest_id: i64,
-}
-
-#[derive(diesel::QueryableByName)]
-struct DigestFactRow {
-    #[diesel(sql_type = Text)]
-    algorithm: String,
-    #[diesel(sql_type = Binary)]
-    digest: Vec<u8>,
 }
 
 /// Resolve source assertions without storing another copy of their hashes or size.
@@ -283,34 +498,14 @@ pub fn resolve_content_identity(
         .iter()
         .filter(|assertion| assertion.identifies_whole_file())
     {
-        let rows = sql_query(
-            "SELECT DISTINCT assertion.content_uuid FROM catalog_content_digest_assertions AS assertion \
-             JOIN digest_values AS digest USING (digest_id) \
-             WHERE digest.algorithm = ? AND digest.digest = ?",
-        )
-        .bind::<Text, _>(assertion.algorithm.as_str())
-        .bind::<Binary, _>(assertion.value)
-        .load::<ContentUuidRow>(connection)?;
-        for row in rows {
-            candidates.insert(resolve_issued_id(
-                connection,
-                content_id(row.content_uuid)?,
-            )?);
+        let rows = ContentIdentityLookup {
+            algorithm: assertion.algorithm.as_str(),
+            digest: assertion.value,
         }
-        let conflicting_aliases = sql_query(
-            "SELECT DISTINCT dispute.candidate_content_uuid AS content_uuid \
-             FROM disputed_file_hashes AS dispute JOIN digest_values AS digest USING (digest_id) \
-             WHERE digest.algorithm = ? AND digest.digest = ?",
-        )
-        .bind::<Text, _>(assertion.algorithm.as_str())
-        .bind::<Binary, _>(assertion.value)
-        .load::<ContentUuidRow>(connection)?;
-        disputed |= !conflicting_aliases.is_empty();
-        for row in conflicting_aliases {
-            candidates.insert(resolve_issued_id(
-                connection,
-                content_id(row.content_uuid)?,
-            )?);
+        .load::<(Vec<u8>, i64)>(connection)?;
+        for (candidate, is_disputed) in rows {
+            disputed |= is_disputed != 0;
+            candidates.insert(resolve_issued_id(connection, content_id(candidate)?)?);
         }
     }
     if disputed {
@@ -322,9 +517,7 @@ pub fn resolve_content_identity(
     match candidates.len() {
         0 => {
             let id = CatalogContentId::generate();
-            sql_query("INSERT INTO catalog_contents (content_uuid) VALUES (?)")
-                .bind::<Binary, _>(id.as_bytes().as_slice())
-                .execute(connection)?;
+            ExecuteDsl::execute(CatalogContentInsert(id), connection)?;
             Ok(ContentIdentityResolution::Linked(id))
         }
         1 => {
@@ -422,31 +615,23 @@ fn compatible_identity(
     size: Option<i64>,
     assertions: ContentDigestAssertions<'_>,
 ) -> crate::Result<bool> {
-    let facts = sql_query(identity_size_select())
-        .bind::<Binary, _>(content_id.as_bytes().as_slice())
-        .load::<ContentFactsRow>(connection)?;
+    let facts = ContentIdentitySizes(content_id.as_bytes()).load::<i64>(connection)?;
     if facts.len() > 1
-        || size.is_some_and(|incoming| facts.first().is_some_and(|fact| fact.size != incoming))
+        || size.is_some_and(|incoming| facts.first().is_some_and(|fact| *fact != incoming))
     {
         return Ok(false);
     }
 
-    let stored = sql_query(format!(
-        "{FILE_COMPONENT_SQL} SELECT DISTINCT digest.algorithm, digest.digest FROM component \
-         CROSS JOIN asset_occurrences AS entry ON entry.content_uuid = component.content_uuid \
-         CROSS JOIN catalog_content_digest_assertions AS assertion ON assertion.occurrence_id = entry.occurrence_id \
-         CROSS JOIN digest_values AS digest ON digest.digest_id = assertion.digest_id",
-    ))
-    .bind::<Binary, _>(content_id.as_bytes().as_slice())
-    .load::<DigestFactRow>(connection)?;
+    let stored =
+        ContentIdentityDigests(content_id.as_bytes()).load::<(String, Vec<u8>)>(connection)?;
     let mut known = BTreeMap::new();
-    for fact in stored {
-        match known.entry(fact.algorithm) {
+    for (algorithm, digest) in stored {
+        match known.entry(algorithm) {
             std::collections::btree_map::Entry::Vacant(entry) => {
-                entry.insert(fact.digest);
+                entry.insert(digest);
             }
             std::collections::btree_map::Entry::Occupied(entry) => {
-                if entry.get() != &fact.digest {
+                if entry.get() != &digest {
                     return Ok(false);
                 }
             }
@@ -460,6 +645,7 @@ fn compatible_identity(
     }))
 }
 
+#[cfg(test)]
 fn identity_size_select() -> String {
     format!(
         "{FILE_COMPONENT_SQL} SELECT DISTINCT \
@@ -496,7 +682,15 @@ fn content_id(bytes: Vec<u8>) -> crate::Result<CatalogContentId> {
 
 #[cfg(test)]
 mod tests {
-    use diesel::{Connection, connection::SimpleConnection};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    use diesel::{
+        Connection,
+        connection::{InstrumentationEvent, SimpleConnection},
+    };
 
     use super::*;
 
@@ -522,6 +716,86 @@ mod tests {
         )?;
         assert_eq!(first.content_id(), second.content_id());
         Ok(())
+    }
+
+    #[test]
+    fn digest_assertion_statements_reuse_prepared_queries_for_changed_values() -> crate::Result<()>
+    {
+        let mut connection = registry_connection()?;
+        let occurrences = [1_i64, 2_i64];
+        let digest_values = [[0x11; 20], [0x22; 20]];
+        for occurrence in occurrences {
+            sql_query("INSERT INTO asset_occurrences(occurrence_id) VALUES (?)")
+                .bind::<BigInt, _>(occurrence)
+                .execute(&mut connection)?;
+        }
+
+        let cached_queries = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&cached_queries);
+        connection.set_instrumentation(move |event: InstrumentationEvent<'_>| {
+            if matches!(event, InstrumentationEvent::CacheQuery { .. }) {
+                observed.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+
+        for (occurrence, digest) in occurrences.into_iter().zip(digest_values) {
+            record_occurrence_digest_assertions(
+                &mut connection,
+                OccurrenceId::from_database(occurrence),
+                ContentDigestAssertions::new("whole_file", None, None, Some(&digest), None),
+                "source_declared",
+            )?;
+        }
+
+        let digests = sql_query(
+            "SELECT digest_id AS id, digest FROM digest_values WHERE algorithm='sha1' ORDER BY digest",
+        )
+        .load::<DigestTestRow>(&mut connection)?;
+        assert_eq!(digests.len(), 2);
+        assert_ne!(digests[0].id, digests[1].id);
+        assert_eq!(digests[0].digest.as_slice(), digest_values[0]);
+        assert_eq!(digests[1].digest.as_slice(), digest_values[1]);
+
+        let assertion_count =
+            sql_query("SELECT COUNT(*) AS count FROM occurrence_digest_assertions")
+                .get_result::<CountRow>(&mut connection)?
+                .count;
+        assert_eq!(assertion_count, 2);
+        assert_eq!(cached_queries.load(Ordering::Relaxed), 3);
+        Ok(())
+    }
+
+    #[test]
+    fn content_identity_lookup_reuses_one_prepared_query_for_each_digest() -> crate::Result<()> {
+        let mut connection = registry_connection()?;
+        let cache_hits = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&cache_hits);
+        connection.set_instrumentation(move |event: InstrumentationEvent<'_>| {
+            if let InstrumentationEvent::CacheQuery { sql, .. } = event
+                && sql.to_string().contains("disputed_file_hashes AS dispute")
+            {
+                observed.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+
+        let digest = [0x71; 20];
+        let assertions =
+            ContentDigestAssertions::new("whole_file", None, None, Some(&digest), None);
+        let first = resolve_content_identity(&mut connection, Some(24), assertions)?;
+        support_identity(&mut connection, &first, Some(24), assertions)?;
+        let second = resolve_content_identity(&mut connection, Some(24), assertions)?;
+
+        assert_eq!(first.content_id(), second.content_id());
+        assert_eq!(cache_hits.load(Ordering::Relaxed), 1);
+        Ok(())
+    }
+
+    #[derive(diesel::QueryableByName)]
+    struct DigestTestRow {
+        #[diesel(sql_type = BigInt)]
+        id: i64,
+        #[diesel(sql_type = Binary)]
+        digest: Vec<u8>,
     }
 
     #[test]

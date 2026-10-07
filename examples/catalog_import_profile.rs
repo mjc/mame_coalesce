@@ -1,6 +1,13 @@
-use std::{env, path::Path, time::Instant};
+use std::{
+    collections::BTreeMap,
+    env,
+    path::Path,
+    sync::{Mutex, OnceLock},
+    time::{Duration, Instant},
+};
 
 use camino::Utf8PathBuf;
+use diesel::connection::{Instrumentation, InstrumentationEvent, set_default_instrumentation};
 use mame_coalesce::{
     app::{self, CatalogDocumentFormat, CatalogImportRequest, CatalogImportStatus},
     database::Database,
@@ -9,7 +16,68 @@ use mame_coalesce::{
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    run(env::args().skip(1))
+    let timings = env::var_os("CATALOG_SQL_TIMINGS").is_some();
+    if timings {
+        set_default_instrumentation(|| Some(sql_timings()))?;
+    }
+    let result = run(env::args().skip(1));
+    if timings {
+        report_sql_timings();
+    }
+    result
+}
+
+#[derive(Clone, Copy, Default)]
+struct QueryTiming {
+    count: u32,
+    elapsed: Duration,
+}
+
+static SQL_TIMINGS: OnceLock<Mutex<BTreeMap<String, QueryTiming>>> = OnceLock::new();
+
+fn sql_timings() -> Box<dyn Instrumentation> {
+    let mut started = None;
+    Box::new(move |event: InstrumentationEvent<'_>| match event {
+        InstrumentationEvent::StartQuery { .. } => started = Some(Instant::now()),
+        InstrumentationEvent::FinishQuery { query, .. } => {
+            let Some(start) = started.take() else { return };
+            let elapsed = start.elapsed();
+            let rendered = query.to_string();
+            let sql = rendered.split(" -- binds:").next().unwrap_or(&rendered);
+            let mut timings = SQL_TIMINGS
+                .get_or_init(Mutex::default)
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let timing = timings.entry(sql.to_owned()).or_default();
+            timing.count += 1;
+            timing.elapsed += elapsed;
+            drop(timings);
+        }
+        _ => {}
+    })
+}
+
+fn report_sql_timings() {
+    let Some(timings) = SQL_TIMINGS.get() else {
+        return;
+    };
+    let mut rows = timings
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .map(|(sql, timing)| (sql.clone(), *timing))
+        .collect::<Vec<_>>();
+    rows.sort_unstable_by_key(|(_, timing)| std::cmp::Reverse(timing.elapsed));
+    for (sql, timing) in rows.into_iter().take(20) {
+        let abbreviated = sql.split_whitespace().collect::<Vec<_>>().join(" ");
+        let abbreviated = abbreviated.chars().take(600).collect::<String>();
+        eprintln!(
+            "SQL seconds={:.6} calls={} average_us={:.1} query={abbreviated}",
+            timing.elapsed.as_secs_f64(),
+            timing.count,
+            timing.elapsed.as_secs_f64() * 1_000_000.0 / f64::from(timing.count),
+        );
+    }
 }
 
 fn run(arguments: impl IntoIterator<Item = String>) -> Result<(), Box<dyn std::error::Error>> {

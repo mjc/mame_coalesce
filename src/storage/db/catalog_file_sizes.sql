@@ -22,15 +22,22 @@ FROM catalog_contents AS identity;
 
 -- Unknown incoming size cannot hide disagreements among retained source facts.
 -- Unlinked entries do not touch an identity and remain independently publishable.
+-- Validate each touched canonical UUID once, not once per duplicate declaration.
+-- MATERIALIZED prevents flattening the component check back into the owner loop.
 CREATE TRIGGER catalog_linked_file_size_publication BEFORE INSERT ON snapshot_publications
 WHEN EXISTS (
-    SELECT 1 FROM catalog_set_groups AS groups
-    CROSS JOIN catalog_sets AS sets ON sets.set_group_id = groups.set_group_id
-    CROSS JOIN asset_occurrences AS occurrence ON occurrence.record_id = sets.set_id
-    JOIN canonical_occurrence_content AS canonical USING (occurrence_id)
-    JOIN canonical_file_size_consistency AS consistency
-      ON consistency.content_uuid = canonical.content_uuid
-    WHERE groups.snapshot_key = NEW.snapshot_key AND consistency.inconsistent
+    WITH touched_identities(content_uuid) AS MATERIALIZED (
+        SELECT DISTINCT canonical.content_uuid
+        FROM catalog_set_groups AS groups
+        CROSS JOIN catalog_sets AS sets ON sets.set_group_id = groups.set_group_id
+        CROSS JOIN asset_occurrences AS occurrence ON occurrence.record_id = sets.set_id
+        JOIN canonical_occurrence_content AS canonical USING (occurrence_id)
+        WHERE groups.snapshot_key = NEW.snapshot_key
+    )
+    SELECT 1 FROM touched_identities
+    CROSS JOIN canonical_file_size_consistency AS consistency
+      ON consistency.content_uuid = touched_identities.content_uuid
+    WHERE consistency.inconsistent
 )
 BEGIN SELECT RAISE(ABORT, 'catalog UUID has contradictory source whole-file lengths (source evidence)'); END;
 

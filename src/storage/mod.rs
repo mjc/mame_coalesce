@@ -1,5 +1,6 @@
 pub mod backup;
 pub mod build_catalog;
+mod cached_sql;
 pub mod catalog_clrmamepro;
 pub mod catalog_content;
 pub mod catalog_coverage;

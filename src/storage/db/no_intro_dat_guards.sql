@@ -105,11 +105,14 @@ BEGIN SELECT RAISE(ABORT, 'No-Intro DAT cannot link an already disputed source h
 CREATE TRIGGER no_intro_dat_linked_identity_publication
 BEFORE INSERT ON snapshot_publications
 WHEN EXISTS (
-    SELECT 1 FROM no_intro_dat_rom_claims AS claim
-    JOIN asset_occurrences AS occurrence ON occurrence.occurrence_id = claim.occurrence_id
-    JOIN canonical_occurrence_content AS canonical ON canonical.occurrence_id = occurrence.occurrence_id
-    JOIN catalog_sets AS game ON game.set_id = occurrence.record_id
-    JOIN catalog_set_groups AS grouping ON grouping.set_group_id = game.set_group_id
+    -- Scope owners first and require an actual native claim before traversing
+    -- canonical UUIDs. Ordinary JOIN lets SQLite run that recursive validation
+    -- for unrelated formats before discovering their native claim is absent.
+    SELECT 1 FROM catalog_set_groups AS grouping
+    CROSS JOIN catalog_sets AS game ON game.set_group_id = grouping.set_group_id
+    CROSS JOIN asset_occurrences AS occurrence ON occurrence.record_id = game.set_id
+    CROSS JOIN no_intro_dat_rom_claims AS claim ON claim.occurrence_id = occurrence.occurrence_id
+    CROSS JOIN canonical_occurrence_content AS canonical ON canonical.occurrence_id = occurrence.occurrence_id
     WHERE grouping.snapshot_key = NEW.snapshot_key AND occurrence.content_uuid IS NOT NULL
       AND (
         EXISTS (

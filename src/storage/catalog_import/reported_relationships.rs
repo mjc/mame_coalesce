@@ -1,8 +1,12 @@
 //! One identity issuer for source declarations; native tables own their literals.
 
 use diesel::{
-    QueryableByName, RunQueryDsl, SqliteConnection, sql_query,
+    RunQueryDsl, SqliteConnection,
+    query_builder::{AstPass, Query, QueryFragment, QueryId},
+    query_dsl::methods::ExecuteDsl,
+    sql_query,
     sql_types::{BigInt, Text},
+    sqlite::Sqlite,
 };
 
 use crate::domain::{
@@ -205,10 +209,59 @@ impl ReportedRelationshipId {
     }
 }
 
-#[derive(QueryableByName)]
-struct IdRow {
-    #[diesel(sql_type = BigInt)]
+struct InsertCatalogRelationshipQuery;
+struct InsertReportedRelationshipQuery;
+
+struct InsertCatalogRelationship<'a> {
+    assertion_key: &'a str,
+    snapshot_key: &'a str,
+}
+
+impl QueryId for InsertCatalogRelationship<'_> {
+    type QueryId = InsertCatalogRelationshipQuery;
+}
+
+impl Query for InsertCatalogRelationship<'_> {
+    type SqlType = BigInt;
+}
+
+impl RunQueryDsl<SqliteConnection> for InsertCatalogRelationship<'_> {}
+
+impl QueryFragment<Sqlite> for InsertCatalogRelationship<'_> {
+    fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, Sqlite>) -> diesel::QueryResult<()> {
+        pass.push_sql(
+            "INSERT INTO catalog_relationships(assertion_key,origin,snapshot_key) VALUES (",
+        );
+        pass.push_bind_param::<Text, _>(&self.assertion_key)?;
+        pass.push_sql(",'source',");
+        pass.push_bind_param::<Text, _>(&self.snapshot_key)?;
+        pass.push_sql(") RETURNING relationship_id");
+        Ok(())
+    }
+}
+
+struct InsertReportedRelationship<'a> {
     relationship_id: i64,
+    source_reference_kind: &'a str,
+}
+
+impl QueryId for InsertReportedRelationship<'_> {
+    type QueryId = InsertReportedRelationshipQuery;
+}
+
+impl RunQueryDsl<SqliteConnection> for InsertReportedRelationship<'_> {}
+
+impl QueryFragment<Sqlite> for InsertReportedRelationship<'_> {
+    fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, Sqlite>) -> diesel::QueryResult<()> {
+        pass.push_sql(
+            "INSERT INTO reported_catalog_relationships(relationship_id,source_reference_kind) VALUES (",
+        );
+        pass.push_bind_param::<BigInt, _>(&self.relationship_id)?;
+        pass.push_sql(",");
+        pass.push_bind_param::<Text, _>(&self.source_reference_kind)?;
+        pass.push_sql(")");
+        Ok(())
+    }
 }
 
 pub(super) fn register(
@@ -217,21 +270,17 @@ pub(super) fn register(
     kind: ReportedReferenceKind,
 ) -> crate::Result<ReportedRelationshipId> {
     let key = RelationshipAssertionKey::fresh();
-    let row = sql_query(
-        "INSERT INTO catalog_relationships(assertion_key,origin,snapshot_key) \
-         VALUES (?,'source',?) RETURNING relationship_id",
-    )
-    .bind::<Text, _>(key.as_str())
-    .bind::<Text, _>(snapshot.as_str())
-    .get_result::<IdRow>(connection)?;
-    sql_query(
-        "INSERT INTO reported_catalog_relationships(relationship_id,source_reference_kind) \
-         VALUES (?,?)",
-    )
-    .bind::<BigInt, _>(row.relationship_id)
-    .bind::<Text, _>(kind.code())
+    let row = InsertCatalogRelationship {
+        assertion_key: key.as_str(),
+        snapshot_key: snapshot.as_str(),
+    }
+    .get_result::<i64>(connection)?;
+    InsertReportedRelationship {
+        relationship_id: row,
+        source_reference_kind: kind.code(),
+    }
     .execute(connection)?;
-    Ok(ReportedRelationshipId(row.relationship_id))
+    Ok(ReportedRelationshipId(row))
 }
 
 enum MergeOwner {
@@ -275,15 +324,6 @@ impl MergeOwner {
         }
     }
 
-    const fn table(&self) -> &'static str {
-        match self {
-            Self::Mame(MergeMediaKind::Rom) => "mame_rom_merges",
-            Self::Mame(MergeMediaKind::Disk) => "mame_disk_merges",
-            Self::Logiqx(_) => "logiqx_file_merges",
-            Self::ClrMamePro => "clrmamepro_rom_merges",
-        }
-    }
-
     const fn claim_kind(&self) -> Option<&'static str> {
         match self {
             Self::Logiqx(MergeMediaKind::Rom) => Some("logiqx_rom"),
@@ -291,6 +331,106 @@ impl MergeOwner {
             _ => None,
         }
     }
+}
+
+trait MergeShape: 'static {
+    const TABLE: &'static str;
+    const STORES_LOCATION: bool;
+    const STORES_CLAIM_KIND: bool;
+}
+
+struct MameRomMergeShape;
+struct MameDiskMergeShape;
+struct LogiqxMergeShape;
+struct ClrMameProMergeShape;
+
+macro_rules! merge_shapes {
+    ($($shape:ty => ($table:literal, $location:literal, $claim:literal)),+ $(,)?) => {
+        $(
+            impl MergeShape for $shape {
+                const TABLE: &'static str = $table;
+                const STORES_LOCATION: bool = $location;
+                const STORES_CLAIM_KIND: bool = $claim;
+            }
+        )+
+    };
+}
+
+merge_shapes!(
+    MameRomMergeShape => ("mame_rom_merges", true, false),
+    MameDiskMergeShape => ("mame_disk_merges", true, false),
+    LogiqxMergeShape => ("logiqx_file_merges", false, true),
+    ClrMameProMergeShape => ("clrmamepro_rom_merges", false, false),
+);
+
+struct MergeInsert<'a, Shape: MergeShape> {
+    occurrence_id: i64,
+    relationship_id: i64,
+    merge_name: &'a str,
+    source_line: i64,
+    source_column: i64,
+    claim_kind: &'a str,
+    shape: std::marker::PhantomData<Shape>,
+}
+
+impl<Shape: MergeShape> QueryId for MergeInsert<'_, Shape> {
+    type QueryId = Shape;
+}
+
+impl<Shape: MergeShape> QueryFragment<Sqlite> for MergeInsert<'_, Shape> {
+    fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, Sqlite>) -> diesel::QueryResult<()> {
+        pass.push_sql("INSERT INTO ");
+        pass.push_sql(Shape::TABLE);
+        pass.push_sql("(occurrence_id,relationship_id,merge_name");
+        if Shape::STORES_LOCATION {
+            pass.push_sql(",source_line,source_column");
+        }
+        if Shape::STORES_CLAIM_KIND {
+            pass.push_sql(",claim_kind");
+        }
+        pass.push_sql(") VALUES (");
+        pass.push_bind_param::<BigInt, _>(&self.occurrence_id)?;
+        pass.push_sql(",");
+        pass.push_bind_param::<BigInt, _>(&self.relationship_id)?;
+        pass.push_sql(",");
+        pass.push_bind_param::<Text, _>(&self.merge_name)?;
+        if Shape::STORES_LOCATION {
+            pass.push_sql(",");
+            pass.push_bind_param::<BigInt, _>(&self.source_line)?;
+            pass.push_sql(",");
+            pass.push_bind_param::<BigInt, _>(&self.source_column)?;
+        }
+        if Shape::STORES_CLAIM_KIND {
+            pass.push_sql(",");
+            pass.push_bind_param::<Text, _>(&self.claim_kind)?;
+        }
+        pass.push_sql(")");
+        Ok(())
+    }
+}
+
+fn insert_merge<Shape: MergeShape>(
+    connection: &mut SqliteConnection,
+    occurrence: OccurrenceId,
+    relationship: &ReportedRelationshipId,
+    literal: &str,
+    location: crate::logiqx::RecordLocation,
+    claim_kind: Option<&str>,
+) -> crate::Result<()> {
+    let claim_kind = claim_kind.unwrap_or_default();
+    ExecuteDsl::execute(
+        MergeInsert::<Shape> {
+            occurrence_id: occurrence.database_value(),
+            relationship_id: relationship.database_value(),
+            merge_name: literal,
+            source_line: location.line,
+            source_column: location.column,
+            claim_kind,
+            shape: std::marker::PhantomData,
+        },
+        connection,
+    )?;
+    Ok(())
 }
 
 pub(super) fn insert_asset_merge(
@@ -306,37 +446,99 @@ pub(super) fn insert_asset_merge(
         return Ok(());
     };
     let relationship = register(connection, snapshot, owner.reference_kind())?;
-    let mut columns = "occurrence_id,relationship_id,merge_name".to_owned();
-    let mut placeholders = "?,?,?".to_owned();
-    let stores_location = matches!(owner, MergeOwner::Mame(_));
-    if stores_location {
-        columns.push_str(",source_line,source_column");
-        placeholders.push_str(",?,?");
+    match owner {
+        MergeOwner::Mame(MergeMediaKind::Rom) => insert_merge::<MameRomMergeShape>(
+            connection,
+            occurrence,
+            &relationship,
+            literal,
+            asset.location,
+            None,
+        ),
+        MergeOwner::Mame(MergeMediaKind::Disk) => insert_merge::<MameDiskMergeShape>(
+            connection,
+            occurrence,
+            &relationship,
+            literal,
+            asset.location,
+            None,
+        ),
+        logiqx @ MergeOwner::Logiqx(_) => insert_merge::<LogiqxMergeShape>(
+            connection,
+            occurrence,
+            &relationship,
+            literal,
+            asset.location,
+            logiqx.claim_kind(),
+        ),
+        MergeOwner::ClrMamePro => insert_merge::<ClrMameProMergeShape>(
+            connection,
+            occurrence,
+            &relationship,
+            literal,
+            asset.location,
+            None,
+        ),
     }
-    if owner.claim_kind().is_some() {
-        columns.push_str(",claim_kind");
-        placeholders.push_str(",?");
+}
+
+#[cfg(test)]
+mod prepared_statement_tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    use diesel::{
+        Connection,
+        connection::{InstrumentationEvent, SimpleConnection},
+        sqlite::SqliteConnection,
+    };
+
+    use super::{ReportedReferenceKind, XmlReferenceKind, register};
+    use crate::domain::SnapshotKey;
+
+    #[test]
+    #[expect(
+        clippy::expect_used,
+        reason = "SQLite fixture setup and prepared statement assertions must fail loudly"
+    )]
+    fn relationship_registration_reuses_both_statements_for_changed_values() -> crate::Result<()> {
+        let mut connection =
+            SqliteConnection::establish(":memory:").expect("open in-memory SQLite");
+        connection.batch_execute(
+            "CREATE TABLE catalog_relationships (
+                relationship_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                assertion_key TEXT NOT NULL,
+                origin TEXT NOT NULL,
+                snapshot_key TEXT NOT NULL
+            );
+            CREATE TABLE reported_catalog_relationships (
+                relationship_id INTEGER PRIMARY KEY,
+                source_reference_kind TEXT NOT NULL
+            )",
+        )?;
+        let cached_queries = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&cached_queries);
+        connection.set_instrumentation(move |event: InstrumentationEvent<'_>| {
+            if matches!(event, InstrumentationEvent::CacheQuery { .. }) {
+                observed.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+
+        let first = register(
+            &mut connection,
+            &SnapshotKey::from_persisted("snapshot-a".into()),
+            ReportedReferenceKind::Mame(XmlReferenceKind::CloneOf),
+        )?;
+        let second = register(
+            &mut connection,
+            &SnapshotKey::from_persisted("snapshot-b".into()),
+            ReportedReferenceKind::Mame(XmlReferenceKind::RomOf),
+        )?;
+
+        assert_ne!(first.database_value(), second.database_value());
+        assert_eq!(cached_queries.load(Ordering::Relaxed), 2);
+        Ok(())
     }
-    let query = sql_query(format!(
-        "INSERT INTO {}({columns}) VALUES ({placeholders})",
-        owner.table()
-    ))
-    .bind::<BigInt, _>(occurrence.database_value())
-    .bind::<BigInt, _>(relationship.database_value())
-    .bind::<Text, _>(literal);
-    if stores_location {
-        let query = query
-            .bind::<BigInt, _>(asset.location.line)
-            .bind::<BigInt, _>(asset.location.column);
-        if let Some(claim_kind) = owner.claim_kind() {
-            query.bind::<Text, _>(claim_kind).execute(connection)?;
-        } else {
-            query.execute(connection)?;
-        }
-    } else if let Some(claim_kind) = owner.claim_kind() {
-        query.bind::<Text, _>(claim_kind).execute(connection)?;
-    } else {
-        query.execute(connection)?;
-    }
-    Ok(())
 }

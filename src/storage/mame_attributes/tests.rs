@@ -1,13 +1,89 @@
 #![allow(clippy::expect_used)]
 
-use super::{EDITION_VALIDATION_QUERY, SnapshotKey, Text, validate_edition};
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
+
+use super::{EDITION_VALIDATION_QUERY, Family, SnapshotKey, Text, insert, validate_edition};
 use crate::{
     app::{self, CatalogDocumentFormat, CatalogImportRequest, CatalogImportStatus},
     database::Database,
     domain::{CatalogKey, CatalogScope, PublishingSourceKey},
 };
 use camino::Utf8PathBuf;
-use diesel::{QueryableByName, RunQueryDsl, connection::SimpleConnection, sql_query};
+use diesel::{
+    Connection, QueryableByName, RunQueryDsl,
+    connection::{InstrumentationEvent, SimpleConnection},
+    sql_query,
+    sqlite::SqliteConnection,
+};
+
+#[test]
+#[expect(
+    clippy::expect_used,
+    reason = "SQLite fixture setup and prepared-statement cache assertions must fail loudly"
+)]
+fn mame_attribute_positions_reuse_the_prepared_statement() -> crate::Result<()> {
+    use crate::xml_reader::{AttributeLocation, AttributePosition};
+
+    let mut conn = SqliteConnection::establish(":memory:").expect("open in-memory SQLite");
+    conn.batch_execute(
+        "CREATE TABLE mame_machine_device_extensions_attribute_positions (
+            set_id INTEGER NOT NULL,
+            element_order INTEGER NOT NULL,
+            extension_order INTEGER NOT NULL,
+            field_kind INTEGER NOT NULL,
+            source_order INTEGER NOT NULL,
+            source_line INTEGER NOT NULL,
+            source_column INTEGER NOT NULL
+        )",
+    )?;
+    let cache_hits = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::clone(&cache_hits);
+    conn.set_instrumentation(move |event: InstrumentationEvent<'_>| {
+        if matches!(event, InstrumentationEvent::CacheQuery { .. }) {
+            observed.fetch_add(1, Ordering::Relaxed);
+        }
+    });
+
+    let positions = [
+        AttributePosition {
+            field: 1_u8,
+            source_order: 0,
+            location: AttributeLocation {
+                line: 10,
+                column: 4,
+            },
+        },
+        AttributePosition {
+            field: 2_u8,
+            source_order: 1,
+            location: AttributeLocation {
+                line: 10,
+                column: 18,
+            },
+        },
+        AttributePosition {
+            field: 3_u8,
+            source_order: 2,
+            location: AttributeLocation {
+                line: 10,
+                column: 31,
+            },
+        },
+    ];
+    insert(
+        &mut conn,
+        Family::Extension,
+        &[7, 11, 13],
+        &positions,
+        i64::from,
+    )?;
+
+    assert_eq!(cache_hits.load(Ordering::Relaxed), 1);
+    Ok(())
+}
 
 fn import_edition(
     database: &Database,

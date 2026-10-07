@@ -3,13 +3,14 @@ use diesel::{
     connection::SimpleConnection,
     prelude::*,
     sql_query,
-    sql_types::{BigInt, Text},
+    sql_types::{BigInt, Bool, Text},
 };
 use mame_coalesce::{
     app::{self, CatalogDocumentFormat, CatalogImportRequest, CatalogImportStatus},
     database::Database,
     domain::{CatalogKey, CatalogScope, PublishingSourceKey},
 };
+use std::fmt::Write as _;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
@@ -29,6 +30,357 @@ fn request(path: Utf8PathBuf) -> CatalogImportRequest {
 struct Count {
     #[diesel(sql_type = BigInt)]
     count: i64,
+}
+
+#[derive(QueryableByName, Debug, PartialEq, Eq)]
+struct SwitchRow {
+    #[diesel(sql_type = BigInt)]
+    switch_order: i64,
+    #[diesel(sql_type = Text)]
+    kind: String,
+    #[diesel(sql_type = Text)]
+    name: String,
+    #[diesel(sql_type = Text)]
+    tag: String,
+    #[diesel(sql_type = Text)]
+    mask: String,
+    #[diesel(sql_type = BigInt)]
+    source_order: i64,
+    #[diesel(sql_type = BigInt)]
+    source_line: i64,
+    #[diesel(sql_type = BigInt)]
+    source_column: i64,
+}
+
+#[derive(QueryableByName, Debug, PartialEq, Eq)]
+struct SwitchLocationRow {
+    #[diesel(sql_type = BigInt)]
+    switch_order: i64,
+    #[diesel(sql_type = BigInt)]
+    location_order: i64,
+    #[diesel(sql_type = BigInt)]
+    source_order: i64,
+    #[diesel(sql_type = Text)]
+    name: String,
+    #[diesel(sql_type = Text)]
+    number: String,
+    #[diesel(sql_type = Bool)]
+    inverted: bool,
+    #[diesel(sql_type = Bool)]
+    inverted_specified: bool,
+    #[diesel(sql_type = BigInt)]
+    source_line: i64,
+    #[diesel(sql_type = BigInt)]
+    source_column: i64,
+}
+
+#[derive(QueryableByName, Debug, PartialEq, Eq)]
+struct SwitchValueRow {
+    #[diesel(sql_type = BigInt)]
+    switch_order: i64,
+    #[diesel(sql_type = BigInt)]
+    value_order: i64,
+    #[diesel(sql_type = BigInt)]
+    source_order: i64,
+    #[diesel(sql_type = Text)]
+    name: String,
+    #[diesel(sql_type = Text)]
+    value: String,
+    #[diesel(sql_type = Bool)]
+    is_default: bool,
+    #[diesel(sql_type = Bool)]
+    default_specified: bool,
+    #[diesel(sql_type = BigInt)]
+    source_line: i64,
+    #[diesel(sql_type = BigInt)]
+    source_column: i64,
+}
+
+#[derive(QueryableByName, Debug, PartialEq, Eq)]
+struct SwitchConditionRow {
+    #[diesel(sql_type = Text)]
+    tag: String,
+    #[diesel(sql_type = Text)]
+    mask: String,
+    #[diesel(sql_type = Text)]
+    relation: String,
+    #[diesel(sql_type = Text)]
+    value: String,
+    #[diesel(sql_type = BigInt)]
+    source_line: i64,
+    #[diesel(sql_type = BigInt)]
+    source_column: i64,
+}
+
+#[test]
+fn machine_switch_import_preserves_rows_and_large_corpus() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let database_path = Utf8PathBuf::try_from(directory.path().join("catalog.sqlite"))?;
+    let database = Database::open(&database_path)?;
+    let document = Utf8PathBuf::try_from(directory.path().join("machines.xml"))?;
+    write_switch_fixture(&document)?;
+    let report = app::import_catalog(&database, &request(document))?;
+    assert_eq!(report.status, CatalogImportStatus::Succeeded);
+    let mut connection = SqliteConnection::establish(database_path.as_str())?;
+    assert_switch_records(&mut connection)?;
+    assert_switch_locations(&mut connection)?;
+    assert_switch_values(&mut connection)?;
+    assert_switch_attribute_provenance(&mut connection)?;
+    Ok(())
+}
+
+const BATCH_CORPUS: usize = 130;
+
+fn write_switch_fixture(document: &Utf8PathBuf) -> TestResult {
+    let mut xml = String::from(
+        "<mame mameconfig='10'>\n<machine name='system'>\n<description>System</description>\n",
+    );
+    xml.push_str(
+        "<dipswitch name='Power' tag=':SW' mask='0x01'>\n\
+         <condition tag=':CFG' mask='0x01' relation='eq' value='1'/>\n\
+         <diplocation name='SW1' number='1' inverted='yes'/>\n\
+         <dipvalue name='Off' value='0x00' default='yes'>\n\
+         <condition tag=':CFG' mask='0x01' relation='ne' value='0'/>\n\
+         </dipvalue>\n\
+         <dipvalue name='On' value='0x01' default='no'/>\n\
+         </dipswitch>\n\
+         <configuration name='Mode' tag=':CFG' mask='mode'>\n\
+         <conflocation name='JP1' number='2'/>\n\
+         <confsetting name='Automatic' value='automatic' default='yes'/>\n\
+         </configuration>\n",
+    );
+    for index in 0..BATCH_CORPUS {
+        write!(
+            xml,
+            "<dipswitch name='Batch {index}' tag=':B{index}' mask='0x01'>\n\
+             <diplocation name='SW{index}' number='{index}' inverted='no'/>\n\
+             <dipvalue name='Value {index}' value='0x{index:02x}' default='no'/>\n\
+             </dipswitch>\n"
+        )?;
+    }
+    xml.push_str("</machine>\n</mame>\n");
+    std::fs::write(document, xml)?;
+    Ok(())
+}
+
+fn assert_switch_records(connection: &mut SqliteConnection) -> TestResult {
+    let switches = sql_query(
+        "SELECT switch_order,kind,name,tag,mask,source_order,source_line,source_column \
+         FROM machine_switches ORDER BY switch_order",
+    )
+    .load::<SwitchRow>(connection)?;
+    assert_eq!(switches.len(), BATCH_CORPUS + 2);
+    assert_eq!(
+        switches[0],
+        SwitchRow {
+            switch_order: 0,
+            kind: "dipswitch".into(),
+            name: "Power".into(),
+            tag: ":SW".into(),
+            mask: "0x01".into(),
+            source_order: 1,
+            source_line: 4,
+            source_column: 1,
+        }
+    );
+    assert_eq!(
+        switches[1],
+        SwitchRow {
+            switch_order: 1,
+            kind: "configuration".into(),
+            name: "Mode".into(),
+            tag: ":CFG".into(),
+            mask: "mode".into(),
+            source_order: 2,
+            source_line: 12,
+            source_column: 1,
+        }
+    );
+    for (index, row) in switches.iter().skip(2).enumerate() {
+        assert_eq!(
+            row,
+            &SwitchRow {
+                switch_order: i64::try_from(index + 2)?,
+                kind: "dipswitch".into(),
+                name: format!("Batch {index}"),
+                tag: format!(":B{index}"),
+                mask: "0x01".into(),
+                source_order: i64::try_from(index + 3)?,
+                source_line: i64::try_from(16 + index * 4)?,
+                source_column: 1,
+            }
+        );
+    }
+    Ok(())
+}
+
+fn assert_switch_locations(connection: &mut SqliteConnection) -> TestResult {
+    let locations = sql_query(
+        "SELECT switch_order,location_order,source_order,name,number,inverted,inverted_specified,source_line,source_column \
+         FROM machine_switch_locations ORDER BY switch_order,location_order",
+    )
+    .load::<SwitchLocationRow>(connection)?;
+    assert_eq!(locations.len(), BATCH_CORPUS + 2);
+    assert_eq!(
+        locations[0],
+        SwitchLocationRow {
+            switch_order: 0,
+            location_order: 0,
+            source_order: 1,
+            name: "SW1".into(),
+            number: "1".into(),
+            inverted: true,
+            inverted_specified: true,
+            source_line: 6,
+            source_column: 1,
+        }
+    );
+    assert_eq!(
+        locations[1],
+        SwitchLocationRow {
+            switch_order: 1,
+            location_order: 0,
+            source_order: 0,
+            name: "JP1".into(),
+            number: "2".into(),
+            inverted: false,
+            inverted_specified: false,
+            source_line: 13,
+            source_column: 1,
+        }
+    );
+    for (index, row) in locations.iter().skip(2).enumerate() {
+        assert_eq!(
+            row,
+            &SwitchLocationRow {
+                switch_order: i64::try_from(index + 2)?,
+                location_order: 0,
+                source_order: 0,
+                name: format!("SW{index}"),
+                number: index.to_string(),
+                inverted: false,
+                inverted_specified: true,
+                source_line: i64::try_from(17 + index * 4)?,
+                source_column: 1,
+            }
+        );
+    }
+    Ok(())
+}
+
+fn assert_switch_values(connection: &mut SqliteConnection) -> TestResult {
+    let values = sql_query(
+        "SELECT switch_order,value_order,source_order,name,value,is_default,default_specified,source_line,source_column \
+         FROM machine_switch_values ORDER BY switch_order,value_order",
+    )
+    .load::<SwitchValueRow>(connection)?;
+    assert_eq!(values.len(), BATCH_CORPUS + 3);
+    assert_eq!(
+        &values[..3],
+        &[
+            SwitchValueRow {
+                switch_order: 0,
+                value_order: 0,
+                source_order: 2,
+                name: "Off".into(),
+                value: "0x00".into(),
+                is_default: true,
+                default_specified: true,
+                source_line: 7,
+                source_column: 1,
+            },
+            SwitchValueRow {
+                switch_order: 0,
+                value_order: 1,
+                source_order: 3,
+                name: "On".into(),
+                value: "0x01".into(),
+                is_default: false,
+                default_specified: true,
+                source_line: 10,
+                source_column: 1,
+            },
+            SwitchValueRow {
+                switch_order: 1,
+                value_order: 0,
+                source_order: 1,
+                name: "Automatic".into(),
+                value: "automatic".into(),
+                is_default: true,
+                default_specified: true,
+                source_line: 14,
+                source_column: 1,
+            },
+        ]
+    );
+    for (index, row) in values.iter().skip(3).enumerate() {
+        assert_eq!(
+            row,
+            &SwitchValueRow {
+                switch_order: i64::try_from(index + 2)?,
+                value_order: 0,
+                source_order: 1,
+                name: format!("Value {index}"),
+                value: format!("0x{index:02x}"),
+                is_default: false,
+                default_specified: true,
+                source_line: i64::try_from(18 + index * 4)?,
+                source_column: 1,
+            }
+        );
+    }
+    Ok(())
+}
+
+fn assert_switch_attribute_provenance(connection: &mut SqliteConnection) -> TestResult {
+    let attribute_positions = sql_query(
+        "SELECT count(*) AS count FROM machine_switches_attribute_positions UNION ALL \
+         SELECT count(*) FROM machine_switch_locations_attribute_positions UNION ALL \
+         SELECT count(*) FROM machine_switch_values_attribute_positions UNION ALL \
+         SELECT count(*) FROM machine_switch_conditions_attribute_positions UNION ALL \
+         SELECT count(*) FROM machine_switch_value_conditions_attribute_positions",
+    )
+    .load::<Count>(connection)?;
+    assert_eq!(
+        attribute_positions
+            .iter()
+            .map(|row| row.count)
+            .collect::<Vec<_>>(),
+        [396, 395, 399, 4, 4]
+    );
+    let switch_conditions = sql_query(
+        "SELECT tag,mask,relation,value,source_line,source_column \
+         FROM machine_switch_conditions ORDER BY set_id,switch_order,condition_order",
+    )
+    .load::<SwitchConditionRow>(connection)?;
+    assert_eq!(
+        switch_conditions,
+        [SwitchConditionRow {
+            tag: ":CFG".into(),
+            mask: "0x01".into(),
+            relation: "eq".into(),
+            value: "1".into(),
+            source_line: 5,
+            source_column: 1,
+        }]
+    );
+    let value_conditions = sql_query(
+        "SELECT tag,mask,relation,value,source_line,source_column \
+         FROM machine_switch_value_conditions ORDER BY set_id,switch_order,value_order,condition_order",
+    )
+    .load::<SwitchConditionRow>(connection)?;
+    assert_eq!(
+        value_conditions,
+        [SwitchConditionRow {
+            tag: ":CFG".into(),
+            mask: "0x01".into(),
+            relation: "ne".into(),
+            value: "0".into(),
+            source_line: 8,
+            source_column: 1,
+        }]
+    );
+    Ok(())
 }
 
 #[test]

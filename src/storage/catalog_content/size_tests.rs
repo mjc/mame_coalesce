@@ -90,6 +90,18 @@ fn identity_size_lookup_seeks_native_successors_with_unrelated_software_present(
         "catalog_linked_file_size_publication",
     )?;
     assert_native_seeks(&publication);
+    assert!(
+        publication
+            .iter()
+            .any(|row| row.detail == "MATERIALIZE touched_identities"),
+        "size validation must deduplicate touched identities before checking their occurrences"
+    );
+    let no_intro = catalog_guard_plan(
+        &mut connection,
+        snapshot.as_str(),
+        "no_intro_dat_linked_identity_publication",
+    )?;
+    assert_native_qualification_first(&no_intro);
     let issuance = catalog_guard_plan(
         &mut connection,
         snapshot.as_str(),
@@ -97,6 +109,28 @@ fn identity_size_lookup_seeks_native_successors_with_unrelated_software_present(
     )?;
     assert_scoped_owner_seeks(&issuance);
     Ok(())
+}
+
+fn assert_native_qualification_first(no_intro: &[PlanRow]) {
+    for alias in ["grouping", "game", "occurrence", "claim"] {
+        assert!(
+            !no_intro
+                .iter()
+                .any(|row| row.detail.starts_with(&format!("SCAN {alias}"))),
+            "No-Intro validation must seek selected native owners, not scan {alias}"
+        );
+    }
+    let claim = no_intro
+        .iter()
+        .position(|row| row.detail.starts_with("SEARCH claim "));
+    let canonical = no_intro.iter().position(|row| {
+        row.detail.starts_with("SEARCH occurrence ") && row.detail.contains("rowid=?")
+    });
+    assert!(
+        matches!((claim, canonical), (Some(claim), Some(canonical)) if claim < canonical),
+        "native claims must qualify before canonical identity validation: {:#?}",
+        no_intro.iter().map(|row| &row.detail).collect::<Vec<_>>()
+    );
 }
 
 fn catalog_guard_plan(
@@ -113,8 +147,13 @@ fn catalog_guard_plan(
 }
 
 fn catalog_guard_query(trigger: &str) -> crate::Result<String> {
-    include_str!("../db/catalog_file_sizes.sql")
-        .split(&format!("CREATE TRIGGER {trigger} "))
+    let source = if trigger == "no_intro_dat_linked_identity_publication" {
+        include_str!("../db/no_intro_dat_guards.sql")
+    } else {
+        include_str!("../db/catalog_file_sizes.sql")
+    };
+    source
+        .split(&format!("CREATE TRIGGER {trigger}"))
         .nth(1)
         .and_then(|body| body.split("WHEN EXISTS (").nth(1))
         .and_then(|body| body.split("\n)\nBEGIN").next())
