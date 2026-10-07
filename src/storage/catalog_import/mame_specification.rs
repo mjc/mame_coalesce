@@ -1,5 +1,5 @@
 use diesel::{
-    RunQueryDsl, SqliteConnection,
+    SqliteConnection,
     sql_types::{BigInt, Nullable, Text},
 };
 
@@ -7,8 +7,8 @@ use super::{SnapshotSet, checked_order};
 use crate::{
     mame,
     storage::{
-        cached_sql::cached_sql,
-        mame_attributes::{self, Family},
+        cached_sql::{InsertBatch, InsertPhase, cached_sql},
+        mame_attributes::{Family, PositionBatch},
     },
 };
 
@@ -23,6 +23,21 @@ enum MameConditionOwner {
 #[allow(clippy::too_many_lines)]
 pub(super) fn insert(
     conn: &mut SqliteConnection,
+    set_id: i64,
+    set: &SnapshotSet,
+) -> crate::Result<()> {
+    let mut batch = InsertBatch::new();
+    insert_values_bulk(conn, &mut batch, set_id, set)?;
+    batch.flush(conn)?;
+    let mut positions = PositionBatch::default();
+    insert_positions_bulk(conn, &mut positions, set_id, set)?;
+    positions.flush(conn)
+}
+
+#[allow(clippy::too_many_lines)]
+pub(super) fn insert_values_bulk(
+    conn: &mut SqliteConnection,
+    batch: &mut InsertBatch,
     set_id: i64,
     set: &SnapshotSet,
 ) -> crate::Result<()> {
@@ -46,7 +61,7 @@ pub(super) fn insert(
                 .bind::<BigInt, _>($location.line)
                 .bind::<BigInt, _>($location.column)
                 $(.bind::<$sql_type, _>($value))*
-                .execute(conn)?;
+                .enqueue(batch, conn, InsertPhase::Parents)?;
         }};
     }
 
@@ -114,7 +129,7 @@ pub(super) fn insert(
                     .bind::<Nullable<Text>, _>(control.ways3.as_deref())
                     .bind::<BigInt, _>(control.location.line)
                     .bind::<BigInt, _>(control.location.column)
-                    .execute(conn)?;
+                    .enqueue(batch, conn, InsertPhase::Children)?;
                 }
             }
             Spec::Port(value) => {
@@ -132,7 +147,7 @@ pub(super) fn insert(
                     .bind::<Text, _>(&analog.mask)
                     .bind::<BigInt, _>(analog.location.line)
                     .bind::<BigInt, _>(analog.location.column)
-                    .execute(conn)?;
+                    .enqueue(batch, conn, InsertPhase::Children)?;
                 }
             }
             Spec::Adjuster(value) => {
@@ -140,7 +155,8 @@ pub(super) fn insert(
                     "name": Text = &value.name,
                     "default_value": Text = &value.default);
                 if let Some(condition) = &value.condition {
-                    insert_condition(
+                    insert_condition_values(
+                        batch,
                         conn,
                         set_id,
                         MameConditionOwner::Adjuster { order },
@@ -184,7 +200,7 @@ pub(super) fn insert(
                     .bind::<Text, _>(&instance.brief_name)
                     .bind::<BigInt, _>(instance.location.line)
                     .bind::<BigInt, _>(instance.location.column)
-                    .execute(conn)?;
+                    .enqueue(batch, conn, InsertPhase::Children)?;
                 }
                 for (extension_order, extension) in value.extensions.iter().enumerate() {
                     cached_sql(
@@ -198,7 +214,7 @@ pub(super) fn insert(
                     .bind::<Text, _>(&extension.name)
                     .bind::<BigInt, _>(extension.location.line)
                     .bind::<BigInt, _>(extension.location.column)
-                    .execute(conn)?;
+                    .enqueue(batch, conn, InsertPhase::Children)?;
                 }
             }
             Spec::Slot(value) => {
@@ -219,7 +235,7 @@ pub(super) fn insert(
                     .bind::<diesel::sql_types::Bool, _>(option.default_specified)
                     .bind::<BigInt, _>(option.location.line)
                     .bind::<BigInt, _>(option.location.column)
-                    .execute(conn)?;
+                    .enqueue(batch, conn, InsertPhase::Children)?;
                 }
             }
             Spec::SoftwareList(value) => {
@@ -236,155 +252,170 @@ pub(super) fn insert(
                 "text": Text = &value.text);
             }
         }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_lines)]
+pub(super) fn insert_positions_bulk(
+    conn: &mut SqliteConnection,
+    batch: &mut PositionBatch,
+    set_id: i64,
+    set: &SnapshotSet,
+) -> crate::Result<()> {
+    macro_rules! queue {
+        ($family:expr, $key:expr, $positions:expr, $code:path) => {
+            batch.queue(conn, $family, $key, $positions, $code)?
+        };
+    }
+
+    for element in &set.specification {
+        use mame::MachineSpecification as Spec;
+        let order = element.element_order;
         match &element.value {
-            mame::MachineSpecification::Sample(_) => {}
-            mame::MachineSpecification::Chip(value) => mame_attributes::insert(
-                conn,
+            Spec::Sample(_) => {}
+            Spec::Chip(value) => queue!(
                 Family::Chip,
                 &[set_id, order],
                 &value.attribute_positions,
-                mame::MameChipAttribute::code,
-            )?,
-            mame::MachineSpecification::Display(value) => mame_attributes::insert(
-                conn,
+                mame::MameChipAttribute::code
+            ),
+            Spec::Display(value) => queue!(
                 Family::Display,
                 &[set_id, order],
                 &value.attribute_positions,
-                mame::MameDisplayAttribute::code,
-            )?,
-            mame::MachineSpecification::Sound(value) => mame_attributes::insert(
-                conn,
+                mame::MameDisplayAttribute::code
+            ),
+            Spec::Sound(value) => queue!(
                 Family::Sound,
                 &[set_id, order],
                 &value.attribute_positions,
-                mame::MameSoundAttribute::code,
-            )?,
-            mame::MachineSpecification::Input(value) => {
-                mame_attributes::insert(
-                    conn,
+                mame::MameSoundAttribute::code
+            ),
+            Spec::Input(value) => {
+                queue!(
                     Family::Input,
                     &[set_id, order],
                     &value.attribute_positions,
-                    mame::MameInputAttribute::code,
-                )?;
+                    mame::MameInputAttribute::code
+                );
                 for (index, control) in value.controls.iter().enumerate() {
-                    mame_attributes::insert(
-                        conn,
+                    queue!(
                         Family::Control,
                         &[set_id, order, checked_order(index, "MAME controls")?],
                         &control.attribute_positions,
-                        mame::MameControlAttribute::code,
-                    )?;
+                        mame::MameControlAttribute::code
+                    );
                 }
             }
-            mame::MachineSpecification::Port(value) => {
-                mame_attributes::insert(
-                    conn,
+            Spec::Port(value) => {
+                queue!(
                     Family::Port,
                     &[set_id, order],
                     &value.attribute_positions,
-                    mame::MamePortAttribute::code,
-                )?;
+                    mame::MamePortAttribute::code
+                );
                 for (index, analog) in value.analogs.iter().enumerate() {
-                    mame_attributes::insert(
-                        conn,
+                    queue!(
                         Family::Analog,
                         &[set_id, order, checked_order(index, "MAME analogs")?],
                         &analog.attribute_positions,
-                        mame::MameAnalogAttribute::code,
+                        mame::MameAnalogAttribute::code
+                    );
+                }
+            }
+            Spec::Adjuster(value) => {
+                queue!(
+                    Family::Adjuster,
+                    &[set_id, order],
+                    &value.attribute_positions,
+                    mame::MameAdjusterAttribute::code
+                );
+                if let Some(condition) = &value.condition {
+                    insert_condition_positions(
+                        conn,
+                        batch,
+                        set_id,
+                        MameConditionOwner::Adjuster { order },
+                        condition,
                     )?;
                 }
             }
-            mame::MachineSpecification::Adjuster(value) => mame_attributes::insert(
-                conn,
-                Family::Adjuster,
-                &[set_id, order],
-                &value.attribute_positions,
-                mame::MameAdjusterAttribute::code,
-            )?,
-            mame::MachineSpecification::Driver(value) => mame_attributes::insert(
-                conn,
+            Spec::Driver(value) => queue!(
                 Family::Driver,
                 &[set_id, order],
                 &value.attribute_positions,
-                mame::MameDriverAttribute::code,
-            )?,
-            mame::MachineSpecification::Feature(value) => mame_attributes::insert(
-                conn,
+                mame::MameDriverAttribute::code
+            ),
+            Spec::Feature(value) => queue!(
                 Family::Feature,
                 &[set_id, order],
                 &value.attribute_positions,
-                mame::MameFeatureAttribute::code,
-            )?,
-            mame::MachineSpecification::Device(value) => {
-                mame_attributes::insert(
-                    conn,
+                mame::MameFeatureAttribute::code
+            ),
+            Spec::Device(value) => {
+                queue!(
                     Family::Device,
                     &[set_id, order],
                     &value.attribute_positions,
-                    mame::MameDeviceAttribute::code,
-                )?;
+                    mame::MameDeviceAttribute::code
+                );
                 if let Some(instance) = &value.instance {
-                    mame_attributes::insert(
-                        conn,
+                    queue!(
                         Family::Instance,
                         &[set_id, order],
                         &instance.attribute_positions,
-                        mame::MameInstanceAttribute::code,
-                    )?;
+                        mame::MameInstanceAttribute::code
+                    );
                 }
                 for (index, extension) in value.extensions.iter().enumerate() {
-                    mame_attributes::insert(
-                        conn,
+                    queue!(
                         Family::Extension,
                         &[
                             set_id,
                             order,
-                            checked_order(index, "MAME device extensions")?,
+                            checked_order(index, "MAME device extensions")?
                         ],
                         &extension.attribute_positions,
-                        mame::MameExtensionAttribute::code,
-                    )?;
+                        mame::MameExtensionAttribute::code
+                    );
                 }
             }
-            mame::MachineSpecification::Slot(value) => {
-                mame_attributes::insert(
-                    conn,
+            Spec::Slot(value) => {
+                queue!(
                     Family::Slot,
                     &[set_id, order],
                     &value.attribute_positions,
-                    mame::MameSlotAttribute::code,
-                )?;
+                    mame::MameSlotAttribute::code
+                );
                 for (index, option) in value.options.iter().enumerate() {
-                    mame_attributes::insert(
-                        conn,
+                    queue!(
                         Family::SlotOption,
                         &[set_id, order, checked_order(index, "MAME slot options")?],
                         &option.attribute_positions,
-                        mame::MameSlotOptionAttribute::code,
-                    )?;
+                        mame::MameSlotOptionAttribute::code
+                    );
                 }
             }
-            mame::MachineSpecification::SoftwareList(value) => mame_attributes::insert(
-                conn,
+            Spec::SoftwareList(value) => queue!(
                 Family::SoftwareList,
                 &[set_id, order],
                 &value.attribute_positions,
-                mame::MameSoftwareListAttribute::code,
-            )?,
-            mame::MachineSpecification::RamOption(value) => mame_attributes::insert(
-                conn,
+                mame::MameSoftwareListAttribute::code
+            ),
+            Spec::RamOption(value) => queue!(
                 Family::RamOption,
                 &[set_id, order],
                 &value.attribute_positions,
-                mame::MameRamOptionAttribute::code,
-            )?,
+                mame::MameRamOptionAttribute::code
+            ),
         }
     }
     Ok(())
 }
 
-fn insert_condition(
+fn insert_condition_values(
+    batch: &mut InsertBatch,
     conn: &mut SqliteConnection,
     set_id: i64,
     owner: MameConditionOwner,
@@ -405,14 +436,7 @@ fn insert_condition(
             .bind::<Text, _>(&condition.value)
             .bind::<BigInt, _>(condition.location.line)
             .bind::<BigInt, _>(condition.location.column)
-            .execute(conn)?;
-            mame_attributes::insert(
-                conn,
-                Family::AdjusterCondition,
-                &[set_id, order, 0],
-                &condition.attribute_positions,
-                mame::MameConditionAttribute::code,
-            )?;
+            .enqueue(batch, conn, InsertPhase::Children)?;
         }
         MameConditionOwner::Switch { order } => {
             cached_sql(
@@ -428,14 +452,7 @@ fn insert_condition(
             .bind::<Text, _>(&condition.value)
             .bind::<BigInt, _>(condition.location.line)
             .bind::<BigInt, _>(condition.location.column)
-            .execute(conn)?;
-            mame_attributes::insert(
-                conn,
-                Family::SwitchCondition,
-                &[set_id, order, 0],
-                &condition.attribute_positions,
-                mame::MameConditionAttribute::code,
-            )?;
+            .enqueue(batch, conn, InsertPhase::Children)?;
         }
         MameConditionOwner::SwitchValue {
             switch_order,
@@ -455,26 +472,50 @@ fn insert_condition(
             .bind::<Text, _>(&condition.value)
             .bind::<BigInt, _>(condition.location.line)
             .bind::<BigInt, _>(condition.location.column)
-            .execute(conn)?;
-            mame_attributes::insert(
-                conn,
-                Family::SwitchValueCondition,
-                &[set_id, switch_order, value_order, 0],
-                &condition.attribute_positions,
-                mame::MameConditionAttribute::code,
-            )?;
+            .enqueue(batch, conn, InsertPhase::Children)?;
         }
     }
     Ok(())
 }
 
-pub(super) fn insert_switch_condition(
+fn insert_condition_positions(
     conn: &mut SqliteConnection,
+    batch: &mut PositionBatch,
+    set_id: i64,
+    owner: MameConditionOwner,
+    condition: &crate::mame::MachineCondition,
+) -> crate::Result<()> {
+    let (family, key): (Family, Vec<i64>) = match owner {
+        MameConditionOwner::Adjuster { order } => {
+            (Family::AdjusterCondition, vec![set_id, order, 0])
+        }
+        MameConditionOwner::Switch { order } => (Family::SwitchCondition, vec![set_id, order, 0]),
+        MameConditionOwner::SwitchValue {
+            switch_order,
+            value_order,
+        } => (
+            Family::SwitchValueCondition,
+            vec![set_id, switch_order, value_order, 0],
+        ),
+    };
+    batch.queue(
+        conn,
+        family,
+        &key,
+        &condition.attribute_positions,
+        mame::MameConditionAttribute::code,
+    )
+}
+
+pub(super) fn insert_switch_condition_values(
+    conn: &mut SqliteConnection,
+    batch: &mut InsertBatch,
     set_id: i64,
     switch_order: i64,
     condition: &crate::mame::MachineCondition,
 ) -> crate::Result<()> {
-    insert_condition(
+    insert_condition_values(
+        batch,
         conn,
         set_id,
         MameConditionOwner::Switch {
@@ -484,15 +525,55 @@ pub(super) fn insert_switch_condition(
     )
 }
 
-pub(super) fn insert_switch_value_condition(
+pub(super) fn insert_switch_condition_positions(
     conn: &mut SqliteConnection,
+    batch: &mut PositionBatch,
+    set_id: i64,
+    switch_order: i64,
+    condition: &crate::mame::MachineCondition,
+) -> crate::Result<()> {
+    insert_condition_positions(
+        conn,
+        batch,
+        set_id,
+        MameConditionOwner::Switch {
+            order: switch_order,
+        },
+        condition,
+    )
+}
+
+pub(super) fn insert_switch_value_condition_values(
+    conn: &mut SqliteConnection,
+    batch: &mut InsertBatch,
     set_id: i64,
     switch_order: i64,
     value_order: i64,
     condition: &crate::mame::MachineCondition,
 ) -> crate::Result<()> {
-    insert_condition(
+    insert_condition_values(
+        batch,
         conn,
+        set_id,
+        MameConditionOwner::SwitchValue {
+            switch_order,
+            value_order,
+        },
+        condition,
+    )
+}
+
+pub(super) fn insert_switch_value_condition_positions(
+    conn: &mut SqliteConnection,
+    batch: &mut PositionBatch,
+    set_id: i64,
+    switch_order: i64,
+    value_order: i64,
+    condition: &crate::mame::MachineCondition,
+) -> crate::Result<()> {
+    insert_condition_positions(
+        conn,
+        batch,
         set_id,
         MameConditionOwner::SwitchValue {
             switch_order,
@@ -504,6 +585,9 @@ pub(super) fn insert_switch_value_condition(
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Write as _;
+
+    use crate::storage::cached_sql::InsertBatch;
     use diesel::{
         Connection, RunQueryDsl, SqliteConnection,
         connection::{InstrumentationEvent, SimpleConnection},
@@ -527,7 +611,7 @@ mod tests {
     #[test]
     fn slot_options_reuse_one_statement_without_losing_order_or_presence()
     -> Result<(), Box<dyn std::error::Error>> {
-        let catalog = crate::mame::MameCatalog::parse(br#"<mame mameconfig="10"><machine name="test"><description>Test</description><slot name="cart"><slotoption name="first" devname="device1"/><slotoption name="second" devname="device2" default="no"/><slotoption name="third" devname="device3" default="yes"/></slot></machine></mame>"#)?;
+        let catalog = crate::mame::MameCatalog::parse(br#"<mame mameconfig="10"><machine name="test"><description>Test</description><slot name="cart"><slotoption name="first" devname="device1"/><slotoption name="second" devname="device2" default="no"/><slotoption name="third" devname="device3" default="yes"/><slotoption name="fourth" devname="device4"/></slot></machine></mame>"#)?;
         let machine = catalog
             .machines
             .into_iter()
@@ -558,10 +642,68 @@ mod tests {
             vec![
                 (0, "first".into(), 0),
                 (1, "second".into(), 1),
-                (2, "third".into(), 1)
+                (2, "third".into(), 1),
+                (3, "fourth".into(), 0),
             ]
         );
         assert_eq!(preparations.load(Ordering::Relaxed), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn bulk_slot_options_use_bounded_values_inserts_and_keep_the_tail()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut xml = String::from(
+            r#"<mame mameconfig="10"><machine name="test"><description>Test</description><slot name="cart">"#,
+        );
+        for order in 0..220 {
+            write!(
+                xml,
+                "<slotoption name=\"option-{order}\" devname=\"device-{order}\"{}/>",
+                if order == 219 { " default=\"yes\"" } else { "" }
+            )?;
+        }
+        xml.push_str("</slot></machine></mame>");
+        let catalog = crate::mame::MameCatalog::parse(xml.as_bytes())?;
+        let machine = catalog
+            .machines
+            .into_iter()
+            .next()
+            .ok_or("missing machine")?;
+        let set = super::super::machine_contents(machine);
+        let mut conn = SqliteConnection::establish(":memory:")?;
+        conn.batch_execute("PRAGMA foreign_keys=ON;
+            CREATE TABLE mame_machine_slots(set_id INTEGER,element_order INTEGER,source_line INTEGER,source_column INTEGER,name TEXT,PRIMARY KEY(set_id,element_order));
+            CREATE TABLE mame_machine_slot_options(set_id INTEGER,element_order INTEGER,option_order INTEGER,name TEXT,devname TEXT,is_default INTEGER,default_specified INTEGER,source_line INTEGER,source_column INTEGER,FOREIGN KEY(set_id,element_order) REFERENCES mame_machine_slots(set_id,element_order));")?;
+        let executions = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&executions);
+        conn.set_instrumentation(move |event: InstrumentationEvent<'_>| {
+            if let InstrumentationEvent::CacheQuery { sql, .. } = event
+                && sql.starts_with("INSERT INTO mame_machine_slot_options")
+            {
+                observed.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+
+        let mut batch = InsertBatch::new();
+        super::insert_values_bulk(&mut conn, &mut batch, 1, &set)?;
+        batch.flush(&mut conn)?;
+
+        let rows = sql_query("SELECT option_order,name,default_specified FROM mame_machine_slot_options WHERE set_id=1 ORDER BY option_order").load::<OptionRow>(&mut conn)?;
+        assert_eq!(rows.len(), 220);
+        assert_eq!(
+            (rows[0].option_order, rows[0].name.as_str()),
+            (0, "option-0")
+        );
+        assert_eq!(
+            (
+                rows[219].option_order,
+                rows[219].name.as_str(),
+                rows[219].default_specified
+            ),
+            (219, "option-219", 1)
+        );
+        assert!(executions.load(Ordering::Relaxed) <= 3);
         Ok(())
     }
 }

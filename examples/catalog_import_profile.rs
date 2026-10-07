@@ -68,6 +68,11 @@ fn report_sql_timings() {
         .map(|(sql, timing)| (sql.clone(), *timing))
         .collect::<Vec<_>>();
     rows.sort_unstable_by_key(|(_, timing)| std::cmp::Reverse(timing.elapsed));
+    let calls = rows
+        .iter()
+        .map(|(_, timing)| u64::from(timing.count))
+        .sum::<u64>();
+    eprintln!("SQL total_calls={calls} statement_shapes={}", rows.len());
     for (sql, timing) in rows.into_iter().take(20) {
         let abbreviated = sql.split_whitespace().collect::<Vec<_>>().join(" ");
         let abbreviated = abbreviated.chars().take(600).collect::<String>();

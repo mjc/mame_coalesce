@@ -758,3 +758,152 @@ not committed-revision benchmark medians or full-file acceptance.
 Full-file latency, current-corpus CPU/heap evidence, publication cost and
 repeated-identity scaling remain open. Do not extrapolate this sample into a
 claim that the full 326,688,140-byte input meets the ten-minute ceiling.
+
+### Attribute presence validation and bounded inserts
+
+The next diagnostic, using the same frozen executable and 1,000-machine input,
+identified 76,610 slot-position, 73,538 ROM-position and 45,483 switch-value
+position statements. Instrumented import time was 19.113s; that includes SQL
+timing overhead and is not a normal-import comparison. Its fresh database and
+query totals are retained at
+`target/profiling/remaining-sql-baseline-20261007.sqlite3` and the matching `.log`.
+
+Read-only execution of the production attribute-presence predicate on that
+database took 2.919s. Replacing two materialized sets and their symmetric
+`EXCEPT` comparisons with one grouped presence comparison took 0.629s. Both
+returned the same valid result. Each side is already snapshot-filtered, so the
+group key contains only the six integer owner/field coordinates, not repeated
+snapshot text. The query still sorts once; it does not bypass validation.
+
+The new query-plan regression was observed failing before the replacement.
+Correctness tests compare all 1,024 pairs of five-key presence subsets, including
+NULL and malformed-field keys, unrelated snapshots, asymmetric duplicate counts,
+every owner coordinate and the separate ordinal-collision guard. These four
+tests complete in 0.11s. Existing native-owner, publication, corruption,
+source-free hydration and history coverage also passes (28 focused tests total).
+
+Attribute-position writes now insert up to 64 rows per statement for one owner,
+borrowing source locations and using a fixed stack buffer for converted field
+and ordinal binds. Even four-key owners use at most 512 bind parameters. Diesel
+caches by generated SQL text, distinguishing both table and batch length; values
+are rebound on each execution. All positions and row-level guards remain intact,
+and import errors still roll back the enclosing transaction. Tests cover key
+arities one through four, empty input, 130 rows across full and tail batches,
+changed bindings, and statement counts. Sol 6.1 medium's read-only adversarial
+review found no actionable issue in the production query/batching delta.
+
+One matched uninstrumented pair, with no project builds/tests running, took
+10.404s before versus 9.483s after for import; process totals including startup
+were **10.69s versus 9.73s** (about 9% lower). Before/after user time was
+9.30/8.76s and system time 1.02/0.76s. Both fresh databases contain 1,000 machines,
+11,157 occurrences and one publication, with identical snapshot keys, clean
+`quick_check` results and no foreign-key violations. These are individual runs,
+not medians; the full input has not been retried.
+
+Paired databases are `target/profiling/attribute-paired-before-1000-20261007.sqlite3`
+and `attribute-paired-after-1000-20261007.sqlite3`; the latter's matching `.log`
+retains stdout and process timings. The frozen after executable is
+`target/profiling/mame-importer-attribute-batch-20261007`, SHA-256
+`bc99764e707d5071050b46e6724e538dd9fb5e3e2f3174302294ca1dafe3e2cf`.
+
+A separate bounded instrumented after run completed in 10.514s, with totals in
+`target/profiling/attribute-timed-after-1000-20261007.log`. Publication remained
+largest at 2.249s for one statement; identity-size checks took 1.461s across 6,012
+calls. Timing instrumentation overhead changes with statement count, so its
+19.113s-before/10.514s-after totals must not be presented as normal-import speedup.
+Further gains need investigation of those remaining production costs, not
+smaller tests or reduced field retention. A supplementary regression verifies
+all 33 families have distinct cached SQL and reuse it when their binds change.
+
+A read-only bidirectional `EXCEPT` comparison of all 59 attribute-position
+tables found no changed rows between the paired databases (including empty
+other-format tables). This checks owner keys, field codes, source ordinals,
+lines and columns, not just counts. Results remain in
+`target/profiling/attribute-paired-positions-20261007.log`; this is not a
+field-by-field comparison of every other native fact table.
+
+The latest complete-gate attempt used `timeout 480 devenv test`: all 681 library
+tests passed in 237.63s and subsequent integration targets reported no failures,
+but the limit expired during the 77-test `catalog_import` target. The full gate
+therefore did **not** pass. Its log is
+`target/profiling/attribute-batch-devenv-test-20261007.log`; the unchanged broad
+test-runtime problem remains tracked separately in MAMEC-64. No whole-suite
+speedup is claimed by this bounded import optimization.
+
+### Cross-machine bulk writes and bounded identity resolution — 2026-10-07
+
+The next cut replaces per-owner writes with batches spanning completed machines,
+without removing native facts, source positions, conflict evidence or publication
+checks. The streaming writer flushes at 64 machines or 4,096 structural nodes;
+an individually larger machine is processed alone, not rejected. Asset identity
+resolution works in pages of 64. Digest values use bulk `ON CONFLICT DO NOTHING`,
+and digest assertions join their dictionary IDs inside SQL rather than fetching
+each ID separately. Machine, specification, switch, BIOS, relationship, asset and
+position rows are inserted in parent-before-child batches.
+
+Identity lookup preserves source order: conflicting input ends the current
+prefix before any later evidence is written. Candidate fanout stays in SQLite
+TEMP tables with file-backed temporary storage; Rust receives bounded summaries,
+and SQL persists every conflict candidate and its evidence. There is no new
+acceptance cap or whole-catalog Rust cache. Batch statement-cache admission is
+bounded; identity fact reads pad UUID bindings to power-of-two arities, with at
+most 16 cached read templates per connection.
+
+The repository's SQLite 3.53.3 build previously enabled
+`SQLITE_ENABLE_STMT_SCANSTATUS`, adding opcode cycle-accounting overhead even
+without import instrumentation. Removing that compile option, without changing
+SQLite version or application guards, reduced the frozen pre-bulk executable's
+sample import from 9.483s to 6.704s. The bulk writer must be compared against that
+6.704s control to separate application gains from the native build change.
+
+| Same 1,000-machine input, fresh databases | Import seconds | Process wall seconds |
+| --- | ---: | ---: |
+| Frozen pre-bulk writer, original SQLite build | 9.483 | 9.73 |
+| Same frozen writer, scanstatus disabled | 6.704 | 6.93 |
+| Bulk writer, indexed identity hydration | 6.577 | 6.79 |
+| Bulk writer, reusable identity read plans | 5.676 | 5.90 |
+
+The final run used 4.75s user, 0.97s system and 69,120 KiB peak RSS. This is about
+15% less import time than the native-build-matched control, not a benchmark
+median. The final binary SHA-256 is
+`9afa54da646df184a55f65eb4da394ca8147c6efd9230829ee108575494150b3`;
+its build path is
+`target/mamec63-profile-build-20261007/profiling/examples/catalog_import_profile`.
+Timings are retained in `target/profiling/bulk-cached-1000-20261007.log` alongside
+its fresh `.sqlite3` database.
+
+An instrumented intermediate bulk run executed 12,288 SQL statements; the old
+writer's top 20 query groups alone accounted for 282,334 executions. These are
+not two complete before/after totals, and instrumented timings are not mixed
+with the table above. An initial bulk implementation regressed to 16.778s:
+digest hydration joined canonical roots too broadly. Rooted occurrence/assertion
+index seeks corrected that regression. A subsequent CPU profile attributed
+19.18% inclusive samples to SQLite parsing, motivating the reusable read plans.
+Its 6,644 samples had 0.24% unknown stacks. That profile predates the final
+read-plan cache change; artifacts are `bulk-indexed-1000-20261007.perf.data`,
+`.svg`, `.analysis.txt` and `.summary.txt` under `target/profiling/`.
+
+The native parity check passed all 80 comparisons across 69 tables, including
+all 33 MAME position families, against the native-build-matched pre-bulk database.
+Both databases contain 1,000 machines, 11,157 asset occurrences, 4,705 content
+identities, 21,454 digest assertions and 24,896 relationship facts; UUIDs and
+dictionary IDs are compared through their represented facts, not random bytes.
+Both passed `quick_check` and foreign-key checks. Reproduction SQL and results
+are `target/profiling/bulk-native-parity-20261007.{sql,log,json}`. This comparison
+predates only the read-plan caching change.
+
+Focused verification passed 36 affected library tests, then 21 cache/identity
+tests including the real query-plan/cache regression, plus 54 integration tests
+across ten affected targets. Regressions cover cross-machine SQL call counts,
+EOF rollback after a flushed batch, cross-page deduplication, conflicting size
+evidence, wide candidate fanout and native field/position retention. Strict
+library/test Clippy passed. Two Sol reviewers reported no remaining actionable
+production findings after their findings were fixed. No full `devenv test` gate
+was run for this cut, and no new full-file or heaptrack measurement is claimed.
+
+The full local MAME 0.289 input contains 50,368 machines and 401,889 XML
+ROM/disk/sample declarations; the sample covers roughly 2% of machines, not the
+full corpus. Millions of child facts and relationships make machine count alone
+a poor cost estimate. The full 326,688,140-byte import still needs a fresh
+measurement; these sample timings do not establish the ten-minute ceiling.
+Other input formats have not been converted to this cross-owner bulk path.

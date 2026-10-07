@@ -3,7 +3,7 @@ use diesel::{
     connection::SimpleConnection,
     r2d2::ConnectionManager,
     sql_query,
-    sql_types::{Binary, Text},
+    sql_types::{Binary, Bool, Text},
 };
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
@@ -13,12 +13,34 @@ use super::{Pool, ddl::SCHEMA};
 #[derive(Debug)]
 struct EnableForeignKeys;
 
+#[derive(QueryableByName)]
+struct TempConfiguration {
+    #[diesel(sql_type = Bool)]
+    forced_memory: bool,
+}
+
 impl diesel::r2d2::CustomizeConnection<SqliteConnection, diesel::r2d2::Error>
     for EnableForeignKeys
 {
     fn on_acquire(&self, conn: &mut SqliteConnection) -> Result<(), diesel::r2d2::Error> {
-        conn.batch_execute("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000")
-            .map_err(diesel::r2d2::Error::QueryError)
+        // This hook runs once when a connection is established, not on pool
+        // checkout: changing temp_store later would delete its request tables.
+        conn.batch_execute(
+            "PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000; PRAGMA temp_store = FILE",
+        )
+        .map_err(diesel::r2d2::Error::QueryError)?;
+        let configuration =
+            sql_query("SELECT sqlite_compileoption_used('TEMP_STORE=3') AS forced_memory")
+                .get_result::<TempConfiguration>(conn)
+                .map_err(diesel::r2d2::Error::QueryError)?;
+        if configuration.forced_memory {
+            return Err(diesel::r2d2::Error::QueryError(
+                diesel::result::Error::QueryBuilderError(
+                    "catalog imports require SQLite with file-backed temporary storage".into(),
+                ),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -148,6 +170,13 @@ mod tests {
 
     #[test]
     fn in_memory_pool_keeps_one_non_expiring_database() -> crate::Result<()> {
+        #[derive(QueryableByName)]
+        struct TempState {
+            #[diesel(sql_type = diesel::sql_types::BigInt)]
+            temp_store: i64,
+            #[diesel(sql_type = Text)]
+            value: String,
+        }
         let pool = create_db_pool(":memory:")?;
         assert_eq!(pool.connections.max_size(), 1);
         assert_eq!(pool.connections.max_lifetime(), None);
@@ -155,8 +184,15 @@ mod tests {
         {
             let mut conn = pool.get()?;
             conn.batch_execute("CREATE TABLE checkout_witness(value TEXT); INSERT INTO checkout_witness VALUES ('kept')")?;
+            conn.batch_execute("CREATE TEMP TABLE temporary_checkout_witness(value TEXT); INSERT INTO temporary_checkout_witness VALUES ('kept')")?;
         }
         let mut conn = pool.get()?;
+        let temporary = sql_query("SELECT temp_store,value FROM pragma_temp_store CROSS JOIN temp.temporary_checkout_witness")
+            .get_result::<TempState>(&mut conn)?;
+        assert_eq!(
+            (temporary.temp_store, temporary.value.as_str()),
+            (1, "kept")
+        );
         assert_eq!(
             schema_objects(&mut conn)?
                 .iter()

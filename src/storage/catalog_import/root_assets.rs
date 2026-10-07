@@ -1,10 +1,10 @@
 use super::{NativeAssetFacts, SnapshotAsset, sqlite_mame_boolean};
 use crate::{
-    domain::CatalogSetId,
+    domain::{CatalogContentId, CatalogSetId},
     storage::{
-        cached_sql::cached_sql,
+        cached_sql::{InsertBatch, InsertPhase, cached_sql},
         catalog_identity::OccurrenceId,
-        mame_attributes::{self, Family},
+        mame_attributes::{self, Family, PositionBatch},
     },
 };
 use diesel::{
@@ -266,15 +266,19 @@ impl QueryId for MameRomClaimInsert<'_> {
 
 impl RunQueryDsl<SqliteConnection> for MameRomClaimInsert<'_> {}
 
-impl QueryFragment<Sqlite> for MameRomClaimInsert<'_> {
-    fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, Sqlite>) -> diesel::QueryResult<()> {
-        pass.push_sql(
-            "INSERT INTO mame_rom_claims \
+trait MameClaimRow {
+    const PREFIX: &'static str;
+    fn walk_values<'b>(&'b self, pass: AstPass<'_, 'b, Sqlite>) -> diesel::QueryResult<()>;
+}
+
+impl MameClaimRow for MameRomClaimInsert<'_> {
+    const PREFIX: &'static str = "INSERT INTO mame_rom_claims \
              (occurrence_id,name,size_text,crc_text,sha1_text,evidence_scope,evidence_provenance, \
               dump_status,source_line,source_column,region,bios,offset_text,optional,source_order, \
               status_specified,optional_specified) \
-             VALUES (",
-        );
+             VALUES ";
+    fn walk_values<'b>(&'b self, mut pass: AstPass<'_, 'b, Sqlite>) -> diesel::QueryResult<()> {
+        pass.push_sql("(");
         pass.push_bind_param::<BigInt, _>(&self.occurrence_id)?;
         pass.push_sql(",");
         pass.push_bind_param::<Text, _>(&self.name)?;
@@ -311,6 +315,13 @@ impl QueryFragment<Sqlite> for MameRomClaimInsert<'_> {
     }
 }
 
+impl QueryFragment<Sqlite> for MameRomClaimInsert<'_> {
+    fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, Sqlite>) -> diesel::QueryResult<()> {
+        pass.push_sql(Self::PREFIX);
+        self.walk_values(pass)
+    }
+}
+
 #[allow(clippy::struct_excessive_bools)] // independent source flags map directly to stored columns
 struct MameDiskClaimInsert<'a> {
     occurrence_id: i64,
@@ -336,14 +347,13 @@ impl QueryId for MameDiskClaimInsert<'_> {
 
 impl RunQueryDsl<SqliteConnection> for MameDiskClaimInsert<'_> {}
 
-impl QueryFragment<Sqlite> for MameDiskClaimInsert<'_> {
-    fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, Sqlite>) -> diesel::QueryResult<()> {
-        pass.push_sql(
-            "INSERT INTO mame_disk_claims \
+impl MameClaimRow for MameDiskClaimInsert<'_> {
+    const PREFIX: &'static str = "INSERT INTO mame_disk_claims \
              (occurrence_id,name,sha1_text,evidence_scope,evidence_provenance,dump_status, \
               source_line,source_column,region,disk_index,writable,optional,source_order, \
-              status_specified,optional_specified,writable_specified) VALUES (",
-        );
+              status_specified,optional_specified,writable_specified) VALUES ";
+    fn walk_values<'b>(&'b self, mut pass: AstPass<'_, 'b, Sqlite>) -> diesel::QueryResult<()> {
+        pass.push_sql("(");
         pass.push_bind_param::<BigInt, _>(&self.occurrence_id)?;
         pass.push_sql(",");
         pass.push_bind_param::<Text, _>(&self.name)?;
@@ -374,6 +384,35 @@ impl QueryFragment<Sqlite> for MameDiskClaimInsert<'_> {
         pass.push_sql(",");
         pass.push_bind_param::<Bool, _>(&self.writable_specified)?;
         pass.push_sql(")");
+        Ok(())
+    }
+}
+
+impl QueryFragment<Sqlite> for MameDiskClaimInsert<'_> {
+    fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, Sqlite>) -> diesel::QueryResult<()> {
+        pass.push_sql(Self::PREFIX);
+        self.walk_values(pass)
+    }
+}
+
+struct ClaimRows<'a, Row>(&'a [Row]);
+
+impl<Row> QueryId for ClaimRows<'_, Row> {
+    type QueryId = ();
+    const HAS_STATIC_QUERY_ID: bool = false;
+}
+
+impl<Row> RunQueryDsl<SqliteConnection> for ClaimRows<'_, Row> {}
+
+impl<Row: MameClaimRow> QueryFragment<Sqlite> for ClaimRows<'_, Row> {
+    fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, Sqlite>) -> diesel::QueryResult<()> {
+        pass.push_sql(Row::PREFIX);
+        for (index, row) in self.0.iter().enumerate() {
+            if index > 0 {
+                pass.push_sql(",");
+            }
+            row.walk_values(pass.reborrow())?;
+        }
         Ok(())
     }
 }
@@ -480,47 +519,14 @@ fn insert_mame(
     match kind {
         RootClaimKind::MameRom => {
             ExecuteDsl::execute(
-                MameRomClaimInsert {
-                    occurrence_id: id.database_value(),
-                    name: &asset.name,
-                    size_text: declarations.size_text.as_deref(),
-                    crc_text: declarations.crc_text.as_deref(),
-                    sha1_text: declarations.sha1_text.as_deref(),
-                    evidence_scope: asset.evidence_scope,
-                    dump_status: asset.dump_status.as_deref(),
-                    source_line: asset.location.line,
-                    source_column: asset.location.column,
-                    region: attributes.region.as_deref(),
-                    bios: attributes.bios.as_deref(),
-                    offset_text: declarations.offset_text.as_deref(),
-                    optional: attributes.optional.as_bool(),
-                    source_order: *source_order,
-                    status_specified: attributes.status_specified,
-                    optional_specified: attributes.optional_specified,
-                },
+                rom_claim(id, asset, attributes, declarations, *source_order),
                 conn,
             )?;
             insert_rom_compatibility(conn, id, attributes, declarations)?;
         }
         RootClaimKind::MameDisk => {
             ExecuteDsl::execute(
-                MameDiskClaimInsert {
-                    occurrence_id: id.database_value(),
-                    name: &asset.name,
-                    sha1_text: declarations.sha1_text.as_deref(),
-                    evidence_scope: asset.evidence_scope,
-                    dump_status: asset.dump_status.as_deref(),
-                    source_line: asset.location.line,
-                    source_column: asset.location.column,
-                    region: attributes.region.as_deref(),
-                    disk_index: attributes.disk_index.as_deref(),
-                    writable: attributes.writable.unwrap_or_default().as_bool(),
-                    optional: attributes.optional.as_bool(),
-                    source_order: *source_order,
-                    status_specified: attributes.status_specified,
-                    optional_specified: attributes.optional_specified,
-                    writable_specified: attributes.writable_specified,
-                },
+                disk_claim(id, asset, attributes, declarations, *source_order),
                 conn,
             )?;
             if let Some(writeable) = attributes.writeable {
@@ -540,6 +546,272 @@ fn insert_mame(
         }
     }
     insert_mame_positions(conn, id, kind, attribute_positions)
+}
+
+fn rom_claim<'a>(
+    id: OccurrenceId,
+    asset: &'a SnapshotAsset,
+    attributes: &'a crate::mame::MameAssetAttributes,
+    declarations: &'a crate::mame::MameAssetDeclarations,
+    source_order: i64,
+) -> MameRomClaimInsert<'a> {
+    MameRomClaimInsert {
+        occurrence_id: id.database_value(),
+        name: &asset.name,
+        size_text: declarations.size_text.as_deref(),
+        crc_text: declarations.crc_text.as_deref(),
+        sha1_text: declarations.sha1_text.as_deref(),
+        evidence_scope: asset.evidence_scope,
+        dump_status: asset.dump_status.as_deref(),
+        source_line: asset.location.line,
+        source_column: asset.location.column,
+        region: attributes.region.as_deref(),
+        bios: attributes.bios.as_deref(),
+        offset_text: declarations.offset_text.as_deref(),
+        optional: attributes.optional.as_bool(),
+        source_order,
+        status_specified: attributes.status_specified,
+        optional_specified: attributes.optional_specified,
+    }
+}
+
+fn disk_claim<'a>(
+    id: OccurrenceId,
+    asset: &'a SnapshotAsset,
+    attributes: &'a crate::mame::MameAssetAttributes,
+    declarations: &'a crate::mame::MameAssetDeclarations,
+    source_order: i64,
+) -> MameDiskClaimInsert<'a> {
+    MameDiskClaimInsert {
+        occurrence_id: id.database_value(),
+        name: &asset.name,
+        sha1_text: declarations.sha1_text.as_deref(),
+        evidence_scope: asset.evidence_scope,
+        dump_status: asset.dump_status.as_deref(),
+        source_line: asset.location.line,
+        source_column: asset.location.column,
+        region: attributes.region.as_deref(),
+        disk_index: attributes.disk_index.as_deref(),
+        writable: attributes.writable.unwrap_or_default().as_bool(),
+        optional: attributes.optional.as_bool(),
+        source_order,
+        status_specified: attributes.status_specified,
+        optional_specified: attributes.optional_specified,
+        writable_specified: attributes.writable_specified,
+    }
+}
+
+pub(super) struct MameAssetInput<'a> {
+    pub record: CatalogSetId,
+    pub order: i64,
+    pub asset: &'a SnapshotAsset,
+    pub content: Option<CatalogContentId>,
+}
+
+/// Allocate occurrence IDs under the import's IMMEDIATE transaction, then write
+/// parents, native claims and positions in dependency order.
+pub(super) fn insert_mame_bulk(
+    conn: &mut SqliteConnection,
+    inputs: &[MameAssetInput<'_>],
+) -> crate::Result<Vec<OccurrenceId>> {
+    if inputs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ids = insert_mame_occurrences(conn, inputs)?;
+    insert_mame_claims(conn, inputs, &ids)?;
+    insert_mame_bulk_positions(conn, inputs, &ids)?;
+    Ok(ids)
+}
+
+fn insert_mame_occurrences(
+    conn: &mut SqliteConnection,
+    inputs: &[MameAssetInput<'_>],
+) -> crate::Result<Vec<OccurrenceId>> {
+    #[derive(diesel::QueryableByName)]
+    struct LastId {
+        #[diesel(sql_type = BigInt)]
+        value: i64,
+    }
+    let last = cached_sql("SELECT COALESCE(MAX(occurrence_id),0) AS value FROM asset_occurrences")
+        .get_result::<LastId>(conn)?
+        .value;
+    let mut batch = InsertBatch::default();
+    let mut ids = Vec::with_capacity(inputs.len());
+    for (index, input) in inputs.iter().enumerate() {
+        let offset = super::checked_order(index, "media entries")?;
+        let value = last
+            .checked_add(offset)
+            .and_then(|id| id.checked_add(1))
+            .ok_or_else(|| crate::Error::DatabaseSchema("occurrence ID overflow".into()))?;
+        let kind = RootClaimKind::for_record(RootRecordKind::MameMachine, input.asset.role)?;
+        cached_sql("INSERT INTO asset_occurrences(occurrence_id,record_id,occurrence_order,claim_kind,content_uuid) VALUES (?,?,?,?,?)")
+            .bind::<BigInt,_>(value).bind::<BigInt,_>(input.record.as_i64())
+            .bind::<BigInt,_>(input.order).bind::<Text,_>(kind.code())
+            .bind::<Nullable<Binary>,_>(input.content.map(|id| id.as_bytes().to_vec()))
+            .enqueue(&mut batch, conn, InsertPhase::Parents)?;
+        ids.push(OccurrenceId::from_database(value));
+    }
+    batch.flush(conn)?;
+    Ok(ids)
+}
+
+fn insert_mame_claims(
+    conn: &mut SqliteConnection,
+    inputs: &[MameAssetInput<'_>],
+    ids: &[OccurrenceId],
+) -> crate::Result<()> {
+    let mut batch = InsertBatch::default();
+    let mut roms = Vec::new();
+    let mut disks = Vec::new();
+    for (input, id) in inputs.iter().zip(ids) {
+        match &input.asset.native {
+            NativeAssetFacts::Mame {
+                attributes,
+                declarations,
+                source_order,
+                ..
+            } => match RootClaimKind::for_record(RootRecordKind::MameMachine, input.asset.role)? {
+                RootClaimKind::MameRom => roms.push(rom_claim(
+                    *id,
+                    input.asset,
+                    attributes,
+                    declarations,
+                    *source_order,
+                )),
+                RootClaimKind::MameDisk => disks.push(disk_claim(
+                    *id,
+                    input.asset,
+                    attributes,
+                    declarations,
+                    *source_order,
+                )),
+                _ => {
+                    return Err(crate::Error::DatabaseSchema(
+                        "invalid MAME media family".into(),
+                    ));
+                }
+            },
+            NativeAssetFacts::MameSample { source_order, .. } => {
+                cached_sql("INSERT INTO mame_samples(occurrence_id,name,source_order,source_line,source_column) VALUES (?,?,?,?,?)")
+                    .bind::<BigInt,_>(id.database_value()).bind::<Text,_>(&input.asset.name)
+                    .bind::<BigInt,_>(*source_order).bind::<BigInt,_>(input.asset.location.line)
+                    .bind::<BigInt,_>(input.asset.location.column)
+                    .enqueue(&mut batch,conn,InsertPhase::Parents)?;
+            }
+            _ => {
+                return Err(crate::Error::DatabaseSchema(
+                    "non-MAME asset in MAME bulk writer".into(),
+                ));
+            }
+        }
+    }
+    for page in roms.chunks(56) {
+        ExecuteDsl::execute(ClaimRows(page), conn)?;
+    }
+    for page in disks.chunks(56) {
+        ExecuteDsl::execute(ClaimRows(page), conn)?;
+    }
+    batch.flush(conn)?;
+    Ok(())
+}
+
+fn insert_mame_bulk_positions(
+    conn: &mut SqliteConnection,
+    inputs: &[MameAssetInput<'_>],
+    ids: &[OccurrenceId],
+) -> crate::Result<()> {
+    let mut positions = PositionBatch::default();
+    for (input, id) in inputs.iter().zip(ids) {
+        match &input.asset.native {
+            NativeAssetFacts::Mame {
+                attributes,
+                declarations,
+                attribute_positions,
+                ..
+            } => {
+                let kind =
+                    RootClaimKind::for_record(RootRecordKind::MameMachine, input.asset.role)?;
+                match (kind, attribute_positions) {
+                    (
+                        RootClaimKind::MameRom,
+                        crate::mame::MameAssetAttributePositions::Rom {
+                            native,
+                            compatibility,
+                        },
+                    ) => {
+                        insert_rom_compatibility(conn, *id, attributes, declarations)?;
+                        positions.queue(
+                            conn,
+                            Family::Rom,
+                            &[id.database_value()],
+                            native,
+                            crate::mame::MameRomAttribute::code,
+                        )?;
+                        positions.queue(
+                            conn,
+                            Family::RomCompatibility,
+                            &[id.database_value()],
+                            compatibility,
+                            crate::mame::MameRomCompatibilityAttribute::code,
+                        )?;
+                    }
+                    (
+                        RootClaimKind::MameDisk,
+                        crate::mame::MameAssetAttributePositions::Disk {
+                            native,
+                            compatibility,
+                        },
+                    ) => {
+                        if let Some(writeable) = attributes.writeable {
+                            ExecuteDsl::execute(
+                                MameDiskCompatibilityInsert {
+                                    occurrence_id: id.database_value(),
+                                    writeable: writeable.as_bool(),
+                                },
+                                conn,
+                            )?;
+                        }
+                        positions.queue(
+                            conn,
+                            Family::Disk,
+                            &[id.database_value()],
+                            native,
+                            crate::mame::MameDiskAttribute::code,
+                        )?;
+                        positions.queue(
+                            conn,
+                            Family::DiskCompatibility,
+                            &[id.database_value()],
+                            compatibility,
+                            crate::mame::MameDiskCompatibilityAttribute::code,
+                        )?;
+                    }
+                    _ => {
+                        return Err(crate::Error::InvalidPath(
+                            "MAME attribute positions have the wrong asset family".into(),
+                        ));
+                    }
+                }
+            }
+            NativeAssetFacts::MameSample {
+                attribute_positions,
+                ..
+            } => positions.queue(
+                conn,
+                Family::Sample,
+                &[id.database_value()],
+                attribute_positions,
+                crate::mame::MameSampleAttribute::code,
+            )?,
+            _ => {
+                return Err(crate::Error::DatabaseSchema(
+                    "non-MAME asset in MAME bulk positions".into(),
+                ));
+            }
+        }
+    }
+    positions.flush(conn)?;
+    Ok(())
 }
 
 fn insert_mame_positions(

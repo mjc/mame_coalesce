@@ -50,98 +50,125 @@ pub(super) enum Family {
     DiskCompatibility,
 }
 
-trait PositionShape: 'static {
-    const FAMILY: Family;
-}
+const ATTRIBUTE_POSITION_BATCH_SIZE: usize = 64;
 
-macro_rules! position_shapes {
-    ($($shape:ident => $family:ident),+ $(,)?) => {
-        $(
-            struct $shape;
+/// Numeric positions spanning owners, bounded to 64 rows per closed family
+/// (132 KiB of row buffers across all 33 families). Flush before publication,
+/// inside the caller's transaction; discard the collector if that transaction fails.
+#[derive(Default)]
+pub(super) struct PositionBatch(BTreeMap<Family, Vec<PositionBindValues>>);
 
-            impl PositionShape for $shape {
-                const FAMILY: Family = Family::$family;
+impl PositionBatch {
+    pub(super) fn queue<Field: Copy>(
+        &mut self,
+        conn: &mut SqliteConnection,
+        family: Family,
+        key: &[i64],
+        positions: &[crate::xml_reader::AttributePosition<Field>],
+        code: fn(Field) -> i64,
+    ) -> crate::Result<()> {
+        let key = owner_key(family, key)?;
+        if positions.is_empty() {
+            return Ok(());
+        }
+        let rows = self
+            .0
+            .entry(family)
+            .or_insert_with(|| Vec::with_capacity(ATTRIBUTE_POSITION_BATCH_SIZE));
+        for position in positions {
+            let row = PositionBindValues::new(key, position, code)?;
+            // A failed execution retains its rows and never grows the buffer.
+            if rows.len() == ATTRIBUTE_POSITION_BATCH_SIZE {
+                flush_position_rows(conn, family, rows)?;
             }
-        )+
-    };
+            rows.push(row);
+            if rows.len() == ATTRIBUTE_POSITION_BATCH_SIZE {
+                flush_position_rows(conn, family, rows)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn flush(&mut self, conn: &mut SqliteConnection) -> crate::Result<()> {
+        for (&family, rows) in &mut self.0 {
+            flush_position_rows(conn, family, rows)?;
+        }
+        Ok(())
+    }
 }
 
-position_shapes!(
-    DocumentPositionShape => Document,
-    MachinePositionShape => Machine,
-    BiosPositionShape => Bios,
-    RomPositionShape => Rom,
-    DiskPositionShape => Disk,
-    DeviceReferencePositionShape => DeviceReference,
-    SamplePositionShape => Sample,
-    ChipPositionShape => Chip,
-    DisplayPositionShape => Display,
-    SoundPositionShape => Sound,
-    InputPositionShape => Input,
-    ControlPositionShape => Control,
-    SwitchPositionShape => Switch,
-    SwitchLocationPositionShape => SwitchLocation,
-    SwitchValuePositionShape => SwitchValue,
-    SwitchConditionPositionShape => SwitchCondition,
-    SwitchValueConditionPositionShape => SwitchValueCondition,
-    AdjusterConditionPositionShape => AdjusterCondition,
-    PortPositionShape => Port,
-    AnalogPositionShape => Analog,
-    AdjusterPositionShape => Adjuster,
-    DriverPositionShape => Driver,
-    FeaturePositionShape => Feature,
-    DevicePositionShape => Device,
-    InstancePositionShape => Instance,
-    ExtensionPositionShape => Extension,
-    SlotPositionShape => Slot,
-    SlotOptionPositionShape => SlotOption,
-    SoftwareListPositionShape => SoftwareList,
-    RamOptionPositionShape => RamOption,
-    MachineCompatibilityPositionShape => MachineCompatibility,
-    RomCompatibilityPositionShape => RomCompatibility,
-    DiskCompatibilityPositionShape => DiskCompatibility,
-);
-
-struct AttributePositionInsert<'a, Shape: PositionShape> {
-    key: &'a [i64],
+#[derive(Clone, Copy, Default)]
+struct PositionBindValues {
+    key: [i64; 4],
     field_kind: i64,
     source_order: i64,
     source_line: i64,
     source_column: i64,
-    shape: std::marker::PhantomData<Shape>,
 }
 
-impl<Shape: PositionShape> QueryId for AttributePositionInsert<'_, Shape> {
-    type QueryId = Shape;
+impl PositionBindValues {
+    fn new<Field: Copy>(
+        key: [i64; 4],
+        position: &crate::xml_reader::AttributePosition<Field>,
+        code: fn(Field) -> i64,
+    ) -> crate::Result<Self> {
+        Ok(Self {
+            key,
+            field_kind: code(position.field),
+            source_order: i64::try_from(position.source_order).map_err(|_| invalid())?,
+            source_line: position.location.line,
+            source_column: position.location.column,
+        })
+    }
 }
 
-impl<Shape: PositionShape> QueryFragment<Sqlite> for AttributePositionInsert<'_, Shape> {
+struct AttributePositionInsert<'a> {
+    family: Family,
+    rows: &'a [PositionBindValues],
+}
+
+impl QueryId for AttributePositionInsert<'_> {
+    type QueryId = ();
+
+    const HAS_STATIC_QUERY_ID: bool = false;
+}
+
+impl QueryFragment<Sqlite> for AttributePositionInsert<'_> {
     fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, Sqlite>) -> diesel::QueryResult<()> {
+        if !self.rows.len().is_power_of_two() {
+            pass.unsafe_to_cache_prepared();
+        }
         pass.push_sql("INSERT INTO ");
-        pass.push_sql(Shape::FAMILY.table());
+        pass.push_sql(self.family.table());
         pass.push_sql(" (");
-        for (index, key) in Shape::FAMILY.keys().iter().enumerate() {
+        for (index, key) in self.family.keys().iter().enumerate() {
             if index != 0 {
                 pass.push_sql(",");
             }
             pass.push_sql(key);
         }
-        pass.push_sql(",field_kind,source_order,source_line,source_column) VALUES (");
-        for (index, key) in self.key.iter().enumerate() {
-            if index != 0 {
+        pass.push_sql(",field_kind,source_order,source_line,source_column) VALUES ");
+        for (position_index, row) in self.rows.iter().enumerate() {
+            if position_index != 0 {
                 pass.push_sql(", ");
             }
-            pass.push_bind_param::<BigInt, _>(key)?;
+            pass.push_sql("(");
+            for (key_index, key) in row.key[..self.family.keys().len()].iter().enumerate() {
+                if key_index != 0 {
+                    pass.push_sql(", ");
+                }
+                pass.push_bind_param::<BigInt, _>(key)?;
+            }
+            pass.push_sql(", ");
+            pass.push_bind_param::<BigInt, _>(&row.field_kind)?;
+            pass.push_sql(", ");
+            pass.push_bind_param::<BigInt, _>(&row.source_order)?;
+            pass.push_sql(", ");
+            pass.push_bind_param::<BigInt, _>(&row.source_line)?;
+            pass.push_sql(", ");
+            pass.push_bind_param::<BigInt, _>(&row.source_column)?;
+            pass.push_sql(")");
         }
-        pass.push_sql(", ");
-        pass.push_bind_param::<BigInt, _>(&self.field_kind)?;
-        pass.push_sql(", ");
-        pass.push_bind_param::<BigInt, _>(&self.source_order)?;
-        pass.push_sql(", ");
-        pass.push_bind_param::<BigInt, _>(&self.source_line)?;
-        pass.push_sql(", ");
-        pass.push_bind_param::<BigInt, _>(&self.source_column)?;
-        pass.push_sql(")");
         Ok(())
     }
 }
@@ -420,70 +447,40 @@ pub(super) fn insert<Field: Copy>(
     positions: &[crate::xml_reader::AttributePosition<Field>],
     code: fn(Field) -> i64,
 ) -> crate::Result<()> {
-    if key.len() != family.keys().len() {
-        return Err(invalid());
-    }
-    macro_rules! insert_shape {
-        ($shape:ty) => {
-            insert_position_rows::<$shape, _>(conn, key, positions, code)
-        };
-    }
-    match family {
-        Family::Document => insert_shape!(DocumentPositionShape),
-        Family::Machine => insert_shape!(MachinePositionShape),
-        Family::Bios => insert_shape!(BiosPositionShape),
-        Family::Rom => insert_shape!(RomPositionShape),
-        Family::Disk => insert_shape!(DiskPositionShape),
-        Family::DeviceReference => insert_shape!(DeviceReferencePositionShape),
-        Family::Sample => insert_shape!(SamplePositionShape),
-        Family::Chip => insert_shape!(ChipPositionShape),
-        Family::Display => insert_shape!(DisplayPositionShape),
-        Family::Sound => insert_shape!(SoundPositionShape),
-        Family::Input => insert_shape!(InputPositionShape),
-        Family::Control => insert_shape!(ControlPositionShape),
-        Family::Switch => insert_shape!(SwitchPositionShape),
-        Family::SwitchLocation => insert_shape!(SwitchLocationPositionShape),
-        Family::SwitchValue => insert_shape!(SwitchValuePositionShape),
-        Family::SwitchCondition => insert_shape!(SwitchConditionPositionShape),
-        Family::SwitchValueCondition => insert_shape!(SwitchValueConditionPositionShape),
-        Family::AdjusterCondition => insert_shape!(AdjusterConditionPositionShape),
-        Family::Port => insert_shape!(PortPositionShape),
-        Family::Analog => insert_shape!(AnalogPositionShape),
-        Family::Adjuster => insert_shape!(AdjusterPositionShape),
-        Family::Driver => insert_shape!(DriverPositionShape),
-        Family::Feature => insert_shape!(FeaturePositionShape),
-        Family::Device => insert_shape!(DevicePositionShape),
-        Family::Instance => insert_shape!(InstancePositionShape),
-        Family::Extension => insert_shape!(ExtensionPositionShape),
-        Family::Slot => insert_shape!(SlotPositionShape),
-        Family::SlotOption => insert_shape!(SlotOptionPositionShape),
-        Family::SoftwareList => insert_shape!(SoftwareListPositionShape),
-        Family::RamOption => insert_shape!(RamOptionPositionShape),
-        Family::MachineCompatibility => insert_shape!(MachineCompatibilityPositionShape),
-        Family::RomCompatibility => insert_shape!(RomCompatibilityPositionShape),
-        Family::DiskCompatibility => insert_shape!(DiskCompatibilityPositionShape),
-    }
-}
-
-fn insert_position_rows<Shape: PositionShape, Field: Copy>(
-    conn: &mut SqliteConnection,
-    key: &[i64],
-    positions: &[crate::xml_reader::AttributePosition<Field>],
-    code: fn(Field) -> i64,
-) -> crate::Result<()> {
-    for position in positions {
-        let source_order = i64::try_from(position.source_order).map_err(|_| invalid())?;
+    let key = owner_key(family, key)?;
+    for batch in positions.chunks(ATTRIBUTE_POSITION_BATCH_SIZE) {
+        let mut bind_values = [PositionBindValues::default(); ATTRIBUTE_POSITION_BATCH_SIZE];
+        for (position, bind_values) in batch.iter().zip(&mut bind_values) {
+            *bind_values = PositionBindValues::new(key, position, code)?;
+        }
         ExecuteDsl::execute(
-            AttributePositionInsert::<Shape> {
-                key,
-                field_kind: code(position.field),
-                source_order,
-                source_line: position.location.line,
-                source_column: position.location.column,
-                shape: std::marker::PhantomData,
+            AttributePositionInsert {
+                family,
+                rows: &bind_values[..batch.len()],
             },
             conn,
         )?;
+    }
+    Ok(())
+}
+
+fn owner_key(family: Family, key: &[i64]) -> crate::Result<[i64; 4]> {
+    if key.len() != family.keys().len() {
+        return Err(invalid());
+    }
+    let mut owner = [0; 4];
+    owner[..key.len()].copy_from_slice(key);
+    Ok(owner)
+}
+
+fn flush_position_rows(
+    conn: &mut SqliteConnection,
+    family: Family,
+    rows: &mut Vec<PositionBindValues>,
+) -> crate::Result<()> {
+    if !rows.is_empty() {
+        ExecuteDsl::execute(AttributePositionInsert { family, rows }, conn)?;
+        rows.clear();
     }
     Ok(())
 }

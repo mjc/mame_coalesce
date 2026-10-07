@@ -14,22 +14,25 @@ use crate::{
     mame_softwarelist,
     no_intro_pc_xml::Catalog as NoIntroCatalog,
     storage::{
-        cached_sql::cached_sql,
+        cached_sql::{InsertBatch, InsertPhase, cached_sql},
         catalog_content::{
-            ContentDigestAssertions, ContentIdentityResolution, record_content_identity_conflict,
-            record_occurrence_digest_assertions, resolve_content_identity,
+            ContentDigestAssertions, ContentIdentityInput, ContentIdentityResolution,
+            record_content_identity_conflict, record_occurrence_digest_assertions,
+            resolve_content_identity,
         },
         db::Pool,
         documents::DocumentStore,
-        mame_attributes::{self, Family},
+        mame_attributes::{self, Family, PositionBatch},
     },
 };
 
 mod cmp_native;
 mod logiqx_cmp_relationships;
 mod logiqx_native;
+mod mame_bulk;
 mod mame_relationships;
 mod mame_specification;
+mod mame_switches;
 mod no_intro_dat_native;
 mod no_intro_database_native;
 mod no_intro_pc_native;
@@ -37,6 +40,9 @@ mod reported_relationships;
 mod root_assets;
 mod root_sets;
 mod software_native;
+
+#[cfg(test)]
+mod bulk_tests;
 
 enum SnapshotPublication {
     Published(SnapshotKey),
@@ -804,6 +810,7 @@ struct StreamingImport<'a> {
     conn: &'a mut SqliteConnection,
     publication: SnapshotPublication,
     run_key: ImportRunKey,
+    machines: mame_bulk::MachineBatch,
 }
 
 struct ClrMameProImport<'a> {
@@ -881,6 +888,7 @@ fn start_streaming_import<'a>(
         conn,
         publication,
         run_key,
+        machines: mame_bulk::MachineBatch::default(),
     })
 }
 
@@ -1007,7 +1015,7 @@ impl StreamingImport<'_> {
             MameRecord::Machine(machine) => {
                 let set = machine_contents(*machine);
                 if let SnapshotPublication::Pending(key) = &self.publication {
-                    insert_snapshot_set(self.conn, key, &set)?;
+                    self.machines.push(self.conn, key, set)?;
                 }
                 Ok(())
             }
@@ -1287,11 +1295,14 @@ fn finish_streaming_result(
 }
 
 fn finish_streaming_import(
-    sink: StreamingImport<'_>,
+    mut sink: StreamingImport<'_>,
     request: &CatalogImportRequest,
     document_key: &DocumentKey,
     interpretation: &ParserInterpretationKey,
 ) -> crate::Result<CatalogImportReport> {
+    if let SnapshotPublication::Pending(key) = &sink.publication {
+        sink.machines.flush(sink.conn, key)?;
+    }
     let snapshot_key =
         sink.publication
             .publish(sink.conn, request, document_key, interpretation)?;
@@ -1806,9 +1817,22 @@ fn insert_snapshot_set(
             asset,
         )?;
     }
-    insert_machine_switches(conn, set_id, set)?;
-    insert_machine_bios_sets(conn, set_id, set)?;
+    insert_mame_switches_and_bios(conn, set_id, set)?;
     Ok(owner)
+}
+
+fn insert_mame_switches_and_bios(
+    conn: &mut SqliteConnection,
+    set_id: i64,
+    set: &SnapshotSet,
+) -> crate::Result<()> {
+    let mut values = InsertBatch::new();
+    mame_switches::insert_values_bulk(conn, &mut values, set_id, set)?;
+    values.flush(conn)?;
+
+    let mut positions = PositionBatch::default();
+    mame_switches::insert_positions_bulk(conn, &mut positions, set_id, set)?;
+    positions.flush(conn)
 }
 
 fn insert_asset_requirement(
@@ -1818,41 +1842,12 @@ fn insert_asset_requirement(
     component_order: i64,
     asset: &SnapshotAsset,
 ) -> crate::Result<OccurrenceId> {
-    let parsed_size = asset.size.map(i64::try_from).transpose();
-    let oversized_pc_size =
-        matches!(&asset.native, NativeAssetFacts::NoIntroPc { .. }) && parsed_size.is_err();
-    let size = if oversized_pc_size {
-        None
+    let input = asset_identity_input(asset)?;
+    let digests = input.assertions;
+    let resolution = if input.eligible {
+        resolve_content_identity(conn, input.size, digests)?
     } else {
-        parsed_size.map_err(|_| crate::Error::InvalidRomSize(asset.size.unwrap_or_default()))?
-    };
-    let digests = ContentDigestAssertions::new(
-        asset.evidence_scope,
-        asset.crc.as_deref(),
-        asset.md5.as_deref(),
-        asset.sha1.as_deref(),
-        None,
-    );
-    // MAME listxml emits complete file size (output_rom/rom_file_size),
-    // unlike software-list ROM entries, whose size is one load segment.
-    let resolution = if oversized_pc_size
-        || asset.role == "other"
-        || asset
-            .cmp_rom_facts()
-            .is_some_and(crate::clrmamepro::AssetFacts::has_conflicting_declarations)
-        || matches!(
-            &asset.native,
-            NativeAssetFacts::Logiqx(LogiqxAssetAttributes {
-                identity_eligibility: SourceIdentityEligibility::UninterpretedDeclaration,
-                ..
-            })
-        )
-        || matches!(&asset.native, NativeAssetFacts::Mame { declarations, .. }
-            if !declarations.declarations_interpretable())
-    {
         ContentIdentityResolution::NoEligibleEvidence
-    } else {
-        resolve_content_identity(conn, size, digests)?
     };
     let content_uuid = resolution
         .content_id()
@@ -1894,6 +1889,45 @@ fn insert_asset_requirement(
     }
     record_content_identity_conflict(conn, occurrence, &resolution)?;
     Ok(occurrence)
+}
+
+fn asset_identity_input(asset: &SnapshotAsset) -> crate::Result<ContentIdentityInput<'_>> {
+    let parsed_size = asset.size.map(i64::try_from).transpose();
+    let oversized_pc_size =
+        matches!(&asset.native, NativeAssetFacts::NoIntroPc { .. }) && parsed_size.is_err();
+    let size = if oversized_pc_size {
+        None
+    } else {
+        parsed_size.map_err(|_| crate::Error::InvalidRomSize(asset.size.unwrap_or_default()))?
+    };
+    let digests = ContentDigestAssertions::new(
+        asset.evidence_scope,
+        asset.crc.as_deref(),
+        asset.md5.as_deref(),
+        asset.sha1.as_deref(),
+        None,
+    );
+    // MAME listxml emits complete file size (output_rom/rom_file_size),
+    // unlike software-list ROM entries, whose size is one load segment.
+    let ineligible = oversized_pc_size
+        || asset.role == "other"
+        || asset
+            .cmp_rom_facts()
+            .is_some_and(crate::clrmamepro::AssetFacts::has_conflicting_declarations)
+        || matches!(
+            &asset.native,
+            NativeAssetFacts::Logiqx(LogiqxAssetAttributes {
+                identity_eligibility: SourceIdentityEligibility::UninterpretedDeclaration,
+                ..
+            })
+        )
+        || matches!(&asset.native, NativeAssetFacts::Mame { declarations, .. }
+            if !declarations.declarations_interpretable());
+    Ok(ContentIdentityInput {
+        size,
+        assertions: digests,
+        eligible: !ineligible,
+    })
 }
 
 fn sqlite_mame_boolean(value: mame::MameBoolean) -> i64 {
@@ -2036,6 +2070,20 @@ fn insert_mame_machine_facts(
     set_id: i64,
     facts: &crate::mame::MachineFacts,
 ) -> crate::Result<()> {
+    let mut values = InsertBatch::default();
+    enqueue_mame_machine_facts(conn, &mut values, set_id, facts)?;
+    values.flush(conn)?;
+    let mut positions = PositionBatch::default();
+    enqueue_mame_machine_positions(conn, &mut positions, set_id, facts)?;
+    positions.flush(conn)
+}
+
+fn enqueue_mame_machine_facts(
+    conn: &mut SqliteConnection,
+    batch: &mut InsertBatch,
+    set_id: i64,
+    facts: &crate::mame::MachineFacts,
+) -> crate::Result<()> {
     cached_sql(
         "INSERT INTO mame_machines \
          (set_id, source_file, description, description_source_order, description_line, description_column, \
@@ -2072,8 +2120,23 @@ fn insert_mame_machine_facts(
     .bind::<diesel::sql_types::Bool, _>(facts.flags.is_mechanical_specified())
     .bind::<BigInt, _>(facts.attributes_location.line)
     .bind::<BigInt, _>(facts.attributes_location.column)
-    .execute(conn)?;
-    mame_attributes::insert(
+    .enqueue(batch, conn, InsertPhase::Parents)?;
+    if facts.flags.is_consumable_specified() {
+        cached_sql("INSERT INTO mame_machine_compatibility(set_id,is_consumable,is_consumable_specified) VALUES (?,?,1)")
+            .bind::<BigInt, _>(set_id)
+            .bind::<diesel::sql_types::Bool, _>(facts.flags.is_consumable())
+            .enqueue(batch, conn, InsertPhase::Children)?;
+    }
+    Ok(())
+}
+
+fn enqueue_mame_machine_positions(
+    conn: &mut SqliteConnection,
+    positions: &mut PositionBatch,
+    set_id: i64,
+    facts: &crate::mame::MachineFacts,
+) -> crate::Result<()> {
+    positions.queue(
         conn,
         Family::Machine,
         &[set_id],
@@ -2081,11 +2144,7 @@ fn insert_mame_machine_facts(
         mame::MameMachineAttribute::code,
     )?;
     if facts.flags.is_consumable_specified() {
-        cached_sql("INSERT INTO mame_machine_compatibility(set_id,is_consumable,is_consumable_specified) VALUES (?,?,1)")
-            .bind::<BigInt, _>(set_id)
-            .bind::<diesel::sql_types::Bool, _>(facts.flags.is_consumable())
-            .execute(conn)?;
-        mame_attributes::insert(
+        positions.queue(
             conn,
             Family::MachineCompatibility,
             &[set_id],
@@ -2124,264 +2183,6 @@ fn insert_mame_document_facts(
     Ok(())
 }
 
-fn insert_machine_bios_sets(
-    conn: &mut SqliteConnection,
-    set_id: i64,
-    set: &SnapshotSet,
-) -> crate::Result<()> {
-    for (bios_order, bios_set) in set.bios_sets.iter().enumerate() {
-        cached_sql(
-            "INSERT INTO mame_bios_sets \
-             (set_id, bios_order, name, description, is_default, default_specified, source_order, source_line, source_column) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind::<BigInt, _>(set_id)
-        .bind::<BigInt, _>(checked_order(bios_order, "MAME BIOS sets")?)
-        .bind::<Text, _>(&bios_set.name)
-        .bind::<Text, _>(&bios_set.description)
-        .bind::<diesel::sql_types::Bool, _>(bios_set.is_default)
-        .bind::<diesel::sql_types::Bool, _>(bios_set.default_specified)
-        .bind::<BigInt, _>(bios_set.source_order)
-        .bind::<BigInt, _>(bios_set.location.line)
-        .bind::<BigInt, _>(bios_set.location.column)
-        .execute(conn)?;
-        mame_attributes::insert(
-            conn,
-            Family::Bios,
-            &[set_id, checked_order(bios_order, "MAME BIOS sets")?],
-            &bios_set.attribute_positions,
-            mame::MameBiosAttribute::code,
-        )?;
-    }
-    Ok(())
-}
-
-const SWITCH_INSERT_BATCH_SIZE: usize = 64;
-
-#[derive(Clone, Copy)]
-enum SwitchBind<'a> {
-    Integer(i64),
-    Text(&'a str),
-    Bool(bool),
-}
-
-fn insert_machine_switch_rows<'a, const COLUMNS: usize>(
-    conn: &mut SqliteConnection,
-    insert_prefix: &'static str,
-    rows: impl IntoIterator<Item = crate::Result<[SwitchBind<'a>; COLUMNS]>>,
-) -> crate::Result<()> {
-    let mut batch = Vec::with_capacity(SWITCH_INSERT_BATCH_SIZE);
-    for row in rows {
-        batch.push(row?);
-        if batch.len() == SWITCH_INSERT_BATCH_SIZE {
-            execute_machine_switch_batch(conn, insert_prefix, &batch)?;
-            batch.clear();
-        }
-    }
-    if !batch.is_empty() {
-        execute_machine_switch_batch(conn, insert_prefix, &batch)?;
-    }
-    Ok(())
-}
-
-fn execute_machine_switch_batch<const COLUMNS: usize>(
-    conn: &mut SqliteConnection,
-    insert_prefix: &str,
-    rows: &[[SwitchBind<'_>; COLUMNS]],
-) -> crate::Result<()> {
-    let placeholders = format!(
-        "({})",
-        std::iter::repeat_n("?", COLUMNS)
-            .collect::<Vec<_>>()
-            .join(",")
-    );
-    let values = std::iter::repeat_n(placeholders.as_str(), rows.len())
-        .collect::<Vec<_>>()
-        .join(",");
-    let query = sql_query(format!("{insert_prefix} {values}"));
-    let mut query = query.into_boxed::<diesel::sqlite::Sqlite>();
-    for row in rows {
-        for value in row {
-            query = match value {
-                SwitchBind::Integer(value) => query.bind::<BigInt, _>(*value),
-                SwitchBind::Text(value) => query.bind::<Text, _>(*value),
-                SwitchBind::Bool(value) => query.bind::<diesel::sql_types::Bool, _>(*value),
-            };
-        }
-    }
-    query.execute(conn)?;
-    Ok(())
-}
-
-fn insert_machine_switches(
-    conn: &mut SqliteConnection,
-    set_id: i64,
-    set: &SnapshotSet,
-) -> crate::Result<()> {
-    insert_machine_switch_records(conn, set_id, set)?;
-    insert_machine_switch_locations(conn, set_id, set)?;
-    insert_machine_switch_values(conn, set_id, set)
-}
-
-fn insert_machine_switch_records(
-    conn: &mut SqliteConnection,
-    set_id: i64,
-    set: &SnapshotSet,
-) -> crate::Result<()> {
-    use SwitchBind::{Integer, Text as TextBind};
-
-    insert_machine_switch_rows(
-        conn,
-        "INSERT INTO machine_switches (set_id, switch_order, kind, name, tag, mask, source_order, source_line, source_column) VALUES",
-        set.switches.iter().enumerate().map(|(index, switch)| {
-            Ok([
-                Integer(set_id),
-                Integer(checked_order(index, "machine switches")?),
-                TextBind(switch.kind.as_str()),
-                TextBind(&switch.name),
-                TextBind(&switch.tag),
-                TextBind(&switch.mask),
-                Integer(switch.source_order),
-                Integer(switch.location.line),
-                Integer(switch.location.column),
-            ])
-        }),
-    )?;
-
-    for (switch_order, switch) in set.switches.iter().enumerate() {
-        let switch_order = checked_order(switch_order, "machine switches")?;
-        mame_attributes::insert(
-            conn,
-            Family::Switch,
-            &[set_id, switch_order],
-            &switch.attribute_positions,
-            mame::MameSwitchAttribute::code,
-        )?;
-        if let Some(condition) = &switch.condition {
-            mame_specification::insert_switch_condition(conn, set_id, switch_order, condition)?;
-        }
-    }
-    Ok(())
-}
-
-fn insert_machine_switch_locations(
-    conn: &mut SqliteConnection,
-    set_id: i64,
-    set: &SnapshotSet,
-) -> crate::Result<()> {
-    use SwitchBind::{Bool, Integer, Text as TextBind};
-
-    let location_rows = set
-        .switches
-        .iter()
-        .enumerate()
-        .flat_map(|(switch_index, switch)| {
-            switch
-                .locations
-                .iter()
-                .enumerate()
-                .map(move |(location_index, location)| (switch_index, location_index, location))
-        });
-    insert_machine_switch_rows(
-        conn,
-        "INSERT INTO machine_switch_locations (set_id, switch_order, location_order, source_order, name, number, inverted, inverted_specified, source_line, source_column) VALUES",
-        location_rows.map(|(switch_index, location_index, location)| {
-            Ok([
-                Integer(set_id),
-                Integer(checked_order(switch_index, "machine switches")?),
-                Integer(checked_order(location_index, "machine switch locations")?),
-                Integer(location.source_order),
-                TextBind(&location.name),
-                TextBind(&location.number),
-                Bool(location.inverted),
-                Bool(location.inverted_specified),
-                Integer(location.location.line),
-                Integer(location.location.column),
-            ])
-        }),
-    )?;
-
-    for (switch_order, switch) in set.switches.iter().enumerate() {
-        let switch_order = checked_order(switch_order, "machine switches")?;
-        for (location_order, location) in switch.locations.iter().enumerate() {
-            mame_attributes::insert(
-                conn,
-                Family::SwitchLocation,
-                &[
-                    set_id,
-                    switch_order,
-                    checked_order(location_order, "machine switch locations")?,
-                ],
-                &location.attribute_positions,
-                mame::MameSwitchLocationAttribute::code,
-            )?;
-        }
-    }
-    Ok(())
-}
-
-fn insert_machine_switch_values(
-    conn: &mut SqliteConnection,
-    set_id: i64,
-    set: &SnapshotSet,
-) -> crate::Result<()> {
-    use SwitchBind::{Bool, Integer, Text as TextBind};
-
-    let value_rows = set
-        .switches
-        .iter()
-        .enumerate()
-        .flat_map(|(switch_index, switch)| {
-            switch
-                .values
-                .iter()
-                .enumerate()
-                .map(move |(value_index, value)| (switch_index, value_index, value))
-        });
-    insert_machine_switch_rows(
-        conn,
-        "INSERT INTO machine_switch_values (set_id, switch_order, value_order, source_order, name, value, is_default, default_specified, source_line, source_column) VALUES",
-        value_rows.map(|(switch_index, value_index, switch_value)| {
-            Ok([
-                Integer(set_id),
-                Integer(checked_order(switch_index, "machine switches")?),
-                Integer(checked_order(value_index, "machine switch values")?),
-                Integer(switch_value.source_order),
-                TextBind(&switch_value.name),
-                TextBind(&switch_value.value),
-                Bool(switch_value.default),
-                Bool(switch_value.default_specified),
-                Integer(switch_value.location.line),
-                Integer(switch_value.location.column),
-            ])
-        }),
-    )?;
-
-    for (switch_order, switch) in set.switches.iter().enumerate() {
-        let switch_order = checked_order(switch_order, "machine switches")?;
-        for (value_order, switch_value) in switch.values.iter().enumerate() {
-            let value_order = checked_order(value_order, "machine switch values")?;
-            mame_attributes::insert(
-                conn,
-                Family::SwitchValue,
-                &[set_id, switch_order, value_order],
-                &switch_value.attribute_positions,
-                mame::MameSwitchValueAttribute::code,
-            )?;
-            if let Some(condition) = &switch_value.condition {
-                mame_specification::insert_switch_value_condition(
-                    conn,
-                    set_id,
-                    switch_order,
-                    value_order,
-                    condition,
-                )?;
-            }
-        }
-    }
-    Ok(())
-}
-
 fn checked_order(order: usize, kind: &str) -> crate::Result<i64> {
     i64::try_from(order).map_err(|_| crate::Error::InvalidPath(format!("too many {kind}")))
 }
@@ -2397,7 +2198,7 @@ mod machine_switch_batch_tests {
         sql_query,
     };
 
-    use super::{insert_machine_switches, machine_contents};
+    use super::{insert_mame_switches_and_bios, machine_contents};
 
     #[derive(diesel::QueryableByName)]
     struct Count {
@@ -2478,13 +2279,13 @@ mod machine_switch_batch_tests {
             }
         });
 
-        insert_machine_switches(&mut connection, 7, &set)?;
+        insert_mame_switches_and_bios(&mut connection, 7, &set)?;
 
         let statements = std::mem::take(&mut *statements.lock().expect("statement-count mutex"));
         assert_eq!(
             statements.len(),
-            9,
-            "130 rows per table should use three 64-row batches per table; statements: {statements:?}"
+            6,
+            "130 rows per table should split at SQLite's bind limit; statements: {statements:?}"
         );
         for table in [
             "machine_switches",
@@ -2496,14 +2297,14 @@ mod machine_switch_batch_tests {
                     .iter()
                     .filter(|statement| statement.starts_with(&format!("INSERT INTO {table} ")))
                     .count(),
-                3,
+                2,
                 "unexpected batch count for {table}"
             );
         }
         assert!(
             statements
                 .iter()
-                .all(|statement| statement.matches('?').count() <= 640)
+                .all(|statement| statement.matches('?').count() <= 999)
         );
         let rows = sql_query(
             "SELECT (SELECT count(*) FROM machine_switches) + \

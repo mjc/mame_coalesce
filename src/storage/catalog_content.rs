@@ -58,6 +58,15 @@ pub struct ContentDigestAssertions<'a> {
     sha256: Option<&'a [u8]>,
 }
 
+/// One ordered input to the bounded content identity resolver.
+#[derive(Clone, Copy)]
+pub struct ContentIdentityInput<'a> {
+    pub size: Option<i64>,
+    pub assertions: ContentDigestAssertions<'a>,
+    /// False skips all size and digest validation, matching callers that skip resolution.
+    pub eligible: bool,
+}
+
 impl<'a> ContentDigestAssertions<'a> {
     #[must_use]
     pub const fn new(
@@ -388,10 +397,10 @@ impl QueryFragment<Sqlite> for ContentIdentitySizes<'_> {
             " UNION SELECT redirect.old_content_uuid FROM component \
              JOIN merged_file_ids AS redirect ON redirect.kept_content_uuid = component.content_uuid \
              JOIN file_match_decision_publications USING (decision_id)) \
-             SELECT DISTINCT (SELECT sizes.size FROM accepted_file_size_assertions AS sizes \
-             WHERE sizes.occurrence_id = entry.occurrence_id) AS size FROM component \
+             SELECT DISTINCT sizes.size FROM component \
              CROSS JOIN asset_occurrences AS entry ON entry.content_uuid = component.content_uuid \
-             WHERE size IS NOT NULL LIMIT 2",
+             CROSS JOIN accepted_file_size_assertions AS sizes \
+               ON sizes.occurrence_id = entry.occurrence_id LIMIT 2",
         );
         Ok(())
     }
@@ -649,11 +658,21 @@ fn compatible_identity(
 fn identity_size_select() -> String {
     format!(
         "{FILE_COMPONENT_SQL} SELECT DISTINCT \
+         sizes.size FROM component \
+         CROSS JOIN asset_occurrences AS entry ON entry.content_uuid = component.content_uuid \
+         CROSS JOIN accepted_file_size_assertions AS sizes \
+           ON sizes.occurrence_id = entry.occurrence_id LIMIT 2"
+    )
+}
+
+#[cfg(test)]
+fn identity_size_scalar_reference_select() -> String {
+    format!(
+        "{FILE_COMPONENT_SQL} SELECT DISTINCT \
          (SELECT sizes.size FROM accepted_file_size_assertions AS sizes \
           WHERE sizes.occurrence_id = entry.occurrence_id) AS size FROM component \
          CROSS JOIN asset_occurrences AS entry ON entry.content_uuid = component.content_uuid \
-         WHERE size IS NOT NULL \
-         LIMIT 2"
+         WHERE size IS NOT NULL LIMIT 2"
     )
 }
 
@@ -669,6 +688,13 @@ fn candidate_size_evidence_insert() -> String {
 
 #[cfg(test)]
 mod size_tests;
+
+mod bulk;
+#[cfg(test)]
+pub use bulk::resolve_content_identities;
+pub use bulk::{
+    record_occurrence_digest_assertions_bulk, record_wide_content_conflict, resolve_content_prefix,
+};
 
 fn content_id(bytes: Vec<u8>) -> crate::Result<CatalogContentId> {
     let bytes: [u8; 16] = bytes.try_into().map_err(|bytes: Vec<u8>| {

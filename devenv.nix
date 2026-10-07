@@ -4,6 +4,17 @@
   pkgs,
   ...
 }: let
+  # Scan-status builds enable per-opcode cycle accounting on every connection.
+  # Keep EXPLAIN and normal SQLite integrity checks without timing every opcode.
+  catalogSqlite = pkgs.sqlite.overrideAttrs (previous: let
+    compileFlags = previous.env.NIX_CFLAGS_COMPILE or previous.NIX_CFLAGS_COMPILE or "";
+  in {
+    env =
+      (previous.env or {})
+      // {
+        NIX_CFLAGS_COMPILE = lib.replaceStrings ["-DSQLITE_ENABLE_STMT_SCANSTATUS"] [""] compileFlags;
+      };
+  });
   scriptCheck = "${pkgs.shellcheck}/bin/shellcheck scripts/fetch_public_domain_test_data.sh scripts/profile_flamegraph.sh scripts/profile_catalog_imports.sh scripts/render_catalog_flamegraph.sh scripts/benchmark_run.sh scripts/generate_synthetic_benchmark_corpus.sh scripts/generate_xml_import_benchmark_corpus.sh scripts/benchmark_xml_import.sh scripts/parse_flamegraph scripts/parse_perfdata";
 in {
   languages.rust = {
@@ -17,7 +28,7 @@ in {
   packages = with pkgs; [
     cmake
     pkg-config
-    sqlite
+    catalogSqlite
     openssl
     zlib
     sccache
@@ -34,7 +45,7 @@ in {
     CC = "${pkgs.stdenv.cc}/bin/cc";
     CXX = "${pkgs.stdenv.cc}/bin/c++";
     RUSTC_WRAPPER = "${pkgs.sccache}/bin/sccache";
-    PKG_CONFIG_PATH = lib.makeSearchPath "lib/pkgconfig" [pkgs.sqlite.dev pkgs.openssl.dev pkgs.zlib.dev];
+    PKG_CONFIG_PATH = lib.makeSearchPath "lib/pkgconfig" [catalogSqlite.dev pkgs.openssl.dev pkgs.zlib.dev];
     GH_PAGER = "cat";
   };
 
@@ -46,6 +57,15 @@ in {
   };
 
   tasks = {
+    "project:sqlite" = {
+      description = "Reject native SQLite builds with per-opcode timing enabled";
+      exec = ''
+        case "$(sqlite3 :memory: "SELECT sqlite_compileoption_used('ENABLE_STMT_SCANSTATUS');")" in
+          0) ;;
+          *) echo "SQLite scan-status instrumentation must be disabled" >&2; exit 1 ;;
+        esac
+      '';
+    };
     "project:format" = {
       description = "Check Rust and Nix formatting";
       exec = "cargo fmt --all -- --check && alejandra --check devenv.nix";
@@ -68,7 +88,7 @@ in {
     };
     "project:check" = {
       description = "Run the complete local verification gate";
-      after = ["project:clippy" "project:scripts"];
+      after = ["project:clippy" "project:scripts" "project:sqlite"];
       # Keep verification out of ordinary shell activation.
       before = lib.optionals config.devenv.isTesting ["devenv:enterTest"];
     };

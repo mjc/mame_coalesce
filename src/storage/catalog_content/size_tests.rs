@@ -5,9 +5,10 @@ use crate::{
     domain::{CatalogKey, CatalogScope, PublishingSourceKey},
 };
 use camino::Utf8PathBuf;
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
-#[derive(QueryableByName)]
+#[derive(Debug, QueryableByName)]
 struct PlanRow {
     #[diesel(sql_type = Text)]
     detail: String,
@@ -22,6 +23,10 @@ struct IdentityRow {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the query-plan fixture keeps related imported-data and plan assertions together"
+)]
 fn identity_size_lookup_seeks_native_successors_with_unrelated_software_present()
 -> crate::Result<()> {
     let directory = tempfile::tempdir()?;
@@ -59,11 +64,37 @@ fn identity_size_lookup_seeks_native_successors_with_unrelated_software_present(
     let sizes = sql_query(identity_size_select())
         .bind::<Binary, _>(uuid.as_bytes().as_slice())
         .load::<ContentFactsRow>(&mut connection)?;
+    let scalar_sizes = sql_query(identity_size_scalar_reference_select())
+        .bind::<Binary, _>(uuid.as_bytes().as_slice())
+        .load::<ContentFactsRow>(&mut connection)?;
     assert_eq!(sizes.len(), 1);
     assert_eq!(sizes[0].size, 8);
+    assert_eq!(
+        sizes.iter().map(|row| row.size).collect::<BTreeSet<_>>(),
+        scalar_sizes
+            .iter()
+            .map(|row| row.size)
+            .collect::<BTreeSet<_>>(),
+        "joining accepted sizes must preserve scalar size facts"
+    );
     let plans = sql_query(format!("EXPLAIN QUERY PLAN {}", identity_size_select()))
         .bind::<Binary, _>(uuid.as_bytes().as_slice())
         .load::<PlanRow>(&mut connection)?;
+    let scalar_plans = sql_query(format!(
+        "EXPLAIN QUERY PLAN {}",
+        identity_size_scalar_reference_select()
+    ))
+    .bind::<Binary, _>(uuid.as_bytes().as_slice())
+    .load::<PlanRow>(&mut connection)?;
+    let size_view_expansions = |plan: &[PlanRow]| {
+        plan.iter()
+            .filter(|row| row.detail == "MATERIALIZE run")
+            .count()
+    };
+    assert!(
+        size_view_expansions(&plans) < size_view_expansions(&scalar_plans),
+        "the join should eliminate repeated size-view evaluation: query plan {plans:#?}; scalar plan {scalar_plans:#?}"
+    );
     assert_native_seeks(&plans);
     let point = sql_query(
         "EXPLAIN QUERY PLAN SELECT size FROM catalog_file_size_assertions WHERE occurrence_id=?",

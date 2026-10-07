@@ -8,6 +8,7 @@ use diesel::{
     sql_types::{BigInt, Text},
     sqlite::Sqlite,
 };
+use std::collections::HashMap;
 
 use crate::domain::{
     CatalogSetId, MergeMediaKind, NoIntroArchiveId, NoIntroArchiveReferenceField, OccurrenceId,
@@ -15,6 +16,7 @@ use crate::domain::{
 };
 
 use super::{NativeAssetFacts, SnapshotAsset};
+use crate::storage::cached_sql::{InsertBatch, InsertPhase, cached_sql};
 
 #[derive(Clone, Copy)]
 pub(super) enum XmlReferenceKind {
@@ -45,6 +47,7 @@ pub(super) enum CmpReferenceKind {
     RomMerge,
 }
 
+#[derive(Clone, Copy)]
 pub(super) enum ReportedReferenceKind {
     Mame(XmlReferenceKind),
     Logiqx(XmlReferenceKind),
@@ -211,6 +214,48 @@ impl ReportedRelationshipId {
 
 struct InsertCatalogRelationshipQuery;
 struct InsertReportedRelationshipQuery;
+struct InsertCatalogRelationshipsBulkQuery;
+
+#[derive(diesel::Queryable)]
+struct RegisteredRelationshipRow {
+    assertion_key: String,
+    relationship_id: i64,
+}
+
+struct InsertCatalogRelationshipsBulk<'a> {
+    rows: &'a [(String, &'a str)],
+}
+
+impl QueryId for InsertCatalogRelationshipsBulk<'_> {
+    type QueryId = InsertCatalogRelationshipsBulkQuery;
+    const HAS_STATIC_QUERY_ID: bool = false;
+}
+
+impl Query for InsertCatalogRelationshipsBulk<'_> {
+    type SqlType = (Text, BigInt);
+}
+
+impl RunQueryDsl<SqliteConnection> for InsertCatalogRelationshipsBulk<'_> {}
+
+impl QueryFragment<Sqlite> for InsertCatalogRelationshipsBulk<'_> {
+    fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, Sqlite>) -> diesel::QueryResult<()> {
+        pass.push_sql(
+            "INSERT INTO catalog_relationships(assertion_key,origin,snapshot_key) VALUES ",
+        );
+        for (index, (key, snapshot_key)) in self.rows.iter().enumerate() {
+            if index != 0 {
+                pass.push_sql(",");
+            }
+            pass.push_sql("(");
+            pass.push_bind_param::<Text, _>(key)?;
+            pass.push_sql(",'source',");
+            pass.push_bind_param::<Text, _>(snapshot_key)?;
+            pass.push_sql(")");
+        }
+        pass.push_sql(" RETURNING assertion_key,relationship_id");
+        Ok(())
+    }
+}
 
 struct InsertCatalogRelationship<'a> {
     assertion_key: &'a str,
@@ -281,6 +326,72 @@ pub(super) fn register(
     }
     .execute(connection)?;
     Ok(ReportedRelationshipId(row))
+}
+
+/// Allocate registry identities in input order without relying on SQLite's
+/// `RETURNING` row order. Callers pass bounded slices to keep retained state
+/// proportional to one insert batch.
+pub(super) fn register_bulk(
+    connection: &mut SqliteConnection,
+    snapshot: &SnapshotKey,
+    kinds: &[ReportedReferenceKind],
+) -> crate::Result<Vec<ReportedRelationshipId>> {
+    const MAX_REGISTRY_ROWS: usize = 64;
+    const MAX_REGISTRY_BYTES: usize = 1024 * 1024;
+
+    let estimated_row_bytes = snapshot.as_str().len().saturating_add(64);
+    let rows_by_bytes = (MAX_REGISTRY_BYTES / estimated_row_bytes.max(1)).max(1);
+    let chunk_size = MAX_REGISTRY_ROWS.min(rows_by_bytes);
+    let mut ids = Vec::with_capacity(kinds.len());
+    for chunk in kinds.chunks(chunk_size) {
+        ids.extend(register_bulk_chunk(connection, snapshot, chunk)?);
+    }
+    Ok(ids)
+}
+
+fn register_bulk_chunk(
+    connection: &mut SqliteConnection,
+    snapshot: &SnapshotKey,
+    kinds: &[ReportedReferenceKind],
+) -> crate::Result<Vec<ReportedRelationshipId>> {
+    let keys = kinds
+        .iter()
+        .map(|_| RelationshipAssertionKey::fresh())
+        .collect::<Vec<_>>();
+    let rows = keys
+        .iter()
+        .map(|key| (key.as_str().to_owned(), snapshot.as_str()))
+        .collect::<Vec<_>>();
+    let returned = InsertCatalogRelationshipsBulk { rows: &rows }
+        .load::<RegisteredRelationshipRow>(connection)?;
+    let ids_by_key = returned
+        .into_iter()
+        .map(|row| (row.assertion_key, row.relationship_id))
+        .collect::<HashMap<_, _>>();
+    if ids_by_key.len() != keys.len() {
+        return Err(crate::Error::DatabaseSchema(
+            "bulk relationship registration did not return every assertion key".into(),
+        ));
+    }
+
+    let mut ids = Vec::with_capacity(kinds.len());
+    let mut subtype_batch = InsertBatch::new();
+    for (key, kind) in keys.iter().zip(kinds) {
+        let id = ids_by_key.get(key.as_str()).copied().ok_or_else(|| {
+            crate::Error::DatabaseSchema(
+                "bulk relationship registration returned an unknown assertion key".into(),
+            )
+        })?;
+        cached_sql(
+            "INSERT INTO reported_catalog_relationships(relationship_id,source_reference_kind) VALUES (?,?)",
+        )
+        .bind::<BigInt, _>(id)
+        .bind::<Text, _>(kind.code())
+        .enqueue(&mut subtype_batch, connection, InsertPhase::Children)?;
+        ids.push(ReportedRelationshipId(id));
+    }
+    subtype_batch.flush(connection)?;
+    Ok(ids)
 }
 
 enum MergeOwner {
@@ -482,6 +593,99 @@ pub(super) fn insert_asset_merge(
     }
 }
 
+pub(super) fn insert_asset_merges_bulk(
+    connection: &mut SqliteConnection,
+    snapshot: &SnapshotKey,
+    occurrences: &[(OccurrenceId, &SnapshotAsset)],
+) -> crate::Result<()> {
+    const MAX_ROWS: usize = 64;
+    const MAX_BYTES: usize = 1024 * 1024;
+
+    let mut offset = 0;
+    while offset < occurrences.len() {
+        let mut end = offset;
+        let mut bytes = 0_usize;
+        let mut pending = Vec::new();
+        while end < occurrences.len() && pending.len() < MAX_ROWS {
+            let (occurrence, asset) = occurrences[end];
+            let Some(literal) = asset.merge.as_deref() else {
+                end += 1;
+                continue;
+            };
+            let Some(owner) = MergeOwner::for_asset(asset)? else {
+                end += 1;
+                continue;
+            };
+            let row_bytes = literal.len().saturating_add(asset.role.len());
+            if !pending.is_empty() && bytes.saturating_add(row_bytes) > MAX_BYTES {
+                break;
+            }
+            bytes = bytes.saturating_add(row_bytes);
+            pending.push((occurrence, asset, owner));
+            end += 1;
+        }
+
+        if pending.is_empty() {
+            offset = end;
+            continue;
+        }
+        let kinds = pending
+            .iter()
+            .map(|(_, _, owner)| owner.reference_kind())
+            .collect::<Vec<_>>();
+        let relationships = register_bulk(connection, snapshot, &kinds)?;
+        let mut merge_batch = InsertBatch::new();
+        for ((occurrence, asset, owner), relationship) in pending.iter().zip(&relationships) {
+            let literal = asset.merge.as_deref().ok_or_else(|| {
+                crate::Error::DatabaseSchema(
+                    "bulk merge owner is missing its declared merge literal".into(),
+                )
+            })?;
+            match owner {
+                MergeOwner::Mame(MergeMediaKind::Rom) => {
+                    cached_sql("INSERT INTO mame_rom_merges(occurrence_id,relationship_id,merge_name,source_line,source_column) VALUES (?,?,?,?,?)")
+                        .bind::<BigInt, _>(occurrence.database_value())
+                        .bind::<BigInt, _>(relationship.database_value())
+                        .bind::<Text, _>(literal)
+                        .bind::<BigInt, _>(asset.location.line)
+                        .bind::<BigInt, _>(asset.location.column)
+                        .enqueue(&mut merge_batch, connection, InsertPhase::Children)?;
+                }
+                MergeOwner::Mame(MergeMediaKind::Disk) => {
+                    cached_sql("INSERT INTO mame_disk_merges(occurrence_id,relationship_id,merge_name,source_line,source_column) VALUES (?,?,?,?,?)")
+                        .bind::<BigInt, _>(occurrence.database_value())
+                        .bind::<BigInt, _>(relationship.database_value())
+                        .bind::<Text, _>(literal)
+                        .bind::<BigInt, _>(asset.location.line)
+                        .bind::<BigInt, _>(asset.location.column)
+                        .enqueue(&mut merge_batch, connection, InsertPhase::Children)?;
+                }
+                MergeOwner::Logiqx(_) => {
+                    let claim_kind = owner.claim_kind().ok_or_else(|| {
+                        crate::Error::DatabaseSchema("XML merge requires a claim kind".into())
+                    })?;
+                    cached_sql("INSERT INTO logiqx_file_merges(occurrence_id,relationship_id,merge_name,claim_kind) VALUES (?,?,?,?)")
+                        .bind::<BigInt, _>(occurrence.database_value())
+                        .bind::<BigInt, _>(relationship.database_value())
+                        .bind::<Text, _>(literal)
+                        .bind::<Text, _>(claim_kind)
+                        .enqueue(&mut merge_batch, connection, InsertPhase::Children)?;
+                }
+                MergeOwner::ClrMamePro => {
+                    cached_sql("INSERT INTO clrmamepro_rom_merges(occurrence_id,relationship_id,merge_name) VALUES (?,?,?)")
+                        .bind::<BigInt, _>(occurrence.database_value())
+                        .bind::<BigInt, _>(relationship.database_value())
+                        .bind::<Text, _>(literal)
+                        .enqueue(&mut merge_batch, connection, InsertPhase::Children)?;
+                }
+            }
+        }
+        merge_batch.flush(connection)?;
+        offset = end;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod prepared_statement_tests {
     use std::sync::{
@@ -539,6 +743,166 @@ mod prepared_statement_tests {
 
         assert_ne!(first.database_value(), second.database_value());
         assert_eq!(cached_queries.load(Ordering::Relaxed), 2);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod bulk_merge_tests {
+    use std::{
+        fmt::Write as _,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+    };
+
+    use diesel::{
+        Connection, RunQueryDsl, SqliteConnection,
+        connection::{InstrumentationEvent, SimpleConnection},
+        sql_query,
+        sql_types::BigInt,
+    };
+
+    use super::{insert_asset_merge, insert_asset_merges_bulk};
+    use crate::{
+        domain::{OccurrenceId, SnapshotKey},
+        storage::catalog_import::{SnapshotAsset, machine_contents},
+    };
+
+    #[derive(diesel::QueryableByName)]
+    struct MergeCounts {
+        #[diesel(sql_type = BigInt)]
+        merges: i64,
+        #[diesel(sql_type = BigInt)]
+        reported: i64,
+        #[diesel(sql_type = BigInt)]
+        mapped: i64,
+    }
+
+    #[derive(diesel::QueryableByName)]
+    struct TextValue {
+        #[diesel(sql_type = diesel::sql_types::Text)]
+        value: String,
+    }
+
+    #[expect(
+        clippy::expect_used,
+        reason = "in-memory SQLite fixture creation must fail loudly"
+    )]
+    fn connection_with_insert_counter() -> crate::Result<(SqliteConnection, Arc<AtomicUsize>)> {
+        let mut connection =
+            SqliteConnection::establish(":memory:").expect("open in-memory SQLite test database");
+        connection.batch_execute(
+            "CREATE TABLE catalog_relationships(relationship_id INTEGER PRIMARY KEY AUTOINCREMENT, assertion_key TEXT, origin TEXT, snapshot_key TEXT);
+             CREATE TABLE reported_catalog_relationships(relationship_id INTEGER PRIMARY KEY, source_reference_kind TEXT);
+             CREATE TABLE mame_rom_merges(occurrence_id INTEGER PRIMARY KEY, relationship_id INTEGER UNIQUE, merge_name TEXT, source_line INTEGER, source_column INTEGER);",
+        )?;
+        let statements = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&statements);
+        connection.set_instrumentation(move |event: InstrumentationEvent<'_>| {
+            if let InstrumentationEvent::StartQuery { query, .. } = event {
+                let sql = query.to_string();
+                if sql.starts_with("INSERT INTO catalog_relationships")
+                    || sql.starts_with("INSERT INTO reported_catalog_relationships")
+                    || sql.starts_with("INSERT INTO mame_rom_merges")
+                {
+                    observed.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        });
+        Ok((connection, statements))
+    }
+
+    fn assets() -> crate::Result<Vec<SnapshotAsset>> {
+        let mut xml = String::from(
+            r#"<mame mameconfig="10"><machine name="test"><description>Test</description>"#,
+        );
+        for index in 0..130 {
+            write!(
+                xml,
+                "<rom name=\"asset-{index}\" size=\"1\" crc=\"00000000\" merge=\"{}\"/>",
+                if index == 129 {
+                    String::new()
+                } else {
+                    format!("parent-{index}")
+                }
+            )
+            .expect("writing XML to a String succeeds");
+        }
+        xml.push_str("</machine></mame>");
+        let catalog = crate::mame::MameCatalog::parse(xml.as_bytes())?;
+        let machine = catalog
+            .machines
+            .into_iter()
+            .next()
+            .ok_or_else(|| crate::Error::DatabaseSchema("missing MAME test machine".into()))?;
+        Ok(machine_contents(machine).assets)
+    }
+
+    #[test]
+    fn asset_merge_bulk_matches_legacy_rows_and_reduces_insert_statements() -> crate::Result<()> {
+        let assets = assets()?;
+        let occurrences = assets
+            .iter()
+            .enumerate()
+            .map(|(index, asset)| {
+                Ok((
+                    OccurrenceId::try_from(
+                        i64::try_from(index).expect("asset index fits in i64") + 1,
+                    )?,
+                    asset,
+                ))
+            })
+            .collect::<crate::Result<Vec<_>>>()?;
+        let snapshot = SnapshotKey::from_persisted("merge-snapshot".into());
+
+        let (mut bulk_connection, bulk_statements) = connection_with_insert_counter()?;
+        insert_asset_merges_bulk(&mut bulk_connection, &snapshot, &occurrences)?;
+        let bulk_counts = sql_query(
+            "SELECT (SELECT count(*) FROM mame_rom_merges) AS merges,
+                    (SELECT count(*) FROM reported_catalog_relationships) AS reported,
+                    (SELECT count(*) FROM mame_rom_merges AS native
+                     JOIN reported_catalog_relationships AS reported USING(relationship_id)
+                     WHERE reported.source_reference_kind='mame_rom_merge') AS mapped",
+        )
+        .get_result::<MergeCounts>(&mut bulk_connection)?;
+        assert_eq!(
+            (bulk_counts.merges, bulk_counts.reported, bulk_counts.mapped),
+            (130, 130, 130)
+        );
+        let empty_merge =
+            sql_query("SELECT merge_name AS value FROM mame_rom_merges WHERE occurrence_id=130")
+                .get_result::<TextValue>(&mut bulk_connection)?;
+        assert_eq!(empty_merge.value, "");
+        let bulk_statement_count = bulk_statements.load(Ordering::Relaxed);
+
+        let (mut legacy_connection, legacy_statements) = connection_with_insert_counter()?;
+        for (occurrence, asset) in &occurrences {
+            insert_asset_merge(&mut legacy_connection, &snapshot, *occurrence, asset)?;
+        }
+        let legacy_counts = sql_query(
+            "SELECT (SELECT count(*) FROM mame_rom_merges) AS merges,
+                    (SELECT count(*) FROM reported_catalog_relationships) AS reported,
+                    (SELECT count(*) FROM mame_rom_merges AS native
+                     JOIN reported_catalog_relationships AS reported USING(relationship_id)
+                     WHERE reported.source_reference_kind='mame_rom_merge') AS mapped",
+        )
+        .get_result::<MergeCounts>(&mut legacy_connection)?;
+        assert_eq!(
+            (
+                legacy_counts.merges,
+                legacy_counts.reported,
+                legacy_counts.mapped
+            ),
+            (bulk_counts.merges, bulk_counts.reported, bulk_counts.mapped)
+        );
+
+        let legacy_statement_count = legacy_statements.load(Ordering::Relaxed);
+        assert_eq!(legacy_statement_count, 130 * 3);
+        assert!(bulk_statement_count <= 9);
+        assert!(bulk_statement_count < legacy_statement_count);
         Ok(())
     }
 }
