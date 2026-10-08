@@ -60,7 +60,7 @@ The five ROM attribute-position codes are `name,size,crc,md5,sha1`. Name and siz
 
 ### 274 observed database exports
 
-The DOC-14/DOC-20 observed ledger accounts for 135 literal fields: 129 archive/details/serial/file attributes plus game `name` and five repeated-capable header text kinds. The separate family lists below total 129. A broader CSV inventory reports 137 fields; that CSV is not present in this candidate slice, and its two additional entries have not been identified or reconciled to owners/positions here. The 135-field DOC ledger is not proof of full 137-field CSV coverage; keep this gap open and do not claim the broader field inventory is complete:
+The DOC-14/DOC-20 observed ledger accounts for 135 literal fields: 129 archive/details/serial/file attributes plus game `name` and five repeated-capable header text kinds. The separate family lists below total 129. A follow-up Luna/sem audit confirmed the current parser's accepted-field allowlists match those groups: 5 header + 1 name + 32 archive + 17 release details + 6 release serial + 17 release file + 20 dump details + 14 dump serial + 23 dump file. The NFO aliases `nfo_crc32` and `nfocrc` are already among the 17 release-details fields; they do not explain the broader CSV's reported 137 count. That CSV was not found in the checkout or MAMEC attachments, so this remains a count-only evidence contradiction, not two identified missing fields or proof of 137-field coverage. Do not invent owners for unnamed fields; reconcile the exact versioned CSV when available:
 
 | Typed owner | Complete literal fields | Count |
 |---|---|---:|

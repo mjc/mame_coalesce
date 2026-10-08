@@ -14,6 +14,28 @@ Implementation sequence: [MAMEC-PLAN-3](https://lific.mjc.lol/MAMEC/plans/108).
 Current-to-target crosswalk: [MAMEC-DOC-20](https://lific.mjc.lol/MAMEC/pages/137).
 Candidate keys and remaining decisions:
 [MAMEC-DOC-21](https://lific.mjc.lol/MAMEC/pages/138).
+
+### Executable design candidate — 2026-10-08 UTC
+
+The isolated [candidate bundle](schema-candidate/README.md), recorded in
+[MAMEC-DOC-26](https://lific.mjc.lol/MAMEC/pages/144), now composes concrete shared
+and native SQL, closed owner/hash-position manifests, generated guards and
+in-memory witnesses. It enumerates 93 native kinds and 32 canonical media-hash
+slots. Assembly prepares all 30 views and checks FK targets; 20 integrated
+tests pass in 3.727 seconds, and all four native fixtures pass. Independent
+GPT-6.1 Sol medium review/fix/re-review loops are CLEAR for their bounded core
+and native scopes, including 52 native adversarial assertions.
+
+This is not production DDL or complete-schema approval. All-format field/count
+closure, exhaustive 22-kind relationship-position proof, qualified size evidence,
+software complete-first-run qualification, UUID eligibility, ordinary diagnostic
+containment and populated target performance proof remain unfinished. Dictionaries
+and collector diagrams must be reconciled with the complete artifact before
+full-design review and explicit approval. No production databases, external
+originals, corpora or profiling artifacts were changed or removed.
+
+### Prior crosswalk milestones
+
 The current crosswalk refinements map
 [Logiqx child/media keys](https://lific.mjc.lol/MAMEC/pages/94#exact-logiqx-childmedia-key-crosswalk-2026-10-08-utc)
 and [software area/media keys](https://lific.mjc.lol/MAMEC/pages/95#exact-software-areamedia-key-crosswalk-2026-10-08-utc).
