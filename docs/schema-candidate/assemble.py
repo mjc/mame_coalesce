@@ -262,7 +262,17 @@ def published_fact_guards(connection, manifest, *, tables=None):
 def immutable_dictionary_sql():
     tables = ('catalog_source_files', 'catalog_reading_rules', 'catalog_xml_repairs',
               'file_id_registries', 'shared_catalog_files', 'catalog_decoded_xml_views')
-    return [f"CREATE TRIGGER {identifier('candidate_dictionary_' + table + '_' + operation.lower())} BEFORE {operation} ON {identifier(table)} BEGIN SELECT RAISE(ABORT,'source/rules/issued identity facts are immutable'); END;" for table in tables for operation in ('UPDATE', 'DELETE')]
+    guards = [f"CREATE TRIGGER {identifier('candidate_dictionary_' + table + '_' + operation.lower())} BEFORE {operation} ON {identifier(table)} BEGIN SELECT RAISE(ABORT,'source/rules/issued identity facts are immutable'); END;" for table in tables for operation in ('UPDATE', 'DELETE')]
+    guards.extend([
+        'CREATE INDEX IF NOT EXISTS catalog_editions_by_rules ON catalog_editions(reading_rules_id);',
+        'CREATE INDEX IF NOT EXISTS catalog_imports_by_rules ON catalog_imports(reading_rules_id);',
+        """CREATE TRIGGER candidate_reading_policy_insert
+        BEFORE INSERT ON catalog_xml_repairs
+        WHEN EXISTS (SELECT 1 FROM catalog_editions WHERE reading_rules_id=NEW.reading_rules_id)
+          OR EXISTS (SELECT 1 FROM catalog_imports WHERE reading_rules_id=NEW.reading_rules_id)
+        BEGIN SELECT RAISE(ABORT,'reading policy is sealed at first use'); END;""",
+    ])
+    return guards
 
 
 def root_diagnostic_sql():
@@ -761,11 +771,11 @@ def assemble():
     source += '\n' + root_tables
     ordinary_views, ordinary_guards = diagnostic_links.sql(manifest)
     source += '\n' + ordinary_views
-    receipt_guards, receipt_problems = receipt_ancestry.sql()
     assertion_views = relationship_closure.sql(manifest)
     assertion_guards = relationship_closure.guards(manifest)
     with closing(sqlite3.connect(":memory:")) as connection:
         connection.executescript(source)
+        receipt_guards, receipt_problems = receipt_ancestry.sql(connection)
         extent_views = physical_extents.sql(connection,manifest)
         ownership, native_problems, native_guards = ownership_sql(connection, manifest)
         fk_guards, fk_problems = foreign_key_guards(connection, manifest)

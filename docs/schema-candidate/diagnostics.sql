@@ -89,13 +89,68 @@ AND (view.source_file_id IS NULL OR message.source_problem_end > view.byte_lengt
 UNION ALL
 SELECT 'message_highlight_mapping',message.message_id,message.edition_id
 FROM catalog_import_messages AS message
-WHERE message.source_problem_start IS NOT NULL AND message.excerpt_problem_start IS NOT NULL
-AND (message.excerpt_problem_start <> max(0,min(length(message.excerpt),message.source_problem_start-message.excerpt_source_start))
-    OR message.excerpt_problem_end <> max(0,min(length(message.excerpt),message.source_problem_end-message.excerpt_source_start)))
+WHERE message.source_problem_start IS NOT NULL AND message.excerpt_source_start IS NOT NULL
+AND (
+    (message.source_problem_start >= message.excerpt_source_start
+     AND message.source_problem_end - message.excerpt_source_start <= length(message.excerpt)
+     AND (message.excerpt_problem_start IS NOT message.source_problem_start-message.excerpt_source_start
+          OR message.excerpt_problem_end IS NOT message.source_problem_end-message.excerpt_source_start))
+    OR
+    ((message.source_problem_start < message.excerpt_source_start
+      OR message.source_problem_end-message.excerpt_source_start > length(message.excerpt))
+     AND (message.excerpt_problem_start IS NOT NULL OR message.excerpt_problem_end IS NOT NULL))
+)
+UNION ALL
+SELECT 'message_coordinate_views',message.message_id,message.edition_id
+FROM catalog_import_messages AS message
+WHERE message.source_view='retained_original_bytes'
+AND message.source_problem_start IS NOT NULL AND message.original_problem_start IS NOT NULL
+AND (message.source_problem_start IS NOT message.original_problem_start
+     OR message.source_problem_end IS NOT message.original_problem_end)
 UNION ALL
 SELECT 'external_evidence_is_incoming', evidence.message_id, message.edition_id
 FROM catalog_import_message_external_evidence AS evidence JOIN catalog_import_messages AS message USING (message_id)
 WHERE evidence.target_edition_id IS message.edition_id;
+
+CREATE TRIGGER candidate_message_coordinates_insert BEFORE INSERT ON catalog_import_messages
+WHEN (
+    NEW.source_problem_start IS NOT NULL AND NEW.excerpt_source_start IS NOT NULL AND (
+        (NEW.source_problem_start >= NEW.excerpt_source_start
+         AND NEW.source_problem_end-NEW.excerpt_source_start <= length(NEW.excerpt)
+         AND (NEW.excerpt_problem_start IS NOT NEW.source_problem_start-NEW.excerpt_source_start
+              OR NEW.excerpt_problem_end IS NOT NEW.source_problem_end-NEW.excerpt_source_start))
+        OR
+        ((NEW.source_problem_start < NEW.excerpt_source_start
+          OR NEW.source_problem_end-NEW.excerpt_source_start > length(NEW.excerpt))
+         AND (NEW.excerpt_problem_start IS NOT NULL OR NEW.excerpt_problem_end IS NOT NULL))
+    )
+) OR (
+    NEW.source_view='retained_original_bytes'
+    AND NEW.source_problem_start IS NOT NULL AND NEW.original_problem_start IS NOT NULL
+    AND (NEW.source_problem_start IS NOT NEW.original_problem_start
+         OR NEW.source_problem_end IS NOT NEW.original_problem_end)
+)
+BEGIN SELECT RAISE(ABORT,'diagnostic coordinates do not match their source views'); END;
+
+CREATE TRIGGER candidate_message_coordinates_update BEFORE UPDATE ON catalog_import_messages
+WHEN (
+    NEW.source_problem_start IS NOT NULL AND NEW.excerpt_source_start IS NOT NULL AND (
+        (NEW.source_problem_start >= NEW.excerpt_source_start
+         AND NEW.source_problem_end-NEW.excerpt_source_start <= length(NEW.excerpt)
+         AND (NEW.excerpt_problem_start IS NOT NEW.source_problem_start-NEW.excerpt_source_start
+              OR NEW.excerpt_problem_end IS NOT NEW.source_problem_end-NEW.excerpt_source_start))
+        OR
+        ((NEW.source_problem_start < NEW.excerpt_source_start
+          OR NEW.source_problem_end-NEW.excerpt_source_start > length(NEW.excerpt))
+         AND (NEW.excerpt_problem_start IS NOT NULL OR NEW.excerpt_problem_end IS NOT NULL))
+    )
+) OR (
+    NEW.source_view='retained_original_bytes'
+    AND NEW.source_problem_start IS NOT NULL AND NEW.original_problem_start IS NOT NULL
+    AND (NEW.source_problem_start IS NOT NEW.original_problem_start
+         OR NEW.source_problem_end IS NOT NEW.original_problem_end)
+)
+BEGIN SELECT RAISE(ABORT,'diagnostic coordinates do not match their source views'); END;
 
 CREATE TRIGGER candidate_message_ancestry_insert BEFORE INSERT ON catalog_import_messages
 WHEN NOT EXISTS (SELECT 1 FROM catalog_imports WHERE import_id=NEW.import_id AND edition_id IS NEW.edition_id)

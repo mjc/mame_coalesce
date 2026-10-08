@@ -123,7 +123,7 @@ class ReceiptAncestry(unittest.TestCase):
         db.execute('DROP TRIGGER candidate_receipt_reverse_ancestry_update')
         db.execute('DROP TRIGGER candidate_receipt_provenance_immutable_update')
         db.execute('UPDATE catalog_file_receipts SET source_file_id=2 WHERE file_receipt_id=1')
-        self.assertEqual(receipt_ancestry.sql()[1], [])
+        self.assertEqual(receipt_ancestry.sql(db)[1], [])
         self.assertEqual(db.execute(
             "SELECT problem,owner_id,edition_id FROM candidate_shared_integrity_problems "
             "WHERE problem='import_receipt_ancestry'").fetchall(), [('import_receipt_ancestry', 1, 1)])
