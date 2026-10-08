@@ -361,12 +361,12 @@ class AssembledWitnesses(unittest.TestCase):
         self.db.execute('ROLLBACK TO witness')
         self.db.execute('RELEASE witness')
 
-    def mame_root(self):
+    def mame_root(self, edition_id=1):
         self.db.execute("""INSERT INTO mame_documents
             (edition_id,debug,debug_specified,mameconfig,source_line,source_column,
              extent_view,extent_start,extent_end,location_view,start_line,start_column,end_line,end_column,column_convention)
-            VALUES(1,0,0,'',1,1,'retained_original_bytes',0,128,'transport_decoded_xml_text',1,1,2,1,'one_based_unicode_scalar')""")
-        self.db.execute("INSERT INTO mame_document_facts_attribute_positions VALUES(1,'mameconfig',0,0,1,7)")
+            VALUES(?,0,0,'',1,1,'retained_original_bytes',0,128,'transport_decoded_xml_text',1,1,2,1,'one_based_unicode_scalar')""", (edition_id,))
+        self.db.execute("INSERT INTO mame_document_facts_attribute_positions VALUES(?,'mameconfig',0,0,1,7)", (edition_id,))
 
     def test_every_view_prepares_and_all_foreign_key_targets_exist(self):
         for (view,) in self.db.execute("SELECT name FROM sqlite_schema WHERE type='view'").fetchall():
@@ -446,6 +446,72 @@ class AssembledWitnesses(unittest.TestCase):
             db.execute("INSERT INTO mame_document_facts_attribute_positions VALUES(1,'debug',0,1,1,20)")
         with self.assertRaises(sqlite3.IntegrityError):
             db.execute('UPDATE catalog_source_files SET byte_length=129')
+
+    def test_publication_rejects_missing_and_invented_native_field_positions(self):
+        db = self.db
+        self.mame_root()
+        mutations = (
+            "DELETE FROM mame_document_facts_attribute_positions WHERE field_kind='mameconfig'",
+            "UPDATE mame_documents SET build=''",
+            "INSERT INTO mame_document_facts_attribute_positions VALUES(1,'debug',0,1,1,20)",
+        )
+        for mutation in mutations:
+            with self.subTest(mutation=mutation):
+                db.execute('SAVEPOINT field_attack')
+                try:
+                    db.execute(mutation)
+                    with self.assertRaisesRegex(sqlite3.IntegrityError, 'complete closure'):
+                        db.execute("INSERT INTO published_catalog_editions VALUES(1,1,1,1,1,'published')")
+                finally:
+                    db.execute('ROLLBACK TO field_attack')
+                    db.execute('RELEASE field_attack')
+
+    def test_draft_presence_can_be_repaired_then_is_frozen_by_publication(self):
+        db = self.db
+        self.mame_root()
+        db.execute("UPDATE mame_documents SET build='' WHERE edition_id=1")
+        with self.assertRaisesRegex(sqlite3.IntegrityError, 'complete closure'):
+            db.execute("INSERT INTO published_catalog_editions VALUES(1,1,1,1,1,'published')")
+        db.execute("INSERT INTO mame_document_facts_attribute_positions VALUES(1,'build',0,1,1,21)")
+        db.execute("INSERT INTO published_catalog_editions VALUES(1,1,1,1,1,'published')")
+        for mutation in ("UPDATE mame_documents SET build=NULL WHERE edition_id=1",
+                         "DELETE FROM mame_document_facts_attribute_positions WHERE field_kind='build'"):
+            with self.subTest(mutation=mutation), self.assertRaisesRegex(sqlite3.IntegrityError, 'immutable'):
+                db.execute(mutation)
+
+    def test_bad_draft_in_another_edition_does_not_block_publication(self):
+        db = self.db
+        self.mame_root()
+        db.execute("INSERT INTO catalog_source_files VALUES(2,?,NULL,128,'other','zstd')", (b't' * 32,))
+        db.execute('INSERT INTO catalog_editions VALUES(2,1,2,1,1,NULL,NULL)')
+        self.mame_root(2)
+        db.execute("UPDATE mame_documents SET build='' WHERE edition_id=2")
+        self.assertEqual(db.execute('SELECT * FROM candidate_field_presence_problems').fetchall(),
+                         [('field_presence:mame_document_facts_attribute_positions:build',2,2)])
+        db.execute("INSERT INTO published_catalog_editions VALUES(1,1,1,1,1,'published')")
+        with self.assertRaisesRegex(sqlite3.IntegrityError, 'complete closure'):
+            db.execute("INSERT INTO published_catalog_editions VALUES(2,1,2,1,1,'published')")
+
+    def test_contradictory_native_ancestry_blocks_both_known_editions(self):
+        db = self.db
+        self.mame_root()
+        db.execute("INSERT INTO catalog_source_files VALUES(2,?,NULL,128,'other','zstd')", (b't' * 32,))
+        db.execute('INSERT INTO catalog_editions VALUES(2,1,2,1,1,NULL,NULL)')
+        self.mame_root(2)
+        db.execute("INSERT INTO catalog_set_groups VALUES(2,2,'root')")
+        db.execute("INSERT INTO catalog_source_elements VALUES(10,1,'mame_machine')")
+        db.execute("INSERT INTO catalog_sets VALUES(10,2,'machine',0,1,1)")
+        with self.assertRaisesRegex(sqlite3.IntegrityError, 'kind or ancestry'):
+            db.execute('INSERT INTO mame_machines VALUES(10,NULL,0,0,0,0,0,0,1,0)')
+        # Independently audit pre-existing corruption, without weakening the guard.
+        db.execute('DROP TRIGGER candidate_native_mame_machines_insert')
+        db.execute('INSERT INTO mame_machines VALUES(10,NULL,0,0,0,0,0,0,1,0)')
+        db.execute("INSERT INTO mame_machines_attribute_positions VALUES(10,'name',0,NULL,0,1,1)")
+        for edition in (2,1):
+            with self.subTest(edition=edition), self.assertRaisesRegex(sqlite3.IntegrityError, 'complete closure'):
+                db.execute("INSERT INTO published_catalog_editions VALUES(?,1,?,1,1,'published')", (edition,edition))
+        self.assertEqual(db.execute("SELECT owner_id,edition_id FROM candidate_integrity_problems WHERE problem='owner_ancestry:mame_machines' ORDER BY edition_id").fetchall(),
+                         [(10,1),(10,2)])
 
 
 def main():

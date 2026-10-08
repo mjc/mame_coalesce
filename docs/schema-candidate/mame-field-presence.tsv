@@ -1,0 +1,135 @@
+owner_table	owner_key	position_table	position_owner	field_code	present_sql
+mame_documents	edition_id	mame_document_facts_attribute_positions	edition_id	build	owner."build" IS NOT NULL
+mame_documents	edition_id	mame_document_facts_attribute_positions	edition_id	debug	owner."debug_specified"=1
+mame_documents	edition_id	mame_document_facts_attribute_positions	edition_id	mameconfig	owner."mameconfig" IS NOT NULL
+mame_machines	set_id	mame_machines_attribute_positions	set_id	name	EXISTS(SELECT 1 FROM catalog_sets AS value WHERE value."set_id"=owner."set_id" AND value."set_name" IS NOT NULL)
+mame_machines	set_id	mame_machines_attribute_positions	set_id	sourcefile	owner."sourcefile" IS NOT NULL
+mame_machines	set_id	mame_machines_attribute_positions	set_id	isbios	owner."isbios_specified"=1
+mame_machines	set_id	mame_machines_attribute_positions	set_id	isdevice	owner."isdevice_specified"=1
+mame_machines	set_id	mame_machines_attribute_positions	set_id	ismechanical	owner."ismechanical_specified"=1
+mame_machines	set_id	mame_machines_attribute_positions	set_id	runnable	owner."runnable_specified"=1
+mame_machines	set_id	mame_machines_attribute_positions	set_id	cloneof	EXISTS(SELECT 1 FROM mame_machine_links AS value WHERE value.machine_id=owner."set_id" AND value.link_kind='cloneof')
+mame_machines	set_id	mame_machines_attribute_positions	set_id	romof	EXISTS(SELECT 1 FROM mame_machine_links AS value WHERE value.machine_id=owner."set_id" AND value.link_kind='romof')
+mame_machines	set_id	mame_machines_attribute_positions	set_id	sampleof	EXISTS(SELECT 1 FROM mame_machine_links AS value WHERE value.machine_id=owner."set_id" AND value.link_kind='sampleof')
+mame_bios_sets	source_element_id	mame_bios_sets_attribute_positions	source_element_id	name	owner."name" IS NOT NULL
+mame_bios_sets	source_element_id	mame_bios_sets_attribute_positions	source_element_id	description	owner."description" IS NOT NULL
+mame_bios_sets	source_element_id	mame_bios_sets_attribute_positions	source_element_id	default	owner."default_specified"=1
+mame_roms	media_entry_id	mame_rom_claims_attribute_positions	media_entry_id	name	owner."name" IS NOT NULL
+mame_roms	media_entry_id	mame_rom_claims_attribute_positions	media_entry_id	bios	owner."bios" IS NOT NULL
+mame_roms	media_entry_id	mame_rom_claims_attribute_positions	media_entry_id	size	owner."size_text" IS NOT NULL
+mame_roms	media_entry_id	mame_rom_claims_attribute_positions	media_entry_id	crc	EXISTS(SELECT 1 FROM catalog_entry_hashes AS value WHERE value.media_entry_id=owner."media_entry_id" AND value.source_hash_field='crc' AND value.field_occurrence=0)
+mame_roms	media_entry_id	mame_rom_claims_attribute_positions	media_entry_id	sha1	EXISTS(SELECT 1 FROM catalog_entry_hashes AS value WHERE value.media_entry_id=owner."media_entry_id" AND value.source_hash_field='sha1' AND value.field_occurrence=0)
+mame_roms	media_entry_id	mame_rom_claims_attribute_positions	media_entry_id	merge	EXISTS(SELECT 1 FROM mame_rom_merges AS value WHERE value."media_entry_id"=owner."media_entry_id" AND value."merge_name" IS NOT NULL)
+mame_roms	media_entry_id	mame_rom_claims_attribute_positions	media_entry_id	region	owner."region" IS NOT NULL
+mame_roms	media_entry_id	mame_rom_claims_attribute_positions	media_entry_id	offset	owner."offset" IS NOT NULL
+mame_roms	media_entry_id	mame_rom_claims_attribute_positions	media_entry_id	status	owner."status_specified"=1
+mame_roms	media_entry_id	mame_rom_claims_attribute_positions	media_entry_id	optional	owner."optional_specified"=1
+mame_disks	media_entry_id	mame_disk_claims_attribute_positions	media_entry_id	name	owner."name" IS NOT NULL
+mame_disks	media_entry_id	mame_disk_claims_attribute_positions	media_entry_id	sha1	EXISTS(SELECT 1 FROM catalog_entry_hashes AS value WHERE value.media_entry_id=owner."media_entry_id" AND value.source_hash_field='sha1' AND value.field_occurrence=0)
+mame_disks	media_entry_id	mame_disk_claims_attribute_positions	media_entry_id	merge	EXISTS(SELECT 1 FROM mame_disk_merges AS value WHERE value."media_entry_id"=owner."media_entry_id" AND value."merge_name" IS NOT NULL)
+mame_disks	media_entry_id	mame_disk_claims_attribute_positions	media_entry_id	region	owner."region" IS NOT NULL
+mame_disks	media_entry_id	mame_disk_claims_attribute_positions	media_entry_id	index	owner."index" IS NOT NULL
+mame_disks	media_entry_id	mame_disk_claims_attribute_positions	media_entry_id	writable	owner."writable_specified"=1
+mame_disks	media_entry_id	mame_disk_claims_attribute_positions	media_entry_id	status	owner."status_specified"=1
+mame_disks	media_entry_id	mame_disk_claims_attribute_positions	media_entry_id	optional	owner."optional_specified"=1
+mame_device_references	source_element_id	mame_device_references_attribute_positions	source_element_id	tag	owner."tag" IS NOT NULL
+mame_device_references	source_element_id	mame_device_references_attribute_positions	source_element_id	name	owner."name" IS NOT NULL
+mame_samples	media_entry_id	mame_samples_attribute_positions	media_entry_id	name	owner."name" IS NOT NULL
+mame_chips	source_element_id	mame_machine_chips_attribute_positions	source_element_id	name	owner."name" IS NOT NULL
+mame_chips	source_element_id	mame_machine_chips_attribute_positions	source_element_id	tag	owner."tag" IS NOT NULL
+mame_chips	source_element_id	mame_machine_chips_attribute_positions	source_element_id	type	owner."type" IS NOT NULL
+mame_chips	source_element_id	mame_machine_chips_attribute_positions	source_element_id	clock	owner."clock" IS NOT NULL
+mame_displays	source_element_id	mame_machine_displays_attribute_positions	source_element_id	tag	owner."tag" IS NOT NULL
+mame_displays	source_element_id	mame_machine_displays_attribute_positions	source_element_id	type	owner."type" IS NOT NULL
+mame_displays	source_element_id	mame_machine_displays_attribute_positions	source_element_id	rotate	owner."rotate" IS NOT NULL
+mame_displays	source_element_id	mame_machine_displays_attribute_positions	source_element_id	flipx	owner."flipx_specified"=1
+mame_displays	source_element_id	mame_machine_displays_attribute_positions	source_element_id	width	owner."width" IS NOT NULL
+mame_displays	source_element_id	mame_machine_displays_attribute_positions	source_element_id	height	owner."height" IS NOT NULL
+mame_displays	source_element_id	mame_machine_displays_attribute_positions	source_element_id	refresh	owner."refresh" IS NOT NULL
+mame_displays	source_element_id	mame_machine_displays_attribute_positions	source_element_id	pixclock	owner."pixclock" IS NOT NULL
+mame_displays	source_element_id	mame_machine_displays_attribute_positions	source_element_id	htotal	owner."htotal" IS NOT NULL
+mame_displays	source_element_id	mame_machine_displays_attribute_positions	source_element_id	hbend	owner."hbend" IS NOT NULL
+mame_displays	source_element_id	mame_machine_displays_attribute_positions	source_element_id	hbstart	owner."hbstart" IS NOT NULL
+mame_displays	source_element_id	mame_machine_displays_attribute_positions	source_element_id	vtotal	owner."vtotal" IS NOT NULL
+mame_displays	source_element_id	mame_machine_displays_attribute_positions	source_element_id	vbend	owner."vbend" IS NOT NULL
+mame_displays	source_element_id	mame_machine_displays_attribute_positions	source_element_id	vbstart	owner."vbstart" IS NOT NULL
+mame_sound	source_element_id	mame_machine_sounds_attribute_positions	source_element_id	channels	owner."channels" IS NOT NULL
+mame_inputs	source_element_id	mame_machine_inputs_attribute_positions	source_element_id	service	owner."service_specified"=1
+mame_inputs	source_element_id	mame_machine_inputs_attribute_positions	source_element_id	tilt	owner."tilt_specified"=1
+mame_inputs	source_element_id	mame_machine_inputs_attribute_positions	source_element_id	players	owner."players" IS NOT NULL
+mame_inputs	source_element_id	mame_machine_inputs_attribute_positions	source_element_id	coins	owner."coins" IS NOT NULL
+mame_input_controls	source_element_id	mame_machine_input_controls_attribute_positions	source_element_id	type	owner."type" IS NOT NULL
+mame_input_controls	source_element_id	mame_machine_input_controls_attribute_positions	source_element_id	player	owner."player" IS NOT NULL
+mame_input_controls	source_element_id	mame_machine_input_controls_attribute_positions	source_element_id	buttons	owner."buttons" IS NOT NULL
+mame_input_controls	source_element_id	mame_machine_input_controls_attribute_positions	source_element_id	minimum	owner."minimum" IS NOT NULL
+mame_input_controls	source_element_id	mame_machine_input_controls_attribute_positions	source_element_id	maximum	owner."maximum" IS NOT NULL
+mame_input_controls	source_element_id	mame_machine_input_controls_attribute_positions	source_element_id	sensitivity	owner."sensitivity" IS NOT NULL
+mame_input_controls	source_element_id	mame_machine_input_controls_attribute_positions	source_element_id	keydelta	owner."keydelta" IS NOT NULL
+mame_input_controls	source_element_id	mame_machine_input_controls_attribute_positions	source_element_id	reverse	owner."reverse_specified"=1
+mame_input_controls	source_element_id	mame_machine_input_controls_attribute_positions	source_element_id	ways	owner."ways" IS NOT NULL
+mame_input_controls	source_element_id	mame_machine_input_controls_attribute_positions	source_element_id	ways2	owner."ways2" IS NOT NULL
+mame_input_controls	source_element_id	mame_machine_input_controls_attribute_positions	source_element_id	ways3	owner."ways3" IS NOT NULL
+mame_switches	source_element_id	machine_switches_attribute_positions	source_element_id	name	owner."name" IS NOT NULL
+mame_switches	source_element_id	machine_switches_attribute_positions	source_element_id	tag	owner."tag" IS NOT NULL
+mame_switches	source_element_id	machine_switches_attribute_positions	source_element_id	mask	owner."mask" IS NOT NULL
+mame_switch_locations	source_element_id	machine_switch_locations_attribute_positions	source_element_id	name	owner."name" IS NOT NULL
+mame_switch_locations	source_element_id	machine_switch_locations_attribute_positions	source_element_id	number	owner."number" IS NOT NULL
+mame_switch_locations	source_element_id	machine_switch_locations_attribute_positions	source_element_id	inverted	owner."inverted_specified"=1
+mame_switch_values	source_element_id	machine_switch_values_attribute_positions	source_element_id	name	owner."name" IS NOT NULL
+mame_switch_values	source_element_id	machine_switch_values_attribute_positions	source_element_id	value	owner."value" IS NOT NULL
+mame_switch_values	source_element_id	machine_switch_values_attribute_positions	source_element_id	default	owner."default_specified"=1
+mame_switch_conditions	source_element_id	machine_switch_conditions_attribute_positions	source_element_id	tag	owner."tag" IS NOT NULL
+mame_switch_conditions	source_element_id	machine_switch_conditions_attribute_positions	source_element_id	mask	owner."mask" IS NOT NULL
+mame_switch_conditions	source_element_id	machine_switch_conditions_attribute_positions	source_element_id	relation	owner."relation" IS NOT NULL
+mame_switch_conditions	source_element_id	machine_switch_conditions_attribute_positions	source_element_id	value	owner."value" IS NOT NULL
+mame_switch_value_conditions	source_element_id	machine_switch_value_conditions_attribute_positions	source_element_id	tag	owner."tag" IS NOT NULL
+mame_switch_value_conditions	source_element_id	machine_switch_value_conditions_attribute_positions	source_element_id	mask	owner."mask" IS NOT NULL
+mame_switch_value_conditions	source_element_id	machine_switch_value_conditions_attribute_positions	source_element_id	relation	owner."relation" IS NOT NULL
+mame_switch_value_conditions	source_element_id	machine_switch_value_conditions_attribute_positions	source_element_id	value	owner."value" IS NOT NULL
+mame_ports	source_element_id	mame_machine_ports_attribute_positions	source_element_id	tag	owner."tag" IS NOT NULL
+mame_analogs	source_element_id	mame_machine_analogs_attribute_positions	source_element_id	mask	owner."mask" IS NOT NULL
+mame_adjusters	source_element_id	mame_machine_adjusters_attribute_positions	source_element_id	name	owner."name" IS NOT NULL
+mame_adjusters	source_element_id	mame_machine_adjusters_attribute_positions	source_element_id	default	owner."default" IS NOT NULL
+mame_adjuster_conditions	source_element_id	mame_machine_adjuster_conditions_attribute_positions	source_element_id	tag	owner."tag" IS NOT NULL
+mame_adjuster_conditions	source_element_id	mame_machine_adjuster_conditions_attribute_positions	source_element_id	mask	owner."mask" IS NOT NULL
+mame_adjuster_conditions	source_element_id	mame_machine_adjuster_conditions_attribute_positions	source_element_id	relation	owner."relation" IS NOT NULL
+mame_adjuster_conditions	source_element_id	mame_machine_adjuster_conditions_attribute_positions	source_element_id	value	owner."value" IS NOT NULL
+mame_drivers	source_element_id	mame_machine_drivers_attribute_positions	source_element_id	status	owner."status" IS NOT NULL
+mame_drivers	source_element_id	mame_machine_drivers_attribute_positions	source_element_id	emulation	owner."emulation" IS NOT NULL
+mame_drivers	source_element_id	mame_machine_drivers_attribute_positions	source_element_id	cocktail	owner."cocktail" IS NOT NULL
+mame_drivers	source_element_id	mame_machine_drivers_attribute_positions	source_element_id	savestate	owner."savestate" IS NOT NULL
+mame_drivers	source_element_id	mame_machine_drivers_attribute_positions	source_element_id	requiresartwork	owner."requiresartwork_specified"=1
+mame_drivers	source_element_id	mame_machine_drivers_attribute_positions	source_element_id	unofficial	owner."unofficial_specified"=1
+mame_drivers	source_element_id	mame_machine_drivers_attribute_positions	source_element_id	nosoundhardware	owner."nosoundhardware_specified"=1
+mame_drivers	source_element_id	mame_machine_drivers_attribute_positions	source_element_id	incomplete	owner."incomplete_specified"=1
+mame_features	source_element_id	mame_machine_features_attribute_positions	source_element_id	type	owner."type" IS NOT NULL
+mame_features	source_element_id	mame_machine_features_attribute_positions	source_element_id	status	owner."status" IS NOT NULL
+mame_features	source_element_id	mame_machine_features_attribute_positions	source_element_id	overall	owner."overall" IS NOT NULL
+mame_devices	source_element_id	mame_machine_devices_attribute_positions	source_element_id	type	owner."type" IS NOT NULL
+mame_devices	source_element_id	mame_machine_devices_attribute_positions	source_element_id	tag	owner."tag" IS NOT NULL
+mame_devices	source_element_id	mame_machine_devices_attribute_positions	source_element_id	fixed_image	owner."fixed_image" IS NOT NULL
+mame_devices	source_element_id	mame_machine_devices_attribute_positions	source_element_id	mandatory	owner."mandatory" IS NOT NULL
+mame_devices	source_element_id	mame_machine_devices_attribute_positions	source_element_id	interface	owner."interface" IS NOT NULL
+mame_device_instances	source_element_id	mame_machine_device_instances_attribute_positions	source_element_id	name	owner."name" IS NOT NULL
+mame_device_instances	source_element_id	mame_machine_device_instances_attribute_positions	source_element_id	briefname	owner."briefname" IS NOT NULL
+mame_device_extensions	source_element_id	mame_machine_device_extensions_attribute_positions	source_element_id	name	owner."name" IS NOT NULL
+mame_slots	source_element_id	mame_machine_slots_attribute_positions	source_element_id	name	owner."name" IS NOT NULL
+mame_slot_options	source_element_id	mame_machine_slot_options_attribute_positions	source_element_id	name	owner."name" IS NOT NULL
+mame_slot_options	source_element_id	mame_machine_slot_options_attribute_positions	source_element_id	devname	owner."devname" IS NOT NULL
+mame_slot_options	source_element_id	mame_machine_slot_options_attribute_positions	source_element_id	default	owner."default_specified"=1
+mame_softwarelist_references	source_element_id	mame_machine_software_lists_attribute_positions	source_element_id	tag	owner."tag" IS NOT NULL
+mame_softwarelist_references	source_element_id	mame_machine_software_lists_attribute_positions	source_element_id	name	owner."name" IS NOT NULL
+mame_softwarelist_references	source_element_id	mame_machine_software_lists_attribute_positions	source_element_id	status	owner."status" IS NOT NULL
+mame_softwarelist_references	source_element_id	mame_machine_software_lists_attribute_positions	source_element_id	filter	owner."filter" IS NOT NULL
+mame_ram_options	source_element_id	mame_machine_ram_options_attribute_positions	source_element_id	name	owner."name" IS NOT NULL
+mame_ram_options	source_element_id	mame_machine_ram_options_attribute_positions	source_element_id	default	owner."default" IS NOT NULL
+mame_machines	set_id	mame_machine_compatibility_attribute_positions	set_id	isconsumable	EXISTS(SELECT 1 FROM mame_machine_compatibility AS value WHERE value."set_id"=owner."set_id" AND value."isconsumable" IS NOT NULL)
+mame_roms	media_entry_id	mame_rom_compatibility_attribute_positions	media_entry_id	md5	EXISTS(SELECT 1 FROM catalog_entry_hashes AS value WHERE value.media_entry_id=owner."media_entry_id" AND value.source_hash_field='md5' AND value.field_occurrence=0)
+mame_roms	media_entry_id	mame_rom_compatibility_attribute_positions	media_entry_id	soundonly	EXISTS(SELECT 1 FROM mame_rom_compatibility AS value WHERE value."media_entry_id"=owner."media_entry_id" AND value."soundonly" IS NOT NULL)
+mame_roms	media_entry_id	mame_rom_compatibility_attribute_positions	media_entry_id	dispose	EXISTS(SELECT 1 FROM mame_rom_compatibility AS value WHERE value."media_entry_id"=owner."media_entry_id" AND value."dispose" IS NOT NULL)
+mame_roms	media_entry_id	mame_rom_compatibility_attribute_positions	media_entry_id	loadflag	EXISTS(SELECT 1 FROM mame_rom_compatibility AS value WHERE value."media_entry_id"=owner."media_entry_id" AND value."loadflag" IS NOT NULL)
+mame_roms	media_entry_id	mame_rom_compatibility_attribute_positions	media_entry_id	value	EXISTS(SELECT 1 FROM mame_rom_compatibility AS value WHERE value."media_entry_id"=owner."media_entry_id" AND value."value" IS NOT NULL)
+mame_roms	media_entry_id	mame_rom_compatibility_attribute_positions	media_entry_id	inverted	EXISTS(SELECT 1 FROM mame_rom_compatibility AS value WHERE value."media_entry_id"=owner."media_entry_id" AND value."inverted" IS NOT NULL)
+mame_roms	media_entry_id	mame_rom_compatibility_attribute_positions	media_entry_id	ovha	EXISTS(SELECT 1 FROM mame_rom_compatibility AS value WHERE value."media_entry_id"=owner."media_entry_id" AND value."ovha" IS NOT NULL)
+mame_roms	media_entry_id	mame_rom_compatibility_attribute_positions	media_entry_id	nothread	EXISTS(SELECT 1 FROM mame_rom_compatibility AS value WHERE value."media_entry_id"=owner."media_entry_id" AND value."nothread" IS NOT NULL)
+mame_disks	media_entry_id	mame_disk_compatibility_attribute_positions	media_entry_id	writeable	EXISTS(SELECT 1 FROM mame_disk_compatibility AS value WHERE value."media_entry_id"=owner."media_entry_id" AND value."writeable" IS NOT NULL)

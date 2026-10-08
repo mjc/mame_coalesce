@@ -1,0 +1,86 @@
+owner_table	owner_key	position_table	position_owner	field_code	present_sql
+logiqx_documents	edition_id	logiqx_document_attribute_positions	edition_id	0	owner.build IS NOT NULL
+logiqx_documents	edition_id	logiqx_document_attribute_positions	edition_id	1	owner.debug_was_present=1
+logiqx_clrmamepro_options	source_element_id	logiqx_clrmamepro_option_positions	source_element_id	0	owner.header IS NOT NULL
+logiqx_clrmamepro_options	source_element_id	logiqx_clrmamepro_option_positions	source_element_id	1	owner.forcemerging_was_present=1
+logiqx_clrmamepro_options	source_element_id	logiqx_clrmamepro_option_positions	source_element_id	2	owner.forcenodump_was_present=1
+logiqx_clrmamepro_options	source_element_id	logiqx_clrmamepro_option_positions	source_element_id	3	owner.forcepacking_was_present=1
+logiqx_romcenter_options	source_element_id	logiqx_romcenter_option_positions	source_element_id	0	owner.plugin IS NOT NULL
+logiqx_romcenter_options	source_element_id	logiqx_romcenter_option_positions	source_element_id	1	owner.rommode_was_present=1
+logiqx_romcenter_options	source_element_id	logiqx_romcenter_option_positions	source_element_id	2	owner.biosmode_was_present=1
+logiqx_romcenter_options	source_element_id	logiqx_romcenter_option_positions	source_element_id	3	owner.samplemode_was_present=1
+logiqx_romcenter_options	source_element_id	logiqx_romcenter_option_positions	source_element_id	4	owner.lockrommode_was_present=1
+logiqx_romcenter_options	source_element_id	logiqx_romcenter_option_positions	source_element_id	5	owner.lockbiosmode_was_present=1
+logiqx_romcenter_options	source_element_id	logiqx_romcenter_option_positions	source_element_id	6	owner.locksamplemode_was_present=1
+logiqx_games	set_id	logiqx_game_attribute_positions	set_id	0	1
+logiqx_games	set_id	logiqx_game_attribute_positions	set_id	1	owner.sourcefile IS NOT NULL
+logiqx_games	set_id	logiqx_game_attribute_positions	set_id	2	owner.isbios_was_present=1
+logiqx_games	set_id	logiqx_game_attribute_positions	set_id	3	EXISTS (SELECT 1 FROM logiqx_set_links AS facet WHERE facet.set_id=owner.set_id AND facet.link_kind='cloneof')
+logiqx_games	set_id	logiqx_game_attribute_positions	set_id	4	EXISTS (SELECT 1 FROM logiqx_set_links AS facet WHERE facet.set_id=owner.set_id AND facet.link_kind='romof')
+logiqx_games	set_id	logiqx_game_attribute_positions	set_id	5	EXISTS (SELECT 1 FROM logiqx_set_links AS facet WHERE facet.set_id=owner.set_id AND facet.link_kind='sampleof')
+logiqx_games	set_id	logiqx_game_attribute_positions	set_id	6	owner.board IS NOT NULL
+logiqx_games	set_id	logiqx_game_attribute_positions	set_id	7	owner.rebuildto IS NOT NULL
+logiqx_releases	source_element_id	logiqx_release_attribute_positions	source_element_id	0	1
+logiqx_releases	source_element_id	logiqx_release_attribute_positions	source_element_id	1	1
+logiqx_releases	source_element_id	logiqx_release_attribute_positions	source_element_id	2	owner.language IS NOT NULL
+logiqx_releases	source_element_id	logiqx_release_attribute_positions	source_element_id	3	owner.date IS NOT NULL
+logiqx_releases	source_element_id	logiqx_release_attribute_positions	source_element_id	4	owner.default_was_present=1
+logiqx_bios_sets	source_element_id	logiqx_bios_attribute_positions	source_element_id	0	1
+logiqx_bios_sets	source_element_id	logiqx_bios_attribute_positions	source_element_id	1	1
+logiqx_bios_sets	source_element_id	logiqx_bios_attribute_positions	source_element_id	2	owner.default_was_present=1
+logiqx_roms	media_entry_id	logiqx_rom_attribute_positions	media_entry_id	0	1
+logiqx_roms	media_entry_id	logiqx_rom_attribute_positions	media_entry_id	1	owner.size_text IS NOT NULL
+logiqx_roms	media_entry_id	logiqx_rom_attribute_positions	media_entry_id	2	EXISTS (SELECT 1 FROM catalog_entry_hashes AS hash WHERE hash.media_entry_id=owner.media_entry_id AND hash.source_hash_field='crc' AND hash.field_occurrence=0)
+logiqx_roms	media_entry_id	logiqx_rom_attribute_positions	media_entry_id	3	EXISTS (SELECT 1 FROM catalog_entry_hashes AS hash WHERE hash.media_entry_id=owner.media_entry_id AND hash.source_hash_field='sha1' AND hash.field_occurrence=0)
+logiqx_roms	media_entry_id	logiqx_rom_attribute_positions	media_entry_id	4	EXISTS (SELECT 1 FROM catalog_entry_hashes AS hash WHERE hash.media_entry_id=owner.media_entry_id AND hash.source_hash_field='md5' AND hash.field_occurrence=0)
+logiqx_roms	media_entry_id	logiqx_rom_attribute_positions	media_entry_id	5	EXISTS (SELECT 1 FROM logiqx_rom_merges AS facet WHERE facet.media_entry_id=owner.media_entry_id)
+logiqx_roms	media_entry_id	logiqx_rom_attribute_positions	media_entry_id	6	owner.status_specified=1
+logiqx_roms	media_entry_id	logiqx_rom_attribute_positions	media_entry_id	7	owner.date IS NOT NULL
+logiqx_roms	media_entry_id	logiqx_rom_attribute_positions	media_entry_id	8	EXISTS (SELECT 1 FROM logiqx_rom_compatibility AS facet WHERE facet.media_entry_id=owner.media_entry_id)
+logiqx_disks	media_entry_id	logiqx_disk_attribute_positions	media_entry_id	0	1
+logiqx_disks	media_entry_id	logiqx_disk_attribute_positions	media_entry_id	1	EXISTS (SELECT 1 FROM catalog_entry_hashes AS hash WHERE hash.media_entry_id=owner.media_entry_id AND hash.source_hash_field='sha1' AND hash.field_occurrence=0)
+logiqx_disks	media_entry_id	logiqx_disk_attribute_positions	media_entry_id	2	EXISTS (SELECT 1 FROM catalog_entry_hashes AS hash WHERE hash.media_entry_id=owner.media_entry_id AND hash.source_hash_field='md5' AND hash.field_occurrence=0)
+logiqx_disks	media_entry_id	logiqx_disk_attribute_positions	media_entry_id	3	EXISTS (SELECT 1 FROM logiqx_disk_merges AS facet WHERE facet.media_entry_id=owner.media_entry_id)
+logiqx_disks	media_entry_id	logiqx_disk_attribute_positions	media_entry_id	4	owner.status_specified=1
+logiqx_samples	media_entry_id	logiqx_sample_attribute_positions	media_entry_id	0	1
+logiqx_archive_references	source_element_id	logiqx_archive_attribute_positions	source_element_id	0	1
+logiqx_device_references	source_element_id	logiqx_device_reference_attribute_positions	source_element_id	0	1
+clrmamepro_headers	header_id	clrmamepro_header_field_positions	header_id	0	owner.name IS NOT NULL
+clrmamepro_headers	header_id	clrmamepro_header_field_positions	header_id	1	owner.description IS NOT NULL
+clrmamepro_headers	header_id	clrmamepro_header_field_positions	header_id	2	owner.version IS NOT NULL
+clrmamepro_headers	header_id	clrmamepro_header_field_positions	header_id	3	owner.date IS NOT NULL
+clrmamepro_headers	header_id	clrmamepro_header_field_positions	header_id	4	owner.author IS NOT NULL
+clrmamepro_headers	header_id	clrmamepro_header_field_positions	header_id	5	owner.email IS NOT NULL
+clrmamepro_headers	header_id	clrmamepro_header_field_positions	header_id	6	owner.homepage IS NOT NULL
+clrmamepro_headers	header_id	clrmamepro_header_field_positions	header_id	7	owner.url IS NOT NULL
+clrmamepro_headers	header_id	clrmamepro_header_field_positions	header_id	8	owner.comment IS NOT NULL
+clrmamepro_headers	header_id	clrmamepro_header_field_positions	header_id	9	owner.category IS NOT NULL
+clrmamepro_headers	header_id	clrmamepro_header_field_positions	header_id	10	EXISTS (SELECT 1 FROM clrmamepro_header_options AS facet WHERE facet.header_id=owner.header_id AND facet.header_definition IS NOT NULL)
+clrmamepro_headers	header_id	clrmamepro_header_field_positions	header_id	11	EXISTS (SELECT 1 FROM clrmamepro_header_options AS facet WHERE facet.header_id=owner.header_id AND facet.forcemerging IS NOT NULL)
+clrmamepro_headers	header_id	clrmamepro_header_field_positions	header_id	12	EXISTS (SELECT 1 FROM clrmamepro_header_options AS facet WHERE facet.header_id=owner.header_id AND facet.forcezipping IS NOT NULL)
+clrmamepro_headers	header_id	clrmamepro_header_field_positions	header_id	13	EXISTS (SELECT 1 FROM clrmamepro_header_options AS facet WHERE facet.header_id=owner.header_id AND facet.forcepacking IS NOT NULL)
+clrmamepro_headers	header_id	clrmamepro_header_field_positions	header_id	14	EXISTS (SELECT 1 FROM clrmamepro_header_options AS facet WHERE facet.header_id=owner.header_id AND facet.forcenodump IS NOT NULL)
+clrmamepro_sets	set_id	clrmamepro_set_field_positions	set_id	0	1
+clrmamepro_sets	set_id	clrmamepro_set_field_positions	set_id	1	EXISTS (SELECT 1 FROM clrmamepro_set_links AS facet WHERE facet.set_id=owner.set_id AND facet.link_kind='cloneof')
+clrmamepro_sets	set_id	clrmamepro_set_field_positions	set_id	2	owner.description IS NOT NULL
+clrmamepro_sets	set_id	clrmamepro_set_field_positions	set_id	3	owner.year IS NOT NULL
+clrmamepro_sets	set_id	clrmamepro_set_field_positions	set_id	4	owner.manufacturer IS NOT NULL
+clrmamepro_sets	set_id	clrmamepro_set_field_positions	set_id	5	owner.rebuildto IS NOT NULL
+clrmamepro_sets	set_id	clrmamepro_set_field_positions	set_id	6	EXISTS (SELECT 1 FROM clrmamepro_set_links AS facet WHERE facet.set_id=owner.set_id AND facet.link_kind='sampleof')
+clrmamepro_sets	set_id	clrmamepro_set_field_positions	set_id	7	owner.region IS NOT NULL
+clrmamepro_sets	set_id	clrmamepro_set_field_positions	set_id	8	owner.releaseyear IS NOT NULL
+clrmamepro_sets	set_id	clrmamepro_set_field_positions	set_id	9	owner.releasemonth IS NOT NULL
+clrmamepro_sets	set_id	clrmamepro_set_field_positions	set_id	10	owner.releaseday IS NOT NULL
+clrmamepro_sets	set_id	clrmamepro_set_field_positions	set_id	11	owner.serial IS NOT NULL
+clrmamepro_roms	media_entry_id	clrmamepro_rom_field_positions	media_entry_id	0	1
+clrmamepro_roms	media_entry_id	clrmamepro_rom_field_positions	media_entry_id	1	owner.size_text IS NOT NULL
+clrmamepro_roms	media_entry_id	clrmamepro_rom_field_positions	media_entry_id	2	EXISTS (SELECT 1 FROM catalog_entry_hashes AS hash WHERE hash.media_entry_id=owner.media_entry_id AND hash.source_hash_field='crc' AND hash.field_occurrence=0)
+clrmamepro_roms	media_entry_id	clrmamepro_rom_field_positions	media_entry_id	3	EXISTS (SELECT 1 FROM catalog_entry_hashes AS hash WHERE hash.media_entry_id=owner.media_entry_id AND hash.source_hash_field='crc32' AND hash.field_occurrence=0)
+clrmamepro_roms	media_entry_id	clrmamepro_rom_field_positions	media_entry_id	4	EXISTS (SELECT 1 FROM catalog_entry_hashes AS hash WHERE hash.media_entry_id=owner.media_entry_id AND hash.source_hash_field='md5' AND hash.field_occurrence=0)
+clrmamepro_roms	media_entry_id	clrmamepro_rom_field_positions	media_entry_id	5	EXISTS (SELECT 1 FROM catalog_entry_hashes AS hash WHERE hash.media_entry_id=owner.media_entry_id AND hash.source_hash_field='sha1' AND hash.field_occurrence=0)
+clrmamepro_roms	media_entry_id	clrmamepro_rom_field_positions	media_entry_id	6	EXISTS (SELECT 1 FROM clrmamepro_rom_merges AS facet WHERE facet.media_entry_id=owner.media_entry_id)
+clrmamepro_roms	media_entry_id	clrmamepro_rom_field_positions	media_entry_id	7	EXISTS (SELECT 1 FROM clrmamepro_rom_details AS facet WHERE facet.media_entry_id=owner.media_entry_id AND facet.date IS NOT NULL)
+clrmamepro_roms	media_entry_id	clrmamepro_rom_field_positions	media_entry_id	8	EXISTS (SELECT 1 FROM clrmamepro_rom_details AS facet WHERE facet.media_entry_id=owner.media_entry_id AND facet.serial IS NOT NULL)
+clrmamepro_roms	media_entry_id	clrmamepro_rom_field_positions	media_entry_id	9	EXISTS (SELECT 1 FROM clrmamepro_rom_details AS facet WHERE facet.media_entry_id=owner.media_entry_id AND facet.status_text IS NOT NULL)
+clrmamepro_roms	media_entry_id	clrmamepro_rom_field_positions	media_entry_id	10	EXISTS (SELECT 1 FROM clrmamepro_rom_field_positions AS flag WHERE flag.media_entry_id=owner.media_entry_id AND flag.field_kind=10 AND flag.field_occurrence=0)
+clrmamepro_roms	media_entry_id	clrmamepro_rom_field_positions	media_entry_id	11	EXISTS (SELECT 1 FROM clrmamepro_rom_field_positions AS flag WHERE flag.media_entry_id=owner.media_entry_id AND flag.field_kind=11 AND flag.field_occurrence=0)

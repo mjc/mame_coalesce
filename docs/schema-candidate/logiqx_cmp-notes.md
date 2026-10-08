@@ -3,8 +3,11 @@
 This is a design artifact, not production schema or approval. The native
 fragment is [logiqx_cmp.sql](/home/mjc/projects/mame_coalesce/docs/schema-candidate/logiqx_cmp.sql).
 It depends on `shared.sql` and `relationships.sql`; the parent assembler adds
-cross-family owner, same-edition, field-presence, mixed-order, closure and
-publication checks from [logiqx_cmp-owners.tsv](/home/mjc/projects/mame_coalesce/docs/schema-candidate/logiqx_cmp-owners.tsv).
+cross-family owner, same-edition, mixed-order, closure and publication checks
+using [logiqx_cmp-owners.tsv](/home/mjc/projects/mame_coalesce/docs/schema-candidate/logiqx_cmp-owners.tsv).
+The installed shared field/value-position audit consumes the separate
+[logiqx_cmp-field-presence.tsv](/home/mjc/projects/mame_coalesce/docs/schema-candidate/logiqx_cmp-field-presence.tsv)
+and participates in the actual candidate integrity/publication gate.
 
 Policy is taken from MAMEC-DOC-11 seq 38144 and MAMEC-DOC-21 seq 38132.
 DOC-11's exact Logiqx owner/state/code ledgers, accepted root-field contract,
@@ -90,9 +93,11 @@ defaulted option-presence bits and `isbios_was_present`/`status_specified` are
 retained; presence for nullable header/plugin text derives from NULL versus
 text. Compatible ROM serial is sparse in `logiqx_rom_compatibility`. Supplied
 ROM size remains exact text even when empty, nonnumeric or out of range; its
-virtual numeric projection is nullable. Strict DTD mode requires size. Hash
-presence/scope/value consistency, DTD-mode-specific required children and
-accepted hash interpretation need edition-aware closure checks.
+virtual numeric projection is nullable. Strict DTD mode requires size.
+Native hash-declaration/position presence is now checked by the shared
+generated audit. Hash scope/interpretation and DTD-mode-specific required
+text children are separate from this presence manifest; existing family
+cardinality/state audits remain enabled.
 
 CMP preserves document form order, header field order, set-item order across
 field pairs/ROMs/samples, and ROM field/flag order. One field pair consumes one
@@ -137,10 +142,11 @@ from a root opening point. CMP needs the full decoded-document extent,
 including annotations, plus end coordinates; current comment/owner records do
 not establish those document boundaries. Ordinary child owners retain their
 opening locations only. Those points cannot establish full child containment.
-Edition-aware rules-family checks, mandatory-field/presence closure, registry
-kind/edition/one-owner checks, cross-table mixed-order and coordinate
-collisions, hash/relationship agreement, and count-seal validation belong to
-the assembled harness/finalizer.
+The assembled harness already supplies edition/rules-family, registry
+kind/edition/one-owner, mixed-order, coordinate and hash/relationship checks,
+and now the shared field/value-position audit. Those executable candidate
+checks do not establish real parser capture or independent source count
+seals. Complete child-extent containment cannot follow from opening points.
 
 The registry manifest intentionally marks `logiqx_games` and
 `clrmamepro_sets` with `sequence=-`: their order is stored once on the common
@@ -362,13 +368,16 @@ repository's application tests remain separate from this artifact.
 ## Known gaps
 
 The field ledger enumerates the pinned accepted-field contract; it is not
-blanket all-field approval or complete parser-to-target proof. In particular, fresh
-raw root-order capture, actual document/root extents, CMP keyword-coordinate
-capture, hash/relationship/presence/count publication enforcement, source-free
-hydration, and populated target query plans remain open. DTD strict versus
-compatible root/content rules and source-text/hash-scope projections need
-edition-aware validation. No authentic TOSEC grammar or whole-file digest
-semantics are inferred. PLAN-3 design approval remains open.
+blanket all-field approval or complete parser-to-target proof. General
+field/value-position presence is installed in the actual candidate
+integrity/publication gate; it is no longer an installation gap. Real raw
+root-order capture, actual root/document extents, CMP keyword-coordinate
+capture, independent source count seals, production source-free hydration
+and representative corpus-scale target query plans remain open. Full parser
+proof of strict versus compatible root/content rules and source-text/hash
+scope semantics is not established by these SQL tests. No authentic TOSEC
+grammar or whole-file digest semantics are inferred. PLAN-3 design approval
+remains open.
 
 The all-code fixture proves constructed native storage/positions, not that
 the real parser captured all supplied optional fields. Erasing an optional
@@ -381,10 +390,105 @@ standalone-external enum normalization, XML shape/CDATA/whitespace behavior,
 root SHA-1 lexical parsing and alias-conflict/status interpretation are not
 proved by constructing SQL rows. The CMP effective ROM-status rule is stated
 in the ledger but a complete source-free status-query witness is still open.
-Full assembled FK-off/publication/edition/relationship/hash lexical-override
-agreement and complete root/child extent containment remain main's integration
-work. No authentic TOSEC, PureDOS or broader nested CMP grammar is inferred.
+Bounded assembled FK-off auditing and publication rejection are now tested
+below; this is not complete model-wide publication or parser implementation
+proof. Hash lexical-override interpretation, complete source coverage and
+root/child extent containment require their own selected-rule/source proofs.
+No authentic TOSEC, PureDOS or broader nested CMP grammar is inferred.
 No NoIntro or software proof is added here: the 135 versus unlocated 137
 evidence contradiction stays unresolved, authentic P/C remains unsupported,
 and software numeric/load qualification still needs its independently checked
 derivation chain.
+
+## Executable field/value-position presence freeze
+
+Source policy was reread through Lific's complete Logiqx state/code and exact
+CMP field/sample/comment sections at DOC-11 seq 38144. The sem skill/MCP
+provided the route reader, presence generator, edition-scope path, assembler
+and existing fixture loader structure. The family SQL audit lookup returned
+not found, so its existing expected-position CTEs were read directly as the
+documented SQL fallback; no native SQL semantics were changed.
+
+The new six-column presence manifest contains exactly the independent DOC-11
+seq 38144 dictionaries: 46 Logiqx attributes and 39 CMP fields/flags across
+14 physical position tables. Each `(position_table, field_code)` occurs once.
+Its owner is the position's real typed FK target, never a payload facet used
+as a surrogate parent. `field_kind` is the canonical code and all singleton
+`field_occurrence` values are zero. Predicates are closed build-time SQL over
+alias `owner`; they do not create runtime EAV/owner/value tables or copies.
+
+Required attributes use `1`; nullable text uses `IS NOT NULL` so supplied
+empty text remains present; all 15 defaulted Logiqx enums use their explicit
+presence bits, not their effective default values. Merge/serial/options/detail
+payloads and set links use keyed typed EXISTS predicates. Set-link kinds are
+distinguished. Hash predicates key the real media owner, source hash field
+and occurrence zero, never merely equal digest bytes. Logiqx empty/invalid
+hash declarations still require positions. CMP invalid hash interpretation
+remains rejected by the existing family audit, not erased by a presence
+predicate. Original-case CMP `game` and `set` spelling does not change the
+set's closed field domain.
+
+The two CMP flags are deliberately different: their positions ARE their
+declarations. Their predicates read their own exact owner/code/occurrence
+rows; there is no duplicate flag bit or value facet. The shared audit can
+check position identity/occurrence consistency but cannot prove a lost flag
+event from its absence. Independent parser-side flag coverage remains needed.
+This is an explicit limit, not 85 independently value-backed fields.
+
+[logiqx_cmp_presence_check.py](/home/mjc/projects/mame_coalesce/docs/schema-candidate/logiqx_cmp_presence_check.py)
+uses the actual `assemble.assemble()` output, including the real shared
+schema, relationship identities, generated field audit and publication gate.
+It compiles that schema/generator once per class, uses one explicitly closed
+in-memory SQLite connection and rolls mutations back with savepoints. Only
+the constructed native INSERT portion of the existing family fixture is
+reused; its placeholder common schema is NOT used. Exact fixture boundaries
+are checked, shortened shared rows are replaced with real common identities,
+and all nine reported relationships have real source identities/kinds.
+The existing SQL witness and its nonvacuous assertions are unchanged.
+
+The 14 tests independently compare physical DDL code domains, coverage TSV
+and route keys, then exercise all 83 independently value-backed missing
+positions; absent versus empty optional fields; all 15 omitted versus
+explicit-default pairs; nullable CMP payload facets; typed set-link/merge/
+compatibility facets; all nine hash fields and occurrence qualification;
+equal-byte CRC/CRC32 aliases; Logiqx empty/invalid declarations; both CMP form
+spellings; token-only flags; equal-count owner substitution; detached-registry
+audit visibility; and actual missing/invented-position publication rejection
+followed by published-position immutability. The baseline has no assembled
+integrity or FK problems. Relationship declaration deletion already has a
+stronger existing guard: tests verify that rejection, remove the position
+first, then verify the exact facet route becomes absent. They do not weaken
+or remove that guard.
+
+The detached-registry case is explicitly simulated pre-existing corruption:
+FK enforcement is off and only registry triggers are removed inside a
+rollback-only test. A missing native ROM position still reports owner 107
+with NULL edition rather than disappearing through an INNER JOIN. Ordinary
+guarded writes are not claimed to permit detaching that row. Registry/FK
+closure is separate from presence identity and is not replaced by this test.
+
+RED evidence: a process-local mutation replaced the root `build` predicate
+with constant `1`. The optional absent/invented-position test produced exactly
+one expected failure, with no setup errors. Restoring the real manifest is
+GREEN; no tracked file was mutated for that RED probe. The suite command is:
+
+```sh
+python3 -Werror::ResourceWarning docs/schema-candidate/logiqx_cmp_presence_check.py
+```
+
+GREEN: all 14 tests passed on the actual assembled schema (13.123 s in the
+recorded focused run), with no ResourceWarning. The unchanged nine-test field
+checker and nonvacuous field SQL fixture also pass. These are candidate tests,
+not a production build, importer run, corpus verification or complete gate.
+
+Required PCDATA child cardinality, root filename/SHA-1 children, sample/comment
+source-event counts and full parser/coverage seals are outside this position
+manifest; they keep their typed native owners and existing family checks.
+Erasing an optional value and its position together still cannot be detected
+without independent source evidence. XSI semantics are outside this family's
+DOC-11 code dictionaries: this suite adds no XSI fields and grants no
+cross-family nil interpretation proof. The installed candidate publication
+gate is tested, but complete production parser/finalizer integration and
+model-wide publication approval remain open. Only this manifest, its new
+test runner and these notes change in this pass; native SQL, coverage,
+owner/hash manifests, previous witnesses and main's harness are untouched.

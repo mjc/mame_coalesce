@@ -56,7 +56,7 @@ authentic importer/corpus/performance proof. The outstanding work below remains.
 
 ## Relationship routing and independent field crosswalks
 
-Current integrated checkpoint: 25 tests pass in 4.045 seconds; assembly prepares
+Routing/field-inventory checkpoint: 25 tests passed in 4.045 seconds; assembly prepared
 93 closed native kinds and 34 views with a clean empty-schema FK check. Core
 routing/reference and all four native field reviews are bounded CLEAR after
 fix/re-review. Logiqx/CMP assertions require exactly one selected row; six
@@ -107,8 +107,63 @@ MAME's 125 DTD plus ten compatibility declarations expand into 151 actual-parent
 attribute contexts; source macros have 126 enum/code slots while the candidate
 has 134 table/code pairs. These are different inventories, not conflicting
 counts. None of the 571 crosswalk rows is an independent runtime source count.
-MAME's field-presence TEMP view is only a test detecting layer; software's
-general presence enforcement and No-Intro XSI semantic enforcement remain open.
+The earlier MAME TEMP view remains test-only. The candidate now installs the
+separate shared field-presence audit described below. No-Intro XSI semantic
+enforcement and independently accumulated parser counts remain open.
+
+## Executable field-position publication checks
+
+Four `*-field-presence.tsv` manifests map 457 distinct physical table/code pairs
+to closed native presence predicates: MAME 134, software 37, Logiqx/CMP 85 and
+No-Intro 201. These build-time definitions do not become catalog rows. Values,
+default-presence flags, hash declarations and relationship literals remain on
+their typed owners; the generated audit is query-only.
+
+`candidate_field_presence_problems` compares each retained native field with
+the exact owner/code position count and occurrence. Its results feed the
+edition publication gate. Drafts may temporarily mismatch and be repaired;
+publication rejects missing, invented, extra or noncanonical positions for
+independently retained fields, then
+existing immutability guards freeze the accepted facts and positions. Joined
+registry/group scopes permit edition-filtered indexed reads while the global
+audit still visits detached owners with an unknown edition.
+
+Thirty-seven No-Intro XSI routes have value and position in the same typed row.
+Their actual `(owner,field_kind)` primary key supplies implicit occurrence zero;
+no synthetic occurrence column is added. This structural closure does not
+interpret `nil`, `type` or selected reading-rule semantics. Nor can any predicate
+infer an optional source field erased together with its position; independent
+source counts/revalidation have their separate, documented limits.
+CMP token-only flags and present-empty P/C `languages` likewise use the position
+as their sole presence marker, not a fabricated duplicate value or presence bit.
+
+Run generator attacks and each family's native presence checks:
+
+```sh
+python3 docs/schema-candidate/presence_check.py
+python3 docs/schema-candidate/mame_presence_check.py
+python3 docs/schema-candidate/software_presence_check.py
+python3 docs/schema-candidate/logiqx_cmp_presence_check.py
+python3 docs/schema-candidate/no_intro_presence_check.py
+```
+
+The main integrated regressions exercise actual missing/invented root positions,
+repair-before-publication, published immutability and isolation from another
+edition's incomplete draft. The generator tests additionally cover empty versus
+absent, explicit defaults, equal-count owner substitution, extra/nonzero
+occurrences, detached owners, invalid manifest references and inventories above
+SQLite's compound-select limit. The current composed replay passes 29 integrated
+tests in 6.280 seconds; assembly prepares 41 views. Ten generator tests and 55
+native presence test methods pass, with hundreds of route/state mutation cases.
+An ancestry contradiction is reported to both known editions; an edition
+identified only by the surviving parent is retained, while truly unknown
+orphans remain global-only findings.
+MAME and software controls distinguish the exact CRC declaration from SHA-1,
+other hash fields and nonzero occurrences. Deliberately broken predicates fail
+the native-presence assertions without unrelated FK/UNIQUE setup failures.
+Fresh GPT-6.1 Sol medium core and four-family native fix/re-review loops are
+bounded CLEAR for this field-position pass. Neither approves complete source
+capture/counts, PCDATA cardinality, XSI semantics, corpus or production cutover.
 
 ## What the checks establish
 

@@ -72,8 +72,10 @@ canonical bytes, and lexical override follow DOC-21's shared contract. No raw
 digest text is repeated in a MAME owner. Native and compatibility positions
 remain separate named tables but share the same per-element lexical ordinal.
 `mame-hash-positions.tsv` is the exact integration map from the four digest
-position families to `catalog_entry_hashes`; the main assembler should enforce
-one-to-one presence/state closure using these owner/code/occurrence columns.
+position families to `catalog_entry_hashes`; the assembled candidate enforces
+one-to-one position closure using these owner/code/occurrence columns. The
+field-presence manifest additionally requires a position exactly when the
+canonical source-field declaration exists, including empty/invalid states.
 
 ## Relationship positions: exact integration cases
 
@@ -98,10 +100,11 @@ The four literal-owner tables retain their sole `target_name`, `name`, or
 literal copy, and link/merge declarations add no attribute coordinates or
 order. Device-reference placement coordinates/order remain on the actual
 child; its `name` attribute coordinates/order remain on its position row.
-Main must enforce the matching relationship ID, owner key, TEXT field code,
-occurrence, reported kind and edition in both directions, including uniqueness
-across the four position families. The local UNIQUE/FK/CHECK constraints do
-not prove that cross-table closure.
+The assembled candidate enforces matching relationship ID, owner key, TEXT
+field code, occurrence, reported kind and edition in both directions, including
+uniqueness across the four position families. The new field-presence routes
+also enforce the corresponding typed source-literal/position obligation.
+Local UNIQUE/FK/CHECK constraints alone do not prove this cross-table closure.
 
 ## Field and position ledgers
 
@@ -226,7 +229,9 @@ value and its position deliberately produces no problem: detecting that loss
 requires an independent parser/source count seal or equivalent source evidence.
 This ledger is a dictionary inventory, not such a runtime seal. Required
 child existence, full parser fidelity and publication closure are not proven
-by the TEMP audit.
+by the TEMP audit. That historical fixture remains test-only: the installed
+design-candidate closure described below comes from the shared generator, not
+from promoting this TEMP view or substituting its thin common tables.
 
 `mame_field_check.py` independently reads the pinned DTD and current Rust macro
 dictionary, verifies exact contextual identities (including equal-count
@@ -244,19 +249,134 @@ devenv shell -- bash -c 'sqlite3 -bail :memory: < docs/schema-candidate/mame_fie
 devenv shell -- bash -c 'sqlite3 -bail :memory: < docs/schema-candidate/mame_witnesses.sql'
 ```
 
+## Installed candidate field-presence closure
+
+`mame-field-presence.tsv` is a build-time manifest, not a runtime catalog table.
+Its 134 unique physical `(position_table,field_code)` routes cover all 33
+native/compatibility position families. They are not 151 wire-context routes:
+the shared switch, location and value tables use one actual base owner per
+code, with the same presence rule under either switch kind. Conditions retain
+three separate typed owners/position tables. No CASE is needed because these
+shared contexts have identical presence policies; no duplicate route is added.
+The exact six-column header names the real position FK target/key and a closed
+Boolean expression on `owner`, never `NEW` or a copied ancestor/value.
+
+Nullable literals use `IS NOT NULL` (including empty/malformed text); required
+NOT NULL literals also use that Boolean test. Defaults use only the explicit
+`*_specified=1` bit. Machine name is checked through its common set owner;
+machine links and media merges use exact typed declaration rows and link kinds.
+All compatibility routes start at the actual machine/ROM/disk owner, not its
+optional payload facet. Sparse booleans use facet-row existence; each of the
+seven ROM payload fields uses its own nullable facet column. MD5 instead uses
+the sole `catalog_entry_hashes` declaration and needs no ROM compatibility
+payload row. All four hash routes match media ID, exact source hash spelling
+and occurrence zero, independently of valid/invalid/empty state. No relationship
+ID semantics or public SQL names changed.
+
+Main's `field_presence_routes`/`field_presence_sql` install
+`candidate_field_presence_problems(problem,owner_id,edition_id)` in the actual
+composed schema and include it in `candidate_integrity_problems` and publication
+closure. Problems are `field_presence:POSITION_TABLE:FIELD_CODE`. Draft values
+and positions may temporarily disagree; they need not be inserted atomically.
+Publication requires agreement, and the existing published-fact guards freeze
+native values, facets and positions afterward. General position-presence checks
+therefore are installed in the design candidate, not merely requested work.
+This is not production parser/schema/publication implementation approval.
+
+`mame_presence_check.py` assembles the real candidate once per class, reuses
+only concrete INSERTs from the earlier field fixture, and never loads its stub
+schema or TEMP presence audit. Its independent inventory test compares the
+134 identities with pinned-DTD/coverage identities, actual closed SQL CHECKs,
+and actual position FKs. Savepoint probes remove every physical code (including
+every populated shared-kind owner), require the exact installed/aggregate
+finding and reject publication; test every nullable native field, all 22
+default bits in 24 contexts, all compatibility facets and MD5 without payload,
+empty/invalid hashes, exact relationships, empty required CDATA, equal-count
+owner substitution, and baseline publication followed by mutation rejection.
+Constructed byte ranges are synthetic source-view fixtures, not authentic
+parser span capture or corpus evidence.
+
+Normal detached-registry deletion is rejected by generated FK guards. The
+explicit reverse-guard-bypass probe preserves the native presence finding even
+without registry scope. Its publication rejection is required by the test;
+the initial shared gate accepted `(owner_id=205,edition_id=NULL)` because it
+filtered only the proposed edition. This is a shared-generator/publication
+integration finding, not a missing MAME route. The initial composed run also
+reported an unclosed connection from `assemble()`'s connection context manager;
+main fixed that cleanup, and the subsequent ResourceWarning-as-error run is
+warning-free. New test connections have explicit cleanup.
+
+Initial checkpoint: 11 tests executed in 12.043s, ten GREEN and one RED for
+detached-registry publication (`IntegrityError not raised`). Main corrected
+the ancestry audit to retain the actual parent's edition when the child's
+registry scope is missing. The unchanged suite then passed all 11 tests in
+12.208s, warning-free. Every normal-scope physical-route deletion is found by
+the installed and aggregate views and rejects publication. This is bounded
+constructed publication proof, not complete-model or parser acceptance.
+
+### NativeSol P2 CRC predicate controls
+
+The original eleven tests did not distinguish CRC presence from a retained
+SHA1 declaration or from an occurrence-one-only CRC declaration. Two new
+composed-schema tests remove the CRC position and occurrence-zero declaration
+while retaining SHA1 and its exact canonical position. The first requires the
+CRC-specific presence result to stay empty, verifies clean aggregate/FK state,
+and successfully publishes that valid CRC-absent draft. The second adds only
+`catalog_entry_hashes(...,source_hash_field='crc',field_occurrence=1,...)` and
+again requires the occurrence-zero CRC presence result to stay empty.
+
+The occurrence-one row is synthetic out-of-MAME-contract source data, not an
+accepted MAME attribute or position. The actual shared hash table permits
+nonnegative occurrences for multiple formats; this insertion requires no
+CHECK, trigger, FK or UNIQUE bypass. Its independent `hash_position_count`
+problem still rejects publication. The native presence assertion executes
+before that separate closure check, so a publication rejection cannot mask a
+bad CRC predicate. All probes roll back to the original baseline.
+
+The checker adds a test-only `--crc-presence-mutant` option that patches only
+the CRC route's in-memory generator input. It does not change any manifest,
+DDL, shared file, setup rows or storage guards. Three individually executed
+mutants are RED at the new native-presence assertions: selecting SHA1 instead
+of CRC; removing the source-field filter; and removing the occurrence-zero
+filter. Each produces the false CRC finding `[(201,1)]` instead of `[]`, with
+one assertion failure and zero setup/storage errors. The actual unmodified
+manifest passes all 13 tests in 17.164s, warning-free; that concurrent test-run
+duration is not a performance benchmark. Sem traced the real generator/hash
+guard interfaces; shared SQL CHECKs were directly inspected as data.
+
+Focused command (active matching devenv, shell `login:false`):
+
+```sh
+python3 -Werror::ResourceWarning docs/schema-candidate/mame_presence_check.py
+```
+
+Reproduce the three expected RED runs independently (each exits 1):
+
+```sh
+python3 -Werror::ResourceWarning docs/schema-candidate/mame_presence_check.py --crc-presence-mutant sha1 ComposedPresence.test_crc_declaration_removal_does_not_select_sha1
+python3 -Werror::ResourceWarning docs/schema-candidate/mame_presence_check.py --crc-presence-mutant any-hash ComposedPresence.test_crc_declaration_removal_does_not_select_sha1
+python3 -Werror::ResourceWarning docs/schema-candidate/mame_presence_check.py --crc-presence-mutant any-occurrence ComposedPresence.test_crc_nonzero_declaration_does_not_supply_occurrence_zero
+```
+
 ## Remaining design gaps
 
-- Constructed field coverage is complete for the stated 135 attribute
-  declarations and four text scalars, not real-source/parser count-seal proof.
-  Optional value-plus-position joint erasure remains undetectable without
-  independent source evidence. The field TEMP audit is not a publication guard.
+- The 134 installed routes close retained source-field/position agreement;
+  they do not provide real-source/parser count seals. Joint deletion of an
+  optional value and its position is still undetectable without independent
+  source evidence, and has an explicit quiet-boundary witness.
+- Required description child existence/cardinality and total PCDATA-child
+  counts are outside this attribute-position manifest. Text remains solely
+  owned by its typed child/RAM owner; no attribute position is fabricated.
+  XSI vocabulary/meaning, source-count capture and parser reading semantics
+  are not established by these 134 native/compatibility presence predicates.
 - DOC-10 specifies strict-DTD behavior but does not name the shared
   `catalog_reading_rules.dialect` token. The integrity view uses the explicit
   candidate marker `strict-dtd`; its canonical reading-rule identity still
   needs policy confirmation rather than being treated as source-established.
-- Relationship identity/edition agreement, media-kind agreement, required
-  description/default-presence rules, and all cross-table ownership checks
-  remain in the main assembler's generated checks.
+- Relationship identity/edition, native ownership/media-kind, mixed order,
+  and field/default-position guards are shared assembled-candidate checks,
+  not still-uninstalled MAME work. Their bounded constructed tests do not
+  prove the complete model or a production publication implementation.
 - Root complete extents require new parser capture; current opening-only
   coordinates are insufficient. Ordinary-child extents remain unavailable.
 - ROM size/offset checked interpretation is documented, not implemented by
@@ -265,6 +385,10 @@ devenv shell -- bash -c 'sqlite3 -bail :memory: < docs/schema-candidate/mame_wit
 - Both SQL fixtures provide populated index-backed query-plan witnesses;
   neither is a production performance measurement or complete approved design.
 
-MAME-owned files are frozen for NativeSol/Banach review after these focused
-checks. The design approval gate remains open; no production build/gate,
-commit, push or external-document edits were performed.
+The presence implementation introduced `mame-field-presence.tsv`; the bounded
+NativeSol P2 follow-up edits only `mame_presence_check.py` and these notes.
+The manifest, native SQL, coverage and shared files remain untouched. The two
+follow-up files are re-frozen for NativeSol re-review. The formerly RED
+shared-gate regression also remains intact; it was not weakened to obtain GREEN.
+The design approval gate remains open; no production build/gate, commit, push
+or external-document edits were performed.

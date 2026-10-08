@@ -4,6 +4,7 @@
 import argparse
 import csv
 from collections import defaultdict
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 import re
@@ -372,6 +373,126 @@ def field_coverage(connection):
     return tuple(entries)
 
 
+def field_presence_routes(families=FAMILIES):
+    """Closed native predicates are build inputs, never stored catalog fields."""
+    expected = ('owner_table', 'owner_key', 'position_table', 'position_owner',
+                'field_code', 'present_sql')
+    routes, seen = [], set()
+    for family in families:
+        if family not in FAMILIES:
+            raise ValueError(f'unknown native family {family}')
+        with (ROOT / f'{family}-field-presence.tsv').open(newline='') as source:
+            reader = csv.DictReader(source, delimiter='\t')
+            if tuple(reader.fieldnames or ()) != expected:
+                raise ValueError(f'{family}: presence columns must be {expected}')
+            for row in reader:
+                if None in row or any(not row[column] for column in expected):
+                    raise ValueError(f'{family}: incomplete presence route {row}')
+                for column in expected[:4]:
+                    identifier(row[column])
+                if any(character in row['present_sql'] for character in ';\n\r'):
+                    raise ValueError('presence predicates must be single SQL expressions')
+                key = (row['position_table'], row['field_code'])
+                if key in seen:
+                    raise ValueError(f'duplicate presence route {key}')
+                seen.add(key)
+                routes.append(row)
+    if not routes:
+        raise ValueError('native presence routes must not be empty')
+    return tuple(routes)
+
+
+def field_presence_scope(connection, table, native_keys):
+    """Join known edition paths so edition publication can use scope indexes."""
+    columns = {column[1] for column in table_columns(connection, table)}
+    if 'edition_id' in columns:
+        return 'owner.edition_id', ''
+    if table in native_keys:
+        return ('field_scope.edition_id',
+                f' LEFT JOIN catalog_source_elements AS field_scope ON '
+                f'field_scope.source_element_id=owner.{identifier(native_keys[table])}')
+    if table == 'catalog_sets':
+        return ('field_scope.edition_id',
+                ' LEFT JOIN catalog_set_groups AS field_scope USING(set_group_id)')
+    group_keys = [row[3] for row in connection.execute(f'PRAGMA foreign_key_list({identifier(table)})')
+                  if row[2] == 'catalog_set_groups' and row[4] == 'set_group_id']
+    if len(group_keys) == 1:
+        return ('field_scope.edition_id',
+                f' LEFT JOIN catalog_set_groups AS field_scope ON '
+                f'field_scope.set_group_id=owner.{identifier(group_keys[0])}')
+    references = defaultdict(list)
+    for entry in connection.execute(f'PRAGMA foreign_key_list({identifier(table)})'):
+        references[entry[0]].append(entry)
+    native_parents = [rows[0] for rows in references.values() if len(rows) == 1
+                      and rows[0][2] in native_keys and rows[0][4] == native_keys[rows[0][2]]]
+    if len(native_parents) == 1:
+        parent = native_parents[0]
+        # A native parent's PK is the issued source-element ID. Resolve that
+        # actual FK directly: chained LEFT JOINs force an owner/history scan.
+        # Missing parent payload is independently diagnosed by FK/owner audits;
+        # its surviving registry identity still gives a truthful edition.
+        return ('field_scope.edition_id',
+                f' LEFT JOIN catalog_source_elements AS field_scope ON '
+                f'field_scope.source_element_id=owner.{identifier(parent[3])}')
+    return edition_expression(connection, table, 'owner', native_keys), ''
+
+
+def field_presence_sql(connection, manifest, routes=None):
+    """Retained native values/default flags and exact positions must agree."""
+    routes = field_presence_routes() if routes is None else routes
+    native_keys = {owner.table: owner.id for owner in manifest}
+    branches, seen = [], set()
+    for row in routes:
+        table, key, position, position_owner = (row[column] for column in
+                ('owner_table', 'owner_key', 'position_table', 'position_owner'))
+        route_key = (position, row['field_code'])
+        if route_key in seen:
+            raise ValueError(f'duplicate presence route {route_key}')
+        seen.add(route_key)
+        owner_info = table_columns(connection, table)
+        owner_columns = {column[1] for column in owner_info}
+        position_info = table_columns(connection, position)
+        position_columns = {column[1] for column in position_info}
+        if key not in owner_columns or not {position_owner, 'field_kind'} <= position_columns:
+            raise ValueError(f'{route_key}: missing native owner or canonical position columns')
+        if 'field_occurrence' not in position_columns:
+            primary = {column[1] for column in position_info if column[5]}
+            if not position.endswith('_xsi_attributes') or primary != {position_owner, 'field_kind'}:
+                raise ValueError(f'{route_key}: implicit occurrence needs the typed XSI singleton key')
+        parents = defaultdict(list)
+        for entry in connection.execute(f'PRAGMA foreign_key_list({identifier(position)})'):
+            parents[entry[0]].append((entry[2], entry[3], entry[4]))
+        if [(table, position_owner, key)] not in parents.values():
+            raise ValueError(f'{route_key}: presence route must use the actual typed owner FK')
+        if {column[1] for column in owner_info if column[5]} != {key}:
+            raise ValueError(f'{route_key}: presence owner needs its complete primary key')
+        predicate = row['present_sql']
+        if not predicate or any(character in predicate for character in ';\n\r'):
+            raise ValueError('presence predicates must be single SQL expressions')
+        connection.execute(f'SELECT ({predicate}) FROM {identifier(table)} AS owner LIMIT 0')
+        code = field_code_literal(connection, position, 'field_kind', row['field_code'])
+        match = (f'position.{identifier(position_owner)}=owner.{identifier(key)} '
+                 f'AND position.field_kind={code}')
+        scope, join = field_presence_scope(connection, table, native_keys)
+        extra_occurrence = (f' OR EXISTS(SELECT 1 FROM {identifier(position)} AS position '
+                            f'WHERE {match} AND position.field_occurrence<>0)'
+                            if 'field_occurrence' in position_columns else '')
+        branches.append(
+            f"SELECT {literal('field_presence:' + position + ':' + row['field_code'])} AS problem,"
+            f'owner.{identifier(key)} AS owner_id,{scope} AS edition_id '
+            f'FROM {identifier(table)} AS owner{join} '
+            f'WHERE ({predicate}) IS NOT (SELECT count(*) FROM {identifier(position)} AS position WHERE {match})'
+            f'{extra_occurrence}')
+    if not branches:
+        raise ValueError('native presence routes must not be empty')
+    chunks = [branches[offset:offset + 100] for offset in range(0, len(branches), 100)]
+    views = [f'CREATE VIEW candidate_field_presence_chunk_{number} AS ' + ' UNION ALL '.join(chunk) + ';'
+             for number, chunk in enumerate(chunks)]
+    views.append('CREATE VIEW candidate_field_presence_problems AS ' + ' UNION ALL '.join(
+        f'SELECT * FROM candidate_field_presence_chunk_{number}' for number in range(len(chunks))) + ';')
+    return '\n'.join(views), ['SELECT problem,owner_id,edition_id FROM candidate_field_presence_problems']
+
+
 def relationship_routes():
     """Closed DOC-23 source-field routes; never persisted as catalog data."""
     with (ROOT / 'relationship-positions.tsv').open(newline='') as source:
@@ -484,7 +605,7 @@ def position_order_sql(connection, manifest):
         if not (table.endswith('_positions') or table.endswith('_xsi_attributes')):
             continue
         columns = {row[1] for row in table_columns(connection, table)}
-        ordinal = next((column for column in ('source_order','attribute_order') if column in columns), None)
+        ordinal = next((column for column in ('source_order','attribute_order','attribute_ordinal') if column in columns), None)
         if ordinal is None:
             continue
         fks = [row for row in connection.execute(f'PRAGMA foreign_key_list({identifier(table)})')
@@ -525,7 +646,17 @@ def ownership_sql(connection, manifest):
         parent_scope = edition_expression(connection, owner.parent_table, "parent", {entry.table: entry.id for entry in manifest})
         rows.append(f"SELECT {literal(owner.kind)} AS element_kind,owner.{key} AS source_element_id FROM {table} AS owner")
         problems.append(f"SELECT {literal('owner_kind:' + owner.table)} AS problem,owner.{key} AS owner_id,element.edition_id FROM {table} AS owner LEFT JOIN catalog_source_elements AS element ON element.source_element_id=owner.{key} WHERE element.element_kind IS NOT {literal(owner.kind)}")
-        problems.append(f"SELECT {literal('owner_ancestry:' + owner.table)},owner.{key},element.edition_id FROM {table} AS owner LEFT JOIN catalog_source_elements AS element ON element.source_element_id=owner.{key} LEFT JOIN {parent} AS parent ON parent.{parent_key}=owner.{parent_column} WHERE element.edition_id IS NOT {parent_scope}")
+        ancestry = (f' FROM {table} AS owner LEFT JOIN catalog_source_elements AS element '
+                    f'ON element.source_element_id=owner.{key} LEFT JOIN {parent} AS parent '
+                    f'ON parent.{parent_key}=owner.{parent_column}')
+        problem = literal('owner_ancestry:' + owner.table)
+        problems.append(f'SELECT {problem},owner.{key},coalesce(element.edition_id,{parent_scope})'
+                        f'{ancestry} WHERE element.edition_id IS NOT {parent_scope}')
+        # Contradictory known ancestry affects both editions. A registry-only
+        # projection would let the parent's edition publish corrupted children.
+        problems.append(f'SELECT {problem},owner.{key},{parent_scope}{ancestry} '
+                        f'WHERE element.edition_id IS NOT NULL AND {parent_scope} IS NOT NULL '
+                        f'AND element.edition_id<>{parent_scope}')
         good = f"SELECT 1 FROM catalog_source_elements AS element JOIN {parent} AS parent ON parent.{parent_key}=NEW.{parent_column} JOIN catalog_editions AS edition ON edition.edition_id=element.edition_id JOIN catalog_reading_rules AS rules USING(reading_rules_id) WHERE element.source_element_id=NEW.{key} AND element.element_kind={literal(owner.kind)} AND element.edition_id={parent_scope} AND rules.format_family={literal(kind_family(owner.kind))}"
         for operation in ("INSERT", "UPDATE"):
             guards.append(f"CREATE TRIGGER {identifier('candidate_native_' + owner.table + '_' + operation.lower())} BEFORE {operation} ON {table} WHEN NOT EXISTS({good}) BEGIN SELECT RAISE(ABORT,'candidate native kind or ancestry'); END;")
@@ -560,7 +691,7 @@ def assemble():
     source = source.replace("/* SOURCE_ELEMENT_KINDS */", ",".join(literal(owner.kind) for owner in manifest))
     root_tables, root_guards, root_problems = root_diagnostic_sql()
     source += '\n' + root_tables
-    with sqlite3.connect(":memory:") as connection:
+    with closing(sqlite3.connect(":memory:")) as connection:
         connection.executescript(source)
         ownership, native_problems, native_guards = ownership_sql(connection, manifest)
         fk_guards, fk_problems = foreign_key_guards(connection, manifest)
@@ -570,15 +701,24 @@ def assemble():
         format_roots,format_guards,format_problems = format_root_sql(connection, manifest)
         position_guards,position_problems = position_order_sql(connection, manifest)
         relationship_views,relationship_guards,relationship_problems = relationship_position_sql(connection)
+        presence_routes = field_presence_routes()
+        expected_fields = {(row['position_table'], row['field_code']) for row in field_coverage(connection)
+                           if row['position_table'] != '-'
+                           and 'field_kind' in {column[1] for column in table_columns(connection, row['position_table'])}}
+        actual_fields = {(row['position_table'], row['field_code']) for row in presence_routes}
+        if actual_fields != expected_fields:
+            raise ValueError(f'presence routes differ from independent field crosswalk: '
+                             f'missing={sorted(expected_fields-actual_fields)}, extra={sorted(actual_fields-expected_fields)}')
+        presence_views, presence_problems = field_presence_sql(connection, manifest, presence_routes)
         format_audits = [f'SELECT problem,owner_id,edition_id FROM {identifier(row[0])}' for row in connection.execute("SELECT name FROM sqlite_schema WHERE type='view' AND (name GLOB 'candidate_*_integrity_problems' OR name='candidate_edition_cycle_problems')")]
-    audits = [*format_audits, *native_problems, *fk_problems, *root_problems, *hash_problems, *format_problems, *position_problems, *relationship_problems]
+    audits = [*format_audits, *native_problems, *fk_problems, *root_problems, *hash_problems, *format_problems, *position_problems, *relationship_problems, *presence_problems]
     # SQLite limits a single compound SELECT to 500 terms. Keep the exhaustive
     # reverse audit in named bounded chunks, not one oversized UNION statement.
     chunks = [audits[offset:offset + 100] for offset in range(0, len(audits), 100)]
     chunk_views = [f"CREATE VIEW candidate_integrity_chunk_{number} AS " + " UNION ALL ".join(chunk) + ';' for number, chunk in enumerate(chunks)]
     integrity = '\n'.join([*chunk_views, "CREATE VIEW candidate_integrity_problems AS " + " UNION ALL ".join(f'SELECT * FROM candidate_integrity_chunk_{number}' for number in range(len(chunks))) + ';'])
     publication = "CREATE TRIGGER candidate_publication_closure BEFORE INSERT ON published_catalog_editions WHEN EXISTS(SELECT 1 FROM candidate_integrity_problems WHERE edition_id=NEW.edition_id) BEGIN SELECT RAISE(ABORT,'candidate publication requires complete closure'); END;"
-    return "\n\n".join([source, ownership, hash_positions,format_roots,relationship_views, integrity, *native_guards, *fk_guards, *collisions, *immutable, *immutable_dictionary_sql(), *root_guards, *hash_guards,*format_guards,*position_guards,*relationship_guards, publication])
+    return "\n\n".join([source, ownership, hash_positions,format_roots,relationship_views, presence_views, integrity, *native_guards, *fk_guards, *collisions, *immutable, *immutable_dictionary_sql(), *root_guards, *hash_guards,*format_guards,*position_guards,*relationship_guards, publication])
 
 
 def main():
@@ -589,7 +729,7 @@ def main():
     if args.emit:
         sys.stdout.write(sql + "\n")
         return
-    with sqlite3.connect(":memory:") as connection:
+    with closing(sqlite3.connect(":memory:")) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
         connection.executescript(sql)
         views = connection.execute("SELECT name FROM sqlite_schema WHERE type='view'").fetchall()

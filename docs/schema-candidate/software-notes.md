@@ -185,13 +185,14 @@ validated. No extent is synthesized from the opening point.
   remain physical owners without registry rows. The new constructed fixture
   exercises actual subtype ancestry and mixed ordering in that assembled DDL;
   the title manifest row deliberately has no duplicate order.
-- Full attribute-presence↔position one-to-one checks for all 37 codes and
-  explicit-default↔attribute-position checks are still unproven. Table-local
-  checks enforce each stored effective value/presence pair, and the software
-  view checks the clone/hash subsets; they do not prove absence/extraneous
-  position closure for every field. The parser-to-row count seal is also not
-  represented: manifest owner closure proves one typed owner per listed source
-  element, not that all parser-counted source elements were persisted.
+- `software-field-presence.tsv` now supplies all 37 attribute/code routes to
+  the shared actual `candidate_field_presence_problems` audit and assembled
+  publication gate. This includes all seven explicit-default pairs and exact
+  typed clone/hash facts, not just the earlier family-view subsets. Drafts may
+  temporarily disagree; native values and positions need not be inserted in
+  one statement. The parser-to-row count seal remains absent: typed owner
+  closure and retained-field consistency do not prove that every parser-counted
+  source element or optional source field was persisted.
 - Registry completeness, table-kind agreement, typed same-edition ancestry
   and mixed-order collision checks are cross-table responsibilities for main's
   manifest-generated guards. These artifacts do not claim arbitrary raw-SQL
@@ -206,7 +207,7 @@ agreement, and a populated ordered query plan. It uses minimal shared identity
 stubs and loads the real `relationships.sql`; it is not a replacement for
 main's cross-family assembled candidate checks.
 
-## Field coverage and independent constructed witnesses — e591363
+## Field coverage and historical constructed witnesses — e591363
 
 `software-field-coverage.tsv` has exactly 42 source-field rows, independently
 transcribed from DOC-12 seq 38114: the 36 pinned DTD attributes plus compatible
@@ -250,10 +251,11 @@ Ledger conventions:
   use description/year/publisher/notes tags. Their actual child discriminators
   0/1/2/3 are stated in `default_rule`; opening location/order is on the child
   itself, not another attribute companion.
-- Presence/default text states the required policy. `position-iff-present`
-  does not claim that every such equivalence already has a mutation/publication
-  guard. NULL, empty and invalid raw numeric text remain distinct from checked
-  numeric interpretation; no inferred execution qualification is in the ledger.
+- Presence/default text states the required policy. The new shared audit now
+  enforces `position-iff-present` for retained attributes at integrity checks
+  and candidate publication, not as a same-statement draft insertion rule.
+  NULL, empty and invalid raw numeric text remain distinct from checked numeric
+  interpretation; no inferred execution qualification is in the ledger.
 
 `software_field_witnesses.sql` is independent of the older minimal family
 fixture. Its stated prerequisite is a fresh in-memory database with the full
@@ -265,6 +267,8 @@ numeric retention, and all four declaration states for each canonical hash
 slot (absent/empty/invalid/value). It asserts required-child absence is audited
 and ends with clean assembled-integrity and FK checks. Hash scopes intentionally
 grant no whole-file/UUID eligibility; disk valid SHA-1 remains CHD-header scope.
+Its TEMP assertion table is historical test scaffolding only, never a runtime
+catalog relation or the implementation of the new shared presence audit.
 
 `software_field_check.py` has a separately written expected 42-field mapping.
 It compares exact wire names, typed/value/position owners, columns and codes;
@@ -278,7 +282,8 @@ loadflag tokens are tested only for scalar storage. Schema SQL is emitted once;
 one class database/fixture is prepared, and each test uses a rollback savepoint.
 No executescript runs inside those per-test savepoints.
 
-Focused commands and observed results:
+Historical focused commands and observed results (before the shared presence
+integration; not a claim about current publication coverage):
 
 ```sh
 python3 docs/schema-candidate/software_field_check.py
@@ -294,8 +299,13 @@ execution do not prove complete parser-fed field/element counts, source byte
 coordinates, EOF or publication closure for arbitrary SQL. In particular, an
 optional value and its position erased together look like legitimate omission;
 these checks cannot detect that without an independent parser-fed count seal.
-General non-hash presence/position equivalences still need enforcement. SQL
-INTEGER affinity on width cannot itself prove exact wire-token recognition
+The shared audit closes those retained attribute/position equivalences; it does
+not supply the missing independent source counts. Required description/year/
+publisher child existence is already audited and per-kind singleton constraints
+prevent duplicates; empty text is allowed. Optional list/title notes are also
+singletons. These five PCDATA scalars have no attribute-position routes, and
+parser-fed PCDATA event/count completeness is not proved by this manifest.
+SQL INTEGER affinity on width cannot itself prove exact wire-token recognition
 (for example, a bound text `08` can become integer 8); yes/no wire booleans also
 need the pinned parser boundary. The witness's constructed coordinates are not
 new parser capture evidence.
@@ -310,3 +320,124 @@ source-declaration/step checks do not turn a retained malformed or unnamed
 declaration into an executable recipe. No new numeric or layout semantics were
 invented, and no production build/gate/import/profile was run. Full design
 approval remains open.
+
+## Retained-field presence closure — current isolated candidate
+
+`software-field-presence.tsv` has one build-time route per distinct physical
+position table/code: 37 routes across 13 families. The independent inventory
+in `software_presence_check.py` spells out the exact wire names and codes,
+rather than treating a matching row count as completeness. Predicates use the
+actual position FK's native owner: 16 required constants, ten nullable scalar
+checks, seven specified-bit checks, one typed clone-facet existence check and
+three canonical media-hash declaration existence checks. Required title name
+belongs only to `catalog_sets`; the required constant does not copy that value
+or replace its FK/NOT NULL enforcement. Empty clone targets and empty/invalid
+hash declarations remain present independently of usable targets/digest bytes.
+Hash identity and typed relationship agreement remain separate shared audits.
+
+The shared generator validates complete owner primary keys and exact
+single-column typed position FK groups, then compares the Boolean predicate
+with the exact owner/code position count and rejects nonzero occurrence. These
+routes are design inputs, not EAV data, and add no stored value or ancestry.
+The generated views are included in actual `candidate_integrity_problems` and
+the actual candidate publication trigger. Publication freezes the existing
+native values and positions; draft mismatches remain observable and repairable.
+Production parser/writer/finalizer adoption and full design approval remain
+unimplemented/unapproved; passing this SQL candidate is not production clearance.
+
+For this closure, DOC-12 seq 38114's complete software field-state rules,
+Presence/location/query/history, and both exact root/title/part and area/media
+crosswalks were reread completely. sem traced the shared generator, scope
+resolver and assembly/publication wiring, including the native area-facet FK
+path. Fixture INSERT statements require direct SQL reading because sem's SQL
+entity index does not expose that DML as entities.
+
+The independent suite prepares the actual composed candidate and existing thin
+family field fixture once per class, then uses test/case rollback savepoints;
+no executescript runs inside them. It covers all 37 missing-position codes,
+ten absent/empty scalar transitions, seven explicit/omitted defaults, all three
+hash slots in empty/invalid/value states, stable typed clone identity, equal-row-
+count owner substitution, repair→actual publication→immutability, and detached
+registry/group/area-parent cases. Deliberate corruption temporarily drops the
+affected table's guards only in rollback savepoints with SQLite FK enforcement
+off; ordinary guard rejection is checked first. Registry/group-detached rows
+remain visible with NULL edition. For an area facet, its actual parent FK is
+the issued source ID: surviving registry identity still truthfully attributes
+edition 1 when only the native parent payload is lost, and publication is
+blocked. Missing registry, alone or with its parent payload, gives NULL in the
+field audit. This is not proof that an edition-filtered publication catches
+arbitrary deliberately detached unknown-edition corruption.
+
+Both actual software area-facet audit branches also have populated edition-
+filtered plan regressions, extracted from the installed shared view definitions
+rather than a handwritten approximation. They require indexed native owner
+and registry lookups on the actual parent FK, no owner/registry scan, and test
+parent-only, registry-only and combined detachment. The initial chained
+parent→registry LEFT JOIN was RED with `SCAN owner` for both facets; the shared
+resolver now joins the registry directly using that issued source identity,
+without copying ancestry or hiding missing native-parent payload audits.
+
+Before installation, deleting part 200's required interface position left the
+actual integrity audit empty and publication incorrectly succeeded (RED).
+The new suite requires that same isolated mismatch to be the sole integrity
+problem, blocks actual publication, then repairs and publishes successfully.
+Earlier focused runs against actual composed DDL after the scope correction
+(before the CRC occurrence review follow-up):
+
+```sh
+python3 -Werror::ResourceWarning docs/schema-candidate/software_presence_check.py
+# 11 tests passed in 18.809 seconds; both actual facet plans and all six
+# parent-only/registry-only/combined facet detachment cases passed.
+python3 -Werror::ResourceWarning docs/schema-candidate/software_field_check.py
+# 7 tests passed in 3.413 seconds.
+```
+
+The earlier presence run was RED only for the two chained-join facet plans
+(11 tests, two failing subtests); its behavioral checks were green. Both recorded
+commands exited zero without connection ResourceWarnings. The final exact-FK-
+group/complete-PK inventory assertion was additionally rerun independently.
+
+### NativeSol P2: CRC declaration occurrence isolation
+
+`test_crc_nonzero_occurrence_only_does_not_invent_canonical_presence` removes
+ROM 400's CRC position and occurrence-0 declaration 600, then successfully
+inserts fresh declaration 609 for the same media/CRC at occurrence 1 only.
+This uses the actual composed schema and normal DML: no dropped guards,
+constraint weakening or expected insert rejection. The test verifies the
+exact retained declaration, absence of a CRC position and a clean FK check.
+The actual native field-presence view must remain empty: occurrence 1 cannot
+invent presence of the absent canonical occurrence-0 attribute.
+
+This is a staged audit control, not a publishable software document. The
+assembled integrity view separately reports exactly `hash_position_count`
+and `software_hash_without_matching_position` for declaration 609. Those
+expected independent hash-position findings are checked, but are not the
+oracle for CRC predicate correctness or a substitute for the native-presence
+assertion.
+
+The targeted real test passed (1 test, 3.105 seconds). Mutation verification
+used `python3 -Werror::ResourceWarning` and an in-memory `unittest.mock` patch
+of `assemble.field_presence_routes`, removing only
+` AND hash.field_occurrence=0` from the ROM CRC code-2 predicate before actual
+assembly. Running the same new test was RED (1 assertion failure, no errors,
+3.346 seconds): the native view falsely returned exactly
+`('field_presence:software_rom_attribute_positions:2',400,1)`. The verification
+driver required that exact failure. No manifest or persistent DDL was changed.
+
+Final bounded follow-up command:
+
+```sh
+python3 -Werror::ResourceWarning docs/schema-candidate/software_presence_check.py
+# 12 tests passed in 22.563 seconds, with no connection ResourceWarnings.
+```
+
+Only `software_presence_check.py` and these notes changed in this follow-up;
+both are frozen again for review. The source-count, PCDATA, XSI, checked-load
+and production-publication proof boundaries below remain unchanged.
+
+No software XSI field is invented: namespace/schema-location storage elsewhere
+does not prove XML namespace or schema semantics, and this family suite makes
+no such claim. Source event/count seals, genuine byte/coordinate capture and
+EOF evidence remain separate, as do the numeric/checked-chain/complete-first-
+run/qualification gaps above. Erasing an optional value and its position
+together cannot be detected without independent parser-fed evidence.
