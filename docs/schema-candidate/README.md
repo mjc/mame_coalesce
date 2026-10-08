@@ -6,6 +6,10 @@ application schema, a migration, a database conversion, or an approved cutover.
 Do not apply it to an existing catalog database. The checks create in-memory
 databases only; no corpus, original, database or profiling output is removed.
 
+Start with the [approval proposal](proposal.md) for the domain model, diagrams,
+exact artifact index, deliberate API changes and design/implementation gates.
+Its review remains pending; it does not replace the native field dictionaries.
+
 The format notes identify the exact Lific revisions, field/code inventories,
 current-to-target decisions, parser capture gaps and still-unproved contracts.
 Unsupported OfflineList, PureDOS extension grammar and authentic DAT-o-MATIC

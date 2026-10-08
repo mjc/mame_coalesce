@@ -515,7 +515,7 @@ blanket all-field approval or complete parser-to-target proof. General
 field/value-position presence is installed in the actual candidate
 integrity/publication gate; it is no longer an installation gap. Real raw
 root-order capture, actual root/document extents, CMP keyword-coordinate
-capture, independent source count seals, production source-free hydration
+capture, independent parser-fed source counts/EOF, production source-free hydration
 and representative corpus-scale target query plans remain open. Full parser
 proof of strict versus compatible root/content rules and source-text/hash
 scope semantics is not established by these SQL tests. No authentic TOSEC
@@ -540,8 +540,8 @@ root/child extent containment require their own selected-rule/source proofs.
 No authentic TOSEC, PureDOS or broader nested CMP grammar is inferred.
 No NoIntro or software proof is added here: the 135 versus unlocated 137
 evidence contradiction stays unresolved, authentic P/C remains unsupported,
-and software numeric/load qualification still needs its independently checked
-derivation chain.
+and software numeric/load qualification has separate checked query-only
+candidate views; its real streaming producer and loader evidence remain open.
 
 ## Executable field/value-position presence freeze
 

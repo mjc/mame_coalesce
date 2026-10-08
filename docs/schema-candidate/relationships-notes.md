@@ -1,6 +1,6 @@
 # Relationship candidate — isolated design
 
-Status: incomplete candidate. This fragment is not production implementation,
+Status: unapproved candidate. This fragment is not production implementation,
 does not describe a migration, and does not close MAMEC-62. Its shared-table
 names and types are read from `shared.sql` as it exists in this checkout.
 `relationships.sql` owns relationship identities, typed endpoint identities,
@@ -17,7 +17,13 @@ tables and point back through `relationship_id`; they do not copy the
 literal. This design adds no generic owner discriminator, serialized endpoint,
 copied literal, digest bytes, UUID payload, or per-list hash/size fact.
 
-## Source pages and sequences read
+## Original source pages and sequences read
+
+These are the initial crosswalk references, not the latest approval revision.
+The current composed checkpoint is signed main `12d9135`; the README and
+`query-contract.md` record its bounded reviews, eight endpoint kinds and exact
+remaining full-model/production boundary. Later candidate generators below
+supersede the initial fragment's missing-size and missing-closure descriptions.
 
 | Page | Sequence | Sections used |
 |---|---:|---|
@@ -90,8 +96,11 @@ These checks are not all-format parser-fed count or complete native-field proof.
 - `reported_catalog_relationships` carries one of the 22 closed kinds. Native
   declarations own literal values; no generic EAV/source-owner table is added.
 - Target identity and payload use a closed kind registry with typed subtype
-  tables for actual set, media entry, issued shared-file UUID, declared hash,
-  observed-content hash, unresolved catalog literal, and external record.
+  tables for actual set, media entry, native No-Intro archive, issued shared-file
+  UUID, declared hash, observed-content hash, unresolved catalog literal, and
+  external record. The archive retains its actual native owner, not a publisher
+  number or a fabricated media entry. Publication/sealing checks its exact
+  native archive/game/root/document/rules ancestry and owner exclusivity.
   Equal hash bytes can use one `hash_values` row while declared and observed
   endpoint identity stays distinct.
 - A shared-file target keeps its originally issued UUID. Redirect resolution
@@ -132,18 +141,16 @@ settled conflict must have its own exact accept/reject disposition. This keeps
 the final witness from being silently omitted; the integrity view reports the
 same issue if a published row set is damaged outside that guard.
 
-The size half is intentionally not claimed complete. `shared.sql` currently
-has no common source-size witness relation, and the format fragments expose
-raw sizes on different typed owners (software also has a derived complete
-first-load length). The candidate's conflict selector is not enough to prove
-the actual native owner/field or reconstruct qualified evidence. No generic
-source-owner table or duplicate size fact was added. The size evidence view,
-per-component `shared_file_sizes` rebuild, and exact typed owner guards must be
-designed with the native-owner manifest before this is a complete candidate.
-Software has an additional complete-first-run boundary: its facts must not
-qualify shared membership before its first source load is complete. The current
-generic edition-publication trigger does not establish that boundary, so
-software gating and the first-run backfill remain open.
+The composed candidate now supplies query-only `candidate_native_file_sizes`
+and native byte-coverage/qualification views, plus affected-component hash and
+size maintenance in `shared_file_facts.py`. The eight source-size routes reach
+the actual native fields; no generic persisted size-witness table or copied
+per-list size fact is introduced. Exact original size text stays native.
+`software_file_lengths.py` derives the checked first verification run; the
+software qualification route requires its complete usable length and actual
+required-file/area/part/title ancestry. These are constructed SQL contracts,
+not proof that a streaming producer already freezes complete software batches.
+The private writer must enforce that boundary under `publication-contract.md`.
 
 ## Remaining closure and proof gaps
 
@@ -157,28 +164,32 @@ software gating and the first-run backfill remain open.
   position carries `relationship_id` without duplicating the literal. Complete
   per-format actual-parent/field/count closure and parser/corpus proof remain
   separate requirements beyond the thin routing witnesses.
-- Endpoint subtype completeness, actual set/media edition closure, and
-  published endpoint readiness need the same explicit manifest and corruption
-  checks. The typed FKs here prove subtype key existence, not cross-table
-  edition equality.
+- `relationship_closure.py` now checks exact user/derived payload, all eight
+  endpoint subtypes and actual native set/media/archive closure before evidence
+  or accepted-review sealing. Its independent audit sees competing archive/game
+  owners and broken ancestry after explicit corruption. Sealed endpoint/rule/
+  assertion and unresolved-edition context are immutable. Ordinary endpoint
+  creation after native publication remains legal. These bounded controls do
+  not establish every production reader or complete-model approval.
 - The SHA-1/SHA-256 identity-evidence view separates strong evidence from
-  CRC32/MD5, but the candidate does not yet guard every assignment to
-  `catalog_media_entries.file_uuid` against that view. Software's complete
-  first-load eligibility and all format-specific UUID-qualification rules need
-  to be included in the source-owner finalizer.
+  CRC32/MD5. `candidate_file_qualification_problems` now rejects linked media
+  without qualified complete-file evidence/strong hashes through the composed
+  publication audit. The private writer must also enforce completed-batch
+  isolation before matching/assignment; unrestricted draft SQL views cannot
+  construct that capability. Real parser-fed qualification remains unproved.
 - Relationship evidence seal completeness and the active replacement graph's
   publication-time cycle rule need the production-parity closure witnesses.
-- Accepted incoming hash/size facts still need a published consistency check
-  against the retained component before a merge can seal. The current guards
-  establish witness ownership and redirect shape but do not prove that every
-  explicitly accepted incoming value agrees with retained evidence.
-- File-match size qualification, exact native size-field closure, rejection
-  lookup and atomic size-membership rebuild remain open as described above.
+- `shared_file_facts.py` now checks exact accepted hash/size membership and
+  affected-component/alias rebuilds, published source-witness ownership and
+  cross-registry/cycle boundaries. Its thin maintenance and actual native
+  qualification controls have bounded Sol fix/re-review, not whole production
+  settlement/finalizer or corpus proof.
 - The integrated assembler loads both relationship fragments, prepares every
   composed view and passes its empty-schema FK check. The earlier No-Intro
   composite header-key mismatch is fixed. Shared/assembled/routing tests and
-  bounded native fixtures do not provide populated settlement/evidence guard
-  coverage; current checkpoint counts are recorded in the README. No build,
+  bounded native fixtures alone do not provide complete settlement/evidence
+  coverage; later focused maintenance/qualification/closure fixtures supply
+  their stated slices, with current receipts in the README. No build,
   import, profile or production gate was run for this isolated design task.
 
 ## Branch-added test explanations
@@ -200,11 +211,14 @@ settlement, same-registry redirect/cycle, and transaction-scoped hash-refresh
 guards, including exact per-hash/per-size review coverage so no final conflict
 witness can be omitted. Both membership rebuilds use setwise deduplication and
 `NOT EXISTS`, avoiding `INSERT OR IGNORE` so pre-insert collision guards do not
-abort on a duplicate witness. The complete assembled schema plus relationship
-guard DDL prepared in memory; no populated relationship/file-match guard
-behavior was executed. None of these cases
-proves canonical relationship-position closure, complete software first-run
-gating, authentic importer behavior, or the production gate.
+abort on a duplicate witness. The initial assembled-schema witness only
+prepared the guard DDL. Later `relationship_closure_check.py`,
+`archive_endpoint_check.py`, `shared_file_facts_check.py` and
+`native_file_qualification_check.py` exercise populated behavior, corruption
+and their bounded access paths. Their SQL proof does not establish streaming
+batch isolation, authentic importer behavior or the production gate. The
+canonical relationship-position routes have their own positive/adversarial
+witnesses in `check.py`.
 
 The format SQL witnesses are bounded constructed fixtures: MAME checks
 device-child order, mixed ROM/disk/sample children, hash-position links,

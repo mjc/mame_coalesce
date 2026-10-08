@@ -358,21 +358,23 @@ python3 -Werror::ResourceWarning docs/schema-candidate/mame_presence_check.py --
 python3 -Werror::ResourceWarning docs/schema-candidate/mame_presence_check.py --crc-presence-mutant any-occurrence ComposedPresence.test_crc_nonzero_declaration_does_not_supply_occurrence_zero
 ```
 
-## Remaining design gaps
+## Retained-field checkpoint limits and current follow-up
 
 - The 134 installed routes close retained source-field/position agreement;
   they do not provide real-source/parser count seals. Joint deletion of an
-  optional value and its position is still undetectable without independent
-  source evidence, and has an explicit quiet-boundary witness.
+  optional value and its position needs independent source evidence, and has
+  an explicit presence-only quiet-boundary witness. The later count contract
+  now supplies SQL seals/audits; authentic event producers and EOF remain open.
 - Required description child existence/cardinality and total PCDATA-child
-  counts are outside this attribute-position manifest. Text remains solely
+  counts are outside this attribute-position manifest and covered separately
+  by the installed native cardinality/count layers. Text remains solely
   owned by its typed child/RAM owner; no attribute position is fabricated.
   XSI vocabulary/meaning, source-count capture and parser reading semantics
   are not established by these 134 native/compatibility presence predicates.
-- DOC-10 specifies strict-DTD behavior but does not name the shared
-  `catalog_reading_rules.dialect` token. The integrity view uses the explicit
-  candidate marker `strict-dtd`; its canonical reading-rule identity still
-  needs policy confirmation rather than being treated as source-established.
+- The target chooses `catalog_reading_rules.dialect='strict-dtd'` explicitly
+  for the strict MAME branch, separately from versioned observed modes. This
+  proposed interpretation identity needs user approval; it is not inferred
+  from a filename or evidence that the current parser implements strict mode.
 - Relationship identity/edition, native ownership/media-kind, mixed order,
   and field/default-position guards are shared assembled-candidate checks,
   not still-uninstalled MAME work. Their bounded constructed tests do not

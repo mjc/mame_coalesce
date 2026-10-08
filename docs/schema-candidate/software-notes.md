@@ -160,14 +160,17 @@ plural `<softwarelists>` root extent. The DDL uses the shared proposed names
 `start_column`, `end_line`, `end_column`, and `column_convention`. It requires
 one complete byte extent or complete text-coordinate extent, enforces paired
 values, positive ordered coordinates and increasing byte offsets, and does
-not claim source-length validation. `candidate_software_integrity_problems`
+not itself validate selected-source length. The composed `physical_extents.py`
+audit now checks actual original/decoded byte bounds independently of links.
+`candidate_software_integrity_problems`
 checks same-view containment for document→root, document→wrapper and
 wrapper→nested-list edges; when byte and coordinate views both match, both
 checks apply. It also audits singular/plural closure, individual-list title
 presence, area subtype closure, title required text, ROM chain links, clone
 position/relationship agreement, and canonical software media hash positions.
-The candidate does not link diagnostic rows itself; DOC-21's exact root-link
-relations remain main's diagnostics integration.
+The composed assembler now installs DOC-21's exact typed root-link relations
+and containment guards. Opening-only ordinary software owners still cannot
+prove child containment; their messages remain source/root-only as applicable.
 
 The current software parser exposes opening-element line/column only for its
 roots and children; it does not expose the complete root/document byte extents,
@@ -198,9 +201,10 @@ validated. No extent is synthesized from the opening point.
   publication gate. This includes all seven explicit-default pairs and exact
   typed clone/hash facts, not just the earlier family-view subsets. Drafts may
   temporarily disagree; native values and positions need not be inserted in
-  one statement. The parser-to-row count seal remains absent: typed owner
-  closure and retained-field consistency do not prove that every parser-counted
-  source element or optional source field was persisted.
+  one statement. Typed SQL source-count seals and the aggregate publication
+  audit are now installed by `source_counts.py`; independent real parser event
+  accumulation and accepted EOF remain future writer obligations. Retained-field
+  consistency alone does not prove every source fact was captured.
 - Registry completeness, table-kind agreement, typed same-edition ancestry
   and mixed-order collision checks are cross-table responsibilities for main's
   manifest-generated guards. These artifacts do not claim arbitrary raw-SQL
