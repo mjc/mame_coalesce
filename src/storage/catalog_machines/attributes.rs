@@ -450,7 +450,7 @@ fn device(positions: &mut Positions, key: [i64; 4], value: &mut mame::Device) ->
             value.interface.is_some(),
         ],
     )?;
-    if let Some(instance) = &mut value.instance {
+    for instance in &mut value.instances {
         instance.attribute_positions = take(
             positions,
             Family::Instance,

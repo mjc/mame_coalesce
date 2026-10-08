@@ -150,6 +150,7 @@ pub struct Input {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InputControl {
+    pub source_order: usize,
     pub kind: String,
     pub player: Option<String>,
     pub buttons: Option<String>,
@@ -176,6 +177,7 @@ pub struct Port {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Analog {
+    pub source_order: usize,
     pub mask: String,
     pub location: RecordLocation,
     pub attribute_positions: Vec<AttributePosition<MameAnalogAttribute>>,
@@ -192,6 +194,7 @@ pub struct Adjuster {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MachineCondition {
+    pub source_order: usize,
     pub tag: String,
     pub mask: String,
     pub relation: ConditionRelation,
@@ -363,7 +366,7 @@ pub struct Device {
     pub fixed_image: Option<String>,
     pub mandatory: Option<String>,
     pub interface: Option<String>,
-    pub instance: Option<DeviceInstance>,
+    pub instances: Vec<DeviceInstance>,
     pub extensions: Vec<DeviceExtension>,
     pub location: RecordLocation,
     pub attribute_positions: Vec<AttributePosition<MameDeviceAttribute>>,
@@ -371,6 +374,7 @@ pub struct Device {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeviceInstance {
+    pub source_order: usize,
     pub name: String,
     pub brief_name: String,
     pub location: RecordLocation,
@@ -379,6 +383,7 @@ pub struct DeviceInstance {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeviceExtension {
+    pub source_order: usize,
     pub name: String,
     pub location: RecordLocation,
     pub attribute_positions: Vec<AttributePosition<MameExtensionAttribute>>,
@@ -394,6 +399,7 @@ pub struct Slot {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SlotOption {
+    pub source_order: usize,
     pub name: String,
     pub device_name: String,
     pub is_default: MameBoolean,
@@ -473,8 +479,12 @@ fn boolean(node: &Element, name: &str, default: bool) -> crate::Result<MameBoole
     })
 }
 
-pub(super) fn parse_condition(node: &Element) -> crate::Result<MachineCondition> {
+pub(super) fn parse_condition(
+    node: &Element,
+    source_order: usize,
+) -> crate::Result<MachineCondition> {
     Ok(MachineCondition {
+        source_order,
         tag: required(node, "tag")?,
         mask: required(node, "mask")?,
         relation: choice(
@@ -499,8 +509,14 @@ pub(super) fn parse_condition(node: &Element) -> crate::Result<MachineCondition>
 }
 
 pub(super) fn parse_optional_condition(node: &Element) -> crate::Result<Option<MachineCondition>> {
-    let mut conditions = node.children().filter(|child| child.name == "condition");
-    let condition = conditions.next().map(parse_condition).transpose()?;
+    let mut conditions = node
+        .children()
+        .enumerate()
+        .filter(|(_, child)| child.name == "condition");
+    let condition = conditions
+        .next()
+        .map(|(source_order, child)| parse_condition(child, source_order))
+        .transpose()?;
     if conditions.next().is_some() {
         return Err(crate::Error::XmlValidation(format!(
             "MAME <{}> has multiple conditions",
@@ -603,9 +619,11 @@ pub(super) fn parse_element(node: &Element) -> crate::Result<MachineSpecificatio
             coins: attribute(node, "coins"),
             controls: node
                 .children()
-                .filter(|child| child.name == "control")
-                .map(|child| {
+                .enumerate()
+                .filter(|(_, child)| child.name == "control")
+                .map(|(source_order, child)| {
                     Ok(InputControl {
+                        source_order,
                         kind: required(child, "type")?,
                         player: attribute(child, "player"),
                         buttons: attribute(child, "buttons"),
@@ -636,9 +654,11 @@ pub(super) fn parse_element(node: &Element) -> crate::Result<MachineSpecificatio
             tag: required(node, "tag")?,
             analogs: node
                 .children()
-                .filter(|child| child.name == "analog")
-                .map(|child| {
+                .enumerate()
+                .filter(|(_, child)| child.name == "analog")
+                .map(|(source_order, child)| {
                     Ok(Analog {
+                        source_order,
                         mask: required(child, "mask")?,
                         location: child.location,
                         attribute_positions: attributes::select(
@@ -788,11 +808,13 @@ pub(super) fn parse_element(node: &Element) -> crate::Result<MachineSpecificatio
             fixed_image: attribute(node, "fixed_image"),
             mandatory: attribute(node, "mandatory"),
             interface: attribute(node, "interface"),
-            instance: node
+            instances: node
                 .children()
-                .find(|child| child.name == "instance")
-                .map(|child| -> crate::Result<DeviceInstance> {
+                .enumerate()
+                .filter(|(_, child)| child.name == "instance")
+                .map(|(source_order, child)| -> crate::Result<DeviceInstance> {
                     Ok(DeviceInstance {
+                        source_order,
                         name: required(child, "name")?,
                         brief_name: required(child, "briefname")?,
                         location: child.location,
@@ -802,12 +824,14 @@ pub(super) fn parse_element(node: &Element) -> crate::Result<MachineSpecificatio
                         )?,
                     })
                 })
-                .transpose()?,
+                .collect::<crate::Result<Vec<_>>>()?,
             extensions: node
                 .children()
-                .filter(|child| child.name == "extension")
-                .map(|child| -> crate::Result<DeviceExtension> {
+                .enumerate()
+                .filter(|(_, child)| child.name == "extension")
+                .map(|(source_order, child)| -> crate::Result<DeviceExtension> {
                     Ok(DeviceExtension {
+                        source_order,
                         name: required(child, "name")?,
                         location: child.location,
                         attribute_positions: attributes::select(
@@ -827,9 +851,11 @@ pub(super) fn parse_element(node: &Element) -> crate::Result<MachineSpecificatio
             name: required(node, "name")?,
             options: node
                 .children()
-                .filter(|child| child.name == "slotoption")
-                .map(|child| {
+                .enumerate()
+                .filter(|(_, child)| child.name == "slotoption")
+                .map(|(source_order, child)| {
                     Ok(SlotOption {
+                        source_order,
                         name: required(child, "name")?,
                         device_name: required(child, "devname")?,
                         is_default: boolean(child, "default", false)?,
@@ -883,4 +909,57 @@ pub(super) fn parse_element(node: &Element) -> crate::Result<MachineSpecificatio
         }
     };
     Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use quick_xml::events::Event;
+
+    use super::{Device, MachineSpecification, parse_element};
+    use crate::xml_reader::{NodeBudget, next, read_element, with_reader};
+
+    fn parse_device(xml: &[u8]) -> crate::Result<Device> {
+        with_reader(xml, |reader, positions| {
+            let (namespace, event) = next(reader, positions)?;
+            let Event::Start(start) = event else {
+                return Err(crate::Error::XmlValidation(
+                    "expected a non-empty MAME device element".to_owned(),
+                ));
+            };
+            let element = read_element(
+                reader,
+                namespace,
+                &start,
+                &mut NodeBudget::default(),
+                0,
+                positions,
+            )?;
+            match parse_element(&element)? {
+                MachineSpecification::Device(device) => Ok(device),
+                _ => Err(crate::Error::XmlValidation(
+                    "expected a MAME device specification".to_owned(),
+                )),
+            }
+        })
+    }
+
+    #[test]
+    fn repeated_device_instances_are_retained_in_source_order() -> crate::Result<()> {
+        // This checks parser fidelity only; format-profile cardinality is
+        // validated separately from this shared typed representation.
+        let device = parse_device(
+            br#"<device type="cartridge">
+                <instance name="cassette" briefname="Cassette"/>
+                <instance name="floppy" briefname="Floppy"/>
+            </device>"#,
+        )?;
+
+        let instances = device
+            .instances
+            .iter()
+            .map(|instance| (instance.name.as_str(), instance.brief_name.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(instances, [("cassette", "Cassette"), ("floppy", "Floppy")]);
+        Ok(())
+    }
 }

@@ -182,13 +182,14 @@ pub(super) fn insert_values_bulk(
                 "status": Nullable<Text> = value.status.map(crate::mame::FeatureStatus::as_str),
                 "overall": Nullable<Text> = value.overall.map(crate::mame::FeatureStatus::as_str)),
             Spec::Device(value) => {
+                ensure_legacy_device_instance_cardinality(&value.instances)?;
                 insert_record!("mame_machine_devices", order, value.location;
                     "kind": Text = &value.kind,
                     "tag": Nullable<Text> = value.tag.as_deref(),
                     "fixed_image": Nullable<Text> = value.fixed_image.as_deref(),
                     "mandatory": Nullable<Text> = value.mandatory.as_deref(),
                     "interface": Nullable<Text> = value.interface.as_deref());
-                if let Some(instance) = &value.instance {
+                for instance in &value.instances {
                     cached_sql(
                         "INSERT INTO mame_machine_device_instances \
                          (set_id, element_order, name, brief_name, source_line, source_column) \
@@ -354,13 +355,14 @@ pub(super) fn insert_positions_bulk(
                 mame::MameFeatureAttribute::code
             ),
             Spec::Device(value) => {
+                ensure_legacy_device_instance_cardinality(&value.instances)?;
                 queue!(
                     Family::Device,
                     &[set_id, order],
                     &value.attribute_positions,
                     mame::MameDeviceAttribute::code
                 );
-                if let Some(instance) = &value.instance {
+                for instance in &value.instances {
                     queue!(
                         Family::Instance,
                         &[set_id, order],
@@ -410,6 +412,17 @@ pub(super) fn insert_positions_bulk(
                 mame::MameRamOptionAttribute::code
             ),
         }
+    }
+    Ok(())
+}
+
+fn ensure_legacy_device_instance_cardinality(
+    instances: &[mame::DeviceInstance],
+) -> crate::Result<()> {
+    if instances.len() > 1 {
+        return Err(crate::Error::DatabaseSchema(
+            "legacy MAME storage supports only one device instance per device".to_owned(),
+        ));
     }
     Ok(())
 }

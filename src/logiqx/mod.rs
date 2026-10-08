@@ -15,7 +15,7 @@ pub enum LogiqxMode {
     StrictDtd15,
 }
 
-pub use crate::xml_reader::{AttributeLocation, AttributePosition};
+pub use crate::xml_reader::{AttributeLocation, AttributePosition, SourceExtent};
 pub use attributes::{
     BiosSetAttribute, ClrMameProAttribute, DiskAttribute, DocumentAttribute, GameAttribute,
     NameAttribute, ReleaseAttribute, RomAttribute, RomCenterAttribute,
@@ -28,5 +28,7 @@ pub use game::{
 pub use header::{
     ClrMameProOptions, Header, HeaderTextField, HeaderTextPosition, RomCenterOptions,
 };
-pub use reader::{DocumentAttributes, LocatedGame, ValidatedLogiqx, read_with, read_with_mode};
+pub use reader::{
+    DocumentAttributes, LocatedGame, LogiqxCaptureProof, ValidatedLogiqx, read_with, read_with_mode,
+};
 pub use rom::{Disk, Rom};

@@ -31,6 +31,9 @@ pub struct DocumentMetadata {
     pub(super) debug: Option<String>,
     pub(super) header: Option<Header>,
     pub(super) sha1: Option<Vec<u8>>,
+    pub(super) header_source_order: Option<usize>,
+    pub(super) file_name_source_order: Option<usize>,
+    pub(super) sha1_source_order: Option<usize>,
     pub(super) attribute_positions: Vec<AttributePosition<DocumentAttribute>>,
 }
 
@@ -258,6 +261,21 @@ impl DocumentMetadata {
     pub fn attribute_positions(&self) -> &[AttributePosition<DocumentAttribute>] {
         &self.attribute_positions
     }
+
+    #[must_use]
+    pub const fn header_source_order(&self) -> Option<usize> {
+        self.header_source_order
+    }
+
+    #[must_use]
+    pub const fn file_name_source_order(&self) -> Option<usize> {
+        self.file_name_source_order
+    }
+
+    #[must_use]
+    pub const fn sha1_source_order(&self) -> Option<usize> {
+        self.sha1_source_order
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -479,12 +497,15 @@ pub(super) fn read_datafile_root(
     positions: &mut xml_reader::PositionMap<'_>,
     budget: &mut NodeBudget,
     strict_dtd15: bool,
-) -> crate::Result<(Element, bool, DeclarationPolicy)> {
+) -> crate::Result<(Element, bool, DeclarationPolicy, (u64, u64))> {
     let mut prolog = PrologState::DeclarationAllowed;
-    let (namespace, event) = loop {
+    let (namespace, event, event_span) = loop {
         let (namespace, event) = xml_reader::next(reader, positions)?;
         if matches!(event, Event::Start(_) | Event::Empty(_)) {
-            break (namespace, event);
+            let span = reader.last_event_span().ok_or_else(|| {
+                crate::Error::XmlValidation("XML datafile root has no source range".into())
+            })?;
+            break (namespace, event, span);
         }
         if event == Event::Eof {
             return Err(crate::Error::XmlValidation("missing document root".into()));
@@ -510,7 +531,7 @@ pub(super) fn read_datafile_root(
             root.name
         )));
     }
-    Ok((root, empty, prolog.policy()))
+    Ok((root, empty, prolog.policy(), event_span))
 }
 
 pub(super) fn parse_datafile_sha1(value: &str) -> crate::Result<Vec<u8>> {
@@ -758,6 +779,111 @@ mod tests {
             names,
             ["root-extension", "game-extension", "header-extension"]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn streaming_capture_maps_bom_root_extent_and_keeps_ignored_child_ordinals() -> crate::Result<()>
+    {
+        let xml = b"\xef\xbb\xbf<datafile><!--before--><vendor-extension/><game name='first'/><file_name>set.dat</file_name></datafile><!--after-->";
+        let mut games = Vec::new();
+        let validated = super::super::read_with::<_, crate::Error>(
+            xml,
+            |attributes| {
+                assert_eq!(attributes.root_extent_start, Some(3));
+                assert_eq!(attributes.root_location.line, 1);
+                assert_eq!(attributes.root_location.column, 1);
+                Ok(())
+            },
+            |(), game| {
+                games.push(game);
+                Ok(())
+            },
+        )?;
+        let (metadata, (), capture) = validated.into_capture_parts();
+
+        let root_end = xml
+            .windows(b"</datafile>".len())
+            .position(|window| window == b"</datafile>")
+            .expect("root closing tag exists")
+            + b"</datafile>".len();
+        assert_eq!(
+            capture.root_extent(),
+            Some(crate::xml_reader::SourceExtent {
+                start: 3,
+                end: root_end,
+            })
+        );
+        assert_eq!(capture.root_end_location().line, 1);
+        assert_eq!(
+            capture.root_end_location().column,
+            i64::try_from(root_end - 2).expect("coordinate fits")
+        );
+        assert_eq!(games.len(), 1);
+        assert_eq!(games[0].game.name(), "first");
+        assert_eq!(games[0].source_order, 1);
+        assert_eq!(metadata.file_name_source_order(), Some(2));
+        Ok(())
+    }
+
+    #[test]
+    fn streaming_capture_does_not_invent_utf16_source_byte_offsets() -> crate::Result<()> {
+        let text = "<datafile><vendor-extension/><game name='first'/></datafile>";
+        let mut xml = vec![0xff, 0xfe];
+        xml.extend(utf16_bytes(text, false));
+        let mut games = Vec::new();
+        let validated = super::super::read_with::<_, crate::Error>(
+            &xml,
+            |attributes| {
+                assert_eq!(attributes.root_extent_start, None);
+                Ok(())
+            },
+            |(), game| {
+                games.push(game);
+                Ok(())
+            },
+        )?;
+        let (_, (), capture) = validated.into_capture_parts();
+        assert_eq!(capture.root_extent(), None);
+        assert_eq!(capture.root_end_location().line, 1);
+        assert_eq!(games.len(), 1);
+        assert_eq!(games[0].source_order, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn trailing_content_error_withholds_capture_after_streaming_games() {
+        let xml = b"<datafile><game name='first'/></datafile><outside/>";
+        let mut games = Vec::new();
+        let result = super::super::read_with::<_, crate::Error>(
+            xml,
+            |_| Ok(()),
+            |(), game| {
+                games.push(game.game.name().to_owned());
+                Ok(())
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(games, ["first"]);
+    }
+
+    #[test]
+    fn strict_mode_keeps_existing_header_metadata_and_game_stream() -> crate::Result<()> {
+        let mut game_orders = Vec::new();
+        let validated = super::super::read_with_mode::<_, crate::Error>(
+            SIMPLE_DAT.as_bytes(),
+            super::super::LogiqxMode::StrictDtd15,
+            |_| Ok(()),
+            |(), game| {
+                game_orders.push(game.source_order);
+                Ok(())
+            },
+        )?;
+        let (metadata, (), capture) = validated.into_capture_parts();
+        assert_eq!(metadata.header()?.name(), "Test Set");
+        assert_eq!(metadata.header_source_order(), Some(0));
+        assert_eq!(game_orders, [1]);
+        assert!(capture.root_extent().is_some());
         Ok(())
     }
 

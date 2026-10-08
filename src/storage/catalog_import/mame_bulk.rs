@@ -78,10 +78,7 @@ fn node_count(set: &SnapshotSet) -> usize {
         let children = match &element.value {
             Spec::Input(value) => value.controls.len(),
             Spec::Port(value) => value.analogs.len(),
-            Spec::Device(value) => value
-                .extensions
-                .len()
-                .saturating_add(usize::from(value.instance.is_some())),
+            Spec::Device(value) => value.extensions.len().saturating_add(value.instances.len()),
             Spec::Slot(value) => value.options.len(),
             Spec::Sample(_)
             | Spec::Chip(_)

@@ -11,7 +11,7 @@ use crate::xml_reader::Element;
 
 mod attributes;
 mod specification;
-pub use crate::xml_reader::{AttributeLocation, AttributePosition};
+pub use crate::xml_reader::{AttributeLocation, AttributePosition, SourceExtent};
 pub use attributes::*;
 pub use specification::*;
 
@@ -419,6 +419,8 @@ pub struct MameHeader {
     pub debug_specified: bool,
     pub config_version: String,
     pub location: RecordLocation,
+    /// Byte offset of the root opening `<`, when the decoded view maps to bytes.
+    pub root_extent_start: Option<usize>,
     pub extensions: Vec<XmlExtension>,
     pub attribute_positions: Vec<AttributePosition<MameDocumentAttribute>>,
 }
@@ -428,14 +430,50 @@ pub enum MameRecord {
     Extension(XmlExtension),
 }
 
+/// A parsed direct child of `<mame>`, delivered only after its closing event.
+pub struct CompleteMameRecord {
+    pub record: MameRecord,
+    pub source_order: i64,
+    pub location: RecordLocation,
+    /// Physical interval of this closed root child when byte mapping is valid.
+    pub extent: Option<SourceExtent>,
+}
+
+/// Root physical extent and end coordinate, available only after accepted EOF.
+pub struct MameCaptureProof {
+    root_extent: Option<SourceExtent>,
+    root_end_location: RecordLocation,
+}
+
+impl MameCaptureProof {
+    #[must_use]
+    pub const fn root_extent(&self) -> Option<SourceExtent> {
+        self.root_extent
+    }
+
+    #[must_use]
+    pub const fn root_end_location(&self) -> RecordLocation {
+        self.root_end_location
+    }
+}
+
 /// Only a successful traversal through the closing root and EOF produces this state.
-pub struct ValidatedMame<S>(S);
+pub struct ValidatedMame<S> {
+    sink: S,
+    capture: MameCaptureProof,
+}
 
 impl<S> ValidatedMame<S> {
     /// Consume the reader-owned valid-EOF proof and return its completed sink.
     #[must_use]
     pub fn into_inner(self) -> S {
-        self.0
+        self.sink
+    }
+
+    /// Consume the sink together with its validated root/EOF capture proof.
+    #[must_use]
+    pub fn into_capture_parts(self) -> (S, MameCaptureProof) {
+        (self.sink, self.capture)
     }
 }
 
@@ -448,12 +486,33 @@ pub fn read_with<S, E: From<crate::Error>>(
     start: impl FnOnce(MameHeader) -> Result<S, E>,
     mut consume: impl FnMut(&mut S, MameRecord) -> Result<(), E>,
 ) -> Result<ValidatedMame<S>, E> {
+    read_captured_with(bytes, start, |sink, complete| {
+        consume(sink, complete.record)
+    })
+}
+
+/// Stream complete root children and return root extent proof only after valid EOF.
+pub fn read_captured_with<S, E: From<crate::Error>>(
+    bytes: &[u8],
+    start: impl FnOnce(MameHeader) -> Result<S, E>,
+    mut consume: impl FnMut(&mut S, CompleteMameRecord) -> Result<(), E>,
+) -> Result<ValidatedMame<S>, E> {
     xml_reader::with_reader(bytes, |reader, positions| {
-        let (namespace, root_start, empty) = loop {
+        let (namespace, root_start, empty, root_event_span) = loop {
             let (namespace, event) = xml_reader::next(reader, positions)?;
             match event {
-                Event::Start(start) => break (namespace, start, false),
-                Event::Empty(start) => break (namespace, start, true),
+                Event::Start(start) => {
+                    let span = reader.last_event_span().ok_or_else(|| {
+                        crate::Error::XmlValidation("XML root start has no source range".into())
+                    })?;
+                    break (namespace, start, false, span);
+                }
+                Event::Empty(start) => {
+                    let span = reader.last_event_span().ok_or_else(|| {
+                        crate::Error::XmlValidation("XML root start has no source range".into())
+                    })?;
+                    break (namespace, start, true, span);
+                }
                 Event::Text(text)
                     if text
                         .xml10_content()
@@ -508,19 +567,27 @@ pub fn read_with<S, E: From<crate::Error>>(
                 }
             })
             .collect();
+        let root_extent_start = positions.event_extent_start(root_event_span.0)?;
         let mut sink = start(MameHeader {
             build,
             debug,
             debug_specified: root.attributes.contains_key("debug"),
             config_version,
             location: root.location,
+            root_extent_start,
             extensions,
             attribute_positions,
         })?;
-        parse_machine_records(reader, positions, &mut budget, empty, true, |record| {
-            consume(&mut sink, record)
-        })?;
-        Ok(ValidatedMame(sink))
+        let capture = parse_machine_records(
+            reader,
+            positions,
+            &mut budget,
+            empty,
+            root_event_span,
+            true,
+            |record| consume(&mut sink, record),
+        )?;
+        Ok(ValidatedMame { sink, capture })
     })
 }
 
@@ -557,21 +624,50 @@ fn parse_machine_records<E: From<crate::Error>>(
     positions: &mut xml_reader::PositionMap<'_>,
     budget: &mut NodeBudget,
     empty: bool,
+    root_event_span: (u64, u64),
     retain_extensions: bool,
-    mut consume: impl FnMut(MameRecord) -> Result<(), E>,
-) -> Result<(), E> {
+    mut consume: impl FnMut(CompleteMameRecord) -> Result<(), E>,
+) -> Result<MameCaptureProof, E> {
     let mut saw_machine = false;
-    if !empty {
+    let (root_end_offset, root_end_location) = if empty {
+        let end = root_event_span.1;
+        (end, positions.event_location(end)?)
+    } else {
+        let mut source_order = 0_usize;
         loop {
             let (namespace, event) = xml_reader::next(reader, positions)?;
-            let node = match event {
+            let (node, record_order, record_start) = match event {
                 Event::Start(child) => {
-                    xml_reader::read_element(reader, namespace, &child, budget, 1, positions)?
+                    let (record_start, _) = reader.last_event_span().ok_or_else(|| {
+                        crate::Error::XmlValidation("XML child start has no source range".into())
+                    })?;
+                    let record_order = to_source_order(source_order)?;
+                    source_order = source_order.checked_add(1).ok_or_else(|| {
+                        crate::Error::XmlValidation("MAME source order overflow".into())
+                    })?;
+                    let node =
+                        xml_reader::read_element(reader, namespace, &child, budget, 1, positions)?;
+                    (node, record_order, record_start)
                 }
                 Event::Empty(child) => {
-                    xml_reader::element_from_start(reader, namespace, &child, budget, 1, positions)?
+                    let (record_start, _) = reader.last_event_span().ok_or_else(|| {
+                        crate::Error::XmlValidation("XML child start has no source range".into())
+                    })?;
+                    let record_order = to_source_order(source_order)?;
+                    source_order = source_order.checked_add(1).ok_or_else(|| {
+                        crate::Error::XmlValidation("MAME source order overflow".into())
+                    })?;
+                    let node = xml_reader::element_from_start(
+                        reader, namespace, &child, budget, 1, positions,
+                    )?;
+                    (node, record_order, record_start)
                 }
-                Event::End(_) => break,
+                Event::End(_) => {
+                    let (_, end) = reader.last_event_span().ok_or_else(|| {
+                        crate::Error::XmlValidation("XML root end has no source range".into())
+                    })?;
+                    break (end, positions.event_location(end)?);
+                }
                 Event::Eof => {
                     return Err(crate::Error::XmlValidation(
                         "unexpected end of input inside <mame>".into(),
@@ -580,14 +676,24 @@ fn parse_machine_records<E: From<crate::Error>>(
                 }
                 _ => continue,
             };
+            let location = node.location;
+            let (_, record_end) = reader.last_event_span().ok_or_else(|| {
+                crate::Error::XmlValidation("XML child end has no source range".into())
+            })?;
+            let extent = positions.event_extent(record_start, record_end)?;
             let record = parse_record(&node, retain_extensions)?;
             drop(node);
             if let Some(record) = record {
                 saw_machine |= matches!(&record, MameRecord::Machine(_));
-                consume(record)?;
+                consume(CompleteMameRecord {
+                    record,
+                    source_order: record_order,
+                    location,
+                    extent,
+                })?;
             }
         }
-    }
+    };
     loop {
         match xml_reader::next(reader, positions)?.1 {
             Event::Eof => break,
@@ -609,7 +715,11 @@ fn parse_machine_records<E: From<crate::Error>>(
             crate::Error::XmlValidation("MAME document has no machine records".into()).into(),
         );
     }
-    Ok(())
+    let root_extent = positions.event_extent(root_event_span.0, root_end_offset)?;
+    Ok(MameCaptureProof {
+        root_extent,
+        root_end_location,
+    })
 }
 
 fn parse_record(node: &Element, retain_extensions: bool) -> crate::Result<Option<MameRecord>> {
@@ -1015,7 +1125,7 @@ fn parse_machine_switch(
                         node.name
                     )));
                 }
-                condition = Some(specification::parse_condition(child)?);
+                condition = Some(specification::parse_condition(child, child_order)?);
             }
             "diplocation" | "conflocation" => {
                 if !matches!(
@@ -1461,6 +1571,95 @@ mod tests {
         );
         assert!(result.is_err());
         assert_eq!(names, ["first"]);
+    }
+
+    #[test]
+    fn captured_records_keep_root_extent_and_physical_source_order() -> crate::Result<()> {
+        let xml = b"\xef\xbb\xbf<mame mameconfig='10'><vendor/><machine name='ordered'><description>Ordered</description><vendor-child/><rom name='r.bin'/></machine><!--after--></mame><!--outside-->";
+        let mut records = Vec::new();
+        let validated = read_captured_with::<_, crate::Error>(
+            xml,
+            |header| {
+                assert_eq!(header.root_extent_start, Some(3));
+                Ok(())
+            },
+            |(), record| {
+                records.push(record);
+                Ok(())
+            },
+        )?;
+        let (_, proof) = validated.into_capture_parts();
+
+        let root_end = xml
+            .windows(b"</mame>".len())
+            .position(|window| window == b"</mame>")
+            .expect("MAME root closes")
+            + b"</mame>".len();
+        assert_eq!(
+            proof.root_extent(),
+            Some(SourceExtent {
+                start: 3,
+                end: root_end
+            })
+        );
+        assert_eq!(proof.root_end_location().line, 1);
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].source_order, 0);
+        assert!(matches!(records[0].record, MameRecord::Extension(_)));
+
+        let machine = &records[1];
+        assert_eq!(machine.source_order, 1);
+        let machine_start = xml
+            .windows(b"<machine name='ordered'>".len())
+            .position(|window| window == b"<machine name='ordered'>")
+            .expect("machine opening tag exists");
+        assert_eq!(machine.location.line, 1);
+        assert_eq!(
+            machine.location.column,
+            i64::try_from(machine_start - 2).expect("location fits")
+        );
+        let machine_end = xml
+            .windows(b"</machine>".len())
+            .position(|window| window == b"</machine>")
+            .expect("machine closing tag exists")
+            + b"</machine>".len();
+        assert_eq!(
+            machine.extent,
+            Some(SourceExtent {
+                start: machine_start,
+                end: machine_end,
+            })
+        );
+        let MameRecord::Machine(machine) = &machine.record else {
+            panic!("second root child is the machine")
+        };
+        assert_eq!(machine.assets[0].source_order, 2);
+        assert_eq!(machine.facts.description_source_order, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn capture_does_not_report_utf16_transcoded_offsets_as_source_bytes() -> crate::Result<()> {
+        let text =
+            "<mame mameconfig='10'><machine name='m'><description>M</description></machine></mame>";
+        let mut xml = vec![0xff, 0xfe];
+        xml.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
+        let mut records = Vec::new();
+        let validated = read_captured_with::<_, crate::Error>(
+            &xml,
+            |_| Ok(()),
+            |(), record| {
+                records.push(record);
+                Ok(())
+            },
+        )?;
+        let (_, proof) = validated.into_capture_parts();
+        assert_eq!(proof.root_extent(), None);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].source_order, 0);
+        assert_eq!(records[0].location.line, 1);
+        assert_eq!(records[0].extent, None);
+        Ok(())
     }
 
     #[test]

@@ -832,15 +832,9 @@ fn check_hardware(machine: &Machine) -> TestResult {
             }
             MachineSpecification::Device(value) => {
                 check_core!("device", 0, &value.attribute_positions);
-                check_core!(
-                    "instance",
-                    0,
-                    &value
-                        .instance
-                        .as_ref()
-                        .expect("device instance")
-                        .attribute_positions
-                );
+                for (index, instance) in value.instances.iter().enumerate() {
+                    check_core!("instance", index, &instance.attribute_positions);
+                }
                 for (index, extension) in value.extensions.iter().enumerate() {
                     check_core!("extension", index, &extension.attribute_positions);
                 }

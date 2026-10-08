@@ -79,6 +79,7 @@ pub struct XmlReader<'a> {
     reader: Reader<&'a [u8]>,
     namespaces: NamespaceResolver,
     pending_pop: bool,
+    last_event_span: Option<(u64, u64)>,
 }
 
 impl<'a> XmlReader<'a> {
@@ -89,6 +90,7 @@ impl<'a> XmlReader<'a> {
             reader,
             namespaces: NamespaceResolver::default(),
             pending_pop: false,
+            last_event_span: None,
         }
     }
 
@@ -100,15 +102,23 @@ impl<'a> XmlReader<'a> {
         &self.namespaces
     }
 
+    /// The most recently consumed event's half-open range in the parse buffer.
+    #[must_use]
+    pub const fn last_event_span(&self) -> Option<(u64, u64)> {
+        self.last_event_span
+    }
+
     fn read_event(&mut self) -> Result<Event<'a>> {
         if self.pending_pop {
             self.namespaces.pop();
             self.pending_pop = false;
         }
+        let start = self.reader.buffer_position();
         let event = self
             .reader
             .read_event()
             .map_err(|error| Error::XmlValidation(error.to_string()))?;
+        self.last_event_span = Some((start, self.reader.buffer_position()));
         match &event {
             Event::Start(start) | Event::Empty(start) => {
                 self.push_namespaces(start)?;
@@ -155,6 +165,13 @@ pub struct Element {
     pub(crate) has_namespace_declarations: bool,
     #[serde(skip)]
     pub location: RecordLocation,
+}
+
+/// Exact half-open byte interval in the UTF-8 transport-decoded XML view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SourceExtent {
+    pub start: usize,
+    pub end: usize,
 }
 
 /// Coarse XML content classification retained without saving markup strings.
@@ -262,6 +279,7 @@ pub struct PositionMap<'a> {
     bytes: &'a [u8],
     cursor: usize,
     position: SourcePosition,
+    source_bytes_mappable: bool,
 }
 
 /// Provenance of a leading U+FEFF in the decoded reader buffer. quick-xml
@@ -384,7 +402,16 @@ impl<'a> PositionMap<'a> {
         Ok(self.position.location())
     }
 
+    #[cfg(test)]
     const fn new(bytes: &'a [u8], bom_origin: BomOrigin) -> Self {
+        Self::with_source_byte_mapping(bytes, bom_origin, true)
+    }
+
+    const fn with_source_byte_mapping(
+        bytes: &'a [u8],
+        bom_origin: BomOrigin,
+        source_bytes_mappable: bool,
+    ) -> Self {
         let prefix_length = utf8_bom_length(bytes);
         let mut position = SourcePosition::new();
         if prefix_length != 0 && matches!(bom_origin, BomOrigin::DecodedScalar) {
@@ -396,6 +423,7 @@ impl<'a> PositionMap<'a> {
             // the reader-skipped byte prefix without erasing a decoded scalar.
             cursor: prefix_length,
             position,
+            source_bytes_mappable,
         }
     }
 
@@ -408,9 +436,32 @@ impl<'a> PositionMap<'a> {
             .ok_or_else(|| Error::XmlValidation("invalid XML event source offset".into()))
     }
 
+    /// Map an event boundary to transport-decoded UTF-8 bytes when available.
+    pub(crate) fn event_extent_start(&self, offset: u64) -> Result<Option<usize>> {
+        self.source_bytes_mappable
+            .then(|| self.event_source_offset(offset))
+            .transpose()
+    }
+
     /// Locate a quick-xml event boundary; borrowed-slice offsets use `source_location`.
     pub(crate) fn event_location(&mut self, offset: u64) -> Result<RecordLocation> {
         self.source_location(self.event_source_offset(offset)?)
+    }
+
+    /// Map reader event boundaries to source bytes when parsing did not
+    /// transcode the XML encoding.
+    pub(crate) fn event_extent(&self, start: u64, end: u64) -> Result<Option<SourceExtent>> {
+        if !self.source_bytes_mappable {
+            return Ok(None);
+        }
+        let start = self.event_source_offset(start)?;
+        let end = self.event_source_offset(end)?;
+        if end <= start {
+            return Err(Error::XmlValidation(
+                "XML event extent is empty or reversed".into(),
+            ));
+        }
+        Ok(Some(SourceExtent { start, end }))
     }
 }
 
@@ -422,6 +473,7 @@ pub fn with_reader<T, E: From<Error>>(
 ) -> std::result::Result<T, E> {
     let source = document_input::decode_xml(bytes)?;
     let view = input_view(bytes);
+    let source_bytes_mappable = utf16_encoding(&source).is_none();
     let xml = decode_text(&source, view)?;
     let bom_origin = if utf16_encoding(&source).is_some() {
         BomOrigin::DecodedScalar
@@ -429,7 +481,7 @@ pub fn with_reader<T, E: From<Error>>(
         BomOrigin::Transport
     };
     validate_xml10_characters(&xml, Some((&source, view)), bom_origin)?;
-    parse_decoded(&xml, bom_origin, parse)
+    parse_decoded(&xml, bom_origin, source_bytes_mappable, parse)
 }
 
 /// Read text decoded once by an adapter with a format-specific recovery policy.
@@ -439,15 +491,17 @@ pub fn with_decoded_reader<T, E: From<Error>>(
     parse: impl FnOnce(&mut XmlReader<'_>, &mut PositionMap<'_>) -> std::result::Result<T, E>,
 ) -> std::result::Result<T, E> {
     validate_xml10_characters(xml, None, bom_origin)?;
-    parse_decoded(xml, bom_origin, parse)
+    parse_decoded(xml, bom_origin, false, parse)
 }
 
 fn parse_decoded<T, E: From<Error>>(
     xml: &str,
     bom_origin: BomOrigin,
+    source_bytes_mappable: bool,
     parse: impl FnOnce(&mut XmlReader<'_>, &mut PositionMap<'_>) -> std::result::Result<T, E>,
 ) -> std::result::Result<T, E> {
-    let mut positions = PositionMap::new(xml.as_bytes(), bom_origin);
+    let mut positions =
+        PositionMap::with_source_byte_mapping(xml.as_bytes(), bom_origin, source_bytes_mappable);
     let mut reader = XmlReader::new(xml.as_bytes());
     parse(&mut reader, &mut positions)
 }
@@ -1172,16 +1226,15 @@ pub fn read_element(
                 element
                     .content_kind
                     .include(ElementContentKind::ElementOnly);
-                element
-                    .content
-                    .push(ElementContent::Element(element_from_start(
-                        reader,
-                        namespace,
-                        &child,
-                        budget,
-                        depth.saturating_add(1),
-                        positions,
-                    )?));
+                let child = element_from_start(
+                    reader,
+                    namespace,
+                    &child,
+                    budget,
+                    depth.saturating_add(1),
+                    positions,
+                )?;
+                element.content.push(ElementContent::Element(child));
             }
             Event::Text(text) => {
                 let text = text.xml10_content();

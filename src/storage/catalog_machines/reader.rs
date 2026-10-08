@@ -1137,6 +1137,8 @@ fn load_specification(
             ));
         }
         values.push(InputControl {
+            source_order: usize::try_from(order)
+                .map_err(|_| MachineQueryError::InvalidPositions(row.owner_id))?,
             attribute_positions: Vec::new(),
             kind: row.control_type,
             player: row.player,
@@ -1167,6 +1169,8 @@ fn load_specification(
             return Err(MachineQueryError::InvalidPositions(row.owner_id));
         }
         values.push(Analog {
+            source_order: usize::try_from(order)
+                .map_err(|_| MachineQueryError::InvalidPositions(row.owner_id))?,
             attribute_positions: Vec::new(),
             mask: row.mask,
             location: RecordLocation {
@@ -1191,11 +1195,13 @@ fn load_specification(
         }
     }
 
-    let mut device_instances = BTreeMap::new();
+    let mut device_instances = BTreeMap::<(i64, i64), Vec<DeviceInstance>>::new();
     for row in
         sql_query(super::queries::SPEC_DEVICE_INSTANCES).load::<DeviceInstanceRow>(connection)?
     {
         let value = DeviceInstance {
+            // The legacy table is one row per device and has no child ordinal.
+            source_order: 0,
             attribute_positions: Vec::new(),
             name: row.name,
             brief_name: row.brief_name,
@@ -1204,12 +1210,10 @@ fn load_specification(
                 column: row.column,
             },
         };
-        if device_instances
-            .insert((row.owner_id, row.element_order), value)
-            .is_some()
-        {
-            return Err(MachineQueryError::InvalidPositions(row.owner_id));
-        }
+        device_instances
+            .entry((row.owner_id, row.element_order))
+            .or_default()
+            .push(value);
     }
     let mut device_extensions = BTreeMap::<(i64, i64), Vec<DeviceExtension>>::new();
     for row in
@@ -1223,6 +1227,8 @@ fn load_specification(
             return Err(MachineQueryError::InvalidPositions(row.owner_id));
         }
         values.push(DeviceExtension {
+            source_order: usize::try_from(order)
+                .map_err(|_| MachineQueryError::InvalidPositions(row.owner_id))?,
             attribute_positions: Vec::new(),
             name: row.name,
             location: RecordLocation {
@@ -1255,6 +1261,8 @@ fn load_specification(
             ));
         }
         values.push(SlotOption {
+            source_order: usize::try_from(order)
+                .map_err(|_| MachineQueryError::InvalidPositions(row.owner_id))?,
             attribute_positions: Vec::new(),
             name: row.name,
             device_name: row.devname,
@@ -1582,7 +1590,7 @@ fn load_specification(
                 fixed_image: row.fixed_image,
                 mandatory: row.mandatory,
                 interface: row.interface,
-                instance: device_instances.remove(&key),
+                instances: device_instances.remove(&key).unwrap_or_default(),
                 extensions: device_extensions.remove(&key).unwrap_or_default(),
                 location: RecordLocation {
                     line: row.line,
@@ -1782,6 +1790,9 @@ fn parse_condition(
         other => return Err(invalid(field, row.owner_id, other)),
     };
     Ok(crate::mame::MachineCondition {
+        // The legacy schema only stores one condition and cannot recover its
+        // original mixed-child position.
+        source_order: 0,
         attribute_positions: Vec::new(),
         tag: row.tag,
         mask: row.mask,
