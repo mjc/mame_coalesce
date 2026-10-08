@@ -55,6 +55,11 @@ CREATE TABLE catalog_import_message_elements (
     FOREIGN KEY (source_element_id, edition_id) REFERENCES catalog_source_elements(source_element_id, edition_id)
 ) STRICT, WITHOUT ROWID;
 
+CREATE INDEX catalog_import_message_elements_by_owner
+    ON catalog_import_message_elements(source_element_id,message_id);
+CREATE INDEX catalog_import_message_elements_by_edition
+    ON catalog_import_message_elements(edition_id,message_id);
+
 CREATE TABLE catalog_import_message_external_evidence (
     message_id INTEGER NOT NULL REFERENCES catalog_import_messages(message_id),
     compared_source_element_id INTEGER NOT NULL,

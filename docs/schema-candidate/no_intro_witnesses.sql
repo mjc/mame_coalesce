@@ -112,7 +112,7 @@ INSERT INTO no_intro_export_headers(header_id,edition_id,location_view,start_lin
 VALUES (700,52,'transport_decoded_xml_text',2,1,2,10,'one_based_unicode_scalar');
 INSERT INTO no_intro_export_header_placements VALUES (300,700,52,0);
 INSERT INTO no_intro_export_header_fields VALUES (301,700,'author','',0,2,12,2,21);
-INSERT INTO no_intro_export_games VALUES (302,NULL,NULL,NULL);
+INSERT INTO no_intro_export_games(set_id,extent_view,extent_start,extent_end) VALUES (302,NULL,NULL,NULL);
 INSERT INTO no_intro_export_game_field_positions VALUES (302,'name',0,0,3,8);
 INSERT INTO no_intro_archive_descriptions(archive_id,set_id,name,source_order,source_line,source_column,source_end_line,source_end_column)
 VALUES (303,302,'variant',0,3,20,3,40);

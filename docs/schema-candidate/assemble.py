@@ -261,6 +261,8 @@ def immutable_dictionary_sql():
 
 
 def root_diagnostic_sql():
+    from diagnostic_links import containment_sql
+
     tables, guards, links, problems = [], [], [], []
     for table, owner, family, extra in ROOT_LINKS:
         extra_column = f'{identifier(extra)} INTEGER NOT NULL,' if extra else ''
@@ -277,14 +279,7 @@ def root_diagnostic_sql():
             owner_join = f'JOIN {identifier(owner)} AS owner ON owner.edition_id=link.edition_id'
             mode = ''
         tables.append(f"CREATE TABLE {identifier(table)}(message_id INTEGER NOT NULL,edition_id INTEGER NOT NULL,{extra_column}role TEXT NOT NULL CHECK(role IN ('primary','related')),PRIMARY KEY(message_id,edition_id,role),FOREIGN KEY(message_id,edition_id) REFERENCES catalog_import_messages(message_id,edition_id),{owner_fk}) STRICT, WITHOUT ROWID;")
-        byte_start = "CASE WHEN message.source_view=owner.extent_view AND message.source_problem_start IS NOT NULL THEN message.source_problem_start WHEN owner.extent_view='retained_original_bytes' THEN message.original_problem_start END"
-        byte_end = "CASE WHEN message.source_view=owner.extent_view AND message.source_problem_end IS NOT NULL THEN message.source_problem_end WHEN owner.extent_view='retained_original_bytes' THEN message.original_problem_end END"
-        byte_available = f'(owner.extent_view IS NOT NULL AND ({byte_start}) IS NOT NULL)'
-        source_length = "CASE owner.extent_view WHEN 'retained_original_bytes' THEN source.byte_length WHEN 'transport_decoded_xml_bytes' THEN decoded.byte_length END"
-        byte_within = f'(owner.extent_start>=0 AND owner.extent_start<owner.extent_end AND owner.extent_end<=({source_length}) AND owner.extent_start<=({byte_start}) AND ({byte_start})<owner.extent_end AND ({byte_start})<=({byte_end}) AND ({byte_end})<=owner.extent_end)'
-        coord_available = '(message.line IS NOT NULL AND message.column IS NOT NULL AND owner.start_line IS NOT NULL AND owner.start_column IS NOT NULL AND owner.end_line IS NOT NULL AND owner.end_column IS NOT NULL AND message.location_view=owner.location_view AND message.column_convention=owner.column_convention)'
-        coord_within = '((message.line>owner.start_line OR (message.line=owner.start_line AND message.column>=owner.start_column)) AND (message.line<owner.end_line OR (message.line=owner.end_line AND message.column<owner.end_column)))'
-        proof = f'(({byte_available}) IS TRUE OR ({coord_available}) IS TRUE) AND (({byte_available}) IS NOT TRUE OR ({byte_within}) IS TRUE) AND (({coord_available}) IS NOT TRUE OR ({coord_within}) IS TRUE)'
+        proof = containment_sql()
         valid = f"SELECT 1 FROM {identifier(table)} AS link JOIN catalog_import_messages AS message ON message.message_id=link.message_id AND message.edition_id=link.edition_id JOIN catalog_imports AS run ON run.import_id=message.import_id AND run.edition_id=link.edition_id JOIN catalog_editions AS edition ON edition.edition_id=link.edition_id AND edition.catalog_id=run.catalog_id AND edition.source_file_id=message.source_file_id AND edition.reading_rules_id=message.reading_rules_id JOIN catalog_reading_rules AS rules ON rules.reading_rules_id=edition.reading_rules_id AND rules.format_family={literal(family)} JOIN catalog_source_files AS source ON source.source_file_id=edition.source_file_id LEFT JOIN catalog_decoded_xml_views AS decoded ON decoded.source_file_id=source.source_file_id {owner_join} WHERE link.message_id=PROPOSED.message_id AND link.edition_id=PROPOSED.edition_id AND link.role=PROPOSED.role {mode} AND {proof}"
         # The proposal is tested without temporarily inserting the real link.
         columns = ['message_id', 'edition_id', *([extra] if extra else []), 'role']
@@ -738,9 +733,13 @@ def publication_closure_sql(audit='candidate_integrity_problems'):
 
 
 def assemble():
+    import diagnostic_links
     import dat_xsi
     import native_file_qualification
     import native_file_sizes
+    import physical_extents
+    import receipt_ancestry
+    import relationship_closure
     import shared_file_facts
     import source_counts
     import software_file_lengths
@@ -755,8 +754,14 @@ def assemble():
     source += '\n' + dat_xsi.sql()
     root_tables, root_guards, root_problems = root_diagnostic_sql()
     source += '\n' + root_tables
+    ordinary_views, ordinary_guards = diagnostic_links.sql(manifest)
+    source += '\n' + ordinary_views
+    receipt_guards, receipt_problems = receipt_ancestry.sql()
+    assertion_views = relationship_closure.sql(manifest)
+    assertion_guards = relationship_closure.guards(manifest)
     with closing(sqlite3.connect(":memory:")) as connection:
         connection.executescript(source)
+        extent_views = physical_extents.sql(connection,manifest)
         ownership, native_problems, native_guards = ownership_sql(connection, manifest)
         fk_guards, fk_problems = foreign_key_guards(connection, manifest)
         collisions = collision_guards(connection)
@@ -786,12 +791,17 @@ def assemble():
               'SELECT * FROM candidate_dat_xsi_problems',
               'SELECT * FROM candidate_file_qualification_problems',
               'SELECT * FROM candidate_shared_identity_problems']
+    audits.append('SELECT * FROM candidate_ordinary_message_problems')
+    audits.append('SELECT * FROM candidate_ordinary_owner_interval_problems')
+    audits.append('SELECT * FROM candidate_physical_extent_problems')
+    audits.extend(receipt_problems)
+    audits.extend(relationship_closure.audit_queries())
     # SQLite limits a single compound SELECT to 500 terms. Keep the exhaustive
     # reverse audit in named bounded chunks, not one oversized UNION statement.
     chunks = [audits[offset:offset + 100] for offset in range(0, len(audits), 100)]
     chunk_views = [f"CREATE VIEW candidate_integrity_chunk_{number} AS " + " UNION ALL ".join(chunk) + ';' for number, chunk in enumerate(chunks)]
     integrity = '\n'.join([*chunk_views, "CREATE VIEW candidate_integrity_problems AS " + " UNION ALL ".join(f'SELECT * FROM candidate_integrity_chunk_{number}' for number in range(len(chunks))) + ';'])
-    return "\n\n".join([source, ownership, hash_positions,format_roots,relationship_views, presence_views, count_contract, integrity, *native_guards, *fk_guards, *collisions, *immutable, *immutable_dictionary_sql(), *root_guards, *hash_guards,*format_guards,*position_guards,*relationship_guards, publication_closure_sql()])
+    return "\n\n".join([source, ownership, hash_positions,format_roots,relationship_views, assertion_views, presence_views, count_contract, extent_views, integrity, *native_guards, *fk_guards, *collisions, *immutable, *immutable_dictionary_sql(), *root_guards, *ordinary_guards, *receipt_guards, *assertion_guards, *hash_guards,*format_guards,*position_guards,*relationship_guards, publication_closure_sql()])
 
 
 def main():

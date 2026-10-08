@@ -243,23 +243,23 @@ def add_unrelated_owners(db, count):
         db.execute("INSERT INTO no_intro_export_games(set_id) VALUES(?)", (game,))
         db.execute("INSERT INTO catalog_source_elements VALUES(?,?, 'no_intro_export_dump_source')",
                    (dump_source, edition))
-        db.execute("INSERT INTO no_intro_dump_sources(dump_source_id,set_id,source_order,source_line,source_column,source_end_line,source_end_column) VALUES(?,?,0,1,1,1,1)",
+        db.execute("INSERT INTO no_intro_dump_sources(dump_source_id,set_id,source_order,source_line,source_column,source_end_line,source_end_column) VALUES(?,?,0,1,1,1,3)",
                    (dump_source, game))
         db.execute("INSERT INTO catalog_source_elements VALUES(?,?, 'no_intro_export_source_file')",
                    (media_entry, edition))
         db.execute("INSERT INTO catalog_media_entries(media_entry_id,file_uuid) VALUES(?,NULL)",
                    (media_entry,))
-        db.execute("INSERT INTO no_intro_dump_files(media_entry_id,dump_source_id,source_order,source_line,source_column,source_end_line,source_end_column) VALUES(?,?,0,1,1,1,1)",
+        db.execute("INSERT INTO no_intro_dump_files(media_entry_id,dump_source_id,source_order,source_line,source_column,source_end_line,source_end_column) VALUES(?,?,0,1,1,1,3)",
                    (media_entry, dump_source))
         db.execute("INSERT INTO catalog_source_elements VALUES(?,?, 'no_intro_export_release')",
                    (release, edition))
-        db.execute("INSERT INTO no_intro_releases(release_id,set_id,source_order,source_line,source_column,source_end_line,source_end_column) VALUES(?,?,1,1,1,1,1)",
+        db.execute("INSERT INTO no_intro_releases(release_id,set_id,source_order,source_line,source_column,source_end_line,source_end_column) VALUES(?,?,1,1,1,1,3)",
                    (release, game))
         db.execute("INSERT INTO catalog_source_elements VALUES(?,?, 'no_intro_export_release_file')",
                    (release_media, edition))
         db.execute("INSERT INTO catalog_media_entries(media_entry_id,file_uuid) VALUES(?,NULL)",
                    (release_media,))
-        db.execute("INSERT INTO no_intro_release_files(media_entry_id,release_id,source_order,source_line,source_column,source_end_line,source_end_column) VALUES(?,?,0,1,1,1,1)",
+        db.execute("INSERT INTO no_intro_release_files(media_entry_id,release_id,source_order,source_line,source_column,source_end_line,source_end_column) VALUES(?,?,0,1,1,1,3)",
                    (release_media, release))
     db.commit()
 

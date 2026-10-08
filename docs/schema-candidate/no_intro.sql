@@ -569,12 +569,15 @@ CREATE INDEX no_intro_export_header_fields_kind ON no_intro_export_header_fields
 
 CREATE TABLE no_intro_export_games (
     set_id INTEGER PRIMARY KEY REFERENCES catalog_sets(set_id),
+    source_end_line INTEGER CHECK (source_end_line IS NULL OR source_end_line > 0),
+    source_end_column INTEGER CHECK (source_end_column IS NULL OR source_end_column > 0),
     extent_view TEXT CHECK (extent_view IN ('retained_original_bytes','transport_decoded_xml_bytes')),
     extent_start INTEGER CHECK (extent_start IS NULL OR extent_start >= 0),
     extent_end INTEGER CHECK (extent_end IS NULL OR extent_end >= 0),
     CHECK ((extent_view IS NULL) = (extent_start IS NULL AND extent_end IS NULL)),
     CHECK ((extent_start IS NULL) = (extent_end IS NULL)),
-    CHECK (extent_start IS NULL OR extent_end >= extent_start)
+    CHECK (extent_start IS NULL OR extent_end >= extent_start),
+    CHECK ((source_end_line IS NULL) = (source_end_column IS NULL))
 ) STRICT, WITHOUT ROWID;
 
 CREATE TABLE no_intro_export_game_field_positions (
@@ -1020,24 +1023,6 @@ WHERE (position.field_kind='clone' AND
             (clone_link.set_id IS NULL OR position.relationship_id IS NOT clone_link.relationship_id))))
    OR (position.field_kind='mergeof' AND position.relationship_id IS NOT merge_link.relationship_id)
    OR (position.field_kind NOT IN ('clone','mergeof') AND position.relationship_id IS NOT NULL)
-UNION ALL
-SELECT 'export_extent_source_range',edition.edition_id,edition.edition_id
-FROM no_intro_export_documents AS document
-JOIN catalog_editions AS edition USING(edition_id)
-JOIN catalog_source_files AS source_file USING(source_file_id)
-WHERE document.extent_view='retained_original_bytes' AND document.extent_end>source_file.byte_length
-UNION ALL
-SELECT 'export_extent_source_range',edition.edition_id,edition.edition_id
-FROM no_intro_export_datafiles AS datafile
-JOIN catalog_editions AS edition USING(edition_id)
-JOIN catalog_source_files AS source_file USING(source_file_id)
-WHERE datafile.extent_view='retained_original_bytes' AND datafile.extent_end>source_file.byte_length
-UNION ALL
-SELECT 'export_extent_source_range',header.header_id,header.edition_id
-FROM no_intro_export_headers AS header
-JOIN catalog_editions AS edition ON edition.edition_id=header.edition_id
-JOIN catalog_source_files AS source_file USING(source_file_id)
-WHERE header.extent_view='retained_original_bytes' AND header.extent_end>source_file.byte_length
 UNION ALL
 SELECT 'export_document_datafile_extent_containment',document.edition_id,document.edition_id
 FROM no_intro_export_documents AS document
