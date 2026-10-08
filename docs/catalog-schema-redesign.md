@@ -87,6 +87,28 @@ These are design corrections, not schema/code/test changes. Exact all-table
 constraint and coverage inventories, populated target queries, complete-design
 review and user approval remain required.
 
+### Publication and integrity checks — candidate
+
+The [shared guard matrix](https://lific.mjc.lol/MAMEC/pages/143) proposes set-based
+validation of immediate typed ownership edges, positions, declarations and
+coverage, without copied descendant ancestry or a full-history query per file.
+Common bases and payload facets have separate closure obligations; they are not
+extra source declarations. Qualified facts from completed import batches must
+remain available to later identity resolution inside the same transaction,
+including the existing complete-run software qualification boundary.
+
+Publication finalizes shared memberships and checks affected components before
+commit. Requested-page checks stay bounded; database-wide integrity additionally
+reverse-checks every closure-bearing relation, including detached common media,
+payloads and positions with no registry/native seed. Unknown ancestry is not
+attributed to an invented edition or game. A failed statement is not proof of
+whole-transaction rollback or a durable failed-run record; infrastructure errors
+need confirmed rollback/commit or an explicitly unresolved outcome.
+
+The matrix is a candidate architecture, not executable complete DDL. Concrete
+per-table guards/count inventories, corruption witnesses and populated target
+plans are still required before the full-design gate can close.
+
 ## Decision and scope
 
 Design from document entities, field meaning, cardinality, and actual queries.
