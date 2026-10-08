@@ -21,6 +21,10 @@ transaction. The hash/length describe the retained original, not a producer's
 declared checksum, transport-decoded XML or a repaired view. A failed catalog
 import does not delete the original or rewrite that identity. The selected
 source-file ID, rules and coverage are fixed for the parser/writer session.
+Select the XML repair facet, including explicit absence/no repair, before an
+edition or import attempt references its reading-rules identity. Once used,
+that identity cannot acquire a late repair policy; a changed policy requires
+new reading rules.
 
 One import owns one connection and one immediate write transaction for all new
 native facts, provisional file matching, conflicts, publication, import messages
@@ -188,6 +192,12 @@ Receipts used by a published edition or terminal attempt retain their identity
 and fetch/source association. Corrections create a new attempt; unreferenced
 draft receipts remain editable. A running attempt may transition once to its
 terminal state after its final facts are installed.
+The fetch parent is already immutable when its receipt is retained; this
+stronger existing rule remains intact. Publication or terminal use additionally
+seals its ordered headers and declared hash expectations, and the attempt's diagnostics
+(payload, native/root links and external evidence). UPDATE cannot reparent facts
+into or out of a sealed aggregate; new children cannot be appended. A running
+attempt may finish constructing its diagnostics before terminalization.
 
 For reuse, verify the exact existing published edition tuple, selected-source
 parse and applicable event/message agreement. Do not reseal or repair its native
@@ -210,6 +220,11 @@ healthy database, a separate transaction may record this attempt as failed with
 NULL edition and source-only messages/excerpts. Re-establish verified retained
 identities if needed; rolled-back native IDs cannot be used for links. If failure
 recording fails, return that secondary error without claiming a durable receipt.
+Failure recording constructs the fresh attempt as running inside that separate
+transaction, adds its final source-only diagnostics and evidence, then changes
+it to failed last and commits atomically. It must not insert a terminal failed
+row and subsequently append messages. No intermediate running receipt is
+committed as the failure result.
 
 | Observation | Required result/action |
 |---|---|

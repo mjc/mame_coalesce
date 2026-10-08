@@ -1,11 +1,20 @@
 # ROM catalog model — approval proposal
 
-Status: awaiting complete-model review and explicit user approval. This is the
-entry point for [MAMEC-62](https://lific.mjc.lol/MAMEC/issues/MAMEC-62), not a
-production cutover or permission to modify an existing database. The SQL,
-generators and inventories reviewed here are frozen at signed `12d9135`;
-subsequent documentation reconciliation does not change that executable model.
-Any model fix requires an identified successor revision and re-review.
+Status: NOT CLEAR; complete-model review and explicit user approval remain
+outstanding. This is the entry point for
+[MAMEC-62](https://lific.mjc.lol/MAMEC/issues/MAMEC-62), not a production
+cutover or permission to modify an existing database. Signed `f3a6e66` is the
+F1–F5 fix successor; `12d9135` is the prior executable snapshot. Focused positive
+and refusal controls pass, but bounded fix re-review and remaining independent
+Lific-section coverage are pending. The DOC-29 checkpoint records coverage;
+it does not change the NOT CLEAR verdict. Complete-model review and explicit
+approval must identify the successor artifact.
+
+F2's XML repair-policy fix seals the policy facet at its first reference from
+either `catalog_editions` or `catalog_imports`, including running and failed
+source-only imports. The facet may be constructed before first use; a changed
+policy uses a new reading-rules identity. This is enforced in the candidate,
+not yet implemented in the application's importer.
 
 ## What belongs where
 
@@ -143,12 +152,15 @@ and confirmed commit/rollback/unresolved outcomes. Semantic parsing is one pass;
 retention/decompression/hash verification is separate source I/O, not permission
 to reparse discarded fields or build a whole-document DOM.
 
-Use real bulk insertion/upsert and bulk digest/identity resolution, including
-within-batch duplicates and bridges; reuse stable prepared statement shapes.
-No per-row full audit, N+1 lookup loop or smaller batch hides query cost. Only
-published owners and this session's installed, complete, frozen batches may
-participate in matching. Unrelated or half-installed drafts cannot leak in.
-Final global checks do not retroactively turn an incomplete batch into evidence.
+Use stable-shape bulk inserts and bulk digest/identity resolution, including
+within-batch duplicates and bridges. The only supported identity-dedup path is
+checked, set-based insertion with `INSERT ... SELECT ... WHERE NOT EXISTS`
+against the full typed key; candidate collision guards reject conflicting
+identities. Blind `INSERT OR IGNORE` and UPSERT are unsupported. No per-row
+full audit, N+1 lookup loop or smaller batch hides query cost. Only published
+owners and this session's installed, complete, frozen batches may participate
+in matching. Unrelated or half-installed drafts cannot leak in. Final global
+checks do not retroactively turn an incomplete batch into evidence.
 
 The MAME, Logiqx/CMP and No-Intro capture contracts, together with the software
 notes and publication contract, specify raw order,
@@ -162,7 +174,7 @@ document or subtree is retained in SQLite.
 
 | Gate | Required result |
 |---|---|
-| Complete design | All shared/native dictionaries, diagrams, contracts and composed DDL agree; complete-model Sol 6.1 medium review/fix/re-review is CLEAR on an identified proposal; user explicitly approves that revision |
+| Complete design | All shared/native dictionaries, diagrams, contracts and composed DDL agree; F1–F5 fixes are reviewed on an identified successor artifact; complete-model Sol 6.1 medium review/fix/re-review is CLEAR on that artifact; user explicitly approves that revision |
 | Greenfield cutover after approval | Remove old schema/database/import/query paths and all migrations/legacy conversions; existing database fingerprints are rejected, not converted. No destructive local DB/corpus/profile operation is implied by design approval |
 | Correct implementation | Typed one-pass capture, all supported fields, native source ownership/order, qualified persistent UUID identity, exact diagnostics, source-free readers/history and paired backup; fault injection proves whole-transaction rollback and commit resolution |
 | Performance | Actual optimized large imports, CPU flamegraphs and heaptrack; no import exceeding ten minutes, including instrumented runs, and no smaller corpus/batch used to hide algorithmic cost. Ordinary compatibility-fact reads target sub-millisecond work through real improvements |
@@ -170,7 +182,8 @@ document or subtree is retained in SQLite.
 
 Current SQL witnesses prove their named constructed slices, not authentic reader
 capture, EOF, runtime writer state transitions, complete corpus coverage or import
-speed. Bounded CLEAR reviews do not add up to complete-model approval. The
-complete-design verdict and any outstanding findings must be recorded with its
-actual coverage before requesting user approval. PLAN-3 remains active until
-the full implementation and verification objective is met.
+speed. Bounded CLEAR reviews do not add up to complete-model approval. The current
+verdict remains NOT CLEAR while fix re-review and complete coverage are pending; the successor review
+must name its exact artifact and state its actual coverage and remaining findings
+before user approval. PLAN-3 remains active until the full implementation and
+verification objective is met.

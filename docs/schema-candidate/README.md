@@ -745,10 +745,27 @@ Focused corrected receipts: shared facts 15/15 in 4.656 seconds, count mappings
 4/4 in 27.462 seconds. Software length-query work stays 2,224→2,224 instructions
 with 128 unrelated chains. Standalone No-Intro witnesses retain 284 assertions /
 24 expected rejections and 18 / 4 respectively, with 269 ledger paths and 201
-closed position codes. The corrected complete replay is still pending.
+closed position codes. The corrected frozen-model replay passes all 332 unique
+tests in 605.890 seconds. SQL, non-test generators and TSV inventories remained
+unchanged from `12d9135` throughout that run. Newly added F1–F5 regressions were
+not in that discovered population; this pass does not resolve those findings.
 
 Luna high's dictionary/diagram coherence audit is CLEAR for its reported
 coverage after correcting the reuse/publication diagram and naming the bounded
 `clrmamepro-declared-text-compat-v1` adapter consistently. That audit is not a
 complete-model semantic Sol CLEAR or user approval. Production implementation
 remains gated by the [approval proposal](proposal.md).
+
+The complete-model Sol checkpoint is **NOT CLEAR**: all 63 local non-test
+artifacts were reviewed, but remaining independent Lific-section coverage is
+open. Five new composed-schema witnesses demonstrate mutable retained
+acquisition children, a late repair policy on used rules, clipped diagnostic
+highlights, contradictory original-view ranges and mutable terminal source-only
+failure diagnostics. Signed successor `f3a6e66` fixes those contracts and adds
+independent positive/refusal controls. Its final focused replay passes 28 tests
+in 15.028 seconds (eight reading-policy, six coordinate, six receipt-evidence,
+eight receipt-ancestry methods). It preserves the stronger existing fetch-parent
+seal at receipt retention, and generates terminal child guards from the actual
+message FK graph. These receipts are not a complete successor-suite replay.
+The identified successor needs Sol fix/re-review and the
+remaining complete-model coverage before user approval can be requested.
