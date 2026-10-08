@@ -472,6 +472,29 @@ These are design/constructed checks only. They do not prove authentic parser
 capture, current application use of the target, all-format query/history parity,
 production import performance or complete-design approval.
 
+Run the constructed export access-path witness with:
+
+```sh
+python3 -Werror::ResourceWarning docs/schema-candidate/export_query_check.py
+```
+
+Its twelve methods pass in 6.400 seconds (6.283 seconds class setup), retaining
+512 unrelated native games with dump-source and release-file owners, `ANALYZE`,
+all guards during positive population and separate committed corruption-copy
+DDL. Game-page work is 203→214 SQLite VM instructions before/after population;
+other owner/position/hash/file-ancestry branches have indexed/PK plan checks,
+not independent VM-scaling claims. No new index or copied ancestry is needed
+for these bounded queries. Publication's cursor-evidence lookup uses an edition-
+PK probe rather than a planner-selected publication-table scan.
+
+`GAME_ANCHOR` and `REQUESTED_MEDIA` are evidence projections, not complete public
+validators: they do not check game-name positions/all intermediate native kinds,
+and the latter does not join common media. Tests prove missing/reparented
+evidence remains visible, not that a full reader rejects every corrupt path.
+Commit before SQLite backup prevents busy retry; cleanup is registered as each
+connection opens; 500 visible rows continue after the last visible row, not the
+lookahead. Independent Sol fix/re-review is bounded CLEAR for the witness.
+
 ## Still required
 
 Before design approval, settle every supported field/owner/state/order contract,
