@@ -415,6 +415,25 @@ are not a substitute for that identity policy. This is a candidate writer
 contract requiring performance/implementation review, not a claim that the
 current application already follows it.
 
+## Source capture and publication design
+
+The proposed [publication contract](publication-contract.md) makes the private
+writer states, completed-batch visibility, independent source counts, accepted
+EOF, reuse and confirmed/uncertain commit outcomes explicit. Format-specific
+capture is specified in [MAME](mame-capture-contract.md),
+[Logiqx/CMP](logiqx-cmp-capture-contract.md) and
+[No-Intro](no-intro-capture-contract.md); software's existing
+[notes](software-notes.md) retain its native load-chain and physical-root
+contract. Exact fields, counter names and parent keys remain single-owned by
+their canonical TSV inventories, not recopied into these documents.
+
+These specifications are reviewable design, not runtime proof. In particular,
+DAT retains every XSI attribute's source QName on its existing row; resolved
+type kind exists only on the four simple-owner relations. A NUL-repaired parser
+buffer is not another stored byte view. Root ends require actual closing
+events, and successful prefix batches never substitute for accepted EOF.
+No reader, writer or schema has been cut over by these documents.
+
 ## Still required
 
 Before design approval, settle every supported field/owner/state/order contract,
