@@ -739,10 +739,13 @@ def publication_closure_sql(audit='candidate_integrity_problems'):
 
 def assemble():
     import source_counts
+    import software_file_lengths
+    import software_numbers
 
     manifest = owners()
     source = "\n\n".join((ROOT / fragment).read_text() for fragment in FRAGMENTS)
     source = source.replace("/* SOURCE_ELEMENT_KINDS */", ",".join(literal(owner.kind) for owner in manifest))
+    source += '\n' + software_numbers.sql() + '\n' + software_file_lengths.sql()
     root_tables, root_guards, root_problems = root_diagnostic_sql()
     source += '\n' + root_tables
     with closing(sqlite3.connect(":memory:")) as connection:

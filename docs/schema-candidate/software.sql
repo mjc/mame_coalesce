@@ -274,6 +274,17 @@ CREATE TABLE software_file_load_steps (
     required_file_id INTEGER REFERENCES software_required_files(required_file_id)
 ) STRICT;
 
+-- One query-only operation classifier shared by chain validation and lengths.
+-- This is not a second persisted loadflag or another source declaration.
+CREATE VIEW candidate_software_rom_operations AS
+SELECT rom.media_entry_id, rom.data_area_id, rom.source_order, rom.loadflag,
+       CASE WHEN rom.loadflag IS NULL OR rom.loadflag IN (
+           'load16_byte', 'load16_word', 'load16_word_swap',
+           'load32_byte', 'load32_word', 'load32_word_swap',
+           'load32_dword', 'load64_word', 'load64_word_swap'
+       ) THEN 'load' ELSE rom.loadflag END AS operation
+FROM software_rom_load_entries AS rom;
+
 -- Thirteen position-only QName ledgers. field_occurrence is zero for every
 -- accepted singleton attribute; source_order is local to that XML element.
 CREATE TABLE software_wrapper_attribute_positions (
@@ -497,13 +508,7 @@ WITH software_editions AS (
     JOIN software_wrapper_headers AS wrapper USING (wrapper_id)
     JOIN software_lists AS list USING (set_group_id)
 ), rom_operations AS (
-    SELECT rom.media_entry_id, rom.data_area_id, rom.source_order, rom.loadflag,
-           CASE WHEN rom.loadflag IS NULL OR rom.loadflag IN (
-               'load16_byte', 'load16_word', 'load16_word_swap',
-               'load32_byte', 'load32_word', 'load32_word_swap',
-               'load32_dword', 'load64_word', 'load64_word_swap'
-           ) THEN 'load' ELSE rom.loadflag END AS operation
-    FROM software_rom_load_entries AS rom
+    SELECT * FROM candidate_software_rom_operations
 ), hash_slots AS (
     SELECT rom.media_entry_id, 2 AS field_kind, 'crc' AS source_hash_field,
            hash.field_occurrence, hash.reported_hash_id
