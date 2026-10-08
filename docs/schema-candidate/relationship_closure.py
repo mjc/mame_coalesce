@@ -5,6 +5,7 @@ ORIGINS = (("user", "manual_catalog_relationships"),
 ENDPOINTS = (
     ("catalog_set_targets", "catalog_set"),
     ("catalog_media_entry_targets", "catalog_media_entry"),
+    ("no_intro_archive_targets", "no_intro_archive"),
     ("shared_file_targets", "shared_file"),
     ("declared_hash_targets", "declared_hash"),
     ("observed_content_hash_targets", "observed_content_hash"),
@@ -35,13 +36,21 @@ def _payload_valid(identity="relationship"):
 
 
 def _target_valid(target_id, native_kinds):
-    set_kinds, media_kinds = native_kinds
+    set_kinds, media_kinds, native_owners = native_kinds
+
+    def native_count(owner_id):
+        # Correlating an aggregate over the global UNION view can scan unrelated
+        # native rows. Put this owner key inside each closed manifest arm.
+        return "(" + " + ".join(
+            f'(SELECT count(*) FROM "{owner.table}" AS actual WHERE actual."{owner.id}"={owner_id})'
+            for owner in native_owners) + ")"
     set_filter = "native.element_kind IN (" + ",".join(_lit(kind) for kind in set_kinds) + ")"
     media_filter = "native.element_kind IN (" + ",".join(_lit(kind) for kind in media_kinds) + ")"
-    subtype_union = " UNION ALL ".join(f"SELECT target_id FROM {table}"
-                                        for table, _ in ENDPOINTS)
-    typed_count = (f"(SELECT count(*) FROM ({subtype_union}) AS subtype "
-                   f"WHERE subtype.target_id={target_id})=1")
+    # Put the requested key inside every arm. A correlated filter outside a
+    # UNION can enumerate all unrelated endpoint rows instead of seeking PKs.
+    typed_count = ("(" + " + ".join(
+        f"(SELECT count(*) FROM {table} AS subtype WHERE subtype.target_id={target_id})"
+        for table, _ in ENDPOINTS) + ")=1")
     actual_set = (
         "target.target_kind='catalog_set' AND EXISTS("
         "SELECT 1 FROM catalog_set_targets AS typed "
@@ -67,6 +76,29 @@ def _target_valid(target_id, native_kinds):
         f"WHERE typed.target_id={target_id} AND {media_filter} "
         "AND (SELECT count(*) FROM candidate_native_owners AS actual "
         "WHERE actual.source_element_id=owner.media_entry_id)=1)")
+    actual_archive = (
+        "target.target_kind='no_intro_archive' AND EXISTS("
+        "SELECT 1 FROM no_intro_archive_targets AS typed "
+        "JOIN no_intro_archive_descriptions AS archive ON archive.archive_id=typed.archive_id "
+        "JOIN catalog_source_elements AS element ON element.source_element_id=archive.archive_id "
+        "AND element.element_kind='no_intro_export_archive' "
+        "JOIN no_intro_export_games AS game ON game.set_id=archive.set_id "
+        "JOIN catalog_source_elements AS game_element ON game_element.source_element_id=game.set_id "
+        "AND game_element.element_kind='no_intro_export_game' "
+        "JOIN catalog_sets AS sets ON sets.set_id=game.set_id "
+        "JOIN catalog_set_groups AS groups ON groups.set_group_id=sets.set_group_id AND groups.group_kind='root' "
+        "JOIN catalog_editions AS edition ON edition.edition_id=groups.edition_id "
+        "JOIN no_intro_export_documents AS document ON document.edition_id=edition.edition_id "
+        "AND document.root_set_group_id=groups.set_group_id "
+        "JOIN catalog_reading_rules AS rules ON rules.reading_rules_id=edition.reading_rules_id "
+        "AND rules.format_family='no_intro_database' "
+        "JOIN published_catalog_editions AS publication ON publication.edition_id=edition.edition_id "
+        "AND publication.catalog_id=edition.catalog_id AND publication.source_file_id=edition.source_file_id "
+        "AND publication.reading_rules_id=edition.reading_rules_id AND publication.coverage_id=edition.coverage_id "
+        f"WHERE typed.target_id={target_id} AND element.edition_id=edition.edition_id "
+        "AND game_element.edition_id=edition.edition_id "
+        f"AND {native_count('archive.archive_id')}=1 "
+        f"AND {native_count('game.set_id')}=1)")
     other_endpoints = (
         ("shared_file", "shared_file_targets AS typed JOIN shared_catalog_files AS owner "
          "ON owner.file_uuid=typed.file_uuid JOIN file_id_registries AS registry "
@@ -77,7 +109,7 @@ def _target_valid(target_id, native_kinds):
          "ON owner.edition_id=typed.edition_id"),
         ("external_record", "external_catalog_targets AS typed"),
     )
-    matching = " OR ".join([actual_set, actual_media,
+    matching = " OR ".join([actual_set, actual_media, actual_archive,
                             *(f"(target.target_kind={_lit(kind)} AND EXISTS(SELECT 1 FROM {joins} "
                               f"WHERE typed.target_id={target_id}))" for kind, joins in other_endpoints)])
     return (f"EXISTS(SELECT 1 FROM catalog_relationship_targets AS target "
@@ -114,7 +146,9 @@ def _native_kinds(manifest):
     media_kinds = tuple(sorted({owner.kind for owner in owners if owner.media}))
     if not set_kinds or not media_kinds:
         raise ValueError("relationship endpoint closure requires the assembled native-owner manifest")
-    return set_kinds, media_kinds
+    # Common set placement is not a native manifest owner. Each remaining
+    # table/key is validated by the canonical assembler's owner manifest.
+    return set_kinds, media_kinds, owners
 
 
 def sql(manifest):

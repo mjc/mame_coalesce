@@ -17,7 +17,9 @@ def connection():
     db.execute("PRAGMA foreign_keys=ON")
     shared = (ROOT / "shared.sql").read_text().replace(
         "/* SOURCE_ELEMENT_KINDS */", "'mame_machine','mame_rom','no_intro_dat_game','no_intro_dat_rom'")
-    db.executescript(shared + (ROOT / "relationships.sql").read_text())
+    db.executescript(shared + ''.join((ROOT / f'{family}.sql').read_text()
+                                     for family in assemble.FAMILIES)
+                     + (ROOT / "relationships.sql").read_text())
     db.executescript((ROOT / "relationships_guards.sql").read_text())
     # Bounded owner projection for these unit cases; see the actual native
     # MAME/No-Intro integration witness below.

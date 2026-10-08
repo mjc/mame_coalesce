@@ -39,7 +39,7 @@ CREATE INDEX reported_relationship_kind_lookup
 CREATE TABLE catalog_relationship_targets (
     target_id INTEGER PRIMARY KEY NOT NULL CHECK (target_id > 0),
     target_kind TEXT NOT NULL CHECK (target_kind IN (
-        'catalog_set', 'catalog_media_entry', 'shared_file',
+        'catalog_set', 'catalog_media_entry', 'shared_file', 'no_intro_archive',
         'declared_hash', 'observed_content_hash', 'unresolved_catalog',
         'external_record'
     )),
@@ -61,6 +61,16 @@ CREATE TABLE catalog_media_entry_targets (
     FOREIGN KEY (target_id, target_kind)
         REFERENCES catalog_relationship_targets(target_id, target_kind) ON DELETE RESTRICT
 ) STRICT;
+
+-- Archive descriptions are actual native records, not media files or ZIPs.
+-- Repeated publisher numbers never substitute for their distinct owner IDs.
+CREATE TABLE no_intro_archive_targets (
+    target_id INTEGER PRIMARY KEY NOT NULL,
+    target_kind TEXT NOT NULL DEFAULT 'no_intro_archive' CHECK (target_kind = 'no_intro_archive'),
+    archive_id INTEGER NOT NULL UNIQUE REFERENCES no_intro_archive_descriptions(archive_id) ON DELETE RESTRICT,
+    FOREIGN KEY (target_id, target_kind)
+        REFERENCES catalog_relationship_targets(target_id, target_kind) ON DELETE RESTRICT
+) STRICT, WITHOUT ROWID;
 
 -- This endpoint retains the issued UUID, including when it later becomes an
 -- alias. Consumers may separately follow the append-only redirect relation.

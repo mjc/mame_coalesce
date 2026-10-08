@@ -226,10 +226,15 @@ def collision_guards(connection, *, tables=None):
 
 def published_fact_guards(connection, manifest, *, tables=None):
     """Native facets and positions are immutable too, not just manifest owners."""
+    from relationship_closure import ENDPOINTS
+
     result = []
     native_keys = {owner.table: owner.id for owner in manifest}
     excluded = {'published_catalog_editions', 'catalog_imports', 'catalog_import_messages',
                 'catalog_import_message_elements', 'catalog_import_message_external_evidence'}
+    # Endpoints can be issued after import. Their meaning freezes when a
+    # relationship is sealed, not when the referenced edition is published.
+    excluded.update(table for table, _ in ENDPOINTS)
     for table in schema_tables(connection, tables):
         if table in excluded or 'import_messages' in table or table.startswith('catalog_relationship'):
             continue
