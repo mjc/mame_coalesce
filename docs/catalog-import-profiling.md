@@ -1,5 +1,93 @@
 # Catalog import profiling
 
+## Shared ROM facts, 2026-10-07
+
+Compatibility previously reconstructed a ROM's facts from every source list
+occurrence. On the retained full MAME database, 128 requested files expanded
+into 47,603 occurrences. Indexed lookups still replayed millions of VM steps.
+The model now separates unique accepted ROM facts from their source witnesses:
+
+- `shared_file_sizes(content_uuid,size)` stores each accepted length once.
+- `shared_file_hashes(content_uuid,digest_id)` stores each accepted hash
+  membership once; `digest_values` still interns the binary hash value.
+- Native declarations and occurrence assertions retain exact source evidence.
+
+Normal import batches add qualified facts before the next identity decision.
+Software declarations wait until their complete first load/continue/ignore run
+closes. Snapshot seals also finalize only their new declarations for direct SQL
+writers. Review seals atomically rebuild only affected canonical components
+from surviving accepted witnesses, including direct SQL publication. Rejecting
+one witness does not remove a fact still supported elsewhere; rejecting the last
+does. Published merges coalesce memberships without rewriting issued UUIDs or
+source declarations. Conflict explanations still enumerate complete evidence.
+
+The real Rust loader, including Diesel decoding and BTree collections, measured
+**633 microseconds warm median** for the unchanged 128-file batch on the fresh
+5,000-machine database. It returned all 128 sizes and 256 hash facts. Those files
+have 10,778 source occurrences; none are traversed by the compatibility queries.
+The first call was **16,970 microseconds** (cold statement/cache), and the first
+reuse was 1,179 microseconds. This establishes the warm target, not cold <1 ms
+or end-to-end import latency. Ten warm observations after the first call were
+1,179/738/633/608/676/594/601/649/588/579 microseconds.
+A second retained run during the full import measured a 698-microsecond warm
+median and 19,127-microsecond first call; its full observations are in
+`shared-rom-facts-loader-5000-20261007.log`.
+
+Fresh same-host 5,000-machine runs took 39.417 seconds for shared facts and
+42.256 seconds for the frozen previous writer, both with zero diagnostics.
+This is one sequential pair, not medians or a full-file speedup claim. Earlier
+historical 27.268-second timing is not substituted for this current control.
+An initial shared-fact run overlapping compilation took 49.906 seconds; it is
+not used as the matched comparison. An instrumented diagnostic run took
+45.277 seconds; publication accounted for 10.396 seconds and the two common
+64-occurrence fact-write shapes together accounted for 1.667 seconds.
+
+All 80 typed multiset comparisons across 69 native tables, including 33 source
+position families, match the current control. Each has 5,000 machines, 62,376
+occurrences, 25,106 identities and zero redirects. Hashes, UUID equivalence,
+relationships and source order are preserved; both databases pass quick_check
+and foreign_key_check, and their fingerprints were unchanged by verification.
+
+Artifacts are under `target/profiling/shared-rom-facts-*20261007*`; the frozen
+importer is `mame-importer-shared-rom-facts-20261007`, SHA-256
+`450402978a99b29de478d4bd488035157d92a0fb8a9e216221942c379cfca4fd`.
+The frozen loader harness has SHA-256
+`127822a20dfdfdf1ff315f108be8d07bce03d055ff7d84ea82af0dcf67d03697`.
+Its selector uses issued IDs; these measured databases have no redirects, so
+issued and canonical IDs coincide. The checked-in selector canonicalizes before
+LIMIT to support future measurements on databases containing published merges.
+The manual loader measurement is an ignored library test, runnable in the
+profiling build with `MAME_COALESCE_FACT_BENCH_DB` pointing at the retained
+database and the filter `profile_128_most_repeated_shared_files`.
+
+The fresh full 326,688,140-byte MAME input imported successfully in **466.926
+seconds (7m47s)** with zero diagnostics. Process time was 7m47.29s, 299.36 user
+and 139.10 system seconds. The earlier full perf-recorded baseline took 538.481
+seconds, but that is not a matched uninstrumented control; no precise full-file
+speedup is claimed. Peak process RSS was 438,332 KiB. The database retains
+50,368 machines, 401,889 occurrences, 158,361 issued identities and 731,502
+source digest assertions, with 158,361 shared sizes and 316,722 shared hash
+memberships, one publication and zero redirects.
+
+On this complete database, the unchanged 128-file selection represents exactly
+**47,603 source occurrences**, matching the prior worst-repetition probe. The
+real Rust loader returns all 128 sizes and 256 hash facts in **548 microseconds
+warm median**. The ten warm observations were
+777/640/555/552/544/548/538/547/546/545 microseconds. First preparation/cache fill
+took 26,621 microseconds. The gate was starting concurrently; no smaller batch,
+fact cap or discarded row was used. Full observations are retained in
+`shared-rom-facts-loader-full-20261007.log`.
+
+Full-database bidirectional comparisons against accepted source facts found zero
+missing or extra sizes and hashes. The database passes quick_check with no
+foreign-key violations. Focused storage, dispute, publication and review tests
+and strict Clippy pass. Sol medium's final adversarial review has no findings.
+The complete `devenv test` gate remains pending at the time of this record;
+its output is retained in `shared-rom-facts-devenv-20261007.log`.
+No new heaptrack or CPU flamegraph result is claimed by this cut. Existing input,
+database and profile artifacts are preserved. This is a scoped shared-fact model
+fix, not acceptance of all remaining PLAN-3 schema decisions.
+
 ## History SQL compilation fix, 2026-10-04
 
 This is a history-reader optimization, not an import-writer or release-profile

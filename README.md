@@ -94,8 +94,10 @@ Backups consist of a SQLite snapshot made with `VACUUM INTO` and an adjacent
 `<backup-path>.documents` directory containing retained source objects. Keep
 both together when moving a backup; source bytes are never stored in SQLite.
 Eligible whole-file SHA-1/SHA-256 source declarations share a persistent
-16-byte file UUID without combining their catalog entries. Hash lookup joins
-the original declarations; shared identities store no copied hashes or size.
+16-byte file UUID without combining their catalog entries. Shared accepted
+whole-file sizes and hash memberships are stored once per ROM. Hash lookup and
+compatibility reads use those facts directly, rather than replaying every list
+declaration. Native declarations retain their source spelling and provenance.
 Contradictions and ambiguous bridges remain unlinked, with references to the
 specific source hash and size evidence. A disputed hash also blocks later sparse
 claims until their exact conflicts receive published reviewed outcomes. The
@@ -103,7 +105,9 @@ claims until their exact conflicts receive published reviewed outcomes. The
 exact hash/size dispositions, and explicit UUID merges. Rejection excludes only
 the named source assertion and cannot be undone by a later accept. A merge
 preserves every issued UUID and source occurrence; old IDs resolve to the kept
-UUID. Unlinked incoming entries are not assigned identities by a review.
+UUID. Publishing a review atomically rebuilds the affected ROM facts from the
+remaining accepted declarations, including when the publication is issued
+through SQL. Unlinked incoming entries are not assigned identities by a review.
 Backup/restore preserves the
 database-wide registry generation; a fresh rebuild starts a new generation.
 UUID interchange uses 32 hexadecimal characters without dashes.
