@@ -756,9 +756,9 @@ coverage after correcting the reuse/publication diagram and naming the bounded
 complete-model semantic Sol CLEAR or user approval. Production implementation
 remains gated by the [approval proposal](proposal.md).
 
-The complete-model Sol checkpoint is **NOT CLEAR**: all 63 local non-test
-artifacts were reviewed, but remaining independent Lific-section coverage is
-open. Five new composed-schema witnesses demonstrate mutable retained
+The first complete-model Sol checkpoint was **NOT CLEAR**: its 63 base local
+non-test artifacts and current-target Lific coverage are now reviewed. Five
+composed-schema witnesses demonstrated mutable retained
 acquisition children, a late repair policy on used rules, clipped diagnostic
 highlights, contradictory original-view ranges and mutable terminal source-only
 failure diagnostics. Signed successor `f3a6e66` fixes those contracts and adds
@@ -767,5 +767,28 @@ in 15.028 seconds (eight reading-policy, six coordinate, six receipt-evidence,
 eight receipt-ancestry methods). It preserves the stronger existing fetch-parent
 seal at receipt retention, and generates terminal child guards from the actual
 message FK graph. These receipts are not a complete successor-suite replay.
-The identified successor needs Sol fix/re-review and the
-remaining complete-model coverage before user approval can be requested.
+Independent bounded Sol review verifies those five original fixes with 281
+checks, including all 42 terminal guards over payload, ordinary, external and
+eleven root-link owners. That is not complete-model approval: the full reviewer
+found two extensions, original-only same-view highlights and late byte-policy
+issuance, requiring another identified successor.
+
+## Coordinate and policy successor — 2026-10-08 UTC
+
+Signed `71a7de8` fixes both extensions. `diagnostic_coordinates.py` generates
+the corruption audit and INSERT/UPDATE guards from one coordinate policy;
+`diagnostics.sql` has two required slots, expanded by `assemble.fragment_sql`
+for both composed and core checks. Missing/duplicate slots fail compilation.
+Original-only ranges map retained-original excerpts, never another byte view;
+highlights describe the whole span or are both NULL. Both reading-policy facets
+seal at first edition/import use, including failed source-only attempts.
+
+Final focused replay: 42/42 in 40.071s (policy eight, coordinate/compiler twelve,
+native qualification eight, receipt evidence six, receipt ancestry eight).
+The five native VM probes remain within zero to three instructions after
+1,024 unrelated declarations. Qualification fixtures now issue policies before
+editions, preserving every native assertion/population and removing cross-test
+class setup ownership. Worker presence checks pass 13 MAME, 16 No-Intro and
+14 Logiqx/CMP methods plus two Logiqx count-mapping controls. These are not a
+complete successor-suite replay or runtime/corpus proof. Complete-model Sol
+fix/re-review and explicit approval remain pending.

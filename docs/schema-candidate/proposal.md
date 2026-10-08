@@ -3,16 +3,18 @@
 Status: NOT CLEAR; complete-model review and explicit user approval remain
 outstanding. This is the entry point for
 [MAMEC-62](https://lific.mjc.lol/MAMEC/issues/MAMEC-62), not a production
-cutover or permission to modify an existing database. Signed `f3a6e66` is the
-F1–F5 fix successor; `12d9135` is the prior executable snapshot. Focused positive
-and refusal controls pass, but bounded fix re-review and remaining independent
-Lific-section coverage are pending. The DOC-29 checkpoint records coverage;
-it does not change the NOT CLEAR verdict. Complete-model review and explicit
-approval must identify the successor artifact.
+cutover or permission to modify an existing database. Signed `71a7de8` is the
+current executable proposal; `f3a6e66` and `12d9135` are prior snapshots. Independent
+bounded review verifies the five original fixes. Complete current-target review
+has finished its base artifact and Lific coverage, but found two extensions:
+original-only same-view highlight mapping and late file-byte policy insertion.
+Their fixes in `71a7de8` await complete-model re-review. The DOC-29 checkpoint
+records coverage; it does not change the NOT CLEAR verdict. Complete-model
+review and explicit approval must identify the successor artifact.
 
-F2's XML repair-policy fix seals the policy facet at its first reference from
+Both XML repair and whole-file byte-policy facets seal at their first reference from
 either `catalog_editions` or `catalog_imports`, including running and failed
-source-only imports. The facet may be constructed before first use; a changed
+source-only imports. Facets may be constructed before first use; a changed
 policy uses a new reading-rules identity. This is enforced in the candidate,
 not yet implemented in the application's importer.
 
@@ -63,6 +65,12 @@ IDs. Virtual root groups are membership owners, not parsed XML elements.
 | Warnings/errors | Per-attempt message, bounded exact BLOB excerpt, zero-based end-exclusive highlight inside that excerpt, independent source-view ranges and typed actual-owner links where containment is proved |
 | Source-only diagnostics | Retain messages and available coordinates when no full owner interval is known. Never borrow an ancestor's interval to manufacture a child link |
 | Acquisition | Raw repeated headers and interpreted nullable declared filename belong to the fetch attempt; receipts point to it and the retained source, without copying acquisition facts into catalog fields |
+
+A highlight maps the entire known problem span into the excerpt or has both
+bounds NULL; it is never a clipped approximation. An original-only range can
+provide that mapping for a retained-original excerpt, but not for a decoded
+excerpt in another byte view. A zero-width anchor may sit at excerpt EOF.
+Audit and INSERT/UPDATE guards use the same generated coordinate predicates.
 
 All public owner IDs/cursors use distinct Rust newtypes and the explicit
 registry-generation rules. Nullable UUID means evidence cannot establish a
@@ -183,7 +191,7 @@ document or subtree is retained in SQLite.
 Current SQL witnesses prove their named constructed slices, not authentic reader
 capture, EOF, runtime writer state transitions, complete corpus coverage or import
 speed. Bounded CLEAR reviews do not add up to complete-model approval. The current
-verdict remains NOT CLEAR while fix re-review and complete coverage are pending; the successor review
-must name its exact artifact and state its actual coverage and remaining findings
+verdict remains NOT CLEAR while the two extension fixes await re-review. The
+successor review must name its exact artifact and state its coverage and findings
 before user approval. PLAN-3 remains active until the full implementation and
 verification objective is met.

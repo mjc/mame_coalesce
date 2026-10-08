@@ -21,10 +21,10 @@ transaction. The hash/length describe the retained original, not a producer's
 declared checksum, transport-decoded XML or a repaired view. A failed catalog
 import does not delete the original or rewrite that identity. The selected
 source-file ID, rules and coverage are fixed for the parser/writer session.
-Select the XML repair facet, including explicit absence/no repair, before an
-edition or import attempt references its reading-rules identity. Once used,
-that identity cannot acquire a late repair policy; a changed policy requires
-new reading rules.
+Select the XML repair and whole-file byte-contract facets, including their
+absence, before an edition or import attempt references its reading-rules
+identity. Once used, that identity cannot acquire either policy late; changed
+repair or qualification policy requires new reading rules.
 
 One import owns one connection and one immediate write transaction for all new
 native facts, provisional file matching, conflicts, publication, import messages
