@@ -82,8 +82,26 @@ Full-database bidirectional comparisons against accepted source facts found zero
 missing or extra sizes and hashes. The database passes quick_check with no
 foreign-key violations. Focused storage, dispute, publication and review tests
 and strict Clippy pass. Sol medium's final adversarial review has no findings.
-The complete `devenv test` gate remains pending at the time of this record;
-its output is retained in `shared-rom-facts-devenv-20261007.log`.
+The initial `devenv test` gate passed 712 library and 7 CLI tests, then exposed
+one stale raw-SQL ambiguity fixture: its draft witnesses bypassed both bounded
+fact maintenance and snapshot publication. An explicit precondition reproduced
+zero queryable hash owners instead of two. Signed commit `4c073e4` supplies the
+native SHA-1 spelling, document owner and attribute positions and publishes each
+witness through the real SQL seal. The incoming claim must still remain unlinked
+with two ambiguity conflicts. The focused test passes in 1.89s, strict Clippy
+passes and GPT-6.1 Sol medium's test-only review has no findings. No production
+code or profiling artifact changed. RED/GREEN output is retained in
+`shared-rom-facts-sql-witness-{red,green}-20261007.log`.
+
+The corrected complete `devenv test` gate exits successfully: 1,727 test
+executions pass across 122 completed test suites, with zero failures and two
+manual/opt-in ignores. This includes unit, integration, doctest and example
+coverage, formatting/script/SQLite checks, strict all-target/all-feature Clippy
+and the CLI help smoke test. Output is retained in
+`shared-rom-facts-devenv-retry-20261007.log`. The initial failed gate's log remains
+in `shared-rom-facts-devenv-20261007.log`. The library suite takes
+275.17s and the software-list verifier example 137.98s; slow-gate work remains
+tracked separately in MAMEC-64, not claimed as fixed by shared facts.
 No new heaptrack or CPU flamegraph result is claimed by this cut. Existing input,
 database and profile artifacts are preserved. This is a scoped shared-fact model
 fix, not acceptance of all remaining PLAN-3 schema decisions.
