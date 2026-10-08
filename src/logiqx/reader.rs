@@ -198,6 +198,7 @@ pub(super) fn read_with_diagnostics_mode<S, E: From<crate::Error>>(
                             "header",
                         )?;
                         metadata.header_source_order = Some(source_order);
+                        metadata.header_location = Some(node.location);
                         if retain_diagnostics {
                             data_file::collect_subtree_attributes(&node, None, &mut document_map);
                         }
@@ -214,6 +215,7 @@ pub(super) fn read_with_diagnostics_mode<S, E: From<crate::Error>>(
                             "file_name",
                         )?;
                         metadata.file_name_source_order = Some(source_order);
+                        metadata.file_name_location = Some(node.location);
                     }
                     "sha1" => {
                         data_file::set_once(
@@ -222,6 +224,7 @@ pub(super) fn read_with_diagnostics_mode<S, E: From<crate::Error>>(
                             "sha1",
                         )?;
                         metadata.sha1_source_order = Some(source_order);
+                        metadata.sha1_location = Some(node.location);
                     }
                     _ => {}
                 }
@@ -321,4 +324,32 @@ fn located_game(
         device_ref_locations,
         unsupported_attributes: source_map.unsupported_attributes,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn document_child_positions_are_captured_in_the_streaming_pass() -> crate::Result<()> {
+        let bytes = b"<datafile>\n<game name=\"first\"/>\n<header><name>Example</name></header>\n<file_name>example.dat</file_name>\n<sha1>0123456789012345678901234567890123456789</sha1>\n</datafile>";
+        let validated = read_with::<(), crate::Error>(bytes, |_| Ok(()), |(), _| Ok(()))?;
+        let (metadata, (), _proof) = validated.into_capture_parts();
+        assert_eq!(
+            metadata.header_location(),
+            Some(RecordLocation { line: 3, column: 1 })
+        );
+        assert_eq!(
+            metadata.file_name_location(),
+            Some(RecordLocation { line: 4, column: 1 })
+        );
+        assert_eq!(
+            metadata.sha1_location(),
+            Some(RecordLocation { line: 5, column: 1 })
+        );
+        assert_eq!(metadata.header_source_order(), Some(1));
+        assert_eq!(metadata.file_name_source_order(), Some(2));
+        assert_eq!(metadata.sha1_source_order(), Some(3));
+        Ok(())
+    }
 }

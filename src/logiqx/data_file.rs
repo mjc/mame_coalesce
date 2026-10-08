@@ -34,6 +34,9 @@ pub struct DocumentMetadata {
     pub(super) header_source_order: Option<usize>,
     pub(super) file_name_source_order: Option<usize>,
     pub(super) sha1_source_order: Option<usize>,
+    pub(super) header_location: Option<RecordLocation>,
+    pub(super) file_name_location: Option<RecordLocation>,
+    pub(super) sha1_location: Option<RecordLocation>,
     pub(super) attribute_positions: Vec<AttributePosition<DocumentAttribute>>,
 }
 
@@ -275,6 +278,21 @@ impl DocumentMetadata {
     #[must_use]
     pub const fn sha1_source_order(&self) -> Option<usize> {
         self.sha1_source_order
+    }
+
+    #[must_use]
+    pub const fn header_location(&self) -> Option<RecordLocation> {
+        self.header_location
+    }
+
+    #[must_use]
+    pub const fn file_name_location(&self) -> Option<RecordLocation> {
+        self.file_name_location
+    }
+
+    #[must_use]
+    pub const fn sha1_location(&self) -> Option<RecordLocation> {
+        self.sha1_location
     }
 }
 
