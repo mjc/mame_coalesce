@@ -108,8 +108,58 @@ attribute contexts; source macros have 126 enum/code slots while the candidate
 has 134 table/code pairs. These are different inventories, not conflicting
 counts. None of the 571 crosswalk rows is an independent runtime source count.
 The earlier MAME TEMP view remains test-only. The candidate now installs the
-separate shared field-presence audit described below. No-Intro XSI semantic
-enforcement and independently accumulated parser counts remain open.
+separate shared field-presence audit described below. The later No-Intro XSI
+checkpoint installs candidate declaration/value/identity checks. Namespace
+capture and independently accumulated parser counts remain open.
+
+## Executable No-Intro XSI checks — 2026-10-08 UTC
+
+`dat_xsi.py` adds query-only projections over the eleven existing typed XSI
+relations and four simple-text owner families. Twenty-two local insert/update
+guards reject invalid attribute QName spelling, nil/type declarations and schema
+hints. They seek only the actual native owner, edition and reading rules. Local
+guards and the global audit share their declaration predicates; hint tokenization
+is scoped to one attribute, not a global recursive seed. No source values,
+effective types, collapsed text, URI pairs or document IDs are stored twice.
+
+The publication audit also checks strict selected scalar values, including the
+default header xs:int when no type is declared. Compatible mode skips these
+value checks, but still checks type QName/derivation and hints. Strict ID/IDREF
+closure uses one edition-partitioned identity pass: duplicates fail and forward
+references may be completed before publication. A matching ID in another edition
+does not resolve a reference. Published native facts retain their existing freeze.
+
+`xml_numeric_sql.py` is shared by strict DAT file sizes and narrowed scalar
+integers. It checks significant decimal digits before casting, including signed
+minimum, overflow and negative zero. `xml_text_sql.py` supplies XML-only whitespace
+collapse, Unicode XML Name/QName and language checks using SQLite built-ins.
+Neither helper introduces a UDF or application-defined input-size cutoff.
+
+```sh
+python3 -Werror::ResourceWarning docs/schema-candidate/xml_numeric_sql_check.py
+python3 -Werror::ResourceWarning docs/schema-candidate/xml_text_sql_check.py
+python3 -Werror::ResourceWarning docs/schema-candidate/dat_xsi_check.py
+```
+
+These are constructed candidate checks, not an imported-source proof. Prefix
+spelling cannot prove namespace binding. The future checked reader must capture
+the XSI attribute QName and resolved built-in type while namespace context exists,
+independently accumulate accepted declarations/counts, reach accepted EOF, and
+atomically finalize the edition. Skipped vendor subtrees do not acquire invented
+typed owners. Full-model review, user approval and production cutover remain open.
+
+Current constructed receipts: twelve XSI methods pass in 11.824 seconds, including
+local guard rollback and real publication refusal/repair/freeze. Five numeric,
+five text, six native-size and eight native-qualification methods pass; the
+integrated 29-method checker passes in 23.026 seconds. Independent No-Intro field
+witnesses remain 284 assertions/24 expected rejections plus legacy 18/4, and five
+audit-wiring checks pass. Assembly prepares 93 closed native kinds and 70 views.
+The 512/1,024 unrelated ID/IDREF-pair regression checks fixed-edition simple/XSI/
+identity work and global identity scaling; it is not a whole-catalog latency or
+authentic import benchmark. The corruption harness previously took 124.979
+seconds because rollback after trigger DDL repeatedly reset SQLite's schema
+cache; the separate committed in-memory copy fixes that harness cost without
+removing cases. No production import speedup is inferred from these test times.
 
 ## Executable field-position publication checks
 

@@ -4,6 +4,11 @@ Status: design candidate only. This file does not authorize production schema or
 
 ## Bounded field-proof freeze — 2026-10-08
 
+Current superseding XSI checkpoint: the executable declaration/value/identity
+checks below now cover part of the older gap lists. Historical field/count
+receipts do not establish parser capture, namespace binding, accepted EOF or
+whole-model approval.
+
 Base inspected: signed main `e591363b16b532cd4f066de73c75c4283ede302c`, with main's concurrent assembled relationship guards. Only the six No-Intro files listed below changed in this pass; shared assembly, checks, relationships, other families, production and Lific were not edited.
 
 `no_intro-field-coverage.tsv` records 269 exact dictionary source paths: 35 flat-DAT native fields (20 ordinary attributes and 15 scalar element-text paths), 81 owner-specific XSI attribute paths, 18 synthetic P/C fields (14 attributes and four scalar text paths), and 135 observed-export fields (130 attributes and five scalar text paths). The same export ledger applies to observed and NUL-recovery readings; recovery is not a second invented grammar. There are 26 declaring table types in this crosswalk. The 81 XSI paths expand twelve header scalar kinds independently and map onto eleven typed XSI relations with 37 distinct relation/code pairs. Together with the 164 native attribute codes, these give 201 distinct closed position table/code pairs. Scalar text uses `position_table=-`; its actual child row already owns mixed child placement, and is not an attribute position.
@@ -28,6 +33,72 @@ Proof boundaries remain open. The original field-witness pass supplied construct
 
 That field-inventory pass froze its six files for NativeSol/Banach review. The later presence pass below changes only its three assigned files; neither pass approves production implementation.
 
+
+## Executable DAT XSI declaration and scalar closure — 2026-10-08
+
+`dat_xsi.py` consumes the existing eleven native XSI owners, retaining their one
+canonical value/QName/position row. Its union views are query-only, never FK
+targets or generic stored metadata. Four simple text families derive the base
+and effective types from the actual native owner and optional type row; no type
+default, collapsed text, ID registry or URI-pair projection is persisted.
+
+The shared declaration predicates serve 22 local insert/update guards and the
+global reverse audit. Each local guard starts at its actual native-owner key,
+edition and rules, not the cross-format/global audit. Schema hint recursion is
+seeded by just that attribute. Original attribute QNames must be prefixed valid
+XML QNames with the exact closed local field name. This does not prove their
+namespace binding. Type values must be one whitespace-collapsed QName whose
+local name agrees with the captured built-in identity and whose derivation fits
+the owner: int/short/byte only for header id; the ten supported string-derived
+types for the other simple fields. A conventional `xs:` prefix is not treated
+as binding evidence.
+
+Strict modes reject every nil declaration, including false/0. Compatible modes
+accept only XML-whitespace-collapsed false/0 and retain the supplied text. Both
+modes check schemaLocation token-pair parity and selected-revision hints on
+every retained owner, without hoisting or hint precedence. Only location tokens
+in schemaLocation pairs are checked. noNamespaceSchemaLocation uses its entire
+collapsed value; empty and non-URI text remain accepted. Revision recognition
+uses the exact v3/v4 basename after either path separator, ignoring a suffix from
+the first question mark/hash; no schema fetch or case folding is performed.
+
+At publication, strict simple values follow the pinned reader's integer bounds,
+XML Name/NCName/NMTOKEN and language rules. Strict ENTITY always fails because
+the reader does not accept unparsed-entity declarations. String,
+normalizedString and token add no further value validation in this pinned reader;
+the SQL does not invent normalization edits. Compatible modes skip selected-text
+and ID registration checks, including malformed/empty header id, but do not skip
+type derivation or hint checks. The default header id remains xs:int without an
+explicit type. Strict duplicate IDs and unresolved IDREFs are checked at
+publication using one document-partitioned identity pass, allowing forward
+references during a draft; cross-edition matches do not resolve them.
+
+The shared `xml_numeric_sql.py` checks decimal-string bounds before any SQLite
+cast; strict native file-size queries now reuse its u32 specialization.
+`xml_text_sql.py` implements the exact Rust XML whitespace and Unicode name
+ranges. SQLite's GLOB endpoint behavior admits U+FFFE/U+FFFF through the U+FFFD
+range, so explicit byte checks exclude those two values. NUL is preserved by
+collapse and explicitly rejected by lexical validators. No UDF, arbitrary token
+cap, source text copy or persisted effective value is added.
+
+`dat_xsi_check.py` uses the actual composed DDL and independent fixture identities
+for all eleven owners. It checks all modes, QName/derivation disagreements,
+integer/string-derived boundaries, nested/root hints, ID/IDREF scope, local
+insert/update rollback, and complete publication refusal/repair/freeze. Reverse
+corruption cases use a separate in-memory copy with only the 22 local XSI
+semantic triggers explicitly removed once; all canonical publication/other
+guards remain installed. The guarded copy retains all composed triggers. Both
+copies isolate mutations with DML-only savepoints, avoiding schema-cache resets
+on every rollback. Independent helper tests and Sol review add
+lexical/range/large-input controls. These are not parser-fed source inventories.
+
+Remaining writer obligations are explicit: capture source_qname and the resolved
+type while the namespace context exists, preserve every accepted declaration and
+ordinal, independently accumulate checked event totals and reach accepted EOF.
+No stored spelling can independently establish a historical namespace binding;
+no typed owner is invented for skipped vendor elements. Full-design review,
+current-corpus/query/performance proof, user approval and production changes
+remain gated.
 
 ## Executable field/value-position presence closure — 2026-10-08
 
