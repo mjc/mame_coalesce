@@ -70,7 +70,7 @@ pub fn load_catalog(
             header.parser_format,
         ));
     }
-    let scope = catalog_coverage::load(&mut conn, CoverageId::from_database(header.coverage_id))?;
+    let scope = catalog_coverage::load(&mut conn, CoverageId::try_from(header.coverage_id)?)?;
     let completeness = match scope {
         CatalogScope::Unknown => SnapshotCompleteness::Unknown,
         CatalogScope::Complete => SnapshotCompleteness::Complete,

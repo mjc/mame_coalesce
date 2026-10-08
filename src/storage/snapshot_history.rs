@@ -1766,10 +1766,8 @@ pub fn history(pool: &Pool, catalog: &CatalogKey) -> crate::Result<Vec<CatalogSn
     .load::<HistoryRow>(&mut conn)?;
     rows.into_iter()
         .map(|row| {
-            let scope = super::catalog_coverage::load(
-                &mut conn,
-                CoverageId::from_database(row.coverage_id),
-            )?;
+            let coverage_id = CoverageId::try_from(row.coverage_id)?;
+            let scope = super::catalog_coverage::load(&mut conn, coverage_id)?;
             Ok(CatalogSnapshotEntry {
                 snapshot: SnapshotKey::from_persisted(row.snapshot_key),
                 document_key: row.document_key,
@@ -1796,7 +1794,8 @@ fn snapshot(conn: &mut diesel::SqliteConnection, key: &SnapshotKey) -> crate::Re
         }
         error => error.into(),
     })?;
-    let scope = super::catalog_coverage::load(conn, CoverageId::from_database(row.coverage_id))?;
+    let coverage_id = CoverageId::try_from(row.coverage_id)?;
+    let scope = super::catalog_coverage::load(conn, coverage_id)?;
     Ok(SnapshotRow {
         catalog_key: row.catalog_key,
         scope,

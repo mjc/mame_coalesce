@@ -34,17 +34,25 @@ pub use storage::backup::{
     restore_backup,
 };
 pub use storage::catalog_clrmamepro;
+pub use storage::catalog_editions;
 pub use storage::catalog_files;
+pub use storage::catalog_hashes;
+pub use storage::catalog_ids;
+pub use storage::catalog_lists;
 pub use storage::catalog_logiqx;
 pub use storage::catalog_machines;
+pub use storage::catalog_messages;
 pub use storage::catalog_no_intro_dat;
 pub use storage::catalog_no_intro_database;
+pub use storage::catalog_requirements;
+pub use storage::catalog_selection;
 pub use storage::catalog_software;
 pub use storage::documents::{
     AcquisitionMetadata, DocumentStore, RetainedDocument, TransportHeader,
 };
 pub use storage::file_match_reviews;
 pub use storage::import_diagnostics;
+pub use storage::reading_rules;
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[cfg(test)]

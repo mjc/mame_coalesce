@@ -12,19 +12,7 @@ use diesel::{
 
 use crate::domain::{CatalogScope, QualifiedCatalogSet, SetCoverage, SetName};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct CoverageId(i64);
-
-impl CoverageId {
-    pub(crate) const fn from_database(value: i64) -> Self {
-        Self(value)
-    }
-
-    #[must_use]
-    pub const fn database_value(self) -> i64 {
-        self.0
-    }
-}
+pub use crate::storage::catalog_ids::CoverageId;
 
 #[derive(diesel::QueryableByName)]
 struct CoverageKindRow {
@@ -44,8 +32,6 @@ struct CoveredSetRow {
     list_order: i64,
     #[diesel(sql_type = Text)]
     set_kind: String,
-    #[diesel(sql_type = Text)]
-    set_group_kind: String,
     #[diesel(sql_type = Nullable<Text>)]
     software_list_name: Option<String>,
     #[diesel(sql_type = Text)]
@@ -67,7 +53,7 @@ pub(super) fn ensure(
             .load::<CoverageIdRow>(connection)?;
 
     for row in existing {
-        let id = CoverageId::from_database(row.coverage_id);
+        let id = CoverageId::try_from(row.coverage_id)?;
         if load(connection, id)? == *scope {
             return Ok(id);
         }
@@ -79,7 +65,7 @@ pub(super) fn ensure(
     let id = sql_query("SELECT last_insert_rowid() AS coverage_id")
         .get_result::<CoverageIdRow>(connection)?
         .coverage_id;
-    let id = CoverageId::from_database(id);
+    let id = CoverageId::try_from(id)?;
 
     match scope {
         CatalogScope::Unknown | CatalogScope::Complete => {}
@@ -101,12 +87,12 @@ pub(super) fn ensure(
 /// Load and validate a persisted scope and its canonical member ordering.
 pub fn load(connection: &mut SqliteConnection, id: CoverageId) -> crate::Result<CatalogScope> {
     let kind = sql_query("SELECT kind FROM catalog_coverage WHERE coverage_id = ?")
-        .bind::<BigInt, _>(id.database_value())
+        .bind::<BigInt, _>(id.as_i64())
         .get_result::<CoverageKindRow>(connection)
         .map_err(|error| match error {
             diesel::result::Error::NotFound => crate::Error::DatabaseSchema(format!(
                 "catalog coverage {} does not exist",
-                id.database_value()
+                id.as_i64()
             )),
             other => other.into(),
         })?
@@ -124,10 +110,10 @@ struct LoadedMembers {
 
 fn load_members(connection: &mut SqliteConnection, id: CoverageId) -> crate::Result<LoadedMembers> {
     let rows = sql_query(
-        "SELECT list_order, set_kind, set_group_kind, software_list_name, set_name, coverage \
+        "SELECT list_order, set_kind, software_list_name, set_name, coverage \
          FROM catalog_covered_sets WHERE coverage_id = ? ORDER BY list_order",
     )
-    .bind::<BigInt, _>(id.database_value())
+    .bind::<BigInt, _>(id.as_i64())
     .load::<CoveredSetRow>(connection)?;
 
     let mut members = BTreeMap::new();
@@ -139,7 +125,7 @@ fn load_members(connection: &mut SqliteConnection, id: CoverageId) -> crate::Res
         if row.list_order != expected_order {
             return Err(crate::Error::DatabaseSchema(format!(
                 "catalog coverage {} has noncanonical member ordering",
-                id.database_value()
+                id.as_i64()
             )));
         }
 
@@ -147,7 +133,7 @@ fn load_members(connection: &mut SqliteConnection, id: CoverageId) -> crate::Res
         if members.insert(member.clone(), coverage).is_some() {
             return Err(crate::Error::DatabaseSchema(format!(
                 "catalog coverage {} repeats a typed set member",
-                id.database_value()
+                id.as_i64()
             )));
         }
         ordered_members.push(member);
@@ -163,20 +149,16 @@ fn decode_member(
     row: CoveredSetRow,
     id: CoverageId,
 ) -> crate::Result<(QualifiedCatalogSet, SetCoverage)> {
-    let member = match (
-        row.set_kind.as_str(),
-        row.set_group_kind.as_str(),
-        row.software_list_name,
-    ) {
-        ("root", "root", None) => QualifiedCatalogSet::RootSet(SetName::new(row.set_name)),
-        ("software_item", "software_list", Some(list_name)) => QualifiedCatalogSet::SoftwareItem {
+    let member = match (row.set_kind.as_str(), row.software_list_name) {
+        ("root", None) => QualifiedCatalogSet::RootSet(SetName::new(row.set_name)),
+        ("software_item", Some(list_name)) => QualifiedCatalogSet::SoftwareItem {
             list_name,
             name: SetName::new(row.set_name),
         },
         _ => {
             return Err(crate::Error::DatabaseSchema(format!(
                 "catalog coverage {} has an invalid typed set qualification",
-                id.database_value()
+                id.as_i64()
             )));
         }
     };
@@ -186,7 +168,7 @@ fn decode_member(
         _ => {
             return Err(crate::Error::DatabaseSchema(format!(
                 "catalog coverage {} has an invalid member coverage value",
-                id.database_value()
+                id.as_i64()
             )));
         }
     };
@@ -209,7 +191,7 @@ fn scope_from_members(
             return Err(crate::Error::DatabaseSchema(format!(
                 "{} catalog coverage {} cannot have member rows",
                 kind,
-                id.database_value()
+                id.as_i64()
             )));
         }
         "filtered" => {
@@ -218,7 +200,7 @@ fn scope_from_members(
                 if coverage != SetCoverage::Covered || !filtered.insert(member) {
                     return Err(crate::Error::DatabaseSchema(format!(
                         "filtered catalog coverage {} must contain distinct covered members",
-                        id.database_value()
+                        id.as_i64()
                     )));
                 }
             }
@@ -228,7 +210,7 @@ fn scope_from_members(
         _ => {
             return Err(crate::Error::DatabaseSchema(format!(
                 "catalog coverage {} has an invalid kind",
-                id.database_value()
+                id.as_i64()
             )));
         }
     };
@@ -249,7 +231,7 @@ fn validate_canonical_order(
     if !canonical_order {
         return Err(crate::Error::DatabaseSchema(format!(
             "catalog coverage {} has noncanonical member ordering",
-            id.database_value()
+            id.as_i64()
         )));
     }
     Ok(())
@@ -262,27 +244,23 @@ fn insert_member(
     member: &QualifiedCatalogSet,
     coverage: SetCoverage,
 ) -> crate::Result<()> {
-    let (set_kind, set_group_kind, list_name, set_name) = match member {
-        QualifiedCatalogSet::RootSet(name) => ("root", "root", None, name.as_str()),
-        QualifiedCatalogSet::SoftwareItem { list_name, name } => (
-            "software_item",
-            "software_list",
-            Some(list_name.as_str()),
-            name.as_str(),
-        ),
+    let (set_kind, list_name, set_name) = match member {
+        QualifiedCatalogSet::RootSet(name) => ("root", None, name.as_str()),
+        QualifiedCatalogSet::SoftwareItem { list_name, name } => {
+            ("software_item", Some(list_name.as_str()), name.as_str())
+        }
     };
     let order = i64::try_from(order).map_err(|_| {
         crate::Error::DatabaseSchema("catalog coverage has too many members".to_owned())
     })?;
     sql_query(
         "INSERT INTO catalog_covered_sets \
-         (coverage_id, list_order, set_kind, set_group_kind, software_list_name, set_name, coverage) \
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
+         (coverage_id, list_order, set_kind, software_list_name, set_name, coverage) \
+         VALUES (?, ?, ?, ?, ?, ?)",
     )
-    .bind::<BigInt, _>(id.database_value())
+    .bind::<BigInt, _>(id.as_i64())
     .bind::<BigInt, _>(order)
     .bind::<Text, _>(set_kind)
-    .bind::<Text, _>(set_group_kind)
     .bind::<Nullable<Text>, _>(list_name)
     .bind::<Text, _>(set_name)
     .bind::<Text, _>(match coverage {

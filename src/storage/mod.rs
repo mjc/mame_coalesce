@@ -4,15 +4,23 @@ mod cached_sql;
 pub mod catalog_clrmamepro;
 pub mod catalog_content;
 pub mod catalog_coverage;
+pub mod catalog_editions;
 pub mod catalog_files;
+pub mod catalog_hashes;
 pub mod catalog_identity;
+pub mod catalog_ids;
 pub mod catalog_import;
+pub mod catalog_lists;
 pub mod catalog_logiqx;
 pub mod catalog_machines;
+pub mod catalog_messages;
 pub mod catalog_no_intro_dat;
 pub mod catalog_no_intro_database;
 pub mod catalog_reconciliation;
+pub mod catalog_requirements;
+pub mod catalog_selection;
 pub mod catalog_software;
+pub(crate) mod catalog_transactions;
 mod clrmamepro_fields;
 pub mod db;
 pub mod documents;
@@ -25,6 +33,7 @@ mod native_fields;
 mod no_intro_dat_fields;
 pub mod no_intro_database_fields;
 mod publishing_sources;
+pub mod reading_rules;
 pub mod relationships;
 pub mod repositories;
 pub mod schema;
@@ -35,3 +44,6 @@ mod software_rom_evidence;
 
 #[cfg(test)]
 mod managed_storage_prototype;
+
+#[cfg(test)]
+pub(crate) mod test_catalog;

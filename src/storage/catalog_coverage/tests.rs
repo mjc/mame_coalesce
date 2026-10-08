@@ -13,15 +13,24 @@ use crate::domain::{
 fn connection() -> crate::Result<SqliteConnection> {
     let mut connection = SqliteConnection::establish(":memory:")
         .map_err(|error| crate::Error::DatabaseSchema(error.to_string()))?;
-    connection.batch_execute(
-        "PRAGMA foreign_keys = ON;
-         CREATE TABLE catalog_snapshots (
-             snapshot_key TEXT PRIMARY KEY,
-             coverage_id INTEGER NOT NULL REFERENCES catalog_coverage(coverage_id)
-         );",
-    )?;
-    connection.batch_execute(include_str!("../db/coverage.sql"))?;
+    crate::storage::db::initialize_database(&mut connection)?;
     Ok(connection)
+}
+
+#[test]
+fn typed_scope_round_trips_against_the_reviewed_catalog_schema() -> crate::Result<()> {
+    let mut connection = connection()?;
+
+    let scope = CatalogScope::Filtered(
+        [root("game"), software("software-list", "item")]
+            .into_iter()
+            .collect(),
+    );
+    connection.immediate_transaction(|connection| {
+        let id = ensure(connection, &scope)?;
+        assert_eq!(load(connection, id)?, scope);
+        Ok(())
+    })
 }
 
 fn root(name: &str) -> QualifiedCatalogSet {
@@ -40,7 +49,6 @@ struct MemberRow<'a> {
     coverage_id: i64,
     list_order: i64,
     set_kind: &'a str,
-    set_group_kind: &'a str,
     software_list_name: Option<&'a str>,
     set_name: &'a str,
     coverage: &'a str,
@@ -52,13 +60,12 @@ fn insert_member(
 ) -> diesel::QueryResult<usize> {
     sql_query(
         "INSERT INTO catalog_covered_sets \
-         (coverage_id, list_order, set_kind, set_group_kind, software_list_name, set_name, coverage) \
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
+         (coverage_id, list_order, set_kind, software_list_name, set_name, coverage) \
+         VALUES (?, ?, ?, ?, ?, ?)",
     )
     .bind::<BigInt, _>(row.coverage_id)
     .bind::<BigInt, _>(row.list_order)
     .bind::<Text, _>(row.set_kind)
-    .bind::<Text, _>(row.set_group_kind)
     .bind::<Nullable<Text>, _>(row.software_list_name)
     .bind::<Text, _>(row.set_name)
     .bind::<Text, _>(row.coverage)
@@ -165,10 +172,10 @@ fn root_member_partial_index_rejects_duplicates_with_null_list_name() -> crate::
         let id = ensure(connection, &scope)?;
         let duplicate = sql_query(
             "INSERT INTO catalog_covered_sets \
-             (coverage_id, list_order, set_kind, set_group_kind, software_list_name, set_name, coverage) \
-             VALUES (?, 1, 'root', 'root', NULL, 'game', 'covered')",
+             (coverage_id, list_order, set_kind, software_list_name, set_name, coverage) \
+             VALUES (?, 1, 'root', NULL, 'game', 'covered')",
         )
-        .bind::<BigInt, _>(id.database_value())
+        .bind::<BigInt, _>(id.as_i64())
         .execute(connection);
         assert!(duplicate.is_err());
         Ok(())
@@ -206,10 +213,9 @@ fn sql_guards_reject_members_in_incompatible_scope_kinds() -> crate::Result<()> 
                 insert_member(
                     connection,
                     MemberRow {
-                        coverage_id: id.database_value(),
+                        coverage_id: id.as_i64(),
                         list_order: 0,
                         set_kind: "root",
-                        set_group_kind: "root",
                         software_list_name: None,
                         set_name: "game",
                         coverage: "covered",
@@ -222,10 +228,9 @@ fn sql_guards_reject_members_in_incompatible_scope_kinds() -> crate::Result<()> 
             insert_member(
                 connection,
                 MemberRow {
-                    coverage_id: filtered_id.database_value(),
+                    coverage_id: filtered_id.as_i64(),
                     list_order: 1,
                     set_kind: "root",
-                    set_group_kind: "root",
                     software_list_name: None,
                     set_name: "other",
                     coverage: "unknown",
@@ -247,23 +252,37 @@ fn unreferenced_scope_can_be_built_but_referenced_scope_is_immutable() -> crate:
         insert_member(
             connection,
             MemberRow {
-                coverage_id: id.database_value(),
+                coverage_id: id.as_i64(),
                 list_order: 1,
                 set_kind: "root",
-                set_group_kind: "root",
                 software_list_name: None,
                 set_name: "extra",
                 coverage: "covered",
             },
         )?;
-        connection.batch_execute(&format!(
-            "INSERT INTO catalog_snapshots(snapshot_key, coverage_id) VALUES ('snapshot', {})",
-            id.database_value()
-        ))?;
+        connection.batch_execute(
+            "INSERT INTO catalog_publishers(publisher_id, publisher_key, display_name) \
+             VALUES (1, 'test-publisher', 'Test Publisher');
+             INSERT INTO catalogs(catalog_id, publisher_id, catalog_key, display_name) \
+             VALUES (1, 1, 'test-catalog', 'Test Catalog');
+             INSERT INTO catalog_source_files \
+             (source_file_id, sha256, byte_length, object_key, codec) \
+             VALUES (1, zeroblob(32), 0, 'test-object', 'zstd');
+             INSERT INTO catalog_reading_rules \
+             (reading_rules_id, rules_key, format_family, dialect, specification_version, parser_version, rules_version) \
+             VALUES (1, 'test-rules', 'mame', 'test', '1', '1', '1');",
+        )?;
+        sql_query(
+            "INSERT INTO catalog_editions \
+             (edition_id, catalog_id, source_file_id, reading_rules_id, coverage_id) \
+             VALUES (1, 1, 1, 1, ?)",
+        )
+        .bind::<BigInt, _>(id.as_i64())
+        .execute(connection)?;
 
         assert!(
             sql_query("UPDATE catalog_coverage SET kind = 'partial' WHERE coverage_id = ?")
-                .bind::<BigInt, _>(id.database_value())
+                .bind::<BigInt, _>(id.as_i64())
                 .execute(connection)
                 .is_err()
         );
@@ -271,10 +290,9 @@ fn unreferenced_scope_can_be_built_but_referenced_scope_is_immutable() -> crate:
             insert_member(
                 connection,
                 MemberRow {
-                    coverage_id: id.database_value(),
+                    coverage_id: id.as_i64(),
                     list_order: 2,
                     set_kind: "root",
-                    set_group_kind: "root",
                     software_list_name: None,
                     set_name: "later",
                     coverage: "covered",
@@ -284,25 +302,28 @@ fn unreferenced_scope_can_be_built_but_referenced_scope_is_immutable() -> crate:
         );
         assert!(
             sql_query("UPDATE catalog_covered_sets SET set_name = 'renamed' WHERE coverage_id = ?")
-                .bind::<BigInt, _>(id.database_value())
+                .bind::<BigInt, _>(id.as_i64())
                 .execute(connection)
                 .is_err()
         );
         assert!(
             sql_query("DELETE FROM catalog_covered_sets WHERE coverage_id = ?")
-                .bind::<BigInt, _>(id.database_value())
+                .bind::<BigInt, _>(id.as_i64())
                 .execute(connection)
                 .is_err()
         );
 
         let empty_id = ensure(connection, &CatalogScope::Complete)?;
-        connection.batch_execute(&format!(
-            "INSERT INTO catalog_snapshots(snapshot_key, coverage_id) VALUES ('empty-snapshot', {})",
-            empty_id.database_value()
-        ))?;
+        sql_query(
+            "INSERT INTO catalog_editions \
+             (edition_id, catalog_id, source_file_id, reading_rules_id, coverage_id) \
+             VALUES (2, 1, 1, 1, ?)",
+        )
+        .bind::<BigInt, _>(empty_id.as_i64())
+        .execute(connection)?;
         assert!(
             sql_query("DELETE FROM catalog_coverage WHERE coverage_id = ?")
-                .bind::<BigInt, _>(empty_id.database_value())
+                .bind::<BigInt, _>(empty_id.as_i64())
                 .execute(connection)
                 .is_err()
         );

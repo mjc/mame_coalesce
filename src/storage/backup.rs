@@ -21,6 +21,9 @@ const BACKUP_APPLICATION_ID: i32 = 0x4d43_4231;
 const BACKUP_FORMAT_VERSION: i32 = 1;
 const MAX_REPORTED_ISSUES: usize = 50;
 
+#[cfg(test)]
+mod greenfield_tests;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RestorePolicy {
     CreateNew,
@@ -74,33 +77,19 @@ struct ForeignKeyViolation {
 }
 
 #[derive(QueryableByName)]
-struct RetainedDocumentRow {
+struct RetainedSourceFileRow {
     #[diesel(sql_type = BigInt)]
-    rowid: i64,
-    #[diesel(sql_type = Text)]
-    document_key: String,
-    #[diesel(sql_type = Nullable<Text>)]
-    object_key: Option<String>,
+    source_file_id: i64,
     #[diesel(sql_type = Nullable<Binary>)]
     sha1: Option<Vec<u8>>,
-    #[diesel(sql_type = Nullable<Binary>)]
-    sha256: Option<Vec<u8>>,
-    #[diesel(sql_type = Nullable<BigInt>)]
-    byte_length: Option<i64>,
-}
-
-#[derive(QueryableByName)]
-struct RetainedObjectRow {
+    #[diesel(sql_type = Binary)]
+    sha256: Vec<u8>,
+    #[diesel(sql_type = BigInt)]
+    byte_length: i64,
     #[diesel(sql_type = Text)]
-    document_key: String,
-    #[diesel(sql_type = Nullable<Binary>)]
-    sha1: Option<Vec<u8>>,
-    #[diesel(sql_type = Nullable<Binary>)]
-    sha256: Option<Vec<u8>>,
-    #[diesel(sql_type = Nullable<BigInt>)]
-    byte_length: Option<i64>,
-    #[diesel(sql_type = Nullable<Text>)]
-    object_key: Option<String>,
+    object_key: String,
+    #[diesel(sql_type = Text)]
+    codec: String,
 }
 
 #[derive(QueryableByName)]
@@ -113,6 +102,16 @@ struct PragmaValue {
 struct IntegrityCheckRow {
     #[diesel(sql_type = Text)]
     integrity_check: String,
+}
+
+#[derive(QueryableByName)]
+struct CatalogIntegrityProblem {
+    #[diesel(sql_type = Text)]
+    problem: String,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    owner_id: Option<i64>,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    edition_id: Option<i64>,
 }
 
 /// Create and validate a standalone, versioned SQLite snapshot without modifying the source.
@@ -503,44 +502,8 @@ fn check_connection(
     }
     check_retained_documents(conn, &mut report)?;
     check_publication_states(conn, &mut report)?;
-    check_logiqx_attribute_positions(conn, &mut report)?;
-    check_software_attribute_positions(conn, &mut report)?;
+    check_catalog_integrity(conn, &mut report)?;
     Ok(report)
-}
-
-fn check_software_attribute_positions(
-    conn: &mut SqliteConnection,
-    report: &mut IntegrityReport,
-) -> Result<()> {
-    let rows=sql_query("SELECT 'Software attributes: ' || reason || ' (' || owner_kind || ':' || owner_a || ',' || owner_b || ',' || owner_c || ', field ' || field_kind || ')' AS integrity_check FROM software_attribute_violations")
-        .load_iter::<IntegrityCheckRow,_>(conn)
-        .map_err(|error|backup_error(format!("software attribute integrity check failed: {error}")))?;
-    for row in rows {
-        let row = row.map_err(|error| {
-            backup_error(format!(
-                "software attribute integrity check failed: {error}"
-            ))
-        })?;
-        push_issue(&mut report.durable_issues, row.integrity_check);
-    }
-    Ok(())
-}
-
-fn check_logiqx_attribute_positions(
-    conn: &mut SqliteConnection,
-    report: &mut IntegrityReport,
-) -> Result<()> {
-    // Global corruption checks belong here, not in per-edition publication.
-    let rows = sql_query("SELECT 'Logiqx attributes: ' || reason || ' (' || owner_kind || ':' || CAST(owner_a AS TEXT) || ',' || owner_b || ', field ' || field_kind || ')' AS integrity_check FROM logiqx_attribute_violations")
-        .load_iter::<IntegrityCheckRow, _>(conn)
-        .map_err(|error| backup_error(format!("Logiqx attribute integrity check failed: {error}")))?;
-    for row in rows {
-        let row = row.map_err(|error| {
-            backup_error(format!("Logiqx attribute integrity check failed: {error}"))
-        })?;
-        push_issue(&mut report.durable_issues, row.integrity_check);
-    }
-    Ok(())
 }
 
 fn check_schema(conn: &mut SqliteConnection, report: &mut IntegrityReport) -> bool {
@@ -558,37 +521,35 @@ fn check_retained_documents(
     conn: &mut SqliteConnection,
     report: &mut IntegrityReport,
 ) -> Result<()> {
-    let mut last_rowid = i64::MIN;
+    let mut last_source_file_id = i64::MIN;
     let mut inclusive = true;
     loop {
-        let Some(document) = sql_query(if inclusive {
-            "SELECT rowid, document_key, object_key, sha1, sha256, byte_length FROM documents \
-                 WHERE retention_status = 'retained' AND rowid >= ? ORDER BY rowid LIMIT 1"
+        let Some(source_file) = sql_query(if inclusive {
+            "SELECT source_file_id, sha1, sha256, byte_length, object_key, codec \
+                 FROM catalog_source_files WHERE source_file_id >= ? \
+                 ORDER BY source_file_id LIMIT 1"
         } else {
-            "SELECT rowid, document_key, object_key, sha1, sha256, byte_length FROM documents \
-                 WHERE retention_status = 'retained' AND rowid > ? ORDER BY rowid LIMIT 1"
+            "SELECT source_file_id, sha1, sha256, byte_length, object_key, codec \
+                 FROM catalog_source_files WHERE source_file_id > ? \
+                 ORDER BY source_file_id LIMIT 1"
         })
-        .bind::<BigInt, _>(last_rowid)
-        .get_result::<RetainedDocumentRow>(conn)
+        .bind::<BigInt, _>(last_source_file_id)
+        .get_result::<RetainedSourceFileRow>(conn)
         .optional()
-        .map_err(|error| backup_error(format!("could not inspect retained documents: {error}")))?
+        .map_err(|error| {
+            backup_error(format!("could not inspect retained source files: {error}"))
+        })?
         else {
             break;
         };
-        last_rowid = document.rowid;
+        last_source_file_id = source_file.source_file_id;
         inclusive = false;
-        if document.object_key.is_none()
-            || document.sha1.is_none()
-            || document.sha256.as_deref().is_none_or(|digest| {
-                format!("sha256:{}", hex::encode(digest)) != document.document_key
-            })
-            || document.byte_length.is_none_or(|length| length < 0)
-        {
+        if !valid_source_file_metadata(&source_file) {
             push_issue(
                 &mut report.durable_issues,
                 format!(
-                    "retained document {} has invalid object metadata",
-                    document.document_key
+                    "source file {} has invalid retained object metadata",
+                    source_file.source_file_id
                 ),
             );
         }
@@ -611,44 +572,26 @@ fn check_document_sidecar(database: &Utf8Path) -> Result<()> {
 
 fn check_sidecar_contents(database: &Utf8Path, report: &mut IntegrityReport) -> Result<()> {
     let mut conn = connect(database)?;
-    let documents = sql_query(
-        "SELECT document_key, sha1, sha256, byte_length, object_key \
-         FROM documents WHERE retention_status = 'retained' ORDER BY document_key",
+    let source_files = sql_query(
+        "SELECT source_file_id, sha1, sha256, byte_length, object_key, codec \
+         FROM catalog_source_files ORDER BY source_file_id",
     )
-    .load::<RetainedObjectRow>(&mut conn)
-    .map_err(|error| backup_error(format!("could not inspect document objects: {error}")))?;
+    .load::<RetainedSourceFileRow>(&mut conn)
+    .map_err(|error| backup_error(format!("could not inspect retained source files: {error}")))?;
     drop(conn);
     let root = document_sidecar_path(database);
-    for document in documents {
-        let valid_key = document.object_key.as_deref().is_some_and(|key| {
-            key.starts_with("sha256/")
-                && !key
-                    .split('/')
-                    .any(|component| component == ".." || component.is_empty())
-        });
-        let Some(key) = document.object_key.filter(|_| valid_key) else {
+    for source_file in source_files {
+        if !valid_source_file_metadata(&source_file) {
             push_issue(
                 &mut report.durable_issues,
                 format!(
-                    "retained document {} has an invalid object key",
-                    document.document_key
+                    "source file {} has invalid retained object metadata",
+                    source_file.source_file_id
                 ),
             );
             continue;
-        };
-        let (Some(expected_sha1), Some(expected_sha256), Some(expected_length)) =
-            (document.sha1, document.sha256, document.byte_length)
-        else {
-            push_issue(
-                &mut report.durable_issues,
-                format!(
-                    "retained document {} is missing digest metadata",
-                    document.document_key
-                ),
-            );
-            continue;
-        };
-        let path = root.join(key);
+        }
+        let path = root.join(&source_file.object_key);
         let actual = (|| -> std::io::Result<(Vec<u8>, Vec<u8>, u64)> {
             let mut decoder = zstd::Decoder::new(File::open(path)?)?;
             let mut sha256 = Sha256::new();
@@ -667,17 +610,19 @@ fn check_sidecar_contents(database: &Utf8Path, report: &mut IntegrityReport) -> 
             Ok((sha256.finalize().to_vec(), sha1.finalize().to_vec(), length))
         })();
         let matches = actual.is_ok_and(|(sha256, sha1, length)| {
-            sha256 == expected_sha256
-                && sha1 == expected_sha1
-                && length == u64::try_from(expected_length).unwrap_or(u64::MAX)
-                && format!("sha256:{}", hex::encode(sha256)) == document.document_key
+            sha256 == source_file.sha256
+                && source_file
+                    .sha1
+                    .as_ref()
+                    .is_none_or(|expected_sha1| &sha1 == expected_sha1)
+                && length == u64::try_from(source_file.byte_length).unwrap_or(u64::MAX)
         });
         if !matches {
             push_issue(
                 &mut report.durable_issues,
                 format!(
-                    "retained document {} has a missing or invalid sidecar object",
-                    document.document_key
+                    "source file {} has a missing or invalid sidecar object",
+                    source_file.source_file_id
                 ),
             );
         }
@@ -688,70 +633,77 @@ fn check_sidecar_contents(database: &Utf8Path, report: &mut IntegrityReport) -> 
     Ok(())
 }
 
+fn valid_source_file_metadata(source_file: &RetainedSourceFileRow) -> bool {
+    source_file.sha256.len() == 32
+        && source_file
+            .sha1
+            .as_ref()
+            .is_none_or(|digest| digest.len() == 20)
+        && source_file.byte_length >= 0
+        && source_file.codec == "zstd"
+        && source_file.object_key == format!("sha256/{}.zst", hex::encode(&source_file.sha256))
+}
+
 fn check_publication_states(
     conn: &mut SqliteConnection,
     report: &mut IntegrityReport,
 ) -> Result<()> {
     let rows = sql_query(
-        "SELECT run_key AS value FROM import_runs AS run \
-         WHERE status IN ('pending', 'running') \
-            OR (status = 'succeeded' AND snapshot_key IS NULL) \
-            OR (status <> 'succeeded' AND snapshot_key IS NOT NULL) \
-            OR (status = 'succeeded' AND NOT EXISTS ( \
-                SELECT 1 FROM snapshot_publications AS publication \
-                WHERE publication.snapshot_key = run.snapshot_key \
-                  AND publication.catalog_key = run.catalog_key \
-                  AND publication.document_key = run.document_key \
-                  AND publication.interpretation_key = run.interpretation_key)) \
-         ORDER BY run_key LIMIT 50",
+        "SELECT run.import_key AS value FROM catalog_imports AS run \
+         LEFT JOIN catalog_editions AS edition ON edition.edition_id = run.edition_id \
+         LEFT JOIN published_catalog_editions AS publication \
+           ON publication.edition_id = edition.edition_id \
+         WHERE run.status = 'running' \
+            OR (run.status = 'succeeded' AND (edition.edition_id IS NULL \
+                OR publication.edition_id IS NULL \
+                OR publication.catalog_id <> run.catalog_id \
+                OR publication.source_file_id <> run.source_file_id \
+                OR publication.reading_rules_id <> run.reading_rules_id)) \
+         ORDER BY run.import_id LIMIT 50",
     )
     .load::<TextValue>(conn)
-    .map_err(|error| backup_error(format!("could not inspect publication states: {error}")))?;
+    .map_err(|error| {
+        backup_error(format!(
+            "could not inspect catalog publication states: {error}"
+        ))
+    })?;
     for row in rows {
         push_issue(
             &mut report.durable_issues,
             format!(
-                "import run {} has an incomplete publication state",
+                "catalog import {} has an incomplete publication state",
                 row.value
             ),
         );
     }
-    let relationships = sql_query(
-        "SELECT assertion_key AS value FROM catalog_relationship_closure \
-         WHERE NOT is_complete OR NOT is_published \
-         ORDER BY assertion_key LIMIT 50",
+    Ok(())
+}
+
+fn check_catalog_integrity(
+    conn: &mut SqliteConnection,
+    report: &mut IntegrityReport,
+) -> Result<()> {
+    let problems = sql_query(
+        "SELECT problem, owner_id, edition_id FROM candidate_integrity_problems \
+         ORDER BY problem, owner_id, edition_id LIMIT 50",
     )
-    .load::<TextValue>(conn)
+    .load_iter::<CatalogIntegrityProblem, _>(conn)
     .map_err(|error| {
         backup_error(format!(
-            "could not inspect relationship publication states: {error}"
+            "could not inspect catalog integrity views: {error}"
         ))
     })?;
-    for row in relationships {
+    for problem in problems {
+        let problem = problem.map_err(|error| {
+            backup_error(format!(
+                "could not inspect catalog integrity views: {error}"
+            ))
+        })?;
         push_issue(
             &mut report.durable_issues,
             format!(
-                "relationship {} has an incomplete evidence publication state",
-                row.value
-            ),
-        );
-    }
-    let reviews = sql_query(
-        "SELECT review_key AS value FROM catalog_relationship_review_closure \
-         WHERE NOT is_complete OR NOT is_published ORDER BY review_id LIMIT 50",
-    )
-    .load::<TextValue>(conn)
-    .map_err(|error| {
-        backup_error(format!(
-            "could not inspect relationship review publication states: {error}"
-        ))
-    })?;
-    for row in reviews {
-        push_issue(
-            &mut report.durable_issues,
-            format!(
-                "relationship review {} has an incomplete publication state",
-                row.value
+                "catalog integrity problem {} (owner {:?}, edition {:?})",
+                problem.problem, problem.owner_id, problem.edition_id
             ),
         );
     }
@@ -880,12 +832,6 @@ fn backup_error(message: impl Into<String>) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{self, CatalogDocumentFormat, CatalogImportRequest};
-    use crate::domain::{
-        CatalogKey, CatalogScope, ContentDigestAlgorithm, ContentIdentity, PublishingSourceKey,
-        RelationshipAssertionKey, RelationshipClaim, RelationshipEndpoint, RelationshipOrigin,
-        RelationshipReview, RelationshipReviewDecision, RelationshipType,
-    };
     use diesel::sql_types::Binary;
     use tempfile::tempdir;
 
@@ -950,156 +896,11 @@ mod tests {
 
         assert_eq!(load_document(&restored, payload)?, payload);
         let mut conn = connect(&restored)?;
-        let acquisition_count =
-            sql_query("SELECT COUNT(*) AS count FROM acquisitions WHERE source_key = 'source'")
-                .get_result::<CountRow>(&mut conn)?
-                .count;
-        assert_eq!(acquisition_count, 1);
+        let receipt_count = sql_query("SELECT COUNT(*) AS count FROM catalog_file_receipts")
+            .get_result::<CountRow>(&mut conn)?
+            .count;
+        assert_eq!(receipt_count, 1);
         assert!(check_integrity(&restored)?.is_clean());
-        Ok(())
-    }
-
-    #[test]
-    #[allow(clippy::too_many_lines)] // One full round-trip fixture proves the durable catalog graph is retained.
-    fn backup_restore_preserves_catalog_snapshots_assertions_and_adjudications() -> Result<()> {
-        let directory = tempdir()?;
-        let source_path = utf8(directory.path().join("catalogs.sqlite"))?;
-        let backup_path = utf8(directory.path().join("catalogs.backup"))?;
-        let restored_path = utf8(directory.path().join("catalogs-restored.sqlite"))?;
-        let database = database(&source_path)?;
-
-        let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let machine_bytes = std::fs::read(fixture_root.join("fixtures/catalog/mame/machine.xml"))?;
-        let machine_request = CatalogImportRequest {
-            document_path: utf8(fixture_root.join("fixtures/catalog/mame/machine.xml"))?,
-            format: CatalogDocumentFormat::MameListXml,
-            source_key: PublishingSourceKey::new("machine-source"),
-            source_display_name: "Machine source".to_owned(),
-            catalog_key: CatalogKey::new("machine-catalog"),
-            catalog_display_name: "Machine catalog".to_owned(),
-            scope: CatalogScope::Unknown,
-        };
-        let machine_snapshot = app::import_catalog(&database, &machine_request)?
-            .snapshot_key
-            .ok_or_else(|| crate::Error::InvalidPath("MAME snapshot missing".to_owned()))?;
-
-        let logiqx_bytes =
-            std::fs::read(fixture_root.join("fixtures/catalog/logiqx/catalog-a-v1.dat"))?;
-        let logiqx_request = CatalogImportRequest {
-            document_path: utf8(fixture_root.join("fixtures/catalog/logiqx/catalog-a-v1.dat"))?,
-            format: CatalogDocumentFormat::Logiqx(crate::logiqx::LogiqxMode::ObservedCompatible),
-            source_key: PublishingSourceKey::new("logiqx-source"),
-            source_display_name: "Logiqx source".to_owned(),
-            catalog_key: CatalogKey::new("logiqx-catalog"),
-            catalog_display_name: "Logiqx catalog".to_owned(),
-            scope: CatalogScope::Unknown,
-        };
-        app::import_catalog(&database, &logiqx_request)?;
-
-        let mut conn = connect(&source_path)?;
-        let assertion = sql_query(
-            "SELECT assertion_key AS value FROM relationship_assertion_explanations \
-             WHERE source_field = 'device_ref' \
-               AND source_snapshot_key=(SELECT snapshot_key FROM catalog_snapshots \
-                                        WHERE catalog_key='logiqx-catalog')",
-        )
-        .get_result::<TextValue>(&mut conn)?;
-        drop(conn);
-        let supporting_assertion = RelationshipAssertionKey::new(assertion.value);
-        let identity = ContentIdentity::new(
-            ContentDigestAlgorithm::Sha1,
-            "0123456789abcdef0123456789abcdef01234567",
-        )?;
-        let candidate = app::record_relationship(
-            &database,
-            &RelationshipClaim {
-                relation_type: RelationshipType::ExactContentIdentity,
-                subject: RelationshipEndpoint::ContentObject(identity.clone()),
-                target: RelationshipEndpoint::ContentObject(identity),
-                origin: RelationshipOrigin::DerivedCandidate {
-                    rule: crate::domain::RelationshipRule::new(
-                        "backup-round-trip",
-                        "v1",
-                        "Backup round-trip witness",
-                    )?,
-                    supporting_assertions: vec![supporting_assertion],
-                },
-                evidence: crate::domain::RelationshipEvidence::Rationale {
-                    reason: "preserve adjudication".to_owned(),
-                },
-            },
-        )?;
-        app::review_relationship(
-            &database,
-            &candidate,
-            &RelationshipReview {
-                decision: RelationshipReviewDecision::Accepted,
-                note: "preserved decision".to_owned(),
-                superseded_by: None,
-            },
-        )?;
-        let original_explanations = app::explain_relationships(&database)?;
-        drop(database);
-
-        create_backup(&source_path, &backup_path)?;
-        restore_backup(&backup_path, &restored_path, RestorePolicy::CreateNew)?;
-
-        let mut restored = connect(&restored_path)?;
-        for (table, expected) in [
-            ("catalogs", 2),
-            ("catalog_snapshots", 2),
-            ("snapshot_publications", 2),
-            ("relationship_assertions", 1),
-            ("relationship_assertion_explanations", 3),
-            ("catalog_relationships", 3),
-            ("catalog_relationship_reviews", 1),
-        ] {
-            let count = sql_query(format!("SELECT COUNT(*) AS count FROM {table}"))
-                .get_result::<CountRow>(&mut restored)?
-                .count;
-            assert!(
-                count >= expected,
-                "{table}: expected at least {expected}, got {count}"
-            );
-        }
-        for bytes in [&machine_bytes, &logiqx_bytes] {
-            assert_eq!(load_document(&restored_path, bytes)?, *bytes);
-        }
-        drop(restored);
-        let restored_database = crate::database::Database::open(&restored_path)?;
-        assert_eq!(
-            app::explain_relationships(&restored_database)?,
-            original_explanations,
-            "paired backup preserves exact native keys, evidence, support and reviews"
-        );
-        let restored_source = app::load_snapshot_source(&restored_database, &machine_snapshot)?;
-        assert_eq!(restored_source, machine_bytes);
-        assert!(
-            restored_source
-                .windows(b"future:flag=\"preserved\"".len())
-                .any(|window| window == b"future:flag=\"preserved\""),
-            "restored source retains the vendor literal"
-        );
-        drop(restored_database);
-        assert!(check_integrity(&restored_path)?.is_clean());
-        let mut restored = connect(&restored_path)?;
-        sql_query("DROP TRIGGER snapshot_publications_are_immutable_delete")
-            .execute(&mut restored)?;
-        sql_query(
-            "DELETE FROM snapshot_publications WHERE snapshot_key = \
-             (SELECT snapshot_key FROM import_runs WHERE status = 'succeeded' LIMIT 1)",
-        )
-        .execute(&mut restored)?;
-        let mut report = IntegrityReport::default();
-        check_publication_states(&mut restored, &mut report)?;
-        drop(restored);
-        assert!(
-            report
-                .durable_issues
-                .iter()
-                .any(|issue| issue.contains("incomplete publication")),
-            "{report:?}"
-        );
         Ok(())
     }
 
@@ -1149,8 +950,11 @@ mod tests {
         create_backup(&source, &backup)?;
         let mut conn = connect(&backup)?;
         sql_query("PRAGMA foreign_keys = OFF").execute(&mut conn)?;
-        sql_query("DROP TRIGGER documents_are_immutable_delete").execute(&mut conn)?;
-        sql_query("DELETE FROM documents WHERE sha256 = ?")
+        sql_query("DROP TRIGGER candidate_dictionary_catalog_source_files_delete")
+            .execute(&mut conn)?;
+        sql_query("DROP TRIGGER candidate_fk_reverse_catalog_file_receipts_0_delete")
+            .execute(&mut conn)?;
+        sql_query("DELETE FROM catalog_source_files WHERE sha256 = ?")
             .bind::<Binary, _>(Sha256::digest(b"backup").as_slice())
             .execute(&mut conn)?;
         drop(conn);
@@ -1197,7 +1001,7 @@ mod tests {
             report
                 .durable_issues
                 .iter()
-                .any(|issue| issue.contains("document")),
+                .any(|issue| issue.contains("source file")),
             "{report:?}"
         );
         Ok(())
@@ -1244,55 +1048,30 @@ mod tests {
     }
 
     #[test]
-    fn integrity_checks_durable_native_payload_after_many_inventory_violations() -> Result<()> {
+    fn integrity_checks_durable_catalog_metadata_after_many_inventory_violations() -> Result<()> {
         let directory = tempdir()?;
         let path = utf8(directory.path().join("cache.sqlite"))?;
         let database = database(&path)?;
-
-        let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let request = CatalogImportRequest {
-            document_path: utf8(fixture_root.join("fixtures/catalog/mame/software-list.xml"))?,
-            format: CatalogDocumentFormat::MameSoftwareListXml,
-            source_key: PublishingSourceKey::new("backup-integrity-software-source"),
-            source_display_name: "Backup integrity software source".to_owned(),
-            catalog_key: CatalogKey::new("backup-integrity-software-catalog"),
-            catalog_display_name: "Backup integrity software catalog".to_owned(),
-            scope: CatalogScope::Unknown,
-        };
-        app::import_catalog(&database, &request)?;
-
         let mut conn = connect(&path)?;
         sql_query("PRAGMA ignore_check_constraints = ON").execute(&mut conn)?;
         for id in 1..=60 {
             insert_corrupt_rom_file(&mut conn, id)?;
         }
-        // Deliberately simulate damaged storage, not an authorized catalog edit.
-        // Restore the exact guard before checking integrity so schema damage
-        // cannot stand in for the native payload CHECK failure under test.
-        let guard = sql_query("SELECT sql FROM sqlite_schema WHERE type = 'trigger' AND name = 'software_rom_entries_immutable_update'")
-            .get_result::<TriggerDefinition>(&mut conn)?;
-        sql_query("DROP TRIGGER software_rom_entries_immutable_update").execute(&mut conn)?;
-        let affected = sql_query(
-            "UPDATE software_rom_entries SET dump_status = 'invalid' \
-             WHERE occurrence_id = (SELECT MIN(occurrence_id) FROM software_rom_entries)",
+        sql_query(
+            "INSERT INTO catalog_source_files \
+             (sha256, sha1, byte_length, object_key, codec) \
+             VALUES (x'01', NULL, 0, 'invalid', 'zstd')",
         )
         .execute(&mut conn)?;
-        sql_query(&guard.sql).execute(&mut conn)?;
-        assert_eq!(affected, 1, "fixture has a native software ROM payload");
-        sql_query("INSERT INTO catalog_contents (content_uuid) VALUES (x'00')")
-            .execute(&mut conn)?;
         drop(conn);
         drop(database);
 
         let report = check_integrity(&path)?;
-        for table in ["software_rom_entries", "catalog_contents"] {
-            assert!(
-                report
-                    .durable_issues
-                    .contains(&format!("CHECK constraint failed in {table}")),
-                "the durable {table} CHECK failure must survive inventory noise: {report:?}"
-            );
-        }
+        assert!(
+            report
+                .durable_issues
+                .contains(&"CHECK constraint failed in catalog_source_files".to_owned())
+        );
         assert_eq!(report.inventory_issues.len(), MAX_REPORTED_ISSUES);
         Ok(())
     }
@@ -1308,9 +1087,10 @@ mod tests {
         for id in 1..=60 {
             insert_corrupt_rom_file(&mut conn, id)?;
         }
+        sql_query("DROP TRIGGER candidate_fk_catalog_fetch_headers_0_insert").execute(&mut conn)?;
         sql_query(
-            "INSERT INTO acquisitions (acquisition_key, source_key, document_key, method) \
-             VALUES ('orphan-acquisition', 'missing-source', 'missing-document', 'test')",
+            "INSERT INTO catalog_fetch_headers (fetch_attempt_id, list_order, name, value) \
+             VALUES (999, 0, 'orphan', 'missing attempt')",
         )
         .execute(&mut conn)?;
         drop(conn);
@@ -1321,7 +1101,7 @@ mod tests {
             report
                 .durable_issues
                 .iter()
-                .any(|issue| issue.contains("acquisitions")),
+                .any(|issue| issue.contains("catalog_fetch_headers")),
             "the durable foreign-key violation must survive inventory noise: {report:?}"
         );
         assert_eq!(report.inventory_issues.len(), MAX_REPORTED_ISSUES);
@@ -1404,7 +1184,7 @@ mod tests {
         add_retained_document(&source, b"schema")?;
         create_backup(&source, &backup)?;
         let mut conn = connect(&backup)?;
-        sql_query("DROP TABLE snapshot_publications").execute(&mut conn)?;
+        sql_query("DROP TABLE published_catalog_editions").execute(&mut conn)?;
         drop(conn);
 
         let report = check_integrity(&backup)?;
@@ -1481,11 +1261,5 @@ mod tests {
     struct CountRow {
         #[diesel(sql_type = BigInt)]
         count: i64,
-    }
-
-    #[derive(QueryableByName)]
-    struct TriggerDefinition {
-        #[diesel(sql_type = Text)]
-        sql: String,
     }
 }

@@ -1640,7 +1640,7 @@ fn prepare_snapshot(
     .load::<IdentityOnlySnapshot>(conn)?;
     let matching_identity = identity_rows.iter().find(|row| {
         row.is_identity_only == 1
-            && row.coverage_id == coverage_id.database_value()
+            && row.coverage_id == coverage_id.as_i64()
             && row.acquisition_source.as_deref() == Some(request.source_key.as_str())
     });
     let snapshot_key = if let Some(existing) = matching_identity {
@@ -1662,7 +1662,7 @@ fn prepare_snapshot(
         .bind::<Text, _>(document_key.to_string())
         .bind::<Text, _>(interpretation.as_str())
         .bind::<Nullable<Text>, _>(Some(acquisition_key.to_owned()))
-        .bind::<BigInt, _>(coverage_id.database_value())
+        .bind::<BigInt, _>(coverage_id.as_i64())
         .execute(conn)?;
         snapshot_key
     };
