@@ -36,7 +36,12 @@ struct QueryTiming {
 static SQL_TIMINGS: OnceLock<Mutex<BTreeMap<String, QueryTiming>>> = OnceLock::new();
 
 fn sql_timings() -> Box<dyn Instrumentation> {
+    sql_timings_with_report(report_sql_timings)
+}
+
+fn sql_timings_with_report(mut report: impl FnMut() + Send + 'static) -> Box<dyn Instrumentation> {
     let mut started = None;
+    let mut queries_until_report = 10_000;
     Box::new(move |event: InstrumentationEvent<'_>| match event {
         InstrumentationEvent::StartQuery { .. } => started = Some(Instant::now()),
         InstrumentationEvent::FinishQuery { query, .. } => {
@@ -52,9 +57,45 @@ fn sql_timings() -> Box<dyn Instrumentation> {
             timing.count += 1;
             timing.elapsed += elapsed;
             drop(timings);
+            queries_until_report -= 1;
+            if queries_until_report == 0 {
+                queries_until_report = 10_000;
+                report();
+            }
         }
         _ => {}
     })
+}
+
+#[cfg(test)]
+mod timing_tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    use diesel::{Connection, QueryableByName, RunQueryDsl, SqliteConnection, sql_query};
+
+    #[test]
+    fn sql_timings_reports_completed_query_checkpoints() -> Result<(), Box<dyn std::error::Error>> {
+        #[derive(QueryableByName)]
+        struct Value {
+            #[diesel(sql_type = diesel::sql_types::BigInt)]
+            value: i64,
+        }
+        let reports = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&reports);
+        let mut connection = SqliteConnection::establish(":memory:")?;
+        connection.set_instrumentation(super::sql_timings_with_report(move || {
+            observed.fetch_add(1, Ordering::Relaxed);
+        }));
+        for index in 1..=20_000 {
+            let row = sql_query("SELECT 1 AS value").get_result::<Value>(&mut connection)?;
+            assert_eq!(row.value, 1);
+            assert_eq!(reports.load(Ordering::Relaxed), index / 10_000);
+        }
+        Ok(())
+    }
 }
 
 fn report_sql_timings() {
@@ -75,7 +116,7 @@ fn report_sql_timings() {
     eprintln!("SQL total_calls={calls} statement_shapes={}", rows.len());
     for (sql, timing) in rows.into_iter().take(20) {
         let abbreviated = sql.split_whitespace().collect::<Vec<_>>().join(" ");
-        let abbreviated = abbreviated.chars().take(600).collect::<String>();
+        let abbreviated = abbreviated.chars().take(2_400).collect::<String>();
         eprintln!(
             "SQL seconds={:.6} calls={} average_us={:.1} query={abbreviated}",
             timing.elapsed.as_secs_f64(),

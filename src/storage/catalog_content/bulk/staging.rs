@@ -89,15 +89,16 @@ fn stage(
         let values = std::iter::repeat_n("(?,?,?)", page.len())
             .collect::<Vec<_>>()
             .join(",");
-        // Accepted aliases use the shared source/review qualification view.
-        // Its redirect traversal relies on the schema's merged_file_cycle
-        // trigger; arbitrary tampering with that graph is not supported here.
+        // Keep shared source/review qualification for accepted aliases, but
+        // take the issued UUID from its native owner. Redirect traversal then
+        // runs in the staged path query instead of once per source occurrence.
         let statement = format!(
             "WITH incoming(request_index,algorithm,digest) AS (VALUES {values})
             INSERT OR IGNORE INTO temp.import_identity_matches(request_index,issued_uuid,disputed)
-            SELECT incoming.request_index,assertion.content_uuid,0 FROM incoming
+            SELECT incoming.request_index,owner.content_uuid,0 FROM incoming
             JOIN digest_values AS digest USING(algorithm,digest)
             JOIN catalog_content_digest_assertions AS assertion USING(digest_id)
+            JOIN asset_occurrences AS owner ON owner.occurrence_id=assertion.occurrence_id
             UNION ALL
             SELECT incoming.request_index,dispute.candidate_content_uuid,1 FROM incoming
             JOIN digest_values AS digest USING(algorithm,digest)

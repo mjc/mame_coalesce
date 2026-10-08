@@ -15,7 +15,7 @@
         NIX_CFLAGS_COMPILE = lib.replaceStrings ["-DSQLITE_ENABLE_STMT_SCANSTATUS"] [""] compileFlags;
       };
   });
-  scriptCheck = "${pkgs.shellcheck}/bin/shellcheck scripts/fetch_public_domain_test_data.sh scripts/profile_flamegraph.sh scripts/profile_catalog_imports.sh scripts/render_catalog_flamegraph.sh scripts/benchmark_run.sh scripts/generate_synthetic_benchmark_corpus.sh scripts/generate_xml_import_benchmark_corpus.sh scripts/benchmark_xml_import.sh scripts/parse_flamegraph scripts/parse_perfdata";
+  scriptCheck = "${pkgs.shellcheck}/bin/shellcheck scripts/fetch_public_domain_test_data.sh scripts/profile_flamegraph.sh scripts/profile_catalog_imports.sh scripts/render_catalog_flamegraph.sh scripts/test_filter_perf_user_stacks.sh scripts/benchmark_run.sh scripts/generate_synthetic_benchmark_corpus.sh scripts/generate_xml_import_benchmark_corpus.sh scripts/benchmark_xml_import.sh scripts/parse_flamegraph scripts/parse_perfdata";
 in {
   languages.rust = {
     enable = true;
@@ -37,6 +37,7 @@ in {
     git
     curl
     jq
+    gawk
     cargo-nextest
     time
   ];
@@ -122,8 +123,13 @@ in {
   profiles = {
     profiling.module = {
       languages.rust.components = ["llvm-tools-preview"];
+      tasks."project:profiling-renderer" = {
+        description = "Check lossless perf-stack rendering and kernel-symbol boundaries";
+        exec = "bash scripts/test_filter_perf_user_stacks.sh";
+        before = ["project:scripts"];
+      };
       packages = with pkgs;
-        [cargo-flamegraph hyperfine]
+        [cargo-flamegraph hyperfine inferno]
         ++ lib.optionals stdenv.isLinux [perf heaptrack];
     };
     maintenance.module = {

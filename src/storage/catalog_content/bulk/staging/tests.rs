@@ -1,6 +1,8 @@
+#![allow(clippy::expect_used)]
+
 use diesel::{
     Connection, RunQueryDsl, SqliteConnection,
-    connection::SimpleConnection,
+    connection::{InstrumentationEvent, SimpleConnection},
     sql_types::{BigInt, Binary},
 };
 
@@ -11,6 +13,118 @@ use crate::{
         ContentDigestAssertions, ContentIdentityInput, record_occurrence_digest_assertions,
     },
 };
+
+#[derive(diesel::QueryableByName)]
+struct ExplainRow {
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    detail: String,
+}
+
+#[test]
+fn redirected_alias_uses_issued_owner_and_avoids_correlated_lookup_normalization()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut conn = SqliteConnection::establish(":memory:")?;
+    conn.batch_execute(
+        "CREATE TABLE catalog_contents(content_uuid BLOB PRIMARY KEY);
+         CREATE TABLE asset_occurrences(occurrence_id INTEGER PRIMARY KEY,content_uuid BLOB);
+         CREATE TABLE digest_values(digest_id INTEGER PRIMARY KEY,algorithm TEXT,digest BLOB,UNIQUE(algorithm,digest));
+         CREATE TABLE occurrence_digest_assertions(occurrence_id INTEGER,digest_id INTEGER,scope TEXT,provenance TEXT,PRIMARY KEY(occurrence_id,digest_id,scope,provenance));
+         CREATE TABLE merged_file_ids(old_content_uuid BLOB,kept_content_uuid BLOB,decision_id INTEGER);
+         CREATE TABLE file_match_decision_publications(decision_id INTEGER);
+         CREATE VIEW canonical_occurrence_content AS
+         SELECT occurrence.occurrence_id,
+             (WITH RECURSIVE path(content_uuid) AS (
+                 SELECT occurrence.content_uuid
+                 UNION ALL
+                 SELECT redirect.kept_content_uuid FROM path
+                 JOIN merged_file_ids AS redirect ON redirect.old_content_uuid=path.content_uuid
+                 JOIN file_match_decision_publications USING(decision_id))
+              SELECT content_uuid FROM path WHERE NOT EXISTS (
+                 SELECT 1 FROM merged_file_ids AS redirect
+                 JOIN file_match_decision_publications USING(decision_id)
+                 WHERE redirect.old_content_uuid=path.content_uuid)) AS content_uuid
+         FROM asset_occurrences AS occurrence WHERE occurrence.content_uuid IS NOT NULL;
+         CREATE VIEW catalog_content_digest_assertions AS
+         SELECT canonical.content_uuid,assertion.*
+         FROM occurrence_digest_assertions AS assertion
+         JOIN asset_occurrences AS owner USING(occurrence_id)
+         JOIN canonical_occurrence_content AS canonical USING(occurrence_id)
+         WHERE owner.content_uuid IS NOT NULL
+           AND assertion.provenance='source_declared'
+           AND assertion.scope IN ('whole_asset','whole_file');
+         CREATE TABLE disputed_file_hashes(digest_id INTEGER,candidate_content_uuid BLOB);",
+    )?;
+
+    let issued = CatalogContentId::generate();
+    let root = CatalogContentId::generate();
+    for content in [issued, root] {
+        diesel::sql_query("INSERT INTO catalog_contents VALUES (?)")
+            .bind::<Binary, _>(content.as_bytes().as_slice())
+            .execute(&mut conn)?;
+    }
+    diesel::sql_query("INSERT INTO asset_occurrences VALUES (1,?),(2,?)")
+        .bind::<Binary, _>(issued.as_bytes().as_slice())
+        .bind::<Binary, _>(root.as_bytes().as_slice())
+        .execute(&mut conn)?;
+    conn.batch_execute(
+        "INSERT INTO merged_file_ids VALUES (
+             (SELECT content_uuid FROM asset_occurrences WHERE occurrence_id=1),
+             (SELECT content_uuid FROM asset_occurrences WHERE occurrence_id=2),77);
+         INSERT INTO file_match_decision_publications VALUES (77);",
+    )?;
+
+    let hash = [9_u8; 20];
+    let assertions = ContentDigestAssertions::new("whole_file", None, None, Some(&hash), None);
+    record_occurrence_digest_assertions(
+        &mut conn,
+        OccurrenceId::from_database(1),
+        assertions,
+        "source_declared",
+    )?;
+
+    let lookup = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let captured = std::sync::Arc::clone(&lookup);
+    conn.set_instrumentation(move |event: InstrumentationEvent<'_>| {
+        if let InstrumentationEvent::StartQuery { query, .. } = event {
+            let sql = query.to_string();
+            if sql.contains("WITH incoming(request_index,algorithm,digest)") {
+                *captured.lock().expect("staging query trace") =
+                    Some(sql.split(" -- binds:").next().unwrap_or(&sql).to_owned());
+            }
+        }
+    });
+    let summaries = staged_candidates(
+        &mut conn,
+        &[ContentIdentityInput {
+            size: None,
+            assertions,
+            eligible: true,
+        }],
+    )?;
+    conn.set_instrumentation(|_: InstrumentationEvent<'_>| {});
+
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(summaries[0].candidate, Some(root));
+    assert_eq!(summaries[0].count, 1);
+    let lookup = lookup
+        .lock()
+        .expect("staging query trace")
+        .clone()
+        .expect("staging lookup was captured");
+    let plan = diesel::sql_query(format!("EXPLAIN QUERY PLAN {lookup}"))
+        .bind::<BigInt, _>(0_i64)
+        .bind::<diesel::sql_types::Text, _>("sha1")
+        .bind::<Binary, _>(&hash[..])
+        .load::<ExplainRow>(&mut conn)?;
+    let details = plan.into_iter().map(|row| row.detail).collect::<Vec<_>>();
+    assert!(
+        !details
+            .iter()
+            .any(|detail| detail.contains("CORRELATED SCALAR SUBQUERY")),
+        "alias lookup should leave redirect normalization to the staged path: {details:#?}"
+    );
+    Ok(())
+}
 
 #[test]
 fn wide_candidates_stay_in_sql_and_all_evidence_is_recorded()

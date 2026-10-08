@@ -25,8 +25,12 @@ impl diesel::r2d2::CustomizeConnection<SqliteConnection, diesel::r2d2::Error>
     fn on_acquire(&self, conn: &mut SqliteConnection) -> Result<(), diesel::r2d2::Error> {
         // This hook runs once when a connection is established, not on pool
         // checkout: changing temp_store later would delete its request tables.
+        // Give bulk imports room for index working sets beyond SQLite's 2 MiB
+        // default. Negative cache_size uses KiB; pages are allocated on demand.
+        // Leave durability and file-backed TEMP storage unchanged.
         conn.batch_execute(
-            "PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000; PRAGMA temp_store = FILE",
+            "PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000; \
+             PRAGMA temp_store = FILE; PRAGMA main.cache_size = -65536",
         )
         .map_err(diesel::r2d2::Error::QueryError)?;
         let configuration =
@@ -165,8 +169,42 @@ pub fn create_db_pool(database_url: &str) -> crate::Result<Pool> {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pooled_connections_have_a_working_set_cache_without_weakening_safety() -> crate::Result<()> {
+        #[derive(QueryableByName)]
+        struct Settings {
+            #[diesel(sql_type = diesel::sql_types::BigInt)]
+            cache_size: i64,
+            #[diesel(sql_type = diesel::sql_types::BigInt)]
+            foreign_keys: i64,
+            #[diesel(sql_type = diesel::sql_types::BigInt)]
+            temp_store: i64,
+            #[diesel(sql_type = diesel::sql_types::BigInt)]
+            synchronous: i64,
+        }
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("page-cache.sqlite3");
+        let pool = create_db_pool(path.to_str().expect("UTF-8 temporary path"))?;
+        let mut first = pool.get()?;
+        let mut second = pool.get()?;
+        for connection in [&mut first, &mut second] {
+            let settings = sql_query(
+                "SELECT cache_size,foreign_keys,temp_store,synchronous \
+                 FROM pragma_cache_size CROSS JOIN pragma_foreign_keys \
+                 CROSS JOIN pragma_temp_store CROSS JOIN pragma_synchronous",
+            )
+            .get_result::<Settings>(connection)?;
+            assert_eq!(settings.cache_size, -65_536, "64 MiB, not 64K pages");
+            assert_eq!(settings.foreign_keys, 1);
+            assert_eq!(settings.temp_store, 1);
+            assert_eq!(settings.synchronous, 2);
+        }
+        Ok(())
+    }
 
     #[test]
     fn in_memory_pool_keeps_one_non_expiring_database() -> crate::Result<()> {

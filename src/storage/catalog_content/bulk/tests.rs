@@ -470,48 +470,57 @@ fn digest_fact_hydration_uses_rooted_plan_and_bounded_cached_shapes() -> crate::
     connection.set_instrumentation(|_: InstrumentationEvent<'_>| {});
 
     for sql in &started {
-        assert!(sql.contains("asset_occurrences AS entry"));
-        assert!(sql.contains("entry.content_uuid"));
-        assert!(sql.contains("component.root_uuid"));
-        assert!(sql.contains("catalog_content_digest_assertions AS assertion"));
-        assert!(sql.contains("assertion.occurrence_id"));
-        assert!(sql.contains("digest.algorithm"));
-        assert!(sql.contains("digest.digest"));
-
-        let mut explain =
-            sql_query(format!("EXPLAIN QUERY PLAN {sql}")).into_boxed::<diesel::sqlite::Sqlite>();
-        let bind_count = sql.matches('?').count();
-        for id in ids.iter().take(bind_count) {
-            explain = explain.bind::<Binary, _>(id.as_bytes().as_slice());
-        }
-        let details = explain
-            .load::<DigestPlanRow>(&mut connection)?
-            .into_iter()
-            .map(|row| row.detail)
-            .collect::<Vec<_>>();
-        assert!(
-            details.iter().any(|detail| {
-                detail.contains("SEARCH entry")
-                    && detail.contains("occurrence_content_lookup")
-                    && detail.contains("content_uuid=?")
-            }),
-            "digest hydration should seek occurrences by UUID: {details:#?}"
-        );
-        assert!(
-            details.iter().any(|detail| {
-                detail.contains("SEARCH assertion") && detail.contains("occurrence_id=?")
-            }),
-            "digest hydration should seek assertions by occurrence: {details:#?}"
-        );
-        assert!(
-            !details.iter().any(|detail| {
-                detail.contains("MATERIALIZE canonical_occurrence_content")
-                    || detail.starts_with("SCAN occurrence ")
-            }),
-            "digest hydration must not materialize or scan the full canonical occurrence view: {details:#?}"
-        );
+        assert_rooted_digest_plan(&mut connection, sql, &ids)?;
     }
     assert_eq!(cache_queries.iter().collect::<BTreeSet<_>>().len(), 2);
+    Ok(())
+}
+
+fn assert_rooted_digest_plan(
+    connection: &mut SqliteConnection,
+    sql: &str,
+    ids: &[CatalogContentId],
+) -> crate::Result<()> {
+    assert!(sql.contains("asset_occurrences AS entry"));
+    assert!(sql.contains("entry.content_uuid"));
+    assert!(sql.contains("component.root_uuid"));
+    assert!(sql.contains("catalog_content_digest_assertions AS assertion"));
+    assert!(sql.contains("assertion.occurrence_id"));
+    assert!(sql.contains("digest.algorithm"));
+    assert!(sql.contains("digest.digest"));
+
+    let mut explain =
+        sql_query(format!("EXPLAIN QUERY PLAN {sql}")).into_boxed::<diesel::sqlite::Sqlite>();
+    let bind_count = sql.matches('?').count();
+    for id in ids.iter().take(bind_count) {
+        explain = explain.bind::<Binary, _>(id.as_bytes().as_slice());
+    }
+    let details = explain
+        .load::<DigestPlanRow>(connection)?
+        .into_iter()
+        .map(|row| row.detail)
+        .collect::<Vec<_>>();
+    assert!(
+        details.iter().any(|detail| {
+            detail.contains("SEARCH entry")
+                && detail.contains("occurrence_content_lookup")
+                && detail.contains("content_uuid=?")
+        }),
+        "digest hydration should seek occurrences by UUID: {details:#?}"
+    );
+    assert!(
+        details.iter().any(|detail| {
+            detail.contains("SEARCH assertion") && detail.contains("occurrence_id=?")
+        }),
+        "digest hydration should seek assertions by occurrence: {details:#?}"
+    );
+    assert!(
+        !details.iter().any(|detail| {
+            detail.contains("MATERIALIZE canonical_occurrence_content")
+                || detail.starts_with("SCAN occurrence ")
+        }),
+        "digest hydration must not materialize or scan the full canonical occurrence view: {details:#?}"
+    );
     Ok(())
 }
 

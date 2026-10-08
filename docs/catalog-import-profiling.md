@@ -907,3 +907,175 @@ full corpus. Millions of child facts and relationships make machine count alone
 a poor cost estimate. The full 326,688,140-byte import still needs a fresh
 measurement; these sample timings do not establish the ten-minute ceiling.
 Other input formats have not been converted to this cross-owner bulk path.
+
+## Full MAME retry and SQLite page-cache pressure — 2026-10-07
+
+The 50,368-machine count extrapolated from the 5.676-second sample suggested
+about 286 seconds. The actual profiling-build full import did not complete
+within its 600-second limit. Including recorder shutdown, it ran 609.43 seconds
+(221.11 user / 386.54 system) with 1,327,236 KiB process-tree peak RSS. It captured
+287,599 samples with zero reported lost samples. This is a stopped import, not
+full-file throughput or publication proof. SQLite recovered its hot rollback
+journal on normal reopening; `quick_check` returned `ok`, with zero machines
+and zero publications. Existing successful artifacts were not overwritten.
+
+Artifacts under `target/profiling/` use the prefix
+`bulk-cached-full-20261007`: `.log`, `.perf.data`, `.kallsyms`, `.boot-id`,
+`.uptime`, and recovered `.sqlite3`. The original executable is preserved as
+`mame-importer-cache2m-20261007`, SHA-256
+`9afa54da646df184a55f65eb4da394ca8147c6efd9230829ee108575494150b3`.
+It has no ELF build ID; `perf buildid-cache --add` could not cache it. Keep this
+frozen executable for analysis of the recording rather than assuming the
+rebuildable example executable still matches.
+
+The old user-stack filter discarded unresolved kernel frames, so its `.svg`
+and associated analysis exclude kernel-only samples and must not be used as a
+whole-run cost breakdown. Same-boot kernel-symbol resolution instead exposes
+heavy `pread64` / ZFS read stacks. The preliminary complete-stack rendering is
+`.complete.svg`; it still needs the sample/period reconciliation described by
+the corrected renderer before its percentages are treated as whole-run totals.
+The suspected mechanism is repeated SQLite page-cache misses: connections used
+the default `cache_size=-2000`, approximately 2 MiB. Read-only Luna audits found
+indexed identity lookup and native per-row guard plans, not a confirmed missing
+index or catalog-wide scan. XML source locations advance a cursor rather than
+rescanning the document prefix.
+
+The connection setup now requests `main.cache_size=-65536`. This is an on-demand
+64 MiB suggested page-cache budget **per connection**, not a process-wide memory
+limit. Ten populated pool connections can approach 640 MiB of main-page caches,
+plus other allocations. It neither changes input acceptance nor retains input
+records in Rust. Foreign keys, file-backed TEMP storage and FULL synchronous
+durability are unchanged. [SQLite documents the units, on-demand allocation,
+and connection-local lifetime](https://www.sqlite.org/pragma.html#pragma_cache_size).
+
+One fresh, sequential, uninstrumented 1,000-machine pair measured:
+
+| Main cache | Import | Process | User / system | Peak RSS |
+| --- | ---: | ---: | ---: | ---: |
+| Default, approximately 2 MiB | 5.268s | 5.55s | 4.54s / 0.75s | 69,376 KiB |
+| 64 MiB | 4.918s | 5.13s | 4.39s / 0.46s | 125,252 KiB |
+
+These are single runs, not medians or a full-file speedup. Artifacts are
+`cache-control-1000-20261007.{sqlite3,log}` and
+`cache64m-1000-20261007.{sqlite3,log}`. The 64 MiB frozen executable is
+`mame-importer-cache64m-20261007`, SHA-256
+`5cbfef01944fd5f3d21f9f207095d8153e4e01a130b490455b70c3cbfc3ae6d6`.
+
+The new file-backed pool test failed first with the original `-2000` setting,
+then passed with `-65536`. It holds two distinct physical connections and checks
+the cache setting, foreign keys, TEMP policy and synchronous durability on both.
+All 23 focused connection/cache/identity tests passed in 0.267 seconds. Sol
+medium found no actionable correctness issue in the connection change. This
+does not replace the complete development gate or full-corpus acceptance.
+
+The matched 64 MiB full-file retry also hit the 600-second limit: 611.77 seconds
+including recorder shutdown, 534.51 user / 75.79 system, and 1,523,224 KiB
+process-tree peak RSS. It captured 291,417 samples with zero reported lost
+samples. Its artifacts use `cache64m-full-20261007`; normal SQLite recovery
+again left zero machines and zero publications, with `quick_check=ok`.
+The cache changed the observed workload from predominantly system time to
+predominantly SQLite CPU work; it did **not** establish acceptable full-file
+throughput. Do not reuse the 286-second extrapolation as an estimate.
+
+The corrected call-stack rendering is `.lossless.svg` / `.lossless.folded`.
+Its folded periods sum to **2,368,461,491,546**, exactly the recording's period
+sum. Previously, 32,509 header-only records (249,527,002,332 periods, **10.5354%**)
+disappeared in the collapser. They now appear explicitly as
+`[unavailable_stack]`, rather than being discarded or assigned invented callers.
+An additional 0.1372% of the complete recording has an unresolved frame.
+Kernel naming requires the explicitly supplied, same-boot `.kallsyms` snapshot;
+the renderer never substitutes the current machine's symbols for old recordings.
+
+Those header-only records still contain a sampled instruction pointer.
+A separate `perf script -G -F period,ip,sym,dso` extraction recovers these leaf
+samples without pretending to recover their callers. The `.leaf.folded` /
+`.leaf.svg` artifacts account for the same **2,368,461,491,546** periods, with
+zero unresolved **leaf symbols** after same-boot kernel resolution. This is a
+leaf-only view, not a reconstructed call graph. `sqlite3BtreeTableMoveto` alone
+accounts for 604,852,959,053 periods (25.54%) there. The `.lossless.analysis.txt`
+and `.leaf.analysis.txt` reports use this repository's flamegraph parser.
+
+A deliberately bounded, SQL-instrumented 120-second diagnostic on the same full
+input uses `cache64m-sql-progress-20261007.{log,sqlite3}` and the frozen executable
+`mame-importer-sql-progress-20261007` (SHA-256
+`9089935a1e44eac6fd195b23ec04927eadbaab4c54fccee3170003954add48f0`).
+It stopped after 120.03 seconds (108.80 user / 10.46 system, 447,584 KiB peak
+RSS). The last completed checkpoint contained 180,018 calls across 4,088 SQL
+shapes; this is not a completed import or a count of all queries before exit.
+The largest candidate-staging digest-query shape consumed 22.247 seconds across
+1,195 calls, averaging 18.617 ms per call. Its earlier average was 11.496 ms,
+evidence that the cost grows as more matching source occurrences accumulate.
+Other arities of the same lookup add further cost.
+
+The captured staging query requested the canonical UUID through the shared
+qualification view, invoking a correlated redirect traversal for each matching
+prior occurrence; the following staging phase resolves redirects again after
+deduplication. The lookup now keeps that qualification view but selects the
+issued UUID from the native occurrence owner. Existing staging then resolves
+redirects after deduplication. This removes repeated normalization without
+duplicating the qualification rules or dropping accepted/rejected evidence,
+published redirects, source order or file-backed candidate fanout. Repeated
+digest probes and compatibility-fact hydration remain possible next targets;
+there is no successful full-corpus result yet.
+
+SQL timing mode now emits cumulative checkpoints every 10,000 completed queries
+per physical connection, so an intentionally stopped diagnostic retains query
+evidence. This mode formats queries and stores timing shapes; its timings are
+diagnostic, not directly comparable to uninstrumented import throughput. The
+real-connection callback test failed before this change and passed afterward;
+all three profiling-example tests passed in 1.23 seconds. The profiling shell
+now supplies GNU awk and Inferno, plus a renderer regression task covering
+64-bit kernel addresses, code/data and module boundaries, unknown preservation,
+header-only records and period conservation.
+
+## Deduplicated redirect normalization — matched 5,000 machines
+
+A larger prefix exposes growth hidden by the 1,000-machine sample. The input
+`target/profiling/machines-5000-20261007.xml` contains 5,000 machines and
+39,080,186 bytes (SHA-256
+`1b2b60cb81d8e6df9874cd01621d0edc83763934d389663ac618d105e52829b9`).
+Both sequential runs use the same optimized profiling build configuration,
+native dependencies, 64 MiB connection cache and fresh file-backed databases,
+without perf or SQL instrumentation:
+
+| Identity lookup | Import | Process | User / system | Peak RSS |
+| --- | ---: | ---: | ---: | ---: |
+| Per-occurrence canonical UUID | 45.134s | 45.56s | 36.61s / 4.95s | 221,128 KiB |
+| Issued UUID, normalize after staging deduplication | 37.125s | 37.41s | 32.36s / 4.26s | 234,516 KiB |
+
+That is an 8.009-second / 17.7% lower import time for this pair, not a median,
+isolated cold-cache experiment or a full-file speedup. Both imported successfully
+with zero diagnostics and the same snapshot key. Artifact prefixes are
+`cache64m-before-staging-5000-20261007` and
+`staged-issued-after-5000-20261007`. The candidate executable is frozen as
+`mame-importer-staged-issued-20261007`, SHA-256
+`1912f94038bd34c500998b82377095eccefebf18d978ee29180ecc9751acbf71`.
+
+On the baseline database, a frequently repeated SHA-1 has 249 qualifying
+occurrences. Selecting their canonical UUID lengths used 23,459 SQLite VM steps;
+selecting issued owner UUID lengths used 14,248 (39.3% fewer), with both returning
+3,984 bytes. The wall timings of this read-only pair are cache-order-confounded
+and are not presented as a speedup. A regression first failed on the old
+correlated recursive plan, then passed on the issued-owner plan while still
+resolving the candidate to its published redirect root. All 24 focused
+connection/cache/bulk-identity tests subsequently passed in 0.377 seconds,
+including wide candidates and complete conflict evidence. Sol medium found no
+actionable issue in the production lookup change. These checks do not establish
+the full-corpus time ceiling or complete the shared catalog-model acceptance.
+
+The 80 typed native parity comparisons across 69 tables all passed on this
+5,000-machine pair, including all 33 attribute-position families. Both databases
+contain 62,376 occurrences, 25,106 identities and 112,625 digest assertions,
+with one publication each; random UUID bytes are compared through represented
+facts rather than byte equality. Results are
+`target/profiling/staged-issued-parity-5000-20261007.json`, using the existing
+`bulk-native-parity-20261007.sql` with its two attached database paths changed
+to this pair. Both databases passed `quick_check` and foreign-key checks.
+
+Final focused verification passed 24 library tests (0.363 seconds), 93
+integration tests across import, review, MAME evidence publication and attribute
+provenance (34.382 seconds), and all three profiling-example tests (7.21
+seconds). Strict library/test/example Clippy, Rust formatting, shell checks,
+renderer regression fixtures and Nix formatting passed. A full `devenv test`
+was not run. None of these results is a completed 50,368-machine import or a
+new heaptrack comparison.
