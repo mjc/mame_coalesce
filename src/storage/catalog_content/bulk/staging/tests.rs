@@ -73,12 +73,22 @@ fn repeated_digest_database(hash: &[u8]) -> Result<SqliteConnection, Box<dyn std
          CREATE TABLE occurrence_digest_assertions(
              occurrence_id INTEGER,digest_id INTEGER,scope TEXT,provenance TEXT,
              PRIMARY KEY(occurrence_id,digest_id,scope,provenance));
+         CREATE TABLE native_sizes(occurrence_id INTEGER,size INTEGER);
+         CREATE VIEW accepted_file_size_assertions AS
+             SELECT occurrence_id,'test_size' AS size_field,size FROM native_sizes;
          CREATE TABLE merged_file_ids(old_content_uuid BLOB,kept_content_uuid BLOB,decision_id INTEGER);
          CREATE TABLE file_match_decision_publications(decision_id INTEGER PRIMARY KEY);
          CREATE TABLE file_match_hash_decisions(
              evidence_occurrence_id INTEGER,digest_id INTEGER,scope TEXT,provenance TEXT,
              disposition TEXT,decision_id INTEGER);
          CREATE TABLE disputed_file_hashes(digest_id INTEGER,candidate_content_uuid BLOB);
+         CREATE TABLE shared_file_sizes(
+             content_uuid BLOB NOT NULL,size INTEGER NOT NULL,
+             PRIMARY KEY(content_uuid,size)) WITHOUT ROWID;
+         CREATE TABLE shared_file_hashes(
+             content_uuid BLOB NOT NULL,digest_id INTEGER NOT NULL,
+             PRIMARY KEY(content_uuid,digest_id)) WITHOUT ROWID;
+         CREATE INDEX shared_file_hash_lookup ON shared_file_hashes(digest_id,content_uuid);
          CREATE VIEW canonical_occurrence_content AS
              SELECT occurrence_id,content_uuid FROM asset_occurrences WHERE content_uuid IS NOT NULL;
          CREATE VIEW catalog_content_digest_assertions AS
@@ -128,23 +138,30 @@ fn repeated_digest_database(hash: &[u8]) -> Result<SqliteConnection, Box<dyn std
     let digest_id = diesel::sql_query("SELECT digest_id FROM digest_values WHERE algorithm='sha1'")
         .get_result::<DigestId>(&mut conn)?
         .digest_id;
-    conn.batch_execute("INSERT INTO file_match_decision_publications VALUES (77)")?;
     diesel::sql_query(
         "INSERT INTO file_match_hash_decisions
          VALUES (3,?,'whole_file','source_declared','reject',77)",
     )
     .bind::<BigInt, _>(digest_id)
     .execute(&mut conn)?;
-    diesel::sql_query(
-        "INSERT INTO occurrence_digest_assertions VALUES (4,?,'member','source_declared')",
-    )
-    .bind::<BigInt, _>(digest_id)
-    .execute(&mut conn)?;
+    conn.batch_execute("INSERT INTO file_match_decision_publications VALUES (77)")?;
+    // Mirror the production publication trigger after the fixture's review mutation.
+    conn.batch_execute(
+        "DELETE FROM shared_file_hashes;
+         INSERT OR IGNORE INTO shared_file_hashes(content_uuid,digest_id)
+         SELECT content_uuid,digest_id FROM catalog_content_digest_assertions;",
+    )?;
+    record_occurrence_digest_assertions(
+        &mut conn,
+        OccurrenceId::from_database(4),
+        ContentDigestAssertions::new("member", None, None, Some(hash), None),
+        "source_declared",
+    )?;
     Ok(conn)
 }
 
 #[test]
-fn redirected_alias_uses_issued_owner_and_avoids_correlated_lookup_normalization()
+fn redirected_alias_uses_shared_facts_without_occurrence_lookup()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut conn = SqliteConnection::establish(":memory:")?;
     conn.batch_execute(
@@ -152,6 +169,8 @@ fn redirected_alias_uses_issued_owner_and_avoids_correlated_lookup_normalization
          CREATE TABLE asset_occurrences(occurrence_id INTEGER PRIMARY KEY,content_uuid BLOB);
          CREATE TABLE digest_values(digest_id INTEGER PRIMARY KEY,algorithm TEXT,digest BLOB,UNIQUE(algorithm,digest));
          CREATE TABLE occurrence_digest_assertions(occurrence_id INTEGER,digest_id INTEGER,scope TEXT,provenance TEXT,PRIMARY KEY(occurrence_id,digest_id,scope,provenance));
+         CREATE TABLE native_sizes(occurrence_id INTEGER,size INTEGER);
+         CREATE VIEW accepted_file_size_assertions AS SELECT occurrence_id,'test_size' AS size_field,size FROM native_sizes;
          CREATE TABLE merged_file_ids(old_content_uuid BLOB,kept_content_uuid BLOB,decision_id INTEGER);
          CREATE TABLE file_match_decision_publications(decision_id INTEGER);
          CREATE VIEW canonical_occurrence_content AS
@@ -175,6 +194,9 @@ fn redirected_alias_uses_issued_owner_and_avoids_correlated_lookup_normalization
          WHERE owner.content_uuid IS NOT NULL
            AND assertion.provenance='source_declared'
            AND assertion.scope IN ('whole_asset','whole_file');
+         CREATE TABLE shared_file_sizes(content_uuid BLOB NOT NULL,size INTEGER NOT NULL,PRIMARY KEY(content_uuid,size)) WITHOUT ROWID;
+         CREATE TABLE shared_file_hashes(content_uuid BLOB NOT NULL,digest_id INTEGER NOT NULL,PRIMARY KEY(content_uuid,digest_id)) WITHOUT ROWID;
+         CREATE INDEX shared_file_hash_lookup ON shared_file_hashes(digest_id,content_uuid);
          CREATE TABLE disputed_file_hashes(digest_id INTEGER,candidate_content_uuid BLOB);",
     )?;
 
@@ -305,7 +327,11 @@ fn wide_candidates_stay_in_sql_and_all_evidence_is_recorded()
         CREATE TABLE asset_occurrences(occurrence_id INTEGER PRIMARY KEY,content_uuid BLOB);
         CREATE TABLE digest_values(digest_id INTEGER PRIMARY KEY,algorithm TEXT,digest BLOB,UNIQUE(algorithm,digest));
         CREATE TABLE occurrence_digest_assertions(occurrence_id INTEGER,digest_id INTEGER,scope TEXT,provenance TEXT,PRIMARY KEY(occurrence_id,digest_id,scope,provenance));
+        CREATE VIEW canonical_occurrence_content AS SELECT occurrence_id,content_uuid FROM asset_occurrences;
         CREATE VIEW catalog_content_digest_assertions AS SELECT entry.content_uuid,assertion.* FROM asset_occurrences AS entry JOIN occurrence_digest_assertions AS assertion USING(occurrence_id) WHERE content_uuid IS NOT NULL;
+        CREATE TABLE shared_file_sizes(content_uuid BLOB NOT NULL,size INTEGER NOT NULL,PRIMARY KEY(content_uuid,size)) WITHOUT ROWID;
+        CREATE TABLE shared_file_hashes(content_uuid BLOB NOT NULL,digest_id INTEGER NOT NULL,PRIMARY KEY(content_uuid,digest_id)) WITHOUT ROWID;
+        CREATE INDEX shared_file_hash_lookup ON shared_file_hashes(digest_id,content_uuid);
         CREATE TABLE merged_file_ids(old_content_uuid BLOB,kept_content_uuid BLOB,decision_id INTEGER);
         CREATE TABLE file_match_decision_publications(decision_id INTEGER);
         CREATE TABLE native_sizes(occurrence_id INTEGER,size INTEGER);

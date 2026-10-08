@@ -492,7 +492,13 @@ pub fn record_occurrence_digest_assertions_bulk(
     for batch in rows.chunks(ASSERTION_BATCH) {
         persist_assertion_batch(connection, batch)?;
     }
-    Ok(())
+    super::shared_facts::record_occurrences(
+        connection,
+        &assertions
+            .iter()
+            .map(|(occurrence, _)| *occurrence)
+            .collect::<Vec<_>>(),
+    )
 }
 
 fn persist_assertion_batch(

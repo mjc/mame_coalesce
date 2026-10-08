@@ -26,7 +26,8 @@ use crate::{
     storage::{
         catalog_content::{
             ContentDigestAssertions, ContentIdentityResolution, record_content_identity_conflict,
-            record_occurrence_digest_assertions, resolve_content_identity,
+            record_occurrence_digest_assertions, record_occurrence_digest_assertions_deferred,
+            resolve_content_identity,
         },
         catalog_files::SoftwareFileOperation,
         catalog_identity::{AllocatedOccurrence, OccurrenceId},
@@ -75,6 +76,10 @@ fn finish_file_identity(
 ) -> crate::Result<()> {
     if let Some(pending) = pending {
         record_content_identity_conflict(conn, pending.occurrence, &pending.resolution)?;
+        crate::storage::catalog_content::shared_facts::record_occurrences(
+            conn,
+            &[pending.occurrence],
+        )?;
     }
     Ok(())
 }
@@ -521,12 +526,17 @@ fn insert_area_components(
     };
     let mut pending = None;
     for (component_order, component) in area.components.iter().enumerate() {
-        if !matches!(component, SoftwareComponent::Rom(rom) if !matches!(
-            SoftwareFileOperation::from_instruction(rom.load),
-            SoftwareFileOperation::Load | SoftwareFileOperation::Fill
-        )) {
-            // The previous declaration's complete native first run must exist
-            // before capturing its evidence or resolving another candidate.
+        let continues_first_run = matches!(
+            component,
+            SoftwareComponent::Rom(rom)
+                if matches!(
+                    SoftwareFileOperation::from_instruction(rom.load),
+                    SoftwareFileOperation::Continue | SoftwareFileOperation::Ignore
+                )
+        );
+        if !continues_first_run {
+            // Keep the declaration pending through every continue/ignore row;
+            // the size view is complete only after the last row is persisted.
             finish_file_identity(conn, pending.take())?;
         }
         let file_size = crate::software_loading::file_verification_length(
@@ -725,7 +735,7 @@ fn insert_rom_component(
     };
     insert_rom_use(conn, record, occurrence, rom, use_declaration)?;
 
-    record_occurrence_digest_assertions(conn, occurrence, digests, "source_declared")?;
+    record_occurrence_digest_assertions_deferred(conn, occurrence, digests, "source_declared")?;
     Ok(is_declaration.then_some(PendingFileIdentity {
         occurrence,
         resolution,

@@ -11,8 +11,8 @@ CREATE TABLE catalog_contents (
     registry_id INTEGER NOT NULL DEFAULT 1 REFERENCES file_id_registries(registry_id) ON DELETE RESTRICT
 ) WITHOUT ROWID;
 
--- Aliases are supported by actual source occurrences. Never copy a digest or
--- size onto the shared identity, or keep an alias after its evidence disappears.
+-- Source declarations are exact evidence for accepted shared ROM facts.
+-- Never keep shared membership after its last accepted witness disappears.
 -- Staged occurrences are visible inside the importing transaction; public
 -- reports independently require a published snapshot.
 CREATE VIEW catalog_content_digest_assertions AS

@@ -26,6 +26,85 @@ struct CountRow {
 }
 
 #[derive(QueryableByName)]
+struct IntegerRow {
+    #[diesel(sql_type = BigInt)]
+    value: i64,
+}
+
+#[derive(QueryableByName, Debug, PartialEq, Eq)]
+struct SharedSizeRow {
+    #[diesel(sql_type = Binary)]
+    content_uuid: Vec<u8>,
+    #[diesel(sql_type = BigInt)]
+    size: i64,
+}
+
+#[derive(QueryableByName, Debug, PartialEq, Eq)]
+struct SharedHashRow {
+    #[diesel(sql_type = Binary)]
+    content_uuid: Vec<u8>,
+    #[diesel(sql_type = BigInt)]
+    digest_id: i64,
+}
+
+fn shared_fact_rows(
+    connection: &mut SqliteConnection,
+) -> Result<(Vec<SharedSizeRow>, Vec<SharedHashRow>), Box<dyn Error>> {
+    let sizes: Vec<SharedSizeRow> =
+        sql_query("SELECT content_uuid,size FROM shared_file_sizes ORDER BY content_uuid,size")
+            .load(connection)?;
+    let hashes: Vec<SharedHashRow> = sql_query(
+        "SELECT content_uuid,digest_id FROM shared_file_hashes ORDER BY content_uuid,digest_id",
+    )
+    .load(connection)?;
+    Ok((sizes, hashes))
+}
+
+fn assert_shared_facts_match_source(
+    connection: &mut SqliteConnection,
+) -> Result<(), Box<dyn Error>> {
+    let size_differences = sql_query(
+        "SELECT \
+           (SELECT count(*) FROM ( \
+             SELECT content_uuid,size FROM shared_file_sizes \
+             EXCEPT SELECT DISTINCT canonical.content_uuid,sizes.size \
+             FROM canonical_occurrence_content AS canonical \
+             JOIN accepted_file_size_assertions AS sizes USING (occurrence_id) \
+             WHERE canonical.content_uuid IS NOT NULL)) + \
+           (SELECT count(*) FROM ( \
+             SELECT DISTINCT canonical.content_uuid,sizes.size \
+             FROM canonical_occurrence_content AS canonical \
+             JOIN accepted_file_size_assertions AS sizes USING (occurrence_id) \
+             WHERE canonical.content_uuid IS NOT NULL \
+             EXCEPT SELECT content_uuid,size FROM shared_file_sizes)) AS count",
+    )
+    .get_result::<CountRow>(connection)?
+    .count;
+    let hash_differences = sql_query(
+        "SELECT \
+           (SELECT count(*) FROM ( \
+             SELECT content_uuid,digest_id FROM shared_file_hashes \
+             EXCEPT SELECT DISTINCT content_uuid,digest_id \
+             FROM catalog_content_digest_assertions)) + \
+           (SELECT count(*) FROM ( \
+             SELECT DISTINCT content_uuid,digest_id \
+             FROM catalog_content_digest_assertions \
+             EXCEPT SELECT content_uuid,digest_id FROM shared_file_hashes)) AS count",
+    )
+    .get_result::<CountRow>(connection)?
+    .count;
+    assert_eq!(
+        size_differences, 0,
+        "shared sizes match accepted source witnesses"
+    );
+    assert_eq!(
+        hash_differences, 0,
+        "shared hashes match accepted source witnesses"
+    );
+    Ok(())
+}
+
+#[derive(QueryableByName)]
 struct ConflictRow {
     #[diesel(sql_type = BigInt)]
     occurrence_id: i64,
@@ -112,6 +191,13 @@ fn import_document(
         .map(|diagnostic| (diagnostic.code, diagnostic.message))
         .collect::<Vec<_>>()
     );
+    let mut connection = SqliteConnection::establish(
+        directory
+            .join("catalog.sqlite")
+            .to_str()
+            .ok_or("non-UTF-8 database path")?,
+    )?;
+    assert_shared_facts_match_source(&mut connection)?;
     Ok(())
 }
 
@@ -282,6 +368,19 @@ fn imported_conflict() -> Result<ImportedCatalogs, Box<dyn Error>> {
     import_document(
         directory.path(),
         &database,
+        "review-candidate-copy-source",
+        "review-candidate-copy-catalog",
+        CatalogDocumentFormat::Logiqx(mame_coalesce::logiqx::LogiqxMode::ObservedCompatible),
+        "candidate-copy.dat",
+        r#"<datafile><header><name>Review candidate copy</name></header>
+          <game name="candidate-copy"><rom name="candidate-copy.bin" size="16"
+            crc="12345678" md5="00112233445566778899aabbccddeeff"
+            sha1="0123456789abcdef0123456789abcdef01234567"/>
+          </game></datafile>"#,
+    )?;
+    import_document(
+        directory.path(),
+        &database,
         "review-incoming-source",
         "review-incoming-catalog",
         CatalogDocumentFormat::NoIntroPcXml,
@@ -435,6 +534,29 @@ fn review_merge(fixture: &MergeFixture, evidence: Vec<EvidenceDecision>) -> File
     }
 }
 
+fn shared_facts_for(
+    connection: &mut SqliteConnection,
+    content_uuid: &[u8],
+) -> Result<(Vec<i64>, Vec<i64>), Box<dyn Error>> {
+    let sizes =
+        sql_query("SELECT size AS value FROM shared_file_sizes WHERE content_uuid=? ORDER BY size")
+            .bind::<Binary, _>(content_uuid)
+            .load::<IntegerRow>(connection)?
+            .into_iter()
+            .map(|row| row.value)
+            .collect();
+    let hashes = sql_query(
+        "SELECT digest_id AS value FROM shared_file_hashes \
+         WHERE content_uuid=? ORDER BY digest_id",
+    )
+    .bind::<Binary, _>(content_uuid)
+    .load::<IntegerRow>(connection)?
+    .into_iter()
+    .map(|row| row.value)
+    .collect();
+    Ok((sizes, hashes))
+}
+
 #[test]
 fn accepted_incoming_contradictions_block_merge_without_promoting_incoming()
 -> Result<(), Box<dyn Error>> {
@@ -467,8 +589,35 @@ fn undispositioned_incoming_conflict_can_merge_without_promoting_incoming()
     let mut fixture = imported_merge_conflict()?;
     let kept = fixture.conflicts[0].candidate;
     let old = fixture.conflicts[1].candidate;
+    import_unrelated_size_component(&fixture)?;
+    let unrelated_uuid = sql_query(
+        "SELECT occurrence.content_uuid FROM no_intro_dat_rom_claims AS rom \
+         JOIN asset_occurrences AS occurrence USING (occurrence_id) \
+         WHERE rom.name='unrelated.bin'",
+    )
+    .get_result::<ComponentIdentity>(&mut fixture.connection)?
+    .content_uuid;
+    let unrelated_facts = shared_facts_for(&mut fixture.connection, &unrelated_uuid)?;
     let review = review_merge(&fixture, Vec::new());
     let decision = file_match_reviews::record_review(&fixture.database, &review)?;
+    assert_shared_facts_match_source(&mut fixture.connection)?;
+    assert_eq!(
+        shared_facts_for(&mut fixture.connection, &unrelated_uuid)?,
+        unrelated_facts,
+        "review rebuild leaves a disjoint content component untouched"
+    );
+    let stale_sizes =
+        sql_query("SELECT count(*) AS count FROM shared_file_sizes WHERE content_uuid=?")
+            .bind::<Binary, _>(old.as_bytes().as_slice())
+            .get_result::<CountRow>(&mut fixture.connection)?
+            .count;
+    let stale_hashes =
+        sql_query("SELECT count(*) AS count FROM shared_file_hashes WHERE content_uuid=?")
+            .bind::<Binary, _>(old.as_bytes().as_slice())
+            .get_result::<CountRow>(&mut fixture.connection)?
+            .count;
+    assert_eq!(stale_sizes, 0, "merge removes old UUID size facts");
+    assert_eq!(stale_hashes, 0, "merge removes old UUID hash facts");
 
     let incoming_link = sql_query(
         "SELECT COUNT(*) AS count FROM asset_occurrences \
@@ -524,6 +673,130 @@ fn undispositioned_incoming_conflict_can_merge_without_promoting_incoming()
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "compare two independent API and SQL seal paths through last-witness rejection"
+)]
+fn direct_sql_review_seal_matches_the_review_api_shared_facts() -> Result<(), Box<dyn Error>> {
+    let mut api_fixture = imported_conflict()?;
+    let (_, api_conflicts) = conflict_refs(&mut api_fixture.connection, 1)?;
+    let conflict = api_conflicts[0];
+    let before = shared_fact_rows(&mut api_fixture.connection)?;
+    let rejected = sql_query(
+        "SELECT evidence.evidence_occurrence_id,evidence.digest_id,evidence.scope, \
+                evidence.role,digest.algorithm \
+         FROM occurrence_content_conflict_hashes AS evidence \
+         JOIN digest_values AS digest USING(digest_id) \
+         WHERE evidence.occurrence_id=? AND evidence.candidate_content_uuid=? \
+           AND evidence.role='candidate' AND digest.algorithm='md5'",
+    )
+    .bind::<BigInt, _>(conflict.incoming.database_value())
+    .bind::<Binary, _>(conflict.candidate.as_bytes().as_slice())
+    .load::<HashEvidenceRow>(&mut api_fixture.connection)?;
+    assert_eq!(rejected.len(), 2, "reject every duplicate MD5 witness");
+    let evidence = rejected
+        .into_iter()
+        .map(|row| {
+            assert_eq!(row.scope, "whole_asset");
+            EvidenceDecision {
+                conflict,
+                evidence: ReviewedEvidence::Hash {
+                    occurrence: OccurrenceId::from_database(row.evidence_occurrence_id),
+                    digest_id: row.digest_id,
+                    scope: WholeFileScope::WholeAsset,
+                    role: EvidenceRole::Candidate,
+                },
+                disposition: Disposition::Reject,
+            }
+        })
+        .collect();
+    file_match_reviews::record_review(
+        &api_fixture.database,
+        &FileMatchReview {
+            rationale: "Reject every candidate MD5 witness through the API".into(),
+            conflicts: api_conflicts,
+            evidence,
+            action: ReviewAction::KeepSeparate,
+        },
+    )?;
+    assert_shared_facts_match_source(&mut api_fixture.connection)?;
+    let api_facts = shared_fact_rows(&mut api_fixture.connection)?;
+    assert_eq!(
+        api_facts.1.len() + 1,
+        before.1.len(),
+        "last-witness rejection must remove a shared fact"
+    );
+
+    let mut sql_fixture = imported_conflict()?;
+    let (_, sql_conflicts) = conflict_refs(&mut sql_fixture.connection, 1)?;
+    let decision = sql_query(
+        "INSERT INTO file_match_decisions(decision,rationale) \
+         VALUES('keep_separate','Keep the imported conflict separate through SQL') \
+         RETURNING decision_id AS count",
+    )
+    .get_result::<CountRow>(&mut sql_fixture.connection)?
+    .count;
+    for conflict in sql_conflicts {
+        sql_query(
+            "INSERT INTO file_match_decision_conflicts \
+             (decision_id,occurrence_id,candidate_content_uuid,outcome) \
+             VALUES(?,?,?,'keep_separate')",
+        )
+        .bind::<BigInt, _>(decision)
+        .bind::<BigInt, _>(conflict.incoming.database_value())
+        .bind::<Binary, _>(conflict.candidate.as_bytes().as_slice())
+        .execute(&mut sql_fixture.connection)?;
+        sql_query(
+            "INSERT INTO file_match_hash_decisions \
+             (decision_id,occurrence_id,candidate_content_uuid,evidence_occurrence_id, \
+              digest_id,scope,provenance,role,disposition) \
+             SELECT ?,evidence.occurrence_id,evidence.candidate_content_uuid, \
+                    evidence.evidence_occurrence_id,evidence.digest_id,evidence.scope, \
+                    evidence.provenance,evidence.role,'reject' \
+             FROM occurrence_content_conflict_hashes AS evidence \
+             JOIN digest_values AS digest USING(digest_id) \
+             WHERE evidence.occurrence_id=? AND evidence.candidate_content_uuid=? \
+               AND evidence.role='candidate' AND digest.algorithm='md5'",
+        )
+        .bind::<BigInt, _>(decision)
+        .bind::<BigInt, _>(conflict.incoming.database_value())
+        .bind::<Binary, _>(conflict.candidate.as_bytes().as_slice())
+        .execute(&mut sql_fixture.connection)?;
+    }
+    sql_query("INSERT INTO file_match_decision_publications(decision_id) VALUES(?)")
+        .bind::<BigInt, _>(decision)
+        .execute(&mut sql_fixture.connection)?;
+    assert_shared_facts_match_source(&mut sql_fixture.connection)?;
+    let sql_facts = shared_fact_rows(&mut sql_fixture.connection)?;
+
+    let mut api_sizes = api_facts.0.iter().map(|row| row.size).collect::<Vec<_>>();
+    let mut sql_sizes = sql_facts.0.iter().map(|row| row.size).collect::<Vec<_>>();
+    let mut api_hashes = api_facts
+        .1
+        .iter()
+        .map(|row| row.digest_id)
+        .collect::<Vec<_>>();
+    let mut sql_hashes = sql_facts
+        .1
+        .iter()
+        .map(|row| row.digest_id)
+        .collect::<Vec<_>>();
+    api_sizes.sort_unstable();
+    sql_sizes.sort_unstable();
+    api_hashes.sort_unstable();
+    sql_hashes.sort_unstable();
+    assert_eq!(
+        api_sizes, sql_sizes,
+        "both seal paths retain the same size facts"
+    );
+    assert_eq!(
+        api_hashes, sql_hashes,
+        "both seal paths retain the same hash facts"
+    );
+    Ok(())
+}
+
+#[test]
 fn review_does_not_open_a_published_candidate_to_later_hash_assertions()
 -> Result<(), Box<dyn Error>> {
     let mut imported = imported_conflict()?;
@@ -538,6 +811,7 @@ fn review_does_not_open_a_published_candidate_to_later_hash_assertions()
             action: ReviewAction::KeepSeparate,
         },
     )?;
+    assert_shared_facts_match_source(&mut imported.connection)?;
 
     let owner = sql_query(
         "SELECT evidence_occurrence_id AS occurrence_id \
@@ -576,6 +850,10 @@ fn review_does_not_open_a_published_candidate_to_later_hash_assertions()
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "ordered review phases verify exact witness withdrawal and monotonic rejection"
+)]
 fn keep_separate_settles_only_its_conflict_and_exact_rejection_restores_sparse_match()
 -> Result<(), Box<dyn Error>> {
     let mut imported = imported_conflict()?;
@@ -623,9 +901,93 @@ fn keep_separate_settles_only_its_conflict_and_exact_rejection_restores_sparse_m
             action: ReviewAction::KeepSeparate,
         },
     )?;
+    assert_shared_facts_match_source(&mut imported.connection)?;
+    let rejected_hashes = sql_query(
+        "SELECT count(*) AS count FROM shared_file_hashes \
+         WHERE content_uuid=? AND digest_id=?",
+    )
+    .bind::<Binary, _>(conflict.candidate.as_bytes().as_slice())
+    .bind::<BigInt, _>(rejected_hash.digest_id)
+    .get_result::<CountRow>(&mut imported.connection)?
+    .count;
+    assert_eq!(
+        rejected_hashes, 1,
+        "one rejection keeps the hash while its duplicate source witness remains"
+    );
+
+    import_document(
+        imported.directory.path(),
+        &imported.database,
+        "review-second-rejection-source",
+        "review-second-rejection-catalog",
+        CatalogDocumentFormat::NoIntroPcXml,
+        "second-rejection.xml",
+        r#"<datafile><header><name>Second rejection</name><version>1</version>
+          <description>Second rejection</description></header>
+          <game name="second-rejection" id="10">
+            <rom name="second-rejection.bin" size="32" crc="87654321"
+              md5="ffeeddccbbaa99887766554433221100"
+              sha1="0123456789abcdef0123456789abcdef01234567"/>
+          </game></datafile>"#,
+    )?;
+    let (_, second_conflicts) = conflict_refs(&mut imported.connection, 1)?;
+    let second_conflict = *second_conflicts
+        .first()
+        .ok_or("second source conflict missing")?;
+    let second_witness = sql_query(
+        "SELECT evidence.evidence_occurrence_id,evidence.digest_id,evidence.scope, \
+                evidence.role,digest.algorithm \
+         FROM occurrence_content_conflict_hashes AS evidence \
+         JOIN digest_values AS digest USING (digest_id) \
+         WHERE evidence.occurrence_id=? AND evidence.candidate_content_uuid=? \
+           AND evidence.digest_id=? AND evidence.role='candidate' \
+           AND evidence.evidence_occurrence_id<>? LIMIT 1",
+    )
+    .bind::<BigInt, _>(second_conflict.incoming.database_value())
+    .bind::<Binary, _>(second_conflict.candidate.as_bytes().as_slice())
+    .bind::<BigInt, _>(rejected_hash.digest_id)
+    .bind::<BigInt, _>(rejected_hash.evidence_occurrence_id)
+    .get_result::<HashEvidenceRow>(&mut imported.connection)?;
+    let scope = match second_witness.scope.as_str() {
+        "whole_asset" => WholeFileScope::WholeAsset,
+        "whole_file" => WholeFileScope::WholeFile,
+        other => return Err(format!("unexpected hash evidence scope {other}").into()),
+    };
+    file_match_reviews::record_review(
+        &imported.database,
+        &FileMatchReview {
+            rationale: "Reject the remaining duplicate MD5 witness".into(),
+            conflicts: second_conflicts,
+            evidence: vec![EvidenceDecision {
+                conflict: second_conflict,
+                evidence: ReviewedEvidence::Hash {
+                    occurrence: OccurrenceId::from_database(second_witness.evidence_occurrence_id),
+                    digest_id: second_witness.digest_id,
+                    scope,
+                    role: EvidenceRole::Candidate,
+                },
+                disposition: Disposition::Reject,
+            }],
+            action: ReviewAction::KeepSeparate,
+        },
+    )?;
+    assert_shared_facts_match_source(&mut imported.connection)?;
+    let rejected_hashes = sql_query(
+        "SELECT count(*) AS count FROM shared_file_hashes \
+         WHERE content_uuid=? AND digest_id=?",
+    )
+    .bind::<Binary, _>(conflict.candidate.as_bytes().as_slice())
+    .bind::<BigInt, _>(rejected_hash.digest_id)
+    .get_result::<CountRow>(&mut imported.connection)?
+    .count;
+    assert_eq!(
+        rejected_hashes, 0,
+        "last rejected witness removes the shared hash"
+    );
 
     assert_sparse_claim_matches(&mut imported, conflict.candidate)?;
     assert_later_size_conflict(&mut imported, conflict.candidate)?;
+    assert_shared_facts_match_source(&mut imported.connection)?;
     Ok(())
 }
 
@@ -767,9 +1129,30 @@ fn corrupt_retained_dat_length(fixture: &mut MergeFixture) -> Result<OccurrenceI
     .bind::<BigInt, _>(occurrence)
     .execute(&mut fixture.connection)?;
     assert_eq!(changed, 1);
+    sql_query(
+        "DELETE FROM shared_file_sizes WHERE content_uuid=( \
+             SELECT canonical.content_uuid FROM canonical_occurrence_content AS canonical \
+             WHERE canonical.occurrence_id=? \
+         )",
+    )
+    .bind::<BigInt, _>(occurrence)
+    .execute(&mut fixture.connection)?;
+    sql_query(
+        "INSERT OR IGNORE INTO shared_file_sizes(content_uuid,size) \
+         SELECT DISTINCT canonical.content_uuid,sizes.size \
+         FROM canonical_occurrence_content AS canonical \
+         JOIN accepted_file_size_assertions AS sizes USING (occurrence_id) \
+         WHERE canonical.content_uuid=( \
+             SELECT affected.content_uuid FROM canonical_occurrence_content AS affected \
+             WHERE affected.occurrence_id=? \
+         )",
+    )
+    .bind::<BigInt, _>(occurrence)
+    .execute(&mut fixture.connection)?;
     for guard in guards {
         diesel::connection::SimpleConnection::batch_execute(&mut fixture.connection, &guard.sql)?;
     }
+    assert_shared_facts_match_source(&mut fixture.connection)?;
     Ok(OccurrenceId::from_database(occurrence))
 }
 
@@ -912,6 +1295,7 @@ fn canonical_size_publication_honors_redirects_and_exact_published_reviews()
     let root = fixture.conflicts[0].candidate;
     let old = fixture.conflicts[1].candidate;
     file_match_reviews::record_review(&fixture.database, &review_merge(&fixture, Vec::new()))?;
+    assert_shared_facts_match_source(&mut fixture.connection)?;
     assert_eq!(
         file_match_reviews::resolve_file_id(&fixture.database, old)?,
         root
@@ -941,6 +1325,7 @@ fn canonical_size_publication_honors_redirects_and_exact_published_reviews()
         &fixture.database,
         &exact_size_review(conflict, bad_size, Disposition::Reject),
     )?;
+    assert_shared_facts_match_source(&mut fixture.connection)?;
     assert!(!size_component_is_inconsistent(
         &mut fixture.connection,
         root
@@ -949,6 +1334,7 @@ fn canonical_size_publication_honors_redirects_and_exact_published_reviews()
         &fixture.database,
         &exact_size_review(second, bad_size, Disposition::Accept),
     )?;
+    assert_shared_facts_match_source(&mut fixture.connection)?;
     assert!(!size_component_is_inconsistent(
         &mut fixture.connection,
         root

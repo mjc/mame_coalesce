@@ -767,7 +767,11 @@ fn registry_connection() -> crate::Result<SqliteConnection> {
          CREATE TABLE occurrence_digest_assertions (occurrence_id INTEGER,digest_id INTEGER,scope TEXT,provenance TEXT,PRIMARY KEY(occurrence_id,digest_id,scope,provenance));
          CREATE TABLE native_file_sizes (occurrence_id INTEGER PRIMARY KEY,size INTEGER);
          CREATE VIEW accepted_file_size_assertions AS SELECT occurrence_id,'test_size' AS size_field,size FROM native_file_sizes;
+         CREATE VIEW canonical_occurrence_content AS SELECT occurrence_id,content_uuid FROM asset_occurrences;
          CREATE VIEW catalog_content_digest_assertions AS SELECT occurrence.content_uuid,assertion.* FROM occurrence_digest_assertions AS assertion JOIN asset_occurrences AS occurrence USING(occurrence_id) WHERE occurrence.content_uuid IS NOT NULL AND scope IN ('whole_asset','whole_file') AND provenance='source_declared';
+         CREATE TABLE shared_file_sizes(content_uuid BLOB NOT NULL,size INTEGER NOT NULL,PRIMARY KEY(content_uuid,size)) WITHOUT ROWID;
+         CREATE TABLE shared_file_hashes(content_uuid BLOB NOT NULL,digest_id INTEGER NOT NULL,PRIMARY KEY(content_uuid,digest_id)) WITHOUT ROWID;
+         CREATE INDEX shared_file_hash_lookup ON shared_file_hashes(digest_id,content_uuid);
          CREATE TABLE merged_file_ids(old_content_uuid BLOB PRIMARY KEY,kept_content_uuid BLOB,decision_id INTEGER);
          CREATE TABLE file_match_decision_publications(decision_id INTEGER PRIMARY KEY);
          CREATE TABLE disputed_file_hashes(digest_id INTEGER,candidate_content_uuid BLOB);",

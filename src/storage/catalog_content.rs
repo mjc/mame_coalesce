@@ -13,6 +13,8 @@ use diesel::{
 use super::catalog_identity::OccurrenceId;
 use crate::domain::{CatalogContentId, CatalogRegistryId, ContentDigestAlgorithm};
 
+pub(super) mod shared_facts;
+
 /// Seed reverse traversal with one canonical UUID; unrelated files are never visited.
 pub const FILE_COMPONENT_SQL: &str = "WITH RECURSIVE component(content_uuid) AS ( \
     SELECT ? UNION SELECT redirect.old_content_uuid FROM component \
@@ -225,6 +227,17 @@ impl QueryFragment<Sqlite> for OccurrenceDigestAssertionInsert<'_> {
 impl RunQueryDsl<SqliteConnection> for OccurrenceDigestAssertionInsert<'_> {}
 
 pub fn record_occurrence_digest_assertions(
+    connection: &mut SqliteConnection,
+    occurrence: OccurrenceId,
+    assertions: ContentDigestAssertions<'_>,
+    provenance: &str,
+) -> crate::Result<()> {
+    record_occurrence_digest_assertions_deferred(connection, occurrence, assertions, provenance)?;
+    shared_facts::record_occurrences(connection, &[occurrence])
+}
+
+/// Software first-run evidence is finalized after its continuation operations.
+pub(super) fn record_occurrence_digest_assertions_deferred(
     connection: &mut SqliteConnection,
     occurrence: OccurrenceId,
     assertions: ContentDigestAssertions<'_>,
@@ -787,7 +800,9 @@ mod tests {
                 .get_result::<CountRow>(&mut connection)?
                 .count;
         assert_eq!(assertion_count, 2);
-        assert_eq!(cached_queries.load(Ordering::Relaxed), 3);
+        // Dictionary insert/select, source assertion insert and two shared-fact
+        // insert shapes are each prepared once, not once per occurrence.
+        assert_eq!(cached_queries.load(Ordering::Relaxed), 5);
         Ok(())
     }
 
@@ -954,6 +969,11 @@ mod tests {
              JOIN asset_occurrences AS occurrence USING(occurrence_id)
              WHERE scope IN ('whole_asset','whole_file') AND provenance='source_declared';
              CREATE TABLE disputed_file_hashes(digest_id INTEGER,candidate_content_uuid BLOB);",
+        )?;
+        connection.batch_execute(
+            "CREATE TABLE shared_file_sizes(content_uuid BLOB,size INTEGER,PRIMARY KEY(content_uuid,size)) WITHOUT ROWID;
+             CREATE TABLE shared_file_hashes(content_uuid BLOB,digest_id INTEGER,PRIMARY KEY(content_uuid,digest_id)) WITHOUT ROWID;
+             CREATE INDEX shared_file_hash_lookup ON shared_file_hashes(digest_id,content_uuid);",
         )?;
         Ok(connection)
     }
