@@ -375,27 +375,118 @@ independent constructed witnesses, corruption controls and populated target
 plans. Read the format notes for concrete remaining gaps rather than inferring
 coverage from the existence of a table or a green test count.
 
-The shared-file evidence layer is specifically incomplete. Its current accepted
-hash view relies too heavily on a `whole_file` tag and excludes `whole_asset`
+The shared-file evidence layer now has candidate hash and size projections,
+native-file qualification and shared-fact refresh triggers; the earlier gaps
+described here are historical. The candidate records one immutable byte-
+contract role per reading-rules row, projects eight native size sources, and
+refreshes hash and size membership for affected canonical components and their
+aliases. These SQL proposals still need completed qualification review and a
+production writer; they do not establish parser-fed facts or authorize UUID
+assignment in the application.
+Historical checkpoint before the 2026-10-08 native-file candidate addition:
+the shared-file evidence layer was incomplete. Its accepted
+hash view relied too heavily on a `whole_file` tag and excluded `whole_asset`
 without the native byte-boundary qualification required by the dictionaries.
-It has no complete native source-size witness projection or size-membership
-refresh. The shared UUID FK alone does not prove native file eligibility, and
-the review refresh still needs exact affected-component/redirected-alias
-cleanup and hash/size consistency controls. The new software length view is
-an input to that work, not a claim that any of these gaps is closed.
+At that checkpoint there was no complete native source-size witness projection
+or size-membership refresh. The shared UUID FK alone did not prove native file
+eligibility, and
+the review refresh still needed exact affected-component/redirected-alias
+cleanup and hash/size consistency controls. The software length view was an
+input to that work.
 
 Missing parser capture and checked numeric/load interpretation are separate from
 constructed SQL proof. No generated SQL can manufacture a verified EOF, complete
-root extent, authentic producer grammar or source-byte mapping. Private Rust
-writer transitions and real corpus/source-free query tests still have to prove
-the supported publication path after design approval. Implement and verify
-parser capture, independent checked producers, accepted EOF, finalizer/rollback
-behavior, source mapping and qualification after that approval. Corpus and
-performance acceptance remain in the implementation/format tickets; they are
-not prerequisites for permission to implement the approved design.
+root extent, authentic producer grammar or source-byte mapping. After design
+approval, a Rust writer must implement and verify the complete batch publication
+path, including parser capture, checked producers, accepted EOF, finalizer/
+rollback behavior, source mapping, qualification and shared-fact maintenance.
+Full-model guards, authentic capture/EOF evidence, corpus and performance
+acceptance remain open. No production schema, importer or writer has changed as
+part of this isolated candidate work.
 
 After reconciling the complete dictionaries and collector-facing diagrams with
 this artifact, obtain a fresh complete-design Sol review and explicit approval
 of an identified proposal revision. Then implement the greenfield cutover,
-regression/corpus/performance checks, complete `devenv test`, signed commits and
+regression/corpus/performance checks, complete `devenv test`, GPG-signed commits and
 push. Existing database fingerprints are rejected, not migrated.
+
+## Native file byte facts — isolated candidate, 2026-10-08
+
+`catalog_file_byte_contracts` binds a reading-rules row to one of six closed
+roles: MAME machine ROM, MAME software file, complete declared Logiqx file,
+ClrMamePro declared asset, unfiltered No-Intro DAT file, or the synthetic
+No-Intro P/C fixture asset. The immutable contract is an explicit trusted
+producer assertion, not a certification or a dialect/version checker.
+
+`candidate_native_file_sizes` exposes eight native size sources: MAME ROM,
+software file length, ClrMamePro ROM, Logiqx ROM, flat DAT ROM, synthetic P/C
+ROM, database-export dump file and database-export release file. Each row keeps
+the native field selector, a queryable byte length when representable, and an
+`omitted`, `value` or `unusable` state. The original lexeme remains on its
+native owner. Numeric projections are bounded by SQLite's signed 64-bit
+integer; a valid unsigned value above `i64::MAX` is therefore `unusable` in
+this projection, not a native parser rejection. Strict flat-DAT sizes use the
+candidate `xs:unsignedInt` projection. Compatible DAT and export size
+projections use conservative ASCII-decimal comparison while preserving the
+native text. These projections do not replace native validation.
+
+`candidate_native_file_byte_coverage` requires a matching immutable byte
+contract and eligible native owner. `candidate_qualified_file_hashes` exposes
+each individually valid, position-backed whole-file/whole-asset hash, even
+when another supplied field is malformed. The stricter automatic eligibility
+view, `candidate_native_file_qualification`, also requires a usable/omitted size
+and all supplied hashes to be valid and mutually consistent. Thus a malformed
+size or CRC blocks automatic identity but does not erase a valid SHA-1 review
+witness. Published match decisions and edition publication
+rebuild both shared hash and size membership over the affected canonical
+component, including issued aliases, and check that stored membership equals
+the accepted witnesses. These are composed SQL candidate contracts, not a
+Rust batch writer or production autoassignment path.
+
+Run the focused candidate checks with the repository's active devenv Python:
+
+```sh
+python3 docs/schema-candidate/native_file_sizes_check.py
+python3 docs/schema-candidate/native_file_qualification_check.py
+python3 docs/schema-candidate/shared_file_facts_check.py
+```
+
+The native-size checker passes six tests. A separate Sol size review ran 4,284
+additional lexical, range and full-view assertions. That bounded review was
+CLEAR across all six
+policy families, 30 cross-family negative controls, and immutability/retrofit
+controls. The native qualification suite now includes separate media-ID,
+reported-hash-ID and UUID-only lookup controls over actual native rows. Its
+focused plan regression passes after 1,024 unrelated MAME ROM/hash/position
+declarations: hash/media 1,585→1,586 instructions; hash/reported 1,545→1,545;
+strict/media 9,296→9,299; accepted hash/UUID 1,577→1,578; accepted size/UUID
+4,102→4,102. The role view uses one keyed media root with closed typed-owner
+checks, not a union that can become a global coroutine. CMP `nodump` preserves
+its existing qualified-digest behavior. The final eight-method replay passes
+in 19.613 seconds and native Sol re-review is bounded CLEAR. Independent reads
+remain bounded with 2,048 unrelated declarations and a target inserted last;
+these constructed MAME plans are not all-format corpus timing.
+The shared-facts suite has fourteen tests using thin size/qualification adapters
+and took 1.461 seconds.
+They include incoming-hash rollback, explicit rejection of a contradictory
+component merge, independently injected cross-registry edges, refusal to
+extend a corrupt redirect cycle and the published-source review boundary. Its
+1024-unrelated-witness control measured point-query VM work from 980 to 981
+instructions and publication work from 7519 to 6725. These figures show
+bounded maintenance-adapter work only; they do not measure composed native
+qualification, a Rust writer, a production import, corpus behavior or runtime.
+
+Separate current checkpoints: the integrated candidate has 29 passing tests in
+22.931 seconds, source-count has 14 in 22.988 seconds, and wiring has five in
+0.004 seconds. Wall times vary with concurrent activity and are not performance
+claims. Full-model guards, producer capture, accepted EOF, complete-batch Rust
+writing after approval, corpus gates and production/performance evidence remain
+open. Candidate evidence views retain draft facts for intended completed-batch
+matching; private Rust batch isolation/freezing remains unproved. Review
+publication requires every affected
+linked occurrence, conflict incoming occurrence and explicit hash/size witness
+owner to belong to a published edition. Draft collection remains allowed; a
+refused decision may publish after its participating editions publish. This
+separates review from mutable drafts without hiding completed-batch matching
+facts. Private Rust batch capture freezing and parser/EOF proof remain open.
+These checks do not alter the application schema or importer.

@@ -319,13 +319,19 @@ need the pinned parser boundary. The witness's constructed coordinates are not
 new parser capture evidence.
 
 The query-only numeric and first-run views described below supersede the
-earlier missing-projection/first-run gap. Maximum-run progress, actual cursor
-behavior, partial-group warning/processing, complete recipe preflight,
-whole-file hash qualification and UUID eligibility still require their pinned
-interpretation proof. Testing all loadflag strings does not test those derived
-facts. Source-declaration/step checks do not turn a retained malformed or
-unnamed declaration into an executable recipe. No production build/gate/import/
-profile was run for these design checks. Full design approval remains open.
+earlier missing-projection/first-run gap. The isolated native-file candidate
+now also defines byte-contract-backed file/hash qualification and shared
+hash/size publication maintenance; see the README's dated section and focused
+checks. Eight composed qualification methods pass and scoped Sol re-review is
+CLEAR. Review publication requires published source owners; candidate evidence
+views retain draft facts for intended completed-batch matching, while private
+Rust batch isolation/freezing remains unproved. Maximum-run progress,
+actual cursor behavior, partial-group warning/processing and complete recipe
+preflight still require their pinned interpretation proof. Testing all
+loadflag strings does not test those derived facts. Source-declaration/step
+checks do not turn a retained malformed or unnamed declaration into an
+executable recipe. No production build/gate/import/profile was run for these
+design checks. Full design approval remains open.
 
 ### Query-only first verification run — candidate
 
@@ -343,9 +349,12 @@ load-chain structure, byte-coverage qualification and accepted shared evidence
 are separate checks. A result over draft rows is provisional: absence of a
 later row is not a parser EOF receipt. The supported finalizer must first
 establish complete source-count/native ownership closure for the selected
-edition. The view alone does not qualify a malformed/unnamed/nodump file,
-promote control-operation hashes, authorize a UUID, or implement the atomic
-shared hash/size review refresh. Those remain open in the all-format design.
+edition. The view alone does not qualify a malformed/unnamed/nodump file or
+promote control-operation hashes. The separate native-file candidate now
+defines qualification and atomic shared hash/size maintenance, but neither is
+wired to a Rust batch writer; implementation follows design approval. Full
+model guards, producer capture, accepted EOF, corpus and production gates
+remain open.
 
 Focused constructed controls are in `numeric_sql_check.py`,
 `software_numbers_check.py` and `software_file_lengths_check.py`. They exercise
