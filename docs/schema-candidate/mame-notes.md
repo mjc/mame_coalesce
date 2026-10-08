@@ -463,3 +463,44 @@ source/parser correspondence, and corpus-wide conformance remain unproven.
 The empty-root behavior is parser-established; the strict content sequences
 are candidate policy for the named strict dialect and do not claim that the
 current compatibility parser validates the upstream DTD sequence.
+
+## Parser event count inventory — candidate
+
+`mame-counts.tsv` is a closed design inventory: 30 native source-owner counts
+from `mame-owners.tsv` and one count for each of the 33 physical
+attribute-position tables. Each owner row is counted once, and each position
+row is counted once per table. The physical root's fixed cardinality is not a
+counter or fabricated registry. Position totals include recognized token-only
+attributes such as explicit boolean/default flags; they do not create separate
+owner counts.
+Description, year, and manufacturer are child source-element rows in
+`mame_machine_text_elements`. RAM-option PCDATA is a scalar on its
+`mame_ram_options` owner row, not a second child owner. Root `mameconfig` and
+other attribute CDATA remain attributes, not PCDATA child events.
+
+The `source_event` values name proposed increment points in the existing MAME
+reader/dispatch (root start, `parse_record`, machine-child or specification
+dispatch, and the typed attribute selector). They describe candidate wiring;
+no parser-fed count-seal comparison or accepted-EOF integration is claimed.
+Each `scope_sql` maps the row identified by `key` to its edition through the
+physical root, `catalog_sets`, or `catalog_source_elements`; it is edition
+scope only, not a query that constructs expected counts from persisted rows.
+
+The inventory does not certify capture completeness. Current opening-tag
+locations do not supply complete element spans. The parser's filtered nested
+walks also lack actual source ordinals for conditions, input controls, port
+analogs, slot options, and device instance/extension order; unknown children
+may leave gaps. Those order/span gaps do not change which recognized typed
+owners or attribute-position rows this inventory names. Parser-fed totals,
+their comparison with candidate rows, and the point at which totals become
+eligible for sealing after accepted input completion remain unimplemented and
+unproved.
+
+`mame_count_mapping_check.py` exercises the candidate's constructed
+count-to-row comparison with a literal, counter-keyed fixture vector. All 63
+routes have positive rows in the constructed fixture; route-by-route deletion
+inside savepoints produces only the named counter mismatch, and changing only
+that literal seal to zero makes the source-count audit quiet. A second
+constructed ROM makes the same-scope ROM/disk table-body swap fail at the
+baseline mapping assertion. These are fixture mapping receipts, not parser
+event totals, parser-fed seals, or EOF/source-capture proof.

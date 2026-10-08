@@ -482,3 +482,44 @@ scope, indexed known-parent/facet query plans, and the real assembled
 publication rejection/repair path. It remains constructed-SQL evidence: it
 does not establish parser/corpus proof, source event counts, or independent
 count seals. No count seals are added in this child/PCDATA slice.
+
+## Parser event count inventory — candidate
+
+`software-counts.tsv` contains 13 native source-owner counts and one count for
+each of the 13 physical attribute-position tables. It counts the canonical
+list and the other native source owners in the owner manifest, excluding the
+wrapper-list placement as a duplicate representation of that list. The fixed
+document root is not counted: envelope mode fixes its cardinality, and in
+plural mode `software_documents` and `software_wrapper_headers` describe the
+same physical root. A bare `<softwarelist>` and each wrapped `<softwarelist>`
+increment the independent list event once; `software_list_wrapper_entries`
+records placement but is not a second count of that element. The list count
+remains independent evidence if both the canonical list owner and its wrapper
+placement are erased.
+
+The proposed increment labels identify the reader root/list callbacks and the
+typed elements represented by each parsed item and its nested parts, switches,
+areas, media declarations, and text children. Recognized token-only attributes
+such as `supported`, `default`, `width`, and `endianness` contribute their one
+physical position row; their specified/value flags do not add owners. Required
+title PCDATA children and optional title/list notes count as source-element
+owners, while values sharing an owner row remain scalar fields. Load steps,
+required-file projections, clone links, and other derived or relation rows are
+excluded.
+
+These are proposed build-time parser events, not implemented producers or
+validated seals. `scope_sql` resolves each listed native row's edition through
+the envelope, `catalog_set_groups`, or `catalog_source_elements`; it does not
+derive expected totals by selecting the candidate rows. This inventory does
+not establish that the callbacks feed counters, that all owner/position events
+are captured, or that totals are sealed only after accepted input completion.
+Physical root/element span capture and parser-to-row completeness therefore
+remain open evidence gaps.
+
+`software_count_mapping_check.py` exercises the candidate's constructed
+count-to-row comparison with an independent literal vector keyed by counter.
+All 26 routes have positive rows in the constructed software fixture; deleting
+each target-edition route inside a savepoint yields only its named counter
+mismatch, and changing only that seal to zero makes the source-count audit
+quiet. The values are fixture mapping receipts, not parser event totals,
+parser-fed seals, or EOF/source-capture proof.

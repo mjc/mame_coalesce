@@ -212,8 +212,9 @@ mapping controls intentionally bypass deletion guards and test the count audit
 alone after their explicit expected-count adjustment; they do not publish the
 damaged graph or derive expectations with SELECT from inserted rows. These
 constructed fixtures do not prove real parser accumulation, checked arithmetic
-or EOF. Expected-count schemas and producers for the other formats remain open;
-per-owner position counters are not added to ordinary pages.
+or EOF. The next layer below defines candidate count shapes for the other
+formats; ordinary-assembler integration and parser producers remain open.
+Per-owner position counters are not added to ordinary pages.
 
 Fresh GPT-6.1 Sol medium core/count and four-family native fix/re-review loops
 are bounded CLEAR for this child/seal pass. Native child suites pass MAME 10,
@@ -222,6 +223,71 @@ pass five and eight respectively. Independent Logiqx/CMP re-review also passes
 all 14 presence tests, nine publication defect/repair controls and the unknown
 orphan isolation control. None establishes full-volume acceptance, parser-fed
 counts/EOF, XSI lexical semantics or complete-design approval.
+
+## Independent source-count contract layer
+
+`source_counts.py` compiles the base candidate plus a proposed count-seal layer.
+It reads four closed `*-counts.tsv` inventories and emits six format-specific
+wide tables, one seal row per edition, with named exact nonnegative integer
+columns. No `(kind,value)` catalog data or per-owner position counters are
+stored. Counts are validation facts and are excluded from semantic history.
+
+The current inventory has 158 counters: MAME 63, software 26, Logiqx 27, CMP 6,
+flat DAT 26 and synthetic P/C 10. Physical source owners and attribute-position
+tables count once. Software's canonical list counts its bare or wrapped source
+element, not its wrapper-placement representation a second time. Existing CMP
+header-presence/comment seals remain canonical. Fixed roots need no duplicate
+counter. P/C language tokens have a separate canonical-value count because
+losing a token need not erase its attribute position; this is not a second wire
+attribute or a claim of authentic DAT-o-MATIC P/C support.
+
+The compiler checks count coverage against closed native owners and physical
+position/XSI tables, validates actual PK components and prepares every edition
+scope. It reuses the base FK/reverse, replacement and published-immutability
+generators for the new tables. A second mandatory publication trigger checks
+the count audit without replacing or bypassing existing publication checks.
+Scope expressions describe persisted comparisons only: expected totals must
+come from independently checked parser events, never SELECT from retained rows.
+
+```sh
+python3 -Werror::ResourceWarning docs/schema-candidate/source_counts.py
+python3 -Werror::ResourceWarning docs/schema-candidate/source_count_check.py
+python3 -Werror::ResourceWarning docs/schema-candidate/mame_count_mapping_check.py
+python3 -Werror::ResourceWarning docs/schema-candidate/software_count_mapping_check.py
+python3 -Werror::ResourceWarning docs/schema-candidate/logiqx_cmp_count_mapping_check.py
+python3 -Werror::ResourceWarning docs/schema-candidate/no_intro_count_mapping_check.py
+```
+
+`source_counts.py --emit` emits the complete base-plus-count candidate. This
+layer prepares 48 views; the ordinary `assemble.py` fixture path still prepares
+45 and has not yet absorbed the count contract. The independent MAME controls
+use literal expected events, exercise actual publication refusal/repair and
+detect a coherently erased optional value and position that the older audit
+cannot infer. Thin compiler controls separately cover equal-sized mappings,
+integer domains, FK-off ownership, replacement and edition isolation.
+The four native mapping suites independently pin counter names, literal event
+vectors and physical deletion targets, with populated rows for all 158 routes.
+Each guard-bypassed deletion must leave the intended count mismatch; adjusting
+only that expected counter then makes the source-count audit quiet. These
+damaged graphs are not published. Separate positive publication controls retain
+the original closure. A process-local ROM/disk SQL-body swap after valid MAME
+fixture setup is detected at mapping assertions, with no SQL/setup errors.
+Until the audit paths are consolidated, integrity consumers must inspect
+`candidate_source_count_problems` alongside the base integrity audit; the
+ordinary base view alone does not report these new count failures.
+
+Fresh independent GPT-6.1 Sol medium technical and claim reviews are bounded
+CLEAR after fixing both findings. All 23 focused tests pass: 12 compiler and
+publication controls, three MAME, two software, two Logiqx/CMP and four No-Intro
+mapping tests. One SQL-only ROM/disk mapping mutation is killed without SQL or
+setup errors; its cascading assertion failures are not separate mutations.
+
+This layer is not complete-design approval. Default-assembler/fixture/audit
+integration, checked parser producers and accepted EOF remain open.
+Ordinary reads do not rescan every edition; publication and
+global integrity scopes remain separate. Compensating edits that preserve a
+counter still require independent source revalidation, not stronger claims
+about these aggregate seals.
 
 ## What the checks establish
 

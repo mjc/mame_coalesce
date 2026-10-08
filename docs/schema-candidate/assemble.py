@@ -93,6 +93,20 @@ def table_columns(connection, table):
     return rows
 
 
+def schema_tables(connection, tables=None):
+    """Validate an explicit extension's tables, or visit the whole schema."""
+    known = {row[0] for row in connection.execute(
+        "SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
+    selected = tuple(sorted(known)) if tables is None else tuple(tables)
+    if len(selected) != len(set(selected)):
+        raise ValueError('duplicate guard table')
+    for table in selected:
+        identifier(table)
+        if table not in known:
+            raise ValueError(f'missing guard table {table}')
+    return selected
+
+
 def edition_expression(connection, table, alias, native_keys=None, seen=()):
     """Resolve an immediate parent's edition without storing copied ancestry."""
     if table in seen:
@@ -130,11 +144,10 @@ def edition_expression(connection, table, alias, native_keys=None, seen=()):
     raise ValueError(f"no unambiguous immediate edition path for {table}")
 
 
-def foreign_key_guards(connection, manifest=()):
+def foreign_key_guards(connection, manifest=(), *, tables=None):
     """Emit concrete SQL for every FK, including reverse checks with FKs off."""
     guards, problems = [], []
-    tables = [row[0] for row in connection.execute("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'")]
-    for table in tables:
+    for table in schema_tables(connection, tables):
         grouped = defaultdict(list)
         for row in connection.execute(f"PRAGMA foreign_key_list({identifier(table)})"):
             grouped[row[0]].append(row)
@@ -168,14 +181,14 @@ def foreign_key_guards(connection, manifest=()):
     return guards, problems
 
 
-def collision_guards(connection):
+def collision_guards(connection, *, tables=None):
     """Protect PK and alternate-key REPLACE without recursive DELETE triggers.
 
     Candidate callers deduplicate batches with set-based NOT EXISTS before INSERT.
     Blind INSERT OR IGNORE/UPSERT is intentionally not a supported replacement API.
     """
     result = []
-    for (table,) in connection.execute("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall():
+    for table in schema_tables(connection, tables):
         info = table_columns(connection, table)
         primary = tuple(row[1] for row in sorted(info, key=lambda row: row[5]) if row[5])
         keys = [(primary, None)] if primary else []
@@ -211,13 +224,13 @@ def collision_guards(connection):
     return result
 
 
-def published_fact_guards(connection, manifest):
+def published_fact_guards(connection, manifest, *, tables=None):
     """Native facets and positions are immutable too, not just manifest owners."""
     result = []
     native_keys = {owner.table: owner.id for owner in manifest}
     excluded = {'published_catalog_editions', 'catalog_imports', 'catalog_import_messages',
                 'catalog_import_message_elements', 'catalog_import_message_external_evidence'}
-    for (table,) in connection.execute("SELECT name FROM sqlite_schema WHERE type='table'").fetchall():
+    for table in schema_tables(connection, tables):
         if table in excluded or 'import_messages' in table or table.startswith('catalog_relationship'):
             continue
         if any(token in table for token in ('review', 'decision', 'conflict')) or table == 'merged_file_ids':

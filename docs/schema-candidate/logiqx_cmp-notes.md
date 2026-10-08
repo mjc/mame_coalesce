@@ -140,6 +140,79 @@ to insert an unknown CMP position, verifies its edition remains `NULL`, and
 confirms it does not poison publication of an unrelated known edition. These
 are constructed SQLite controls, not parser or corpus proof.
 
+## Edition count inventory
+
+[`logiqx_cmp-counts.tsv`](/home/mjc/projects/mame_coalesce/docs/schema-candidate/logiqx_cmp-counts.tsv)
+is the closed edition-level comparison inventory for future independent
+parser accumulators. Each `counter` names one persisted relation and counts
+its actual source-owner rows once, or its actual stored field-position rows
+once. The 19 owner counters cover every registry-bearing owner in
+`logiqx_cmp-owners.tsv` except the CMP header and comment owners, whose existing
+independent header-presence and comment-count seals already compare those
+facts. The two physical document rows and virtual root groups have no
+registry-bearing source identity and are not additional source-owner counts.
+
+Logiqx header/game PCDATA relations are source-owner relations: each retained
+text child contributes once to its corresponding owner counter. They have no
+attribute-position row and do not receive a second position count. More
+generally, owner and position counters name distinct source facts; a producer
+must not increment an owner total again merely because that owner also has
+attribute positions.
+
+The 14 position counters cover all eleven Logiqx attribute-position tables and
+all three CMP field-position tables. A CMP field pair or flag contributes one
+stored position row; its Keyword and Value query anchors are roles over that
+row and do not contribute extra counts. Hash declarations, hash-position
+projections, relationship rows, and shared `catalog_sets`/media bases are not
+additional counters. Keyed options, ROM details/compatibility, and merge/link
+facets are payload of their source owner, not separate source events. Repeated
+Logiqx game comments and CMP samples remain separate owner rows and are counted
+as such.
+
+For each row, `scope_sql` is a correlated expression evaluated with the
+persisted count-comparison row aliased as `owner`; it yields the actual
+edition through the listed row's key and typed registry/group ancestry. A
+missing ancestry yields NULL for the independent orphan audit, never an
+edition inferred from a coincidentally equal ID. These scopes define only
+which persisted rows a count compares. Expected values must be accumulated
+from parser events independently, with checked nonnegative integer arithmetic;
+they must not be selected or reconstructed from the persisted rows. The
+counter set is edition-wide and is not a per-owner/page witness.
+
+The six-family countcompiler contract is checked as an independent second
+trigger against the actual publication path over the overfull candidate
+schema. That validates expected-versus-actual mapping and publication refusal
+in constructed tests; it is not evidence from an authentic Logiqx/CMP parser
+producer and does not close producer accumulation or source-to-event coverage.
+
+The focused
+[`logiqx_cmp_count_mapping_check.py`](/home/mjc/projects/mame_coalesce/docs/schema-candidate/logiqx_cmp_count_mapping_check.py)
+receipt is 2 tests passing: 33 populated mapping controls (27 Logiqx, 6 CMP)
+and positive publication of both fixture editions through the full candidate
+gate. The expected vectors are literal and keyed by counter name; physical
+delete targets are pinned independently of the TSV routes. Each rollback-only
+table deletion reports exactly its intended source-count problem, and setting
+that seal counter to zero clears the source-count audit. FK enforcement is
+disabled only for those destructive probes; no FK diagnostic or damaged-graph
+publication is used as proof. The positive publication control uses the
+applicable Logiqx edition-1 and CMP edition-2 seals; the other four families
+have no root rows in this fixture. The receipt is constructed-schema evidence,
+not authentic producer or EOF evidence.
+
+The current parser does not yet provide the complete independent accumulator
+or the capture needed to claim one. In particular, Logiqx compatible root
+ordinals still lose gaps for ignored root children, and the available root
+observations do not provide the closing extent/coordinates. CMP comment
+callbacks preserve text and start coordinates but not containing-form or
+keyword/value placement; CMP keyword-coordinate capture is also outstanding.
+Neither current import path establishes full-document EOF extent. Accumulating
+counts from emitted parser events can seal emitted rows, but cannot prove that
+the source was consumed through valid EOF or recover events the parser failed
+to retain. Completion therefore needs explicit parser/finalizer EOF success,
+checked accumulator sealing, and source-versus-owner/position coverage evidence.
+The inventory records that contract without changing either producer or
+candidate DDL.
+
 CMP preserves document form order, header field order, set-item order across
 field pairs/ROMs/samples, and ROM field/flag order. One field pair consumes one
 source order; the `Keyword` and `Value` token anchors are roles over its
