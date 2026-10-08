@@ -21,6 +21,18 @@ The [CMP comment audit](https://lific.mjc.lol/MAMEC/pages/94#current-cmp-comment
 distinguishes retained text/location from the uncaptured containing-form and
 keyword/value placement. These are design refinements, not new schema changes;
 the complete keys, state domains, cross-table guards and approval remain open.
+The proposed [software file-chain contract](https://lific.mjc.lol/MAMEC/pages/95#rom-file-chain-relations-and-derived-states-candidate-2026-10-08-utc)
+stores declaration links without duplicate operation/link-state strings. Six
+operations derive from the pinned source load flags; four link-state cases
+distinguish self-declarations, linked controls, orphan controls and fill.
+This does not make invalid raw declarations executable or establish final
+publication guards. The ownership sketch now shows concrete data-area/ROM and
+disk-area/disk links.
+The [MAME key crosswalk](https://lific.mjc.lol/MAMEC/pages/93#exact-mame-hardwaremedia-key-crosswalk-candidate-2026-10-08-utc)
+names hardware parents and all 33 position companions; the
+[software root/title/part crosswalk](https://lific.mjc.lol/MAMEC/pages/95#exact-software-roottitlepart-key-crosswalk-candidate-2026-10-08-utc)
+completes its remaining nine position mappings. Parser capture of nested MAME
+child order, CMP token keys and final cross-table enforcement remain unfinished.
 The expanded proposal records the adversarial review findings. Native importers,
 storage and source-free queries now exist for the supported families. Remaining
 producer/dialect and complete current-corpus/query/profiling proof is not implied
