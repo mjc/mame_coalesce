@@ -37,13 +37,14 @@ stubs to isolate a format. They are not substitutes for the assembled checks.
 
 Run MAME, software and Logiqx/CMP witnesses directly with
 `sqlite3 -bail :memory: < docs/schema-candidate/FAMILY_witnesses.sql`.
-The No-Intro fixture instead requires the composed DDL first:
+The No-Intro fixtures require the composed DDL and a statement runner that
+asserts their expected rejections before checking independently corrupted rows:
 
 ```sh
-{ python3 docs/schema-candidate/assemble.py --emit && cat docs/schema-candidate/no_intro_witnesses.sql; } | sqlite3 -bail :memory:
+python3 docs/schema-candidate/no_intro_field_check.py
 ```
 
-## Bounded review checkpoint — 2026-10-08 UTC
+## Initial bounded review checkpoint — 2026-10-08 UTC
 
 The integrated harness passes 20 tests in 3.727 seconds; all four native fixtures
 pass. Assembly prepares 93 closed native kinds and 30 views with a clean
@@ -52,6 +53,62 @@ are CLEAR for the bounded core and native slices. Native re-review additionally
 ran 52 adversarial assertions covering the six original findings and No-Intro
 relationship-position corrections. These are not complete-design approval or
 authentic importer/corpus/performance proof. The outstanding work below remains.
+
+## Relationship routing and independent field crosswalks
+
+Current integrated checkpoint: 25 tests pass in 4.045 seconds; assembly prepares
+93 closed native kinds and 34 views with a clean empty-schema FK check. Core
+routing/reference and all four native field reviews are bounded CLEAR after
+fix/re-review. Logiqx/CMP assertions require exactly one selected row; six
+missing/multiple-selector mutations fail at the intended assertion CHECK.
+No complete-design or production approval is implied.
+
+`relationship-positions.tsv` maps DOC-23's 22 kinds to their concrete typed
+declaration and canonical position. Generated checks reject the wrong owner,
+field, occurrence or edition; reverse checks protect already-linked positions;
+global audits diagnose missing/mismatched positions. Both No-Intro `P` marker
+branches have separate presence and mutual-exclusion rules. Query-only unions
+share this routing definition with the relationship-kind audit, without copying
+source values or ancestry into persisted tables.
+
+`check.py` now exercises every relationship route and all 32 hash mappings with
+thin typed owners, plus an actual composed MAME ownership regression. Integer
+field codes use INTEGER SQL literals: trigger `NEW` expressions do not inherit
+table-column comparison affinity. Positive tests prevent valid native values
+from being rejected by a superficially strict guard. The actual populated MAME
+identity lookups use indexed searches across both routing views.
+
+The four `*-field-coverage.tsv` inventories identify source fields, actual value
+owners/columns, canonical position codes, accepted states/defaults and evidence.
+`field_coverage` checks real SQL references (including generated columns), not
+specification completeness or presence consistency. Independent family field
+witnesses exercise their stated slices; their notes identify remaining gaps.
+The TSV files are build-time design evidence, not generic runtime catalog data.
+
+Run the independent field checks separately from the shared routing suite:
+
+```sh
+python3 docs/schema-candidate/mame_field_check.py
+python3 docs/schema-candidate/software_field_check.py
+python3 docs/schema-candidate/logiqx_cmp_field_check.py
+python3 docs/schema-candidate/no_intro_field_check.py
+```
+
+The current field evidence is bounded as follows:
+
+| Family | Inventory represented | Focused evidence |
+|---|---|---|
+| MAME | 155 contextual rows: 151 attribute contexts and four PCDATA scalars | Six tests; independent DTD/macro identity comparison and constructed state probes |
+| Software | 42 rows: 37 attributes and five text scalars | Seven tests; all 13 position families and seven default-presence pairs |
+| Logiqx/CMP | 105 rows; 46 Logiqx and 39 CMP attribute/field codes, plus native text/form facts | Nine tests; all 85 codes, 13 text-child kinds and 15 XML default-presence fields |
+| No-Intro | 269 source paths; 201 distinct position table/code pairs | 284 field assertions / 24 expected rejections, plus legacy 18 / 4 |
+
+MAME's 125 DTD plus ten compatibility declarations expand into 151 actual-parent
+attribute contexts; source macros have 126 enum/code slots while the candidate
+has 134 table/code pairs. These are different inventories, not conflicting
+counts. None of the 571 crosswalk rows is an independent runtime source count.
+MAME's field-presence TEMP view is only a test detecting layer; software's
+general presence enforcement and No-Intro XSI semantic enforcement remain open.
 
 ## What the checks establish
 
@@ -81,7 +138,7 @@ current application already follows it.
 ## Still required
 
 This artifact remains incomplete until independently verified all-format
-field-presence/default/position closure, exact relationship-kind/position closure,
+field-presence/default/position closure, full native relationship publication proof,
 all root modes and diagnostic containment, independently parser-fed count seals,
 qualified size/hash evidence and atomic review refresh, UUID eligibility,
 ordinary-owner immutability, corruption witnesses and populated native plans are

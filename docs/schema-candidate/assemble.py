@@ -297,20 +297,27 @@ def root_diagnostic_sql():
     return '\n'.join(tables), guards, problems
 
 
-def hash_position_sql(connection):
-    branches, policies, guards = [], defaultdict(list), []
+def hash_routes():
+    rows = []
     for family in FAMILIES:
         with (ROOT / f'{family}-hash-positions.tsv').open(newline='') as source:
-            for row in csv.DictReader(source, delimiter='\t'):
-                table, owner, code, occurrence = (identifier(row[key]) for key in ('table', 'owner_column', 'code_column', 'occurrence_column'))
-                field_code, source_field = literal(row['field_code']), literal(row['source_hash_field'])
-                role = row.get('role_constraint', '-')
-                if role not in ('-', 'Value'):
-                    raise ValueError(f'unknown canonical hash position role {role}')
-                role_check = ' AND value_line IS NOT NULL AND value_column IS NOT NULL' if role == 'Value' else ''
-                branches.append(f'SELECT reported_hash_id,{owner} AS media_entry_id,{source_field} AS source_hash_field,{occurrence} AS field_occurrence FROM {table} WHERE {code}={field_code} AND reported_hash_id IS NOT NULL{role_check}')
-                new_role = ' AND NEW.value_line IS NOT NULL AND NEW.value_column IS NOT NULL' if role == 'Value' else ''
-                policies[row['table']].append(f'(NEW.{code}={field_code} AND hash.media_entry_id=NEW.{owner} AND hash.source_hash_field={source_field} AND hash.field_occurrence=NEW.{occurrence}{new_role})')
+            rows.extend(csv.DictReader(source, delimiter='\t'))
+    return tuple(rows)
+
+
+def hash_position_sql(connection):
+    branches, policies, guards = [], defaultdict(list), []
+    for row in hash_routes():
+        table, owner, code, occurrence = (identifier(row[key]) for key in ('table', 'owner_column', 'code_column', 'occurrence_column'))
+        field_code = field_code_literal(connection,row['table'],row['code_column'],row['field_code'])
+        source_field = literal(row['source_hash_field'])
+        role = row.get('role_constraint', '-')
+        if role not in ('-', 'Value'):
+            raise ValueError(f'unknown canonical hash position role {role}')
+        role_check = ' AND value_line IS NOT NULL AND value_column IS NOT NULL' if role == 'Value' else ''
+        branches.append(f'SELECT reported_hash_id,{owner} AS media_entry_id,{source_field} AS source_hash_field,{occurrence} AS field_occurrence FROM {table} WHERE {code}={field_code} AND reported_hash_id IS NOT NULL{role_check}')
+        new_role = ' AND NEW.value_line IS NOT NULL AND NEW.value_column IS NOT NULL' if role == 'Value' else ''
+        policies[row['table']].append(f'(NEW.{code}={field_code} AND hash.media_entry_id=NEW.{owner} AND hash.source_hash_field={source_field} AND hash.field_occurrence=NEW.{occurrence}{new_role})')
     view = 'CREATE VIEW candidate_canonical_hash_positions AS ' + ' UNION ALL '.join(branches) + ';'
     for table, choices in policies.items():
         valid = f"SELECT 1 FROM catalog_entry_hashes AS hash WHERE hash.reported_hash_id=NEW.reported_hash_id AND ({' OR '.join(choices)})"
@@ -321,6 +328,131 @@ def hash_position_sql(connection):
         "SELECT 'hash_position_identity',position.reported_hash_id,element.edition_id FROM candidate_canonical_hash_positions AS position LEFT JOIN catalog_entry_hashes AS hash USING(reported_hash_id) LEFT JOIN catalog_source_elements AS element ON element.source_element_id=position.media_entry_id WHERE hash.media_entry_id IS NOT position.media_entry_id OR hash.source_hash_field IS NOT position.source_hash_field OR hash.field_occurrence IS NOT position.field_occurrence",
     ]
     return view, guards, problems
+
+
+def field_code_literal(connection,table,column,value):
+    """NEW fields in triggers do not inherit column comparison affinity."""
+    kind = next((row[2] for row in table_columns(connection,table) if row[1]==column),None)
+    if kind == 'INTEGER':
+        if not re.fullmatch(r'0|[1-9][0-9]*',value):
+            raise ValueError(f'{table}.{column}: expected an integer field code, got {value!r}')
+        return value
+    if kind == 'TEXT':
+        return literal(value)
+    raise ValueError(f'{table}.{column}: unsupported field-code type {kind}')
+
+
+def field_coverage(connection):
+    """Validate the independent field crosswalk's references, not its completeness."""
+    entries, seen = [], set()
+    expected = ('family','owner_table','field_code','wire_name','value_owner',
+                'value_column','position_table','presence','default_rule','evidence')
+    for family in FAMILIES:
+        with (ROOT / f'{family}-field-coverage.tsv').open(newline='') as source:
+            reader = csv.DictReader(source,delimiter='\t')
+            if tuple(reader.fieldnames or ()) != expected:
+                raise ValueError(f'{family}: field crosswalk columns must be {expected}')
+            for row in reader:
+                if None in row or any(not row[column] for column in expected):
+                    raise ValueError(f'{family}: incomplete field crosswalk row {row}')
+                key = (row['family'],row['owner_table'],row['wire_name'])
+                if key in seen:
+                    raise ValueError(f'duplicate field crosswalk entry {key}')
+                seen.add(key)
+                table_columns(connection,row['owner_table'])
+                columns = {column[1] for column in connection.execute(f"PRAGMA table_xinfo({identifier(row['value_owner'])})")}
+                requested = set(row['value_column'].split(','))
+                if not requested <= columns:
+                    raise ValueError(f"{key}: nonexistent canonical value column {requested-columns}")
+                if row['position_table'] != '-':
+                    position_columns = {column[1] for column in table_columns(connection,row['position_table'])}
+                    if 'field_kind' in position_columns:
+                        field_code_literal(connection,row['position_table'],'field_kind',row['field_code'])
+                entries.append(row)
+    return tuple(entries)
+
+
+def relationship_routes():
+    """Closed DOC-23 source-field routes; never persisted as catalog data."""
+    with (ROOT / 'relationship-positions.tsv').open(newline='') as source:
+        reader = csv.DictReader(source, delimiter='\t')
+        expected = ('kind', 'declaration_table', 'declaration_owner', 'link_kind',
+                    'position_table', 'position_owner', 'field_code', 'marker_table')
+        if tuple(reader.fieldnames or ()) != expected:
+            raise ValueError(f'relationship manifest columns must be {expected}')
+        routes = tuple(reader)
+    kinds = [row['kind'] for row in routes]
+    if len(kinds) != 22 or len(set(kinds)) != 22:
+        raise ValueError('DOC-23 requires exactly 22 unique reported relationship routes')
+    for row in routes:
+        for key in ('declaration_table','declaration_owner','position_table','position_owner'):
+            identifier(row[key])
+        if row['marker_table'] != '-':
+            identifier(row['marker_table'])
+    return routes
+
+
+def relationship_position_sql(connection):
+    """Close typed declarations, canonical positions and reported identity both ways."""
+    routes = relationship_routes()
+    declarations, positions, guards, problems = [], [], [], []
+    by_position, by_declaration = defaultdict(list), defaultdict(list)
+    reported_sql = connection.execute("SELECT sql FROM sqlite_schema WHERE name='reported_catalog_relationships'").fetchone()[0]
+    listed = re.search(r'reported_kind\s+IN\s*\((.*?)\)', reported_sql, re.S).group(1)
+    if set(re.findall(r"'([^']+)'", listed)) != {row['kind'] for row in routes}:
+        raise ValueError('reported registry and DOC-23 relationship routes disagree')
+    for row in routes:
+        table, owner = identifier(row['declaration_table']), identifier(row['declaration_owner'])
+        position, position_owner = identifier(row['position_table']), identifier(row['position_owner'])
+        for name, columns in ((row['declaration_table'], (row['declaration_owner'],'relationship_id')),
+                              (row['position_table'], (row['position_owner'],'field_kind','field_occurrence','relationship_id'))):
+            if not set(columns) <= {column[1] for column in table_columns(connection,name)}:
+                raise ValueError(f'relationship route does not match {name}')
+        selected = '' if row['link_kind']=='-' else f" WHERE declaration.link_kind={literal(row['link_kind'])}"
+        kind = literal(row['kind'])
+        declarations.append(f'SELECT declaration.relationship_id,{kind} AS reported_kind,declaration.{owner} AS source_element_id,element.edition_id FROM {table} AS declaration LEFT JOIN catalog_source_elements AS element ON element.source_element_id=declaration.{owner}{selected}')
+        by_position[row['position_table']].append(row)
+        by_declaration[row['declaration_table']].append(row)
+    for name, members in by_position.items():
+        owner = identifier(members[0]['position_owner'])
+        if any(row['position_owner'] != members[0]['position_owner'] for row in members):
+            raise ValueError(f'{name}: inconsistent canonical position owner')
+        cases = 'CASE position.field_kind ' + ' '.join(f"WHEN {field_code_literal(connection,name,'field_kind',row['field_code'])} THEN {literal(row['kind'])}" for row in members) + ' END'
+        positions.append(f'SELECT position.relationship_id,{cases} AS reported_kind,position.{owner} AS source_element_id,position.field_occurrence,element.edition_id FROM {identifier(name)} AS position LEFT JOIN catalog_source_elements AS element ON element.source_element_id=position.{owner} WHERE position.relationship_id IS NOT NULL')
+        valid_choices = []
+        for row in members:
+            valid_choices.append(f"(NEW.field_kind={field_code_literal(connection,name,'field_kind',row['field_code'])} AND declaration.reported_kind={literal(row['kind'])})")
+        valid = f"SELECT 1 FROM candidate_relationship_declarations AS declaration JOIN reported_catalog_relationships AS reported USING(relationship_id,reported_kind) JOIN catalog_relationships AS identity USING(relationship_id) WHERE declaration.relationship_id=NEW.relationship_id AND declaration.source_element_id=NEW.{owner} AND declaration.edition_id=identity.edition_id AND identity.origin='source' AND NEW.field_occurrence=0 AND ({' OR '.join(valid_choices)})"
+        for operation in ('INSERT','UPDATE'):
+            guards.append(f"CREATE TRIGGER {identifier('candidate_relationship_position_' + name + '_' + operation.lower())} BEFORE {operation} ON {identifier(name)} WHEN NEW.relationship_id IS NOT NULL AND NOT EXISTS({valid}) BEGIN SELECT RAISE(ABORT,'relationship position requires its exact typed declaration'); END;")
+    for name, members in by_declaration.items():
+        owner = identifier(members[0]['declaration_owner'])
+        kind = literal(members[0]['kind']) if len(members)==1 else 'CASE NEW.link_kind ' + ' '.join(f"WHEN {literal(row['link_kind'])} THEN {literal(row['kind'])}" for row in members) + ' END'
+        match = f'position.relationship_id IS NEW.relationship_id AND position.source_element_id IS NEW.{owner} AND position.reported_kind IS ({kind})'
+        guards.append(f"CREATE TRIGGER {identifier('candidate_relationship_declaration_' + name + '_update')} BEFORE UPDATE ON {identifier(name)} WHEN EXISTS(SELECT 1 FROM candidate_relationship_positions AS position WHERE position.relationship_id=OLD.relationship_id AND NOT({match})) BEGIN SELECT RAISE(ABORT,'relationship declaration cannot detach its canonical position'); END;")
+        guards.append(f"CREATE TRIGGER {identifier('candidate_relationship_declaration_' + name + '_delete')} BEFORE DELETE ON {identifier(name)} WHEN EXISTS(SELECT 1 FROM candidate_relationship_positions WHERE relationship_id=OLD.relationship_id) BEGIN SELECT RAISE(ABORT,'remove draft positions before their declaration'); END;")
+    views = '\n'.join((
+        'CREATE VIEW candidate_relationship_declarations AS ' + ' UNION ALL '.join(declarations) + ';',
+        'CREATE VIEW candidate_relationship_positions AS ' + ' UNION ALL '.join(positions) + ';'))
+    problems.extend((
+        "SELECT 'relationship_position_count' AS problem,declaration.relationship_id AS owner_id,coalesce(declaration.edition_id,identity.edition_id) AS edition_id FROM candidate_relationship_declarations AS declaration LEFT JOIN catalog_relationships AS identity USING(relationship_id) LEFT JOIN candidate_relationship_positions AS position ON position.relationship_id=declaration.relationship_id AND position.reported_kind=declaration.reported_kind AND position.source_element_id=declaration.source_element_id AND position.field_occurrence=0 GROUP BY declaration.relationship_id,declaration.reported_kind,declaration.source_element_id HAVING count(position.relationship_id)<>1",
+        "SELECT 'relationship_position_identity',position.relationship_id,coalesce(position.edition_id,identity.edition_id) FROM candidate_relationship_positions AS position LEFT JOIN catalog_relationships AS identity USING(relationship_id) WHERE NOT EXISTS(SELECT 1 FROM candidate_relationship_declarations AS declaration JOIN reported_catalog_relationships AS reported USING(relationship_id,reported_kind) WHERE declaration.relationship_id=position.relationship_id AND declaration.source_element_id=position.source_element_id AND declaration.reported_kind=position.reported_kind AND declaration.edition_id=position.edition_id AND identity.origin='source' AND identity.edition_id=position.edition_id AND position.field_occurrence=0)"))
+    guards.extend((
+        "CREATE TRIGGER candidate_relationship_identity_update BEFORE UPDATE ON catalog_relationships WHEN EXISTS(SELECT 1 FROM candidate_relationship_declarations WHERE relationship_id=OLD.relationship_id AND (NEW.origin<>'source' OR edition_id IS NOT NEW.edition_id)) BEGIN SELECT RAISE(ABORT,'reported identity must retain its native edition'); END;",
+        "CREATE TRIGGER candidate_relationship_kind_update BEFORE UPDATE ON reported_catalog_relationships WHEN EXISTS(SELECT 1 FROM candidate_relationship_declarations WHERE relationship_id=OLD.relationship_id AND reported_kind IS NOT NEW.reported_kind) BEGIN SELECT RAISE(ABORT,'reported kind must match its native declaration'); END;"))
+    for row in routes:
+        if row['marker_table']=='-':
+            continue
+        marker, declaration, position = map(identifier,(row['marker_table'],row['declaration_table'],row['position_table']))
+        owner, position_owner = map(identifier,(row['declaration_owner'],row['position_owner']))
+        code = field_code_literal(connection,row['position_table'],'field_kind',row['field_code'])
+        problems.append(f"SELECT {literal('relationship_marker:' + row['kind'])},marker.{owner},element.edition_id FROM {marker} AS marker LEFT JOIN catalog_source_elements AS element ON element.source_element_id=marker.{owner} WHERE EXISTS(SELECT 1 FROM {declaration} WHERE {owner}=marker.{owner}) OR (SELECT count(*) FROM {position} WHERE {position_owner}=marker.{owner} AND field_kind={code} AND field_occurrence=0 AND relationship_id IS NULL)<>1")
+        problems.append(f"SELECT {literal('relationship_missing_marker:' + row['kind'])},position.{position_owner},element.edition_id FROM {position} AS position LEFT JOIN catalog_source_elements AS element ON element.source_element_id=position.{position_owner} WHERE position.field_kind={code} AND position.relationship_id IS NULL AND NOT EXISTS(SELECT 1 FROM {marker} WHERE {owner}=position.{position_owner})")
+        for operation in ('INSERT','UPDATE'):
+            guards.append(f"CREATE TRIGGER {identifier('candidate_relationship_marker_position_' + row['kind'] + '_' + operation.lower())} BEFORE {operation} ON {position} WHEN NEW.field_kind={code} AND NEW.relationship_id IS NULL AND NOT EXISTS(SELECT 1 FROM {marker} WHERE {owner}=NEW.{position_owner}) BEGIN SELECT RAISE(ABORT,'NULL clone identity requires its typed P marker'); END;")
+            for target,other in ((row['marker_table'],declaration),(row['declaration_table'],marker)):
+                guards.append(f"CREATE TRIGGER {identifier('candidate_relationship_marker_exclusion_' + target + '_' + operation.lower())} BEFORE {operation} ON {identifier(target)} WHEN EXISTS(SELECT 1 FROM {other} WHERE {owner}=NEW.{owner}) BEGIN SELECT RAISE(ABORT,'clone marker and relationship declaration are mutually exclusive'); END;")
+    return views,guards,problems
 
 
 def format_root_sql(connection, manifest):
@@ -437,15 +569,16 @@ def assemble():
         hash_positions, hash_guards, hash_problems = hash_position_sql(connection)
         format_roots,format_guards,format_problems = format_root_sql(connection, manifest)
         position_guards,position_problems = position_order_sql(connection, manifest)
+        relationship_views,relationship_guards,relationship_problems = relationship_position_sql(connection)
         format_audits = [f'SELECT problem,owner_id,edition_id FROM {identifier(row[0])}' for row in connection.execute("SELECT name FROM sqlite_schema WHERE type='view' AND (name GLOB 'candidate_*_integrity_problems' OR name='candidate_edition_cycle_problems')")]
-    audits = [*format_audits, *native_problems, *fk_problems, *root_problems, *hash_problems, *format_problems, *position_problems]
+    audits = [*format_audits, *native_problems, *fk_problems, *root_problems, *hash_problems, *format_problems, *position_problems, *relationship_problems]
     # SQLite limits a single compound SELECT to 500 terms. Keep the exhaustive
     # reverse audit in named bounded chunks, not one oversized UNION statement.
     chunks = [audits[offset:offset + 100] for offset in range(0, len(audits), 100)]
     chunk_views = [f"CREATE VIEW candidate_integrity_chunk_{number} AS " + " UNION ALL ".join(chunk) + ';' for number, chunk in enumerate(chunks)]
     integrity = '\n'.join([*chunk_views, "CREATE VIEW candidate_integrity_problems AS " + " UNION ALL ".join(f'SELECT * FROM candidate_integrity_chunk_{number}' for number in range(len(chunks))) + ';'])
     publication = "CREATE TRIGGER candidate_publication_closure BEFORE INSERT ON published_catalog_editions WHEN EXISTS(SELECT 1 FROM candidate_integrity_problems WHERE edition_id=NEW.edition_id) BEGIN SELECT RAISE(ABORT,'candidate publication requires complete closure'); END;"
-    return "\n\n".join([source, ownership, hash_positions,format_roots, integrity, *native_guards, *fk_guards, *collisions, *immutable, *immutable_dictionary_sql(), *root_guards, *hash_guards,*format_guards,*position_guards, publication])
+    return "\n\n".join([source, ownership, hash_positions,format_roots,relationship_views, integrity, *native_guards, *fk_guards, *collisions, *immutable, *immutable_dictionary_sql(), *root_guards, *hash_guards,*format_guards,*position_guards,*relationship_guards, publication])
 
 
 def main():

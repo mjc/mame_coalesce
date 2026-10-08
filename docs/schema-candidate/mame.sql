@@ -29,7 +29,8 @@ CREATE TABLE mame_documents (
     CHECK ((location_view IS NULL) = (column_convention IS NULL)),
     CHECK (start_line IS NULL OR (start_line > 0 AND start_column > 0 AND end_line > 0 AND end_column > 0)),
     CHECK (start_line IS NULL OR end_line > start_line OR (end_line = start_line AND end_column > start_column)),
-    CHECK (extent_view IS NOT NULL OR location_view IS NOT NULL)
+    CHECK (extent_view IS NOT NULL OR location_view IS NOT NULL),
+    CHECK (debug_specified=1 OR debug=0)
 ) STRICT, WITHOUT ROWID;
 
 CREATE TABLE mame_machines (

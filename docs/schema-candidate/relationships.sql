@@ -413,87 +413,13 @@ WHERE evidence.file_uuid IS NULL
 ;
 
 -- Relationship-owned, query-only audit surface. Native declarations retain
--- their own closed typed tables; this UNION is an audit projection, not a
--- persisted polymorphic owner. Native position closure is intentionally left
--- to the assembler until every worker position table carries its
--- canonical_relationship_id column.
+-- their own closed typed tables. The assembler supplies the closed DOC-23
+-- declaration projection and bidirectional canonical-position checks; neither
+-- query surface is a persisted polymorphic source-owner table.
 CREATE VIEW candidate_relationship_integrity_problems AS
 WITH typed_declarations(relationship_id, reported_kind, owner_edition_id) AS (
-    SELECT link.relationship_id,
-           CASE link.link_kind WHEN 'cloneof' THEN 'mame_cloneof'
-                WHEN 'romof' THEN 'mame_romof' ELSE 'mame_sampleof' END,
-           element.edition_id
-    FROM mame_machine_links AS link
-    JOIN catalog_source_elements AS element ON element.source_element_id = link.machine_id
-    UNION ALL
-    SELECT link.relationship_id, 'mame_device_ref', element.edition_id
-    FROM mame_device_references AS link
-    JOIN catalog_source_elements AS element USING (source_element_id)
-    UNION ALL
-    SELECT link.relationship_id, 'mame_rom_merge', element.edition_id
-    FROM mame_rom_merges AS link
-    JOIN catalog_source_elements AS element ON element.source_element_id = link.media_entry_id
-    UNION ALL
-    SELECT link.relationship_id, 'mame_disk_merge', element.edition_id
-    FROM mame_disk_merges AS link
-    JOIN catalog_source_elements AS element ON element.source_element_id = link.media_entry_id
-    UNION ALL
-    SELECT link.relationship_id,
-           CASE link.link_kind WHEN 'cloneof' THEN 'logiqx_cloneof'
-                WHEN 'romof' THEN 'logiqx_romof' ELSE 'logiqx_sampleof' END,
-           element.edition_id
-    FROM logiqx_set_links AS link
-    JOIN catalog_source_elements AS element ON element.source_element_id = link.set_id
-    UNION ALL
-    SELECT link.relationship_id, 'logiqx_device_ref', element.edition_id
-    FROM logiqx_device_references AS link
-    JOIN catalog_source_elements AS element USING (source_element_id)
-    UNION ALL
-    SELECT link.relationship_id, 'logiqx_rom_merge', element.edition_id
-    FROM logiqx_rom_merges AS link
-    JOIN catalog_source_elements AS element ON element.source_element_id = link.media_entry_id
-    UNION ALL
-    SELECT link.relationship_id, 'logiqx_disk_merge', element.edition_id
-    FROM logiqx_disk_merges AS link
-    JOIN catalog_source_elements AS element ON element.source_element_id = link.media_entry_id
-    UNION ALL
-    SELECT link.relationship_id,
-           CASE link.link_kind WHEN 'cloneof' THEN 'clrmamepro_cloneof'
-                ELSE 'clrmamepro_sampleof' END,
-           element.edition_id
-    FROM clrmamepro_set_links AS link
-    JOIN catalog_source_elements AS element ON element.source_element_id = link.set_id
-    UNION ALL
-    SELECT link.relationship_id, 'clrmamepro_rom_merge', element.edition_id
-    FROM clrmamepro_rom_merges AS link
-    JOIN catalog_source_elements AS element ON element.source_element_id = link.media_entry_id
-    UNION ALL
-    SELECT link.relationship_id, 'software_cloneof', element.edition_id
-    FROM software_clone_links AS link
-    JOIN catalog_source_elements AS element ON element.source_element_id = link.set_id
-    UNION ALL
-    SELECT link.relationship_id,
-           CASE link.link_kind WHEN 'cloneof' THEN 'no_intro_dat_cloneof'
-                ELSE 'no_intro_dat_cloneofid' END,
-           element.edition_id
-    FROM no_intro_dat_set_links AS link
-    JOIN catalog_source_elements AS element ON element.source_element_id = link.set_id
-    UNION ALL
-    SELECT link.relationship_id, 'no_intro_database_archive_clone', element.edition_id
-    FROM no_intro_archive_clone_links AS link
-    JOIN catalog_source_elements AS element ON element.source_element_id = link.archive_id
-    UNION ALL
-    SELECT link.relationship_id, 'no_intro_database_archive_mergeof', element.edition_id
-    FROM no_intro_archive_merge_links AS link
-    JOIN catalog_source_elements AS element ON element.source_element_id = link.archive_id
-    UNION ALL
-    SELECT link.relationship_id, 'no_intro_pc_clone', element.edition_id
-    FROM no_intro_pc_clone_links AS link
-    JOIN catalog_source_elements AS element ON element.source_element_id = link.set_id
-    UNION ALL
-    SELECT link.relationship_id, 'no_intro_pc_mergeof', element.edition_id
-    FROM no_intro_pc_merge_links AS link
-    JOIN catalog_source_elements AS element ON element.source_element_id = link.set_id
+    SELECT relationship_id,reported_kind,edition_id
+    FROM candidate_relationship_declarations
 ), declaration_counts AS (
     SELECT relationship_id, count(*) AS declaration_count,
            min(reported_kind) AS sole_kind,

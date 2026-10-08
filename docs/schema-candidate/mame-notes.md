@@ -114,23 +114,41 @@ their literal names (including `sourcefile`, `flipx`, `pixclock`, `htotal`,
 `hbend`, `hbstart`, `vtotal`, `vbend`, `vbstart`, `briefname`, `devname`,
 `keydelta`, `nosoundhardware`, and `fixed_image`).
 
-The pinned DTD inventory has 125 ATTLIST declarations, but this candidate does
-not claim all 125 are independently proven. The 30 native owner ledgers
-currently encode 116 distinct field codes. The typed `mame_switches`,
-`mame_switch_locations`, and `mame_switch_values` each serve two DTD elements
-(`dipswitch`/`configuration`, `diplocation`/`conflocation`, and
-`dipvalue`/`confsetting`); those nine repeated declaration slots are
-disambiguated by the owning element kind, not duplicated field values. The
-three compatibility ledgers add ten closed codes: machine `isconsumable`; ROM
-`md5`, `soundonly`, `dispose`, `loadflag`, `value`, `inverted`, `ovha`,
-`nothread`; disk `writeable`. This is a declaration-count seal of 125 + 10,
-not 135 distinct attribute spellings. The three compatibility position
-families encode ten additional observed-compatibility codes; these are not DTD
-attributes. The nine repeated declaration slots are accounted for in the DTD
-inventory, but independent per-kind source-enum/field witnesses are still
-missing. Thus `116 + 10` is the implemented candidate code count, not proof
-coverage of `125 + 10`; do not report the nine slots as proven by shared
-tables merely because their values have the same names.
+`mame-field-coverage.tsv` records all 125 pinned DTD attribute declarations
+plus ten accepted compatibility attributes, with exact current SQL column to
+candidate canonical-owner mappings. It contains 155 contextual rows: 151
+attribute rows (the 135 declarations plus 16 additional placements of the
+four condition attributes across five actual-parent contexts), and four
+unpositioned PCDATA scalars. Description, year, manufacturer and RAM PCDATA
+are explicitly text, not attributes. Every row cites DOC-10 seq 38124 and its
+parser/macro evidence; native attributes additionally cite the pinned DTD.
+Hash rows identify the canonical shared state owner and explain reconstruction
+through `hash_values`/`declared_catalog_hash_text`, without copying digest text.
+
+The source macro dictionary has 126 slots: 116 native and ten compatibility.
+Its three shared switch/location/value enums expand to both source element
+kinds, adding nine element-qualified declarations. The candidate DDL has 134
+physical table/code pairs (124 native plus ten compatibility), because the
+four shared condition codes occur in three typed position families. These
+different inventories are checked independently, not equated. All six
+switch/location/value element kinds and all five condition-parent contexts
+have separately constructed owners, field assertions and actual-parent
+controls. The 22 distinct stored default-presence fields are tested in all
+24 wire contexts, including separate DIP/configuration defaults. Adjuster
+default and RAM default remain CDATA rather than default-presence booleans;
+RAM PCDATA remains a separate scalar. Native `writable` and compatibility
+`writeable` have separate positions and a positive disagreement witness.
+
+The evidence review used sem MCP on `read_with`, `parse_machine`,
+`parse_machine_children`, `parse_machine_switch`, `parse_machine_bios_set`,
+`parse_device_reference`, `parse_asset`, `parse_mame_asset_attributes`,
+`known_asset_attribute`, `known_child_attribute`, `parse_condition`,
+`specification::parse_element` and attribute `select`. Macro invocations and
+SQL declarations were read as data because sem does not index their fields.
+DOC-10's complete selected sections were the exact hardware/media crosswalk,
+field-state completion, compatibility ownership, document/machine/source,
+ROM/disk/sample, specification families, switches/values/conditions, closed
+enums, position-only keys, truth of presence, and lexical-order policy.
 
 ## Root diagnostic extent contract
 
@@ -171,14 +189,67 @@ violation explicitly, and rolls it back before the final clean FK assertion.
 This is a bounded construction witness, not exhaustive field dictionary,
 cross-table ownership, or real-source extent proof.
 
+The inventory counts different identities: 125 DTD `(element, attribute)`
+declarations plus ten compatibility declarations give 135. The source Rust
+macros have 126 enum/code slots because switch, location and value enums each
+serve two XML kinds (nine additional DTD declarations). The candidate has 134
+table/code pairs: the four condition codes occur in three typed position
+tables, adding eight pairs to the macro count. Conditions also occur under five
+actual wire parents (DIP switch, configuration, DIP value, configuration setting
+and adjuster), so four DTD fields expand to twenty contextual declarations:
+135 + 16 = 151 attributes, plus four PCDATA scalars = 155 ledger rows. The 126
+count is not a count of physical candidate position pairs.
+
+`mame_field_witnesses.sql` adds independent constructed execution for every
+contextual ledger row and every closed position code. Required NULL and enum
+empty-value controls, optional absent/present-empty controls, all 24 explicit
+default/absent-default contexts, sparse compatibility/relationship states,
+and absent/empty/invalid/value hash states execute against typed owners.
+Savepoints restore the baseline after each state probe; rolled-back assertion
+rows are observed through SQLite tracing by the Python checker. A populated
+display parent/order query uses `mame_displays_parent_order`.
+
+The first integration run failed at the `unspecified-nondefault:mame:debug`
+negative assertion near original line 948: `UPDATE OR IGNORE` accepted
+`debug=1,debug_specified=0`. This exposed a missing local default implication,
+not a weakened test. `mame_documents` now has
+`CHECK(debug_specified=1 OR debug=0)`, and the unchanged negative passes.
+No public columns or relationship interfaces were renamed.
+
+The fixture's TEMP `mame_fixture_presence_problems` is explicitly a test-only
+detecting layer, not an installed candidate publication view. It checks
+retained typed value/specified-bit/sparse-declaration presence against exact
+owner/code positions. Constructed attacks show deletion of a position,
+absent value with a present position, an invented default position, and an
+equal-position-count move between two owners. Joint deletion of an optional
+value and its position deliberately produces no problem: detecting that loss
+requires an independent parser/source count seal or equivalent source evidence.
+This ledger is a dictionary inventory, not such a runtime seal. Required
+child existence, full parser fidelity and publication closure are not proven
+by the TEMP audit.
+
+`mame_field_check.py` independently reads the pinned DTD and current Rust macro
+dictionary, verifies exact contextual identities (including equal-count
+mutation controls), checks current and candidate table/column references,
+compares all actual closed DDL codes with the ledger and populated fixture,
+and verifies executed field/default/hash probes. Its six tests inspect only
+isolated SQLite declarations and fixture data; they do not run a production
+parser, import or build.
+
+Focused commands, all passing in the repository devenv:
+
+```sh
+devenv shell -- python3 docs/schema-candidate/mame_field_check.py
+devenv shell -- bash -c 'sqlite3 -bail :memory: < docs/schema-candidate/mame_field_witnesses.sql'
+devenv shell -- bash -c 'sqlite3 -bail :memory: < docs/schema-candidate/mame_witnesses.sql'
+```
+
 ## Remaining design gaps
 
-- The bounded SQL witness checks strict-vs-v3 instance diagnostics and root
-  span completeness, but does not prove all declaration-state relationships,
-  field presence, or cross-table mixed order.
-- The nine shared switch-family DTD declaration slots need an independent
-  field inventory witness under both element kinds; they are not nine extra
-  value columns or position rows on one source owner.
+- Constructed field coverage is complete for the stated 135 attribute
+  declarations and four text scalars, not real-source/parser count-seal proof.
+  Optional value-plus-position joint erasure remains undetectable without
+  independent source evidence. The field TEMP audit is not a publication guard.
 - DOC-10 specifies strict-DTD behavior but does not name the shared
   `catalog_reading_rules.dialect` token. The integrity view uses the explicit
   candidate marker `strict-dtd`; its canonical reading-rule identity still
@@ -188,4 +259,12 @@ cross-table ownership, or real-source extent proof.
   remain in the main assembler's generated checks.
 - Root complete extents require new parser capture; current opening-only
   coordinates are insufficient. Ordinary-child extents remain unavailable.
-- No populated query-plan witness or complete approved design exists yet.
+- ROM size/offset checked interpretation is documented, not implemented by
+  these literal-retention tables. Complete UUID/hash linking, diagnostic/source
+  span, cross-table mixed order and publication proof remain unapproved.
+- Both SQL fixtures provide populated index-backed query-plan witnesses;
+  neither is a production performance measurement or complete approved design.
+
+MAME-owned files are frozen for NativeSol/Banach review after these focused
+checks. The design approval gate remains open; no production build/gate,
+commit, push or external-document edits were performed.

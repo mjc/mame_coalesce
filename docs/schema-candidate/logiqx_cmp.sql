@@ -62,6 +62,16 @@ BEGIN
     SELECT RAISE(ABORT, 'Logiqx root sha1 must reference a 20-byte SHA-1 value');
 END;
 
+CREATE TRIGGER logiqx_root_sha1_algorithm_update
+BEFORE UPDATE OF hash_id ON logiqx_root_sha1_elements
+WHEN NOT EXISTS (
+    SELECT 1 FROM hash_values
+    WHERE hash_id = NEW.hash_id AND algorithm = 'sha1' AND length(bytes) = 20
+)
+BEGIN
+    SELECT RAISE(ABORT, 'Logiqx root sha1 must reference a 20-byte SHA-1 value');
+END;
+
 CREATE TABLE logiqx_headers (
     header_id INTEGER PRIMARY KEY NOT NULL REFERENCES catalog_source_elements(source_element_id),
     set_group_id INTEGER NOT NULL REFERENCES catalog_set_groups(set_group_id),
@@ -488,7 +498,7 @@ END;
 
 CREATE TABLE clrmamepro_sets (
     set_id INTEGER PRIMARY KEY NOT NULL REFERENCES catalog_sets(set_id),
-    source_block TEXT NOT NULL CHECK (lower(source_block) = 'game'),
+    source_block TEXT NOT NULL CHECK (lower(source_block) IN ('game', 'set')),
     description TEXT,
     year TEXT,
     manufacturer TEXT,
@@ -580,7 +590,12 @@ CREATE TABLE clrmamepro_header_field_positions (
     field_kind INTEGER NOT NULL CHECK (field_kind BETWEEN 0 AND 14),
     field_occurrence INTEGER NOT NULL DEFAULT 0 CHECK (field_occurrence = 0),
     source_order INTEGER NOT NULL CHECK (source_order >= 0),
-    keyword TEXT NOT NULL,
+    keyword TEXT NOT NULL CHECK (lower(keyword) = CASE field_kind
+        WHEN 0 THEN 'name' WHEN 1 THEN 'description' WHEN 2 THEN 'version'
+        WHEN 3 THEN 'date' WHEN 4 THEN 'author' WHEN 5 THEN 'email'
+        WHEN 6 THEN 'homepage' WHEN 7 THEN 'url' WHEN 8 THEN 'comment'
+        WHEN 9 THEN 'category' WHEN 10 THEN 'header' WHEN 11 THEN 'forcemerging'
+        WHEN 12 THEN 'forcezipping' WHEN 13 THEN 'forcepacking' WHEN 14 THEN 'forcenodump' END),
     keyword_line INTEGER NOT NULL CHECK (keyword_line > 0),
     keyword_column INTEGER NOT NULL CHECK (keyword_column > 0),
     value_line INTEGER NOT NULL CHECK (value_line > 0),
@@ -596,7 +611,11 @@ CREATE TABLE clrmamepro_set_field_positions (
     field_kind INTEGER NOT NULL CHECK (field_kind BETWEEN 0 AND 11),
     field_occurrence INTEGER NOT NULL DEFAULT 0 CHECK (field_occurrence = 0),
     source_order INTEGER NOT NULL CHECK (source_order >= 0),
-    keyword TEXT NOT NULL,
+    keyword TEXT NOT NULL CHECK (lower(keyword) = CASE field_kind
+        WHEN 0 THEN 'name' WHEN 1 THEN 'cloneof' WHEN 2 THEN 'description'
+        WHEN 3 THEN 'year' WHEN 4 THEN 'manufacturer' WHEN 5 THEN 'rebuildto'
+        WHEN 6 THEN 'sampleof' WHEN 7 THEN 'region' WHEN 8 THEN 'releaseyear'
+        WHEN 9 THEN 'releasemonth' WHEN 10 THEN 'releaseday' WHEN 11 THEN 'serial' END),
     keyword_line INTEGER NOT NULL CHECK (keyword_line > 0),
     keyword_column INTEGER NOT NULL CHECK (keyword_column > 0),
     value_line INTEGER NOT NULL CHECK (value_line > 0),
@@ -615,7 +634,10 @@ CREATE TABLE clrmamepro_rom_field_positions (
     field_kind INTEGER NOT NULL CHECK (field_kind BETWEEN 0 AND 11),
     field_occurrence INTEGER NOT NULL DEFAULT 0 CHECK (field_occurrence = 0),
     source_order INTEGER NOT NULL CHECK (source_order >= 0),
-    keyword TEXT NOT NULL,
+    keyword TEXT NOT NULL CHECK (lower(keyword) = CASE field_kind
+        WHEN 0 THEN 'name' WHEN 1 THEN 'size' WHEN 2 THEN 'crc' WHEN 3 THEN 'crc32'
+        WHEN 4 THEN 'md5' WHEN 5 THEN 'sha1' WHEN 6 THEN 'merge' WHEN 7 THEN 'date'
+        WHEN 8 THEN 'serial' WHEN 9 THEN 'status' WHEN 10 THEN 'nodump' WHEN 11 THEN 'baddump' END),
     keyword_line INTEGER NOT NULL CHECK (keyword_line > 0),
     keyword_column INTEGER NOT NULL CHECK (keyword_column > 0),
     value_line INTEGER,
@@ -1000,5 +1022,10 @@ problems(problem, edition_id, owner_id, detail) AS (
       JOIN catalog_source_elements s ON s.source_element_id=p.media_entry_id
       WHERE h.source_hash_field IS NOT p.expected_source_hash_field OR h.media_entry_id <> p.media_entry_id
          OR h.field_occurrence <> p.field_occurrence
+    UNION ALL SELECT 'cmp_invalid_hash_state', s.edition_id, h.reported_hash_id,
+           'CMP compatible-v1 accepts supplied hashes only in valid value state'
+      FROM catalog_entry_hashes h JOIN clrmamepro_roms r USING (media_entry_id)
+      JOIN catalog_source_elements s ON s.source_element_id=r.media_entry_id
+      WHERE h.source_hash_field IN ('crc','crc32','md5','sha1') AND h.presence <> 'value'
 )
 SELECT problem, edition_id, owner_id, detail FROM problems;

@@ -177,18 +177,14 @@ validated. No extent is synthesized from the opening point.
   software witness loads that fragment instead of stubbing the relationship
   registry. The clone target literal belongs only to `software_clone_links`;
   title attribute field 1 points to the matching relationship identity.
-- DOC-12 assigns title opening location to `catalog_sets`, but current shared
-  candidate `catalog_sets` has no location columns. Keep that title location
-  on the common set row; do not duplicate it on `software_titles`.
-- Add all thirteen software `element_kind` strings from `software-owners.tsv`
-  to the assembler's `/* SOURCE_ELEMENT_KINDS */` closed ledger. List root,
-  wrapper root and document are physical owners, not registry rows.
-- `assemble.py` must union `candidate_software_integrity_problems` into the
-  assembled publication audit. Its generic owner resolver also needs to walk
-  media ancestry through `software_data_areas`/`software_disk_areas` to the
-  registered `software_areas` owner. For mixed ordering, merge the
-  `list_children` manifest domain with common `catalog_sets` placements; the
-  title manifest row deliberately has no duplicate order.
+- At signed main `e591363`, common `catalog_sets` owns title opening
+  `source_line/source_column`. Native `software_titles` has no duplicate.
+- The assembler consumes the thirteen software manifest kinds and includes
+  `candidate_software_integrity_problems` by its explicit
+  `problem,owner_id,edition_id` interface. List root, wrapper root and document
+  remain physical owners without registry rows. The new constructed fixture
+  exercises actual subtype ancestry and mixed ordering in that assembled DDL;
+  the title manifest row deliberately has no duplicate order.
 - Full attribute-presence↔position one-to-one checks for all 37 codes and
   explicit-default↔attribute-position checks are still unproven. Table-local
   checks enforce each stored effective value/presence pair, and the software
@@ -209,3 +205,108 @@ malformed numeric retention, closed enum rejection, clone and hash-position
 agreement, and a populated ordered query plan. It uses minimal shared identity
 stubs and loads the real `relationships.sql`; it is not a replacement for
 main's cross-family assembled candidate checks.
+
+## Field coverage and independent constructed witnesses — e591363
+
+`software-field-coverage.tsv` has exactly 42 source-field rows, independently
+transcribed from DOC-12 seq 38114: the 36 pinned DTD attributes plus compatible
+wrapper build (37 attributes in 13 position families), and five element-text
+scalars (list notes and title description/year/publisher/notes). This inventory
+comes from the dictionary, not the candidate's table or code count. There are
+seven default-presence pairs: supported, dipvalue default, dataarea width and
+endianness, ROM status, disk status and disk writeable. The required title
+description/year/publisher children must exist once but may have empty text;
+notes children remain optional and can also be empty.
+
+The complete sections read for this cut were the pinned grammar boundary;
+Lists, items and parts (including the exact root/title/part crosswalk); Areas
+and source entries (including reconciliation and the exact area/media
+crosswalk); Complete software field-state rules; Native attribute provenance
+contract (all its subsections); Checked unsigned numeric interpretation; ROM
+file-chain relations and derived states; and All DTD loadflag values. All reads
+returned seq 38114. Evidence labels in the TSV abbreviate these named sections.
+The current-to-candidate column dispositions are in each row's `current=`
+evidence, with its actual parser entity. sem traced current
+`mame_softwarelist::{software_document_header,parse_list,parse_item,parse_part,
+parse_dipswitch,parse_area,parse_rom,parse_disk,named_value}`, native writers,
+`catalog_software::queries`, `catalog_files::software::rom_select`, and
+`snapshot_history::software::{load_document,load_requirements}`. The production
+`SCHEMA` composition in `src/storage/db/ddl.rs` still includes its existing
+schema/guard/position fragments; this cut changes none of them.
+
+Ledger conventions:
+
+- `owner_table` is the actual candidate typed owner of the source construct,
+  even when the sole value belongs to a common set or clone relation.
+- `value_owner` is one existing table/view and `value_column` is an exact column
+  name or comma-separated actual columns. Defaulted attributes list both the
+  effective-value and specified columns. For digest scalars the existing
+  `declared_catalog_hash_text.declared_text` view supplies the lossless source
+  spelling from canonical `catalog_entry_hashes` state/override/hash link and
+  `hash_values.bytes`; it adds no persisted copy. Their positions identify
+  the same canonical declaration, never a copied media digest.
+- Attribute codes are the actual integer `field_kind` codes. Text scalars use
+  `position_table='-'`: list notes uses `field_code='text'`, and title scalars
+  use description/year/publisher/notes tags. Their actual child discriminators
+  0/1/2/3 are stated in `default_rule`; opening location/order is on the child
+  itself, not another attribute companion.
+- Presence/default text states the required policy. `position-iff-present`
+  does not claim that every such equivalence already has a mutation/publication
+  guard. NULL, empty and invalid raw numeric text remain distinct from checked
+  numeric interpretation; no inferred execution qualification is in the ledger.
+
+`software_field_witnesses.sql` is independent of the older minimal family
+fixture. Its stated prerequisite is a fresh in-memory database with the full
+assembled candidate DDL. It constructs valid typed owners and real parents,
+inserts every accepted attribute code, and exercises required-empty text,
+optional omission versus empty, all seven omitted versus explicit-default
+pairs, an empty clone literal with stable relationship identity, malformed
+numeric retention, and all four declaration states for each canonical hash
+slot (absent/empty/invalid/value). It asserts required-child absence is audited
+and ends with clean assembled-integrity and FK checks. Hash scopes intentionally
+grant no whole-file/UUID eligibility; disk valid SHA-1 remains CHD-header scope.
+
+`software_field_check.py` has a separately written expected 42-field mapping.
+It compares exact wire names, typed/value/position owners, columns and codes;
+removing any row, substituting its wire name without changing row count, or
+substituting its value mapping must fail (126 in-memory mutations). It also
+checks actual DDL tables/views/columns, typed position FKs, all 13 closed code
+domains and constructed rows for every code. Valid-row mutations isolate
+required NULL rejection, illegal/fractional position codes, closed enums, and
+each of the seven omitted-nondefault contradictions. All fourteen accepted
+loadflag tokens are tested only for scalar storage. Schema SQL is emitted once;
+one class database/fixture is prepared, and each test uses a rollback savepoint.
+No executescript runs inside those per-test savepoints.
+
+Focused commands and observed results:
+
+```sh
+python3 docs/schema-candidate/software_field_check.py
+# 7 tests passed in 4.139 seconds, including one-time assembly/preparation.
+{ python3 docs/schema-candidate/assemble.py --emit && cat docs/schema-candidate/software_field_witnesses.sql; } | sqlite3 -bail :memory:
+# software field witnesses passed
+sqlite3 -bail :memory: < docs/schema-candidate/software_witnesses.sql
+# software witnesses passed; populated ROM area lookup uses its covering index.
+```
+
+Proof boundaries remain concrete. Exact field inventory and constructed state
+execution do not prove complete parser-fed field/element counts, source byte
+coordinates, EOF or publication closure for arbitrary SQL. In particular, an
+optional value and its position erased together look like legitimate omission;
+these checks cannot detect that without an independent parser-fed count seal.
+General non-hash presence/position equivalences still need enforcement. SQL
+INTEGER affinity on width cannot itself prove exact wire-token recognition
+(for example, a bound text `08` can become integer 8); yes/no wire booleans also
+need the pinned parser boundary. The witness's constructed coordinates are not
+new parser capture evidence.
+
+Pending checked-chain derivation is separate: exact unsigned numeric
+projections for dataarea size and ROM size/offset are still absent from this
+candidate, and first-run length, maximum-run progress, actual cursor behavior,
+partial-group warning/processing, complete recipe preflight, whole-file hash
+qualification and UUID eligibility require their pinned interpretation proof.
+Testing all loadflag strings does not test those derived facts. Existing
+source-declaration/step checks do not turn a retained malformed or unnamed
+declaration into an executable recipe. No new numeric or layout semantics were
+invented, and no production build/gate/import/profile was run. Full design
+approval remains open.

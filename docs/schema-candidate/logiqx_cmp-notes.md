@@ -15,7 +15,7 @@ physical-root diagnostics and the separate CMP identity/order exception.
 ## Table and field inventory
 
 The fragment defines 31 native relations and 14 position relations plus the
-CMP position-token view and local integrity view. Logiqx has 21 native owners and 11 attribute-position
+CMP position-token view and local integrity view. Logiqx has 21 native relations and 11 attribute-position
 families. Its closed position codes cover 46 accepted attributes: document
 build/debug; ClrMamePro and RomCenter options; game, release, BIOS, ROM, disk,
 sample, archive and compatible device-reference attributes. The remaining
@@ -185,6 +185,135 @@ crosswalk, not a claim that those consumers have been ported.
 
 ## Witnesses and branch test explanation
 
+### Field-inventory freeze at main e591363
+
+The independent inventory is transcribed from MAMEC-DOC-11 **seq 38144**,
+not inferred from the candidate's number of tables or populated TSV rows:
+
+- Logiqx: 46 attributes in 11 local code domains; ten header text kinds;
+  three game text kinds; repeated game comments; two compatible root text
+  children. This is 62 field/text entries, including 15 defaulted enum fields
+  with explicit presence (nine on option owners).
+- CMP: 15 header, 12 set and 12 ROM codes (39 total); repeated scalar samples
+  and document comments are separate, for 41 entries. Two additional lexical
+  facts record retained `source_block` spelling on header/set forms; they are
+  not extra scalar codes. Both `game` and `set` forms are accepted.
+
+The resulting [field ledger](/home/mjc/projects/mame_coalesce/docs/schema-candidate/logiqx_cmp-field-coverage.tsv)
+has 105 entries. Each `value_owner` is one actual SQL relation; `value_column`
+contains only exact columns, optionally comma-separated. Joins to hash bytes
+and relationship declarations are described in evidence/default rules, not
+encoded as invented columns. XML attribute wire names carry `@`. Text children
+have textual tag codes and `position_table=-`; their real typed child
+`field_kind` numbers are given in evidence. They own their element placement
+themselves and do not become attribute positions. CMP sample/comment/form
+entries likewise have no invented scalar code. Numeric codes cover the 85
+attribute/CMP positions; the 13 XML text kinds are separate closed domains.
+There are 21 distinct field-owning table names and 32 distinct canonical
+value-owner relations in this ledger; these are not registry-owner counts.
+The unchanged manifest still has 21 registry-bearing native owners, plus the
+two non-registry document roots described above. No new runtime owner,
+value, order, ancestry, JSON, EAV or token-storage relation was introduced.
+
+Required pinned DOC-11 sections were read completely: normative text-child
+ownership; accepted root fields; device-reference correction; reconciled
+Logiqx dictionary; complete Logiqx state/code ledger; field-owner
+reconciliation; the ClrMamePro text section including exact CMP field/sample/
+comment keys; exact Logiqx child/media crosswalk; current CMP comment-capture
+boundary; and remaining dictionary gaps. DOC-21 seq 38132 remains the pinned
+identity/order/root-diagnostic basis, with main's supplied common interface.
+
+Sem traces checked current DTD attribute declarations, XML readers, CMP
+`parse_header`/`parse_set_facts`/`parse_asset_facts` and `reader::read_with`,
+production `SCHEMA`, current native SQL facts, `DocumentDetails`,
+`insert_logiqx_set_facts`, `insert_set_facts` and actual source-free consumers
+`hydrate_rows`, `sets_for_snapshot`, `load_parents`. The CMP writer trace
+included its position and relationship callees in one context call (3 ms).
+This confirms the current-to-candidate aliases and the accepted `game|set`
+forms; it does not port any consumer to candidate SQL.
+
+### Independent all-code field witness and checker
+
+[logiqx_cmp_field_witnesses.sql](/home/mjc/projects/mame_coalesce/docs/schema-candidate/logiqx_cmp_field_witnesses.sql)
+constructs typed owners independently of both the ledger and the older
+representative witness. It executes every one of the 85 position codes and
+all 13 text-child kinds, with actual linked hash/relationship declarations,
+root filename/SHA-1 owners, samples and document/game comments. Required text
+is explicitly empty, not NULL. It tests all 15 explicit versus omitted XML
+defaults, grouped optional text/hash/link omission, quoted empty CMP text,
+unknown/empty directives, and CMP's omitted `forcenodump` effective default.
+SQL assertions execute inside savepoints before rollback; rollback does not
+skip the assertion. It also reaches the intended CMP invalid-hash diagnostic
+while retaining Logiqx's distinct empty/invalid declaration states.
+
+[logiqx_cmp_field_check.py](/home/mjc/projects/mame_coalesce/docs/schema-candidate/logiqx_cmp_field_check.py)
+is a stdlib SQLite unittest runner for this design only. Its nine tests:
+
+- Compare an independently transcribed DOC-11 inventory to each ledger
+  wire/code entry, and validate every real owner/value column using SQLite
+  metadata.
+- Compare actual DDL closed-code CHECKs and populated codes for all 14
+  position tables and two typed text-child tables; reject out-of-range,
+  fractional, malformed and NULL codes at the precise storage/check layer.
+- Remove each populated position separately. The 83 value-backed positions
+  produce `missing_position`; CMP's two flags are the declarations themselves
+  and correctly have no independent missing-value report.
+- Reject empty/invalid enum tokens and malformed presence bits for all 15
+  defaulted XML fields. The independent SQL exercises their absence/default
+  transitions.
+- Reject NULL required text and malformed CMP sizes while preserving those
+  same malformed/empty size texts in Logiqx with a NULL numeric projection.
+- Reject CMP code/keyword disagreements and missing/nonpositive scalar
+  coordinates; test both original-case set forms and the root SHA-1 update
+  guard at its trigger layer.
+- Insert a fresh, otherwise valid, unclaimed hash declaration and substitute
+  it into a CMP position. The expected `cmp_hash_mapping` report carries the
+  native CMP edition, not a coincidental UNIQUE rejection or media ID.
+- Check three populated parent-order/annotation queries use index searches
+  without temporary sort B-trees. This is bounded plan evidence, not a corpus
+  performance measurement.
+- Mutate each of the three row-selected field assertions to match nothing
+  (selector 999) and to match multiple rows. All six mutated fixtures must
+  fail at `field_assert`'s `ok=1` CHECK. The assertions use an aggregate that
+  always emits one row and requires exactly one matching, true evaluation;
+  they cannot silently succeed by inserting zero assertion rows.
+
+Both SQL fixtures require a fresh empty SQLite database, repository-root CLI
+execution and STRICT support (SQLite >= 3.37). They deliberately supply
+minimal common-key/hash/relationship fixtures, not main's complete shared
+schema. The Python runner expands only the native DDL include and can run
+from any directory. Its extended STRICT datatype check requires SQLite error
+code 3091 even on Python builds that name that code `unknown`.
+
+Local DDL corrections exposed during this pass: accept both CMP set-form
+keywords; bind each CMP keyword to its exact field code case-insensitively
+without erasing original case; guard root SHA-1 hash-reference updates as
+well as inserts; report CMP empty/invalid hash declarations as
+`cmp_invalid_hash_state`. Public table/column names, position codes,
+`relationship_id` semantics, owner manifest and hash manifest are unchanged.
+The root update guard does not by itself prove shared hash-value immutability.
+
+Freeze checks (all exit 0, no production build/import/gate):
+
+```sh
+sqlite3 :memory: < docs/schema-candidate/logiqx_cmp_field_witnesses.sql
+python3 docs/schema-candidate/logiqx_cmp_field_check.py
+sqlite3 :memory: < docs/schema-candidate/logiqx_cmp_witnesses.sql
+```
+
+The Python suite reports nine passing tests. The new field SQL reports
+`Logiqx/CMP independent field witness: passed`; the existing family witness
+continues to pass. Changed files in this pass are the native SQL, coverage
+TSV, independent field SQL, Python field checker and these notes. No other
+family, main-owned integration file, Lific page or production file was edited.
+
+Banach's zero-row assertion finding is fixed in the three field SQL assertions
+for quoted empty header text, unknown/empty directives and omitted
+`forcenodump`. This re-freeze changes only the field SQL, Python checker and
+notes; native DDL and field/owner/hash inventories are unchanged. The ninth
+test covers missing and multiple selector matches independently for all three
+assertions; the unmutated SQL fixture still passes.
+
 `logiqx_cmp_witnesses.sql` is a bounded SQLite-only candidate witness. It seeds
 one Logiqx edition and one CMP edition, then checks representative root and
 native ownership, defaults and explicit states, a quoted/empty CMP scalar,
@@ -232,11 +361,30 @@ repository's application tests remain separate from this artifact.
 
 ## Known gaps
 
-The source contract specifies accepted data and the candidate relations cover
-it, but no complete parser-to-target proof exists here. In particular, fresh
+The field ledger enumerates the pinned accepted-field contract; it is not
+blanket all-field approval or complete parser-to-target proof. In particular, fresh
 raw root-order capture, actual document/root extents, CMP keyword-coordinate
 capture, hash/relationship/presence/count publication enforcement, source-free
 hydration, and populated target query plans remain open. DTD strict versus
 compatible root/content rules and source-text/hash-scope projections need
 edition-aware validation. No authentic TOSEC grammar or whole-file digest
 semantics are inferred. PLAN-3 design approval remains open.
+
+The all-code fixture proves constructed native storage/positions, not that
+the real parser captured all supplied optional fields. Erasing an optional
+value and its position together can remain internally consistent. Losing a
+CMP flag, sample or optional text child can likewise leave no independent
+native value from which to reconstruct presence. Independent parser-side
+count seals, coverage inventories and source comparisons must catch those
+losses; no test here claims otherwise. Full strict DTD child ordering,
+standalone-external enum normalization, XML shape/CDATA/whitespace behavior,
+root SHA-1 lexical parsing and alias-conflict/status interpretation are not
+proved by constructing SQL rows. The CMP effective ROM-status rule is stated
+in the ledger but a complete source-free status-query witness is still open.
+Full assembled FK-off/publication/edition/relationship/hash lexical-override
+agreement and complete root/child extent containment remain main's integration
+work. No authentic TOSEC, PureDOS or broader nested CMP grammar is inferred.
+No NoIntro or software proof is added here: the 135 versus unlocated 137
+evidence contradiction stays unresolved, authentic P/C remains unsupported,
+and software numeric/load qualification still needs its independently checked
+derivation chain.

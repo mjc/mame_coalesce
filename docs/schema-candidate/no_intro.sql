@@ -395,7 +395,7 @@ CREATE INDEX no_intro_pc_header_versions_parent_order ON no_intro_pc_header_vers
 
 CREATE TABLE no_intro_pc_games (
     set_id INTEGER PRIMARY KEY REFERENCES catalog_sets(set_id),
-    archive_id TEXT CHECK (archive_id IS NULL OR (length(archive_id)>0 AND archive_id NOT GLOB '*[^0-9]*')),
+    archive_id TEXT CHECK (archive_id IS NULL OR (length(archive_id)>0 AND instr(archive_id,char(0))=0 AND archive_id NOT GLOB '*[^0-9]*')),
     name_alt TEXT,
     region TEXT,
     version TEXT,
@@ -424,12 +424,12 @@ CREATE TABLE no_intro_pc_clone_markers (
 ) STRICT;
 CREATE TABLE no_intro_pc_clone_links (
     set_id INTEGER PRIMARY KEY REFERENCES no_intro_pc_games(set_id),
-    target_archive_id TEXT NOT NULL CHECK (length(target_archive_id) > 0 AND target_archive_id NOT GLOB '*[^0-9]*'),
+    target_archive_id TEXT NOT NULL CHECK (length(target_archive_id) > 0 AND instr(target_archive_id,char(0))=0 AND target_archive_id NOT GLOB '*[^0-9]*'),
     relationship_id INTEGER NOT NULL UNIQUE REFERENCES reported_catalog_relationships(relationship_id)
 ) STRICT;
 CREATE TABLE no_intro_pc_merge_links (
     set_id INTEGER PRIMARY KEY REFERENCES no_intro_pc_games(set_id),
-    target_archive_id TEXT NOT NULL CHECK (length(target_archive_id) > 0 AND target_archive_id NOT GLOB '*[^0-9]*'),
+    target_archive_id TEXT NOT NULL CHECK (length(target_archive_id) > 0 AND instr(target_archive_id,char(0))=0 AND target_archive_id NOT GLOB '*[^0-9]*'),
     relationship_id INTEGER NOT NULL UNIQUE REFERENCES reported_catalog_relationships(relationship_id)
 ) STRICT;
 
@@ -437,13 +437,17 @@ CREATE TABLE no_intro_pc_file_claims (
     media_entry_id INTEGER PRIMARY KEY REFERENCES catalog_media_entries(media_entry_id),
     set_id INTEGER NOT NULL REFERENCES no_intro_pc_games(set_id),
     name TEXT NOT NULL CHECK (length(name) > 0),
-    size_text TEXT NOT NULL CHECK (length(size_text) > 0 AND size_text NOT GLOB '*[^0-9]*' AND
-        (length(ltrim(size_text,'0')) < 20 OR
-         (length(ltrim(size_text,'0')) = 20 AND ltrim(size_text,'0') <= '18446744073709551615'))),
+    -- Rust parse::<u64>: optional single '+', nonempty ASCII digits, no
+    -- whitespace/minus, and the complete unsigned range. Preserve spelling.
+    size_text TEXT CHECK (size_text IS NULL OR (instr(size_text,char(0))=0 AND
+        length(CASE WHEN substr(size_text,1,1)='+' THEN substr(size_text,2) ELSE size_text END)>0 AND
+        (CASE WHEN substr(size_text,1,1)='+' THEN substr(size_text,2) ELSE size_text END) NOT GLOB '*[^0-9]*' AND
+        (length(ltrim(size_text,'+0')) < 20 OR
+         (length(ltrim(size_text,'+0')) = 20 AND ltrim(size_text,'+0') <= '18446744073709551615')))),
     size_i64 INTEGER GENERATED ALWAYS AS (
-        CASE WHEN length(size_text)>0 AND size_text NOT GLOB '*[^0-9]*'
-          AND (length(ltrim(size_text,'0'))<19 OR
-            (length(ltrim(size_text,'0'))=19 AND ltrim(size_text,'0')<='9223372036854775807'))
+        CASE WHEN size_text IS NOT NULL
+          AND (length(ltrim(size_text,'+0'))<19 OR
+            (length(ltrim(size_text,'+0'))=19 AND ltrim(size_text,'+0')<='9223372036854775807'))
           THEN CAST(size_text AS INTEGER) END
     ) VIRTUAL,
     source_order INTEGER NOT NULL CHECK (source_order >= 0),
@@ -610,7 +614,7 @@ CREATE TABLE no_intro_archive_clone_markers (
 ) STRICT;
 CREATE TABLE no_intro_archive_clone_links (
     archive_id INTEGER PRIMARY KEY REFERENCES no_intro_archive_descriptions(archive_id),
-    declared_target_number TEXT NOT NULL,
+    declared_target_number TEXT NOT NULL CHECK (declared_target_number <> 'P'),
     relationship_id INTEGER NOT NULL UNIQUE REFERENCES reported_catalog_relationships(relationship_id)
 ) STRICT;
 CREATE TABLE no_intro_archive_merge_links (
@@ -618,6 +622,18 @@ CREATE TABLE no_intro_archive_merge_links (
     declared_mergeof TEXT NOT NULL,
     relationship_id INTEGER NOT NULL UNIQUE REFERENCES reported_catalog_relationships(relationship_id)
 ) STRICT;
+
+-- Read projections over the two disjoint typed clone variants. No second
+-- literal is stored; the field ledger names these concrete value views.
+CREATE VIEW no_intro_archive_declared_clone_text AS
+SELECT archive_id,marker AS declared_text FROM no_intro_archive_clone_markers
+UNION ALL
+SELECT archive_id,declared_target_number FROM no_intro_archive_clone_links;
+
+CREATE VIEW no_intro_pc_declared_clone_text AS
+SELECT set_id,marker AS declared_text FROM no_intro_pc_clone_markers
+UNION ALL
+SELECT set_id,target_archive_id FROM no_intro_pc_clone_links;
 
 CREATE TABLE no_intro_dump_sources (
     dump_source_id INTEGER PRIMARY KEY REFERENCES catalog_source_elements(source_element_id),

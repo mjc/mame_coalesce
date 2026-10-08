@@ -38,9 +38,12 @@ the shared registry does not copy the literal. For each XML source attribute,
 the target canonical key is `(source_element_id, field_kind, field_occurrence=0)`.
 CMP scalar positions instead use their actual set/media owner plus field code
 and occurrence zero. A target position row carries
-`relationship_id`. Native fragments now provide these typed FKs and selected
-field-to-declaration checks; exhaustive bidirectional closure for all 22 kinds
-remains required.
+`relationship_id`. The closed `relationship-positions.tsv` now enumerates all
+22 native routes. The assembler uses it for a single query-only declaration
+projection, canonical position projection, forward exact-owner/kind/occurrence/
+edition guards, reverse declaration/registry update checks and global missing/
+mismatched-position audits. The same declaration projection feeds this fragment's
+kind/owner audit; it is not a second persisted value owner.
 
 | Kind | Current literal owner → candidate typed declaration | Current canonical position → target position | Current behavior retained |
 |---|---|---|---|
@@ -72,9 +75,11 @@ edition. Media merge ancestry follows the typed media owner, then its actual
 machine/game/set parent. Child-element order and coordinates are not copied
 into attribute-position rows. None of these source literals is resolved to a
 target record by this design. The relationship audit view verifies registry,
-typed literal owner, kind, and edition parity. Native position FKs now use
-`relationship_id`; their existence is not proof of exhaustive required-position,
-literal-owner, kind and edition closure for all 22 kinds.
+typed literal owner, kind, and edition parity. Native position FKs use
+`relationship_id`. All 22 routing branches now have positive/adversarial checks
+with thin typed owners, and an integrated MAME witness verifies exact native
+ownership, reverse mutation, missing-position audit and indexed identity reads.
+These checks are not all-format parser-fed count or complete native-field proof.
 
 ## Endpoint and identity choices
 
@@ -146,13 +151,12 @@ software gating and the first-run backfill remain open.
   contract `(problem, owner_id, edition_id)` and checks source identity/kind
   presence, exactly one typed literal owner, owner kind and edition parity,
   derived/user evidence readiness, evidence payload presence, and shared hash
-  membership mismatches. It does not prove each identity has exactly one
-  matching canonical position or complete owner ancestry. Main's
-  manifest/harness must enumerate all 22 native relations in both directions;
-  each position row carries `relationship_id` without duplicating the source
-  literal. The native fragments now expose these FKs, including the conditional
-  No-Intro clone-marker case. Exhaustive position closure remains an integration
-  dependency, not a missing-column claim.
+  membership mismatches. The assembler additionally enumerates all 22 native
+  routes in both directions and checks canonical position identity/count,
+  including conditional No-Intro P-marker presence and mutual exclusion. Each
+  position carries `relationship_id` without duplicating the literal. Complete
+  per-format actual-parent/field/count closure and parser/corpus proof remain
+  separate requirements beyond the thin routing witnesses.
 - Endpoint subtype completeness, actual set/media edition closure, and
   published endpoint readiness need the same explicit manifest and corruption
   checks. The typed FKs here prove subtype key existence, not cross-table
@@ -170,12 +174,12 @@ software gating and the first-run backfill remain open.
   explicitly accepted incoming value agrees with retained evidence.
 - File-match size qualification, exact native size-field closure, rejection
   lookup and atomic size-membership rebuild remain open as described above.
-- The integrated assembler now loads both relationship fragments, prepares all
-  30 views and passes its empty-schema FK check. The earlier No-Intro composite
-  header-key mismatch is fixed. The 20 shared/assembled tests and four bounded
-  native fixtures pass, but they do not provide populated settlement/evidence
-  guard coverage. No build, import, profile or production gate was run for this
-  isolated design task.
+- The integrated assembler loads both relationship fragments, prepares every
+  composed view and passes its empty-schema FK check. The earlier No-Intro
+  composite header-key mismatch is fixed. Shared/assembled/routing tests and
+  bounded native fixtures do not provide populated settlement/evidence guard
+  coverage; current checkpoint counts are recorded in the README. No build,
+  import, profile or production gate was run for this isolated design task.
 
 ## Branch-added test explanations
 

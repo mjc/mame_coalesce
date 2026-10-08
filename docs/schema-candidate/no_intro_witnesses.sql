@@ -1,6 +1,8 @@
 -- Bounded SQLite-only No-Intro fixture. Run after the assembled candidate DDL
 -- with foreign_keys=ON. It exercises all three interpretations, hash-position
 -- links, mixed native ownership, NFO scope separation, and known/missing extents.
+-- Execute with no_intro_field_check.py: -- expect-error directives are checked
+-- by its statement runner. sqlite3.executescript alone cannot expect failures.
 SAVEPOINT no_intro_candidate_witness;
 
 CREATE TEMP TABLE no_intro_witness_assertions (
@@ -183,29 +185,41 @@ SELECT 'relationship positions reuse the exact typed declaration identities; P c
             WHERE archive_id=303 AND field_kind='clone')
        AND (SELECT count(*)=0 FROM candidate_no_intro_integrity_problems
             WHERE problem LIKE '%relationship_position_mismatch');
+-- expect-error: relationship position requires its exact typed declaration
+UPDATE no_intro_pc_game_attribute_positions SET relationship_id=920
+WHERE source_element_id=203 AND field_kind='clone';
+SAVEPOINT pc_position_audit;
+DROP TRIGGER candidate_relationship_position_no_intro_pc_game_attribute_positions_update;
 UPDATE no_intro_pc_game_attribute_positions SET relationship_id=920
 WHERE source_element_id=203 AND field_kind='clone';
 INSERT INTO no_intro_witness_assertions
 SELECT 'P clone marker rejects a position relationship identity from another declaration',
        EXISTS(SELECT 1 FROM candidate_no_intro_integrity_problems
               WHERE problem='pc_relationship_position_mismatch' AND owner_id=203);
-UPDATE no_intro_pc_game_attribute_positions SET relationship_id=NULL
-WHERE source_element_id=203 AND field_kind='clone';
-UPDATE OR IGNORE no_intro_dat_game_field_positions SET relationship_id=NULL
+ROLLBACK TO pc_position_audit;
+RELEASE pc_position_audit;
+-- expect-error: CHECK constraint failed
+UPDATE no_intro_dat_game_field_positions SET relationship_id=NULL
 WHERE set_id=102 AND field_kind='cloneof';
 INSERT INTO no_intro_witness_assertions
 SELECT 'DAT clone positions cannot omit their canonical relationship identity',
        NOT EXISTS(SELECT 1 FROM no_intro_dat_game_field_positions
                   WHERE set_id=102 AND field_kind='cloneof' AND relationship_id IS NULL);
+-- expect-error: relationship position requires its exact typed declaration
+UPDATE no_intro_dat_game_field_positions SET relationship_id=922
+WHERE set_id=102 AND field_kind='cloneof';
+SAVEPOINT dat_position_audit;
+DROP TRIGGER candidate_relationship_position_no_intro_dat_game_field_positions_update;
 UPDATE no_intro_dat_game_field_positions SET relationship_id=922
 WHERE set_id=102 AND field_kind='cloneof';
 INSERT INTO no_intro_witness_assertions
 SELECT 'DAT clone position mismatch is surfaced against its typed declaration',
        EXISTS(SELECT 1 FROM candidate_no_intro_integrity_problems
               WHERE problem='dat_game_relationship_position_mismatch' AND owner_id=102);
-UPDATE no_intro_dat_game_field_positions SET relationship_id=920
-WHERE set_id=102 AND field_kind='cloneof';
-UPDATE OR IGNORE no_intro_pc_game_attribute_positions SET relationship_id=920
+ROLLBACK TO dat_position_audit;
+RELEASE dat_position_audit;
+-- expect-error: relationship position requires its exact typed declaration
+UPDATE no_intro_pc_game_attribute_positions SET relationship_id=920
 WHERE source_element_id=203 AND field_kind='name';
 INSERT INTO no_intro_witness_assertions
 SELECT 'non-relationship position rejects a relationship identity at table level',

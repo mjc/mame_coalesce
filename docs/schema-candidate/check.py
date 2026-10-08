@@ -207,6 +207,141 @@ class SharedWitnesses(unittest.TestCase):
         self.assertEqual(db.execute("SELECT count(*) FROM shared_file_hashes").fetchone()[0], 1024)
 
 
+class HashRoutingWitnesses(unittest.TestCase):
+    """Positive and adversarial identity routing, not algorithm/format validity."""
+
+    def test_all_32_hash_routes_accept_their_actual_field_code_types(self):
+        db = sqlite3.connect(':memory:')
+        self.addCleanup(db.close)
+        db.executescript('''
+            CREATE TABLE catalog_source_elements(source_element_id INTEGER PRIMARY KEY,edition_id INTEGER);
+            CREATE TABLE catalog_entry_hashes(reported_hash_id INTEGER PRIMARY KEY,media_entry_id INTEGER,source_hash_field TEXT,field_occurrence INTEGER);
+        ''')
+        routes = assemble.hash_routes()
+        self.assertEqual(len(routes),32)
+        tables = set()
+        for row in routes:
+            if row['table'] in tables:
+                continue
+            affinity = 'INTEGER' if row['field_code'].isdigit() else 'TEXT'
+            role = ',value_line INTEGER,value_column INTEGER' if row.get('role_constraint')=='Value' else ''
+            db.execute(f"CREATE TABLE {row['table']}({row['owner_column']} INTEGER,{row['code_column']} {affinity},{row['occurrence_column']} INTEGER,reported_hash_id INTEGER{role})")
+            tables.add(row['table'])
+        view,guards,problems = assemble.hash_position_sql(db)
+        db.executescript(view + '\n' + '\n'.join(guards) + '\nCREATE VIEW routing_problems AS ' + ' UNION ALL '.join(problems))
+        for row in routes:
+            with self.subTest(table=row['table'],code=row['field_code']):
+                db.execute('SAVEPOINT hash_route')
+                db.execute('INSERT INTO catalog_source_elements VALUES(10,1)')
+                db.execute('INSERT INTO catalog_entry_hashes VALUES(1,10,?,0)',(row['source_hash_field'],))
+                role = (1,1) if row.get('role_constraint')=='Value' else ()
+                values = (10,row['field_code'],0,1,*role)
+                query = f"INSERT INTO {row['table']} VALUES({','.join('?' for _ in values)})"
+                for wrong in ((11,*values[1:]),(*values[:2],1,*values[3:]),(10,'999' if row['field_code'].isdigit() else 'unknown',*values[2:])):
+                    with self.assertRaisesRegex(sqlite3.IntegrityError,'exact native declaration'):
+                        db.execute(query,wrong)
+                if role:
+                    with self.assertRaisesRegex(sqlite3.IntegrityError,'exact native declaration'):
+                        db.execute(query,(*values[:-2],None,None))
+                db.execute(query,values)
+                self.assertEqual(db.execute('SELECT * FROM routing_problems').fetchall(),[])
+                db.execute(f"DELETE FROM {row['table']}")
+                self.assertEqual(db.execute('SELECT problem,edition_id FROM routing_problems').fetchall(),[('hash_position_count',1)])
+                db.execute('ROLLBACK TO hash_route')
+                db.execute('RELEASE hash_route')
+
+
+class RelationshipRoutingWitnesses(unittest.TestCase):
+    """All routes with thin typed owners: routing proof, not native field proof."""
+
+    def setUp(self):
+        self.db = sqlite3.connect(':memory:')
+        self.addCleanup(self.db.close)
+        db = self.db
+        self.routes = assemble.relationship_routes()
+        db.executescript('''
+            CREATE TABLE catalog_source_elements(source_element_id INTEGER PRIMARY KEY,edition_id INTEGER);
+            CREATE TABLE catalog_relationships(relationship_id INTEGER PRIMARY KEY,origin TEXT,edition_id INTEGER);
+        ''')
+        kinds = ','.join(assemble.literal(row['kind']) for row in self.routes)
+        db.execute(f'CREATE TABLE reported_catalog_relationships(relationship_id INTEGER PRIMARY KEY,reported_kind TEXT CHECK(reported_kind IN ({kinds})))')
+        tables = set()
+        for row in self.routes:
+            table,owner = row['declaration_table'],row['declaration_owner']
+            if table not in tables:
+                link = ',link_kind TEXT' if row['link_kind']!='-' else ''
+                db.execute(f'CREATE TABLE {table}({owner} INTEGER NOT NULL,relationship_id INTEGER UNIQUE NOT NULL{link})')
+                tables.add(table)
+            table,owner = row['position_table'],row['position_owner']
+            if table not in tables:
+                affinity = 'INTEGER' if row['field_code'].isdigit() else 'TEXT'
+                db.execute(f'CREATE TABLE {table}({owner} INTEGER,field_kind {affinity},field_occurrence INTEGER,relationship_id INTEGER UNIQUE)')
+                tables.add(table)
+            if row['marker_table']!='-':
+                db.execute(f"CREATE TABLE {row['marker_table']}({row['declaration_owner']} INTEGER PRIMARY KEY,marker TEXT)")
+        views,guards,problems = assemble.relationship_position_sql(db)
+        db.executescript(views + '\n' + '\n'.join(guards) + '\nCREATE VIEW routing_problems AS ' + ' UNION ALL '.join(problems))
+
+    def seed_route(self,row):
+        db = self.db
+        db.execute('INSERT INTO catalog_source_elements VALUES(10,1),(11,1),(12,2)')
+        db.execute("INSERT INTO catalog_relationships VALUES(1,'source',1)")
+        db.execute('INSERT INTO reported_catalog_relationships VALUES(1,?)',(row['kind'],))
+        link_column,link_value = (',link_kind',','+assemble.literal(row['link_kind'])) if row['link_kind']!='-' else ('','')
+        db.execute(f"INSERT INTO {row['declaration_table']}({row['declaration_owner']},relationship_id{link_column}) VALUES(10,1{link_value})")
+
+    def position(self,row,owner=10,code=None,occurrence=0,relationship=1):
+        self.db.execute(f"INSERT INTO {row['position_table']} VALUES(?,?,?,?)",(owner,row['field_code'] if code is None else code,occurrence,relationship))
+
+    def test_all_22_routes_require_exact_owner_kind_occurrence_and_edition(self):
+        for row in self.routes:
+            with self.subTest(kind=row['kind']):
+                self.db.execute('SAVEPOINT route')
+                self.seed_route(row)
+                for owner,code,occurrence in ((11,None,0),(12,None,0),(10,'999' if row['field_code'].isdigit() else 'unknown',0),(10,None,1)):
+                    with self.assertRaisesRegex(sqlite3.IntegrityError,'exact typed declaration'):
+                        self.position(row,owner,code,occurrence)
+                self.position(row)
+                self.assertEqual(self.db.execute('SELECT * FROM routing_problems').fetchall(),[])
+                # Reverse corruption must stay visible without a registry seed.
+                # The real schema's FK guards reject this deletion; the thin
+                # fixture bypasses that layer to test the independent audit.
+                self.db.execute('DELETE FROM catalog_source_elements WHERE source_element_id=10')
+                self.assertIn(('relationship_position_identity',1,1),
+                              self.db.execute('SELECT * FROM routing_problems').fetchall())
+                self.db.execute('INSERT INTO catalog_source_elements VALUES(10,1)')
+                for sql in (f"UPDATE {row['declaration_table']} SET {row['declaration_owner']}=11",
+                            f"DELETE FROM {row['declaration_table']}",
+                            "UPDATE catalog_relationships SET edition_id=2",
+                            "UPDATE reported_catalog_relationships SET reported_kind='not-the-kind'"):
+                    with self.assertRaises(sqlite3.IntegrityError):
+                        self.db.execute(sql)
+                self.db.execute(f"DELETE FROM {row['position_table']}")
+                self.assertEqual(self.db.execute("SELECT problem,owner_id,edition_id FROM routing_problems WHERE problem='relationship_position_count'").fetchall(),[('relationship_position_count',1,1)])
+                self.db.execute('ROLLBACK TO route')
+                self.db.execute('RELEASE route')
+
+    def test_clone_markers_are_not_relationship_declarations(self):
+        for row in (row for row in self.routes if row['marker_table']!='-'):
+            with self.subTest(kind=row['kind']):
+                db = self.db
+                db.execute('SAVEPOINT marker')
+                db.execute('INSERT INTO catalog_source_elements VALUES(10,1)')
+                with self.assertRaisesRegex(sqlite3.IntegrityError,'typed P marker'):
+                    self.position(row,relationship=None)
+                db.execute(f"INSERT INTO {row['marker_table']} VALUES(10,'P')")
+                self.position(row,relationship=None)
+                self.assertEqual(db.execute('SELECT * FROM routing_problems').fetchall(),[])
+                db.execute("INSERT INTO catalog_relationships VALUES(1,'source',1)")
+                db.execute('INSERT INTO reported_catalog_relationships VALUES(1,?)',(row['kind'],))
+                with self.assertRaisesRegex(sqlite3.IntegrityError,'mutually exclusive'):
+                    db.execute(f"INSERT INTO {row['declaration_table']} VALUES(10,1)")
+                db.execute(f"DELETE FROM {row['position_table']}")
+                self.assertEqual(len(db.execute('SELECT * FROM routing_problems').fetchall()),1)
+                db.execute('ROLLBACK TO marker')
+                db.execute('RELEASE marker')
+
+
 class AssembledWitnesses(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -238,6 +373,38 @@ class AssembledWitnesses(unittest.TestCase):
             with self.subTest(view=view):
                 self.db.execute(f'SELECT * FROM {assemble.identifier(view)} LIMIT 0')
         self.assertEqual(self.db.execute('PRAGMA foreign_key_check').fetchall(), [])
+
+    def test_field_crosswalks_name_real_typed_value_and_position_owners(self):
+        rows = assemble.field_coverage(self.db)
+        self.assertTrue(rows)
+        for row in rows:
+            self.assertTrue(row['presence'])
+            self.assertTrue(row['evidence'])
+
+    def test_relationship_position_must_name_its_exact_declaration(self):
+        db = self.db
+        self.mame_root()
+        db.execute("INSERT INTO catalog_set_groups VALUES(1,1,'root')")
+        for owner in (10,11):
+            db.execute("INSERT INTO catalog_source_elements VALUES(?,1,'mame_machine')", (owner,))
+            db.execute("INSERT INTO catalog_sets VALUES(?,1,'machine',?,1,1)", (owner,owner))
+            db.execute("INSERT INTO mame_machines VALUES(?,NULL,0,0,0,0,0,0,1,0)", (owner,))
+        db.execute("INSERT INTO catalog_relationships(relationship_id,assertion_key,origin,edition_id) VALUES(1,'clone','source',1)")
+        db.execute("INSERT INTO reported_catalog_relationships VALUES(1,'mame_cloneof')")
+        db.execute("INSERT INTO mame_machine_links VALUES(10,'cloneof','',1)")
+        for owner,code in ((11,'cloneof'), (10,'romof')):
+            with self.subTest(owner=owner,code=code), self.assertRaises(sqlite3.IntegrityError):
+                db.execute("INSERT INTO mame_machines_attribute_positions VALUES(?,?,0,1,0,1,1)", (owner,code))
+        db.execute("INSERT INTO mame_machines_attribute_positions VALUES(10,'cloneof',0,1,0,1,1)")
+        for view in ('candidate_relationship_declarations','candidate_relationship_positions'):
+            result = db.execute(f'SELECT relationship_id,reported_kind,source_element_id,edition_id FROM {view} WHERE relationship_id=1').fetchall()
+            self.assertEqual(result,[(1,'mame_cloneof',10,1)])
+            plan = db.execute(f'EXPLAIN QUERY PLAN SELECT * FROM {view} WHERE relationship_id=1').fetchall()
+            self.assertFalse(any('SCAN' in step[3] for step in plan),plan)
+        with self.assertRaises(sqlite3.IntegrityError):
+            db.execute("UPDATE mame_machine_links SET machine_id=11")
+        db.execute("DELETE FROM mame_machines_attribute_positions WHERE relationship_id=1")
+        self.assertEqual(db.execute("SELECT owner_id,edition_id FROM candidate_integrity_problems WHERE problem='relationship_position_count'").fetchall(), [(1,1)])
 
     def test_common_set_and_list_notes_share_the_actual_group_sequence(self):
         db = self.db
@@ -287,6 +454,8 @@ def main():
     args = parser.parse_args()
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(SharedWitnesses)
     if not args.core:
+        suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(HashRoutingWitnesses))
+        suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(RelationshipRoutingWitnesses))
         suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(AssembledWitnesses))
     outcome = unittest.TextTestRunner(verbosity=2).run(suite)
     raise SystemExit(not outcome.wasSuccessful())
