@@ -1,16 +1,26 @@
 # Catalog schema redesign from all input formats
 
-Status: reviewed greenfield implementation in progress, 2026-10-04. The
-current-state sections describe the implemented native model and remaining
-acceptance requirements; dated checkpoints retain their frozen-revision evidence.
-This is not a migration. The original proposal received four Luna audits and a
-repeated Sol review. The expanded Sol review identified the six Xbox 360 NULs,
-the observed-vs-strict v3 distinction, and release/source ownership cases;
-those findings are incorporated here. Existing SQLite imports and source
-objects remain the comparison baseline.
+Status: greenfield implementation and target-design reconciliation in progress,
+2026-10-08 UTC. The current-state sections describe bounded implemented milestones;
+they do not approve the complete replacement schema. PLAN-3's design gate remains
+open for the exact all-format field/owner/key/order crosswalk, complete-design Sol
+review and user approval. This is not a migration. Earlier Luna audits and Sol
+reviews retain their frozen-revision scope, including the Xbox 360 NULs,
+observed-vs-strict v3 distinction and release/source ownership findings.
+Existing SQLite imports and source objects remain comparison evidence.
 
 Durable design: [MAMEC-DOC-7](https://lific.mjc.lol/MAMEC/pages/89).
 Implementation sequence: [MAMEC-PLAN-3](https://lific.mjc.lol/MAMEC/plans/108).
+Current-to-target crosswalk: [MAMEC-DOC-20](https://lific.mjc.lol/MAMEC/pages/137).
+Candidate keys and remaining decisions:
+[MAMEC-DOC-21](https://lific.mjc.lol/MAMEC/pages/138).
+The current crosswalk refinements map
+[Logiqx child/media keys](https://lific.mjc.lol/MAMEC/pages/94#exact-logiqx-childmedia-key-crosswalk-2026-10-08-utc)
+and [software area/media keys](https://lific.mjc.lol/MAMEC/pages/95#exact-software-areamedia-key-crosswalk-2026-10-08-utc).
+The [CMP comment audit](https://lific.mjc.lol/MAMEC/pages/94#current-cmp-comment-capture-boundary-2026-10-08-utc)
+distinguishes retained text/location from the uncaptured containing-form and
+keyword/value placement. These are design refinements, not new schema changes;
+the complete keys, state domains, cross-table guards and approval remain open.
 The expanded proposal records the adversarial review findings. Native importers,
 storage and source-free queries now exist for the supported families. Remaining
 producer/dialect and complete current-corpus/query/profiling proof is not implied
@@ -60,10 +70,14 @@ virtual numeric projection. Ordinary imports and builds now use published native
 snapshots; the old mutable DAT/game/ROM/archive-file tables and scanned-file
 association column are removed. Build queries derive expected evidence and
 metadata from native owners in one read transaction. Shared file UUIDs now use
-an immutable registry generation, source-backed hash/size views and native
-conflict evidence; published cross-list membership has bounded bulk and keyset
-queries. Reviewed conflict outcomes and UUID redirects now have an atomic typed
-storage API. Separate observed whole-file digest endpoints are implemented;
+an immutable registry generation, unique accepted whole-file size/hash memberships
+and native conflict evidence. Compatibility reads use those memberships directly;
+exact source views remain authoritative for qualification, conflict explanations
+and affected-component review refresh. The earlier proposed same-name hash evidence
+view is superseded; the reconciled candidate distinguishes stored shared facts from
+query-only source witnesses in DOC-8/20/21. Published cross-list membership has
+bounded bulk and keyset queries. Reviewed conflict outcomes and UUID redirects have
+an atomic typed storage API. Separate observed whole-file digest endpoints are implemented;
 automatic immutable scan/location integration and remaining per-format acceptance
 are not. This is not a claim of complete DTD conformance.
 
