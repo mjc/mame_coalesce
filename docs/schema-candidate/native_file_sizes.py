@@ -132,11 +132,11 @@ SELECT media.media_entry_id,
            {' '.join(size_states)}
        END AS size_state
 FROM catalog_media_entries AS media
-JOIN catalog_source_elements AS source
+CROSS JOIN catalog_source_elements AS source
   ON source.source_element_id = media.media_entry_id
-JOIN catalog_editions AS edition
+CROSS JOIN catalog_editions AS edition
   ON edition.edition_id = source.edition_id
-JOIN catalog_reading_rules AS rules
+CROSS JOIN catalog_reading_rules AS rules
   ON rules.reading_rules_id = edition.reading_rules_id
 WHERE source.element_kind IN (
     'mame_rom', 'software_rom_entry', 'clrmamepro_rom', 'logiqx_rom',

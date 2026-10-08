@@ -71,6 +71,42 @@ CREATE TABLE catalog_reading_rules (
     rules_version TEXT NOT NULL
 ) STRICT;
 
+-- Optional closed policy facet, issued with the immutable reading rules.
+-- Absence means no proof of complete-file bytes. This is not a per-ROM flag
+-- and must not be inferred from a digest name, filename or stored scope tag.
+CREATE TABLE catalog_file_byte_contracts (
+    reading_rules_id INTEGER PRIMARY KEY NOT NULL REFERENCES catalog_reading_rules(reading_rules_id),
+    contract_kind TEXT NOT NULL CHECK (contract_kind IN (
+        'mame_0289_machine_rom', 'mame_0289_software_file',
+        'logiqx_complete_declared_file', 'clrmamepro_declared_asset',
+        'no_intro_dat_unfiltered_file', 'no_intro_pc_fixture_asset'
+    ))
+) STRICT;
+
+CREATE TRIGGER candidate_file_byte_contract_insert
+BEFORE INSERT ON catalog_file_byte_contracts
+WHEN EXISTS (SELECT 1 FROM catalog_file_byte_contracts WHERE reading_rules_id=NEW.reading_rules_id)
+ OR NOT EXISTS (
+    SELECT 1 FROM catalog_reading_rules AS rules
+    WHERE rules.reading_rules_id=NEW.reading_rules_id
+      AND rules.format_family=CASE NEW.contract_kind
+          WHEN 'mame_0289_machine_rom' THEN 'mame'
+          WHEN 'mame_0289_software_file' THEN 'software'
+          WHEN 'logiqx_complete_declared_file' THEN 'logiqx'
+          WHEN 'clrmamepro_declared_asset' THEN 'clrmamepro'
+          WHEN 'no_intro_dat_unfiltered_file' THEN 'no_intro_dat'
+          WHEN 'no_intro_pc_fixture_asset' THEN 'no_intro_pc_fixture' END
+ )
+ OR EXISTS (SELECT 1 FROM published_catalog_editions WHERE reading_rules_id=NEW.reading_rules_id)
+BEGIN SELECT RAISE(ABORT,'file byte contract requires unpublished, matching immutable reading rules'); END;
+
+CREATE TRIGGER candidate_file_byte_contract_update
+BEFORE UPDATE ON catalog_file_byte_contracts
+BEGIN SELECT RAISE(ABORT,'file byte contracts are immutable'); END;
+CREATE TRIGGER candidate_file_byte_contract_delete
+BEFORE DELETE ON catalog_file_byte_contracts
+BEGIN SELECT RAISE(ABORT,'file byte contracts are immutable'); END;
+
 CREATE TABLE catalog_xml_repairs (
     reading_rules_id INTEGER PRIMARY KEY NOT NULL REFERENCES catalog_reading_rules(reading_rules_id),
     replace_nul INTEGER NOT NULL CHECK (replace_nul IN (0, 1))

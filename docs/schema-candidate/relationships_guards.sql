@@ -215,24 +215,40 @@ CREATE TRIGGER file_match_conflict_hash_owner_guard
 BEFORE INSERT ON file_match_conflict_hashes
 WHEN NOT EXISTS (
     SELECT 1 FROM file_match_conflicts AS conflict
-    JOIN catalog_entry_hashes AS hash USING (reported_hash_id)
-    JOIN catalog_media_entries AS media USING (media_entry_id)
+    JOIN candidate_qualified_file_hashes AS hash ON hash.reported_hash_id=NEW.reported_hash_id
+    JOIN catalog_media_entries AS media ON media.media_entry_id=hash.media_entry_id
     WHERE conflict.conflict_id = NEW.conflict_id
       AND ((NEW.role = 'incoming' AND media.media_entry_id = conflict.incoming_media_entry_id)
-        OR (NEW.role = 'candidate' AND media.file_uuid = conflict.candidate_file_uuid))
-      AND hash.presence = 'value' AND hash.hash_scope = 'whole_file'
+        OR (NEW.role = 'candidate' AND EXISTS (
+            SELECT 1 FROM canonical_shared_file_uuids AS source
+            JOIN canonical_shared_file_uuids AS candidate ON candidate.file_uuid=conflict.candidate_file_uuid
+            WHERE source.file_uuid=media.file_uuid AND source.canonical_file_uuid=candidate.canonical_file_uuid
+        )))
 )
+ OR EXISTS (SELECT 1 FROM file_match_decision_conflicts AS settled
+            JOIN file_match_decision_publications AS publication USING(decision_id)
+            WHERE settled.conflict_id=NEW.conflict_id)
 BEGIN SELECT RAISE(ABORT, 'file-match hash witness is not owned by its conflict side'); END;
 
 CREATE TRIGGER file_match_conflict_size_owner_guard
 BEFORE INSERT ON file_match_conflict_sizes
 WHEN NOT EXISTS (
     SELECT 1 FROM file_match_conflicts AS conflict
-    JOIN catalog_media_entries AS media USING (media_entry_id)
+    JOIN candidate_native_file_sizes AS size ON size.media_entry_id=NEW.media_entry_id
+    JOIN candidate_native_file_byte_coverage AS qualification ON qualification.media_entry_id=size.media_entry_id
+    JOIN catalog_media_entries AS media ON media.media_entry_id=size.media_entry_id
     WHERE conflict.conflict_id = NEW.conflict_id
       AND ((NEW.role = 'incoming' AND media.media_entry_id = conflict.incoming_media_entry_id)
-        OR (NEW.role = 'candidate' AND media.file_uuid = conflict.candidate_file_uuid))
+        OR (NEW.role = 'candidate' AND EXISTS (
+            SELECT 1 FROM canonical_shared_file_uuids AS source
+            JOIN canonical_shared_file_uuids AS candidate ON candidate.file_uuid=conflict.candidate_file_uuid
+            WHERE source.file_uuid=media.file_uuid AND source.canonical_file_uuid=candidate.canonical_file_uuid
+        )))
+      AND size.source_size_field=NEW.source_size_field AND size.size_state='value'
 )
+ OR EXISTS (SELECT 1 FROM file_match_decision_conflicts AS settled
+            JOIN file_match_decision_publications AS publication USING(decision_id)
+            WHERE settled.conflict_id=NEW.conflict_id)
 BEGIN SELECT RAISE(ABORT, 'file-match size witness is not owned by its conflict side'); END;
 
 CREATE TRIGGER file_match_decision_conflict_guard
@@ -249,12 +265,12 @@ BEGIN SELECT RAISE(ABORT, 'file-match outcome disagrees with its decision'); END
 CREATE TRIGGER file_match_hash_decision_guard
 BEFORE INSERT ON file_match_hash_decisions
 WHEN EXISTS (SELECT 1 FROM file_match_decision_publications WHERE decision_id = NEW.decision_id)
- OR EXISTS (
+ OR (NEW.disposition='accept' AND EXISTS (
     SELECT 1 FROM file_match_hash_decisions AS previous
     JOIN file_match_decision_publications AS publication USING (decision_id)
     WHERE previous.reported_hash_id = NEW.reported_hash_id
       AND previous.disposition = 'reject'
- )
+ ))
 BEGIN SELECT RAISE(ABORT, 'published file-match hash decision cannot be changed or restored'); END;
 CREATE TRIGGER file_match_hash_decision_append_only_update
 BEFORE UPDATE ON file_match_hash_decisions
@@ -266,13 +282,13 @@ BEGIN SELECT RAISE(ABORT, 'file-match hash decisions are append-only'); END;
 CREATE TRIGGER file_match_size_decision_guard
 BEFORE INSERT ON file_match_size_decisions
 WHEN EXISTS (SELECT 1 FROM file_match_decision_publications WHERE decision_id = NEW.decision_id)
- OR EXISTS (
+ OR (NEW.disposition='accept' AND EXISTS (
     SELECT 1 FROM file_match_size_decisions AS previous
     JOIN file_match_decision_publications AS publication USING (decision_id)
     WHERE previous.media_entry_id = NEW.media_entry_id
       AND previous.source_size_field = NEW.source_size_field
       AND previous.disposition = 'reject'
- )
+ ))
 BEGIN SELECT RAISE(ABORT, 'published file-match size decision cannot be changed or restored'); END;
 CREATE TRIGGER file_match_size_decision_append_only_update
 BEFORE UPDATE ON file_match_size_decisions
@@ -301,7 +317,7 @@ WHEN NOT EXISTS (
  OR EXISTS (
     WITH RECURSIVE reachable(file_uuid) AS (
         SELECT NEW.kept_file_uuid
-        UNION ALL
+        UNION
         SELECT redirect.kept_file_uuid FROM file_match_uuid_redirects AS redirect
         JOIN file_match_decision_publications AS publication USING (decision_id)
         JOIN reachable ON redirect.old_file_uuid = reachable.file_uuid
@@ -392,21 +408,24 @@ WHEN EXISTS (SELECT 1 FROM file_match_decision_publications WHERE decision_id = 
        )
  )
  OR EXISTS (
-     WITH RECURSIVE edges(old_file_uuid, kept_file_uuid) AS (
-         SELECT redirect.old_file_uuid, redirect.kept_file_uuid
-         FROM file_match_uuid_redirects AS redirect
-         JOIN file_match_decision_publications AS publication USING (decision_id)
-         UNION ALL
-         SELECT redirect.old_file_uuid, redirect.kept_file_uuid
-         FROM file_match_uuid_redirects AS redirect
-         WHERE redirect.decision_id = NEW.decision_id
-     ), walk(issued_file_uuid, current_file_uuid) AS (
-         SELECT old_file_uuid, kept_file_uuid FROM edges
-         UNION ALL
-         SELECT walk.issued_file_uuid, edges.kept_file_uuid
-         FROM walk JOIN edges ON edges.old_file_uuid = walk.current_file_uuid
+     WITH RECURSIVE walk(issued_file_uuid, current_file_uuid) AS (
+         SELECT old_file_uuid,kept_file_uuid FROM file_match_uuid_redirects
+         WHERE decision_id=NEW.decision_id
+         UNION
+         SELECT walk.issued_file_uuid,redirect.kept_file_uuid
+         FROM walk JOIN file_match_uuid_redirects AS redirect ON redirect.old_file_uuid=walk.current_file_uuid
+         WHERE redirect.decision_id=NEW.decision_id OR EXISTS (
+             SELECT 1 FROM file_match_decision_publications WHERE decision_id=redirect.decision_id
+         )
      )
      SELECT 1 FROM walk WHERE issued_file_uuid = current_file_uuid
+ )
+ OR EXISTS (
+     SELECT 1 FROM file_match_uuid_redirects AS redirect
+     LEFT JOIN canonical_shared_file_uuids AS destination
+       ON destination.file_uuid=redirect.kept_file_uuid
+     WHERE redirect.decision_id=NEW.decision_id
+       AND destination.canonical_file_uuid IS NULL
  )
 BEGIN SELECT RAISE(ABORT, 'file-match decision is incomplete or has an unreviewed redirect'); END;
 
@@ -417,57 +436,9 @@ CREATE TRIGGER file_match_publication_append_only_delete
 BEFORE DELETE ON file_match_decision_publications
 BEGIN SELECT RAISE(ABORT, 'file-match publications are immutable'); END;
 
--- Recompute only the impacted redirect component in the same statement
--- transaction as publication. Evidence remains source-owned; DISTINCT removes
--- duplicate witnesses only when building the canonical membership relation.
-CREATE TRIGGER shared_file_facts_after_file_match_publication
-AFTER INSERT ON file_match_decision_publications
-BEGIN
-    DELETE FROM shared_file_hashes
-    WHERE file_uuid IN (
-        SELECT canonical_file_uuid FROM canonical_shared_file_uuids
-        WHERE file_uuid IN (
-            SELECT candidate_file_uuid FROM file_match_conflicts AS conflict
-            JOIN file_match_decision_conflicts AS settled USING (conflict_id)
-            WHERE settled.decision_id = NEW.decision_id
-        )
-    );
-    INSERT INTO shared_file_hashes(file_uuid, hash_id)
-    SELECT evidence.file_uuid, evidence.hash_id
-    FROM canonical_catalog_file_hash_evidence AS evidence
-    WHERE evidence.file_uuid IN (
-        SELECT canonical_file_uuid FROM canonical_shared_file_uuids
-        WHERE file_uuid IN (
-            SELECT candidate_file_uuid FROM file_match_conflicts AS conflict
-            JOIN file_match_decision_conflicts AS settled USING (conflict_id)
-            WHERE settled.decision_id = NEW.decision_id
-        )
-    )
-      AND NOT EXISTS (
-          SELECT 1 FROM shared_file_hashes AS stored
-          WHERE stored.file_uuid = evidence.file_uuid
-            AND stored.hash_id = evidence.hash_id
-      )
-    GROUP BY evidence.file_uuid, evidence.hash_id;
-END;
-
-CREATE TRIGGER shared_file_hashes_after_edition_publication
-AFTER INSERT ON published_catalog_editions
-BEGIN
-    INSERT INTO shared_file_hashes(file_uuid, hash_id)
-    SELECT canonical.canonical_file_uuid, evidence.hash_id
-    FROM accepted_catalog_file_hash_evidence AS evidence
-    JOIN catalog_source_elements AS element
-      ON element.source_element_id = evidence.media_entry_id
-    JOIN canonical_shared_file_uuids AS canonical USING (file_uuid)
-    WHERE element.edition_id = NEW.edition_id
-      AND NOT EXISTS (
-          SELECT 1 FROM shared_file_hashes AS stored
-          WHERE stored.file_uuid = canonical.canonical_file_uuid
-            AND stored.hash_id = evidence.hash_id
-      )
-    GROUP BY canonical.canonical_file_uuid, evidence.hash_id;
-END;
+-- shared_file_facts.sql() emits the same affected-component maintenance for
+-- hash and size membership at review and edition publication. Keeping one
+-- generator prevents one lane or an old issued alias being forgotten.
 
 -- Typed native literal/position closure is deliberately left to the main
 -- candidate harness. Native declarations point to reported_catalog_relationships;

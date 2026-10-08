@@ -344,20 +344,40 @@ CREATE TABLE file_match_decision_publications (
 ) STRICT;
 
 CREATE VIEW canonical_shared_file_uuids AS
-WITH RECURSIVE walk(issued_file_uuid, current_file_uuid) AS (
-    SELECT file_uuid, file_uuid FROM shared_catalog_files
-    UNION ALL
-    SELECT walk.issued_file_uuid, redirect.kept_file_uuid
-    FROM walk JOIN file_match_uuid_redirects AS redirect
-      ON redirect.old_file_uuid = walk.current_file_uuid
-    JOIN file_match_decision_publications AS publication USING (decision_id)
+SELECT issued.file_uuid,
+       (WITH RECURSIVE walk(file_uuid) AS (
+            SELECT issued.file_uuid
+            UNION
+            SELECT redirect.kept_file_uuid FROM walk
+            JOIN file_match_uuid_redirects AS redirect ON redirect.old_file_uuid=walk.file_uuid
+            JOIN file_match_decision_publications AS publication USING(decision_id)
+        )
+        SELECT walk.file_uuid FROM walk
+        WHERE NOT EXISTS (
+            SELECT 1 FROM file_match_uuid_redirects AS redirect
+            JOIN file_match_decision_publications AS publication USING(decision_id)
+            WHERE redirect.old_file_uuid=walk.file_uuid
+        )) AS canonical_file_uuid
+FROM shared_catalog_files AS issued;
+
+-- Reverse traversal starts at a selected canonical root, not at every issued
+-- UUID. Both endpoints remain issued identities; no source assignment changes.
+CREATE VIEW candidate_file_component_members AS
+SELECT root.file_uuid AS canonical_file_uuid, member.file_uuid
+FROM shared_catalog_files AS root
+JOIN shared_catalog_files AS member ON member.file_uuid IN (
+    WITH RECURSIVE aliases(file_uuid) AS (
+        SELECT root.file_uuid
+        UNION
+        SELECT redirect.old_file_uuid FROM aliases
+        JOIN file_match_uuid_redirects AS redirect ON redirect.kept_file_uuid=aliases.file_uuid
+        JOIN file_match_decision_publications AS publication USING(decision_id)
+    ) SELECT file_uuid FROM aliases
 )
-SELECT issued_file_uuid AS file_uuid, current_file_uuid AS canonical_file_uuid
-FROM walk
 WHERE NOT EXISTS (
     SELECT 1 FROM file_match_uuid_redirects AS redirect
-    JOIN file_match_decision_publications AS publication USING (decision_id)
-    WHERE redirect.old_file_uuid = walk.current_file_uuid
+    JOIN file_match_decision_publications AS publication USING(decision_id)
+    WHERE redirect.old_file_uuid=root.file_uuid
 );
 
 -- Source evidence views never copy hash bytes or size values. The rejection
@@ -367,24 +387,37 @@ CREATE VIEW accepted_catalog_file_hash_evidence AS
 SELECT declaration.reported_hash_id, media.file_uuid, declaration.hash_id,
        declaration.hash_scope, declaration.source_hash_field,
        declaration.media_entry_id
-FROM catalog_entry_hashes AS declaration
-JOIN catalog_media_entries AS media USING (media_entry_id)
-JOIN catalog_source_elements AS element ON element.source_element_id = media.media_entry_id
-JOIN catalog_editions AS edition ON edition.edition_id = element.edition_id
-JOIN catalog_reading_rules AS rules USING (reading_rules_id)
+FROM catalog_media_entries AS media
+CROSS JOIN catalog_entry_hashes AS declaration
+  ON declaration.media_entry_id=media.media_entry_id
 WHERE media.file_uuid IS NOT NULL
-  AND declaration.presence = 'value'
-  AND declaration.hash_scope = 'whole_file'
-  AND declaration.hash_id IS NOT NULL
-  AND declaration.source_hash_field IN ('crc', 'crc32', 'md5', 'sha1', 'sha256')
-  AND (declaration.source_hash_field <> 'crc' OR rules.format_family IN ('mame','logiqx','no_intro_dat','no_intro_pc_fixture'))
-  AND (declaration.source_hash_field <> 'crc32' OR rules.format_family IN ('clrmamepro','no_intro_database'))
-  AND (declaration.source_hash_field <> 'sha256' OR rules.format_family IN ('mame','software','logiqx','clrmamepro','no_intro_dat','no_intro_database','no_intro_pc_fixture'))
+  AND EXISTS (
+      SELECT 1 FROM candidate_qualified_file_hashes AS qualified
+      WHERE qualified.reported_hash_id=declaration.reported_hash_id
+  )
   AND NOT EXISTS (
       SELECT 1 FROM file_match_hash_decisions AS review
       JOIN file_match_decision_publications AS publication USING (decision_id)
       WHERE review.reported_hash_id = declaration.reported_hash_id
         AND review.disposition = 'reject'
+  );
+
+CREATE VIEW accepted_catalog_file_size_evidence AS
+SELECT size.media_entry_id, size.source_size_field, size.byte_length, media.file_uuid
+FROM catalog_media_entries AS media
+CROSS JOIN candidate_native_file_sizes AS size
+  ON size.media_entry_id=media.media_entry_id
+WHERE media.file_uuid IS NOT NULL AND size.size_state='value'
+  AND EXISTS (
+      SELECT 1 FROM candidate_native_file_byte_coverage AS qualification
+      WHERE qualification.media_entry_id=media.media_entry_id
+  )
+  AND NOT EXISTS (
+      SELECT 1 FROM file_match_size_decisions AS review
+      JOIN file_match_decision_publications AS publication USING(decision_id)
+      WHERE review.media_entry_id=size.media_entry_id
+        AND review.source_size_field=size.source_size_field
+        AND review.disposition='reject'
   );
 
 CREATE VIEW accepted_catalog_file_identity_evidence AS
@@ -393,24 +426,89 @@ JOIN hash_values AS value USING (hash_id)
 WHERE value.algorithm IN ('sha1', 'sha256');
 
 CREATE VIEW canonical_catalog_file_hash_evidence AS
-SELECT canonical.canonical_file_uuid AS file_uuid, evidence.hash_id
-FROM accepted_catalog_file_hash_evidence AS evidence
-JOIN canonical_shared_file_uuids AS canonical USING (file_uuid)
-GROUP BY canonical.canonical_file_uuid, evidence.hash_id;
+SELECT member.canonical_file_uuid AS file_uuid, evidence.hash_id
+FROM candidate_file_component_members AS member
+JOIN accepted_catalog_file_hash_evidence AS evidence ON evidence.file_uuid=member.file_uuid
+GROUP BY member.canonical_file_uuid, evidence.hash_id;
+
+CREATE VIEW canonical_catalog_file_size_evidence AS
+SELECT member.canonical_file_uuid AS file_uuid, evidence.byte_length
+FROM candidate_file_component_members AS member
+JOIN accepted_catalog_file_size_evidence AS evidence ON evidence.file_uuid=member.file_uuid
+GROUP BY member.canonical_file_uuid, evidence.byte_length;
 
 CREATE VIEW catalog_shared_fact_mismatches AS
-SELECT 'hash_missing' AS problem, evidence.file_uuid, evidence.hash_id
+SELECT 'hash_missing' AS problem, evidence.file_uuid, evidence.hash_id, NULL AS byte_length
 FROM canonical_catalog_file_hash_evidence AS evidence
 LEFT JOIN shared_file_hashes AS stored
   ON stored.file_uuid = evidence.file_uuid AND stored.hash_id = evidence.hash_id
 WHERE stored.file_uuid IS NULL
 UNION ALL
-SELECT 'hash_unsupported', stored.file_uuid, stored.hash_id
+SELECT 'hash_unsupported', stored.file_uuid, stored.hash_id, NULL
 FROM shared_file_hashes AS stored
 LEFT JOIN canonical_catalog_file_hash_evidence AS evidence
   ON evidence.file_uuid = stored.file_uuid AND evidence.hash_id = stored.hash_id
 WHERE evidence.file_uuid IS NULL
-;
+UNION ALL
+SELECT 'size_missing', evidence.file_uuid, NULL, evidence.byte_length
+FROM canonical_catalog_file_size_evidence AS evidence
+LEFT JOIN shared_file_sizes AS stored USING(file_uuid,byte_length)
+WHERE stored.file_uuid IS NULL
+UNION ALL
+SELECT 'size_unsupported', stored.file_uuid, NULL, stored.byte_length
+FROM shared_file_sizes AS stored
+LEFT JOIN canonical_catalog_file_size_evidence AS evidence USING(file_uuid,byte_length)
+WHERE evidence.file_uuid IS NULL;
+
+CREATE VIEW candidate_shared_file_contradictions AS
+SELECT 'size_contradiction' AS problem, file_uuid
+FROM shared_file_sizes GROUP BY file_uuid HAVING count(*)>1
+UNION ALL
+SELECT 'hash_contradiction', membership.file_uuid
+FROM shared_file_hashes AS membership JOIN hash_values AS value USING(hash_id)
+GROUP BY membership.file_uuid,value.algorithm HAVING count(*)>1;
+
+CREATE VIEW candidate_review_file_components AS
+SELECT settled.decision_id, canonical.canonical_file_uuid
+FROM file_match_decision_conflicts AS settled
+JOIN file_match_conflicts AS conflict USING(conflict_id)
+JOIN canonical_shared_file_uuids AS canonical ON canonical.file_uuid=conflict.candidate_file_uuid
+UNION ALL
+SELECT settled.decision_id,canonical.canonical_file_uuid
+FROM file_match_decision_conflicts AS settled
+JOIN file_match_conflicts AS conflict USING(conflict_id)
+JOIN catalog_media_entries AS incoming ON incoming.media_entry_id=conflict.incoming_media_entry_id
+JOIN canonical_shared_file_uuids AS canonical ON canonical.file_uuid=incoming.file_uuid
+UNION ALL
+SELECT decision.decision_id,canonical.canonical_file_uuid
+FROM file_match_decisions AS decision
+JOIN canonical_shared_file_uuids AS canonical ON canonical.file_uuid=decision.kept_file_uuid;
+
+CREATE VIEW candidate_shared_identity_problems AS
+SELECT 'linked_file_redirect_cycle_or_missing_identity' AS problem,
+       media.media_entry_id AS owner_id, element.edition_id
+FROM catalog_media_entries AS media
+JOIN catalog_source_elements AS element ON element.source_element_id=media.media_entry_id
+LEFT JOIN canonical_shared_file_uuids AS canonical ON canonical.file_uuid=media.file_uuid
+WHERE media.file_uuid IS NOT NULL AND canonical.canonical_file_uuid IS NULL
+UNION ALL
+SELECT 'linked_file_cross_registry_redirect',media.media_entry_id,element.edition_id
+FROM catalog_media_entries AS media
+JOIN catalog_source_elements AS element ON element.source_element_id=media.media_entry_id
+JOIN canonical_shared_file_uuids AS canonical ON canonical.file_uuid=media.file_uuid
+JOIN shared_catalog_files AS issued ON issued.file_uuid=media.file_uuid
+JOIN shared_catalog_files AS kept ON kept.file_uuid=canonical.canonical_file_uuid
+WHERE issued.registry_id<>kept.registry_id
+UNION ALL
+SELECT 'issued_file_redirect_cycle:' || hex(canonical.file_uuid),NULL,NULL
+FROM canonical_shared_file_uuids AS canonical WHERE canonical.canonical_file_uuid IS NULL
+UNION ALL
+SELECT 'issued_file_cross_registry_redirect:' || hex(redirect.old_file_uuid),NULL,NULL
+FROM file_match_uuid_redirects AS redirect
+JOIN file_match_decision_publications AS publication USING(decision_id)
+JOIN shared_catalog_files AS issued ON issued.file_uuid=redirect.old_file_uuid
+JOIN shared_catalog_files AS kept ON kept.file_uuid=redirect.kept_file_uuid
+WHERE issued.registry_id<>kept.registry_id;
 
 -- Relationship-owned, query-only audit surface. Native declarations retain
 -- their own closed typed tables. The assembler supplies the closed DOC-23
@@ -529,8 +627,9 @@ WITH typed_declarations(relationship_id, reported_kind, owner_edition_id) AS (
           AND review.role = witness.role
     )
     UNION ALL
-    SELECT 'shared_hash_membership_mismatch:' || mismatch.problem || ':'
-           || hex(mismatch.file_uuid) || ':' || mismatch.hash_id, NULL, NULL
+    SELECT 'shared_membership_mismatch:' || mismatch.problem || ':'
+           || hex(mismatch.file_uuid) || ':'
+           || coalesce('hash=' || mismatch.hash_id,'size=' || mismatch.byte_length), NULL, NULL
     FROM catalog_shared_fact_mismatches AS mismatch
 )
 SELECT problem, owner_id, edition_id FROM problems;

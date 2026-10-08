@@ -738,6 +738,9 @@ def publication_closure_sql(audit='candidate_integrity_problems'):
 
 
 def assemble():
+    import native_file_qualification
+    import native_file_sizes
+    import shared_file_facts
     import source_counts
     import software_file_lengths
     import software_numbers
@@ -746,6 +749,8 @@ def assemble():
     source = "\n\n".join((ROOT / fragment).read_text() for fragment in FRAGMENTS)
     source = source.replace("/* SOURCE_ELEMENT_KINDS */", ",".join(literal(owner.kind) for owner in manifest))
     source += '\n' + software_numbers.sql() + '\n' + software_file_lengths.sql()
+    source += '\n' + native_file_sizes.sql() + '\n' + native_file_qualification.sql()
+    source += '\n' + shared_file_facts.sql()
     root_tables, root_guards, root_problems = root_diagnostic_sql()
     source += '\n' + root_tables
     with closing(sqlite3.connect(":memory:")) as connection:
@@ -755,6 +760,9 @@ def assemble():
         collisions = collision_guards(connection)
         immutable = published_fact_guards(connection, manifest)
         hash_positions, hash_guards, hash_problems = hash_position_sql(connection)
+        # Qualification consumes the canonical native hash selector. Install it
+        # in the introspection DB before preparing the composed audit views.
+        connection.executescript(hash_positions)
         format_roots,format_guards,format_problems = format_root_sql(connection, manifest)
         position_guards,position_problems = position_order_sql(connection, manifest)
         relationship_views,relationship_guards,relationship_problems = relationship_position_sql(connection)
@@ -772,7 +780,9 @@ def assemble():
         source_counts.validate_inventory(connection, count_routes)
         count_contract = source_counts.fragment(connection, count_routes)
     audits = [*format_audits, *native_problems, *fk_problems, *root_problems, *hash_problems, *format_problems, *position_problems, *relationship_problems, *presence_problems,
-              'SELECT * FROM candidate_source_count_problems']
+              'SELECT * FROM candidate_source_count_problems',
+              'SELECT * FROM candidate_file_qualification_problems',
+              'SELECT * FROM candidate_shared_identity_problems']
     # SQLite limits a single compound SELECT to 500 terms. Keep the exhaustive
     # reverse audit in named bounded chunks, not one oversized UNION statement.
     chunks = [audits[offset:offset + 100] for offset in range(0, len(audits), 100)]
