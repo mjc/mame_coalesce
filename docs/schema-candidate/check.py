@@ -14,7 +14,7 @@ def shared_connection(foreign_keys=True):
     connection = sqlite3.connect(":memory:")
     connection.execute(f"PRAGMA foreign_keys={'ON' if foreign_keys else 'OFF'}")
     sql = (assemble.ROOT / "shared.sql").read_text().replace("/* SOURCE_ELEMENT_KINDS */", "'mame_machine','mame_rom'")
-    connection.executescript(sql + (assemble.ROOT / "diagnostics.sql").read_text())
+    connection.executescript(sql + assemble.fragment_sql("diagnostics.sql"))
     guards, _ = assemble.foreign_key_guards(connection)
     connection.executescript("\n".join(guards + assemble.collision_guards(connection)
                                      + assemble.published_fact_guards(connection, ())

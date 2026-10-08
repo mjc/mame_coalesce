@@ -18,10 +18,16 @@ import no_intro_presence_check
 import software_presence_check
 
 
-def composed_db():
+def composed_db(add_cleanup=None):
     db = sqlite3.connect(":memory:")
-    db.execute("PRAGMA foreign_keys=ON")
-    db.executescript(assemble.assemble())
+    if add_cleanup is not None:
+        add_cleanup(db.close)
+    try:
+        db.execute("PRAGMA foreign_keys=ON")
+        db.executescript(assemble.assemble())
+    except BaseException:
+        db.close()
+        raise
     return db
 
 
@@ -41,15 +47,12 @@ def add_hash(db, *, media_id, reported_id, hash_id, field, algorithm, scope,
 class NativeFileQualificationChecks(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        no_intro_presence_check.NoIntroPresence.setUpClass()
-        cls.dat_db = no_intro_presence_check.NoIntroPresence.db
-        # Producer proof for these two constructed editions is explicit in
-        # this fixture; the view never derives contracts from tags or names.
-        cls.dat_db.executemany(
-            "INSERT INTO catalog_file_byte_contracts VALUES(?,?)",
-            ((10100, "no_intro_dat_unfiltered_file"),
-             (10400, "no_intro_dat_unfiltered_file"),
-             (10200, "no_intro_pc_fixture_asset")),
+        cls.dat_db = composed_db(cls.addClassCleanup)
+        no_intro_presence_check.populate_fixture(
+            cls.dat_db,
+            file_byte_contracts=((10100, "no_intro_dat_unfiltered_file"),
+                                 (10400, "no_intro_dat_unfiltered_file"),
+                                 (10200, "no_intro_pc_fixture_asset")),
         )
         cls.dat_db.execute("UPDATE no_intro_pc_file_claims SET size_text='0' WHERE media_entry_id=12012")
         cls.dat_db.execute("INSERT INTO catalog_source_elements VALUES(15000,10400,'no_intro_dat_game')")
@@ -80,10 +83,10 @@ class NativeFileQualificationChecks(unittest.TestCase):
             "VALUES(15001,'sha1',0,1,11,30,904)"
         )
 
-        cls.mame_db = composed_db()
-        mame_presence_check.seed(cls.mame_db)
-        cls.mame_db.execute(
-            "INSERT INTO catalog_file_byte_contracts VALUES(1,'mame_0289_machine_rom')"
+        cls.mame_db = composed_db(cls.addClassCleanup)
+        mame_presence_check.seed(
+            cls.mame_db,
+            file_byte_contracts=((1, "mame_0289_machine_rom"),),
         )
         cls.mame_db.execute("INSERT INTO catalog_source_elements VALUES(237,1,'mame_rom')")
         cls.mame_db.execute("INSERT INTO catalog_media_entries(media_entry_id) VALUES(237)")
@@ -123,13 +126,20 @@ class NativeFileQualificationChecks(unittest.TestCase):
             position_values=(),
         )
 
-        cls.software_db = composed_db()
-        cls.software_db.executescript((ROOT / "software_field_witnesses.sql").read_text())
+        cls.software_db = composed_db(cls.addClassCleanup)
+        software_fixture = (ROOT / "software_field_witnesses.sql").read_text()
+        edition_marker = "INSERT INTO catalog_editions\n"
+        if software_fixture.count(edition_marker) != 1:
+            raise AssertionError("software edition fixture boundary changed")
+        software_fixture = software_fixture.replace(
+            edition_marker,
+            "INSERT INTO catalog_file_byte_contracts VALUES "
+            "(1,'mame_0289_software_file');\n" + edition_marker,
+            1,
+        )
+        cls.software_db.executescript(software_fixture)
         count_fixtures.seal(cls.software_db, "software", 1,
                             software_presence_check.SOFTWARE_FIELD_EVENTS)
-        cls.software_db.execute(
-            "INSERT INTO catalog_file_byte_contracts VALUES(1,'mame_0289_software_file')"
-        )
         cls.software_db.execute("INSERT INTO catalog_source_elements VALUES(53,1,'software_rom_entry')")
         cls.software_db.execute("INSERT INTO catalog_media_entries(media_entry_id) VALUES(53)")
         cls.software_db.execute(
@@ -149,15 +159,12 @@ class NativeFileQualificationChecks(unittest.TestCase):
             position_values=(),
         )
 
-        cls.cmp_db = composed_db()
-        cls.cmp_db.executescript(logiqx_cmp_presence_check.transplanted_fixture())
+        cls.cmp_db = composed_db(cls.addClassCleanup)
+        cls.cmp_db.executescript(logiqx_cmp_presence_check.transplanted_fixture(
+            file_byte_contracts=((1, "logiqx_complete_declared_file"),
+                                 (2, "clrmamepro_declared_asset")),
+        ))
         logiqx_cmp_presence_check.seal_transplanted_fixture(cls.cmp_db)
-        cls.cmp_db.execute(
-            "INSERT INTO catalog_file_byte_contracts VALUES(1,'logiqx_complete_declared_file')"
-        )
-        cls.cmp_db.execute(
-            "INSERT INTO catalog_file_byte_contracts VALUES(2,'clrmamepro_declared_asset')"
-        )
         cls.cmp_db.execute("INSERT INTO catalog_source_elements VALUES(5000,1,'logiqx_rom')")
         cls.cmp_db.execute("INSERT INTO catalog_media_entries(media_entry_id,file_uuid) VALUES(5000,NULL)")
         cls.cmp_db.execute(
@@ -292,9 +299,9 @@ class NativeFileQualificationChecks(unittest.TestCase):
     def test_mame_point_qualification_and_uuid_evidence_stay_bounded(self):
         db = composed_db()
         try:
-            mame_presence_check.seed(db)
-            db.execute(
-                "INSERT INTO catalog_file_byte_contracts VALUES(1,'mame_0289_machine_rom')"
+            mame_presence_check.seed(
+                db,
+                file_byte_contracts=((1, "mame_0289_machine_rom"),),
             )
             db.execute("INSERT INTO catalog_source_elements VALUES(237,1,'mame_rom')")
             db.execute("INSERT INTO catalog_media_entries(media_entry_id) VALUES(237)")

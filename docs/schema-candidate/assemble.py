@@ -11,6 +11,8 @@ import re
 import sqlite3
 import sys
 
+import diagnostic_coordinates
+
 
 ROOT = Path(__file__).resolve().parent
 FAMILIES = ("mame", "software", "logiqx_cmp", "no_intro")
@@ -41,6 +43,11 @@ def identifier(value):
 
 def literal(value):
     return "'" + value.replace("'", "''") + "'"
+
+
+def fragment_sql(name):
+    source = (ROOT / name).read_text()
+    return diagnostic_coordinates.render(source) if name == 'diagnostics.sql' else source
 
 
 def kind_family(kind):
@@ -266,12 +273,15 @@ def immutable_dictionary_sql():
     guards.extend([
         'CREATE INDEX IF NOT EXISTS catalog_editions_by_rules ON catalog_editions(reading_rules_id);',
         'CREATE INDEX IF NOT EXISTS catalog_imports_by_rules ON catalog_imports(reading_rules_id);',
-        """CREATE TRIGGER candidate_reading_policy_insert
-        BEFORE INSERT ON catalog_xml_repairs
+    ])
+    for table, trigger in (
+            ('catalog_xml_repairs', 'candidate_reading_policy_insert'),
+            ('catalog_file_byte_contracts', 'candidate_file_byte_policy_insert')):
+        guards.append(f"""CREATE TRIGGER {identifier(trigger)}
+        BEFORE INSERT ON {identifier(table)}
         WHEN EXISTS (SELECT 1 FROM catalog_editions WHERE reading_rules_id=NEW.reading_rules_id)
           OR EXISTS (SELECT 1 FROM catalog_imports WHERE reading_rules_id=NEW.reading_rules_id)
-        BEGIN SELECT RAISE(ABORT,'reading policy is sealed at first use'); END;""",
-    ])
+        BEGIN SELECT RAISE(ABORT,'reading policy is sealed at first use'); END;""")
     return guards
 
 
@@ -761,7 +771,7 @@ def assemble():
     import software_numbers
 
     manifest = owners()
-    source = "\n\n".join((ROOT / fragment).read_text() for fragment in FRAGMENTS)
+    source = "\n\n".join(fragment_sql(fragment) for fragment in FRAGMENTS)
     source = source.replace("/* SOURCE_ELEMENT_KINDS */", ",".join(literal(owner.kind) for owner in manifest))
     source += '\n' + software_numbers.sql() + '\n' + software_file_lengths.sql()
     source += '\n' + native_file_sizes.sql() + '\n' + native_file_qualification.sql()

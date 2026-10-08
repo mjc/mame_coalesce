@@ -99,6 +99,52 @@ def expected_routes():
     return routes
 
 
+def populate_fixture(db, *, file_byte_contracts=()):
+    """Populate the constructed witnesses, optionally issuing contracts first."""
+    fixture = (ROOT / "no_intro_field_witnesses.sql").read_text()
+    fixture = fixture.split("\n-- expect-error:", 1)[0]
+    marker = "INSERT INTO catalog_editions("
+    if fixture.count(marker) != 4:
+        raise AssertionError("No-Intro edition fixture boundary changed")
+    contracts = "".join(
+        "INSERT INTO catalog_file_byte_contracts VALUES "
+        f"({int(rules_id)},{assemble.literal(contract_kind)});\n"
+        for rules_id, contract_kind in file_byte_contracts
+    )
+    if contracts:
+        fixture = fixture.replace(marker, contracts + marker, 1)
+    db.executescript(fixture)
+    # Independent sparse literals for the constructed native rows. Export
+    # family 10300 intentionally has no source-count seal.
+    count_fixtures.seal(db, "no_intro_dat", 10100, {
+        "header_count": 1, "header_text_child_count": 12,
+        "clrmamepro_element_count": 1, "romcenter_element_count": 1,
+        "game_count": 1, "game_description_count": 1, "category_count": 1,
+        "identifier_count": 1, "release_count": 1, "rom_count": 1,
+        "game_attribute_position_count": 4, "release_attribute_position_count": 2,
+        "clrmamepro_attribute_position_count": 2,
+        "romcenter_attribute_position_count": 1, "rom_attribute_position_count": 11,
+        "document_xsi_attribute_count": 3, "header_xsi_attribute_count": 3,
+        "header_text_child_xsi_attribute_count": 48,
+        "clrmamepro_xsi_attribute_count": 3, "romcenter_xsi_attribute_count": 3,
+        "game_xsi_attribute_count": 3, "game_description_xsi_attribute_count": 4,
+        "category_xsi_attribute_count": 4, "identifier_xsi_attribute_count": 4,
+        "release_xsi_attribute_count": 3, "rom_xsi_attribute_count": 3,
+    })
+    count_fixtures.seal(db, "no_intro_dat", 10400, {
+        "header_count": 1, "header_text_child_count": 4,
+        "clrmamepro_element_count": 1,
+    })
+    count_fixtures.seal(db, "no_intro_pc_fixture", 10200, {
+        "header_count": 1, "header_name_child_count": 1,
+        "header_description_child_count": 1, "header_version_child_count": 1,
+        "game_count": 2, "language_token_count": 3, "game_description_count": 1,
+        "rom_count": 3, "game_attribute_position_count": 12,
+        "rom_attribute_position_count": 7,
+    })
+    db.execute("RELEASE no_intro_fields")
+
+
 class NoIntroPresence(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -110,37 +156,7 @@ class NoIntroPresence(unittest.TestCase):
         # Main calls its generator once; do not assemble once per test/route.
         cls.db.executescript(assemble.assemble())
         # Only the constructed positive setup, before expected-failure controls.
-        fixture = (ROOT / "no_intro_field_witnesses.sql").read_text()
-        cls.db.executescript(fixture.split("\n-- expect-error:", 1)[0])
-        # Independent sparse literals for the constructed native rows. Export
-        # family 10300 intentionally has no source-count seal.
-        count_fixtures.seal(cls.db, "no_intro_dat", 10100, {
-            "header_count": 1, "header_text_child_count": 12,
-            "clrmamepro_element_count": 1, "romcenter_element_count": 1,
-            "game_count": 1, "game_description_count": 1, "category_count": 1,
-            "identifier_count": 1, "release_count": 1, "rom_count": 1,
-            "game_attribute_position_count": 4, "release_attribute_position_count": 2,
-            "clrmamepro_attribute_position_count": 2,
-            "romcenter_attribute_position_count": 1, "rom_attribute_position_count": 11,
-            "document_xsi_attribute_count": 3, "header_xsi_attribute_count": 3,
-            "header_text_child_xsi_attribute_count": 48,
-            "clrmamepro_xsi_attribute_count": 3, "romcenter_xsi_attribute_count": 3,
-            "game_xsi_attribute_count": 3, "game_description_xsi_attribute_count": 4,
-            "category_xsi_attribute_count": 4, "identifier_xsi_attribute_count": 4,
-            "release_xsi_attribute_count": 3, "rom_xsi_attribute_count": 3,
-        })
-        count_fixtures.seal(cls.db, "no_intro_dat", 10400, {
-            "header_count": 1, "header_text_child_count": 4,
-            "clrmamepro_element_count": 1,
-        })
-        count_fixtures.seal(cls.db, "no_intro_pc_fixture", 10200, {
-            "header_count": 1, "header_name_child_count": 1,
-            "header_description_child_count": 1, "header_version_child_count": 1,
-            "game_count": 2, "language_token_count": 3, "game_description_count": 1,
-            "rom_count": 3, "game_attribute_position_count": 12,
-            "rom_attribute_position_count": 7,
-        })
-        cls.db.execute("RELEASE no_intro_fields")
+        populate_fixture(cls.db)
         cls.by_code = {(r["position_table"], r["field_code"]): r for r in cls.routes}
 
     def setUp(self):

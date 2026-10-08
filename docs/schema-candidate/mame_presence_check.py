@@ -100,7 +100,7 @@ def rows(name):
         return reader.fieldnames, list(reader)
 
 
-def seed(db, *, seal_counts=True):
+def seed(db, *, seal_counts=True, file_byte_contracts=()):
     """Reuse only concrete INSERTs, never the thin fixture's schema/TEMP audit."""
     db.execute("INSERT INTO catalog_publishers VALUES(1,'presence','Presence fixture',NULL)")
     db.execute("INSERT INTO catalogs VALUES(1,1,'presence','Presence fixture')")
@@ -108,6 +108,10 @@ def seed(db, *, seal_counts=True):
     db.execute("INSERT INTO catalog_decoded_xml_views VALUES(1,10000)")
     db.execute("INSERT INTO catalog_reading_rules VALUES(1,'presence-v3','mame','observed','0.289','constructed','mame-observed-compat-declared-text-v3')")
     db.execute("INSERT INTO catalog_coverage VALUES(1,'complete')")
+    db.executemany(
+        "INSERT INTO catalog_file_byte_contracts VALUES(?,?)",
+        file_byte_contracts,
+    )
     db.execute("INSERT INTO catalog_editions VALUES(1,1,1,1,1,NULL,NULL)")
     db.execute("INSERT INTO catalog_set_groups VALUES(10,1,'root')")
     source = (HERE / "mame_field_witnesses.sql").read_text()

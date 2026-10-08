@@ -116,7 +116,7 @@ def seal_transplanted_fixture(connection):
         count_fixtures.seal(connection, family, edition_id, WITNESS_EVENTS[family])
 
 
-def transplanted_fixture():
+def transplanted_fixture(*, file_byte_contracts=()):
     """Reuse only constructed native INSERTs, never the witness's stub schema.
 
     Replace its two shortened common identity declarations and one placeholder
@@ -151,6 +151,13 @@ INSERT INTO catalog_coverage VALUES(1,'complete');
 INSERT INTO catalog_reading_rules VALUES
  (1,'logiqx-presence','logiqx','compat','1.5','candidate','logiqx-declared-text-compat-v2'),
  (2,'cmp-presence','clrmamepro','compat','observed','candidate','clrmamepro-declared-text-compat-v1');
+"""
+    shared += "".join(
+        "INSERT INTO catalog_file_byte_contracts VALUES "
+        f"({int(rules_id)},{assemble.literal(contract_kind)});\n"
+        for rules_id, contract_kind in file_byte_contracts
+    )
+    shared += """
 INSERT INTO catalog_editions VALUES(1,1,1,1,1,NULL,NULL),(2,1,1,2,1,NULL,NULL);
 """
     return shared + body
