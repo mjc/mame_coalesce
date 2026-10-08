@@ -125,6 +125,19 @@ document/header's already-admitted original-text alternative may be used only
 with proof of that view and its mapping. Ordinary owners retain only the
 positions their existing tables admit; do not fabricate child end ranges.
 
+Export games retain independently captured `source_end_line/source_end_column`
+on `no_intro_export_games`, paired and positive when known; their opening
+position stays single-owned by `catalog_sets`. Unknown ends stay NULL. The
+eleven closed ordinary export-owner routes with actual intervals may receive
+diagnostic links only after typed ancestry and half-open containment checks.
+Opening-only owners in other formats cannot borrow a parent's interval; retain
+source-only evidence or a separately proven physical-root link instead.
+
+Every supplied native byte extent is checked against its selected original or
+unrepaired decoded length at publication and by the independent global audit,
+whether or not any diagnostic refers to it. Missing decoded length is not
+permission to use original length. Unavailable extents remain unavailable.
+
 Export dump-source and release details already expose a distinct opening-tag
 endpoint to consumers. Capture it independently at the end-exclusive position
 after the opening `>` on `no_intro_dump_details` and

@@ -275,6 +275,15 @@ FK ancestry; external comparison evidence is a separate published target.
 Confirmed failed imports have no incoming edition/owner links. No SQL text
 coercion or guessed owner may conceal malformed stored evidence.
 
+Ordinary links use the closed native export-owner interval routes in
+`diagnostic_links.py`, not registry membership alone. Verify every typed ancestor,
+selected format and actual interval; every available comparable byte/coordinate
+proof must contain the problem. A point at the exclusive end is not contained.
+Opening-only owners remain source/root-only. The game end pair is retained on
+its native game row, not synthesized from its name or its parent's end.
+Scoped reverse guards preserve linked draft facts; the separate global audit
+starts from links so missing or mistyped owners cannot disappear through joins.
+
 The existing summary is the first diagnostic's message (confirmed by
 `load_summary`), so derive it from message order zero, not a duplicate summary
 column. The current retained/not-retained discriminator is reshaped: a

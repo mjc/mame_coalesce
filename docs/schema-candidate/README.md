@@ -495,6 +495,82 @@ Commit before SQLite backup prevents busy retry; cleanup is registered as each
 connection opens; 500 visible rows continue after the last visible row, not the
 lookahead. Independent Sol fix/re-review is bounded CLEAR for the witness.
 
+## Native diagnostic containment and independent byte bounds
+
+`diagnostic_links.py` shares one half-open containment predicate with physical
+root links. Its closed eleven-route export projection checks actual typed
+ancestry and format, rather than accepting registry FKs alone. Every available
+comparable proof must agree. Link insert/update and scoped reverse checks reject
+invalid linked draft rewrites; the link-seeded global audit also detects missing
+owners and mistyped intermediate ancestors after guards are bypassed. Export
+games regain their independently observed optional paired end coordinates;
+their opening position remains owned once by `catalog_sets`. Opening-only
+owners cannot borrow parent intervals. A separate raw-native coordinate audit
+rejects supplied empty/reversed intervals even without diagnostic links; its
+LEFT JOIN ancestry preserves globally unattributable corrupt rows.
+
+`physical_extents.py` independently validates supplied byte extents on all
+twelve native extent-bearing tables against the selected original/decoded
+length. Publication does not depend on a diagnostic happening to reference a
+bad range. All-NULL unavailable extents remain unavailable; missing decoded
+length cannot fall back to original length. This adds a query-only audit, not
+stored bytes or another extent/ancestry table.
+
+```sh
+python3 -Werror::ResourceWarning docs/schema-candidate/ordinary_diagnostics_check.py
+python3 -Werror::ResourceWarning docs/schema-candidate/physical_extents_check.py
+```
+
+These are constructed containment/publication controls, not authentic capture,
+all-format child intervals, runtime timing or full-model approval. The bounds
+test's twelve-table assertion verifies generated audit membership; behavioral
+publication/boundary cases exercise the populated software fixture. The ordinary
+point-read control retains 512 unrelated games, sources, files, details and
+serials with guards enabled and `ANALYZE`; it is a bounded instruction/plan
+check, not a production benchmark.
+
+## Sealed relationship meaning and receipt provenance
+
+`relationship_closure.py` supplements the existing source-relationship routing
+with user/derived assertion closure. Evidence sealing and accepted reviews need
+the origin-appropriate payload and exactly one compatible typed endpoint for
+each target. Actual set/media targets require matching native kinds and a
+published edition; other endpoint facts retain their real typed references.
+Sealing freezes assertion/evidence children, endpoint meaning and referenced
+inference rules, including late insertion and draft-to-sealed child moves.
+An unresolved target need not have a published edition, but sealing freezes
+that edition's defining context; unsealed draft context remains editable.
+The separate audit finds broken sealed payload/endpoint closure after guard
+bypass. It does not infer the truth of a user's relationship assertion.
+
+`receipt_ancestry.py` preserves receipt/source/publisher agreement in both
+reference directions and freezes receipt provenance once used by a published
+edition or terminal import. Terminal imports cannot detach, downgrade, delete
+and reattach to evade that freeze; running attempts may finish normally.
+Unreferenced receipts remain editable. Existing shared ancestry audits are
+reused rather than copied, with reverse indexes for receipt-reference lookups.
+
+```sh
+python3 -Werror::ResourceWarning docs/schema-candidate/relationship_closure_check.py
+python3 -Werror::ResourceWarning docs/schema-candidate/receipt_ancestry_check.py
+```
+
+These constructed lifecycle witnesses are not production finalizer/recovery
+proof. Any thin or publication-bypassed fixture is explicitly labelled and
+cannot establish complete native publication closure.
+
+This checkpoint's main receipts: 14 ordinary diagnostic tests (14.425s), six
+byte-bound tests (10.554s), eight receipt tests (4.893s), and thirteen relationship
+tests (0.429s). Independent configured GPT-6.1 Sol medium fix/re-reviews are
+bounded CLEAR for those slices, including normal linked-owner rename/deletion,
+terminal-import detach/downgrade/delete and unresolved-edition context bypasses.
+Assembly prepares 93 native kinds and 75 views. The integrated 29-method suite
+passed in 24.659s before the last small guard deltas; later independent fix
+controls and final assembly cover those deltas, not a rerun of the full gate.
+No-Intro presence remains 16/16 (17.637s), export queries 12/12 (7.536s), and the
+focused export-count publication/freeze control 1/1 (6.736s). These constructed
+timings include schema/fixture setup and concurrent work, not import acceptance.
+
 ## Still required
 
 Before design approval, settle every supported field/owner/state/order contract,
@@ -504,6 +580,13 @@ diagnostics and query semantics. Prove composed candidate closure with
 independent constructed witnesses, corruption controls and populated target
 plans. Read the format notes for concrete remaining gaps rather than inferring
 coverage from the existence of a table or a green test count.
+
+One newly confirmed consumer gap remains: the current application has real
+`no_intro_archive_targets` and source-free archive endpoint round trips, but the
+candidate's seven-type endpoint registry omits that native owner. Reconcile the
+eighth typed endpoint and its publication/closure/freeze/query contracts before
+complete-model clearance; repeated publisher archive numbers must not collapse
+actual archive owners. Do not silently replace them with set/name endpoints.
 
 The shared-file evidence layer now has candidate hash and size projections,
 native-file qualification and shared-fact refresh triggers; the earlier gaps

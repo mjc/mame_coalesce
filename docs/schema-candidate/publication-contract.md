@@ -182,6 +182,13 @@ After accepted EOF, the writer performs these operations in the same transaction
    then prepare commit. Reset/finish pending write statements. No success is
    reported externally until commit is confirmed.
 
+Terminal succeeded/failed import rows are immutable: they cannot detach their
+receipt, downgrade to running, or be deleted and recreated to rewrite provenance.
+Receipts used by a published edition or terminal attempt retain their identity
+and fetch/source association. Corrections create a new attempt; unreferenced
+draft receipts remain editable. A running attempt may transition once to its
+terminal state after its final facts are installed.
+
 For reuse, verify the exact existing published edition tuple, selected-source
 parse and applicable event/message agreement. Do not reseal or repair its native
 content, predecessor or stored counts. Record only this fresh import attempt and
