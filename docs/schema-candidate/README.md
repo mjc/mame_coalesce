@@ -443,6 +443,35 @@ local Markdown links and whitespace checks pass. This documentation checkpoint
 does not rerun parser tests, imports, profiles or the production gate, and is not
 a complete-design clearance.
 
+## Source-free consumer reconciliation
+
+[The shared/export query contract](query-contract.md) maps issued file identity,
+generation-bound cursors, compatibility reads, native export hydration, build/
+audit/reconciliation/dependency consumers, diagnostics, history, integrity,
+paired backup and explicit external source recovery to actual candidate owners.
+Its identity/response-shape changes and publication-time ordering are explicit
+proposals, not backward-compatibility or implemented-reader claims.
+[MAME/software](mame-software-consumers.md) and
+[Logiqx/CMP/DAT/synthetic P/C](logiqx-cmp-dat-consumers.md) map each native returned
+family, field/default/position meaning, parent-local sequence and semantic
+history disposition without duplicating the canonical field ledgers.
+
+Independent GPT-6.1 Sol medium review/fix/re-review is bounded CLEAR for these
+consumer contracts. Corrections retain export details' independently observed
+opening-tag endpoints on the two actual details owners; fix source-order page
+keys, software notes ownership/area naming, and current-versus-new CMP/root-SHA1
+capture; and account for catalog name selectors, build metadata/parents and
+repeated-root-name rejection. The two new endpoint regressions went RED for
+missing columns then GREEN, including checked coordinates and publication
+freeze. All ten export-count methods and sixteen No-Intro presence methods
+pass, plus 284/24 field and 18/4 legacy assertions/expected rejections. The full
+count suite takes 51.488 seconds; this is recorded evidence, not an acceptable
+runtime performance claim or a reason to reduce its cases.
+
+These are design/constructed checks only. They do not prove authentic parser
+capture, current application use of the target, all-format query/history parity,
+production import performance or complete-design approval.
+
 ## Still required
 
 Before design approval, settle every supported field/owner/state/order contract,
