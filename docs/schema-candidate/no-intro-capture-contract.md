@@ -17,7 +17,7 @@ has no attribute-position row.
 
 | Input | Completed record and final proof | Native placement |
 |---|---|---|
-| Flat DAT v3/v4, strict/compatible | Closed games may be handed off before EOF; the final proof carries the selected mode, root interval, 26 independent DAT counters and completed document-wide ID/IDREF checks, not an accumulated game collection | One unqualified datafile and required preceding header; games and supported children use their existing typed owners and actual parent-local mixed element order |
+| Flat DAT v3/v4, strict/compatible | Closed games may be handed off before EOF; the final proof carries the selected mode, root interval, 26 independent DAT counters and, only in strict modes, completed document-wide ID/IDREF checks; it is not an accumulated game collection | One unqualified datafile and required preceding header; games and supported children use their existing typed owners and actual parent-local mixed element order |
 | Observed database export / NUL recovery | Closed games carry their existing parent-local witnesses; final proof carries envelope/header facts, whole-document and physical-root intervals, 18 independent edition totals and exhausted recovery warnings | Exactly one datafile; optional nested header before games, or exactly one preceding sibling header; one canonical header owner in either mode |
 | Synthetic P/C fixture | Closed fixture records plus a final proof for the exact repository projection and ten fixture counters | Existing synthetic header/game/child/attribute routes only; this is not authentic DAT-o-MATIC P/C grammar |
 

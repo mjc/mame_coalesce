@@ -434,6 +434,15 @@ buffer is not another stored byte view. Root ends require actual closing
 events, and successful prefix batches never substitute for accepted EOF.
 No reader, writer or schema has been cut over by these documents.
 
+Two independent GPT-6.1 Sol medium reviews cover the publication/No-Intro and
+MAME/Logiqx/CMP contract slices. Fix/re-review makes MAME's byte versus coordinate
+view names and half-open root end explicit. Strict-only DAT identity checks and
+new-edition-only publication insertion are explicit, not imposed on compatible
+mode or reused editions. Assembly still prepares 93 native kinds and 70 views;
+local Markdown links and whitespace checks pass. This documentation checkpoint
+does not rerun parser tests, imports, profiles or the production gate, and is not
+a complete-design clearance.
+
 ## Still required
 
 Before design approval, settle every supported field/owner/state/order contract,

@@ -172,7 +172,7 @@ After accepted EOF, the writer performs these operations in the same transaction
    native field/owner/order/hash/relationship/count closure for that edition.
    Include request-attributable errors; globally unattributable orphans remain
    global integrity findings rather than guessed membership in this import.
-3. Insert the publication marker. No native source row or position can change
+3. For a new edition, insert the publication marker. No native source row or position can change
    after this point. The marker is transaction-local until commit.
 4. Run/check accepted hash and size membership maintenance for affected canonical
    file components/aliases. Candidate publication triggers implement part of
