@@ -21,13 +21,23 @@ The isolated [candidate bundle](schema-candidate/README.md), recorded in
 [MAMEC-DOC-26](https://lific.mjc.lol/MAMEC/pages/144), now composes concrete shared
 and native SQL, closed owner/hash-position manifests, generated guards and
 in-memory witnesses. It enumerates 93 native kinds and 32 canonical media-hash
-slots. Assembly prepares all 30 views and checks FK targets; 20 integrated
-tests pass in 3.727 seconds, and all four native fixtures pass. Independent
-GPT-6.1 Sol medium review/fix/re-review loops are CLEAR for their bounded core
-and native scopes, including 52 native adversarial assertions.
+slots. Assembly prepares all 34 views and checks FK targets; 25 integrated
+tests pass in 4.045 seconds. All 22 relationship routes and 32 hash mappings
+have positive/adversarial typed routing checks, including INTEGER-coded fields
+that previously failed trigger-affinity comparisons. The single declaration
+projection now drives kind and canonical-position audits without copied values.
+
+Four independent native field crosswalks name actual storage/position owners,
+accepted source states, defaults and evidence. Separate checkers exercise pinned
+inventory identities and bounded constructed values: MAME six tests, software
+seven, Logiqx/CMP nine, and No-Intro 284 SQL assertions/24 expected rejections
+plus its legacy 18/4 fixture. The updated core routing and reference-validation
+Sol review and all four native field reviews are bounded CLEAR after fix/re-review.
+Six Logiqx/CMP missing/multiple-selector mutations independently verify that
+assertions cannot pass without checking exactly one selected row.
 
 This is not production DDL or complete-schema approval. All-format field/count
-closure, exhaustive 22-kind relationship-position proof, qualified size evidence,
+and publication closure beyond the routing checks, qualified size evidence,
 software complete-first-run qualification, UUID eligibility, ordinary diagnostic
 containment and populated target performance proof remain unfinished. Dictionaries
 and collector diagrams must be reconciled with the complete artifact before
