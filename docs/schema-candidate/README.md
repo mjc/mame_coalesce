@@ -8,7 +8,11 @@ databases only; no corpus, original, database or profiling output is removed.
 
 Start with the [approval proposal](proposal.md) for the domain model, diagrams,
 exact artifact index, deliberate API changes and design/implementation gates.
-Its review remains pending; it does not replace the native field dictionaries.
+Complete-model Sol review is CLEAR for executable `71a7de8` with documentation
+checkpoint `e7a54af`; explicit user approval remains pending. The proposal does
+not replace the native field dictionaries. Earlier checkpoints below retain
+their historical scope; the latest complete-model checkpoint supersedes their
+review status, not their implementation-evidence limits.
 
 The format notes identify the exact Lific revisions, field/code inventories,
 current-to-target decisions, parser capture gaps and still-unproved contracts.
@@ -790,5 +794,32 @@ The five native VM probes remain within zero to three instructions after
 editions, preserving every native assertion/population and removing cross-test
 class setup ownership. Worker presence checks pass 13 MAME, 16 No-Intro and
 14 Logiqx/CMP methods plus two Logiqx count-mapping controls. These are not a
-complete successor-suite replay or runtime/corpus proof. Complete-model Sol
-fix/re-review and explicit approval remain pending.
+complete successor-suite replay or runtime/corpus proof.
+
+## Complete-model review — 2026-10-08 UTC
+
+GPT-6.1 Sol medium returns complete-model CLEAR for executable `71a7de8`, with
+documentation checkpoint `e7a54af`: all 64 local non-test artifacts and critical
+current-target Lific sections reviewed, no unresolved material design finding
+and no unread critical target text. Historical receipts/comments and illustrative
+bitmaps are excluded. All five original findings and both extensions are closed.
+
+Independent controls include 810 coordinate-oracle cases, core/composed positive
+and refusal probes, the actual MAME-root FK mapping, 75 prepared views and empty
+complete-native global/FK audits. Receipt evidence/ancestry replays pass 14 tests
+in 6.988s. The predicate renderer and both callers were reviewed with sem context.
+
+The main-owned serial replay passes all 358 unique constructed tests in 614.853s,
+with ResourceWarning treated as errors and no ignored controls. Measured methods
+take 483.032s; class setup/runner residual is 131.823s. MAMEC-64 records the top
+20 methods and measured export-query setup stages, without claiming an import
+benchmark or inferring a root cause from timing alone.
+Separate standalone checks pass: No-Intro field witnesses have 284 assertions
+and 24 expected rejections, native witnesses have 18 assertions and four expected
+rejections, and the ledger checks 269 exact paths/201 closed position codes.
+Software file-length point queries remain 2,224 VM instructions before/after
+128 unrelated native chains. These checks also treat ResourceWarning as errors.
+This verdict and replay do not prove authentic parser/EOF/corpus
+capture, runtime bulk writers/readers, import performance or the full devenv gate.
+Explicit user approval of the identified design remains required before production
+cutover. PLAN-3 remains active.
