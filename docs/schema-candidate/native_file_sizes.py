@@ -1,5 +1,6 @@
 """Query-only numeric projections of native whole-file size declarations."""
 
+from xml_numeric_sql import xml_integer_sql
 
 I64_MAX = "9223372036854775807"
 
@@ -25,23 +26,7 @@ END"""
 
 def _xs_unsigned_int_sql(expression: str) -> str:
     """Mirror strict flat-DAT xs:unsignedInt parsing, narrowed to u32."""
-    value = f"({expression})"
-    lexical = f"trim({value}, char(9) || char(10) || char(13) || ' ')"
-    digits = (
-        f"CASE WHEN substr({lexical}, 1, 1) IN ('+', '-') "
-        f"THEN substr({lexical}, 2) ELSE {lexical} END"
-    )
-    significant = f"ltrim({digits}, '0')"
-    return f"""CASE
-    WHEN typeof({value}) = 'text'
-     AND instr(CAST({value} AS BLOB), X'00') = 0
-     AND length({digits}) > 0
-     AND {digits} NOT GLOB '*[^0-9]*'
-     AND (substr({lexical}, 1, 1) <> '-' OR {significant} = '')
-     AND (length({significant}) < 10 OR
-          (length({significant}) = 10 AND {significant} COLLATE BINARY <= '4294967295'))
-    THEN CAST(CASE WHEN {significant} = '' THEN '0' ELSE {significant} END AS INTEGER)
-END"""
+    return xml_integer_sql(expression, 0, 4294967295)
 
 
 def _native_size_scalar(table: str, raw_column: str, value_expression: str) -> str:
