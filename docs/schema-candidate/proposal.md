@@ -64,13 +64,13 @@ archive number, unresolved clone literal or equal name is never a native key.
 
 | Input | Native ownership / inventory | Boundary |
 |---|---|---|
-| MAME machine XML | `mame.sql`, `mame-owners.tsv`, `mame-field-coverage.tsv`, `mame-field-presence.tsv`, `mame-hash-positions.tsv`, `mame-counts.tsv` | Pinned MAME 0.289 specification and named observed compatibility policy; proposed strict dialect is `strict-dtd`, not inferred from filenames |
-| MAME software-list XML | Corresponding `software.*` / `software-*.tsv`; title → part → data/disk area → actual load/file declarations | Pinned 0.289 loading contract, checked continue/reload/ignore/fill behavior; partial byte groups warn and process as agreed, rather than being silently truncated or rejected |
-| Logiqx XML | `logiqx_cmp.sql` and the `logiqx_cmp-*` ledgers | Pinned DTD 1.5 versus explicit compatible rules; source-declared root metadata is distinct from computed original digests and acquisition facts |
-| ClrMamePro text | Same SQL/ledgers with concrete CMP form/scalar/flag/comment owners | Bounded `clrmamepro-declared-text-compat-v1` adapter; quoted-empty values, keyword/value anchors and order survive. No external producer specification or arbitrary nested TOSEC/PureDOS grammar is claimed |
-| No-Intro DAT XML | `no_intro.sql`, `no_intro-*` ledgers, native DAT/XSI owners | Acquired v3/v4 schema contracts and separately named compatible deviations; namespace/QName capture while context exists, strict-only ID/IDREF rules |
-| No-Intro database export | Same No-Intro ledgers; game → archive descriptions / dumping sources / releases → distinct details, serials and files | Observed versioned wire contract, including selected narrow NUL recovery; two envelope/header-placement modes stay distinct. Current-file hash scope remains unknown unless independently trusted |
-| Synthetic No-Intro P/C fixture | Explicit `no_intro_pc_*` owners in the same fragment | Existing fixture adapter only, not authentic DAT-o-MATIC P/C support |
+| [MAME machine XML](https://lific.mjc.lol/MAMEC/pages/93) | `mame.sql`, `mame-owners.tsv`, `mame-field-coverage.tsv`, `mame-field-presence.tsv`, `mame-hash-positions.tsv`, `mame-counts.tsv` | Pinned MAME 0.289 specification and named observed compatibility policy; proposed strict dialect is `strict-dtd`, not inferred from filenames |
+| [MAME software-list XML](https://lific.mjc.lol/MAMEC/pages/95) | Corresponding `software.*` / `software-*.tsv`; title → part → data/disk area → actual load/file declarations | Pinned 0.289 loading contract, checked continue/reload/ignore/fill behavior; partial byte groups warn and process as agreed, rather than being silently truncated or rejected |
+| [Logiqx XML](https://lific.mjc.lol/MAMEC/pages/94) | `logiqx_cmp.sql` and the `logiqx_cmp-*` ledgers | Pinned DTD 1.5 versus explicit compatible rules; source-declared root metadata is distinct from computed original digests and acquisition facts |
+| [ClrMamePro text](https://lific.mjc.lol/MAMEC/pages/94) | Same SQL/ledgers with concrete CMP form/scalar/flag/comment owners | Bounded `clrmamepro-declared-text-compat-v1` adapter; quoted-empty values, keyword/value anchors and order survive. No external producer specification or arbitrary nested TOSEC/PureDOS grammar is claimed |
+| [No-Intro DAT XML](https://lific.mjc.lol/MAMEC/pages/97) | `no_intro.sql`, `no_intro-*` ledgers, native DAT/XSI owners | Acquired v3/v4 schema contracts and separately named compatible deviations; namespace/QName capture while context exists, strict-only ID/IDREF rules |
+| [No-Intro database export](https://lific.mjc.lol/MAMEC/pages/97) | Same No-Intro ledgers; game → archive descriptions / dumping sources / releases → distinct details, serials and files | Observed versioned wire contract, including selected narrow NUL recovery; two envelope/header-placement modes stay distinct. Current-file hash scope remains unknown unless independently trusted |
+| [Synthetic No-Intro P/C fixture](https://lific.mjc.lol/MAMEC/pages/92) | Explicit `no_intro_pc_*` owners in the same fragment | Existing fixture adapter only, not authentic DAT-o-MATIC P/C support |
 
 The inventories contain 571 contextual field rows, 93 native kinds, 32 hash
 routes and 22 source relationship-position routes. Counts have different units:
@@ -84,6 +84,8 @@ unsupported. The observed export ledger has 135 identified fields; an unlocated
 137-field CSV does not identify two additional fields. No owners are invented
 for unnamed fields. Unsupported producer/byte-coverage contracts remain explicit,
 not hidden by a format-family label or a green synthetic test.
+Their format tickets remain open: design approval does not waive authentic
+grammar research, required format implementation or the remaining PLAN-3 work.
 
 For exact original-to-target state/key/order decisions, read the four format
 notes and [DOC-20](https://lific.mjc.lol/MAMEC/pages/137). The tables above are an
