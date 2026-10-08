@@ -925,10 +925,16 @@ fn seed_ambiguous_digest_witnesses(
             .execute(connection)?;
         assert_eq!(inserted, 1);
 
+        sql_query(
+            "INSERT INTO catalogs(catalog_key,source_key,display_name) \
+             SELECT ?,source_key,display_name FROM catalogs WHERE catalog_key='catalog-a'",
+        )
+        .bind::<Text, _>(&snapshot_key)
+        .execute(connection)?;
         let inserted = sql_query(
             "INSERT INTO catalog_snapshots \
              (snapshot_key, catalog_key, document_key, interpretation_key, coverage_id) \
-             SELECT ?, snapshot.catalog_key, snapshot.document_key, \
+             SELECT ?, ?, snapshot.document_key, \
                     snapshot.interpretation_key, snapshot.coverage_id \
              FROM catalog_snapshots AS snapshot \
              JOIN catalogs USING (catalog_key) \
@@ -939,6 +945,7 @@ fn seed_ambiguous_digest_witnesses(
                AND parser_interpretations.format = 'logiqx' \
              ORDER BY snapshot.snapshot_key LIMIT 1",
         )
+        .bind::<Text, _>(&snapshot_key)
         .bind::<Text, _>(&snapshot_key)
         .execute(connection)?;
         assert_eq!(inserted, 1, "baseline Logiqx source snapshot exists");
@@ -974,11 +981,14 @@ fn seed_ambiguous_digest_witnesses(
         .value;
         sql_query(
             "INSERT INTO logiqx_rom_claims \
-             (occurrence_id, name, size_text, evidence_scope, evidence_provenance, \
+             (occurrence_id, name, size_text, sha1_text, evidence_scope, evidence_provenance, \
               source_line, source_column) \
-             VALUES (?, 'ambiguous-witness.bin', '16', 'whole_asset', 'source_declared', 1, 1)",
+             VALUES (?, 'ambiguous-witness.bin', '16', \
+               (SELECT lower(hex(digest)) FROM digest_values WHERE digest_id=?), \
+               'whole_asset', 'source_declared', 1, 1)",
         )
         .bind::<BigInt, _>(occurrence_id)
+        .bind::<BigInt, _>(digest_id)
         .execute(connection)?;
         sql_query(
             "INSERT INTO occurrence_digest_assertions \
@@ -988,8 +998,52 @@ fn seed_ambiguous_digest_witnesses(
         .bind::<BigInt, _>(occurrence_id)
         .bind::<BigInt, _>(digest_id)
         .execute(connection)?;
+        publish_ambiguous_digest_witness(connection, &snapshot_key, set_id, occurrence_id)?;
     }
 
+    let candidates =
+        sql_query("SELECT COUNT(*) AS count FROM shared_file_hashes WHERE digest_id = ?")
+            .bind::<BigInt, _>(digest_id)
+            .get_result::<CountRow>(connection)?;
+    assert_eq!(candidates.count, 2, "both SQL witnesses must be queryable");
+
+    Ok(())
+}
+
+fn publish_ambiguous_digest_witness(
+    connection: &mut SqliteConnection,
+    snapshot_key: &str,
+    set_id: i64,
+    occurrence_id: i64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    sql_query("INSERT INTO logiqx_document_facts(snapshot_key) VALUES(?)")
+        .bind::<Text, _>(snapshot_key)
+        .execute(connection)?;
+    sql_query(
+        "INSERT INTO logiqx_game_attribute_positions \
+         (set_id,field_kind,source_order,source_line,source_column) VALUES(?,0,0,1,1)",
+    )
+    .bind::<BigInt, _>(set_id)
+    .execute(connection)?;
+    sql_query(
+        "INSERT INTO logiqx_rom_attribute_positions \
+         (occurrence_id,field_kind,source_order,source_line,source_column) \
+         SELECT ?,field_kind,source_order,1,1 FROM \
+         (SELECT 0 AS field_kind,0 AS source_order UNION ALL SELECT 1,1 UNION ALL SELECT 3,2)",
+    )
+    .bind::<BigInt, _>(occurrence_id)
+    .execute(connection)?;
+    // SQL writers expose their accepted facts by sealing the complete snapshot,
+    // just as the streaming importer does after its final completed batch.
+    let published = sql_query(
+        "INSERT INTO snapshot_publications \
+         (catalog_key,document_key,interpretation_key,snapshot_key) \
+         SELECT catalog_key,document_key,interpretation_key,snapshot_key \
+         FROM catalog_snapshots WHERE snapshot_key=?",
+    )
+    .bind::<Text, _>(snapshot_key)
+    .execute(connection)?;
+    assert_eq!(published, 1);
     Ok(())
 }
 
