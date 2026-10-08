@@ -131,13 +131,6 @@ CREATE TABLE no_intro_dat_rom_claims (
     set_id INTEGER NOT NULL REFERENCES no_intro_dat_games(set_id),
     name TEXT NOT NULL,
     size_text TEXT,
-    size_i64 INTEGER GENERATED ALWAYS AS (
-        CASE WHEN size_text IS NOT NULL AND length(size_text)>0
-          AND size_text NOT GLOB '*[^0-9]*'
-          AND (length(ltrim(size_text,'0'))<19 OR
-            (length(ltrim(size_text,'0'))=19 AND ltrim(size_text,'0')<='9223372036854775807'))
-          THEN CAST(size_text AS INTEGER) END
-    ) VIRTUAL,
     status_text TEXT,
     serial_text TEXT,
     header_text TEXT,
@@ -674,12 +667,6 @@ CREATE TABLE no_intro_dump_files (
     bad TEXT, date TEXT, extension TEXT, filter TEXT, forcename TEXT, forcescenename TEXT, format TEXT,
     header TEXT, id TEXT, item TEXT, mia TEXT, note TEXT, origin_size TEXT, serial TEXT,
     size_text TEXT,
-    size_i64 INTEGER GENERATED ALWAYS AS (
-        CASE WHEN size_text IS NOT NULL AND length(size_text)>0 AND size_text NOT GLOB '*[^0-9]*'
-          AND (length(ltrim(size_text,'0'))<19 OR
-            (length(ltrim(size_text,'0'))=19 AND ltrim(size_text,'0')<='9223372036854775807'))
-          THEN CAST(size_text AS INTEGER) END
-    ) VIRTUAL,
     update_type TEXT, "unique" TEXT, version TEXT,
     source_order INTEGER NOT NULL CHECK (source_order >= 0),
     source_line INTEGER NOT NULL CHECK (source_line > 0), source_column INTEGER NOT NULL CHECK (source_column > 0),
@@ -722,12 +709,6 @@ CREATE TABLE no_intro_release_files (
     release_id INTEGER NOT NULL REFERENCES no_intro_releases(release_id),
     bad TEXT, extension TEXT, forcename TEXT, forcescenename TEXT, format TEXT, header TEXT,
     id TEXT, item TEXT, note TEXT, serial TEXT, size_text TEXT,
-    size_i64 INTEGER GENERATED ALWAYS AS (
-        CASE WHEN size_text IS NOT NULL AND length(size_text)>0 AND size_text NOT GLOB '*[^0-9]*'
-          AND (length(ltrim(size_text,'0'))<19 OR
-            (length(ltrim(size_text,'0'))=19 AND ltrim(size_text,'0')<='9223372036854775807'))
-          THEN CAST(size_text AS INTEGER) END
-    ) VIRTUAL,
     update_type TEXT, version TEXT,
     source_order INTEGER NOT NULL CHECK (source_order >= 0),
     source_line INTEGER NOT NULL CHECK (source_line > 0), source_column INTEGER NOT NULL CHECK (source_column > 0),
