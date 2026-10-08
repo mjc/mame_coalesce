@@ -32,11 +32,36 @@ The [MAME key crosswalk](https://lific.mjc.lol/MAMEC/pages/93#exact-mame-hardwar
 names hardware parents and all 33 position companions; the
 [software root/title/part crosswalk](https://lific.mjc.lol/MAMEC/pages/95#exact-software-roottitlepart-key-crosswalk-candidate-2026-10-08-utc)
 completes its remaining nine position mappings. Parser capture of nested MAME
-child order, CMP token keys and final cross-table enforcement remain unfinished.
+child order, CMP keyword-coordinate capture and final cross-table enforcement
+remain unfinished.
 The expanded proposal records the adversarial review findings. Native importers,
 storage and source-free queries now exist for the supported families. Remaining
 producer/dialect and complete current-corpus/query/profiling proof is not implied
 by those bounded implementations.
+
+### CMP lexical ownership — candidate
+
+The [exact CMP key/state proposal](https://lific.mjc.lol/MAMEC/pages/94#exact-cmp-field-sample-and-comment-keys-candidate-2026-10-08-utc)
+keeps existing form/item ordinals, including skipped-item gaps. Field pairs,
+ROM forms and scalar samples share the actual set-body item order; comments do
+not consume those ordinals. Typed field-position keys identify keyword/value
+roles without allocating another global ID for every word. Samples reuse their
+single media ID. Distinct keyword/value coordinates locate comments between
+them; keyword coordinates need new parser capture.
+
+Semicolon comments remain document annotations, including those inside unknown
+vendor forms, without a claimed syntax-parent FK. Their global IDs and unique
+start coordinates support ordered queries without a stored token stream,
+neighbor links or comment-only rank. The current full-document comment vector
+and sealed-count check remain; a separate bounded page relies on immutable
+publication and a private library-issued continuation. History still compares
+ordered complete comment texts, preserving repetitions.
+
+ROM dump-flag presence derives from canonical flag declarations rather than
+duplicate native booleans. Values, hashes and relationship literals retain one
+typed owner. This replaces earlier tentative CMP token-store wording, not the
+wire grammar. Exact coverage/kind/edition/collision guards, populated query plans,
+target implementation and the complete-design approval remain open.
 
 ## Decision and scope
 
