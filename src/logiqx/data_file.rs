@@ -801,6 +801,12 @@ mod tests {
             },
         )?;
         let (metadata, (), capture) = validated.into_capture_parts();
+        assert_eq!(
+            capture.source_byte_view(),
+            Some(crate::xml_reader::SourceByteView::RetainedOriginal {
+                byte_length: xml.len(),
+            })
+        );
 
         let root_end = xml
             .windows(b"</datafile>".len())
@@ -844,10 +850,44 @@ mod tests {
             },
         )?;
         let (_, (), capture) = validated.into_capture_parts();
+        assert_eq!(capture.source_byte_view(), None);
         assert_eq!(capture.root_extent(), None);
         assert_eq!(capture.root_end_location().line, 1);
         assert_eq!(games.len(), 1);
         assert_eq!(games[0].source_order, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn streaming_capture_reports_gzip_decoded_length_and_exact_root_end() -> crate::Result<()> {
+        use flate2::{Compression, write::GzEncoder};
+
+        let xml = b"<datafile><game name='first'/></datafile><!--outside-->";
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(xml)?;
+        let compressed = encoder.finish()?;
+        let validated = super::super::read_with::<_, crate::Error>(
+            compressed.as_slice(),
+            |_| Ok(()),
+            |(), _| Ok(()),
+        )?;
+        let (_, (), capture) = validated.into_capture_parts();
+
+        let root_end = xml
+            .windows(b"</datafile>".len())
+            .position(|window| window == b"</datafile>")
+            .expect("Logiqx root closes")
+            + b"</datafile>".len();
+        assert_eq!(
+            capture.source_byte_view(),
+            Some(crate::xml_reader::SourceByteView::TransportDecodedXml {
+                byte_length: xml.len(),
+            })
+        );
+        assert_eq!(
+            capture.root_extent().map(|extent| extent.end),
+            Some(root_end)
+        );
         Ok(())
     }
 

@@ -8,6 +8,7 @@ use crate::{
 };
 
 use crate::xml_reader::Element;
+pub use crate::xml_reader::SourceByteView;
 
 mod attributes;
 mod specification;
@@ -443,6 +444,7 @@ pub struct CompleteMameRecord {
 pub struct MameCaptureProof {
     root_extent: Option<SourceExtent>,
     root_end_location: RecordLocation,
+    source_byte_view: Option<SourceByteView>,
 }
 
 impl MameCaptureProof {
@@ -454,6 +456,11 @@ impl MameCaptureProof {
     #[must_use]
     pub const fn root_end_location(&self) -> RecordLocation {
         self.root_end_location
+    }
+
+    #[must_use]
+    pub const fn source_byte_view(&self) -> Option<SourceByteView> {
+        self.source_byte_view
     }
 }
 
@@ -719,6 +726,7 @@ fn parse_machine_records<E: From<crate::Error>>(
     Ok(MameCaptureProof {
         root_extent,
         root_end_location,
+        source_byte_view: positions.source_byte_view(),
     })
 }
 
@@ -1589,6 +1597,12 @@ mod tests {
             },
         )?;
         let (_, proof) = validated.into_capture_parts();
+        assert_eq!(
+            proof.source_byte_view(),
+            Some(crate::xml_reader::SourceByteView::RetainedOriginal {
+                byte_length: xml.len(),
+            })
+        );
 
         let root_end = xml
             .windows(b"</mame>".len())
@@ -1654,11 +1668,44 @@ mod tests {
             },
         )?;
         let (_, proof) = validated.into_capture_parts();
+        assert_eq!(proof.source_byte_view(), None);
         assert_eq!(proof.root_extent(), None);
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].source_order, 0);
         assert_eq!(records[0].location.line, 1);
         assert_eq!(records[0].extent, None);
+        Ok(())
+    }
+
+    #[test]
+    fn captured_gzip_reports_complete_decoded_view_without_extending_root_extent()
+    -> crate::Result<()> {
+        use flate2::{Compression, write::GzEncoder};
+        use std::io::Write;
+
+        let xml = b"<mame mameconfig='10'><machine name='m'><description>M</description></machine></mame><!--outside-->";
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(xml)?;
+        let compressed = encoder.finish()?;
+        let validated = read_captured_with::<_, crate::Error>(
+            compressed.as_slice(),
+            |_| Ok(()),
+            |(), _| Ok(()),
+        )?;
+        let (_, proof) = validated.into_capture_parts();
+
+        let root_end = xml
+            .windows(b"</mame>".len())
+            .position(|window| window == b"</mame>")
+            .expect("MAME root closes")
+            + b"</mame>".len();
+        assert_eq!(
+            proof.source_byte_view(),
+            Some(crate::xml_reader::SourceByteView::TransportDecodedXml {
+                byte_length: xml.len(),
+            })
+        );
+        assert_eq!(proof.root_extent().map(|extent| extent.end), Some(root_end));
         Ok(())
     }
 

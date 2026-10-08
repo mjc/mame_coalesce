@@ -7,7 +7,7 @@ use super::{
     data_file::{self, XmlSourceMap},
     dtd15,
 };
-use crate::xml_reader::{self, Element, NodeBudget, SourceExtent};
+use crate::xml_reader::{self, Element, NodeBudget, SourceByteView, SourceExtent};
 
 /// Root declarations available before any game is consumed.
 #[derive(Clone, Copy, Debug)]
@@ -46,6 +46,7 @@ pub struct ValidatedLogiqx<S> {
 pub struct LogiqxCaptureProof {
     root_extent: Option<SourceExtent>,
     root_end_location: RecordLocation,
+    source_byte_view: Option<SourceByteView>,
 }
 
 impl LogiqxCaptureProof {
@@ -57,6 +58,11 @@ impl LogiqxCaptureProof {
     #[must_use]
     pub const fn root_end_location(&self) -> RecordLocation {
         self.root_end_location
+    }
+
+    #[must_use]
+    pub const fn source_byte_view(&self) -> Option<SourceByteView> {
+        self.source_byte_view
     }
 }
 
@@ -231,6 +237,7 @@ pub(super) fn read_with_diagnostics_mode<S, E: From<crate::Error>>(
             capture: LogiqxCaptureProof {
                 root_extent: positions.event_extent(root_event_span.0, root_end_offset)?,
                 root_end_location,
+                source_byte_view: positions.source_byte_view(),
             },
             document_diagnostics: document_map.unsupported_attributes,
         })

@@ -15,7 +15,7 @@ pub enum LogiqxMode {
     StrictDtd15,
 }
 
-pub use crate::xml_reader::{AttributeLocation, AttributePosition, SourceExtent};
+pub use crate::xml_reader::{AttributeLocation, AttributePosition, SourceByteView, SourceExtent};
 pub use attributes::{
     BiosSetAttribute, ClrMameProAttribute, DiskAttribute, DocumentAttribute, GameAttribute,
     NameAttribute, ReleaseAttribute, RomAttribute, RomCenterAttribute,

@@ -279,7 +279,16 @@ pub struct PositionMap<'a> {
     bytes: &'a [u8],
     cursor: usize,
     position: SourcePosition,
-    source_bytes_mappable: bool,
+    source_byte_view: Option<SourceByteView>,
+}
+
+/// Identifies the complete byte sequence against which source extents are measured.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceByteView {
+    /// The retained input bytes are the XML byte sequence.
+    RetainedOriginal { byte_length: usize },
+    /// A transport wrapper was decoded; the XML byte sequence is this long.
+    TransportDecodedXml { byte_length: usize },
 }
 
 /// Provenance of a leading U+FEFF in the decoded reader buffer. quick-xml
@@ -404,13 +413,19 @@ impl<'a> PositionMap<'a> {
 
     #[cfg(test)]
     const fn new(bytes: &'a [u8], bom_origin: BomOrigin) -> Self {
-        Self::with_source_byte_mapping(bytes, bom_origin, true)
+        Self::with_source_byte_mapping(
+            bytes,
+            bom_origin,
+            Some(SourceByteView::RetainedOriginal {
+                byte_length: bytes.len(),
+            }),
+        )
     }
 
     const fn with_source_byte_mapping(
         bytes: &'a [u8],
         bom_origin: BomOrigin,
-        source_bytes_mappable: bool,
+        source_byte_view: Option<SourceByteView>,
     ) -> Self {
         let prefix_length = utf8_bom_length(bytes);
         let mut position = SourcePosition::new();
@@ -423,8 +438,14 @@ impl<'a> PositionMap<'a> {
             // the reader-skipped byte prefix without erasing a decoded scalar.
             cursor: prefix_length,
             position,
-            source_bytes_mappable,
+            source_byte_view,
         }
+    }
+
+    /// Describe the complete mapped byte view, if event offsets refer to it.
+    #[must_use]
+    pub const fn source_byte_view(&self) -> Option<SourceByteView> {
+        self.source_byte_view
     }
 
     /// Translate quick-xml's BOM-excluding offset to the retained parse buffer.
@@ -438,7 +459,8 @@ impl<'a> PositionMap<'a> {
 
     /// Map an event boundary to transport-decoded UTF-8 bytes when available.
     pub(crate) fn event_extent_start(&self, offset: u64) -> Result<Option<usize>> {
-        self.source_bytes_mappable
+        self.source_byte_view
+            .is_some()
             .then(|| self.event_source_offset(offset))
             .transpose()
     }
@@ -451,7 +473,7 @@ impl<'a> PositionMap<'a> {
     /// Map reader event boundaries to source bytes when parsing did not
     /// transcode the XML encoding.
     pub(crate) fn event_extent(&self, start: u64, end: u64) -> Result<Option<SourceExtent>> {
-        if !self.source_bytes_mappable {
+        if self.source_byte_view.is_none() {
             return Ok(None);
         }
         let start = self.event_source_offset(start)?;
@@ -474,6 +496,14 @@ pub fn with_reader<T, E: From<Error>>(
     let source = document_input::decode_xml(bytes)?;
     let view = input_view(bytes);
     let source_bytes_mappable = utf16_encoding(&source).is_none();
+    let source_byte_view = source_bytes_mappable.then(|| match view {
+        ExcerptView::RetainedOriginalBytes => SourceByteView::RetainedOriginal {
+            byte_length: source.len(),
+        },
+        ExcerptView::TransportDecodedXmlBytes => SourceByteView::TransportDecodedXml {
+            byte_length: source.len(),
+        },
+    });
     let xml = decode_text(&source, view)?;
     let bom_origin = if utf16_encoding(&source).is_some() {
         BomOrigin::DecodedScalar
@@ -481,7 +511,7 @@ pub fn with_reader<T, E: From<Error>>(
         BomOrigin::Transport
     };
     validate_xml10_characters(&xml, Some((&source, view)), bom_origin)?;
-    parse_decoded(&xml, bom_origin, source_bytes_mappable, parse)
+    parse_decoded(&xml, bom_origin, source_byte_view, parse)
 }
 
 /// Read text decoded once by an adapter with a format-specific recovery policy.
@@ -491,17 +521,17 @@ pub fn with_decoded_reader<T, E: From<Error>>(
     parse: impl FnOnce(&mut XmlReader<'_>, &mut PositionMap<'_>) -> std::result::Result<T, E>,
 ) -> std::result::Result<T, E> {
     validate_xml10_characters(xml, None, bom_origin)?;
-    parse_decoded(xml, bom_origin, false, parse)
+    parse_decoded(xml, bom_origin, None, parse)
 }
 
 fn parse_decoded<T, E: From<Error>>(
     xml: &str,
     bom_origin: BomOrigin,
-    source_bytes_mappable: bool,
+    source_byte_view: Option<SourceByteView>,
     parse: impl FnOnce(&mut XmlReader<'_>, &mut PositionMap<'_>) -> std::result::Result<T, E>,
 ) -> std::result::Result<T, E> {
     let mut positions =
-        PositionMap::with_source_byte_mapping(xml.as_bytes(), bom_origin, source_bytes_mappable);
+        PositionMap::with_source_byte_mapping(xml.as_bytes(), bom_origin, source_byte_view);
     let mut reader = XmlReader::new(xml.as_bytes());
     parse(&mut reader, &mut positions)
 }
@@ -1327,6 +1357,7 @@ fn allowed_reference(reference: &BytesRef<'_>) -> bool {
 #[cfg(test)]
 mod tests {
     use quick_xml::events::Event;
+    use std::io::Write;
 
     use super::*;
 
@@ -1335,6 +1366,61 @@ mod tests {
             while !matches!(next(reader, positions)?.1, Event::Eof) {}
             Ok(())
         })
+    }
+
+    #[test]
+    fn source_byte_view_reports_complete_mappable_input_view_lengths() -> Result<()> {
+        use flate2::{Compression, write::GzEncoder};
+
+        let plain = b"<root/>";
+        let plain_view =
+            with_reader::<_, Error>(plain, |_, positions| Ok(positions.source_byte_view()))?;
+        assert_eq!(
+            plain_view,
+            Some(SourceByteView::RetainedOriginal {
+                byte_length: plain.len()
+            })
+        );
+
+        let mut bom_xml = b"\xef\xbb\xbf".to_vec();
+        bom_xml.extend_from_slice(plain);
+        let bom_view =
+            with_reader::<_, Error>(&bom_xml, |_, positions| Ok(positions.source_byte_view()))?;
+        assert_eq!(
+            bom_view,
+            Some(SourceByteView::RetainedOriginal {
+                byte_length: bom_xml.len()
+            })
+        );
+
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(plain)?;
+        let compressed = encoder.finish()?;
+        let gzip_view =
+            with_reader::<_, Error>(&compressed, |_, positions| Ok(positions.source_byte_view()))?;
+        assert_eq!(
+            gzip_view,
+            Some(SourceByteView::TransportDecodedXml {
+                byte_length: plain.len()
+            })
+        );
+
+        let utf16 = [
+            0xff, 0xfe, b'<', 0, b'r', 0, b'o', 0, b'o', 0, b't', 0, b'/', 0, b'>', 0,
+        ];
+        let utf16_view =
+            with_reader::<_, Error>(&utf16, |_, positions| Ok(positions.source_byte_view()))?;
+        assert_eq!(utf16_view, None);
+
+        let recovered_view =
+            with_decoded_reader::<_, Error>("<root/>", BomOrigin::Transport, |_, positions| {
+                Ok(positions.source_byte_view())
+            })?;
+        assert_eq!(recovered_view, None);
+
+        let repaired_map = PositionMap::with_source_byte_mapping(plain, BomOrigin::Transport, None);
+        assert_eq!(repaired_map.source_byte_view(), None);
+        Ok(())
     }
 
     #[test]
