@@ -35,10 +35,26 @@ pub(super) const fn cached_sql(sql: &'static str) -> CachedSql {
 /// The bind count must match the placeholders. Callers must parameterize
 /// values and bound both template arity and the set of SQL texts admitted to
 /// Diesel's prepared statement cache. Do not pass user-provided SQL.
-pub(super) const fn cached_generated_sql(sql: String, bindings: Vec<OwnedBinding>) -> BatchQuery {
+pub(super) const fn cached_generated_sql(
+    sql: String,
+    bindings: Vec<OwnedBinding>,
+) -> BatchQuery<'static> {
     BatchQuery {
         sql,
-        bindings,
+        bindings: BatchBindings::Owned(bindings),
+        cacheable: true,
+    }
+}
+
+/// Build a generated query whose text and binary values remain borrowed until
+/// Diesel has encoded the statement.
+pub(super) fn cached_generated_sql_borrowed<'a>(
+    sql: String,
+    bindings: Vec<BorrowedBinding<'a>>,
+) -> BatchQuery<'a> {
+    BatchQuery {
+        sql,
+        bindings: BatchBindings::Borrowed(bindings),
         cacheable: true,
     }
 }
@@ -353,10 +369,6 @@ impl InsertGroup {
                 sql.push(')');
                 debug_assert_eq!(row.len(), row_parameters);
             }
-            let bindings = rows[index..end]
-                .iter()
-                .flat_map(|row| row.iter().cloned())
-                .collect();
             // Cache powers of two plus the maximum row count for this shape.
             // Arbitrary tails still execute normally but cannot grow the cache
             // once for every distinct VALUES tuple count.
@@ -365,7 +377,10 @@ impl InsertGroup {
             let cacheable = rows_in_statement.is_power_of_two() || rows_in_statement == max_rows;
             BatchQuery {
                 sql,
-                bindings,
+                bindings: BatchBindings::OwnedRows {
+                    rows: &rows[index..end],
+                    parameters_per_row: row_parameters,
+                },
                 cacheable,
             }
             .run(conn)?;
@@ -385,6 +400,76 @@ pub(super) enum OwnedBinding {
     NullableBinary(Option<Vec<u8>>),
     Bool(bool),
     Binary(Vec<u8>),
+}
+
+/// Borrowed scalar values supported by generated, immediately executed SQL.
+pub(super) enum BorrowedBinding<'a> {
+    BigInt(i64),
+    Text(&'a str),
+    Binary(&'a [u8]),
+}
+
+enum BatchBindings<'a> {
+    Owned(Vec<OwnedBinding>),
+    Borrowed(Vec<BorrowedBinding<'a>>),
+    OwnedRows {
+        rows: &'a [Vec<OwnedBinding>],
+        parameters_per_row: usize,
+    },
+}
+
+impl BatchBindings<'_> {
+    fn len(&self) -> usize {
+        match self {
+            Self::Owned(bindings) => bindings.len(),
+            Self::Borrowed(bindings) => bindings.len(),
+            Self::OwnedRows {
+                rows,
+                parameters_per_row,
+            } => rows.len().saturating_mul(*parameters_per_row),
+        }
+    }
+
+    fn push_bind<'b>(
+        &'b self,
+        index: usize,
+        pass: &mut AstPass<'_, 'b, Sqlite>,
+    ) -> diesel::QueryResult<()> {
+        match self {
+            Self::Owned(bindings) => bindings
+                .get(index)
+                .ok_or_else(|| query_builder_error("more SQL placeholders than batch bindings"))?
+                .push_bind(pass),
+            Self::Borrowed(bindings) => bindings
+                .get(index)
+                .ok_or_else(|| query_builder_error("more SQL placeholders than batch bindings"))?
+                .push_bind(pass),
+            Self::OwnedRows {
+                rows,
+                parameters_per_row,
+            } => {
+                if *parameters_per_row == 0 {
+                    return Err(query_builder_error("missing generated SQL binding"));
+                }
+                rows.get(index / *parameters_per_row)
+                    .and_then(|row| row.get(index % *parameters_per_row))
+                    .ok_or_else(|| {
+                        query_builder_error("more SQL placeholders than batch bindings")
+                    })?
+                    .push_bind(pass)
+            }
+        }
+    }
+}
+
+impl BorrowedBinding<'_> {
+    fn push_bind<'b>(&'b self, pass: &mut AstPass<'_, 'b, Sqlite>) -> diesel::QueryResult<()> {
+        match self {
+            Self::BigInt(value) => pass.push_bind_param::<diesel::sql_types::BigInt, _>(value),
+            Self::Text(value) => pass.push_bind_param::<diesel::sql_types::Text, _>(value),
+            Self::Binary(value) => pass.push_bind_param::<diesel::sql_types::Binary, _>(value),
+        }
+    }
 }
 
 impl OwnedBinding {
@@ -517,31 +602,31 @@ where
     }
 }
 
-pub(super) struct BatchQuery {
+pub(super) struct BatchQuery<'a> {
     sql: String,
-    bindings: Vec<OwnedBinding>,
+    bindings: BatchBindings<'a>,
     cacheable: bool,
 }
 
-impl BatchQuery {
+impl BatchQuery<'_> {
     fn run(self, conn: &mut SqliteConnection) -> diesel::QueryResult<()> {
         <Self as diesel::query_dsl::methods::ExecuteDsl<SqliteConnection>>::execute(self, conn)?;
         Ok(())
     }
 }
 
-impl QueryId for BatchQuery {
+impl QueryId for BatchQuery<'_> {
     type QueryId = ();
     const HAS_STATIC_QUERY_ID: bool = false;
 }
 
-impl Query for BatchQuery {
+impl Query for BatchQuery<'_> {
     type SqlType = Untyped;
 }
 
-impl RunQueryDsl<SqliteConnection> for BatchQuery {}
+impl RunQueryDsl<SqliteConnection> for BatchQuery<'_> {}
 
-impl QueryFragment<Sqlite> for BatchQuery {
+impl QueryFragment<Sqlite> for BatchQuery<'_> {
     fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, Sqlite>) -> diesel::QueryResult<()> {
         if !self.cacheable {
             pass.unsafe_to_cache_prepared();
@@ -557,11 +642,8 @@ impl QueryFragment<Sqlite> for BatchQuery {
                 }
                 '\'' => quoted = !quoted,
                 '?' if !quoted => {
-                    let binding = self.bindings.get(binding_index).ok_or_else(|| {
-                        query_builder_error("more SQL placeholders than batch bindings")
-                    })?;
                     pass.push_sql(&self.sql[start..index]);
-                    binding.push_bind(&mut pass)?;
+                    self.bindings.push_bind(binding_index, &mut pass)?;
                     binding_index += 1;
                     start = index + ch.len_utf8();
                 }
@@ -664,10 +746,13 @@ mod tests {
     use diesel::{
         Connection, RunQueryDsl, SqliteConnection,
         connection::{InstrumentationEvent, SimpleConnection},
-        sql_types::{BigInt, Nullable, Text},
+        sql_types::{BigInt, Binary, Bool, Nullable, Text},
     };
 
-    use super::{InsertBatch, InsertPhase, OwnedBinding, cached_generated_sql, cached_sql};
+    use super::{
+        BorrowedBinding, InsertBatch, InsertPhase, OwnedBinding, cached_generated_sql,
+        cached_generated_sql_borrowed, cached_sql,
+    };
 
     #[derive(diesel::QueryableByName)]
     struct Row {
@@ -686,9 +771,59 @@ mod tests {
     }
 
     #[derive(diesel::QueryableByName)]
-    struct BinaryRow {
+    struct BorrowedRow {
+        #[diesel(sql_type = Text)]
+        algorithm: String,
         #[diesel(sql_type = diesel::sql_types::Binary)]
         payload: Vec<u8>,
+        #[diesel(sql_type = Text)]
+        note: String,
+    }
+
+    #[derive(diesel::QueryableByName)]
+    struct AllBindingsRow {
+        #[diesel(sql_type = BigInt)]
+        id: i64,
+        #[diesel(sql_type = Nullable<Text>)]
+        name: Option<String>,
+        #[diesel(sql_type = Nullable<BigInt>)]
+        optional_id: Option<i64>,
+        #[diesel(sql_type = Bool)]
+        enabled: bool,
+        #[diesel(sql_type = Nullable<Bool>)]
+        optional_enabled: Option<bool>,
+        #[diesel(sql_type = Binary)]
+        payload: Vec<u8>,
+        #[diesel(sql_type = Nullable<Binary>)]
+        optional_payload: Option<Vec<u8>>,
+    }
+
+    #[test]
+    fn generated_sql_accepts_borrowed_text_and_binary_bindings()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut conn = SqliteConnection::establish(":memory:")?;
+        conn.batch_execute(
+            "CREATE TABLE items(id INTEGER, algorithm TEXT, payload BLOB, note TEXT)",
+        )?;
+        let algorithm = String::from("sha1");
+        let digest = [0x5a; 20];
+
+        cached_generated_sql_borrowed(
+            "INSERT INTO items(id,algorithm,payload,note) VALUES (?,?,?,'literal_?')".to_owned(),
+            vec![
+                BorrowedBinding::BigInt(7),
+                BorrowedBinding::Text(&algorithm),
+                BorrowedBinding::Binary(&digest),
+            ],
+        )
+        .execute(&mut conn)?;
+
+        let row = cached_sql("SELECT algorithm,payload,note FROM items WHERE id=7")
+            .get_result::<BorrowedRow>(&mut conn)?;
+        assert_eq!(row.algorithm, algorithm);
+        assert_eq!(row.payload, digest);
+        assert_eq!(row.note, "literal_?");
+        Ok(())
     }
 
     #[test]
@@ -820,28 +955,68 @@ mod tests {
     fn batches_owned_rows_with_nullable_and_binary_values() -> Result<(), Box<dyn std::error::Error>>
     {
         let mut conn = SqliteConnection::establish(":memory:")?;
-        conn.batch_execute("CREATE TABLE items(id INTEGER PRIMARY KEY, name TEXT, payload BLOB)")?;
+        conn.batch_execute(
+            "CREATE TABLE items(
+                id INTEGER PRIMARY KEY,
+                name TEXT,
+                optional_id INTEGER,
+                enabled BOOLEAN NOT NULL,
+                optional_enabled BOOLEAN,
+                payload BLOB NOT NULL,
+                optional_payload BLOB
+            )",
+        )?;
         let mut batch = InsertBatch::new();
-        cached_sql("INSERT INTO items(id,name,payload) VALUES (?,?,?)")
+        cached_sql("INSERT INTO items(id,name,optional_id,enabled,optional_enabled,payload,optional_payload) VALUES (?,?,?,?,?,?,?)")
             .bind::<BigInt, _>(1_i64)
             .bind::<Nullable<Text>, _>(Some("first"))
+            .bind::<Nullable<BigInt>, _>(Some(17_i64))
+            .bind::<Bool, _>(true)
+            .bind::<Nullable<Bool>, _>(Some(false))
             .bind::<diesel::sql_types::Binary, _>(vec![0, 1, 255])
+            .bind::<Nullable<Binary>, _>(Some(vec![9, 8]))
             .enqueue(&mut batch, &mut conn, InsertPhase::Parents)?;
-        cached_sql("INSERT INTO items(id,name,payload) VALUES (?,?,?)")
+        cached_sql("INSERT INTO items(id,name,optional_id,enabled,optional_enabled,payload,optional_payload) VALUES (?,?,?,?,?,?,?)")
             .bind::<BigInt, _>(2_i64)
             .bind::<Nullable<Text>, _>(None::<String>)
+            .bind::<Nullable<BigInt>, _>(None)
+            .bind::<Bool, _>(false)
+            .bind::<Nullable<Bool>, _>(None)
             .bind::<diesel::sql_types::Binary, _>(vec![42])
+            .bind::<Nullable<Binary>, _>(None)
             .enqueue(&mut batch, &mut conn, InsertPhase::Parents)?;
         batch.flush(&mut conn)?;
 
-        let rows = cached_sql("SELECT id,name FROM items ORDER BY id").load::<Row>(&mut conn)?;
+        let rows = cached_sql(
+            "SELECT id,name,optional_id,enabled,optional_enabled,payload,optional_payload \
+             FROM items ORDER BY id",
+        )
+        .load::<AllBindingsRow>(&mut conn)?;
         assert_eq!(rows.len(), 2);
-        assert_eq!((rows[0].id, rows[0].name.as_deref()), (1, Some("first")));
-        assert_eq!((rows[1].id, rows[1].name.as_deref()), (2, None));
-        let payloads =
-            cached_sql("SELECT payload FROM items ORDER BY id").load::<BinaryRow>(&mut conn)?;
-        assert_eq!(payloads[0].payload, [0, 1, 255]);
-        assert_eq!(payloads[1].payload, [42]);
+        assert_eq!(
+            (
+                rows[0].id,
+                rows[0].name.as_deref(),
+                rows[0].optional_id,
+                rows[0].enabled,
+                rows[0].optional_enabled,
+            ),
+            (1, Some("first"), Some(17), true, Some(false))
+        );
+        assert_eq!(rows[0].payload, [0, 1, 255]);
+        assert_eq!(rows[0].optional_payload.as_deref(), Some(&[9, 8][..]));
+        assert_eq!(
+            (
+                rows[1].id,
+                rows[1].name.as_deref(),
+                rows[1].optional_id,
+                rows[1].enabled,
+                rows[1].optional_enabled,
+            ),
+            (2, None, None, false, None)
+        );
+        assert_eq!(rows[1].payload, [42]);
+        assert_eq!(rows[1].optional_payload, None);
         Ok(())
     }
 

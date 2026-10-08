@@ -3,7 +3,7 @@
 use diesel::{Connection, QueryableByName, RunQueryDsl, SqliteConnection, sql_types::BigInt};
 
 use super::{
-    cached_sql::{OwnedBinding, cached_generated_sql},
+    cached_sql::{BorrowedBinding, cached_generated_sql_borrowed},
     catalog_ids::HashId,
 };
 
@@ -109,11 +109,13 @@ fn intern_validated(
         for row in 0..arity {
             let input_order = row.min(page.len() - 1);
             let input = page[input_order];
-            values.push(OwnedBinding::BigInt(i64::try_from(input_order).map_err(
-                |_| crate::Error::DatabaseSchema("too many digests in one page".to_owned()),
-            )?));
-            values.push(OwnedBinding::Text(input.algorithm.as_str().to_owned()));
-            values.push(OwnedBinding::Binary(input.bytes.to_vec()));
+            values.push(BorrowedBinding::BigInt(
+                i64::try_from(input_order).map_err(|_| {
+                    crate::Error::DatabaseSchema("too many digests in one page".to_owned())
+                })?,
+            ));
+            values.push(BorrowedBinding::Text(input.algorithm.as_str()));
+            values.push(BorrowedBinding::Binary(input.bytes));
         }
 
         let rows = std::iter::repeat_n("(?,?,?)", arity)
@@ -124,13 +126,13 @@ fn intern_validated(
         let mut insert_bindings = Vec::with_capacity(arity * 2);
         for row in 0..arity {
             let input = page[row.min(page.len() - 1)];
-            insert_bindings.push(OwnedBinding::Text(input.algorithm.as_str().to_owned()));
-            insert_bindings.push(OwnedBinding::Binary(input.bytes.to_vec()));
+            insert_bindings.push(BorrowedBinding::Text(input.algorithm.as_str()));
+            insert_bindings.push(BorrowedBinding::Binary(input.bytes));
         }
         let insert_rows = std::iter::repeat_n("(?,?)", arity)
             .collect::<Vec<_>>()
             .join(",");
-        cached_generated_sql(
+        cached_generated_sql_borrowed(
             format!(
                 "WITH requested(algorithm, bytes) AS (VALUES {insert_rows}) \
                  INSERT INTO hash_values(algorithm, bytes) \
@@ -143,7 +145,7 @@ fn intern_validated(
         )
         .execute(connection)?;
 
-        let resolved_rows = cached_generated_sql(
+        let resolved_rows = cached_generated_sql_borrowed(
             format!(
                 "{values_cte} SELECT DISTINCT requested.input_order, value.hash_id \
                  FROM requested JOIN hash_values AS value \

@@ -110,6 +110,35 @@ fn reuses_interned_hash_ids_across_calls() -> crate::Result<()> {
 }
 
 #[test]
+fn interns_borrowed_digest_slices_across_the_existing_page_boundary() -> crate::Result<()> {
+    let mut connection = connection()?;
+    let digests = (0_u32..u32::try_from(HASHES_PER_PAGE).expect("page size fits"))
+        .map(u32::to_be_bytes)
+        .collect::<Vec<_>>();
+    let mut inputs = digests
+        .iter()
+        .map(|bytes| HashInput {
+            algorithm: HashAlgorithm::Crc32,
+            bytes,
+        })
+        .collect::<Vec<_>>();
+    inputs.push(HashInput {
+        algorithm: HashAlgorithm::Crc32,
+        bytes: &digests[0],
+    });
+
+    let ids = intern(&mut connection, &inputs)?;
+
+    assert_eq!(ids.len(), HASHES_PER_PAGE + 1);
+    assert_eq!(ids[0], ids[HASHES_PER_PAGE]);
+    assert_eq!(
+        hash_count(&mut connection)?,
+        i64::try_from(HASHES_PER_PAGE).expect("page size fits SQLite")
+    );
+    Ok(())
+}
+
+#[test]
 fn rejects_invalid_digest_lengths_without_partial_inserts() -> crate::Result<()> {
     let mut connection = connection()?;
     let valid = [0x66; 16];
