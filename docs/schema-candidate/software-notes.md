@@ -105,11 +105,19 @@ leading-zero octal, or `0x`/`0X` hexadecimal in `0..i64::MAX`. Malformed,
 empty, signed, whitespace-padded or overflowing supplied text remains stored
 with a NULL numeric interpretation; absent optional text remains NULL and has
 no position. SQLite's built-in casts cannot implement this grammar exactly.
-This DDL therefore keeps the source lexeme and leaves the checked numeric
-projection to the pinned software-reading-rule implementation; it does not
-store a potentially inconsistent second numeric value. This is a known
-candidate DDL/query gap until the design selects a deterministic SQL function
-or an explicitly validated projection mechanism.
+The candidate keeps the source lexeme and installs query-only projections:
+`candidate_software_data_area_numbers(area_id,byte_length)` and
+`candidate_software_rom_numbers(media_entry_id,byte_length,byte_offset)`.
+Both use `numeric_sql.software_integer_sql`, which emits SQLite built-ins,
+not an application UDF or a persisted numeric copy. It checks the complete
+ASCII token, NUL exclusion and range before decimal conversion or bounded
+octal/hex accumulation. Leading zeroes are removed before accumulation; a
+long zero prefix cannot create an unbounded recursive walk. The projections
+return NULL for absent or malformed text without changing the retained
+lexeme. A numeric zero is valid at this layer; operation-specific rules may
+require a positive length. These are not generic number rules for other
+formats: flat DAT's strict XML `unsignedInt` and P/C's Rust `u64` contracts
+have different lexical/sign/range rules.
 
 ROM loadflag accepts exactly `reload`, `fill`, `continue`, `reload_plain`,
 `ignore`, `load16_byte`, `load16_word`, `load16_word_swap`, `load32_byte`,
@@ -310,16 +318,40 @@ SQL INTEGER affinity on width cannot itself prove exact wire-token recognition
 need the pinned parser boundary. The witness's constructed coordinates are not
 new parser capture evidence.
 
-Pending checked-chain derivation is separate: exact unsigned numeric
-projections for dataarea size and ROM size/offset are still absent from this
-candidate, and first-run length, maximum-run progress, actual cursor behavior,
-partial-group warning/processing, complete recipe preflight, whole-file hash
-qualification and UUID eligibility require their pinned interpretation proof.
-Testing all loadflag strings does not test those derived facts. Existing
-source-declaration/step checks do not turn a retained malformed or unnamed
-declaration into an executable recipe. No new numeric or layout semantics were
-invented, and no production build/gate/import/profile was run. Full design
-approval remains open.
+The query-only numeric and first-run views described below supersede the
+earlier missing-projection/first-run gap. Maximum-run progress, actual cursor
+behavior, partial-group warning/processing, complete recipe preflight,
+whole-file hash qualification and UUID eligibility still require their pinned
+interpretation proof. Testing all loadflag strings does not test those derived
+facts. Source-declaration/step checks do not turn a retained malformed or
+unnamed declaration into an executable recipe. No production build/gate/import/
+profile was run for these design checks. Full design approval remains open.
+
+### Query-only first verification run — candidate
+
+`candidate_software_file_lengths(media_entry_id,byte_length)` derives the first
+ordinary load's verification length from native ROM/load-step/required-file
+owners. It adds consecutive `continue` and `ignore` lengths and stops at the
+first reload, reload_plain, fill or next ordinary load. It does not use the
+largest reload run, data-area size, offset, destination extent or progress
+estimate as the file length. Base and continue lengths must be positive;
+ignore may be zero. An invalid consumed length, signed-range overflow or
+broken owner/step chain yields NULL, never the accumulated valid prefix.
+
+The view adds no stored length or extra source declaration. Numeric projection,
+load-chain structure, byte-coverage qualification and accepted shared evidence
+are separate checks. A result over draft rows is provisional: absence of a
+later row is not a parser EOF receipt. The supported finalizer must first
+establish complete source-count/native ownership closure for the selected
+edition. The view alone does not qualify a malformed/unnamed/nodump file,
+promote control-operation hashes, authorize a UUID, or implement the atomic
+shared hash/size review refresh. Those remain open in the all-format design.
+
+Focused constructed controls are in `numeric_sql_check.py`,
+`software_numbers_check.py` and `software_file_lengths_check.py`. They exercise
+literal numeric boundaries, retained native lexemes, operation/owner corruption,
+and point-query plans. They are not authentic parser, corpus, EOF or runtime
+performance acceptance.
 
 ## Retained-field presence closure — current isolated candidate
 

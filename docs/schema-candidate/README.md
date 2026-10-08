@@ -261,7 +261,9 @@ python3 -Werror::ResourceWarning docs/schema-candidate/logiqx_cmp_count_mapping_
 python3 -Werror::ResourceWarning docs/schema-candidate/no_intro_count_mapping_check.py
 ```
 
-Both entry points emit the same complete 48-view candidate. The independent MAME controls
+At the count-consolidation checkpoint both entry points emitted the same
+complete 48-view candidate; the software interpretation additions below add
+four query-only views. The independent MAME controls
 use literal expected events, exercise actual publication refusal/repair and
 detect a coherently erased optional value and position that the older audit
 cannot infer. Thin compiler controls separately cover equal-sized mappings,
@@ -306,6 +308,38 @@ global integrity scopes remain separate. Compensating edits that preserve a
 counter still require independent source revalidation, not stronger claims
 about these aggregate seals.
 
+## Query-only software numbers and first verification lengths
+
+The composed candidate includes one operation classifier, area-size and
+ROM-size/offset numeric projections, and a first-verification-run length view.
+All four are query-only. The source `loadflag` and exact numeric text remain
+owned once by their native rows; no derived size, operation string or source
+bytes are added to storage. The operation classifier is shared with the native
+chain integrity audit.
+
+The checked number grammar is software-specific: decimal, leading-zero octal
+and `0x`/`0X` hex, no signs/whitespace/non-ASCII digits/NUL, bounded by i64::MAX.
+Conversion cannot accept a partial token or SQLite's clamped overflow value.
+Octal/hex accumulation strips leading zeroes and walks only bounded significant
+digits. File length sums the first base/continue/ignore run, stopping at reload,
+reload_plain, fill or the next base load. Invalid consumed lengths, broken
+required-file/load-step ownership and overflowing sums project NULL rather
+than a usable prefix. A draft result is provisional, not a parser EOF receipt.
+
+```sh
+python3 -Werror::ResourceWarning docs/schema-candidate/numeric_sql_check.py
+python3 -Werror::ResourceWarning docs/schema-candidate/software_numbers_check.py
+python3 -Werror::ResourceWarning docs/schema-candidate/software_file_lengths_check.py
+```
+
+These constructed checks cover literal boundaries, exact native lexeme
+retention, operation/ownership corruptions and indexed point-read plans. SQLite
+instruction controls test that unrelated native declarations/chains do not
+increase point-query work. They do not establish real-import timing, all-format
+numeric equivalence, checked source capture/EOF, executable recipe behavior or
+qualified shared UUID assignment. See `software-notes.md` for the remaining
+qualification and publication obligations.
+
 ## What the checks establish
 
 The shared witnesses exercise binary UUID width/type; edition identity including
@@ -340,6 +374,15 @@ diagnostics and query semantics. Prove composed candidate closure with
 independent constructed witnesses, corruption controls and populated target
 plans. Read the format notes for concrete remaining gaps rather than inferring
 coverage from the existence of a table or a green test count.
+
+The shared-file evidence layer is specifically incomplete. Its current accepted
+hash view relies too heavily on a `whole_file` tag and excludes `whole_asset`
+without the native byte-boundary qualification required by the dictionaries.
+It has no complete native source-size witness projection or size-membership
+refresh. The shared UUID FK alone does not prove native file eligibility, and
+the review refresh still needs exact affected-component/redirected-alias
+cleanup and hash/size consistency controls. The new software length view is
+an input to that work, not a claim that any of these gaps is closed.
 
 Missing parser capture and checked numeric/load interpretation are separate from
 constructed SQL proof. No generated SQL can manufacture a verified EOF, complete
