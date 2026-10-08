@@ -63,6 +63,30 @@ typed owner. This replaces earlier tentative CMP token-store wording, not the
 wire grammar. Exact coverage/kind/edition/collision guards, populated query plans,
 target implementation and the complete-design approval remain open.
 
+### Field-state refinements — candidate
+
+The [MAME field-state completion](https://lific.mjc.lol/MAMEC/pages/93#field-state-completion-and-instance-policy-candidate-2026-10-08-utc)
+distinguishes required presence from nonempty text, names every pinned default,
+retains RAM PCDATA and assigns compatibility MD5 to the sole hash owner. ROM
+offset stays source text; its existing hexadecimal `u64` interpretation is not
+silently narrowed to SQLite or software-list numeric rules. The proposed
+observed-v3 rule retains every accepted device instance with mixed child order;
+current observed-v2 still retains only the first. Strict DTD cardinality remains
+separate. This profile change is not implemented or approved.
+
+The [Logiqx field-state/code ledger](https://lific.mjc.lol/MAMEC/pages/94#complete-logiqx-field-state-and-code-ledger-candidate-2026-10-08-utc)
+maps every attribute family and compatible-only code to its selected owner.
+It preserves mode-specific text requirements, empty/invalid media hashes and
+the strict external-DTD `standalone="yes"` exception. Raw root ordering across
+ignored elements still needs new capture. The
+[software field-state rules](https://lific.mjc.lol/MAMEC/pages/95#complete-software-field-state-rules-candidate-2026-10-08-utc)
+separate accepted raw numeric/hash declarations from closed enums that reject
+invalid supplied values, and retain explicit-default presence.
+
+These are design corrections, not schema/code/test changes. Exact all-table
+constraint and coverage inventories, populated target queries, complete-design
+review and user approval remain required.
+
 ## Decision and scope
 
 Design from document entities, field meaning, cardinality, and actual queries.
