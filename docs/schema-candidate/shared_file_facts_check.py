@@ -3,6 +3,7 @@
 
 import sqlite3
 import unittest
+from unittest import mock
 
 import assemble
 import shared_file_facts
@@ -13,10 +14,20 @@ A, B, C, D = (bytes([number]) * 16 for number in range(1, 5))
 
 def connection():
     db = sqlite3.connect(':memory:')
+    try:
+        populate_connection(db)
+    except BaseException:
+        db.close()
+        raise
+    return db
+
+
+def populate_connection(db):
     db.execute('PRAGMA foreign_keys=ON')
     shared = (assemble.ROOT / 'shared.sql').read_text().replace(
         '/* SOURCE_ELEMENT_KINDS */', "'mame_rom'")
-    db.executescript(shared + (assemble.ROOT / 'relationships.sql').read_text())
+    db.executescript(shared + (assemble.ROOT / 'relationships.sql').read_text()
+                     + (assemble.ROOT / 'no_intro.sql').read_text())
     # These are explicitly thin source-size/qualification adapters. Exact
     # native owners, lexical grammars and eligibility have independent suites.
     db.executescript('''
@@ -54,7 +65,6 @@ def connection():
     db.executemany('INSERT INTO shared_catalog_files VALUES(?,1)', ((file,) for file in (A, B, C, D)))
     db.execute("INSERT INTO hash_values VALUES(1,'sha1',?)", (b'h' * 20,))
     db.execute("INSERT INTO hash_values VALUES(2,'sha1',?)", (b'i' * 20,))
-    return db
 
 
 def source(db, media, file, size=10, hash_id=1, scope='whole_asset', edition=1):
@@ -100,6 +110,19 @@ def decision(db, identity, incoming, candidates, *, merge=False, kept=None,
             db.execute('INSERT INTO file_match_uuid_redirects VALUES(?,?,?)', (candidate, kept, identity))
     if publish:
         db.execute('INSERT INTO file_match_decision_publications VALUES(?,?)', (identity, 'time'))
+
+
+class ConnectionCleanup(unittest.TestCase):
+    def test_failed_fixture_setup_closes_connection(self):
+        db = sqlite3.connect(':memory:')
+        self.addCleanup(db.close)
+        with mock.patch.object(sqlite3, 'connect', return_value=db), \
+                mock.patch.object(assemble, 'foreign_key_guards',
+                                  side_effect=RuntimeError('injected setup failure')):
+            with self.assertRaisesRegex(RuntimeError, 'injected setup failure'):
+                connection()
+        with self.assertRaisesRegex(sqlite3.ProgrammingError, 'closed database'):
+            db.execute('SELECT 1')
 
 
 class SharedFactReviews(unittest.TestCase):

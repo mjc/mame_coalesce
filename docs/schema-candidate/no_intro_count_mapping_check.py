@@ -127,8 +127,8 @@ class NoIntroCountMappings(unittest.TestCase):
             connection.executescript(cls.ddl)
             view_count = connection.execute(
                 "SELECT count(*) FROM sqlite_schema WHERE type='view'").fetchone()[0]
-            if view_count != 48:
-                raise AssertionError(f'expected 48 full-candidate views, found {view_count}')
+            if view_count != 75:
+                raise AssertionError(f'expected 75 full-candidate views, found {view_count}')
             cls.routes = tuple(row for row in source_counts.inventory()
                                if row['family'] in NO_INTRO_FAMILIES)
         cls.routes_by_counter = {(row['family'], row['counter']): row for row in cls.routes}
@@ -145,6 +145,7 @@ class NoIntroCountMappings(unittest.TestCase):
 
     def populated_database(self):
         connection = sqlite3.connect(':memory:')
+        self.addCleanup(connection.close)
         connection.execute('PRAGMA foreign_keys=ON')
         connection.executescript(self.ddl)
         load_populated_fixture(connection)
@@ -176,7 +177,6 @@ class NoIntroCountMappings(unittest.TestCase):
 
     def test_literal_fixture_vectors_match_all_36_independent_routes(self):
         connection = self.populated_database()
-        self.addCleanup(connection.close)
         for (family, edition), vector in EXPECTED_COUNTS.items():
             for counter, expected in vector.items():
                 with self.subTest(family=family, edition=edition, counter=counter):
@@ -188,7 +188,6 @@ class NoIntroCountMappings(unittest.TestCase):
 
     def test_each_counter_maps_only_its_literal_table_and_edition(self):
         connection = self.populated_database()
-        self.addCleanup(connection.close)
         for (family, counter), table in EXPECTED_TABLES.items():
             row = self.routes_by_counter[(family, counter)]
             edition = TARGET_EDITION[family]
@@ -218,7 +217,6 @@ class NoIntroCountMappings(unittest.TestCase):
         expression = row['scope_sql']
 
         connection = self.populated_database()
-        self.addCleanup(connection.close)
         # Payload missing, owner registry retained: the actual header-XSI rows
         # remain scoped even though the typed header row has gone.
         connection.execute('SAVEPOINT header_payload_missing')
@@ -279,7 +277,6 @@ class NoIntroCountMappings(unittest.TestCase):
 
     def test_language_token_rows_are_separate_from_language_position(self):
         connection = self.populated_database()
-        self.addCleanup(connection.close)
         connection.execute('SAVEPOINT language_token_loss')
         connection.execute(
             'DELETE FROM no_intro_pc_languages WHERE set_id=12010 AND language_order=0')

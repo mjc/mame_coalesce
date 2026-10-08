@@ -728,3 +728,27 @@ refused decision may publish after its participating editions publish. This
 separates review from mutable drafts without hiding completed-batch matching
 facts. Private Rust batch capture freezing and parser/EOF proof remain open.
 These checks do not alter the application schema or importer.
+
+## Complete candidate replay — 2026-10-08
+
+The first serial discovery run constructed 331 unique tests; 327 executed in
+570.184 seconds, with 15 errors. Fourteen were one thin shared-fact fixture's
+missing native archive dependency; the count-mapping class also retained an
+obsolete 48-view assertion (the composed candidate has 75). These are failed
+test receipts, not a passing complete-model gate.
+
+The shared-fact fixture now loads the actual No-Intro native DDL needed by the
+archive endpoint's foreign key, without dropping any integrity guards. Its
+factory closes the connection on failed setup, verified by an injected failure.
+Count fixtures register cleanup before construction, not after it succeeds.
+Focused corrected receipts: shared facts 15/15 in 4.656 seconds, count mappings
+4/4 in 27.462 seconds. Software length-query work stays 2,224→2,224 instructions
+with 128 unrelated chains. Standalone No-Intro witnesses retain 284 assertions /
+24 expected rejections and 18 / 4 respectively, with 269 ledger paths and 201
+closed position codes. The corrected complete replay is still pending.
+
+Luna high's dictionary/diagram coherence audit is CLEAR for its reported
+coverage after correcting the reuse/publication diagram and naming the bounded
+`clrmamepro-declared-text-compat-v1` adapter consistently. That audit is not a
+complete-model semantic Sol CLEAR or user approval. Production implementation
+remains gated by the [approval proposal](proposal.md).
