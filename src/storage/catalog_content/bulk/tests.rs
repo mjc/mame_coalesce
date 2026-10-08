@@ -54,6 +54,54 @@ struct DigestQueryTrace {
 }
 
 #[test]
+#[ignore = "manual profiling-build measurement against a retained import database"]
+fn profile_128_most_repeated_shared_files() -> Result<(), Box<dyn std::error::Error>> {
+    if cfg!(debug_assertions) {
+        return Err("use --profile profiling".into());
+    }
+    let path = std::env::var("MAME_COALESCE_FACT_BENCH_DB")?;
+    let mut conn = SqliteConnection::establish(&path)?;
+    conn.batch_execute("PRAGMA query_only=ON; PRAGMA cache_size=-65536; PRAGMA temp_store=FILE;")?;
+    let ids = sql_query(
+        "SELECT content_uuid FROM canonical_occurrence_content WHERE content_uuid IS NOT NULL \
+         GROUP BY content_uuid ORDER BY COUNT(*) DESC,content_uuid LIMIT 128",
+    )
+    .load::<ContentUuidRow>(&mut conn)?
+    .into_iter()
+    .map(|row| content_id(row.content_uuid))
+    .collect::<crate::Result<BTreeSet<_>>>()?;
+    assert_eq!(ids.len(), 128, "the batch must not be reduced");
+    let mut elapsed = Vec::new();
+    for round in 0..11 {
+        let start = std::time::Instant::now();
+        let facts = load_facts(&mut conn, &ids)?;
+        let duration = start.elapsed();
+        assert_eq!(facts.len(), 128);
+        let sizes: usize = facts.values().map(|facts| facts.sizes.len()).sum();
+        let hashes: usize = facts
+            .values()
+            .flat_map(|facts| facts.digests.values())
+            .map(BTreeSet::len)
+            .sum();
+        eprintln!(
+            "shared_file_facts round={round} elapsed_us={} files={} sizes={sizes} hashes={hashes}",
+            duration.as_micros(),
+            facts.len()
+        );
+        if round > 0 {
+            elapsed.push(duration);
+        }
+        std::hint::black_box(facts);
+    }
+    elapsed.sort_unstable();
+    eprintln!(
+        "shared_file_facts warm_median_us={}",
+        elapsed[elapsed.len() / 2].as_micros()
+    );
+    Ok(())
+}
+
+#[test]
 fn bulk_overlay_matches_sequential_digest_and_size_decisions() -> crate::Result<()> {
     let sha1_a = [0x11; 20];
     let sha1_b = [0x22; 20];
@@ -416,7 +464,7 @@ fn digest_fact_hydration_uses_rooted_plan_and_bounded_cached_shapes() -> crate::
             _ => return,
         };
         let sql = sql.split(" -- binds:").next().unwrap_or(&sql).to_owned();
-        if sql.contains("catalog_content_digest_assertions AS assertion") {
+        if sql.contains("shared_file_hashes AS assertion") {
             let mut trace = observed.lock().expect("digest query trace");
             if is_cache_query {
                 trace.cache_queries.push(sql);
@@ -481,11 +529,10 @@ fn assert_rooted_digest_plan(
     sql: &str,
     ids: &[CatalogContentId],
 ) -> crate::Result<()> {
-    assert!(sql.contains("asset_occurrences AS entry"));
-    assert!(sql.contains("entry.content_uuid"));
-    assert!(sql.contains("component.root_uuid"));
-    assert!(sql.contains("catalog_content_digest_assertions AS assertion"));
-    assert!(sql.contains("assertion.occurrence_id"));
+    assert!(sql.contains("shared_file_hashes AS assertion"));
+    assert!(sql.contains("assertion.content_uuid"));
+    assert!(sql.contains("roots.root_uuid"));
+    assert!(sql.contains("assertion.digest_id"));
     assert!(sql.contains("digest.algorithm"));
     assert!(sql.contains("digest.digest"));
 
@@ -502,24 +549,13 @@ fn assert_rooted_digest_plan(
         .collect::<Vec<_>>();
     assert!(
         details.iter().any(|detail| {
-            detail.contains("SEARCH entry")
-                && detail.contains("occurrence_content_lookup")
-                && detail.contains("content_uuid=?")
+            detail.contains("SEARCH assertion") && detail.contains("content_uuid=?")
         }),
-        "digest hydration should seek occurrences by UUID: {details:#?}"
+        "digest hydration should seek shared facts by content UUID: {details:#?}"
     );
     assert!(
-        details.iter().any(|detail| {
-            detail.contains("SEARCH assertion") && detail.contains("occurrence_id=?")
-        }),
-        "digest hydration should seek assertions by occurrence: {details:#?}"
-    );
-    assert!(
-        !details.iter().any(|detail| {
-            detail.contains("MATERIALIZE canonical_occurrence_content")
-                || detail.starts_with("SCAN occurrence ")
-        }),
-        "digest hydration must not materialize or scan the full canonical occurrence view: {details:#?}"
+        !details.iter().any(|detail| detail.contains("occurrence")),
+        "digest hydration should read shared facts without scanning occurrences: {details:#?}"
     );
     Ok(())
 }

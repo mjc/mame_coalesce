@@ -339,7 +339,7 @@ fn load_facts_chunk(
         return Ok(BTreeMap::new());
     }
     let arity = ids.len().next_power_of_two();
-    // Duplicate a real root, never a sentinel identity. UNION in component
+    // Duplicate a real root, never a sentinel identity. DISTINCT in roots
     // deduplicates it while the finite arities keep expensive plans reusable.
     let roots = (0..arity)
         .map(|index| OwnedBinding::Binary(ids[index.min(ids.len() - 1)].as_bytes().to_vec()))
@@ -348,20 +348,15 @@ fn load_facts_chunk(
         .collect::<Vec<_>>()
         .join(", ");
     let component = format!(
-        "WITH RECURSIVE roots(content_uuid) AS (VALUES {values}), \
-         component(root_uuid, content_uuid) AS ( \
-             SELECT content_uuid, content_uuid FROM roots UNION \
-             SELECT component.root_uuid, redirect.old_content_uuid FROM component \
-             JOIN merged_file_ids AS redirect ON redirect.kept_content_uuid = component.content_uuid \
-             JOIN file_match_decision_publications USING (decision_id)) "
+        "WITH requested(content_uuid) AS (VALUES {values}), \
+         roots(root_uuid) AS (SELECT DISTINCT content_uuid FROM requested) "
     );
     let sizes = cached_generated_sql(
         format!(
             "{component}, size_groups AS ( \
-             SELECT component.root_uuid, MIN(sizes.size) AS minimum_size, MAX(sizes.size) AS maximum_size \
-             FROM component CROSS JOIN asset_occurrences AS entry ON entry.content_uuid = component.content_uuid \
-             CROSS JOIN accepted_file_size_assertions AS sizes ON sizes.occurrence_id = entry.occurrence_id \
-             GROUP BY component.root_uuid) \
+             SELECT roots.root_uuid, MIN(sizes.size) AS minimum_size, MAX(sizes.size) AS maximum_size \
+             FROM roots CROSS JOIN shared_file_sizes AS sizes ON sizes.content_uuid = roots.root_uuid \
+             GROUP BY roots.root_uuid) \
          SELECT root_uuid, minimum_size AS size FROM size_groups \
          UNION ALL \
          SELECT root_uuid, maximum_size AS size FROM size_groups \
@@ -381,13 +376,12 @@ fn load_facts_chunk(
     let digests = cached_generated_sql(
         format!(
             "{component}, digest_groups AS ( \
-             SELECT component.root_uuid, digest.algorithm, MIN(digest.digest) AS minimum_digest, \
+             SELECT roots.root_uuid, digest.algorithm, MIN(digest.digest) AS minimum_digest, \
                     MAX(digest.digest) AS maximum_digest \
-             FROM component \
-             CROSS JOIN asset_occurrences AS entry ON entry.content_uuid=component.content_uuid \
-             CROSS JOIN catalog_content_digest_assertions AS assertion ON assertion.occurrence_id=entry.occurrence_id \
+             FROM roots \
+             CROSS JOIN shared_file_hashes AS assertion ON assertion.content_uuid=roots.root_uuid \
              CROSS JOIN digest_values AS digest ON digest.digest_id = assertion.digest_id \
-             GROUP BY component.root_uuid, digest.algorithm) \
+             GROUP BY roots.root_uuid, digest.algorithm) \
          SELECT root_uuid, algorithm, minimum_digest AS digest FROM digest_groups \
          UNION ALL \
          SELECT root_uuid, algorithm, maximum_digest AS digest FROM digest_groups \

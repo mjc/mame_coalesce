@@ -89,9 +89,8 @@ fn stage(
         let values = std::iter::repeat_n("(?,?,?)", page.len())
             .collect::<Vec<_>>()
             .join(",");
-        // Keep shared source/review qualification for accepted aliases, but
-        // take the issued UUID from its native owner. Redirect traversal then
-        // runs in the staged path query instead of once per source occurrence.
+        // Accepted membership already belongs to the canonical shared file.
+        // Disputed candidates still follow published redirects below.
         // Resolve distinct digests before expanding back to request indexes;
         // keep accepted and disputed matches distinct until candidate reduction.
         let statement = format!(
@@ -99,12 +98,11 @@ fn stage(
             requested(algorithm,digest) AS MATERIALIZED (
                 SELECT DISTINCT algorithm,digest FROM incoming),
             matches(algorithm,digest,issued_uuid,disputed) AS MATERIALIZED (
-                SELECT requested.algorithm,requested.digest,owner.content_uuid,0
+                SELECT requested.algorithm,requested.digest,assertion.content_uuid,0
                 FROM requested
                 CROSS JOIN digest_values AS digest
                     ON digest.algorithm=requested.algorithm AND digest.digest=requested.digest
-                JOIN catalog_content_digest_assertions AS assertion USING(digest_id)
-                JOIN asset_occurrences AS owner ON owner.occurrence_id=assertion.occurrence_id
+                JOIN shared_file_hashes AS assertion USING(digest_id)
                 UNION
                 SELECT requested.algorithm,requested.digest,dispute.candidate_content_uuid,1
                 FROM requested

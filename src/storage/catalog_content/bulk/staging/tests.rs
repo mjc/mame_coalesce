@@ -54,11 +54,24 @@ fn trace_lookup_plan(
             .bind::<diesel::sql_types::Text, _>("sha1")
             .bind::<Binary, _>(hash);
     }
-    let details = plan
+    let details: Vec<String> = plan
         .load::<ExplainRow>(conn)?
         .into_iter()
         .map(|row| row.detail)
         .collect();
+    assert!(lookup.contains("JOIN shared_file_hashes AS assertion USING(digest_id)"));
+    assert!(
+        details.iter().any(|detail| {
+            detail.contains("SEARCH assertion")
+                && detail.contains("shared_file_hash_lookup")
+                && detail.contains("digest_id=?")
+        }),
+        "staged lookup should seek accepted hashes through the shared-facts index: {details:#?}"
+    );
+    assert!(
+        !details.iter().any(|detail| detail.contains("occurrence")),
+        "staged lookup should not read occurrence history: {details:#?}"
+    );
     Ok((summaries, details))
 }
 

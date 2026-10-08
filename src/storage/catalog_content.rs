@@ -312,8 +312,8 @@ impl RunQueryDsl<SqliteConnection> for ContentIdentityLookup<'_> {}
 impl QueryFragment<Sqlite> for ContentIdentityLookup<'_> {
     fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, Sqlite>) -> diesel::QueryResult<()> {
         pass.push_sql(
-            "SELECT DISTINCT assertion.content_uuid AS content_uuid, 0 AS disputed \
-             FROM catalog_content_digest_assertions AS assertion \
+            "SELECT assertion.content_uuid AS content_uuid, 0 AS disputed \
+             FROM shared_file_hashes AS assertion \
              JOIN digest_values AS digest USING (digest_id) \
              WHERE digest.algorithm = ",
         );
@@ -404,17 +404,9 @@ impl RunQueryDsl<SqliteConnection> for ContentIdentitySizes<'_> {}
 
 impl QueryFragment<Sqlite> for ContentIdentitySizes<'_> {
     fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, Sqlite>) -> diesel::QueryResult<()> {
-        pass.push_sql("WITH RECURSIVE component(content_uuid) AS ( SELECT ");
+        pass.push_sql("SELECT size FROM shared_file_sizes WHERE content_uuid = ");
         pass.push_bind_param::<Binary, _>(&self.0)?;
-        pass.push_sql(
-            " UNION SELECT redirect.old_content_uuid FROM component \
-             JOIN merged_file_ids AS redirect ON redirect.kept_content_uuid = component.content_uuid \
-             JOIN file_match_decision_publications USING (decision_id)) \
-             SELECT DISTINCT sizes.size FROM component \
-             CROSS JOIN asset_occurrences AS entry ON entry.content_uuid = component.content_uuid \
-             CROSS JOIN accepted_file_size_assertions AS sizes \
-               ON sizes.occurrence_id = entry.occurrence_id LIMIT 2",
-        );
+        pass.push_sql(" LIMIT 2");
         Ok(())
     }
 }
@@ -435,18 +427,11 @@ impl RunQueryDsl<SqliteConnection> for ContentIdentityDigests<'_> {}
 
 impl QueryFragment<Sqlite> for ContentIdentityDigests<'_> {
     fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, Sqlite>) -> diesel::QueryResult<()> {
-        pass.push_sql("WITH RECURSIVE component(content_uuid) AS ( SELECT ");
-        pass.push_bind_param::<Binary, _>(&self.0)?;
         pass.push_sql(
-            " UNION SELECT redirect.old_content_uuid FROM component \
-             JOIN merged_file_ids AS redirect ON redirect.kept_content_uuid = component.content_uuid \
-             JOIN file_match_decision_publications USING (decision_id)) \
-             SELECT DISTINCT digest.algorithm, digest.digest FROM component \
-             CROSS JOIN asset_occurrences AS entry ON entry.content_uuid = component.content_uuid \
-             CROSS JOIN catalog_content_digest_assertions AS assertion \
-                 ON assertion.occurrence_id = entry.occurrence_id \
-             CROSS JOIN digest_values AS digest ON digest.digest_id = assertion.digest_id",
+            "SELECT digest.algorithm, digest.digest FROM shared_file_hashes AS assertion \
+             JOIN digest_values AS digest USING(digest_id) WHERE assertion.content_uuid = ",
         );
+        pass.push_bind_param::<Binary, _>(&self.0)?;
         Ok(())
     }
 }
@@ -484,7 +469,7 @@ struct ContentFactsRow {
     size: i64,
 }
 
-/// Resolve source assertions without storing another copy of their hashes or size.
+/// Resolve source assertions against the shared accepted ROM facts.
 /// The caller persists the linked native occurrence and its assertions in the
 /// same import transaction before resolving the next occurrence.
 pub fn resolve_content_identity(
