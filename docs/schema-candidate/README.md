@@ -534,7 +534,7 @@ check, not a production benchmark.
 `relationship_closure.py` supplements the existing source-relationship routing
 with user/derived assertion closure. Evidence sealing and accepted reviews need
 the origin-appropriate payload and exactly one compatible typed endpoint for
-each target. Actual set/media targets require matching native kinds and a
+each target. Actual set/media/archive targets require matching native kinds and a
 published edition; other endpoint facts retain their real typed references.
 Sealing freezes assertion/evidence children, endpoint meaning and referenced
 inference rules, including late insertion and draft-to-sealed child moves.
@@ -552,6 +552,7 @@ reused rather than copied, with reverse indexes for receipt-reference lookups.
 
 ```sh
 python3 -Werror::ResourceWarning docs/schema-candidate/relationship_closure_check.py
+python3 -Werror::ResourceWarning docs/schema-candidate/archive_endpoint_check.py
 python3 -Werror::ResourceWarning docs/schema-candidate/receipt_ancestry_check.py
 ```
 
@@ -581,12 +582,32 @@ independent constructed witnesses, corruption controls and populated target
 plans. Read the format notes for concrete remaining gaps rather than inferring
 coverage from the existence of a table or a green test count.
 
-One newly confirmed consumer gap remains: the current application has real
-`no_intro_archive_targets` and source-free archive endpoint round trips, but the
-candidate's seven-type endpoint registry omits that native owner. Reconcile the
-eighth typed endpoint and its publication/closure/freeze/query contracts before
-complete-model clearance; repeated publisher archive numbers must not collapse
-actual archive owners. Do not silently replace them with set/name endpoints.
+The candidate now restores `no_intro_archive_targets` as the eighth endpoint,
+with an actual native archive FK and checked archive/game/root/document/rules/
+publication ancestry. Its composed tests preserve repeated publisher numbers
+as separate owners, reject broken ancestry and freeze sealed endpoint meaning.
+The composed fixture also caught and fixes native-publication guards wrongly
+preventing endpoint creation after import: closed endpoint tables instead use
+relationship-sealing guards. This bounded fix is not complete-model clearance.
+The query contract now enumerates all eight endpoints and explanation facts;
+DAT publisher-ID and archive-number references stay distinct source-only
+variants, not generic set-name endpoints. Complete-model consistency review,
+production readers and source-free runtime round trips remain required.
+
+Archive checkpoint receipts: 13 composed methods pass (19.720s, including
+fixture/schema setup and concurrent checks); relationship closure remains
+13/13 (2.768s), and the integrated candidate suite passes 29/29 (23.517s).
+Archive owner exclusivity rejects competing native archive/game facets after
+explicit corruption. A populated point check keeps work at 3,352 → 3,350 VM
+instructions with 512 unrelated native archives/targets after ANALYZE. The
+initial outside-UNION subtype count and global native-owner count both showed
+unrelated-row growth; requested keys now seed each closed table's PK lookup.
+This does not establish all endpoint query plans or production import speed.
+Fresh configured GPT-6.1 Sol medium fix/re-review is CLEAR for this bounded
+slice: the reviewer independently verifies both competing-owner rejection and
+the populated query result, runs six focused archive controls and all thirteen
+closure tests, and reports no remaining actionable finding. This does not
+replace the required complete-model review or explicit user approval.
 
 The shared-file evidence layer now has candidate hash and size projections,
 native-file qualification and shared-fact refresh triggers; the earlier gaps

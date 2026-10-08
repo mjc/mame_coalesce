@@ -203,6 +203,54 @@ replacement status remain available to `record_relationship`,
 review/publication tables in `relationships.sql`. No generic parent-ID pair,
 copied source literal or stored explanation payload is introduced.
 
+### Relationship endpoints and explanations
+
+The closed generic registry has eight kinds. These are endpoint identities,
+not eight alternative encodings of source-declared references:
+
+| Registry kind | Canonical typed owner |
+|---|---|
+| `catalog_set` | `catalog_set_targets.set_id` → actual native set or software item |
+| `catalog_media_entry` | `catalog_media_entry_targets.media_entry_id` → actual native file declaration |
+| `no_intro_archive` | `no_intro_archive_targets.archive_id` → actual `no_intro_archive_descriptions` record |
+| `shared_file` | `shared_file_targets.file_uuid` → issued UUID, distinct from its redirect result |
+| `declared_hash` | `declared_hash_targets.hash_id` → unscoped declared digest |
+| `observed_content_hash` | `observed_content_hash_targets.hash_id` → observed whole-file digest identity |
+| `unresolved_catalog` | `unresolved_catalog_targets` → edition-qualified literal set/software-item/media-entry reference |
+| `external_record` | `external_catalog_targets` → namespace and literal external key |
+
+Actual archive endpoints derive game, root group, edition, catalog and reading
+rules through the native parents. Both archive and game registry kinds/editions,
+the export document's root, the No-Intro database format and the publication
+tuple must agree before evidence or an accepted review can seal. Publisher
+`number` is returned from the archive, never used instead of `archive_id` or
+assumed unique. Endpoints may be issued after native edition publication; their
+own meaning freezes at relationship sealing, while published native facts
+remain immutable. Requested endpoint hydration starts from requested IDs and
+must report inconsistent/missing typed owners, not silently omit them.
+
+`unresolved_catalog_targets.record_kind='media_entry'` is the candidate name
+for the current API's `asset_requirement`; this is a deliberate vocabulary
+change, not another stored subtype. DAT `cloneof` names and `cloneofid` publisher
+IDs remain distinct **source-reference** variants, reached through their
+reported kind, native declaration and field position. Publisher-ID, archive-
+number and merge-reference source variants are not generic registry endpoints.
+No generic set-name endpoint is synthesized for them. Resolution, if asserted,
+is a separate typed relationship retaining the original source assertion as
+evidence; the literal is never overwritten or coerced into an actual owner ID.
+
+| Explanation response facts | Canonical route / visibility |
+|---|---|
+| Stable assertion key, origin, relation type, typed subject/target | Identity plus exact reported/manual/inferred owner and the closed endpoint dispatch above; source references dispatch by reported kind |
+| Rationale or comparison status and ordered field dispositions | Exact evidence subtype, its publication, and comparison-field order; no stored explanation blob |
+| Source field/QName, order, coordinates, owner and import provenance | Native declaring owner and canonical position → edition/rules/source/receipt; source-only literals retain their declared kind |
+| Rule identity/revision/description and ordered supporting assertions | Inferred rule FK and ordered evidence edges; repeated support at separate positions survives |
+| Latest visible review and complete visible review history | Published reviews with decision, note, time and optional replacement; latest published ID is chosen before decision filtering, and an unsealed draft cannot hide it |
+
+All returned owner IDs retain the query contract's typed, registry-qualified
+identity rules. These are proposed reader obligations, not proof that a new
+production reader or source-free round-trip implementation already exists.
+
 These are model routes and explicit behavioral boundaries, not evidence that
 the current application consumes the candidate. Implementation acceptance must
 exercise build/plan/audit, dependency closure, reconciliation and relationship
