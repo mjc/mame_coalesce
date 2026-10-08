@@ -14,6 +14,8 @@ import unittest
 
 sys.dont_write_bytecode = True
 import assemble
+import count_fixtures
+import software_presence_check
 
 ROOT = Path(__file__).resolve().parent
 
@@ -28,7 +30,15 @@ class SoftwareCardinality(unittest.TestCase):
         cls.db.executescript(assembled)
         cls.assert_view_interface()
         cls.db.executescript((ROOT / "software_field_witnesses.sql").read_text())
+        count_fixtures.seal(
+            cls.db, "software", 1, software_presence_check.SOFTWARE_FIELD_EVENTS
+        )
         cls.add_envelope_controls()
+        baseline = cls.db.execute(
+            "SELECT problem,owner_id,edition_id FROM candidate_integrity_problems"
+        ).fetchall()
+        if baseline:
+            raise AssertionError(f"software cardinality baselines are not clean: {baseline}")
         cls.db.commit()
         cls.db.execute("PRAGMA foreign_keys=OFF")
 
@@ -64,6 +74,20 @@ class SoftwareCardinality(unittest.TestCase):
         db.execute("INSERT INTO software_titles VALUES(2000,'yes',0)")
         db.execute("""INSERT INTO software_title_text_elements VALUES
             (2010,2000,0,'',0,4,1),(2011,2000,1,'',1,5,1),(2012,2000,2,'',2,6,1)""")
+        db.execute("INSERT INTO software_list_attribute_positions"
+                   "(set_group_id,field_kind,source_order,source_line,source_column)"
+                   " VALUES(200,0,0,2,15)")
+        db.execute("INSERT INTO software_title_attribute_positions"
+                   "(set_id,field_kind,source_order,source_line,source_column)"
+                   " VALUES(2000,0,0,3,7)")
+        count_fixtures.seal(db, "software", 2, {
+            "list_count": 1,
+            "title_count": 1,
+            "title_text_element_count": 3,
+            "list_attribute_position_count": 1,
+            "title_attribute_position_count": 1,
+        })
+        count_fixtures.seal(db, "software", 3, {})
 
     def setUp(self):
         self.db.execute("SAVEPOINT software_cardinality_test")

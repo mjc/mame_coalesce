@@ -163,7 +163,9 @@ def candidate(routes=None):
 
 
 def seed_facts(db):
-    mame_presence_check.seed(db)
+    # This suite owns the independently transcribed asymmetric 63-counter
+    # vector below; the shared field fixture must not insert a second seal.
+    mame_presence_check.seed(db, seal_counts=False)
     db.execute("INSERT INTO catalog_source_elements VALUES(237,1,'mame_rom')")
     db.execute("INSERT INTO catalog_media_entries(media_entry_id) VALUES(237)")
     db.execute(

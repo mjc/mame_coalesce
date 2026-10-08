@@ -17,11 +17,81 @@ import unittest
 from unittest.mock import patch
 
 import assemble
+import count_fixtures
 import mame_field_check
 
 
 HERE = Path(__file__).resolve().parent
 HEADER = "owner_table owner_key position_table position_owner field_code present_sql".split()
+
+# Literal receipt for the rows loaded from mame_field_witnesses.sql. The
+# count-mapping fixture adds one ROM and its name position, so it supplies its
+# own asymmetric vector instead.
+MAME_FIELD_EVENTS = {
+    "machine_count": 1,
+    "machine_text_element_count": 3,
+    "bios_set_count": 1,
+    "rom_count": 1,
+    "disk_count": 1,
+    "sample_count": 1,
+    "device_reference_count": 1,
+    "chip_count": 1,
+    "display_count": 1,
+    "sound_count": 1,
+    "input_count": 1,
+    "input_control_count": 1,
+    "switch_count": 2,
+    "switch_location_count": 2,
+    "switch_value_count": 2,
+    "switch_condition_count": 2,
+    "switch_value_condition_count": 2,
+    "adjuster_count": 1,
+    "adjuster_condition_count": 1,
+    "port_count": 1,
+    "analog_count": 1,
+    "driver_count": 1,
+    "feature_count": 1,
+    "device_count": 1,
+    "device_instance_count": 1,
+    "device_extension_count": 1,
+    "slot_count": 1,
+    "slot_option_count": 1,
+    "softwarelist_reference_count": 1,
+    "ram_option_count": 1,
+    "machine_switch_condition_attribute_position_count": 8,
+    "machine_switch_location_attribute_position_count": 6,
+    "machine_switch_value_condition_attribute_position_count": 8,
+    "machine_switch_value_attribute_position_count": 6,
+    "machine_switch_attribute_position_count": 6,
+    "bios_set_attribute_position_count": 3,
+    "device_reference_attribute_position_count": 2,
+    "disk_attribute_position_count": 8,
+    "disk_compatibility_attribute_position_count": 1,
+    "rom_attribute_position_count": 10,
+    "rom_compatibility_attribute_position_count": 8,
+    "document_attribute_position_count": 3,
+    "adjuster_condition_attribute_position_count": 4,
+    "adjuster_attribute_position_count": 2,
+    "analog_attribute_position_count": 1,
+    "chip_attribute_position_count": 4,
+    "display_attribute_position_count": 14,
+    "device_extension_attribute_position_count": 1,
+    "device_instance_attribute_position_count": 2,
+    "device_attribute_position_count": 5,
+    "driver_attribute_position_count": 8,
+    "feature_attribute_position_count": 3,
+    "input_control_attribute_position_count": 11,
+    "input_attribute_position_count": 4,
+    "machine_compatibility_attribute_position_count": 1,
+    "machine_attribute_position_count": 9,
+    "port_attribute_position_count": 1,
+    "ram_option_attribute_position_count": 2,
+    "slot_option_attribute_position_count": 3,
+    "slot_attribute_position_count": 1,
+    "softwarelist_reference_attribute_position_count": 4,
+    "sample_attribute_position_count": 1,
+    "sound_attribute_position_count": 1,
+}
 
 
 def rows(name):
@@ -30,7 +100,7 @@ def rows(name):
         return reader.fieldnames, list(reader)
 
 
-def seed(db):
+def seed(db, *, seal_counts=True):
     """Reuse only concrete INSERTs, never the thin fixture's schema/TEMP audit."""
     db.execute("INSERT INTO catalog_publishers VALUES(1,'presence','Presence fixture',NULL)")
     db.execute("INSERT INTO catalogs VALUES(1,1,'presence','Presence fixture')")
@@ -52,6 +122,8 @@ def seed(db):
                        (number, f"constructed-{number}"))
         else:
             db.execute(line)
+    if seal_counts:
+        count_fixtures.seal(db, "mame", 1, MAME_FIELD_EVENTS)
     db.commit()
 
 
@@ -269,11 +341,14 @@ class ComposedPresence(unittest.TestCase):
             self.assertEqual(self.db.execute("PRAGMA foreign_key_check").fetchall(), [])
             self.assertEqual(self.findings("mame_rom_claims_attribute_positions", "sha1"), [])
             # CRC and its position are absent, regardless of the retained SHA1.
-            # Mutants must fail here, not during setup, FK/UNIQUE checks or seal.
+            # The presence slice stays clean; the independent event receipt
+            # still detects deleting an accepted source position after import.
             self.assertEqual(self.findings("mame_rom_claims_attribute_positions", "crc"), [],
                              "native CRC presence must not select the retained SHA1 declaration")
-            self.assertEqual(self.db.execute("SELECT * FROM candidate_integrity_problems").fetchall(), [])
-            self.db.execute("INSERT INTO published_catalog_editions VALUES(1,1,1,1,1,'constructed-crc-absent')")
+            self.assertEqual(self.db.execute(
+                "SELECT problem,owner_id,edition_id FROM candidate_integrity_problems"
+            ).fetchall(), [("source_count:mame:rom_attribute_position_count", 1, 1)])
+            self.publication_rejected()
 
     def test_crc_nonzero_declaration_does_not_supply_occurrence_zero(self):
         with self.probe():

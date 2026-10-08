@@ -13,6 +13,8 @@ import unittest
 
 sys.dont_write_bytecode = True
 import assemble
+import count_fixtures
+import logiqx_cmp_presence_check
 
 HERE = Path(__file__).resolve().parent
 
@@ -63,6 +65,7 @@ class CardinalityChecks(unittest.TestCase):
         cls.db.execute("PRAGMA foreign_keys=ON")
         cls.db.executescript(assemble.assemble())
         cls.db.executescript(composed_fixture())
+        logiqx_cmp_presence_check.seal_transplanted_fixture(cls.db)
         view = cls.db.execute(
             "SELECT 1 FROM sqlite_schema WHERE type='view' AND name=?",
             ("candidate_logiqx_cmp_cardinality_problems",),
@@ -91,9 +94,22 @@ class CardinalityChecks(unittest.TestCase):
             (edition_id,),
         ).fetchall()
 
+    def adjust_expected_events(self, family, edition_id, events):
+        """Apply literal fixture-event deltas without reading audited rows."""
+        assignments = ",".join(
+            f"{assemble.identifier(counter)}={assemble.identifier(counter)}+?"
+            for counter in events
+        )
+        self.db.execute(
+            f"UPDATE {assemble.identifier(family + '_source_count_seals')} "
+            f"SET {assignments} WHERE edition_id=?",
+            (*events.values(), edition_id),
+        )
+
     def assert_only_publication_problem(self, edition_id, problem, owner_id,
                                         source_file_id=None, reading_rules_id=3,
-                                        allow_problem_prefixes=()):
+                                        allow_problem_prefixes=(),
+                                        expected_other_problems=()):
         found = self.edition_problems(edition_id)
         if isinstance(owner_id, (set, frozenset)):
             expected_rows = [row for row in found if row[0] == problem and row[2] == edition_id]
@@ -103,9 +119,15 @@ class CardinalityChecks(unittest.TestCase):
             self.assertIn((problem, owner_id, edition_id), found)
         unexpected = [
             row for row in found
-            if row[0] != problem and not any(row[0].startswith(prefix) for prefix in allow_problem_prefixes)
+            if row[0] != problem
+            and row not in expected_other_problems
+            and not any(row[0].startswith(prefix) for prefix in allow_problem_prefixes)
         ]
         self.assertEqual(unexpected, [], found)
+        self.assertEqual(
+            sorted(row for row in found if row in expected_other_problems),
+            sorted(expected_other_problems), found,
+        )
         if source_file_id is None:
             source_file_id = edition_id
         with self.assertRaisesRegex(sqlite3.IntegrityError, "complete closure"):
@@ -155,6 +177,7 @@ class CardinalityChecks(unittest.TestCase):
             "column_convention='one_based_unicode_scalar' WHERE edition_id=?",
             (edition_id,),
         )
+        count_fixtures.seal(self.db, "clrmamepro", edition_id, {})
 
     def add_cmp_set(self, source_element_id, source_order, positioned=False, edition_id=3, group_id=None, same_line=False):
         if group_id is None:
@@ -181,6 +204,10 @@ class CardinalityChecks(unittest.TestCase):
                 "VALUES(?,0,?,'name',?,?,?, ?,1)",
                 (source_element_id, source_order, line, column + 2, line, column + 7),
             )
+        events = {"set_count": 1}
+        if positioned:
+            events["set_field_position_count"] = 1
+        self.adjust_expected_events("clrmamepro", edition_id, events)
 
     def test_existing_complete_fixture_has_no_cardinality_problems(self):
         self.assertEqual(self.reports(), [])
@@ -386,6 +413,13 @@ class CardinalityChecks(unittest.TestCase):
                 "INSERT INTO logiqx_game_text_elements VALUES(?,?,?,?,?,?,?)",
                 (source_id, game_id, field_kind, "", source_order, 3, offset + 1),
             )
+        count_fixtures.seal(self.db, "logiqx", edition_id, {
+            "header_count": 1,
+            "game_count": 1,
+            "header_text_count": 4,
+            "game_text_count": 2 if defect in ("game", "compatible") else 1,
+            "game_attribute_position_count": 1,
+        })
         return edition_id, header_id, game_id, header_ordering, game_ordering
 
     def test_strict_logiqx_sequence_defects_reject_publication_and_repair(self):
@@ -472,7 +506,8 @@ class CardinalityChecks(unittest.TestCase):
             (description_id,),
         )
         self.assert_only_publication_problem(
-            edition, "missing_strict_game_description", game_id
+            edition, "missing_strict_game_description", game_id,
+            expected_other_problems=(("source_count:logiqx:game_text_count", edition, edition),),
         )
         self.db.execute(
             "INSERT INTO catalog_source_elements VALUES(?,?,'logiqx_game_text')",
@@ -502,7 +537,14 @@ class CardinalityChecks(unittest.TestCase):
             "VALUES(?,0,0,4,10)",
             (media_id,),
         )
-        self.assert_only_publication_problem(edition, "missing_strict_rom_size", media_id)
+        self.adjust_expected_events("logiqx", edition, {
+            "rom_count": 1,
+            "rom_attribute_position_count": 2,
+        })
+        self.assert_only_publication_problem(
+            edition, "missing_strict_rom_size", media_id,
+            expected_other_problems=(("source_count:logiqx:rom_attribute_position_count", edition, edition),),
+        )
         self.db.execute("UPDATE logiqx_roms SET size_text='0' WHERE media_entry_id=?", (media_id,))
         self.db.execute(
             "INSERT INTO logiqx_rom_attribute_positions "
@@ -528,6 +570,7 @@ class CardinalityChecks(unittest.TestCase):
             "(set_id,field_kind,source_order,source_line,source_column) VALUES(?,1,1,1,2)",
             (game_id,),
         )
+        self.adjust_expected_events("logiqx", edition, {"game_attribute_position_count": 1})
         self.assert_repaired_publication(edition)
 
         edition, _, game_id, _, _ = self.add_strict_logiqx_edition(32, "clean")
@@ -536,6 +579,7 @@ class CardinalityChecks(unittest.TestCase):
             "(set_id,field_kind,source_order,source_line,source_column) VALUES(?,1,1,1,2)",
             (game_id,),
         )
+        self.adjust_expected_events("logiqx", edition, {"game_attribute_position_count": 1})
         self.assert_only_publication_problem(
             edition, "unexpected_position", game_id,
             allow_problem_prefixes=("field_presence:logiqx_game_attribute_positions:1",),
@@ -544,6 +588,7 @@ class CardinalityChecks(unittest.TestCase):
             "DELETE FROM logiqx_game_attribute_positions WHERE set_id=? AND field_kind=1",
             (game_id,),
         )
+        self.adjust_expected_events("logiqx", edition, {"game_attribute_position_count": -1})
         self.assert_repaired_publication(edition)
 
     def test_missing_cmp_rom_detail_facet_blocks_and_repairs_publication(self):
@@ -569,6 +614,10 @@ class CardinalityChecks(unittest.TestCase):
             "value_line,value_column,value_is_quoted) VALUES(?,0,0,'name',2,3,2,8,1)",
             (media_id,),
         )
+        self.adjust_expected_events("clrmamepro", edition, {
+            "rom_count": 1,
+            "rom_field_position_count": 1,
+        })
         self.db.execute("DELETE FROM clrmamepro_rom_details WHERE media_entry_id=?", (media_id,))
         self.assert_only_publication_problem(
             edition, "missing_cmp_rom_details", media_id,
@@ -611,6 +660,7 @@ class CardinalityChecks(unittest.TestCase):
             "VALUES(?,?,0,2,10,0,0,0)",
             (option_id, header_id),
         )
+        self.adjust_expected_events("logiqx", edition, {"clrmamepro_options_count": 1})
         header_text_ids = {2000 + edition * 10 + offset for offset in range(4)}
         self.assert_only_publication_problem(
             edition, "logiqx_header_mixed_order_collision",
@@ -621,6 +671,7 @@ class CardinalityChecks(unittest.TestCase):
             "DELETE FROM logiqx_clrmamepro_options WHERE source_element_id=?", (option_id,)
         )
         self.db.execute("DELETE FROM catalog_source_elements WHERE source_element_id=?", (option_id,))
+        self.adjust_expected_events("logiqx", edition, {"clrmamepro_options_count": -1})
         self.assert_repaired_publication(edition, reading_rules_id=1)
 
         edition, _, game_id, _, _ = self.add_strict_logiqx_edition(14, "clean", rules_id=1)
@@ -634,6 +685,7 @@ class CardinalityChecks(unittest.TestCase):
             "INSERT INTO logiqx_game_comments VALUES(?,?, 'comment',0,3,10)",
             (comment_id, game_id),
         )
+        self.adjust_expected_events("logiqx", edition, {"game_comment_count": 1})
         description_id = 2000 + edition * 10
         self.assert_only_publication_problem(
             edition, "logiqx_game_mixed_order_collision",
@@ -642,6 +694,7 @@ class CardinalityChecks(unittest.TestCase):
         )
         self.db.execute("DELETE FROM logiqx_game_comments WHERE source_element_id=?", (comment_id,))
         self.db.execute("DELETE FROM catalog_source_elements WHERE source_element_id=?", (comment_id,))
+        self.adjust_expected_events("logiqx", edition, {"game_comment_count": -1})
         self.assert_repaired_publication(edition, reading_rules_id=1)
 
     def test_cmp_document_and_set_item_collisions_are_edition_scoped(self):
@@ -696,6 +749,10 @@ class CardinalityChecks(unittest.TestCase):
             "value_line,value_column,value_is_quoted) VALUES(?,0,0,'name',2,3,2,8,1)",
             (media_id,),
         )
+        self.adjust_expected_events("clrmamepro", edition, {
+            "rom_count": 1,
+            "rom_field_position_count": 1,
+        })
         self.assert_only_publication_problem(
             edition, "cmp_set_item_mixed_order_collision", {0, media_id, set_id},
             source_file_id=source_file_id, reading_rules_id=2,
@@ -733,6 +790,10 @@ class CardinalityChecks(unittest.TestCase):
             "value_line,value_column,value_is_quoted) VALUES(?,0,0,'name',1,11,1,15,1)",
             (media_id,),
         )
+        self.adjust_expected_events("clrmamepro", edition, {
+            "rom_count": 1,
+            "rom_field_position_count": 1,
+        })
         self.assert_only_publication_problem(
             edition, "cmp_set_item_order_inversion", set_id,
             source_file_id=source_file_id, reading_rules_id=2,
@@ -767,6 +828,7 @@ class CardinalityChecks(unittest.TestCase):
             "value_line,value_column,value_is_quoted) VALUES(?,?,?,?,2,?,2,?,1)",
             ((header_id, 0, 0, "name", 20, 25), (header_id, 1, 1, "description", 10, 15)),
         )
+        self.adjust_expected_events("clrmamepro", edition, {"header_field_position_count": 2})
         self.assert_only_publication_problem(
             edition, "cmp_nested_field_order_inversion", header_id,
             source_file_id=source_file_id, reading_rules_id=2,
@@ -849,6 +911,10 @@ class CardinalityChecks(unittest.TestCase):
             "VALUES(?,2,1,'crc',2,10,2,15,1,?)",
             (media_id, hash_id),
         )
+        self.adjust_expected_events("clrmamepro", edition, {
+            "rom_count": 1,
+            "rom_field_position_count": 2,
+        })
         self.assert_only_publication_problem(
             edition, "cmp_invalid_hash_state", hash_id,
             source_file_id=source_file_id, reading_rules_id=2,
@@ -869,6 +935,7 @@ class CardinalityChecks(unittest.TestCase):
             db.execute("PRAGMA foreign_keys=ON")
             db.executescript(assemble.assemble())
             db.executescript(composed_fixture())
+            logiqx_cmp_presence_check.seal_transplanted_fixture(db)
             db.commit()
             db.execute("PRAGMA foreign_keys=OFF")
             trigger_rows = db.execute(
@@ -930,6 +997,7 @@ class CardinalityChecks(unittest.TestCase):
             case_db.execute("PRAGMA foreign_keys=ON")
             case_db.executescript(assemble.assemble())
             case_db.executescript(composed_fixture())
+            logiqx_cmp_presence_check.seal_transplanted_fixture(case_db)
             case_db.commit()
             original_db = self.db
             self.db = case_db

@@ -16,6 +16,8 @@ DIRECTORY = Path(__file__).resolve().parent
 sys.path.insert(0, str(DIRECTORY))
 
 import no_intro_field_check
+import assemble
+import count_fixtures
 import source_counts
 
 
@@ -120,7 +122,7 @@ def load_populated_fixture(connection):
 class NoIntroCountMappings(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.ddl = source_counts.candidate()
+        cls.ddl = assemble.assemble()
         with closing(sqlite3.connect(':memory:')) as connection:
             connection.executescript(cls.ddl)
             view_count = connection.execute(
@@ -147,12 +149,7 @@ class NoIntroCountMappings(unittest.TestCase):
         connection.executescript(self.ddl)
         load_populated_fixture(connection)
         for (family, edition), vector in EXPECTED_COUNTS.items():
-            counters = sorted(vector)
-            columns = ','.join(['edition_id', *counters])
-            values = ','.join('?' for _ in range(len(counters) + 1))
-            connection.execute(
-                f'INSERT INTO {family}_source_count_seals({columns}) VALUES({values})',
-                (edition, *(vector[counter] for counter in counters)))
+            count_fixtures.seal(connection, family, edition, vector)
         # Count-deletion controls deliberately bypass only the composed
         # in-memory FK reverse guards; the FK graph is never published.
         for (trigger,) in connection.execute(

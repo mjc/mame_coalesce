@@ -89,6 +89,11 @@ class SoftwareCountMappings(unittest.TestCase):
         cls.assert_route_contract()
         cls.insert_literal_seal()
         cls.db.commit()
+        integrity = cls.db.execute(
+            "SELECT problem,owner_id,edition_id FROM candidate_integrity_problems"
+        ).fetchall()
+        if integrity:
+            raise AssertionError(f"software count-mapping baseline is not clean: {integrity}")
         cls.assert_baseline()
 
     @classmethod

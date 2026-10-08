@@ -3,8 +3,10 @@
 
 import sqlite3
 import unittest
+from unittest.mock import patch
 
 import source_counts
+import assemble
 
 
 def route(counter, table):
@@ -28,14 +30,15 @@ class CountCompiler(unittest.TestCase):
         self.routes = (route('alpha_count', 'mame_alpha'), route('beta_count', 'mame_beta'))
 
     def install(self, routes=None):
-        self.db.executescript(source_counts.fragment(self.db, self.routes if routes is None else routes))
+        self.db.executescript(source_counts.fragment(self.db, self.routes if routes is None else routes)
+                              + '\n' + assemble.publication_closure_sql('candidate_source_count_problems'))
 
     def publish(self):
         self.db.execute('INSERT INTO published_catalog_editions VALUES(1)')
 
     def test_missing_seal_refuses_publication_then_literal_counts_publish(self):
         self.install()
-        with self.assertRaisesRegex(sqlite3.IntegrityError, 'source count'):
+        with self.assertRaisesRegex(sqlite3.IntegrityError, 'complete closure'):
             self.publish()
         self.db.execute('INSERT INTO mame_source_count_seals VALUES(1,1,1)')
         self.publish()  # Edition 2's missing seal does not block edition 1.
@@ -47,7 +50,7 @@ class CountCompiler(unittest.TestCase):
             for bad in (0, 2):
                 with self.subTest(counter=counter, bad=bad):
                     self.db.execute(f'UPDATE mame_source_count_seals SET {counter}=? WHERE edition_id=1', (bad,))
-                    with self.assertRaisesRegex(sqlite3.IntegrityError, 'source count'):
+                    with self.assertRaisesRegex(sqlite3.IntegrityError, 'complete closure'):
                         self.publish()
                     self.db.execute(f'UPDATE mame_source_count_seals SET {counter}=1 WHERE edition_id=1')
         # Both start at one: a swapped COUNT body must not pass this control.
@@ -109,7 +112,8 @@ class CountCompiler(unittest.TestCase):
         self.assertTrue(self.db.in_transaction)
         schema = self.db.execute('SELECT name,sql FROM sqlite_schema ORDER BY name').fetchall()
         sql = source_counts.fragment(self.db, self.routes)
-        self.assertIn('candidate_source_count_publication', sql)
+        self.assertIn('candidate_source_count_problems', sql)
+        self.assertNotIn('CREATE TRIGGER candidate_publication_closure', sql)
         self.assertEqual(self.db.execute('SELECT name,sql FROM sqlite_schema ORDER BY name').fetchall(), schema)
         self.assertTrue(self.db.in_transaction)
 
@@ -131,17 +135,43 @@ class CountCompiler(unittest.TestCase):
 
 
 class ComposedSourceCounts(unittest.TestCase):
+    def test_default_artifact_has_one_complete_audit_and_publication_gate(self):
+        # Compile the real artifact once for the class. Separately prove the
+        # alias delegates, rather than compiling the same multi-MB SQL twice.
+        with patch.object(assemble, 'assemble', return_value=self.ddl) as canonical:
+            self.assertEqual(source_counts.candidate(), self.ddl)
+            canonical.assert_called_once_with()
+        tables = {row[0] for row in self.db.execute("SELECT name FROM sqlite_schema WHERE type='table'")}
+        self.assertTrue({family + '_source_count_seals' for family in source_counts.ROOTS} <= tables)
+        gates = self.db.execute("SELECT name FROM sqlite_schema WHERE type='trigger' "
+                                "AND tbl_name='published_catalog_editions' "
+                                "AND (sql LIKE '%candidate_integrity_problems%' "
+                                "OR sql LIKE '%candidate_source_count_problems%')").fetchall()
+        self.assertEqual(gates, [('candidate_publication_closure',)])
+        self.assertIn('SELECT * FROM candidate_source_count_problems', self.ddl)
+
+    def test_literal_fixture_receipts_reject_unknown_or_noninteger_events(self):
+        import count_fixtures
+        for events in ({'invented_count': 1}, {'machine_count': -1},
+                       {'machine_count': True}, {'machine_count': 0.5},
+                       {'machine_count': '1'}):
+            with self.subTest(events=events), self.assertRaises(ValueError):
+                count_fixtures.seal(self.db, 'mame', 1, events)
+        with self.assertRaises(ValueError):
+            count_fixtures.seal(self.db, 'invented', 1, {})
+
     @classmethod
     def setUpClass(cls):
         cls.db = sqlite3.connect(':memory:')
         cls.addClassCleanup(cls.db.close)
-        cls.db.executescript(source_counts.candidate())
+        cls.ddl = assemble.assemble()
+        cls.db.executescript(cls.ddl)
         cls.routes = source_counts.inventory()
         import check
         check.seed_identity(cls.db)
         fixture = check.AssembledWitnesses()
         fixture.db = cls.db
-        fixture.complete_mame_root()
+        fixture.complete_mame_root(seal_counts=False)
         cls.db.commit()
 
     def setUp(self):
@@ -168,7 +198,7 @@ class ComposedSourceCounts(unittest.TestCase):
         self.db.execute("INSERT INTO published_catalog_editions VALUES(1,1,1,1,1,'source-counts')")
 
     def test_actual_candidate_requires_literal_seal_and_preserves_other_publication_checks(self):
-        with self.assertRaisesRegex(sqlite3.IntegrityError, 'source count'):
+        with self.assertRaisesRegex(sqlite3.IntegrityError, 'complete closure'):
             self.publish()
         self.seal()
         self.assertEqual(self.db.execute('SELECT * FROM candidate_source_count_problems WHERE edition_id=1').fetchall(), [])
@@ -189,7 +219,7 @@ class ComposedSourceCounts(unittest.TestCase):
             name = row['counter']
             with self.subTest(counter=name):
                 self.db.execute(f'UPDATE mame_source_count_seals SET {name}={name}+1 WHERE edition_id=1')
-                with self.assertRaisesRegex(sqlite3.IntegrityError, 'source count'):
+                with self.assertRaisesRegex(sqlite3.IntegrityError, 'complete closure'):
                     self.publish()
                 self.db.execute(f'UPDATE mame_source_count_seals SET {name}={name}-1 WHERE edition_id=1')
         self.publish()
@@ -201,10 +231,11 @@ class ComposedSourceCounts(unittest.TestCase):
         self.db.execute('UPDATE mame_source_count_seals SET document_attribute_position_count=2 WHERE edition_id=1')
         self.db.execute("DELETE FROM mame_document_facts_attribute_positions WHERE field_kind='build'")
         self.db.execute('UPDATE mame_documents SET build=NULL WHERE edition_id=1')
-        self.assertEqual(self.db.execute('SELECT * FROM candidate_integrity_problems WHERE edition_id=1').fetchall(), [])
+        self.assertEqual(self.db.execute('SELECT problem FROM candidate_integrity_problems WHERE edition_id=1').fetchall(),
+                         [('source_count:mame:document_attribute_position_count',)])
         self.assertEqual(self.db.execute('SELECT problem FROM candidate_source_count_problems WHERE edition_id=1').fetchall(),
                          [('source_count:mame:document_attribute_position_count',)])
-        with self.assertRaisesRegex(sqlite3.IntegrityError, 'source count'):
+        with self.assertRaisesRegex(sqlite3.IntegrityError, 'complete closure'):
             self.publish()
 
     def test_missing_inventory_route_is_a_compile_error_not_a_silent_missing_check(self):

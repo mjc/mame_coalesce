@@ -732,7 +732,14 @@ def format_audit_queries(connection):
     return queries
 
 
+def publication_closure_sql(audit='candidate_integrity_problems'):
+    """Single aggregate integrity gate, also used by thin compiler witnesses."""
+    return f"CREATE TRIGGER candidate_publication_closure BEFORE INSERT ON published_catalog_editions WHEN EXISTS(SELECT 1 FROM {identifier(audit)} WHERE edition_id=NEW.edition_id) BEGIN SELECT RAISE(ABORT,'candidate publication requires complete closure'); END;"
+
+
 def assemble():
+    import source_counts
+
     manifest = owners()
     source = "\n\n".join((ROOT / fragment).read_text() for fragment in FRAGMENTS)
     source = source.replace("/* SOURCE_ELEMENT_KINDS */", ",".join(literal(owner.kind) for owner in manifest))
@@ -758,14 +765,17 @@ def assemble():
                              f'missing={sorted(expected_fields-actual_fields)}, extra={sorted(actual_fields-expected_fields)}')
         presence_views, presence_problems = field_presence_sql(connection, manifest, presence_routes)
         format_audits = format_audit_queries(connection)
-    audits = [*format_audits, *native_problems, *fk_problems, *root_problems, *hash_problems, *format_problems, *position_problems, *relationship_problems, *presence_problems]
+        count_routes = source_counts.inventory()
+        source_counts.validate_inventory(connection, count_routes)
+        count_contract = source_counts.fragment(connection, count_routes)
+    audits = [*format_audits, *native_problems, *fk_problems, *root_problems, *hash_problems, *format_problems, *position_problems, *relationship_problems, *presence_problems,
+              'SELECT * FROM candidate_source_count_problems']
     # SQLite limits a single compound SELECT to 500 terms. Keep the exhaustive
     # reverse audit in named bounded chunks, not one oversized UNION statement.
     chunks = [audits[offset:offset + 100] for offset in range(0, len(audits), 100)]
     chunk_views = [f"CREATE VIEW candidate_integrity_chunk_{number} AS " + " UNION ALL ".join(chunk) + ';' for number, chunk in enumerate(chunks)]
     integrity = '\n'.join([*chunk_views, "CREATE VIEW candidate_integrity_problems AS " + " UNION ALL ".join(f'SELECT * FROM candidate_integrity_chunk_{number}' for number in range(len(chunks))) + ';'])
-    publication = "CREATE TRIGGER candidate_publication_closure BEFORE INSERT ON published_catalog_editions WHEN EXISTS(SELECT 1 FROM candidate_integrity_problems WHERE edition_id=NEW.edition_id) BEGIN SELECT RAISE(ABORT,'candidate publication requires complete closure'); END;"
-    return "\n\n".join([source, ownership, hash_positions,format_roots,relationship_views, presence_views, integrity, *native_guards, *fk_guards, *collisions, *immutable, *immutable_dictionary_sql(), *root_guards, *hash_guards,*format_guards,*position_guards,*relationship_guards, publication])
+    return "\n\n".join([source, ownership, hash_positions,format_roots,relationship_views, presence_views, count_contract, integrity, *native_guards, *fk_guards, *collisions, *immutable, *immutable_dictionary_sql(), *root_guards, *hash_guards,*format_guards,*position_guards,*relationship_guards, publication_closure_sql()])
 
 
 def main():

@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Compile the proposed independent source-count contract over candidate SQL.
+"""Independent source-count contracts used by the canonical candidate assembler.
 
-This next design layer is not yet part of assemble.py's ordinary fixture path.
---emit emits the entire base candidate plus mandatory source-count publication
-checks. Expected values must come from checked parser events, never this audit.
+--emit delegates to the same complete candidate as assemble.py. Expected values
+must come from checked parser events, never this audit or retained catalog rows.
 """
 
 import argparse
@@ -158,21 +157,12 @@ def fragment(connection, routes):
              ' UNION ALL '.join(chunk) + ';' for number, chunk in enumerate(chunks)]
     views.append('CREATE VIEW candidate_source_count_problems AS ' + ' UNION ALL '.join(
         f'SELECT * FROM candidate_source_count_chunk_{number}' for number in range(len(chunks))) + ';')
-    gate = '''CREATE TRIGGER candidate_source_count_publication
-        BEFORE INSERT ON published_catalog_editions
-        WHEN EXISTS(SELECT 1 FROM candidate_source_count_problems WHERE edition_id=NEW.edition_id)
-        BEGIN SELECT RAISE(ABORT,'candidate publication requires independent source counts'); END;'''
-    return '\n'.join([*definitions, *views, *guards, gate])
+    return '\n'.join([*definitions, *views, *guards])
 
 
 def candidate():
-    base = assemble.assemble()
-    with closing(sqlite3.connect(':memory:')) as connection:
-        connection.executescript(base)
-        routes = inventory()
-        validate_inventory(connection, routes)
-        extension = fragment(connection, routes)
-    return base + '\n' + extension
+    """Compatibility CLI entry point, not a second schema assembly path."""
+    return assemble.assemble()
 
 
 def main():

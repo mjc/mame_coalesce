@@ -212,8 +212,8 @@ mapping controls intentionally bypass deletion guards and test the count audit
 alone after their explicit expected-count adjustment; they do not publish the
 damaged graph or derive expectations with SELECT from inserted rows. These
 constructed fixtures do not prove real parser accumulation, checked arithmetic
-or EOF. The next layer below defines candidate count shapes for the other
-formats; ordinary-assembler integration and parser producers remain open.
+or EOF. The integrated count contract below covers the other formats;
+checked parser producers and accepted EOF remain open.
 Per-owner position counters are not added to ordinary pages.
 
 Fresh GPT-6.1 Sol medium core/count and four-family native fix/re-review loops
@@ -226,8 +226,9 @@ counts/EOF, XSI lexical semantics or complete-design approval.
 
 ## Independent source-count contract layer
 
-`source_counts.py` compiles the base candidate plus a proposed count-seal layer.
-It reads four closed `*-counts.tsv` inventories and emits six format-specific
+The ordinary `assemble.py` compiler includes the source-count contract.
+`source_counts.py` delegates to that same assembler, including for `--emit`.
+Four closed `*-counts.tsv` inventories define six format-specific
 wide tables, one seal row per edition, with named exact nonnegative integer
 columns. No `(kind,value)` catalog data or per-owner position counters are
 stored. Counts are validation facts and are excluded from semantic history.
@@ -244,8 +245,10 @@ attribute or a claim of authentic DAT-o-MATIC P/C support.
 The compiler checks count coverage against closed native owners and physical
 position/XSI tables, validates actual PK components and prepares every edition
 scope. It reuses the base FK/reverse, replacement and published-immutability
-generators for the new tables. A second mandatory publication trigger checks
-the count audit without replacing or bypassing existing publication checks.
+generators for the new tables. The main `candidate_integrity_problems` audit
+includes the count audit, and the single aggregate publication-closure trigger
+checks both count and existing ownership/field/cardinality failures. Existing
+native publication, identity and immutability guards are retained.
 Scope expressions describe persisted comparisons only: expected totals must
 come from independently checked parser events, never SELECT from retained rows.
 
@@ -258,9 +261,7 @@ python3 -Werror::ResourceWarning docs/schema-candidate/logiqx_cmp_count_mapping_
 python3 -Werror::ResourceWarning docs/schema-candidate/no_intro_count_mapping_check.py
 ```
 
-`source_counts.py --emit` emits the complete base-plus-count candidate. This
-layer prepares 48 views; the ordinary `assemble.py` fixture path still prepares
-45 and has not yet absorbed the count contract. The independent MAME controls
+Both entry points emit the same complete 48-view candidate. The independent MAME controls
 use literal expected events, exercise actual publication refusal/repair and
 detect a coherently erased optional value and position that the older audit
 cannot infer. Thin compiler controls separately cover equal-sized mappings,
@@ -272,9 +273,8 @@ only that expected counter then makes the source-count audit quiet. These
 damaged graphs are not published. Separate positive publication controls retain
 the original closure. A process-local ROM/disk SQL-body swap after valid MAME
 fixture setup is detected at mapping assertions, with no SQL/setup errors.
-Until the audit paths are consolidated, integrity consumers must inspect
-`candidate_source_count_problems` alongside the base integrity audit; the
-ordinary base view alone does not report these new count failures.
+`candidate_source_count_problems` remains available for focused diagnostics;
+integrity consumers no longer need a separate audit pass to find count failures.
 
 Fresh independent GPT-6.1 Sol medium technical and claim reviews are bounded
 CLEAR after fixing both findings. All 23 focused tests pass: 12 compiler and
@@ -282,8 +282,25 @@ publication controls, three MAME, two software, two Logiqx/CMP and four No-Intro
 mapping tests. One SQL-only ROM/disk mapping mutation is killed without SQL or
 setup errors; its cascading assertion failures are not separate mutations.
 
-This layer is not complete-design approval. Default-assembler/fixture/audit
-integration, checked parser producers and accepted EOF remain open.
+The subsequent consolidation removes the separate assembly/audit/publication
+path. Constructed fixtures supply sparse literal source-event vectors through
+the test-only `count_fixtures.seal` helper, never SQLite-derived expectations.
+The default-artifact regression checks all six seal tables, alias delegation
+and one aggregate closure gate; optional whole-field erasure must now appear
+in the main integrity audit as well as the focused count audit.
+
+Fresh GPT-6.1 Sol medium technical and local claim re-reviews are bounded CLEAR
+for this consolidation. Both fixture findings were fixed and independently
+rechecked. Final normal receipts: 29 integrated tests, 14 count-compiler and
+publication controls, five audit-wiring and eight export-count tests; 57 unique
+MAME/software/standalone software-field tests; Logiqx/CMP 14 presence, 18
+cardinality and two mapping tests; No-Intro 16 presence, 13 cardinality and four
+mapping tests, plus 284 field assertions/24 expected rejections and legacy 18/4.
+The software mapping suite's final two-test replay also preserves the full
+integrity baseline before its deliberately destructive mapping controls.
+
+This layer is not complete-design approval. Checked parser producers and
+accepted EOF remain open.
 Ordinary reads do not rescan every edition; publication and
 global integrity scopes remain separate. Compensating edits that preserve a
 counter still require independent source revalidation, not stronger claims
@@ -316,19 +333,23 @@ current application already follows it.
 
 ## Still required
 
-This artifact remains incomplete until complete parser-fed field/child capture,
-full native relationship publication proof, all root modes and diagnostic
-containment, independently parser-fed count seals,
-qualified size/hash evidence and atomic review refresh, UUID eligibility,
-ordinary-owner immutability, corruption witnesses and populated native plans are
-complete. Read the format notes for concrete remaining gaps rather than inferring
+Before design approval, settle every supported field/owner/state/order contract,
+typed keys and ancestry, count events/scopes, required parser capture, checked
+accumulation and EOF/failure-transition specifications, qualification/UUID rules,
+diagnostics and query semantics. Prove composed candidate closure with
+independent constructed witnesses, corruption controls and populated target
+plans. Read the format notes for concrete remaining gaps rather than inferring
 coverage from the existence of a table or a green test count.
 
 Missing parser capture and checked numeric/load interpretation are separate from
 constructed SQL proof. No generated SQL can manufacture a verified EOF, complete
 root extent, authentic producer grammar or source-byte mapping. Private Rust
 writer transitions and real corpus/source-free query tests still have to prove
-the supported publication path after design approval.
+the supported publication path after design approval. Implement and verify
+parser capture, independent checked producers, accepted EOF, finalizer/rollback
+behavior, source mapping and qualification after that approval. Corpus and
+performance acceptance remain in the implementation/format tickets; they are
+not prerequisites for permission to implement the approved design.
 
 After reconciling the complete dictionaries and collector-facing diagrams with
 this artifact, obtain a fresh complete-design Sol review and explicit approval

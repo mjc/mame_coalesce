@@ -214,7 +214,6 @@ ROLLBACK TO missing_required_text;
 RELEASE missing_required_text;
 
 INSERT INTO software_field_assertions VALUES
-    ('foreign-keys-clean',(SELECT count(*)=0 FROM pragma_foreign_key_check)),
-    ('assembled-integrity-clean',NOT EXISTS(SELECT 1 FROM candidate_integrity_problems));
+    ('foreign-keys-clean',(SELECT count(*)=0 FROM pragma_foreign_key_check));
 COMMIT;
 SELECT 'software field witnesses passed' AS result;

@@ -12,6 +12,9 @@ import subprocess
 import sys
 import unittest
 
+import count_fixtures
+import software_presence_check
+
 ROOT = Path(__file__).resolve().parent
 HEADER = [
     "family", "owner_table", "field_code", "wire_name", "value_owner",
@@ -130,6 +133,15 @@ class SoftwareFields(unittest.TestCase):
             raise AssertionError(f"constructed field witness: {error}; SQL: {trace[-1:]}") from error
         finally:
             cls.db.set_trace_callback(None)
+        count_fixtures.seal(
+            cls.db, "software", 1, software_presence_check.SOFTWARE_FIELD_EVENTS
+        )
+        problems = cls.db.execute(
+            "SELECT problem,owner_id,edition_id FROM candidate_integrity_problems"
+        ).fetchall()
+        if problems:
+            raise AssertionError(f"assembled software field witness is not clean: {problems}")
+        cls.db.commit()
 
     def setUp(self):
         # executescript commits pending transactions: prepare only in setUpClass.

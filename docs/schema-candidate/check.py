@@ -7,6 +7,7 @@ import sqlite3
 import unittest
 
 import assemble
+import count_fixtures
 
 
 def shared_connection(foreign_keys=True):
@@ -366,7 +367,7 @@ class AssembledWitnesses(unittest.TestCase):
             VALUES(?,0,0,'',1,1,'retained_original_bytes',0,128,'transport_decoded_xml_text',1,1,2,1,'one_based_unicode_scalar')""", (edition_id,))
         self.db.execute("INSERT INTO mame_document_facts_attribute_positions VALUES(?,'mameconfig',0,0,1,7)", (edition_id,))
 
-    def complete_mame_root(self, edition_id=1, group_id=None):
+    def complete_mame_root(self, edition_id=1, group_id=None, seal_counts=True):
         """A publication-positive document includes its required machine/text."""
         self.mame_root(edition_id)
         group_id = group_id if group_id is not None else 1000 + edition_id
@@ -379,6 +380,12 @@ class AssembledWitnesses(unittest.TestCase):
         self.db.execute("INSERT INTO catalog_source_elements VALUES(?,?,'mame_machine_text')", (machine_id + 1, edition_id))
         self.db.execute("INSERT INTO mame_machine_text_elements VALUES(?,?,'description','',0,1,1)",
                         (machine_id + 1, machine_id))
+        if seal_counts:
+            count_fixtures.seal(self.db, 'mame', edition_id, {
+                'machine_count': 1, 'machine_text_element_count': 1,
+                'document_attribute_position_count': 1,
+                'machine_attribute_position_count': 1,
+            })
 
     def test_every_view_prepares_and_all_foreign_key_targets_exist(self):
         for (view,) in self.db.execute("SELECT name FROM sqlite_schema WHERE type='view'").fetchall():
@@ -486,6 +493,9 @@ class AssembledWitnesses(unittest.TestCase):
         with self.assertRaisesRegex(sqlite3.IntegrityError, 'complete closure'):
             db.execute("INSERT INTO published_catalog_editions VALUES(1,1,1,1,1,'published')")
         db.execute("INSERT INTO mame_document_facts_attribute_positions VALUES(1,'build',0,1,1,21)")
+        # This fixture now describes a second source attribute, independently
+        # of the one-position baseline sealed by complete_mame_root.
+        db.execute('UPDATE mame_source_count_seals SET document_attribute_position_count=2 WHERE edition_id=1')
         db.execute("INSERT INTO published_catalog_editions VALUES(1,1,1,1,1,'published')")
         for mutation in ("UPDATE mame_documents SET build=NULL WHERE edition_id=1",
                          "DELETE FROM mame_document_facts_attribute_positions WHERE field_kind='build'"):

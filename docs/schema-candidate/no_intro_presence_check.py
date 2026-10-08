@@ -17,6 +17,7 @@ import unittest
 
 sys.dont_write_bytecode = True
 import assemble
+import count_fixtures
 
 ROOT = pathlib.Path(__file__).resolve().parent
 
@@ -111,6 +112,34 @@ class NoIntroPresence(unittest.TestCase):
         # Only the constructed positive setup, before expected-failure controls.
         fixture = (ROOT / "no_intro_field_witnesses.sql").read_text()
         cls.db.executescript(fixture.split("\n-- expect-error:", 1)[0])
+        # Independent sparse literals for the constructed native rows. Export
+        # family 10300 intentionally has no source-count seal.
+        count_fixtures.seal(cls.db, "no_intro_dat", 10100, {
+            "header_count": 1, "header_text_child_count": 12,
+            "clrmamepro_element_count": 1, "romcenter_element_count": 1,
+            "game_count": 1, "game_description_count": 1, "category_count": 1,
+            "identifier_count": 1, "release_count": 1, "rom_count": 1,
+            "game_attribute_position_count": 4, "release_attribute_position_count": 2,
+            "clrmamepro_attribute_position_count": 2,
+            "romcenter_attribute_position_count": 1, "rom_attribute_position_count": 11,
+            "document_xsi_attribute_count": 3, "header_xsi_attribute_count": 3,
+            "header_text_child_xsi_attribute_count": 48,
+            "clrmamepro_xsi_attribute_count": 3, "romcenter_xsi_attribute_count": 3,
+            "game_xsi_attribute_count": 3, "game_description_xsi_attribute_count": 4,
+            "category_xsi_attribute_count": 4, "identifier_xsi_attribute_count": 4,
+            "release_xsi_attribute_count": 3, "rom_xsi_attribute_count": 3,
+        })
+        count_fixtures.seal(cls.db, "no_intro_dat", 10400, {
+            "header_count": 1, "header_text_child_count": 4,
+            "clrmamepro_element_count": 1,
+        })
+        count_fixtures.seal(cls.db, "no_intro_pc_fixture", 10200, {
+            "header_count": 1, "header_name_child_count": 1,
+            "header_description_child_count": 1, "header_version_child_count": 1,
+            "game_count": 2, "language_token_count": 3, "game_description_count": 1,
+            "rom_count": 3, "game_attribute_position_count": 12,
+            "rom_attribute_position_count": 7,
+        })
         cls.db.execute("RELEASE no_intro_fields")
         cls.by_code = {(r["position_table"], r["field_code"]): r for r in cls.routes}
 
@@ -249,6 +278,9 @@ class NoIntroPresence(unittest.TestCase):
             self.publish(10400)
         self.db.execute("INSERT INTO no_intro_dat_clrmamepro_field_positions VALUES(14020,'forcenodump',0,0,1,1)")
         self.assertEqual(self.problems(position, "forcenodump", 14020), [])
+        self.db.execute(
+            "UPDATE no_intro_dat_source_count_seals "
+            "SET clrmamepro_attribute_position_count=1 WHERE edition_id=10400")
         self.publish(10400)
 
     def test_optional_pc_size_and_invented_position(self):
@@ -260,6 +292,9 @@ class NoIntroPresence(unittest.TestCase):
             self.publish(10200)
         self.db.execute("UPDATE no_intro_pc_file_claims SET size_text='+0000' WHERE media_entry_id=12013")
         self.assertEqual(self.problems(position, "size", 12013), [])
+        self.db.execute(
+            "UPDATE no_intro_pc_fixture_source_count_seals "
+            "SET rom_attribute_position_count=8 WHERE edition_id=10200")
         self.publish(10200)
 
     def test_equal_count_owner_substitution_is_red(self):
@@ -297,7 +332,16 @@ class NoIntroPresence(unittest.TestCase):
         self.assertEqual(self.problems("no_intro_pc_game_attribute_positions", "namealt", 12010), [])
         # This is a coherent absent state. Only independent source inventory can
         # distinguish it from loss of an optional accepted source declaration.
-        self.publish(10200)
+        self.assertEqual(
+            self.db.execute(
+                "SELECT problem,owner_id,edition_id FROM candidate_integrity_problems "
+                "WHERE edition_id=10200 AND problem="
+                "'source_count:no_intro_pc_fixture:game_attribute_position_count'"
+            ).fetchall(),
+            [("source_count:no_intro_pc_fixture:game_attribute_position_count", 10200, 10200)],
+        )
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "publication requires complete closure"):
+            self.publish(10200)
 
     def test_nfo_aliases_remain_on_actual_details_owner(self):
         self.assertEqual(self.db.execute("SELECT source_hash_field,presence FROM no_intro_release_nfo_hashes WHERE release_details_element_id=13041 ORDER BY source_hash_field").fetchall(), [("nfo_crc32", "value"), ("nfocrc", "invalid")])

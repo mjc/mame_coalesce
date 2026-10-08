@@ -14,6 +14,7 @@ import unittest
 
 sys.dont_write_bytecode = True
 import assemble
+import count_fixtures
 
 HERE = Path(__file__).resolve().parent
 # Independent DOC11@38144 physical code domains; not inferred from route count.
@@ -64,6 +65,55 @@ NULLABLE = {
                         ("releasemonth", 9), ("releaseday", 10), ("serial", 11)),
     "clrmamepro_roms": (("size_text", 1),),
 }
+
+# Literal events for the shared constructed fixture. Kept independent from the
+# native count inventory and from the mapping suite's separately transcribed
+# vectors; these make the ordinary full integrity audit clean at baseline.
+WITNESS_EVENTS = {
+    "logiqx": {
+        "root_file_name_count": 1,
+        "root_sha1_count": 1,
+        "header_count": 1,
+        "clrmamepro_options_count": 1,
+        "romcenter_options_count": 1,
+        "game_count": 1,
+        "header_text_count": 10,
+        "game_text_count": 3,
+        "game_comment_count": 1,
+        "release_count": 1,
+        "bios_set_count": 1,
+        "archive_reference_count": 1,
+        "device_reference_count": 1,
+        "rom_count": 1,
+        "disk_count": 1,
+        "sample_count": 1,
+        "document_attribute_position_count": 2,
+        "clrmamepro_option_position_count": 4,
+        "romcenter_option_position_count": 7,
+        "game_attribute_position_count": 8,
+        "release_attribute_position_count": 5,
+        "bios_attribute_position_count": 3,
+        "archive_attribute_position_count": 1,
+        "device_reference_attribute_position_count": 1,
+        "rom_attribute_position_count": 9,
+        "disk_attribute_position_count": 5,
+        "sample_attribute_position_count": 1,
+    },
+    "clrmamepro": {
+        "set_count": 1,
+        "rom_count": 1,
+        "sample_count": 1,
+        "header_field_position_count": 15,
+        "set_field_position_count": 12,
+        "rom_field_position_count": 12,
+    },
+}
+
+
+def seal_transplanted_fixture(connection):
+    """Seal the two constructed editions from literal fixture events."""
+    for family, edition_id in (("logiqx", 1), ("clrmamepro", 2)):
+        count_fixtures.seal(connection, family, edition_id, WITNESS_EVENTS[family])
 
 
 def transplanted_fixture():
@@ -117,6 +167,7 @@ class PresenceChecks(unittest.TestCase):
         # Compile the real assembler/generator once per class, not per case.
         cls.db.executescript(assemble.assemble())
         cls.db.executescript(transplanted_fixture())
+        seal_transplanted_fixture(cls.db)
         cls.db.commit()
 
     def setUp(self):

@@ -450,14 +450,17 @@ positive controls, edition attribution, and publication rejection followed by
 repair. A complete strict publication fixture jointly erases ROM size text and
 its matching position, confirms the ordinary presence audit is quiet, and
 proves strict cardinality rejects publication until both are restored. A
-separate observed-mode publication control proves the same consistent
-absence remains accepted. No positive assertion is inferred from persisted
+separate observed-mode control has no strict required-size finding, but the
+unchanged literal source-count seal still detects erasing a previously counted
+size declaration and blocks publication. Legitimate source absence and loss
+after import are distinct. No positive assertion is inferred from persisted
 row totals. This is SQL execution evidence only: it does not prove production
 parser or corpus cardinality, nor detect jointly erased optional children
 without an independent source count seal.
 
-The installed scope intentionally leaves child-count seals for optional or
-repeatable fields to separate work. Nested content not represented by typed
+The default candidate installs edition-wide native owner/position count seals;
+independent parser accumulation and accepted-EOF sealing remain unfinished.
+Nested content not represented by typed
 candidate rows, child-local uniqueness already enforced by the DDL, exact
 source/parser correspondence, and corpus-wide conformance remain unproven.
 The empty-root behavior is parser-established; the strict content sequences

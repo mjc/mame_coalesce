@@ -17,8 +17,56 @@ import unittest
 
 sys.dont_write_bytecode = True
 import assemble
+import count_fixtures
 
 ROOT = Path(__file__).resolve().parent
+
+# Literal receipt transcribed from software_field_witnesses.sql. The table
+# owners and position rows remain the fixture input; omitted inventory routes
+# intentionally mean zero.
+SOFTWARE_FIELD_EVENTS = {
+    "list_count": 2,
+    "list_note_count": 1,
+    "title_count": 2,
+    "title_text_element_count": 7,
+    "title_info_count": 2,
+    "shared_feature_count": 2,
+    "part_count": 1,
+    "part_feature_count": 2,
+    "part_switch_count": 1,
+    "part_switch_value_count": 2,
+    "area_count": 3,
+    "rom_entry_count": 4,
+    "disk_entry_count": 4,
+    "wrapper_attribute_position_count": 1,
+    "list_attribute_position_count": 3,
+    "title_attribute_position_count": 4,
+    "title_info_attribute_position_count": 3,
+    "shared_feature_attribute_position_count": 3,
+    "part_attribute_position_count": 2,
+    "part_feature_attribute_position_count": 3,
+    "part_switch_attribute_position_count": 3,
+    "part_switch_value_attribute_position_count": 5,
+    "data_area_attribute_position_count": 6,
+    "disk_area_attribute_position_count": 1,
+    "rom_attribute_position_count": 21,
+    "disk_attribute_position_count": 11,
+}
+POSITION_COUNTERS = {
+    "software_wrapper_attribute_positions": "wrapper_attribute_position_count",
+    "software_list_attribute_positions": "list_attribute_position_count",
+    "software_title_attribute_positions": "title_attribute_position_count",
+    "software_title_info_attribute_positions": "title_info_attribute_position_count",
+    "software_shared_feature_attribute_positions": "shared_feature_attribute_position_count",
+    "software_part_attribute_positions": "part_attribute_position_count",
+    "software_part_feature_attribute_positions": "part_feature_attribute_position_count",
+    "software_part_switch_attribute_positions": "part_switch_attribute_position_count",
+    "software_part_switch_value_attribute_positions": "part_switch_value_attribute_position_count",
+    "software_data_area_attribute_positions": "data_area_attribute_position_count",
+    "software_disk_area_attribute_positions": "disk_area_attribute_position_count",
+    "software_rom_attribute_positions": "rom_attribute_position_count",
+    "software_disk_attribute_positions": "disk_attribute_position_count",
+}
 HEADER = (
     "owner_table", "owner_key", "position_table", "position_owner",
     "field_code", "present_sql",
@@ -105,6 +153,13 @@ class SoftwarePresence(unittest.TestCase):
         # No substitute view / no family-specific fake publication trigger.
         cls.db.executescript(assemble.assemble())
         cls.db.executescript((ROOT / "software_field_witnesses.sql").read_text())
+        count_fixtures.seal(cls.db, "software", 1, SOFTWARE_FIELD_EVENTS)
+        baseline = cls.db.execute(
+            "SELECT problem,owner_id,edition_id FROM candidate_integrity_problems"
+        ).fetchall()
+        if baseline:
+            raise AssertionError(f"software witness baseline is not clean: {baseline}")
+        cls.db.commit()
         # Explicit generated FK guards remain active. OFF is needed only for
         # deliberate corruption after guards are dropped within a test savepoint.
         # PRAGMA cannot be changed once the per-test savepoint has begun.
@@ -130,6 +185,17 @@ class SoftwarePresence(unittest.TestCase):
         self.assertEqual(self.db.execute(
             "SELECT problem,owner_id,edition_id FROM candidate_integrity_problems"
         ).fetchall(), [])
+
+    def field_presence_clean(self, counter):
+        # The deleted position no longer has a presence violation, but its
+        # independent source event remains sealed and keeps publication closed.
+        self.assertEqual(self.db.execute(
+            "SELECT problem,owner_id,edition_id FROM candidate_field_presence_problems"
+        ).fetchall(), [])
+        self.assertEqual(self.db.execute(
+            "SELECT problem,owner_id,edition_id FROM candidate_integrity_problems"
+        ).fetchall(), [(f"source_count:software:{counter}", 1, 1)])
+        self.blocked()
 
     def blocked(self):
         with self.assertRaisesRegex(sqlite3.IntegrityError, "candidate publication requires complete closure"):
@@ -230,7 +296,7 @@ class SoftwarePresence(unittest.TestCase):
                 self.problem(position, code, owner)
                 self.blocked()
                 saved = self.take_position(position, key, owner, code)
-                self.clean()  # value and position both absent is legitimate omission.
+                self.field_presence_clean(POSITION_COUNTERS[position])
                 self.db.execute(update, (present_value, owner))
                 self.problem(position, code, owner)  # empty still requires a position.
                 self.blocked()
@@ -250,7 +316,7 @@ class SoftwarePresence(unittest.TestCase):
                 self.problem(position, code, owner)
                 self.blocked()
                 saved = self.take_position(position, key, owner, code)
-                self.clean()
+                self.field_presence_clean(POSITION_COUNTERS[position])
                 self.db.execute(
                     f"UPDATE {quoted(table)} SET {quoted(bit)}=1 WHERE {quoted(key)}=?", (owner,)
                 )
@@ -333,6 +399,7 @@ class SoftwarePresence(unittest.TestCase):
         ).fetchall(), [
             ("hash_position_count", 609, 1),
             ("software_hash_without_matching_position", 609, 1),
+            ("source_count:software:rom_attribute_position_count", 1, 1),
         ])
 
     def test_equal_count_owner_substitution_is_not_a_count_seal(self):
@@ -374,7 +441,10 @@ class SoftwarePresence(unittest.TestCase):
         saved = self.take_position(position, "part_id", 200, 1)
         self.assertEqual(self.db.execute(
             "SELECT problem,owner_id,edition_id FROM candidate_integrity_problems"
-        ).fetchall(), [(f"field_presence:{position}:1", 200, 1)])
+        ).fetchall(), [
+            (f"field_presence:{position}:1", 200, 1),
+            ("source_count:software:part_attribute_position_count", 1, 1),
+        ])
         self.blocked()
         self.restore_position(position, saved)
         self.clean()

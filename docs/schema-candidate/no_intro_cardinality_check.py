@@ -13,6 +13,7 @@ import unittest
 
 sys.dont_write_bytecode = True
 import assemble
+import count_fixtures
 
 ROOT = pathlib.Path(__file__).resolve().parent
 
@@ -38,6 +39,19 @@ class NoIntroCardinality(unittest.TestCase):
             "\nINSERT INTO no_intro_witness_assertions", 1)[0]
         cls.db.executescript(setup)
         cls.db.execute("RELEASE no_intro_candidate_witness")
+        count_fixtures.seal(cls.db, "no_intro_dat", 50, {
+            "header_count": 1, "header_text_child_count": 4,
+            "game_count": 1, "game_description_count": 1, "category_count": 1,
+            "rom_count": 1, "game_attribute_position_count": 3,
+            "rom_attribute_position_count": 3,
+        })
+        count_fixtures.seal(cls.db, "no_intro_pc_fixture", 51, {
+            "header_count": 1, "header_name_child_count": 1,
+            "header_version_child_count": 1, "game_count": 2,
+            "language_token_count": 1, "game_description_count": 1,
+            "rom_count": 1, "game_attribute_position_count": 6,
+            "rom_attribute_position_count": 2,
+        })
 
     def setUp(self):
         self.db.execute("SAVEPOINT cardinality_case")
@@ -120,6 +134,15 @@ class NoIntroCardinality(unittest.TestCase):
                 "INSERT INTO no_intro_dat_rom_field_positions "
                 "(media_entry_id,field_kind,field_occurrence,source_order,source_line,source_column) "
                 "VALUES (?, 'size',0,1,2,22)", (base + 12,))
+        count_fixtures.seal(self.db, "no_intro_dat", edition, {
+            "header_count": 1,
+            "header_text_child_count": len(header_fields),
+            "game_count": 1,
+            "game_description_count": 1,
+            "rom_count": 1,
+            "game_attribute_position_count": 1,
+            "rom_attribute_position_count": 5 if strict else 1,
+        })
 
     def cardinality(self, edition=None):
         query = "SELECT problem,owner_id,edition_id FROM candidate_no_intro_cardinality_problems"

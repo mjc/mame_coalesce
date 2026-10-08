@@ -179,9 +179,10 @@ from parser events independently, with checked nonnegative integer arithmetic;
 they must not be selected or reconstructed from the persisted rows. The
 counter set is edition-wide and is not a per-owner/page witness.
 
-The six-family countcompiler contract is checked as an independent second
-trigger against the actual publication path over the overfull candidate
-schema. That validates expected-versus-actual mapping and publication refusal
+The default candidate includes six-family count findings in
+`candidate_integrity_problems`, checked by its single aggregate publication-
+closure trigger; existing native publication guards remain. Constructed
+overfull fixtures validate expected-versus-actual mapping and publication refusal
 in constructed tests; it is not evidence from an authentic Logiqx/CMP parser
 producer and does not close producer accumulation or source-to-event coverage.
 

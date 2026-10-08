@@ -14,6 +14,7 @@ import sqlite3
 import unittest
 
 import assemble
+import count_fixtures
 import mame_presence_check
 
 
@@ -108,6 +109,7 @@ def seed_strict_publication_fixture(db):
             )
         else:
             db.execute(line)
+    count_fixtures.seal(db, "mame", 1, mame_presence_check.MAME_FIELD_EVENTS)
     db.commit()
 
 
@@ -299,7 +301,10 @@ class MameCardinality(unittest.TestCase):
             )
             self.assertEqual(
                 db.execute("SELECT * FROM candidate_integrity_problems").fetchall(),
-                [("strict_rom_requires_size", 201, 1)],
+                [
+                    ("strict_rom_requires_size", 201, 1),
+                    ("source_count:mame:rom_attribute_position_count", 1, 1),
+                ],
             )
             with self.assertRaisesRegex(sqlite3.IntegrityError, "candidate publication requires complete closure"):
                 db.execute("INSERT INTO published_catalog_editions VALUES(1,1,1,1,1,'constructed')")
@@ -315,7 +320,7 @@ class MameCardinality(unittest.TestCase):
             db.execute("INSERT INTO published_catalog_editions VALUES(1,1,1,1,1,'constructed')")
             self.assertEqual(db.execute("SELECT edition_id FROM published_catalog_editions").fetchall(), [(1,)])
 
-    def test_observed_rom_size_joint_absence_remains_publishable(self):
+    def test_observed_rom_size_joint_erasure_is_caught_by_literal_source_count(self):
         with closing(sqlite3.connect(":memory:")) as db:
             db.execute("PRAGMA foreign_keys=OFF")
             db.executescript(assemble.assemble())
@@ -332,9 +337,12 @@ class MameCardinality(unittest.TestCase):
                 "DELETE FROM mame_rom_claims_attribute_positions "
                 "WHERE media_entry_id=201 AND field_kind='size'"
             )
-            self.assertEqual(db.execute("SELECT * FROM candidate_integrity_problems").fetchall(), [])
-            db.execute("INSERT INTO published_catalog_editions VALUES(1,1,1,1,1,'constructed')")
-            self.assertEqual(db.execute("SELECT edition_id FROM published_catalog_editions").fetchall(), [(1,)])
+            self.assertEqual(
+                db.execute("SELECT * FROM candidate_integrity_problems").fetchall(),
+                [("source_count:mame:rom_attribute_position_count", 1, 1)],
+            )
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "candidate publication requires complete closure"):
+                db.execute("INSERT INTO published_catalog_editions VALUES(1,1,1,1,1,'constructed')")
 
 
 if __name__ == "__main__":
