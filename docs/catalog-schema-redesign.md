@@ -21,8 +21,8 @@ The isolated [candidate bundle](schema-candidate/README.md), recorded in
 [MAMEC-DOC-26](https://lific.mjc.lol/MAMEC/pages/144), now composes concrete shared
 and native SQL, closed owner/hash-position manifests, generated guards and
 in-memory witnesses. It enumerates 93 native kinds and 32 canonical media-hash
-slots. Assembly prepares all 34 views and checks FK targets; 25 integrated
-tests pass in 4.045 seconds. All 22 relationship routes and 32 hash mappings
+slots. Assembly prepares all 41 views and checks FK targets; 29 integrated
+tests pass in 6.280 seconds. All 22 relationship routes and 32 hash mappings
 have positive/adversarial typed routing checks, including INTEGER-coded fields
 that previously failed trigger-affinity comparisons. The single declaration
 projection now drives kind and canonical-position audits without copied values.
@@ -36,8 +36,16 @@ Sol review and all four native field reviews are bounded CLEAR after fix/re-revi
 Six Logiqx/CMP missing/multiple-selector mutations independently verify that
 assertions cannot pass without checking exactly one selected row.
 
-This is not production DDL or complete-schema approval. All-format field/count
-and publication closure beyond the routing checks, qualified size evidence,
+The next executable pass installs 457 retained-field/position predicates in the
+edition publication audit, with no new persisted projection. Required, nullable,
+default-specified, hash and reference fields must have their exact positions;
+draft mismatches may be repaired before publication, while published facts are
+immutable. Thirty-seven inline No-Intro XSI routes prove structural ownership,
+not XSI interpretation. Ten generator tests and 55 native presence test methods
+pass. Fresh core and four-family native Sol fix/re-review loops are bounded CLEAR.
+
+This is not production DDL or complete-schema approval. Mode-specific child
+cardinality, parser-fed counts and complete publication proof, qualified size evidence,
 software complete-first-run qualification, UUID eligibility, ordinary diagnostic
 containment and populated target performance proof remain unfinished. Dictionaries
 and collector diagrams must be reconciled with the complete artifact before
