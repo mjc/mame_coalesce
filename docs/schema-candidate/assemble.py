@@ -738,6 +738,7 @@ def publication_closure_sql(audit='candidate_integrity_problems'):
 
 
 def assemble():
+    import dat_xsi
     import native_file_qualification
     import native_file_sizes
     import shared_file_facts
@@ -751,6 +752,7 @@ def assemble():
     source += '\n' + software_numbers.sql() + '\n' + software_file_lengths.sql()
     source += '\n' + native_file_sizes.sql() + '\n' + native_file_qualification.sql()
     source += '\n' + shared_file_facts.sql()
+    source += '\n' + dat_xsi.sql()
     root_tables, root_guards, root_problems = root_diagnostic_sql()
     source += '\n' + root_tables
     with closing(sqlite3.connect(":memory:")) as connection:
@@ -781,6 +783,7 @@ def assemble():
         count_contract = source_counts.fragment(connection, count_routes)
     audits = [*format_audits, *native_problems, *fk_problems, *root_problems, *hash_problems, *format_problems, *position_problems, *relationship_problems, *presence_problems,
               'SELECT * FROM candidate_source_count_problems',
+              'SELECT * FROM candidate_dat_xsi_problems',
               'SELECT * FROM candidate_file_qualification_problems',
               'SELECT * FROM candidate_shared_identity_problems']
     # SQLite limits a single compound SELECT to 500 terms. Keep the exhaustive
