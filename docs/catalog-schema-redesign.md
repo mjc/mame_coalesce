@@ -60,6 +60,19 @@ bounded CLEAR, including independent Logiqx/CMP publication rejection and repair
 The native child suites pass MAME 10, software 10, Logiqx/CMP 18 and No-Intro 13
 tests; five fail-closed wiring and eight independent export-seal tests also pass.
 
+The next isolated count-contract layer compiles six format-specific edition
+seal tables from 158 counters across four closed inventories and six families.
+It reuses shared guard generators and preserves the existing publication checks while
+adding a mandatory count gate in the emitted base-plus-count candidate. That
+layer prepares 48 views; the ordinary 45-view fixture path has not yet absorbed
+it. Expected values must come from independent checked parser events, not SQL
+censuses. All 23 focused tests pass, covering independently specified populated
+mapping routes for all 158 counters, publication controls and a SQL-only mapping
+mutation. Fresh independent GPT-6.1 Sol medium technical and claim reviews are
+bounded CLEAR after both findings were fixed. Ordinary-assembler/fixture/audit
+consolidation and checked parser/EOF integration remain open; this is not a
+second production schema or a cutover authorization.
+
 This is not production DDL or complete-schema approval. Complete mode/child
 capture, parser-fed counts and publication proof, qualified size evidence,
 software complete-first-run qualification, UUID eligibility, ordinary diagnostic
