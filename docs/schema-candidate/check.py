@@ -2,6 +2,7 @@
 """Fast constructed-row witnesses, not authentic-import or production-gate proof."""
 
 import argparse
+from contextlib import closing
 import sqlite3
 import unittest
 
@@ -84,7 +85,7 @@ class SharedWitnesses(unittest.TestCase):
 
     def test_fk_off_still_rejects_forward_reverse_and_replace_attacks(self):
         for enabled in (True, False):
-            with self.subTest(foreign_keys=enabled), shared_connection(enabled) as db:
+            with self.subTest(foreign_keys=enabled), closing(shared_connection(enabled)) as db:
                 seed_identity(db)
                 with self.assertRaises(sqlite3.IntegrityError):
                     db.execute("INSERT INTO catalogs VALUES(2,99,'orphan','Orphan')")
@@ -346,12 +347,9 @@ class AssembledWitnesses(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.db = sqlite3.connect(':memory:')
+        cls.addClassCleanup(cls.db.close)
         cls.db.execute('PRAGMA foreign_keys=ON')
         cls.db.executescript(assemble.assemble())
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.db.close()
 
     def setUp(self):
         self.db.execute('SAVEPOINT witness')
@@ -367,6 +365,20 @@ class AssembledWitnesses(unittest.TestCase):
              extent_view,extent_start,extent_end,location_view,start_line,start_column,end_line,end_column,column_convention)
             VALUES(?,0,0,'',1,1,'retained_original_bytes',0,128,'transport_decoded_xml_text',1,1,2,1,'one_based_unicode_scalar')""", (edition_id,))
         self.db.execute("INSERT INTO mame_document_facts_attribute_positions VALUES(?,'mameconfig',0,0,1,7)", (edition_id,))
+
+    def complete_mame_root(self, edition_id=1, group_id=None):
+        """A publication-positive document includes its required machine/text."""
+        self.mame_root(edition_id)
+        group_id = group_id if group_id is not None else 1000 + edition_id
+        machine_id = 10000 + 2 * edition_id
+        self.db.execute("INSERT INTO catalog_set_groups VALUES(?,?,'root')", (group_id, edition_id))
+        self.db.execute("INSERT INTO catalog_source_elements VALUES(?,?,'mame_machine')", (machine_id, edition_id))
+        self.db.execute("INSERT INTO catalog_sets VALUES(?,?,'machine',0,1,1)", (machine_id, group_id))
+        self.db.execute("INSERT INTO mame_machines VALUES(?,NULL,0,0,0,0,0,0,1,0)", (machine_id,))
+        self.db.execute("INSERT INTO mame_machines_attribute_positions VALUES(?,'name',0,NULL,0,1,1)", (machine_id,))
+        self.db.execute("INSERT INTO catalog_source_elements VALUES(?,?,'mame_machine_text')", (machine_id + 1, edition_id))
+        self.db.execute("INSERT INTO mame_machine_text_elements VALUES(?,?,'description','',0,1,1)",
+                        (machine_id + 1, machine_id))
 
     def test_every_view_prepares_and_all_foreign_key_targets_exist(self):
         for (view,) in self.db.execute("SELECT name FROM sqlite_schema WHERE type='view'").fetchall():
@@ -437,7 +449,7 @@ class AssembledWitnesses(unittest.TestCase):
 
     def test_published_root_and_attribute_positions_are_immutable(self):
         db = self.db
-        self.mame_root()
+        self.complete_mame_root()
         self.assertEqual(db.execute('SELECT * FROM candidate_integrity_problems WHERE edition_id=1').fetchall(), [])
         db.execute("INSERT INTO published_catalog_editions VALUES(1,1,1,1,1,'published')")
         with self.assertRaises(sqlite3.IntegrityError):
@@ -449,7 +461,8 @@ class AssembledWitnesses(unittest.TestCase):
 
     def test_publication_rejects_missing_and_invented_native_field_positions(self):
         db = self.db
-        self.mame_root()
+        self.complete_mame_root()
+        self.assertEqual(db.execute('SELECT * FROM candidate_integrity_problems WHERE edition_id=1').fetchall(), [])
         mutations = (
             "DELETE FROM mame_document_facts_attribute_positions WHERE field_kind='mameconfig'",
             "UPDATE mame_documents SET build=''",
@@ -468,7 +481,7 @@ class AssembledWitnesses(unittest.TestCase):
 
     def test_draft_presence_can_be_repaired_then_is_frozen_by_publication(self):
         db = self.db
-        self.mame_root()
+        self.complete_mame_root()
         db.execute("UPDATE mame_documents SET build='' WHERE edition_id=1")
         with self.assertRaisesRegex(sqlite3.IntegrityError, 'complete closure'):
             db.execute("INSERT INTO published_catalog_editions VALUES(1,1,1,1,1,'published')")
@@ -481,10 +494,10 @@ class AssembledWitnesses(unittest.TestCase):
 
     def test_bad_draft_in_another_edition_does_not_block_publication(self):
         db = self.db
-        self.mame_root()
+        self.complete_mame_root()
         db.execute("INSERT INTO catalog_source_files VALUES(2,?,NULL,128,'other','zstd')", (b't' * 32,))
         db.execute('INSERT INTO catalog_editions VALUES(2,1,2,1,1,NULL,NULL)')
-        self.mame_root(2)
+        self.complete_mame_root(2)
         db.execute("UPDATE mame_documents SET build='' WHERE edition_id=2")
         self.assertEqual(db.execute('SELECT * FROM candidate_field_presence_problems').fetchall(),
                          [('field_presence:mame_document_facts_attribute_positions:build',2,2)])
@@ -494,13 +507,12 @@ class AssembledWitnesses(unittest.TestCase):
 
     def test_contradictory_native_ancestry_blocks_both_known_editions(self):
         db = self.db
-        self.mame_root()
+        self.complete_mame_root()
         db.execute("INSERT INTO catalog_source_files VALUES(2,?,NULL,128,'other','zstd')", (b't' * 32,))
         db.execute('INSERT INTO catalog_editions VALUES(2,1,2,1,1,NULL,NULL)')
-        self.mame_root(2)
-        db.execute("INSERT INTO catalog_set_groups VALUES(2,2,'root')")
+        self.complete_mame_root(2, group_id=2)
         db.execute("INSERT INTO catalog_source_elements VALUES(10,1,'mame_machine')")
-        db.execute("INSERT INTO catalog_sets VALUES(10,2,'machine',0,1,1)")
+        db.execute("INSERT INTO catalog_sets VALUES(10,2,'machine',1,1,1)")
         with self.assertRaisesRegex(sqlite3.IntegrityError, 'kind or ancestry'):
             db.execute('INSERT INTO mame_machines VALUES(10,NULL,0,0,0,0,0,0,1,0)')
         # Independently audit pre-existing corruption, without weakening the guard.

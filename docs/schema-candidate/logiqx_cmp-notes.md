@@ -79,9 +79,11 @@ owners, root-group kind/edition, CMP header/comment cardinality seals, keyed
 payload facets, typed-parent mixed-order collisions, CMP source-order versus
 opening/keyword coordinate inversions, comment/token coordinate collisions,
 keyword-before-value order, canonical hash-code/Value-role mapping and
-relationship-position agreement. Hash mapping diagnostics resolve edition
-through the actual native position owner and its source-element registry row;
-a declaration's media ID is never used as an edition ID. The
+relationship-position agreement. Edition attribution for native diagnostics
+uses a query-local `native_owner_editions` map keyed by exact owner kind and
+actual native ancestry, not by coincidentally matching IDs or registry rows.
+Unknown orphans remain `NULL`-scoped for independent orphan auditing; a
+declaration's media ID is never treated as an edition ID. The
 assembler still owns cross-family registry-kind/edition/one-owner checks,
 decoded-source bounds, document/child containment, publication gates, and
 whole-catalog closure. The view is diagnostic, not a trigger or a claim that
@@ -96,8 +98,47 @@ ROM size remains exact text even when empty, nonnumeric or out of range; its
 virtual numeric projection is nullable. Strict DTD mode requires size.
 Native hash-declaration/position presence is now checked by the shared
 generated audit. Hash scope/interpretation and DTD-mode-specific required
-text children are separate from this presence manifest; existing family
-cardinality/state audits remain enabled.
+text children are separate from this presence manifest.
+
+## Native child cardinality closure
+
+`candidate_logiqx_cmp_cardinality_problems` is the exact three-column
+family-cardinality interface consumed by the assembler's fail-closed format
+audit. Its new rule requires each CMP document root to contain at least one
+native game/set form. Edition attribution comes from the document's actual
+root group and edition; `owner_id` is the physical document's edition key,
+not a fabricated source-element identity. A present empty-name set satisfies
+the minimum, and multiple sets remain valid.
+
+The rest of the bounded cardinality contract already has an owner, so this
+view does not repeat it: the existing family integrity view audits strict
+Logiqx root/game and mode-specific header/game/ROM requirements; it also
+audits the compatible header-name requirement and strict-only extension bans.
+Typed unique keys enforce singleton Logiqx text/root/option children and
+singleton CMP header/set/ROM field codes. Logiqx game comments and CMP samples
+are repeatable; CMP comments and header presence retain their existing
+separate count/presence seals. Compatible Logiqx permits an absent game
+description, a missing header, and zero games; strict DTD mode requires a
+description per game and at least one game. Present empty PCDATA is retained
+as `''`, while absence is no typed child row.
+
+Strict DTD markup/order rejection and compatible nested-markup projection
+remain parser behavior: typed rows cannot prove those source-shape facts, and
+this composed SQL check is not parser or corpus proof. No expected child-count
+seal is introduced by this slice. The independent cardinality check exercises
+the assembled publication path when the view is present, compatible and
+strict mode controls, empty versus absent required text, singleton overflow,
+and CMP zero/one/multiple top-level set forms.
+
+The composed `logiqx_cmp_cardinality_check.py` suite also tests actual
+edition-filtered publication rejection and repair for strict sequence and
+required-child defects, removed registry rows, missing CMP ROM facets,
+missing/unexpected field positions, all five mixed-order collision scopes,
+and all three CMP lexical inversion branches (document form, set item and
+nested field). Its isolated orphan control deliberately bypasses staging guards
+to insert an unknown CMP position, verifies its edition remains `NULL`, and
+confirms it does not poison publication of an unrelated known edition. These
+are constructed SQLite controls, not parser or corpus proof.
 
 CMP preserves document form order, header field order, set-item order across
 field pairs/ROMs/samples, and ROM field/flag order. One field pair consumes one
@@ -110,6 +151,34 @@ derive quoted=false. Sample media identity carries its item order and its own
 keyword/value coordinates. Comments are ordered by decoded source line/column;
 they do not consume item order and do not claim a syntactic parent. The full
 document comment vector and `comment_count` seal remain part of the contract.
+
+The three CMP lexical-order audits compare adjacent complete coordinate pairs
+(`line`, `column`) after ordering by `source_order`: document forms, set items,
+and nested header/ROM fields. They use `LAG` on the actual preceding anchor,
+never independent `MAX(line)`/`MAX(column)` values that could synthesize a
+coordinate from different rows. Anchors lacking either coordinate are filtered
+before windowing, retaining the prior comparison semantics while allowing
+gaps; the existing order-collision and keyword/value checks remain separate.
+This makes the three former pairwise self-joins ordered scans rather than
+quadratic comparisons.
+
+Strict Logiqx sequence checks now enforce root header-before-games and the
+pinned DTD sibling order within headers and games. They use typed child source
+orders and DTD child ranks; compatible mode is deliberately unaffected. These
+are sequence checks only and do not replace parser-side rejection of malformed
+markup or prove source/corpus compatibility.
+
+The composed test measures VM instructions for the actual edition-filtered
+publication audit query on populated valid CMP editions, at 100/200/400
+document-form anchors in both same-line and varying-line layouts. Each layout
+runs in a separate in-memory database seeded with the common fixture, so the
+other benchmark layout's growing edition does not accumulate in that run.
+Observed steps were 624,342 / 1,129,152 / 2,194,352 (same-line) and
+624,045 / 1,128,555 / 2,193,155 (varying-line). These checkpoints show
+near-linear growth for this edition-filtered audit in the constructed layouts;
+they are not a before/after speedup, do not prove global-scan-free execution,
+and are not a corpus-wide performance claim. VM instructions, not host timing,
+are measured.
 
 Defaulted Logiqx enums use their pinned defaults only when omitted; invalid
 supplied enums reject. Strict enum normalization follows the DOC-11
@@ -489,6 +558,6 @@ without independent source evidence. XSI semantics are outside this family's
 DOC-11 code dictionaries: this suite adds no XSI fields and grants no
 cross-family nil interpretation proof. The installed candidate publication
 gate is tested, but complete production parser/finalizer integration and
-model-wide publication approval remain open. Only this manifest, its new
-test runner and these notes change in this pass; native SQL, coverage,
-owner/hash manifests, previous witnesses and main's harness are untouched.
+model-wide publication approval remain open. At that retained-field checkpoint,
+only the manifest, its test runner and these notes changed; the subsequent
+child/cardinality and edition-attribution changes are documented above.

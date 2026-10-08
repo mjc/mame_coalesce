@@ -958,7 +958,7 @@ SELECT 'flat_dat_incompatible_field_presence',document.edition_id,document.editi
 FROM no_intro_dat_documents AS document
 JOIN catalog_editions AS edition USING(edition_id)
 JOIN catalog_reading_rules AS rules USING(reading_rules_id)
-WHERE (rules.dialect IN ('no-intro-dat-v3-strict','no-intro-dat-v3-compatible') AND EXISTS (
+WHERE (rules.dialect='no-intro-dat-v3-strict' AND EXISTS (
           SELECT 1 FROM no_intro_dat_headers AS header JOIN no_intro_dat_header_text_children AS field USING(header_id)
           WHERE header.set_group_id IN (SELECT set_group_id FROM catalog_set_groups WHERE edition_id=document.edition_id)
             AND field.field_kind IN ('trademarks','piracy')))

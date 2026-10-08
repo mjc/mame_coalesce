@@ -441,3 +441,44 @@ no such claim. Source event/count seals, genuine byte/coordinate capture and
 EOF evidence remain separate, as do the numeric/checked-chain/complete-first-
 run/qualification gaps above. Erasing an optional value and its position
 together cannot be detected without independent parser-fed evidence.
+
+## Native child cardinality candidate — 2026-10-08
+
+`software_cardinality.sql` owns the exact `problem,owner_id,edition_id` view
+`candidate_software_cardinality_problems`. Its three bounded audits cover a
+list with no typed title, missing required title description/year/publisher
+PCDATA children (empty text is present and valid), and data/disk area subtype
+closure. Required title text is exactly one of each: the view checks the
+minimum and exact count, while the native `UNIQUE(set_id,field_kind)` key
+enforces the maximum in ordinary writes. The same native unique keys enforce
+optional list/title notes as zero-or-one. Area subtype diagnostics preserve
+every area with outer joins. They use the parent source element's edition
+first, fall back to the area's own source-element edition when the parent
+registry is missing, and retain NULL when both scopes are unknown; native
+ownership/ancestry audits continue to report the detached rows independently.
+
+The existing `candidate_software_integrity_problems` no longer duplicates
+these three rules. Envelope closure remains there: a bare root has exactly one
+canonical list; the compatible plural wrapper requires its physical wrapper
+and placements for present lists, while zero nested lists is accepted. The
+importer requires each present list to contain at least one software item and
+requires each item's description/year/publisher, while accepting empty PCDATA.
+It accepts parts, areas, switches, and recognized children with zero children;
+specifically, `parse_dipswitch` accepts no `dipvalue` even though the pinned
+upstream DTD spells that child with `+`. Unknown children in supported scopes
+are retained as extensions and are not treated as typed native children. The
+candidate follows these importer-compatible outcomes rather than imposing
+stricter DTD validation.
+
+`software_cardinality_check.py` composes the current assembler output once
+and checks its exact view interface without re-creating the view. Rollback
+savepoints cover erasing each required PCDATA kind, rejecting an extra
+singleton, an empty list, an area/subtype mismatch, and repair. Positive
+controls include empty required text, optional notes present-empty/absent,
+empty dipswitch and area children, a bare single-list document, and a plural
+wrapper with zero nested lists. The suite checks parent-derived edition
+attribution, a detached parent with own-registry fallback, fully unknown NULL
+scope, indexed known-parent/facet query plans, and the real assembled
+publication rejection/repair path. It remains constructed-SQL evidence: it
+does not establish parser/corpus proof, source event counts, or independent
+count seals. No count seals are added in this child/PCDATA slice.

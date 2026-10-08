@@ -545,24 +545,6 @@ LEFT JOIN catalog_set_groups AS groups USING (set_group_id)
 LEFT JOIN software_documents AS document ON document.edition_id = groups.edition_id
 WHERE groups.group_kind IS NOT 'software_list' OR document.edition_id IS NULL
 UNION ALL
-SELECT 'software_list_without_title', list.set_group_id, groups.edition_id
-FROM software_lists AS list
-JOIN catalog_set_groups AS groups USING (set_group_id)
-WHERE NOT EXISTS (SELECT 1 FROM catalog_sets AS set_entry
-                  JOIN software_titles AS title ON title.set_id = set_entry.set_id
-                  WHERE set_entry.set_group_id = list.set_group_id)
-UNION ALL
-SELECT 'software_title_required_text_missing', title.set_id, groups.edition_id
-FROM software_titles AS title
-JOIN catalog_sets AS set_entry ON set_entry.set_id = title.set_id
-JOIN catalog_set_groups AS groups USING (set_group_id)
-WHERE NOT EXISTS (SELECT 1 FROM software_title_text_elements AS text
-                  WHERE text.set_id = title.set_id AND text.field_kind = 0)
-   OR NOT EXISTS (SELECT 1 FROM software_title_text_elements AS text
-                  WHERE text.set_id = title.set_id AND text.field_kind = 1)
-   OR NOT EXISTS (SELECT 1 FROM software_title_text_elements AS text
-                  WHERE text.set_id = title.set_id AND text.field_kind = 2)
-UNION ALL
 SELECT 'software_envelope_mode_closure', document.edition_id, document.edition_id
 FROM software_documents AS document
 WHERE (document.envelope_kind = 'single_list' AND (
@@ -628,14 +610,6 @@ WHERE parent.location_view = child.location_view
   AND parent.location_view IS NOT NULL
   AND NOT ((parent.start_line, parent.start_column) <= (child.start_line, child.start_column)
        AND (child.end_line, child.end_column) <= (parent.end_line, parent.end_column))
-UNION ALL
-SELECT 'software_area_subtype_closure', area.area_id, element.edition_id
-FROM software_areas AS area
-LEFT JOIN software_data_areas AS data USING (area_id)
-LEFT JOIN software_disk_areas AS disk USING (area_id)
-LEFT JOIN catalog_source_elements AS element ON element.source_element_id = area.area_id
-WHERE (area.kind = 'data' AND (data.area_id IS NULL OR disk.area_id IS NOT NULL))
-   OR (area.kind = 'disk' AND (disk.area_id IS NULL OR data.area_id IS NOT NULL))
 UNION ALL
 SELECT 'software_rom_missing_load_step', rom.media_entry_id, element.edition_id
 FROM software_rom_load_entries AS rom

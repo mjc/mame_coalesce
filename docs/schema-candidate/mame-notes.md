@@ -392,3 +392,74 @@ follow-up files are re-frozen for NativeSol re-review. The formerly RED
 shared-gate regression also remains intact; it was not weakened to obtain GREEN.
 The design approval gate remains open; no production build/gate, commit, push
 or external-document edits were performed.
+
+## Native child and PCDATA cardinality — candidate 2026-10-08
+
+`mame_cardinality.sql` supplies the family view
+`candidate_mame_cardinality_problems(problem,owner_id,edition_id)`. The main
+assembler explicitly includes it in the cardinality audit discovery and
+publication closure. Root-without-machine is attributed to the real
+`mame_documents.edition_id`; a missing required machine description is
+attributed to its actual `mame_machines.set_id` and registry edition. Detached
+orphan ancestry remains the assembler's separate ownership audit.
+
+The view enforces the parser's accepted requirement that every MAME document
+contain at least one machine, independent of dialect: `parse_machine_records`
+returns `MAME document has no machine records` when it sees none. Each machine
+must have its singleton `description` text child. Empty description, year,
+manufacturer and RAM-option PCDATA remain valid values; optional year and
+manufacturer absence remains valid. Existing typed constraints already cap
+machine text kinds and singleton cardinality, condition/value ownership and
+other locally unique optional children. The view does not repeat those local
+UNIQUE/CHECK/FK rules. RAM PCDATA remains a non-NULL field on each RAM-option
+row, preserving present-empty text.
+
+The strict `strict-dtd` reading mode additionally checks the pinned machine
+child sequence, switch condition/location/value sequence, and device
+instance-before-extension sequence. The machine sequence ranks are exactly
+description, year, manufacturer, BIOS set, ROM, disk, device reference,
+sample, chip, display, sound, input, DIP switch, configuration, port,
+adjuster, driver, feature, device, slot, software list, RAM option. These
+strict-only scans filter to strict owners before applying a prior-maximum
+window; they do not pairwise compare every sibling. Observed compatibility
+keeps source orders the parser accepts. The separate existing integrity view
+continues to report a second device instance only for strict DTD; it is not
+duplicated here. Shared mixed-sibling source-order collision detection also
+remains in the assembler, not this family view.
+
+For DTD-required attributes, the field crosswalk identifies `rom@size` as the
+only required value intentionally nullable in the shared projection: observed
+compatibility permits absence, while strict DTD does not. The cardinality view
+therefore requires non-NULL `mame_roms.size_text` only for `strict-dtd`; it
+does not validate decimal syntax, range, or interpretation, and accepts
+present-empty or malformed retained text. The other DTD-required attribute
+values, including root `mameconfig` and machine `name`, are stored in NOT NULL
+columns. Existing field-presence publication checks require a position for
+each retained required value. Required description and the parser-accepted
+nonempty root are handled as child/root cardinality above. Erasing an entire
+optional or repeated source record together with its registry entry can remain
+undetectable when the surviving parent still meets its cardinality. That needs
+independent source/parser evidence, not a count inferred from surviving rows.
+
+`mame_cardinality_check.py` uses `assemble.assemble()` directly and requires
+the installed view, so it cannot double-create it. Its constructed in-memory
+cases cover complete roots with multiple machines, present-empty PCDATA,
+required-description deletion/repair, zero-machine root rejection/repair,
+strict machine/switch/device sequence rejection and repair, observed-order
+positive controls, edition attribution, and publication rejection followed by
+repair. A complete strict publication fixture jointly erases ROM size text and
+its matching position, confirms the ordinary presence audit is quiet, and
+proves strict cardinality rejects publication until both are restored. A
+separate observed-mode publication control proves the same consistent
+absence remains accepted. No positive assertion is inferred from persisted
+row totals. This is SQL execution evidence only: it does not prove production
+parser or corpus cardinality, nor detect jointly erased optional children
+without an independent source count seal.
+
+The installed scope intentionally leaves child-count seals for optional or
+repeatable fields to separate work. Nested content not represented by typed
+candidate rows, child-local uniqueness already enforced by the DDL, exact
+source/parser correspondence, and corpus-wide conformance remain unproven.
+The empty-root behavior is parser-established; the strict content sequences
+are candidate policy for the named strict dialect and do not claim that the
+current compatibility parser validates the upstream DTD sequence.

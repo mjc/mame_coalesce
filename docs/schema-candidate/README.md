@@ -152,9 +152,10 @@ repair-before-publication, published immutability and isolation from another
 edition's incomplete draft. The generator tests additionally cover empty versus
 absent, explicit defaults, equal-count owner substitution, extra/nonzero
 occurrences, detached owners, invalid manifest references and inventories above
-SQLite's compound-select limit. The current composed replay passes 29 integrated
-tests in 6.280 seconds; assembly prepares 41 views. Ten generator tests and 55
-native presence test methods pass, with hundreds of route/state mutation cases.
+SQLite's compound-select limit. The retained-field checkpoint passed 29 integrated
+tests in 6.280 seconds with 41 views. The later child/seal snapshot prepares
+45 views and passed 29 integrated tests in 5.748 seconds. Ten generator tests
+and 55 native presence test methods pass, with hundreds of route/state mutations.
 An ancestry contradiction is reported to both known editions; an edition
 identified only by the surviving parent is retained, while truly unknown
 orphans remain global-only findings.
@@ -164,6 +165,63 @@ the native-presence assertions without unrelated FK/UNIQUE setup failures.
 Fresh GPT-6.1 Sol medium core and four-family native fix/re-review loops are
 bounded CLEAR for this field-position pass. Neither approves complete source
 capture/counts, PCDATA cardinality, XSI semantics, corpus or production cutover.
+
+## Native child cardinality and export count seals
+
+The assembler explicitly loads all four `*_cardinality.sql` fragments and
+requires their exact `(problem,owner_id,edition_id)` view interfaces. Missing or
+misspelled views, wrong columns and unresolved native dependencies fail assembly;
+each family audit participates in the actual edition publication gate. Existing
+format integrity views and local singleton keys remain part of that gate.
+
+The MAME audit requires machines and each machine's description. Strict DTD
+machine/switch/device child order and required ROM size are checked separately
+from observed-compatible order and optional size. Its prior-maximum windows
+avoid pairwise sibling comparisons. Software
+list/title/area cardinalities move from the older integrity view to their one
+canonical audit, preserving empty required text, optional singleton notes and
+compatible empty areas/switches. CMP requires at least one game/set form;
+Logiqx's existing mode-specific text rules remain in its format integrity view;
+its strict root/header/game child order has its own candidate checks. CMP
+lexical ordering uses adjacent ordered anchors instead of quadratic pairwise
+joins, including nested fields. No-Intro strict DAT ROMs require their
+size/CRC/MD5/SHA-1 declarations; all four DAT modes require the header before
+games, while strict header/game child order does not constrain compatible
+children. V3 compatible mode correctly permits trademarks/piracy. Existing DAT/P-C/export
+child rules remain in their native keys and integrity view. These are not new
+claims of strict XSI, numeric lexical validation or complete parser capture.
+
+Run the independent composed cardinality and seal checks:
+
+```sh
+python3 docs/schema-candidate/cardinality_wiring_check.py
+python3 docs/schema-candidate/mame_cardinality_check.py
+python3 docs/schema-candidate/software_cardinality_check.py
+python3 docs/schema-candidate/logiqx_cmp_cardinality_check.py
+python3 docs/schema-candidate/no_intro_cardinality_check.py
+python3 docs/schema-candidate/export_count_check.py
+```
+
+`export_count_check.py` independently specifies the existing 18 edition counters
+and nine game/source/release counters. It perturbs each expected count, removes
+each seal, tests exact nonnegative integers, deletes native relations to expose
+same-sized swapped query mappings, and exercises actual publication refusal,
+repair and immutability. Removing a complete optional header child and its
+registry row still leaves the independent seal reporting source loss. The
+mapping controls intentionally bypass deletion guards and test the count audit
+alone after their explicit expected-count adjustment; they do not publish the
+damaged graph or derive expectations with SELECT from inserted rows. These
+constructed fixtures do not prove real parser accumulation, checked arithmetic
+or EOF. Expected-count schemas and producers for the other formats remain open;
+per-owner position counters are not added to ordinary pages.
+
+Fresh GPT-6.1 Sol medium core/count and four-family native fix/re-review loops
+are bounded CLEAR for this child/seal pass. Native child suites pass MAME 10,
+software 10, Logiqx/CMP 18 and No-Intro 13 tests; the wiring and export suites
+pass five and eight respectively. Independent Logiqx/CMP re-review also passes
+all 14 presence tests, nine publication defect/repair controls and the unknown
+orphan isolation control. None establishes full-volume acceptance, parser-fed
+counts/EOF, XSI lexical semantics or complete-design approval.
 
 ## What the checks establish
 
@@ -192,9 +250,9 @@ current application already follows it.
 
 ## Still required
 
-This artifact remains incomplete until independently verified all-format
-field-presence/default/position closure, full native relationship publication proof,
-all root modes and diagnostic containment, independently parser-fed count seals,
+This artifact remains incomplete until complete parser-fed field/child capture,
+full native relationship publication proof, all root modes and diagnostic
+containment, independently parser-fed count seals,
 qualified size/hash evidence and atomic review refresh, UUID eligibility,
 ordinary-owner immutability, corruption witnesses and populated native plans are
 complete. Read the format notes for concrete remaining gaps rather than inferring

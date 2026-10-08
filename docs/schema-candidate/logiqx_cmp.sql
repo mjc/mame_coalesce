@@ -808,6 +808,71 @@ actual_positions(owner_kind, owner_id, field_kind) AS (
     UNION ALL SELECT 'clrmamepro_set', set_id, field_kind FROM clrmamepro_set_field_positions
     UNION ALL SELECT 'clrmamepro_rom', media_entry_id, field_kind FROM clrmamepro_rom_field_positions
 ),
+-- Closed, query-local edition scopes keyed by the exact native owner kind.
+-- These joins deliberately bypass catalog_source_elements: native ancestry
+-- remains authoritative when a registry row is independently missing. Rows
+-- without a known native parent stay unattributed for the assembler's orphan
+-- audits rather than receiving an inferred/global edition.
+native_owner_editions(owner_kind, owner_id, edition_id) AS (
+    SELECT 'logiqx_document', d.edition_id, d.edition_id FROM logiqx_documents AS d
+    UNION ALL SELECT 'logiqx_clrmamepro_options', o.source_element_id, g.edition_id
+      FROM logiqx_clrmamepro_options AS o JOIN logiqx_headers AS h USING (header_id)
+      JOIN catalog_set_groups AS g USING (set_group_id)
+    UNION ALL SELECT 'logiqx_romcenter_options', o.source_element_id, g.edition_id
+      FROM logiqx_romcenter_options AS o JOIN logiqx_headers AS h USING (header_id)
+      JOIN catalog_set_groups AS g USING (set_group_id)
+    UNION ALL SELECT 'logiqx_game', game.set_id, g.edition_id
+      FROM logiqx_games AS game JOIN catalog_sets AS s USING (set_id)
+      JOIN catalog_set_groups AS g USING (set_group_id)
+    UNION ALL SELECT 'logiqx_release', child.source_element_id, g.edition_id
+      FROM logiqx_releases AS child JOIN logiqx_games AS game USING (set_id)
+      JOIN catalog_sets AS s USING (set_id) JOIN catalog_set_groups AS g USING (set_group_id)
+    UNION ALL SELECT 'logiqx_bios', child.source_element_id, g.edition_id
+      FROM logiqx_bios_sets AS child JOIN logiqx_games AS game USING (set_id)
+      JOIN catalog_sets AS s USING (set_id) JOIN catalog_set_groups AS g USING (set_group_id)
+    UNION ALL SELECT 'logiqx_archive', child.source_element_id, g.edition_id
+      FROM logiqx_archive_references AS child JOIN logiqx_games AS game USING (set_id)
+      JOIN catalog_sets AS s USING (set_id) JOIN catalog_set_groups AS g USING (set_group_id)
+    UNION ALL SELECT 'logiqx_device', child.source_element_id, g.edition_id
+      FROM logiqx_device_references AS child JOIN logiqx_games AS game USING (set_id)
+      JOIN catalog_sets AS s USING (set_id) JOIN catalog_set_groups AS g USING (set_group_id)
+    UNION ALL SELECT 'logiqx_rom', child.media_entry_id, g.edition_id
+      FROM logiqx_roms AS child JOIN logiqx_games AS game USING (set_id)
+      JOIN catalog_sets AS s USING (set_id) JOIN catalog_set_groups AS g USING (set_group_id)
+    UNION ALL SELECT 'logiqx_disk', child.media_entry_id, g.edition_id
+      FROM logiqx_disks AS child JOIN logiqx_games AS game USING (set_id)
+      JOIN catalog_sets AS s USING (set_id) JOIN catalog_set_groups AS g USING (set_group_id)
+    UNION ALL SELECT 'logiqx_sample', child.media_entry_id, g.edition_id
+      FROM logiqx_samples AS child JOIN logiqx_games AS game USING (set_id)
+      JOIN catalog_sets AS s USING (set_id) JOIN catalog_set_groups AS g USING (set_group_id)
+    UNION ALL SELECT 'logiqx_header_text', child.source_element_id, g.edition_id
+      FROM logiqx_header_text_elements AS child JOIN logiqx_headers AS h USING (header_id)
+      JOIN catalog_set_groups AS g USING (set_group_id)
+    UNION ALL SELECT 'logiqx_game_text', child.source_element_id, g.edition_id
+      FROM logiqx_game_text_elements AS child JOIN logiqx_games AS game USING (set_id)
+      JOIN catalog_sets AS s USING (set_id) JOIN catalog_set_groups AS g USING (set_group_id)
+    UNION ALL SELECT 'clrmamepro_header', h.header_id, h.edition_id FROM clrmamepro_headers AS h
+    UNION ALL SELECT 'clrmamepro_set', cs.set_id, g.edition_id
+      FROM clrmamepro_sets AS cs JOIN catalog_sets AS s USING (set_id)
+      JOIN catalog_set_groups AS g USING (set_group_id)
+    UNION ALL SELECT 'clrmamepro_rom', rom.media_entry_id, g.edition_id
+      FROM clrmamepro_roms AS rom JOIN clrmamepro_sets AS cs USING (set_id)
+      JOIN catalog_sets AS s USING (set_id) JOIN catalog_set_groups AS g USING (set_group_id)
+    UNION ALL SELECT 'logiqx-root', g.set_group_id, g.edition_id FROM catalog_set_groups AS g
+    UNION ALL SELECT 'logiqx-header', h.header_id, g.edition_id
+      FROM logiqx_headers AS h JOIN catalog_set_groups AS g USING (set_group_id)
+    UNION ALL SELECT 'logiqx-game', game.set_id, g.edition_id
+      FROM logiqx_games AS game JOIN catalog_sets AS s USING (set_id)
+      JOIN catalog_set_groups AS g USING (set_group_id)
+    UNION ALL SELECT 'cmp-document', d.edition_id, d.edition_id FROM clrmamepro_documents AS d
+    UNION ALL SELECT 'cmp-set', cs.set_id, g.edition_id
+      FROM clrmamepro_sets AS cs JOIN catalog_sets AS s USING (set_id)
+      JOIN catalog_set_groups AS g USING (set_group_id)
+    UNION ALL SELECT 'header', h.header_id, h.edition_id FROM clrmamepro_headers AS h
+    UNION ALL SELECT 'rom', rom.media_entry_id, g.edition_id
+      FROM clrmamepro_roms AS rom JOIN clrmamepro_sets AS cs USING (set_id)
+      JOIN catalog_sets AS s USING (set_id) JOIN catalog_set_groups AS g USING (set_group_id)
+),
 expected_relationship_positions(owner_kind, owner_id, field_kind, relationship_id) AS (
     SELECT 'logiqx_game', set_id,
            CASE link_kind WHEN 'cloneof' THEN 3 WHEN 'romof' THEN 4 WHEN 'sampleof' THEN 5 END,
@@ -827,16 +892,16 @@ actual_relationship_positions(owner_kind, owner_id, field_kind, relationship_id)
     UNION ALL SELECT 'clrmamepro_set', set_id, field_kind, relationship_id FROM clrmamepro_set_field_positions WHERE relationship_id IS NOT NULL
     UNION ALL SELECT 'clrmamepro_rom', media_entry_id, field_kind, relationship_id FROM clrmamepro_rom_field_positions WHERE relationship_id IS NOT NULL
 ),
-native_hash_positions(family, media_entry_id, reported_hash_id, field_occurrence, expected_source_hash_field) AS (
-    SELECT 'logiqx', r.media_entry_id, p.reported_hash_id, p.field_occurrence,
+native_hash_positions(owner_kind, family, media_entry_id, reported_hash_id, field_occurrence, expected_source_hash_field) AS (
+    SELECT 'logiqx_rom', 'logiqx', r.media_entry_id, p.reported_hash_id, p.field_occurrence,
            CASE p.field_kind WHEN 2 THEN 'crc' WHEN 3 THEN 'sha1' WHEN 4 THEN 'md5' END
       FROM logiqx_rom_attribute_positions p JOIN logiqx_roms r USING (media_entry_id)
       WHERE p.reported_hash_id IS NOT NULL
-    UNION ALL SELECT 'logiqx', d.media_entry_id, p.reported_hash_id, p.field_occurrence,
+    UNION ALL SELECT 'logiqx_disk', 'logiqx', d.media_entry_id, p.reported_hash_id, p.field_occurrence,
            CASE p.field_kind WHEN 1 THEN 'sha1' WHEN 2 THEN 'md5' END
       FROM logiqx_disk_attribute_positions p JOIN logiqx_disks d USING (media_entry_id)
       WHERE p.reported_hash_id IS NOT NULL
-    UNION ALL SELECT 'clrmamepro', r.media_entry_id, p.reported_hash_id, p.field_occurrence,
+    UNION ALL SELECT 'clrmamepro_rom', 'clrmamepro', r.media_entry_id, p.reported_hash_id, p.field_occurrence,
            CASE p.field_kind WHEN 2 THEN 'crc' WHEN 3 THEN 'crc32' WHEN 4 THEN 'md5' WHEN 5 THEN 'sha1' END
       FROM clrmamepro_rom_field_positions p JOIN clrmamepro_roms r USING (media_entry_id)
       WHERE p.reported_hash_id IS NOT NULL
@@ -913,22 +978,162 @@ cmp_nested_field_anchors(owner_kind, owner_id, source_order, source_line, source
     UNION ALL SELECT 'rom', media_entry_id, source_order, keyword_line, keyword_column, field_kind
       FROM clrmamepro_rom_field_positions
 ),
+cmp_set_item_ordered AS (
+    SELECT item.*,
+           lag(source_order) OVER (PARTITION BY set_id ORDER BY source_order, source_line, source_column) AS prior_source_order,
+           lag(source_line) OVER (PARTITION BY set_id ORDER BY source_order, source_line, source_column) AS prior_line,
+           lag(source_column) OVER (PARTITION BY set_id ORDER BY source_order, source_line, source_column) AS prior_column
+      FROM cmp_set_item_anchors AS item
+     WHERE source_line IS NOT NULL AND source_column IS NOT NULL
+),
+cmp_document_item_ordered AS (
+    SELECT item.*,
+           lag(source_order) OVER (PARTITION BY edition_id ORDER BY source_order, source_line, source_column) AS prior_source_order,
+           lag(source_line) OVER (PARTITION BY edition_id ORDER BY source_order, source_line, source_column) AS prior_line,
+           lag(source_column) OVER (PARTITION BY edition_id ORDER BY source_order, source_line, source_column) AS prior_column
+      FROM cmp_document_item_anchors AS item
+     WHERE source_line IS NOT NULL AND source_column IS NOT NULL
+),
+cmp_nested_field_ordered AS (
+    SELECT field.*,
+           lag(source_order) OVER (PARTITION BY owner_kind, owner_id ORDER BY source_order, source_line, source_column) AS prior_source_order,
+           lag(source_line) OVER (PARTITION BY owner_kind, owner_id ORDER BY source_order, source_line, source_column) AS prior_line,
+           lag(source_column) OVER (PARTITION BY owner_kind, owner_id ORDER BY source_order, source_line, source_column) AS prior_column
+      FROM cmp_nested_field_anchors AS field
+     WHERE source_line IS NOT NULL AND source_column IS NOT NULL
+),
+strict_logiqx_documents AS (
+    SELECT document.edition_id, document.set_group_id
+      FROM logiqx_documents AS document
+      JOIN catalog_editions AS edition USING (edition_id)
+      JOIN catalog_reading_rules AS rules USING (reading_rules_id)
+     WHERE rules.rules_version = 'logiqx-dtd-1.5-v1'
+),
+strict_logiqx_root_children(parent_id, edition_id, source_order, sequence_rank, item_kind, owner_id) AS (
+    SELECT document.set_group_id, document.edition_id, header.source_order, 0, 'header', header.header_id
+      FROM strict_logiqx_documents AS document
+      JOIN logiqx_headers AS header USING (set_group_id)
+    UNION ALL
+    SELECT document.set_group_id, document.edition_id, placement.source_order, 1, 'game', game.set_id
+      FROM strict_logiqx_documents AS document
+      JOIN catalog_sets AS placement USING (set_group_id)
+      JOIN logiqx_games AS game USING (set_id)
+),
+strict_logiqx_root_ordered AS (
+    SELECT child.*,
+           lag(sequence_rank) OVER (PARTITION BY parent_id ORDER BY source_order) AS prior_rank
+      FROM strict_logiqx_root_children AS child
+),
+strict_logiqx_header_children(parent_id, edition_id, source_order, sequence_rank, owner_id) AS (
+    SELECT header.header_id, document.edition_id, text.source_order, text.field_kind, text.source_element_id
+      FROM strict_logiqx_documents AS document
+      JOIN logiqx_headers AS header USING (set_group_id)
+      JOIN logiqx_header_text_elements AS text USING (header_id)
+    UNION ALL
+    SELECT header.header_id, document.edition_id, option.source_order, 10, option.source_element_id
+      FROM strict_logiqx_documents AS document
+      JOIN logiqx_headers AS header USING (set_group_id)
+      JOIN logiqx_clrmamepro_options AS option USING (header_id)
+    UNION ALL
+    SELECT header.header_id, document.edition_id, option.source_order, 11, option.source_element_id
+      FROM strict_logiqx_documents AS document
+      JOIN logiqx_headers AS header USING (set_group_id)
+      JOIN logiqx_romcenter_options AS option USING (header_id)
+),
+strict_logiqx_header_ordered AS (
+    SELECT child.*,
+           lag(sequence_rank) OVER (PARTITION BY parent_id ORDER BY source_order) AS prior_rank
+      FROM strict_logiqx_header_children AS child
+),
+strict_logiqx_game_children(parent_id, edition_id, source_order, sequence_rank, owner_id) AS (
+    SELECT game.set_id, document.edition_id, text.source_order,
+           CASE text.field_kind WHEN 0 THEN 1 WHEN 1 THEN 2 WHEN 2 THEN 3 END,
+           text.source_element_id
+      FROM strict_logiqx_documents AS document
+      JOIN catalog_sets AS placement USING (set_group_id)
+      JOIN logiqx_games AS game USING (set_id)
+      JOIN logiqx_game_text_elements AS text USING (set_id)
+    UNION ALL
+    SELECT game.set_id, document.edition_id, comment.source_order, 0, comment.source_element_id
+      FROM strict_logiqx_documents AS document
+      JOIN catalog_sets AS placement USING (set_group_id)
+      JOIN logiqx_games AS game USING (set_id)
+      JOIN logiqx_game_comments AS comment USING (set_id)
+    UNION ALL
+    SELECT game.set_id, document.edition_id, child.source_order, 4, child.source_element_id
+      FROM strict_logiqx_documents AS document
+      JOIN catalog_sets AS placement USING (set_group_id)
+      JOIN logiqx_games AS game USING (set_id)
+      JOIN logiqx_releases AS child USING (set_id)
+    UNION ALL
+    SELECT game.set_id, document.edition_id, child.source_order, 5, child.source_element_id
+      FROM strict_logiqx_documents AS document
+      JOIN catalog_sets AS placement USING (set_group_id)
+      JOIN logiqx_games AS game USING (set_id)
+      JOIN logiqx_bios_sets AS child USING (set_id)
+    UNION ALL
+    SELECT game.set_id, document.edition_id, child.source_order, 6, child.media_entry_id
+      FROM strict_logiqx_documents AS document
+      JOIN catalog_sets AS placement USING (set_group_id)
+      JOIN logiqx_games AS game USING (set_id)
+      JOIN logiqx_roms AS child USING (set_id)
+    UNION ALL
+    SELECT game.set_id, document.edition_id, child.source_order, 7, child.media_entry_id
+      FROM strict_logiqx_documents AS document
+      JOIN catalog_sets AS placement USING (set_group_id)
+      JOIN logiqx_games AS game USING (set_id)
+      JOIN logiqx_disks AS child USING (set_id)
+    UNION ALL
+    SELECT game.set_id, document.edition_id, child.source_order, 8, child.media_entry_id
+      FROM strict_logiqx_documents AS document
+      JOIN catalog_sets AS placement USING (set_group_id)
+      JOIN logiqx_games AS game USING (set_id)
+      JOIN logiqx_samples AS child USING (set_id)
+    UNION ALL
+    SELECT game.set_id, document.edition_id, child.source_order, 9, child.source_element_id
+      FROM strict_logiqx_documents AS document
+      JOIN catalog_sets AS placement USING (set_group_id)
+      JOIN logiqx_games AS game USING (set_id)
+      JOIN logiqx_archive_references AS child USING (set_id)
+),
+strict_logiqx_game_ordered AS (
+    SELECT child.*,
+           lag(sequence_rank) OVER (PARTITION BY parent_id ORDER BY source_order) AS prior_rank
+      FROM strict_logiqx_game_children AS child
+),
+strict_logiqx_root_problems(problem, edition_id, owner_id, detail) AS (
+    SELECT 'strict_logiqx_root_child_order' AS problem, edition_id, owner_id,
+           item_kind || ' follows a later DTD sibling'
+      FROM strict_logiqx_root_ordered WHERE prior_rank > sequence_rank
+),
+strict_logiqx_header_problems(problem, edition_id, owner_id, detail) AS (
+    SELECT 'strict_logiqx_header_child_order' AS problem, edition_id, owner_id,
+           'header child follows a later DTD sibling'
+      FROM strict_logiqx_header_ordered WHERE prior_rank > sequence_rank
+),
+strict_logiqx_game_problems(problem, edition_id, owner_id, detail) AS (
+    SELECT 'strict_logiqx_game_child_order' AS problem, edition_id, owner_id,
+           'game child follows a later DTD sibling'
+      FROM strict_logiqx_game_ordered WHERE prior_rank > sequence_rank
+),
 problems(problem, edition_id, owner_id, detail) AS (
-    SELECT 'missing_position', NULL, e.owner_id, e.owner_kind || ':' || e.field_kind
+    SELECT 'missing_position', scope.edition_id, e.owner_id, e.owner_kind || ':' || e.field_kind
       FROM expected_positions e LEFT JOIN actual_positions a USING (owner_kind, owner_id, field_kind)
+      LEFT JOIN native_owner_editions AS scope USING (owner_kind, owner_id)
       WHERE a.owner_id IS NULL
-    UNION ALL SELECT 'unexpected_position', NULL, a.owner_id, a.owner_kind || ':' || a.field_kind
+    UNION ALL SELECT 'unexpected_position', scope.edition_id, a.owner_id, a.owner_kind || ':' || a.field_kind
       FROM actual_positions a LEFT JOIN expected_positions e USING (owner_kind, owner_id, field_kind)
+      LEFT JOIN native_owner_editions AS scope USING (owner_kind, owner_id)
       WHERE e.owner_id IS NULL
     UNION ALL SELECT 'relationship_position_mismatch', s.edition_id, e.owner_id, e.owner_kind || ':' || e.field_kind
       FROM expected_relationship_positions e
       LEFT JOIN actual_relationship_positions a USING (owner_kind, owner_id, field_kind)
-      LEFT JOIN catalog_source_elements s ON s.source_element_id=e.owner_id
+      LEFT JOIN native_owner_editions AS s USING (owner_kind, owner_id)
       WHERE e.relationship_id IS NOT a.relationship_id
     UNION ALL SELECT 'unexpected_relationship_position', s.edition_id, a.owner_id, a.owner_kind || ':' || a.field_kind
       FROM actual_relationship_positions a
       LEFT JOIN expected_relationship_positions e USING (owner_kind, owner_id, field_kind)
-      LEFT JOIN catalog_source_elements s ON s.source_element_id=a.owner_id
+      LEFT JOIN native_owner_editions AS s USING (owner_kind, owner_id)
       WHERE e.owner_id IS NULL
     UNION ALL SELECT 'bad_logiqx_rules', d.edition_id, d.edition_id, r.rules_version
       FROM logiqx_documents d JOIN catalog_editions e USING (edition_id)
@@ -962,15 +1167,17 @@ problems(problem, edition_id, owner_id, detail) AS (
       JOIN catalog_reading_rules r USING (reading_rules_id) JOIN logiqx_headers h USING (set_group_id)
       WHERE r.rules_version = 'logiqx-declared-text-compat-v2'
         AND NOT EXISTS (SELECT 1 FROM logiqx_header_text_elements t WHERE t.header_id=h.header_id AND t.field_kind=0)
-    UNION ALL SELECT 'missing_strict_game_description', NULL, g.set_id, 'strict game needs description'
-      FROM logiqx_games g WHERE NOT EXISTS (SELECT 1 FROM logiqx_game_text_elements t WHERE t.set_id=g.set_id AND t.field_kind=0)
-       AND EXISTS (SELECT 1 FROM catalog_sets s JOIN logiqx_documents d USING (set_group_id)
-                   JOIN catalog_editions e USING (edition_id) JOIN catalog_reading_rules r USING (reading_rules_id)
-                   WHERE s.set_id=g.set_id AND r.rules_version='logiqx-dtd-1.5-v1')
-    UNION ALL SELECT 'missing_strict_rom_size', NULL, r.media_entry_id, 'strict ROM needs size attribute'
-      FROM logiqx_roms r JOIN catalog_sets s USING (set_id) JOIN logiqx_documents d USING (set_group_id)
-      JOIN catalog_editions e USING (edition_id) JOIN catalog_reading_rules rr USING (reading_rules_id)
-      WHERE rr.rules_version='logiqx-dtd-1.5-v1' AND r.size_text IS NULL
+    UNION ALL SELECT 'missing_strict_game_description', d.edition_id, game.set_id, 'strict game needs description'
+      FROM logiqx_games AS game JOIN catalog_sets AS s USING (set_id)
+      JOIN logiqx_documents AS d USING (set_group_id)
+      JOIN catalog_editions AS e USING (edition_id) JOIN catalog_reading_rules AS r USING (reading_rules_id)
+      WHERE r.rules_version='logiqx-dtd-1.5-v1'
+        AND NOT EXISTS (SELECT 1 FROM logiqx_game_text_elements AS t WHERE t.set_id=game.set_id AND t.field_kind=0)
+    UNION ALL SELECT 'missing_strict_rom_size', d.edition_id, rom.media_entry_id, 'strict ROM needs size attribute'
+      FROM logiqx_roms AS rom JOIN catalog_sets AS s USING (set_id)
+      JOIN logiqx_documents AS d USING (set_group_id)
+      JOIN catalog_editions AS e USING (edition_id) JOIN catalog_reading_rules AS rr USING (reading_rules_id)
+      WHERE rr.rules_version='logiqx-dtd-1.5-v1' AND rom.size_text IS NULL
     UNION ALL SELECT 'root_group_edition_or_kind', d.edition_id, d.set_group_id, 'root group must belong to edition and have root kind'
       FROM logiqx_documents d LEFT JOIN catalog_set_groups g ON g.set_group_id=d.set_group_id AND g.edition_id=d.edition_id AND g.group_kind='root'
       WHERE g.set_group_id IS NULL
@@ -987,45 +1194,66 @@ problems(problem, edition_id, owner_id, detail) AS (
       FROM clrmamepro_documents d WHERE d.comment_count <> (SELECT count(*) FROM clrmamepro_comments c WHERE c.edition_id=d.edition_id)
     UNION ALL SELECT 'missing_cmp_header_options', h.edition_id, h.header_id, 'present header lacks its one keyed options facet'
       FROM clrmamepro_headers h WHERE NOT EXISTS (SELECT 1 FROM clrmamepro_header_options o WHERE o.header_id=h.header_id)
-    UNION ALL SELECT 'missing_cmp_rom_details', NULL, r.media_entry_id, 'present ROM lacks its one keyed detail facet'
-      FROM clrmamepro_roms r WHERE NOT EXISTS (SELECT 1 FROM clrmamepro_rom_details d WHERE d.media_entry_id=r.media_entry_id)
-    UNION ALL SELECT 'logiqx_root_mixed_order_collision', NULL, p.owner_id, 'duplicate source_order in root domain'
-      FROM placements p WHERE p.domain='logiqx-root' GROUP BY p.parent_key, p.source_order HAVING count(*) > 1
-    UNION ALL SELECT 'logiqx_header_mixed_order_collision', NULL, p.owner_id, 'duplicate source_order in header domain'
-      FROM placements p WHERE p.domain='logiqx-header' GROUP BY p.parent_key, p.source_order HAVING count(*) > 1
-    UNION ALL SELECT 'logiqx_game_mixed_order_collision', NULL, p.owner_id, 'duplicate source_order in game domain'
-      FROM placements p WHERE p.domain='logiqx-game' GROUP BY p.parent_key, p.source_order HAVING count(*) > 1
-    UNION ALL SELECT 'cmp_document_mixed_order_collision', NULL, p.owner_id, 'duplicate source_order in document-form domain'
-      FROM placements p WHERE p.domain='cmp-document' GROUP BY p.parent_key, p.source_order HAVING count(*) > 1
-    UNION ALL SELECT 'cmp_set_item_mixed_order_collision', NULL, p.owner_id, 'duplicate source_order across fields/ROMs/samples'
-      FROM placements p WHERE p.domain='cmp-set' GROUP BY p.parent_key, p.source_order HAVING count(*) > 1
+    UNION ALL SELECT 'missing_cmp_rom_details', scope.edition_id, r.media_entry_id, 'present ROM lacks its one keyed detail facet'
+      FROM clrmamepro_roms AS r LEFT JOIN native_owner_editions AS scope
+        ON scope.owner_kind='clrmamepro_rom' AND scope.owner_id=r.media_entry_id
+      WHERE NOT EXISTS (SELECT 1 FROM clrmamepro_rom_details AS d WHERE d.media_entry_id=r.media_entry_id)
+    UNION ALL SELECT 'logiqx_root_mixed_order_collision', scope.edition_id, p.owner_id, 'duplicate source_order in root domain'
+      FROM placements AS p LEFT JOIN native_owner_editions AS scope
+        ON scope.owner_kind=p.domain AND scope.owner_id=p.parent_key
+      WHERE p.domain='logiqx-root' GROUP BY scope.edition_id, p.parent_key, p.source_order HAVING count(*) > 1
+    UNION ALL SELECT 'logiqx_header_mixed_order_collision', scope.edition_id, p.owner_id, 'duplicate source_order in header domain'
+      FROM placements AS p LEFT JOIN native_owner_editions AS scope
+        ON scope.owner_kind=p.domain AND scope.owner_id=p.parent_key
+      WHERE p.domain='logiqx-header' GROUP BY scope.edition_id, p.parent_key, p.source_order HAVING count(*) > 1
+    UNION ALL SELECT 'logiqx_game_mixed_order_collision', scope.edition_id, p.owner_id, 'duplicate source_order in game domain'
+      FROM placements AS p LEFT JOIN native_owner_editions AS scope
+        ON scope.owner_kind=p.domain AND scope.owner_id=p.parent_key
+      WHERE p.domain='logiqx-game' GROUP BY scope.edition_id, p.parent_key, p.source_order HAVING count(*) > 1
+    UNION ALL SELECT 'cmp_document_mixed_order_collision', scope.edition_id, p.owner_id, 'duplicate source_order in document-form domain'
+      FROM placements AS p LEFT JOIN native_owner_editions AS scope
+        ON scope.owner_kind=p.domain AND scope.owner_id=p.parent_key
+      WHERE p.domain='cmp-document' GROUP BY scope.edition_id, p.parent_key, p.source_order HAVING count(*) > 1
+    UNION ALL SELECT 'cmp_set_item_mixed_order_collision', scope.edition_id, p.owner_id, 'duplicate source_order across fields/ROMs/samples'
+      FROM placements AS p LEFT JOIN native_owner_editions AS scope
+        ON scope.owner_kind=p.domain AND scope.owner_id=p.parent_key
+      WHERE p.domain='cmp-set' GROUP BY scope.edition_id, p.parent_key, p.source_order HAVING count(*) > 1
     UNION ALL SELECT 'cmp_lexical_coordinate_collision', a.edition_id, a.owner_id, 'two token/comment anchors start at the same coordinate'
       FROM cmp_lexical_anchors a GROUP BY a.edition_id,a.source_line,a.source_column HAVING count(*) > 1
-    UNION ALL SELECT 'cmp_set_item_order_inversion', NULL, a.set_id, a.item_kind || ':' || a.item_id || ' precedes a later source_order item lexically'
-      FROM cmp_set_item_anchors a JOIN cmp_set_item_anchors b ON b.set_id=a.set_id AND a.source_order < b.source_order
-      WHERE a.source_line > b.source_line OR (a.source_line=b.source_line AND a.source_column >= b.source_column)
-    UNION ALL SELECT 'cmp_document_form_order_inversion', a.edition_id, a.item_id, a.item_kind || ' precedes a later form lexically'
-      FROM cmp_document_item_anchors a JOIN cmp_document_item_anchors b ON b.edition_id=a.edition_id AND a.source_order < b.source_order
-      WHERE a.source_line > b.source_line OR (a.source_line=b.source_line AND a.source_column >= b.source_column)
-    UNION ALL SELECT 'cmp_nested_field_order_inversion', NULL, a.owner_id, a.owner_kind || ' field ' || a.field_kind || ' precedes a later field lexically'
-      FROM cmp_nested_field_anchors a JOIN cmp_nested_field_anchors b
-        ON b.owner_kind=a.owner_kind AND b.owner_id=a.owner_id AND a.source_order < b.source_order
-      WHERE a.source_line > b.source_line OR (a.source_line=b.source_line AND a.source_column >= b.source_column)
+    UNION ALL SELECT 'cmp_set_item_order_inversion', scope.edition_id, a.set_id, a.item_kind || ':' || a.item_id || ' source_order advances but lexical coordinates do not'
+      FROM cmp_set_item_ordered a LEFT JOIN native_owner_editions AS scope
+        ON scope.owner_kind='cmp-set' AND scope.owner_id=a.set_id
+      WHERE a.prior_source_order < a.source_order AND
+        (a.prior_line > a.source_line OR (a.prior_line=a.source_line AND a.prior_column >= a.source_column))
+    UNION ALL SELECT 'cmp_document_form_order_inversion', a.edition_id, a.item_id, a.item_kind || ' source_order advances but lexical coordinates do not'
+      FROM cmp_document_item_ordered a
+      WHERE a.prior_source_order < a.source_order AND
+        (a.prior_line > a.source_line OR (a.prior_line=a.source_line AND a.prior_column >= a.source_column))
+    UNION ALL SELECT 'cmp_nested_field_order_inversion', scope.edition_id, a.owner_id, a.owner_kind || ' field ' || a.field_kind || ' source_order advances but lexical coordinates do not'
+      FROM cmp_nested_field_ordered a LEFT JOIN native_owner_editions AS scope
+        ON scope.owner_kind=a.owner_kind AND scope.owner_id=a.owner_id
+      WHERE a.prior_source_order < a.source_order AND
+        (a.prior_line > a.source_line OR (a.prior_line=a.source_line AND a.prior_column >= a.source_column))
     UNION ALL SELECT 'cmp_keyword_value_order', a.edition_id, a.owner_id, 'keyword coordinate must precede value coordinate'
       FROM cmp_lexical_anchors a JOIN cmp_lexical_anchors b ON b.edition_id=a.edition_id AND b.owner_id=a.owner_id
         AND b.anchor_kind='value' AND a.anchor_kind='keyword'
       WHERE a.owner_kind=b.owner_kind AND a.field_kind=b.field_kind AND a.field_occurrence=b.field_occurrence
         AND (a.source_line > b.source_line OR (a.source_line=b.source_line AND a.source_column >= b.source_column))
     UNION ALL SELECT CASE p.family WHEN 'logiqx' THEN 'logiqx_hash_mapping' ELSE 'cmp_hash_mapping' END,
-           s.edition_id, p.reported_hash_id, 'hash declaration field/owner/occurrence differs from its canonical position'
+           scope.edition_id, p.reported_hash_id, 'hash declaration field/owner/occurrence differs from its canonical position'
       FROM native_hash_positions p JOIN catalog_entry_hashes h USING (reported_hash_id)
-      JOIN catalog_source_elements s ON s.source_element_id=p.media_entry_id
+      LEFT JOIN native_owner_editions AS scope
+        ON scope.owner_kind=p.owner_kind AND scope.owner_id=p.media_entry_id
       WHERE h.source_hash_field IS NOT p.expected_source_hash_field OR h.media_entry_id <> p.media_entry_id
          OR h.field_occurrence <> p.field_occurrence
-    UNION ALL SELECT 'cmp_invalid_hash_state', s.edition_id, h.reported_hash_id,
+    UNION ALL SELECT 'cmp_invalid_hash_state', scope.edition_id, h.reported_hash_id,
            'CMP compatible-v1 accepts supplied hashes only in valid value state'
       FROM catalog_entry_hashes h JOIN clrmamepro_roms r USING (media_entry_id)
-      JOIN catalog_source_elements s ON s.source_element_id=r.media_entry_id
+      LEFT JOIN native_owner_editions AS scope
+        ON scope.owner_kind='clrmamepro_rom' AND scope.owner_id=r.media_entry_id
       WHERE h.source_hash_field IN ('crc','crc32','md5','sha1') AND h.presence <> 'value'
+    UNION ALL SELECT problem, edition_id, owner_id, detail FROM strict_logiqx_root_problems
+    UNION ALL SELECT problem, edition_id, owner_id, detail FROM strict_logiqx_header_problems
+    UNION ALL SELECT problem, edition_id, owner_id, detail FROM strict_logiqx_game_problems
 )
 SELECT problem, edition_id, owner_id, detail FROM problems;

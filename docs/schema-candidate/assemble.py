@@ -14,7 +14,9 @@ import sys
 
 ROOT = Path(__file__).resolve().parent
 FAMILIES = ("mame", "software", "logiqx_cmp", "no_intro")
-FRAGMENTS = ("shared.sql", *(f"{family}.sql" for family in FAMILIES), "relationships.sql", "relationships_guards.sql", "diagnostics.sql")
+FRAGMENTS = ("shared.sql", *(f"{family}.sql" for family in FAMILIES),
+             "relationships.sql", "relationships_guards.sql", "diagnostics.sql",
+             *(f"{family}_cardinality.sql" for family in FAMILIES))
 IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z_0-9]*\Z")
 ROOT_LINKS = (
     ('mame_root_import_messages', 'mame_documents', 'mame', None),
@@ -685,6 +687,38 @@ def ownership_sql(connection, manifest):
     return f"CREATE VIEW candidate_native_owners AS {owner_union};", [registry_problem, *problems], guards
 
 
+def format_audit_queries(connection):
+    """Require every native cardinality audit in the publication input set.
+
+    A misspelled view must fail assembly, not silently disappear from the
+    discovery glob and leave a family publishable without its child checks.
+    """
+    required = {f'candidate_{family}_cardinality_problems' for family in FAMILIES}
+    names = {row[0] for row in connection.execute(
+        "SELECT name FROM sqlite_schema WHERE type='view' AND "
+        "(name GLOB 'candidate_*_integrity_problems' OR "
+        "name GLOB 'candidate_*_cardinality_problems' OR "
+        "name='candidate_edition_cycle_problems')")}
+    if missing := required - names:
+        raise ValueError(f'missing native cardinality audits: {sorted(missing)}')
+    queries = []
+    for name in sorted(names):
+        query = f'SELECT problem,owner_id,edition_id FROM {identifier(name)}'
+        # Validate the complete declared interface, including unused extra
+        # columns and dependencies that SQLite defers when CREATE VIEW runs.
+        if name.endswith('_cardinality_problems'):
+            columns = tuple(row[1] for row in connection.execute(
+                f'PRAGMA table_info({identifier(name)})'))
+            if columns != ('problem', 'owner_id', 'edition_id'):
+                raise ValueError(f'{name}: audit columns must be problem,owner_id,edition_id')
+            connection.execute(query + ' LIMIT 0')
+        # Other integrity views may depend on generated relationship views not
+        # yet installed in this compiler connection. The completed assembly's
+        # all-view prepare check validates those after their dependencies exist.
+        queries.append(query)
+    return queries
+
+
 def assemble():
     manifest = owners()
     source = "\n\n".join((ROOT / fragment).read_text() for fragment in FRAGMENTS)
@@ -710,7 +744,7 @@ def assemble():
             raise ValueError(f'presence routes differ from independent field crosswalk: '
                              f'missing={sorted(expected_fields-actual_fields)}, extra={sorted(actual_fields-expected_fields)}')
         presence_views, presence_problems = field_presence_sql(connection, manifest, presence_routes)
-        format_audits = [f'SELECT problem,owner_id,edition_id FROM {identifier(row[0])}' for row in connection.execute("SELECT name FROM sqlite_schema WHERE type='view' AND (name GLOB 'candidate_*_integrity_problems' OR name='candidate_edition_cycle_problems')")]
+        format_audits = format_audit_queries(connection)
     audits = [*format_audits, *native_problems, *fk_problems, *root_problems, *hash_problems, *format_problems, *position_problems, *relationship_problems, *presence_problems]
     # SQLite limits a single compound SELECT to 500 terms. Keep the exhaustive
     # reverse audit in named bounded chunks, not one oversized UNION statement.

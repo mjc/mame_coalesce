@@ -209,7 +209,7 @@ RELEASE omitted_wrapper_build;
 SAVEPOINT missing_required_text;
 DELETE FROM software_title_text_elements WHERE source_element_id=110;
 INSERT INTO software_field_assertions VALUES
-    ('required-description-audited',EXISTS(SELECT 1 FROM candidate_software_integrity_problems WHERE problem='software_title_required_text_missing' AND owner_id=100));
+    ('required-description-audited',EXISTS(SELECT 1 FROM candidate_software_cardinality_problems WHERE problem='software_title_required_text_missing' AND owner_id=100));
 ROLLBACK TO missing_required_text;
 RELEASE missing_required_text;
 

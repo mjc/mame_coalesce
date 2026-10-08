@@ -79,7 +79,8 @@ VALUES (105,102,'game.rom','12',2,2,35);
 INSERT INTO no_intro_dat_game_field_positions VALUES
     (102,'name',0,0,2,8,NULL),(102,'cloneof',0,1,2,18,920),(102,'cloneofid',0,2,2,41,921);
 INSERT INTO no_intro_dat_rom_field_positions VALUES
-    (105,'name',0,0,2,42,NULL),(105,'crc',0,1,2,55,900);
+    (105,'name',0,0,2,42,NULL),(105,'crc',0,1,2,55,900),
+    (105,'size',0,2,2,54,NULL);
 
 INSERT INTO no_intro_pc_documents(edition_id,location_view,start_line,start_column,column_convention)
 VALUES (51,'transport_decoded_xml_text',1,1,'one_based_unicode_scalar');

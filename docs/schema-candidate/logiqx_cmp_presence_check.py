@@ -198,8 +198,13 @@ class PresenceChecks(unittest.TestCase):
         self.assertEqual(self.reports(), set())
         self.assertEqual(self.db.execute("PRAGMA foreign_key_check").fetchall(), [])
         self.assertEqual(self.db.execute("SELECT problem,owner_id,edition_id FROM candidate_integrity_problems").fetchall(), [])
+        self.assertEqual(self.db.execute("SELECT problem,owner_id,edition_id FROM candidate_logiqx_cmp_cardinality_problems").fetchall(), [])
         gate = self.db.execute("SELECT sql FROM sqlite_schema WHERE name='candidate_publication_closure'").fetchone()[0]
         self.assertIn("candidate_integrity_problems", gate)
+        chunks = [row[0] for row in self.db.execute(
+            "SELECT sql FROM sqlite_schema WHERE type='view' AND name GLOB 'candidate_integrity_chunk_*'"
+        )]
+        self.assertTrue(any("candidate_logiqx_cmp_cardinality_problems" in sql for sql in chunks))
         self.assertTrue(self.db.execute("SELECT sql FROM sqlite_schema WHERE name='candidate_field_presence_problems'").fetchone())
 
     def test_each_value_backed_position_is_required_by_its_exact_native_owner(self):
