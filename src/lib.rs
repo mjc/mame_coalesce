@@ -59,6 +59,34 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub mod test_helpers {
     use crate::storage::db::{Pool, create_db_pool};
 
+    /// Create a FIFO fixture on Unix, including platforms without `mkfifoat`.
+    #[cfg(unix)]
+    pub(crate) fn create_fifo(path: &std::path::Path) -> std::io::Result<()> {
+        let status = std::process::Command::new("mkfifo")
+            .args(["-m", "600"])
+            .arg(path)
+            .status()?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(std::io::Error::other(format!("mkfifo failed: {status}")))
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fifo_fixture_is_a_private_named_pipe() -> std::io::Result<()> {
+        use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("fixture.pipe");
+        create_fifo(&path)?;
+        let metadata = std::fs::symlink_metadata(&path)?;
+        assert!(metadata.file_type().is_fifo());
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+        Ok(())
+    }
+
     /// Create an in-memory `SQLite` pool from the current schema for unit tests.
     pub fn in_memory_pool() -> crate::Result<Pool> {
         create_db_pool(":memory:")

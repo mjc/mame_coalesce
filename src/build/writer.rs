@@ -1096,18 +1096,26 @@ fn is_snapshot_still_named(
     name: &str,
     snapshot: &ArtifactSnapshot,
 ) -> bool {
+    file_is_still_named(file, parent, name)
+        && snapshot_handle(file).is_some_and(|current| current == *snapshot)
+}
+
+#[cfg(unix)]
+fn file_is_still_named(file: &File, parent: &File, name: &str) -> bool {
     use rustix::fs::{self, AtFlags};
     use std::os::fd::AsFd;
 
+    let Ok(opened) = fs::fstat(file.as_fd()) else {
+        return false;
+    };
     let Ok(named) = fs::statat(parent.as_fd(), name, AtFlags::SYMLINK_NOFOLLOW) else {
         return false;
     };
-    snapshot_handle(file).is_some_and(|current| {
-        let named_identity_matches =
-            current.device == named.st_dev && current.inode == named.st_ino;
-        let named_type_matches = current.file_type == (named.st_mode & 0o170_000);
-        current == *snapshot && named_identity_matches && named_type_matches
-    })
+    // Compare native stat fields with native stat fields. MetadataExt widens
+    // them differently on Darwin (signed dev_t and 16-bit mode_t).
+    opened.st_dev == named.st_dev
+        && opened.st_ino == named.st_ino
+        && (opened.st_mode & 0o170_000) == (named.st_mode & 0o170_000)
 }
 
 #[cfg(unix)]
@@ -1391,20 +1399,7 @@ impl SecureSpoolDirectory {
     }
 
     fn is_still_named(&self) -> bool {
-        use rustix::fs::{self, AtFlags};
-        use std::os::fd::AsFd;
-
-        let Ok(opened) = fs::fstat(self.directory.as_fd()) else {
-            return false;
-        };
-        let Ok(named) = fs::statat(
-            self.parent.as_fd(),
-            self.name.as_str(),
-            AtFlags::SYMLINK_NOFOLLOW,
-        ) else {
-            return false;
-        };
-        opened.st_dev == named.st_dev && opened.st_ino == named.st_ino
+        file_is_still_named(&self.directory, &self.parent, &self.name)
     }
 }
 
@@ -4030,7 +4025,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn fifo_destination_does_not_block_verified_reuse() -> Result<(), Box<dyn std::error::Error>> {
-        use std::{os::fd::AsFd, sync::mpsc, time::Duration};
+        use std::{sync::mpsc, time::Duration};
 
         let temp_dir = tempfile::tempdir()?;
         let root = utf8_path(temp_dir.path())?;
@@ -4039,12 +4034,7 @@ mod tests {
         let plan = single_bare_file_plan(&source_path);
         let destination = root.join("output");
         fs::create_dir_all(&destination)?;
-        let directory = File::open(&destination)?;
-        rustix::fs::mkfifoat(
-            directory.as_fd(),
-            "safe.zip",
-            rustix::fs::Mode::from_raw_mode(0o600),
-        )?;
+        crate::test_helpers::create_fifo(destination.join("safe.zip").as_std_path())?;
         let (sender, receiver) = mpsc::channel();
         let worker_destination = destination.clone();
         std::thread::spawn(move || {

@@ -48,10 +48,10 @@ pub(super) const fn cached_generated_sql(
 
 /// Build a generated query whose text and binary values remain borrowed until
 /// Diesel has encoded the statement.
-pub(super) fn cached_generated_sql_borrowed<'a>(
+pub(super) const fn cached_generated_sql_borrowed(
     sql: String,
-    bindings: Vec<BorrowedBinding<'a>>,
-) -> BatchQuery<'a> {
+    bindings: Vec<BorrowedBinding<'_>>,
+) -> BatchQuery<'_> {
     BatchQuery {
         sql,
         bindings: BatchBindings::Borrowed(bindings),
@@ -419,7 +419,7 @@ enum BatchBindings<'a> {
 }
 
 impl BatchBindings<'_> {
-    fn len(&self) -> usize {
+    const fn len(&self) -> usize {
         match self {
             Self::Owned(bindings) => bindings.len(),
             Self::Borrowed(bindings) => bindings.len(),

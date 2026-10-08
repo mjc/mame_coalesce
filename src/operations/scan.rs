@@ -628,19 +628,14 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn scanning_fifo_skips_it_without_blocking() -> Result<(), Box<dyn std::error::Error>> {
-        use std::{os::fd::AsFd, sync::mpsc, time::Duration};
+        use std::{sync::mpsc, time::Duration};
 
         let temp_dir = tempfile::tempdir()?;
         let root = Utf8Path::from_path(temp_dir.path())
             .ok_or_else(|| io::Error::other("temp path is not UTF-8"))?
             .to_owned();
         std::fs::write(root.join("visible.rom"), b"visible")?;
-        let directory = std::fs::File::open(&root)?;
-        rustix::fs::mkfifoat(
-            directory.as_fd(),
-            "blocked.rom",
-            rustix::fs::Mode::from_raw_mode(0o600),
-        )?;
+        crate::test_helpers::create_fifo(root.join("blocked.rom").as_std_path())?;
         std::os::unix::fs::symlink("blocked.rom", root.join("blocked-link.rom"))?;
 
         let (sender, receiver) = mpsc::channel();
