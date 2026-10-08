@@ -6,7 +6,7 @@ use diesel::{
     sql_types::{BigInt, Binary},
 };
 
-use super::{record_wide_conflict, staged_candidates};
+use super::{CandidateSummary, record_wide_conflict, staged_candidates};
 use crate::{
     domain::{CatalogContentId, OccurrenceId},
     storage::catalog_content::{
@@ -18,6 +18,129 @@ use crate::{
 struct ExplainRow {
     #[diesel(sql_type = diesel::sql_types::Text)]
     detail: String,
+}
+
+fn trace_lookup_plan(
+    conn: &mut SqliteConnection,
+    inputs: &[ContentIdentityInput<'_>],
+    hash: &[u8],
+    request_indices: &[i64],
+) -> Result<(Vec<CandidateSummary>, Vec<String>), Box<dyn std::error::Error>> {
+    let lookup = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let captured = std::sync::Arc::clone(&lookup);
+    conn.set_instrumentation(move |event: InstrumentationEvent<'_>| {
+        if let InstrumentationEvent::StartQuery { query, .. } = event {
+            let sql = query.to_string();
+            if sql.contains("WITH incoming(request_index,algorithm,digest)") {
+                *captured.lock().expect("staging query trace") =
+                    Some(sql.split(" -- binds:").next().unwrap_or(&sql).to_owned());
+            }
+        }
+    });
+    let summaries = staged_candidates(conn, inputs);
+    conn.set_instrumentation(|_: InstrumentationEvent<'_>| {});
+    let summaries = summaries?;
+
+    let lookup = lookup
+        .lock()
+        .expect("staging query trace")
+        .clone()
+        .expect("staging lookup was captured");
+    let mut plan = diesel::sql_query(format!("EXPLAIN QUERY PLAN {lookup}"))
+        .into_boxed::<diesel::sqlite::Sqlite>();
+    for request_index in request_indices {
+        plan = plan
+            .bind::<BigInt, _>(*request_index)
+            .bind::<diesel::sql_types::Text, _>("sha1")
+            .bind::<Binary, _>(hash);
+    }
+    let details = plan
+        .load::<ExplainRow>(conn)?
+        .into_iter()
+        .map(|row| row.detail)
+        .collect();
+    Ok((summaries, details))
+}
+
+fn repeated_digest_database(hash: &[u8]) -> Result<SqliteConnection, Box<dyn std::error::Error>> {
+    let mut conn = SqliteConnection::establish(":memory:")?;
+    conn.batch_execute(
+        "CREATE TABLE catalog_contents(content_uuid BLOB PRIMARY KEY);
+         CREATE TABLE asset_occurrences(
+             occurrence_id INTEGER PRIMARY KEY,content_uuid BLOB,claim_kind TEXT);
+         CREATE TABLE digest_values(
+             digest_id INTEGER PRIMARY KEY,algorithm TEXT,digest BLOB,UNIQUE(algorithm,digest));
+         CREATE TABLE occurrence_digest_assertions(
+             occurrence_id INTEGER,digest_id INTEGER,scope TEXT,provenance TEXT,
+             PRIMARY KEY(occurrence_id,digest_id,scope,provenance));
+         CREATE TABLE merged_file_ids(old_content_uuid BLOB,kept_content_uuid BLOB,decision_id INTEGER);
+         CREATE TABLE file_match_decision_publications(decision_id INTEGER PRIMARY KEY);
+         CREATE TABLE file_match_hash_decisions(
+             evidence_occurrence_id INTEGER,digest_id INTEGER,scope TEXT,provenance TEXT,
+             disposition TEXT,decision_id INTEGER);
+         CREATE TABLE disputed_file_hashes(digest_id INTEGER,candidate_content_uuid BLOB);
+         CREATE VIEW canonical_occurrence_content AS
+             SELECT occurrence_id,content_uuid FROM asset_occurrences WHERE content_uuid IS NOT NULL;
+         CREATE VIEW catalog_content_digest_assertions AS
+         SELECT canonical.content_uuid,assertion.*
+         FROM occurrence_digest_assertions AS assertion
+         JOIN asset_occurrences AS owner USING(occurrence_id)
+         JOIN canonical_occurrence_content AS canonical USING(occurrence_id)
+         WHERE owner.content_uuid IS NOT NULL
+           AND owner.claim_kind='test_file'
+           AND assertion.provenance='source_declared'
+           AND assertion.scope IN ('whole_asset','whole_file')
+           AND NOT EXISTS (
+               SELECT 1 FROM file_match_hash_decisions AS review
+               JOIN file_match_decision_publications USING(decision_id)
+               WHERE review.evidence_occurrence_id=assertion.occurrence_id
+                 AND review.digest_id=assertion.digest_id
+                 AND review.scope=assertion.scope
+                 AND review.provenance=assertion.provenance
+                 AND review.disposition='reject');",
+    )?;
+
+    let candidates = [
+        CatalogContentId::generate(),
+        CatalogContentId::generate(),
+        CatalogContentId::generate(),
+        CatalogContentId::generate(),
+    ];
+    for (index, candidate) in candidates.iter().enumerate() {
+        diesel::sql_query("INSERT INTO catalog_contents VALUES (?)")
+            .bind::<Binary, _>(candidate.as_bytes().as_slice())
+            .execute(&mut conn)?;
+        diesel::sql_query("INSERT INTO asset_occurrences VALUES (?,?, 'test_file')")
+            .bind::<BigInt, _>(i64::try_from(index + 1)?)
+            .bind::<Binary, _>(candidate.as_bytes().as_slice())
+            .execute(&mut conn)?;
+    }
+
+    let assertions = ContentDigestAssertions::new("whole_file", None, None, Some(hash), None);
+    for index in 1_i64..=3 {
+        record_occurrence_digest_assertions(
+            &mut conn,
+            OccurrenceId::from_database(index),
+            assertions,
+            "source_declared",
+        )?;
+    }
+    let digest_id = diesel::sql_query("SELECT digest_id FROM digest_values WHERE algorithm='sha1'")
+        .get_result::<DigestId>(&mut conn)?
+        .digest_id;
+    conn.batch_execute("INSERT INTO file_match_decision_publications VALUES (77)")?;
+    diesel::sql_query(
+        "INSERT INTO file_match_hash_decisions
+         VALUES (3,?,'whole_file','source_declared','reject',77)",
+    )
+    .bind::<BigInt, _>(digest_id)
+    .execute(&mut conn)?;
+    diesel::sql_query(
+        "INSERT INTO occurrence_digest_assertions VALUES (4,?,'member','source_declared')",
+    )
+    .bind::<BigInt, _>(digest_id)
+    .execute(&mut conn)?;
+    Ok(conn)
 }
 
 #[test]
@@ -82,41 +205,20 @@ fn redirected_alias_uses_issued_owner_and_avoids_correlated_lookup_normalization
         "source_declared",
     )?;
 
-    let lookup = std::sync::Arc::new(std::sync::Mutex::new(None));
-    let captured = std::sync::Arc::clone(&lookup);
-    conn.set_instrumentation(move |event: InstrumentationEvent<'_>| {
-        if let InstrumentationEvent::StartQuery { query, .. } = event {
-            let sql = query.to_string();
-            if sql.contains("WITH incoming(request_index,algorithm,digest)") {
-                *captured.lock().expect("staging query trace") =
-                    Some(sql.split(" -- binds:").next().unwrap_or(&sql).to_owned());
-            }
-        }
-    });
-    let summaries = staged_candidates(
+    let (summaries, details) = trace_lookup_plan(
         &mut conn,
         &[ContentIdentityInput {
             size: None,
             assertions,
             eligible: true,
         }],
+        &hash,
+        &[0],
     )?;
-    conn.set_instrumentation(|_: InstrumentationEvent<'_>| {});
 
     assert_eq!(summaries.len(), 1);
     assert_eq!(summaries[0].candidate, Some(root));
     assert_eq!(summaries[0].count, 1);
-    let lookup = lookup
-        .lock()
-        .expect("staging query trace")
-        .clone()
-        .expect("staging lookup was captured");
-    let plan = diesel::sql_query(format!("EXPLAIN QUERY PLAN {lookup}"))
-        .bind::<BigInt, _>(0_i64)
-        .bind::<diesel::sql_types::Text, _>("sha1")
-        .bind::<Binary, _>(&hash[..])
-        .load::<ExplainRow>(&mut conn)?;
-    let details = plan.into_iter().map(|row| row.detail).collect::<Vec<_>>();
     assert!(
         !details
             .iter()
@@ -124,6 +226,64 @@ fn redirected_alias_uses_issued_owner_and_avoids_correlated_lookup_normalization
         "alias lookup should leave redirect normalization to the staged path: {details:#?}"
     );
     Ok(())
+}
+
+#[test]
+fn repeated_digest_matches_expand_to_eligible_whole_file_requests()
+-> Result<(), Box<dyn std::error::Error>> {
+    let hash = [11_u8; 20];
+    let mut conn = repeated_digest_database(&hash)?;
+    let assertions = ContentDigestAssertions::new("whole_file", None, None, Some(&hash), None);
+    let inputs = [
+        ContentIdentityInput {
+            size: None,
+            assertions,
+            eligible: true,
+        },
+        ContentIdentityInput {
+            size: None,
+            assertions,
+            eligible: true,
+        },
+        ContentIdentityInput {
+            size: None,
+            assertions,
+            eligible: false,
+        },
+        ContentIdentityInput {
+            size: None,
+            assertions: ContentDigestAssertions::new(
+                "archive_member",
+                None,
+                None,
+                Some(&hash),
+                None,
+            ),
+            eligible: true,
+        },
+    ];
+    let (summaries, details) = trace_lookup_plan(&mut conn, &inputs, &hash, &[0, 1])?;
+
+    assert_eq!(summaries.len(), 2);
+    assert!(summaries.iter().all(|row| {
+        matches!(row.request_index, 0 | 1)
+            && row.count == 2
+            && row.candidate.is_none()
+            && !row.disputed
+    }));
+    assert!(
+        details
+            .iter()
+            .any(|detail| detail.contains("MATERIALIZE requested")),
+        "repeated digest lookup should materialize distinct requests once: {details:#?}"
+    );
+    Ok(())
+}
+
+#[derive(diesel::QueryableByName)]
+struct DigestId {
+    #[diesel(sql_type = BigInt, column_name = digest_id)]
+    digest_id: i64,
 }
 
 #[test]

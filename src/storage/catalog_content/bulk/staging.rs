@@ -92,17 +92,28 @@ fn stage(
         // Keep shared source/review qualification for accepted aliases, but
         // take the issued UUID from its native owner. Redirect traversal then
         // runs in the staged path query instead of once per source occurrence.
+        // Resolve distinct digests before expanding back to request indexes;
+        // keep accepted and disputed matches distinct until candidate reduction.
         let statement = format!(
-            "WITH incoming(request_index,algorithm,digest) AS (VALUES {values})
+            "WITH incoming(request_index,algorithm,digest) AS (VALUES {values}),
+            requested(algorithm,digest) AS MATERIALIZED (
+                SELECT DISTINCT algorithm,digest FROM incoming),
+            matches(algorithm,digest,issued_uuid,disputed) AS MATERIALIZED (
+                SELECT requested.algorithm,requested.digest,owner.content_uuid,0
+                FROM requested
+                CROSS JOIN digest_values AS digest
+                    ON digest.algorithm=requested.algorithm AND digest.digest=requested.digest
+                JOIN catalog_content_digest_assertions AS assertion USING(digest_id)
+                JOIN asset_occurrences AS owner ON owner.occurrence_id=assertion.occurrence_id
+                UNION
+                SELECT requested.algorithm,requested.digest,dispute.candidate_content_uuid,1
+                FROM requested
+                CROSS JOIN digest_values AS digest
+                    ON digest.algorithm=requested.algorithm AND digest.digest=requested.digest
+                JOIN disputed_file_hashes AS dispute USING(digest_id))
             INSERT OR IGNORE INTO temp.import_identity_matches(request_index,issued_uuid,disputed)
-            SELECT incoming.request_index,owner.content_uuid,0 FROM incoming
-            JOIN digest_values AS digest USING(algorithm,digest)
-            JOIN catalog_content_digest_assertions AS assertion USING(digest_id)
-            JOIN asset_occurrences AS owner ON owner.occurrence_id=assertion.occurrence_id
-            UNION ALL
-            SELECT incoming.request_index,dispute.candidate_content_uuid,1 FROM incoming
-            JOIN digest_values AS digest USING(algorithm,digest)
-            JOIN disputed_file_hashes AS dispute USING(digest_id)"
+            SELECT incoming.request_index,matches.issued_uuid,matches.disputed
+            FROM incoming JOIN matches USING(algorithm,digest)"
         );
         let mut query = sql_query(statement).into_boxed::<Sqlite>();
         for (index, assertion) in page {

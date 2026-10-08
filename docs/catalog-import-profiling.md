@@ -1079,3 +1079,106 @@ seconds). Strict library/test/example Clippy, Rust formatting, shell checks,
 renderer regression fixtures and Nix formatting passed. A full `devenv test`
 was not run. None of these results is a completed 50,368-machine import or a
 new heaptrack comparison.
+
+## Deduplicated digest probes — 2026-10-07
+
+Candidate staging now materializes the distinct `(algorithm,digest)` keys in
+each bounded parameter page, resolves each key once, and joins those matches
+back to every original request index. Both lookup branches anchor requested
+keys before `digest_values` using `CROSS JOIN`; this changes join ordering as
+well as removing repeated probes. It retains the shared accepted-source
+qualification view and issued owner UUIDs. Deduplication includes the disputed
+flag, so an accepted and disputed match to the same UUID are not conflated.
+Existing file-backed staging still resolves published redirects, validates
+terminal roots and accumulates complete candidate/evidence fanout. There is no
+whole-catalog Rust cache, schema change or reduced integrity policy.
+
+On the same 5,000-machine / 39,080,186-byte prefix and fresh file-backed
+databases, the previous issued-UUID executable took 37.125 seconds to import;
+the deduplicated-probe executable took **27.268 seconds**, a 26.6% reduction
+for this single sequential comparison. The new process took 27.50 seconds
+(23.51 user / 3.45 system), with 234,352 KiB peak RSS, zero diagnostics and the
+same snapshot key. Neither run used perf or SQL timing. These are not medians,
+an isolated cold-cache experiment or a full-file estimate.
+
+The new artifacts use `target/profiling/dedup-probes-after-5000-20261007`.
+The optimized, symbolized executable is frozen as
+`target/profiling/mame-importer-dedup-probes-20261007`, SHA-256
+`75a2378bac67318593a916bb4000f0648a5b05964dd09d98d72546ee779e4617`.
+
+A separate SQL-instrumented run of the previous executable completed the
+5,000-machine prefix with 63,439 calls across 3,471 shapes. The largest digest
+staging shape took 3.029 seconds over 467 calls; snapshot publication alone
+took 7.357 seconds. This diagnostic is not the uninstrumented timing above.
+Read-only predicate probes identified native MAME publication checks as a
+substantial remaining cost. Each side of the attribute-presence comparison
+contains **1,660,556 positions** on this sample; checking all of them is real
+work, not evidence of duplicated source storage.
+
+Materializing the native position CTE, materializing attribute presence, and
+replacing the grouped presence comparison with two materialized `EXCEPT`
+queries all measured worse than their respective current predicates. None of
+these experimental rewrites was adopted. Existing duplicate, NULL-owner,
+coordinate, snapshot-isolation and publication checks remain intact. Probe
+SQL and logs are retained under `target/profiling/`, including
+`publication-guard-costs-5000-20261007` and the
+`mame-publication-*-probe-5000-20261007` /
+`mame-attribute-*-probe-5000-20261007` prefixes.
+
+### Completed full-file capture
+
+The same executable completed the full **326,688,140-byte MAME 0.289 source**
+under perf: **538.481 seconds importing** and **564.90 seconds including
+recorder shutdown**, 400.08 user / 160.73 system seconds and 1,333,408 KiB
+process-tree peak RSS. It reported success with zero diagnostics. This is the
+first successful full-file run after the two timed-out controls above, not a
+paired full-file speedup or a median. It meets the ten-minute ceiling for this
+run; further performance work is still warranted.
+
+The database contains 50,368 machines, 401,889 occurrences, 158,361 identities,
+731,502 digest assertions and one publication. Its snapshot key is
+`sha256:8523a3bad9dacf27d6370c85374cedac032908e98937407bebb7f0eb7bc3a3cf`.
+`quick_check` returned `ok` and `foreign_key_check` returned no violations.
+The matched 5,000-machine pair also passed all 80 typed native comparisons
+across 69 tables, including 33 position families; both databases passed
+`quick_check`, and the candidate passed the foreign-key check. The parity
+artifact is `dedup-probes-parity-5000-20261007.json`.
+
+Full-run artifacts use `target/profiling/dedup-probes-full-20261007`:
+`.sqlite3`, `.log`, `.perf.data`, `.kallsyms`, `.boot-id`, `.uptime`,
+`.lossless.folded` / `.lossless.svg`, `.leaf.folded` / `.leaf.svg`,
+`.sample-periods.txt` and both `.analysis.txt` reports. The kernel-symbol
+snapshot was captured before recording, on the same boot. Existing inputs,
+databases, frozen executables and profiles were preserved.
+
+Perf captured **256,272 samples**, with zero reported lost samples and
+**1,593,821,862,642 sampled periods**. The complete-stack and leaf-only folded
+views each sum to exactly that denominator. The complete-stack view explicitly
+marks 22.8981% whose callers are unavailable. Another 0.205282% of periods
+(3,271,832,601, across 106 folded stacks) contain unresolved frames. The
+leaf extraction parsed all 256,272 records and has zero unknown symbols.
+Leaf symbols do not reconstruct unavailable callers or unresolved frames.
+
+Using this repository's parser, the leaf-only category breakdown attributes
+56.05% to SQLite/Diesel and 12.27% to memory operations. Individual leaf costs
+include `sqlite3VdbeExec` (21.03%), `sqlite3BtreeIndexMoveto` (6.78%),
+`sqlite3BtreeTableMoveto` (5.78%) and `pcache1Fetch` (4.92%). The call-stack view
+also shows statement preparation at 4.89% inclusive coverage. These percentages
+are sampled CPU periods, not wall-time attribution, and inclusive caller and
+callee percentages overlap. Repeated compatibility-fact hydration across pages
+and uncached staging-query preparation are candidates for further bounded
+measurement, not newly demonstrated full-file query-cost rankings.
+
+This cut does not include a new heaptrack comparison or the complete
+`devenv test` gate, and does not close the other-format writer or shared-model
+acceptance work.
+
+Focused verification passed 25 connection/cache/bulk-identity library tests
+(0.555 seconds) and 93 import/review/MAME-evidence/attribute-provenance
+integration tests (25.658 seconds), after compilation. Strict library, test and
+example Clippy and Rust formatting passed. The new repeated-digest regression
+first failed against the old plan and now checks expansion to both eligible
+requests while excluding an ineligible request, incoming member evidence,
+stored member-only evidence and a published rejected whole-file assertion.
+Shared query-tracing helpers retain the earlier published-redirect regression;
+existing wide-candidate, complete-evidence and dispute tests also pass.
