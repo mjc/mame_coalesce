@@ -125,6 +125,16 @@ document/header's already-admitted original-text alternative may be used only
 with proof of that view and its mapping. Ordinary owners retain only the
 positions their existing tables admit; do not fabricate child end ranges.
 
+Export dump-source and release details already expose a distinct opening-tag
+endpoint to consumers. Capture it independently at the end-exclusive position
+after the opening `>` on `no_intro_dump_details` and
+`no_intro_release_details`, in `opening_end_line/opening_end_column` using the
+same one-based Unicode-scalar view as their element start/end. Require
+`start < opening_end <= element_end`; self-closing details have equal opening
+and element ends. Closing-tag endpoints and decoded attribute values cannot
+recover this boundary. It is a structural coordinate, not a new source field
+or count event, and freezes with the native details owner on publication.
+
 Unknown extents stay NULL. Cross-view containment requires a verified mapping.
 Diagnostic excerpts are exact BLOB windows of retained-original or unrepaired
 decoded bytes; their zero-based end-exclusive highlight is relative to that

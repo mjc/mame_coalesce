@@ -645,7 +645,11 @@ CREATE TABLE no_intro_dump_details (
     originalformat TEXT, project TEXT, r_date TEXT, r_date_info TEXT, region TEXT, rominfo TEXT, section TEXT, tool TEXT,
     source_order INTEGER NOT NULL CHECK (source_order >= 0),
     source_line INTEGER NOT NULL CHECK (source_line > 0), source_column INTEGER NOT NULL CHECK (source_column > 0),
-    source_end_line INTEGER NOT NULL CHECK (source_end_line > 0), source_end_column INTEGER NOT NULL CHECK (source_end_column > 0)
+    source_end_line INTEGER NOT NULL CHECK (source_end_line > 0), source_end_column INTEGER NOT NULL CHECK (source_end_column > 0),
+    opening_end_line INTEGER NOT NULL CHECK (opening_end_line > 0),
+    opening_end_column INTEGER NOT NULL CHECK (opening_end_column > 0),
+    CHECK ((source_line, source_column) < (opening_end_line, opening_end_column)),
+    CHECK ((opening_end_line, opening_end_column) <= (source_end_line, source_end_column))
 ) STRICT;
 CREATE INDEX no_intro_dump_details_parent_order ON no_intro_dump_details(dump_source_id, source_order, details_element_id);
 
@@ -690,7 +694,11 @@ CREATE TABLE no_intro_release_details (
     nfo_size TEXT, nfoname TEXT, nfosize TEXT, origin TEXT, originalformat TEXT, region TEXT, rominfo TEXT, tool TEXT,
     source_order INTEGER NOT NULL CHECK (source_order >= 0),
     source_line INTEGER NOT NULL CHECK (source_line > 0), source_column INTEGER NOT NULL CHECK (source_column > 0),
-    source_end_line INTEGER NOT NULL CHECK (source_end_line > 0), source_end_column INTEGER NOT NULL CHECK (source_end_column > 0)
+    source_end_line INTEGER NOT NULL CHECK (source_end_line > 0), source_end_column INTEGER NOT NULL CHECK (source_end_column > 0),
+    opening_end_line INTEGER NOT NULL CHECK (opening_end_line > 0),
+    opening_end_column INTEGER NOT NULL CHECK (opening_end_column > 0),
+    CHECK ((source_line, source_column) < (opening_end_line, opening_end_column)),
+    CHECK ((opening_end_line, opening_end_column) <= (source_end_line, source_end_column))
 ) STRICT;
 CREATE INDEX no_intro_release_details_parent_order ON no_intro_release_details(release_id, source_order, details_element_id);
 

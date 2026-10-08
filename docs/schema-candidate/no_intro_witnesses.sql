@@ -121,16 +121,16 @@ INSERT INTO no_intro_archive_merge_links VALUES (303,'2',924);
 INSERT INTO no_intro_archive_field_positions VALUES
     (303,'name',0,0,3,28,NULL),(303,'clone',0,1,3,30,NULL),(303,'mergeof',0,2,3,34,924);
 INSERT INTO no_intro_dump_sources VALUES (304,302,1,3,41,3,90);
-INSERT INTO no_intro_dump_details(details_element_id,dump_source_id,id,source_order,source_line,source_column,source_end_line,source_end_column)
-VALUES (305,304,'publisher-1',0,3,50,3,70);
+INSERT INTO no_intro_dump_details(details_element_id,dump_source_id,id,source_order,source_line,source_column,source_end_line,source_end_column,opening_end_line,opening_end_column)
+VALUES (305,304,'publisher-1',0,3,50,3,70,3,69);
 INSERT INTO no_intro_dump_details_field_positions VALUES (305,'id',0,0,3,58);
 INSERT INTO no_intro_dump_files(media_entry_id,dump_source_id,id,size_text,source_order,source_line,source_column,source_end_line,source_end_column)
 VALUES (306,304,'1','bad-size',1,3,71,3,89);
 INSERT INTO no_intro_dump_file_field_positions VALUES
     (306,'id',0,0,3,78,NULL),(306,'origin_sha256',0,1,3,82,902);
 INSERT INTO no_intro_releases VALUES (307,302,2,3,91,3,140);
-INSERT INTO no_intro_release_details(details_element_id,release_id,nfo_size,nfosize,source_order,source_line,source_column,source_end_line,source_end_column)
-VALUES (308,307,'10','11',0,3,100,3,120);
+INSERT INTO no_intro_release_details(details_element_id,release_id,nfo_size,nfosize,source_order,source_line,source_column,source_end_line,source_end_column,opening_end_line,opening_end_column)
+VALUES (308,307,'10','11',0,3,100,3,120,3,119);
 INSERT INTO no_intro_release_nfo_hashes VALUES (910,308,'nfocrc',0,'bad-nfo','invalid',NULL);
 INSERT INTO invalid_no_intro_release_nfo_hashes VALUES (910,'invalid_hash');
 INSERT INTO no_intro_release_details_field_positions VALUES (308,'nfo_size',0,0,3,108,NULL),(308,'nfocrc',0,1,3,113,910);

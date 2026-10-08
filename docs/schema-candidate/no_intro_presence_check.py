@@ -349,7 +349,7 @@ class NoIntroPresence(unittest.TestCase):
         self.db.execute("INSERT INTO catalog_source_elements VALUES(13900,10300,'no_intro_export_release')")
         self.db.execute("INSERT INTO no_intro_releases VALUES(13900,13010,4,10,1,10,1000)")
         self.db.execute("INSERT INTO catalog_source_elements VALUES(13901,10300,'no_intro_export_release_details')")
-        self.db.execute("INSERT INTO no_intro_release_details(details_element_id,release_id,source_order,source_line,source_column,source_end_line,source_end_column) VALUES(13901,13900,0,10,1,10,1000)")
+        self.db.execute("INSERT INTO no_intro_release_details(details_element_id,release_id,source_order,source_line,source_column,source_end_line,source_end_column,opening_end_line,opening_end_column) VALUES(13901,13900,0,10,1,10,1000,10,2)")
         self.db.execute("UPDATE no_intro_release_nfo_hashes SET release_details_element_id=13901 WHERE source_hash_field='nfocrc' AND release_details_element_id=13041")
         self.expect_problem("no_intro_release_details_field_positions", "nfocrc", 13041, 10300)
         self.expect_problem("no_intro_release_details_field_positions", "nfocrc", 13901, 10300)

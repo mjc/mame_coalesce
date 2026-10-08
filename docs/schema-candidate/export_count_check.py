@@ -112,6 +112,38 @@ class ExportCountSeals(unittest.TestCase):
             WHERE edition_id=10300''').fetchall(), [])
         self.publish()
 
+    def test_details_opening_endpoint_is_independent_and_frozen(self):
+        for table, owner in (('no_intro_dump_details', 13031),
+                             ('no_intro_release_details', 13041)):
+            with self.subTest(table=table):
+                self.assertEqual(self.db.execute(f'''SELECT source_line,source_column,
+                    opening_end_line,opening_end_column,source_end_line,source_end_column
+                    FROM {table} WHERE details_element_id=?''', (owner,)).fetchone(),
+                    (10, 1, 10, 2, 10, 1000))
+        self.publish()
+        for table, owner in (('no_intro_dump_details', 13031),
+                             ('no_intro_release_details', 13041)):
+            with self.subTest(table=table), self.assertRaises(sqlite3.IntegrityError):
+                self.db.execute(f'UPDATE {table} SET opening_end_column=3 WHERE details_element_id=?',
+                                (owner,))
+
+    def test_details_opening_endpoint_has_checked_coordinate_bounds(self):
+        for table, owner in (('no_intro_dump_details', 13031),
+                             ('no_intro_release_details', 13041)):
+            for line, column in ((None, 2), (10, None), (0, 2), (10, 0),
+                                 ('bad', 2), (10, 1), (9, 999), (10, 1001), (11, 1)):
+                with self.subTest(table=table, line=line, column=column):
+                    with self.assertRaises(sqlite3.IntegrityError):
+                        self.db.execute(f'''UPDATE {table} SET opening_end_line=?,
+                            opening_end_column=? WHERE details_element_id=?''', (line, column, owner))
+            # A self-closing element ends at its opening-tag endpoint.
+            self.db.execute(f'''UPDATE {table} SET opening_end_line=10,
+                opening_end_column=1000 WHERE details_element_id=?''', (owner,))
+            self.db.execute(f'''UPDATE {table} SET source_end_line=12,
+                opening_end_line=11,opening_end_column=2 WHERE details_element_id=?''', (owner,))
+            self.assertEqual(self.db.execute(f'''SELECT opening_end_line,opening_end_column
+                FROM {table} WHERE details_element_id=?''', (owner,)).fetchone(), (11, 2))
+
     def test_every_edition_counter_detects_independent_under_and_overcount(self):
         for column, expected in EDITION_COUNTS:
             for delta in (-1, 1):
