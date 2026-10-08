@@ -1,0 +1,4 @@
+table	owner_column	code_column	field_code	source_hash_field	occurrence_column
+software_rom_attribute_positions	media_entry_id	field_kind	2	crc	field_occurrence
+software_rom_attribute_positions	media_entry_id	field_kind	3	sha1	field_occurrence
+software_disk_attribute_positions	media_entry_id	field_kind	1	sha1	field_occurrence

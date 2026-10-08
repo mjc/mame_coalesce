@@ -1,0 +1,10 @@
+table	owner_column	code_column	field_code	source_hash_field	occurrence_column	role_constraint
+logiqx_rom_attribute_positions	media_entry_id	field_kind	2	crc	field_occurrence	-
+logiqx_rom_attribute_positions	media_entry_id	field_kind	3	sha1	field_occurrence	-
+logiqx_rom_attribute_positions	media_entry_id	field_kind	4	md5	field_occurrence	-
+logiqx_disk_attribute_positions	media_entry_id	field_kind	1	sha1	field_occurrence	-
+logiqx_disk_attribute_positions	media_entry_id	field_kind	2	md5	field_occurrence	-
+clrmamepro_rom_field_positions	media_entry_id	field_kind	2	crc	field_occurrence	Value
+clrmamepro_rom_field_positions	media_entry_id	field_kind	3	crc32	field_occurrence	Value
+clrmamepro_rom_field_positions	media_entry_id	field_kind	4	md5	field_occurrence	Value
+clrmamepro_rom_field_positions	media_entry_id	field_kind	5	sha1	field_occurrence	Value

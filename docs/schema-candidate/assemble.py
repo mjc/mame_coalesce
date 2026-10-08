@@ -1,0 +1,474 @@
+#!/usr/bin/env python3
+"""Assemble the isolated schema proposal; never open an application database."""
+
+import argparse
+import csv
+from collections import defaultdict
+from dataclasses import dataclass
+from pathlib import Path
+import re
+import sqlite3
+import sys
+
+
+ROOT = Path(__file__).resolve().parent
+FAMILIES = ("mame", "software", "logiqx_cmp", "no_intro")
+FRAGMENTS = ("shared.sql", *(f"{family}.sql" for family in FAMILIES), "relationships.sql", "relationships_guards.sql", "diagnostics.sql")
+IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z_0-9]*\Z")
+ROOT_LINKS = (
+    ('mame_root_import_messages', 'mame_documents', 'mame', None),
+    ('logiqx_datafile_import_messages', 'logiqx_documents', 'logiqx', None),
+    ('clrmamepro_document_import_messages', 'clrmamepro_documents', 'clrmamepro', None),
+    ('software_document_import_messages', 'software_documents', 'software', None),
+    ('software_list_root_import_messages', 'software_lists', 'software', 'set_group_id'),
+    ('software_wrapper_import_messages', 'software_wrapper_headers', 'software', 'wrapper_id'),
+    ('no_intro_dat_root_import_messages', 'no_intro_dat_documents', 'no_intro_dat', None),
+    ('no_intro_export_document_import_messages', 'no_intro_export_documents', 'no_intro_database', None),
+    ('no_intro_export_datafile_import_messages', 'no_intro_export_datafiles', 'no_intro_database', None),
+    ('no_intro_export_header_import_messages', 'no_intro_export_headers', 'no_intro_database', 'header_id'),
+    ('no_intro_pc_root_import_messages', 'no_intro_pc_documents', 'no_intro_pc_fixture', None),
+)
+
+
+def identifier(value):
+    if not IDENTIFIER.fullmatch(value):
+        raise ValueError(f"not a SQL identifier: {value!r}")
+    return f'"{value}"'
+
+
+def literal(value):
+    return "'" + value.replace("'", "''") + "'"
+
+
+def kind_family(kind):
+    for prefix, family in (('mame_', 'mame'), ('software_', 'software'), ('logiqx_', 'logiqx'),
+                           ('clrmamepro_', 'clrmamepro'), ('no_intro_dat_', 'no_intro_dat'),
+                           ('no_intro_pc_', 'no_intro_pc_fixture'), ('no_intro_export_', 'no_intro_database')):
+        if kind.startswith(prefix):
+            return family
+    raise ValueError(f'no supported reading-rule family for native kind {kind}')
+
+
+@dataclass(frozen=True)
+class NativeOwner:
+    kind: str
+    table: str
+    id: str
+    parent_table: str
+    parent_column: str
+    parent_key: str
+    sequence: str
+    media: bool
+
+
+def owners():
+    result = []
+    for family in FAMILIES:
+        with (ROOT / f"{family}-owners.tsv").open(newline="") as source:
+            reader = csv.DictReader(source, delimiter="\t")
+            expected = ("kind", "table", "id", "parent_table", "parent_column", "parent_key", "sequence", "media")
+            if tuple(reader.fieldnames or ()) != expected:
+                raise ValueError(f"{family}: owner manifest columns must be {expected}")
+            for row in reader:
+                row["sequence"] = row["sequence"] or "-"
+                if row["media"] not in ("0", "1"):
+                    raise ValueError(f"{family}: media is not 0/1: {row}")
+                for key in expected[:-1]:
+                    if key != "kind" and (key != "sequence" or row[key] != "-"):
+                        identifier(row[key])
+                result.append(NativeOwner(**{**row, "media": row["media"] == "1"}))
+    kinds = [owner.kind for owner in result]
+    if not result or len(kinds) != len(set(kinds)):
+        raise ValueError("native kinds must be nonempty and have exactly one owner")
+    return tuple(result)
+
+
+def table_columns(connection, table):
+    rows = connection.execute(f"PRAGMA table_info({identifier(table)})").fetchall()
+    if not rows:
+        raise ValueError(f"missing candidate table {table}")
+    return rows
+
+
+def edition_expression(connection, table, alias, native_keys=None, seen=()):
+    """Resolve an immediate parent's edition without storing copied ancestry."""
+    if table in seen:
+        raise ValueError(f"cyclic edition path at {table}")
+    columns = {row[1] for row in table_columns(connection, table)}
+    if "edition_id" in columns:
+        return f"{alias}.edition_id"
+    if native_keys and table in native_keys:
+        return f"(SELECT edition_id FROM catalog_source_elements WHERE source_element_id={alias}.{identifier(native_keys[table])})"
+    if table == "catalog_sets":
+        return f"(SELECT edition_id FROM catalog_set_groups WHERE set_group_id={alias}.set_group_id)"
+    if table == "catalog_media_entries":
+        return f"(SELECT edition_id FROM catalog_source_elements WHERE source_element_id={alias}.media_entry_id)"
+    references = connection.execute(f"PRAGMA foreign_key_list({identifier(table)})").fetchall()
+    registry_keys = [row[3] for row in references if row[2] == "catalog_source_elements" and row[4] == "source_element_id"]
+    if len(registry_keys) == 1:
+        return f"(SELECT edition_id FROM catalog_source_elements WHERE source_element_id={alias}.{identifier(registry_keys[0])})"
+    groups = [row[3] for row in references if row[2] == "catalog_set_groups" and row[4] == "set_group_id"]
+    if len(groups) == 1:
+        return f"(SELECT edition_id FROM catalog_set_groups WHERE set_group_id={alias}.{identifier(groups[0])})"
+    paths = defaultdict(list)
+    for row in references:
+        paths[row[0]].append(row)
+    for rows in sorted(paths.values(), key=lambda rows: rows[0][2] not in (native_keys or {})):
+        target = rows[0][2]
+        if target in (*seen, table):
+            continue
+        target_alias = 'scope_' + str(len(seen))
+        try:
+            scope = edition_expression(connection, target, target_alias, native_keys, (*seen, table))
+        except ValueError:
+            continue
+        match = ' AND '.join(f'{target_alias}.{identifier(row[4])}={alias}.{identifier(row[3])}' for row in rows)
+        return f'(SELECT {scope} FROM {identifier(target)} AS {target_alias} WHERE {match})'
+    raise ValueError(f"no unambiguous immediate edition path for {table}")
+
+
+def foreign_key_guards(connection, manifest=()):
+    """Emit concrete SQL for every FK, including reverse checks with FKs off."""
+    guards, problems = [], []
+    tables = [row[0] for row in connection.execute("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'")]
+    for table in tables:
+        grouped = defaultdict(list)
+        for row in connection.execute(f"PRAGMA foreign_key_list({identifier(table)})"):
+            grouped[row[0]].append(row)
+        columns = {row[1] for row in table_columns(connection, table)}
+        try:
+            edition = edition_expression(connection, table, "child", {owner.table: owner.id for owner in manifest})
+        except ValueError:
+            edition = "NULL"
+        for number, rows in grouped.items():
+            rows.sort(key=lambda row: row[1])
+            parent = rows[0][2]
+            pairs = [(row[3], row[4]) for row in rows]
+            if any(target is None for _, target in pairs):
+                raise ValueError(f"{table}: implicit FK targets must be explicit")
+            present = " AND ".join(f"NEW.{identifier(child)} IS NOT NULL" for child, _ in pairs)
+            match = " AND ".join(f"parent.{identifier(target)}=NEW.{identifier(child)}" for child, target in pairs)
+            condition = f"({present}) AND NOT EXISTS(SELECT 1 FROM {identifier(parent)} AS parent WHERE {match})"
+            for operation in ("INSERT", "UPDATE"):
+                guards.append(f"CREATE TRIGGER {identifier(f'candidate_fk_{table}_{number}_{operation.lower()}')} BEFORE {operation} ON {identifier(table)} WHEN {condition} BEGIN SELECT RAISE(ABORT,'candidate foreign key closure'); END;")
+            reverse = " AND ".join(f"child.{identifier(child)}=OLD.{identifier(target)}" for child, target in pairs)
+            changes = " OR ".join(f"NEW.{identifier(target)} IS NOT OLD.{identifier(target)}" for _, target in pairs)
+            exists = f"EXISTS(SELECT 1 FROM {identifier(table)} AS child WHERE {reverse})"
+            for operation, when in (("DELETE", exists), ("UPDATE", f"({changes}) AND {exists}")):
+                guards.append(f"CREATE TRIGGER {identifier(f'candidate_fk_reverse_{table}_{number}_{operation.lower()}')} BEFORE {operation} ON {identifier(parent)} WHEN {when} BEGIN SELECT RAISE(ABORT,'candidate referenced owner is immutable'); END;")
+            audit_present = " AND ".join(f"child.{identifier(child)} IS NOT NULL" for child, _ in pairs)
+            audit_match = " AND ".join(f"parent.{identifier(target)}=child.{identifier(child)}" for child, target in pairs)
+            primary = sorted((row for row in table_columns(connection, table) if row[5]), key=lambda row: row[5])
+            owner = f"child.{identifier(primary[0][1])}" if primary else "NULL"
+            # owner_id is presentation only: UUID and composite-key rows stay typed in their tables.
+            problems.append(f"SELECT {literal('foreign_key:' + table + ':' + str(number))} AS problem,{owner} AS owner_id,{edition} AS edition_id FROM {identifier(table)} AS child WHERE {audit_present} AND NOT EXISTS(SELECT 1 FROM {identifier(parent)} AS parent WHERE {audit_match})")
+    return guards, problems
+
+
+def collision_guards(connection):
+    """Protect PK and alternate-key REPLACE without recursive DELETE triggers.
+
+    Candidate callers deduplicate batches with set-based NOT EXISTS before INSERT.
+    Blind INSERT OR IGNORE/UPSERT is intentionally not a supported replacement API.
+    """
+    result = []
+    for (table,) in connection.execute("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall():
+        info = table_columns(connection, table)
+        primary = tuple(row[1] for row in sorted(info, key=lambda row: row[5]) if row[5])
+        keys = [(primary, None)] if primary else []
+        for index in connection.execute(f"PRAGMA index_list({identifier(table)})").fetchall():
+            if not index[2]:
+                continue
+            key = tuple(row[2] for row in connection.execute(f"PRAGMA index_info({identifier(index[1])})"))
+            if any(column is None for column in key):
+                raise ValueError(f"{table}: expression unique index needs explicit collision policy")
+            predicate = None
+            if index[4]:
+                sql = connection.execute("SELECT sql FROM sqlite_schema WHERE name=?", (index[1],)).fetchone()[0]
+                predicate = re.split(r"\bWHERE\b", sql, maxsplit=1, flags=re.IGNORECASE)[1]
+            if (key, predicate) not in keys:
+                keys.append((key, predicate))
+        collisions, update_collisions = [], []
+        for key, predicate in keys:
+            match = " AND ".join(f"existing.{identifier(column)}=NEW.{identifier(column)}" for column in key)
+            test = f"EXISTS(SELECT 1 FROM {identifier(table)} AS existing WHERE {match}"
+            if predicate:
+                new_row = ",".join(f"NEW.{identifier(row[1])} AS {identifier(row[1])}" for row in info)
+                test += f" AND ({predicate})) AND (SELECT ({predicate}) FROM (SELECT {new_row}))"
+            else:
+                test += ")"
+            collisions.append(f"({test})")
+            old_identity = ' AND '.join(f'existing.{identifier(column)} IS OLD.{identifier(column)}' for column in primary)
+            if not old_identity:
+                raise ValueError(f'{table}: collision checks require a primary key')
+            update_collisions.append('(' + test.replace(' WHERE ', f' WHERE NOT ({old_identity}) AND ', 1) + ')')
+        if collisions:
+            result.append(f"CREATE TRIGGER {identifier('candidate_collision_' + table)} BEFORE INSERT ON {identifier(table)} WHEN {' OR '.join(collisions)} BEGIN SELECT RAISE(ABORT,'candidate identity collision: deduplicate before insert'); END;")
+            result.append(f"CREATE TRIGGER {identifier('candidate_update_collision_' + table)} BEFORE UPDATE ON {identifier(table)} WHEN {' OR '.join(update_collisions)} BEGIN SELECT RAISE(ABORT,'candidate update identity collision'); END;")
+    return result
+
+
+def published_fact_guards(connection, manifest):
+    """Native facets and positions are immutable too, not just manifest owners."""
+    result = []
+    native_keys = {owner.table: owner.id for owner in manifest}
+    excluded = {'published_catalog_editions', 'catalog_imports', 'catalog_import_messages',
+                'catalog_import_message_elements', 'catalog_import_message_external_evidence'}
+    for (table,) in connection.execute("SELECT name FROM sqlite_schema WHERE type='table'").fetchall():
+        if table in excluded or 'import_messages' in table or table.startswith('catalog_relationship'):
+            continue
+        if any(token in table for token in ('review', 'decision', 'conflict')) or table == 'merged_file_ids':
+            continue
+        try:
+            scope = edition_expression(connection, table, 'owner', native_keys)
+        except ValueError:
+            continue
+        primary = sorted((row for row in table_columns(connection, table) if row[5]), key=lambda row: row[5])
+        if not primary:
+            raise ValueError(f'{table}: an immutable fact needs a primary key')
+        for operation, aliases in (('INSERT', ('NEW',)), ('UPDATE', ('OLD','NEW')), ('DELETE', ('OLD',))):
+            # Resolve from the actual row/parent. On INSERT use the proposed row,
+            # so new positions cannot be appended to an already published owner.
+            conditions = []
+            for alias in aliases:
+                proposed = ','.join(f'{alias}.{identifier(row[1])} AS {identifier(row[1])}' for row in table_columns(connection, table))
+                conditions.append(f'EXISTS(SELECT 1 FROM (SELECT {proposed}) AS owner JOIN published_catalog_editions AS publication ON publication.edition_id={scope})')
+            condition = ' OR '.join(conditions)
+            result.append(f"CREATE TRIGGER {identifier('candidate_immutable_' + table + '_' + operation.lower())} BEFORE {operation} ON {identifier(table)} WHEN {condition} BEGIN SELECT RAISE(ABORT,'published candidate payload and positions are immutable'); END;")
+    return result
+
+
+def immutable_dictionary_sql():
+    tables = ('catalog_source_files', 'catalog_reading_rules', 'catalog_xml_repairs',
+              'file_id_registries', 'shared_catalog_files', 'catalog_decoded_xml_views')
+    return [f"CREATE TRIGGER {identifier('candidate_dictionary_' + table + '_' + operation.lower())} BEFORE {operation} ON {identifier(table)} BEGIN SELECT RAISE(ABORT,'source/rules/issued identity facts are immutable'); END;" for table in tables for operation in ('UPDATE', 'DELETE')]
+
+
+def root_diagnostic_sql():
+    tables, guards, links, problems = [], [], [], []
+    for table, owner, family, extra in ROOT_LINKS:
+        extra_column = f'{identifier(extra)} INTEGER NOT NULL,' if extra else ''
+        if extra == 'set_group_id':
+            owner_fk = 'FOREIGN KEY(set_group_id) REFERENCES software_lists(set_group_id), FOREIGN KEY(set_group_id,edition_id) REFERENCES catalog_set_groups(set_group_id,edition_id)'
+            owner_join = 'JOIN software_lists AS owner ON owner.set_group_id=link.set_group_id JOIN catalog_set_groups AS owner_group ON owner_group.set_group_id=owner.set_group_id AND owner_group.edition_id=link.edition_id'
+            mode = "AND EXISTS(SELECT 1 FROM software_documents WHERE edition_id=link.edition_id AND envelope_kind='single_list')"
+        elif extra:
+            owner_fk = f'FOREIGN KEY({identifier(extra)},edition_id) REFERENCES {identifier(owner)}({identifier(extra)},edition_id)'
+            owner_join = f'JOIN {identifier(owner)} AS owner ON owner.{identifier(extra)}=link.{identifier(extra)} AND owner.edition_id=link.edition_id'
+            mode = "AND EXISTS(SELECT 1 FROM software_documents WHERE edition_id=link.edition_id AND envelope_kind='plural_lists')" if extra == 'wrapper_id' else ''
+        else:
+            owner_fk = f'FOREIGN KEY(edition_id) REFERENCES {identifier(owner)}(edition_id)'
+            owner_join = f'JOIN {identifier(owner)} AS owner ON owner.edition_id=link.edition_id'
+            mode = ''
+        tables.append(f"CREATE TABLE {identifier(table)}(message_id INTEGER NOT NULL,edition_id INTEGER NOT NULL,{extra_column}role TEXT NOT NULL CHECK(role IN ('primary','related')),PRIMARY KEY(message_id,edition_id,role),FOREIGN KEY(message_id,edition_id) REFERENCES catalog_import_messages(message_id,edition_id),{owner_fk}) STRICT, WITHOUT ROWID;")
+        byte_start = "CASE WHEN message.source_view=owner.extent_view AND message.source_problem_start IS NOT NULL THEN message.source_problem_start WHEN owner.extent_view='retained_original_bytes' THEN message.original_problem_start END"
+        byte_end = "CASE WHEN message.source_view=owner.extent_view AND message.source_problem_end IS NOT NULL THEN message.source_problem_end WHEN owner.extent_view='retained_original_bytes' THEN message.original_problem_end END"
+        byte_available = f'(owner.extent_view IS NOT NULL AND ({byte_start}) IS NOT NULL)'
+        source_length = "CASE owner.extent_view WHEN 'retained_original_bytes' THEN source.byte_length WHEN 'transport_decoded_xml_bytes' THEN decoded.byte_length END"
+        byte_within = f'(owner.extent_start>=0 AND owner.extent_start<owner.extent_end AND owner.extent_end<=({source_length}) AND owner.extent_start<=({byte_start}) AND ({byte_start})<owner.extent_end AND ({byte_start})<=({byte_end}) AND ({byte_end})<=owner.extent_end)'
+        coord_available = '(message.line IS NOT NULL AND message.column IS NOT NULL AND owner.start_line IS NOT NULL AND owner.start_column IS NOT NULL AND owner.end_line IS NOT NULL AND owner.end_column IS NOT NULL AND message.location_view=owner.location_view AND message.column_convention=owner.column_convention)'
+        coord_within = '((message.line>owner.start_line OR (message.line=owner.start_line AND message.column>=owner.start_column)) AND (message.line<owner.end_line OR (message.line=owner.end_line AND message.column<owner.end_column)))'
+        proof = f'(({byte_available}) IS TRUE OR ({coord_available}) IS TRUE) AND (({byte_available}) IS NOT TRUE OR ({byte_within}) IS TRUE) AND (({coord_available}) IS NOT TRUE OR ({coord_within}) IS TRUE)'
+        valid = f"SELECT 1 FROM {identifier(table)} AS link JOIN catalog_import_messages AS message ON message.message_id=link.message_id AND message.edition_id=link.edition_id JOIN catalog_imports AS run ON run.import_id=message.import_id AND run.edition_id=link.edition_id JOIN catalog_editions AS edition ON edition.edition_id=link.edition_id AND edition.catalog_id=run.catalog_id AND edition.source_file_id=message.source_file_id AND edition.reading_rules_id=message.reading_rules_id JOIN catalog_reading_rules AS rules ON rules.reading_rules_id=edition.reading_rules_id AND rules.format_family={literal(family)} JOIN catalog_source_files AS source ON source.source_file_id=edition.source_file_id LEFT JOIN catalog_decoded_xml_views AS decoded ON decoded.source_file_id=source.source_file_id {owner_join} WHERE link.message_id=PROPOSED.message_id AND link.edition_id=PROPOSED.edition_id AND link.role=PROPOSED.role {mode} AND {proof}"
+        # The proposal is tested without temporarily inserting the real link.
+        columns = ['message_id', 'edition_id', *([extra] if extra else []), 'role']
+        proposed = ','.join(f'NEW.{identifier(column)} AS {identifier(column)}' for column in columns)
+        select_new = valid.replace(f'FROM {identifier(table)} AS link', f'FROM (SELECT {proposed}) AS link').replace('PROPOSED.', 'NEW.')
+        for operation in ('INSERT', 'UPDATE'):
+            guards.append(f"CREATE TRIGGER {identifier('candidate_root_link_' + table + '_' + operation.lower())} BEFORE {operation} ON {identifier(table)} WHEN NOT EXISTS({select_new}) BEGIN SELECT RAISE(ABORT,'root diagnostic requires matching ancestry, mode and proven containment'); END;")
+        problems.append(f"SELECT {literal('root_message:' + table)} AS problem,proposed.message_id AS owner_id,proposed.edition_id FROM {identifier(table)} AS proposed WHERE NOT EXISTS({valid.replace('PROPOSED.', 'proposed.')})")
+        links.append(f"SELECT message_id,edition_id FROM {identifier(table)} WHERE role='primary'")
+    links.append("SELECT message_id,edition_id FROM catalog_import_message_elements WHERE role='primary'")
+    primary = ' UNION ALL '.join(links)
+    problems.append(f"SELECT 'message_primary_count',message_id,edition_id FROM ({primary}) GROUP BY message_id HAVING count(*)>1")
+    primary_tables = [table for table, *_ in ROOT_LINKS] + ['catalog_import_message_elements']
+    for table in primary_tables:
+        for operation in ('INSERT', 'UPDATE'):
+            branches = []
+            for other in primary_tables:
+                exclude = ''
+                if operation == 'UPDATE' and other == table:
+                    exclude = ' AND NOT(message_id=OLD.message_id AND edition_id=OLD.edition_id AND role=OLD.role'
+                    if table == 'catalog_import_message_elements':
+                        exclude += ' AND source_element_id=OLD.source_element_id'
+                    exclude += ')'
+                branches.append(f"SELECT 1 FROM {identifier(other)} WHERE message_id=NEW.message_id AND role='primary'{exclude}")
+            guards.append(f"CREATE TRIGGER {identifier('candidate_primary_' + table + '_' + operation.lower())} BEFORE {operation} ON {identifier(table)} WHEN NEW.role='primary' AND EXISTS({' UNION ALL '.join(branches)}) BEGIN SELECT RAISE(ABORT,'a diagnostic has at most one primary owner'); END;")
+    return '\n'.join(tables), guards, problems
+
+
+def hash_position_sql(connection):
+    branches, policies, guards = [], defaultdict(list), []
+    for family in FAMILIES:
+        with (ROOT / f'{family}-hash-positions.tsv').open(newline='') as source:
+            for row in csv.DictReader(source, delimiter='\t'):
+                table, owner, code, occurrence = (identifier(row[key]) for key in ('table', 'owner_column', 'code_column', 'occurrence_column'))
+                field_code, source_field = literal(row['field_code']), literal(row['source_hash_field'])
+                role = row.get('role_constraint', '-')
+                if role not in ('-', 'Value'):
+                    raise ValueError(f'unknown canonical hash position role {role}')
+                role_check = ' AND value_line IS NOT NULL AND value_column IS NOT NULL' if role == 'Value' else ''
+                branches.append(f'SELECT reported_hash_id,{owner} AS media_entry_id,{source_field} AS source_hash_field,{occurrence} AS field_occurrence FROM {table} WHERE {code}={field_code} AND reported_hash_id IS NOT NULL{role_check}')
+                new_role = ' AND NEW.value_line IS NOT NULL AND NEW.value_column IS NOT NULL' if role == 'Value' else ''
+                policies[row['table']].append(f'(NEW.{code}={field_code} AND hash.media_entry_id=NEW.{owner} AND hash.source_hash_field={source_field} AND hash.field_occurrence=NEW.{occurrence}{new_role})')
+    view = 'CREATE VIEW candidate_canonical_hash_positions AS ' + ' UNION ALL '.join(branches) + ';'
+    for table, choices in policies.items():
+        valid = f"SELECT 1 FROM catalog_entry_hashes AS hash WHERE hash.reported_hash_id=NEW.reported_hash_id AND ({' OR '.join(choices)})"
+        for operation in ('INSERT', 'UPDATE'):
+            guards.append(f"CREATE TRIGGER {identifier('candidate_hash_position_' + table + '_' + operation.lower())} BEFORE {operation} ON {identifier(table)} WHEN NEW.reported_hash_id IS NOT NULL AND NOT EXISTS({valid}) BEGIN SELECT RAISE(ABORT,'hash position must reference its exact native declaration'); END;")
+    problems = [
+        "SELECT 'hash_position_count' AS problem,hash.reported_hash_id AS owner_id,element.edition_id FROM catalog_entry_hashes AS hash LEFT JOIN catalog_source_elements AS element ON element.source_element_id=hash.media_entry_id LEFT JOIN candidate_canonical_hash_positions AS position USING(reported_hash_id) GROUP BY hash.reported_hash_id HAVING count(position.reported_hash_id)<>1",
+        "SELECT 'hash_position_identity',position.reported_hash_id,element.edition_id FROM candidate_canonical_hash_positions AS position LEFT JOIN catalog_entry_hashes AS hash USING(reported_hash_id) LEFT JOIN catalog_source_elements AS element ON element.source_element_id=position.media_entry_id WHERE hash.media_entry_id IS NOT position.media_entry_id OR hash.source_hash_field IS NOT position.source_hash_field OR hash.field_occurrence IS NOT position.field_occurrence",
+    ]
+    return view, guards, problems
+
+
+def format_root_sql(connection, manifest):
+    roots = (('mame_documents','mame'), ('software_documents','software'),
+             ('logiqx_documents','logiqx'), ('clrmamepro_documents','clrmamepro'),
+             ('no_intro_dat_documents','no_intro_dat'), ('no_intro_export_documents','no_intro_database'),
+             ('no_intro_pc_documents','no_intro_pc_fixture'))
+    union = ' UNION ALL '.join(f'SELECT edition_id,{literal(family)} AS format_family FROM {identifier(table)}' for table,family in roots)
+    view = f'CREATE VIEW candidate_document_roots AS {union};'
+    problems = ["SELECT 'document_root_count' AS problem,edition.edition_id AS owner_id,edition.edition_id FROM catalog_editions AS edition JOIN catalog_reading_rules AS rules USING(reading_rules_id) LEFT JOIN candidate_document_roots AS root ON root.edition_id=edition.edition_id GROUP BY edition.edition_id HAVING count(root.edition_id)<>1 OR sum(root.format_family=rules.format_family)<>1"]
+    cases = 'CASE element.element_kind ' + ' '.join(f'WHEN {literal(owner.kind)} THEN {literal(kind_family(owner.kind))}' for owner in manifest) + ' END'
+    problems.append(f"SELECT 'element_reading_family',element.source_element_id,element.edition_id FROM catalog_source_elements AS element JOIN catalog_editions AS edition USING(edition_id) JOIN catalog_reading_rules AS rules USING(reading_rules_id) WHERE rules.format_family IS NOT ({cases})")
+    guards = []
+    physical = {(owner,family) for _,owner,family,_ in ROOT_LINKS}
+    for table, family in sorted(physical):
+        scope = edition_expression(connection, table, 'owner', {entry.table:entry.id for entry in manifest})
+        proposed = ','.join(f'NEW.{identifier(row[1])} AS {identifier(row[1])}' for row in table_columns(connection, table))
+        valid = f'SELECT 1 FROM (SELECT {proposed}) AS owner JOIN catalog_editions AS edition ON edition.edition_id={scope} JOIN catalog_reading_rules AS rules USING(reading_rules_id) WHERE rules.format_family={literal(family)}'
+        for operation in ('INSERT','UPDATE'):
+            guards.append(f"CREATE TRIGGER {identifier('candidate_root_format_' + table + '_' + operation.lower())} BEFORE {operation} ON {identifier(table)} WHEN NOT EXISTS({valid}) BEGIN SELECT RAISE(ABORT,'physical owner requires its selected reading family'); END;")
+    return view,guards,problems
+
+
+def position_order_sql(connection, manifest):
+    """The native and compatibility/XSI fields of one tag share one ordinal."""
+    groups, guards, problems = defaultdict(list), [], []
+    native_keys = {owner.table:owner.id for owner in manifest}
+    for (table,) in connection.execute("SELECT name FROM sqlite_schema WHERE type='table'").fetchall():
+        if not (table.endswith('_positions') or table.endswith('_xsi_attributes')):
+            continue
+        columns = {row[1] for row in table_columns(connection, table)}
+        ordinal = next((column for column in ('source_order','attribute_order') if column in columns), None)
+        if ordinal is None:
+            continue
+        fks = [row for row in connection.execute(f'PRAGMA foreign_key_list({identifier(table)})')
+               if row[2] not in ('catalog_entry_hashes','reported_catalog_relationships','no_intro_release_nfo_hashes')]
+        parents = {(row[2],row[3],row[4]) for row in fks}
+        if len(parents) != 1:
+            raise ValueError(f'{table}: position order needs exactly one actual owner FK, got {parents}')
+        parent, column, target = parents.pop()
+        groups[(parent,target)].append((table,column,ordinal))
+    # CMP field pairs and media forms share set-body Form.items order.
+    groups[('clrmamepro_sets','set_id')].extend((table,'set_id','source_order') for table in ('clrmamepro_roms','clrmamepro_samples'))
+    for (parent,target), members in groups.items():
+        branches = [f'SELECT {identifier(column)} AS owner_id,{identifier(ordinal)} AS source_order FROM {identifier(table)}' for table,column,ordinal in members]
+        scope = edition_expression(connection, parent, 'parent', native_keys)
+        problems.append(f"SELECT {literal('position_order:' + parent)} AS problem,position.owner_id,{scope} AS edition_id FROM ({' UNION ALL '.join(branches)}) AS position LEFT JOIN {identifier(parent)} AS parent ON parent.{identifier(target)}=position.owner_id GROUP BY position.owner_id,position.source_order HAVING count(*)>1")
+        for table,column,ordinal in members:
+            primary = [row[1] for row in table_columns(connection,table) if row[5]]
+            for operation in ('INSERT','UPDATE'):
+                checks = []
+                for other,other_column,other_ordinal in members:
+                    exclude = ''
+                    if other == table and operation == 'UPDATE':
+                        exclude = ' AND NOT(' + ' AND '.join(f'other.{identifier(key)} IS OLD.{identifier(key)}' for key in primary) + ')'
+                    checks.append(f'SELECT 1 FROM {identifier(other)} AS other WHERE other.{identifier(other_column)}=NEW.{identifier(column)} AND other.{identifier(other_ordinal)}=NEW.{identifier(ordinal)}{exclude}')
+                guards.append(f"CREATE TRIGGER {identifier('candidate_position_order_' + table + '_' + operation.lower())} BEFORE {operation} ON {identifier(table)} WHEN EXISTS({' UNION ALL '.join(checks)}) BEGIN SELECT RAISE(ABORT,'native, compatibility and lexical item ordinals are unique per owner'); END;")
+    return guards,problems
+
+
+def ownership_sql(connection, manifest):
+    rows, problems, guards = [], [], []
+    sequences = defaultdict(list)
+    for owner in manifest:
+        table, key = identifier(owner.table), identifier(owner.id)
+        parent, parent_key, parent_column = map(identifier, (owner.parent_table, owner.parent_key, owner.parent_column))
+        columns = {row[1] for row in table_columns(connection, owner.table)}
+        if owner.id not in columns or owner.parent_column not in columns:
+            raise ValueError(f"owner manifest does not match {owner.table} columns")
+        parent_scope = edition_expression(connection, owner.parent_table, "parent", {entry.table: entry.id for entry in manifest})
+        rows.append(f"SELECT {literal(owner.kind)} AS element_kind,owner.{key} AS source_element_id FROM {table} AS owner")
+        problems.append(f"SELECT {literal('owner_kind:' + owner.table)} AS problem,owner.{key} AS owner_id,element.edition_id FROM {table} AS owner LEFT JOIN catalog_source_elements AS element ON element.source_element_id=owner.{key} WHERE element.element_kind IS NOT {literal(owner.kind)}")
+        problems.append(f"SELECT {literal('owner_ancestry:' + owner.table)},owner.{key},element.edition_id FROM {table} AS owner LEFT JOIN catalog_source_elements AS element ON element.source_element_id=owner.{key} LEFT JOIN {parent} AS parent ON parent.{parent_key}=owner.{parent_column} WHERE element.edition_id IS NOT {parent_scope}")
+        good = f"SELECT 1 FROM catalog_source_elements AS element JOIN {parent} AS parent ON parent.{parent_key}=NEW.{parent_column} JOIN catalog_editions AS edition ON edition.edition_id=element.edition_id JOIN catalog_reading_rules AS rules USING(reading_rules_id) WHERE element.source_element_id=NEW.{key} AND element.element_kind={literal(owner.kind)} AND element.edition_id={parent_scope} AND rules.format_family={literal(kind_family(owner.kind))}"
+        for operation in ("INSERT", "UPDATE"):
+            guards.append(f"CREATE TRIGGER {identifier('candidate_native_' + owner.table + '_' + operation.lower())} BEFORE {operation} ON {table} WHEN NOT EXISTS({good}) BEGIN SELECT RAISE(ABORT,'candidate native kind or ancestry'); END;")
+        if owner.sequence != "-":
+            if "source_order" not in columns:
+                raise ValueError(f"{owner.table}: sequenced owner has no source_order")
+            parent_domain = ('catalog_set_groups', 'set_group_id') if owner.parent_table == 'software_lists' else (owner.parent_table, owner.parent_key)
+            sequences[parent_domain].append(owner)
+        if owner.media:
+            problems.append(f"SELECT {literal('missing_media:' + owner.table)},owner.{key},element.edition_id FROM {table} AS owner LEFT JOIN catalog_source_elements AS element ON element.source_element_id=owner.{key} LEFT JOIN catalog_media_entries AS media ON media.media_entry_id=owner.{key} WHERE media.media_entry_id IS NULL")
+    sequences[('catalog_set_groups', 'set_group_id')].append(NativeOwner('common_set_placement', 'catalog_sets', 'set_id', 'catalog_set_groups', 'set_group_id', 'set_group_id', 'source_order', False))
+    for (parent_table, parent_key), members in sequences.items():
+        sequence = parent_table + '_' + parent_key
+        branches = [f"SELECT {identifier(owner.parent_column)} AS parent_id,source_order,{identifier(owner.id)} AS source_element_id FROM {identifier(owner.table)}" for owner in members]
+        union = " UNION ALL ".join(branches)
+        problems.append(f"SELECT {literal('mixed_order:' + sequence)},min(child.source_element_id),element.edition_id FROM ({union}) AS child LEFT JOIN catalog_source_elements AS element USING(source_element_id) GROUP BY child.parent_id,child.source_order HAVING count(*)<>1")
+        for owner in members:
+            for operation in ("INSERT", "UPDATE"):
+                other = f" AND child.source_element_id<>OLD.{identifier(owner.id)}" if operation == "UPDATE" else ""
+                duplicate = f"SELECT 1 FROM ({union}) AS child WHERE child.parent_id=NEW.{identifier(owner.parent_column)} AND child.source_order=NEW.source_order{other}"
+                guards.append(f"CREATE TRIGGER {identifier('candidate_siblings_' + owner.table + '_' + operation.lower())} BEFORE {operation} ON {identifier(owner.table)} WHEN EXISTS({duplicate}) BEGIN SELECT RAISE(ABORT,'candidate mixed sibling order collision'); END;")
+    owner_union = " UNION ALL ".join(rows)
+    registry_problem = "SELECT 'native_owner_count' AS problem,element.source_element_id AS owner_id,element.edition_id FROM catalog_source_elements AS element LEFT JOIN candidate_native_owners AS owner ON owner.source_element_id=element.source_element_id AND owner.element_kind=element.element_kind GROUP BY element.source_element_id HAVING count(owner.source_element_id)<>1"
+    media_kinds = ",".join(literal(owner.kind) for owner in manifest if owner.media) or "NULL"
+    problems.append(f"SELECT 'unexpected_common_media',media.media_entry_id,element.edition_id FROM catalog_media_entries AS media LEFT JOIN catalog_source_elements AS element ON element.source_element_id=media.media_entry_id WHERE element.element_kind IS NULL OR element.element_kind NOT IN ({media_kinds})")
+    return f"CREATE VIEW candidate_native_owners AS {owner_union};", [registry_problem, *problems], guards
+
+
+def assemble():
+    manifest = owners()
+    source = "\n\n".join((ROOT / fragment).read_text() for fragment in FRAGMENTS)
+    source = source.replace("/* SOURCE_ELEMENT_KINDS */", ",".join(literal(owner.kind) for owner in manifest))
+    root_tables, root_guards, root_problems = root_diagnostic_sql()
+    source += '\n' + root_tables
+    with sqlite3.connect(":memory:") as connection:
+        connection.executescript(source)
+        ownership, native_problems, native_guards = ownership_sql(connection, manifest)
+        fk_guards, fk_problems = foreign_key_guards(connection, manifest)
+        collisions = collision_guards(connection)
+        immutable = published_fact_guards(connection, manifest)
+        hash_positions, hash_guards, hash_problems = hash_position_sql(connection)
+        format_roots,format_guards,format_problems = format_root_sql(connection, manifest)
+        position_guards,position_problems = position_order_sql(connection, manifest)
+        format_audits = [f'SELECT problem,owner_id,edition_id FROM {identifier(row[0])}' for row in connection.execute("SELECT name FROM sqlite_schema WHERE type='view' AND (name GLOB 'candidate_*_integrity_problems' OR name='candidate_edition_cycle_problems')")]
+    audits = [*format_audits, *native_problems, *fk_problems, *root_problems, *hash_problems, *format_problems, *position_problems]
+    # SQLite limits a single compound SELECT to 500 terms. Keep the exhaustive
+    # reverse audit in named bounded chunks, not one oversized UNION statement.
+    chunks = [audits[offset:offset + 100] for offset in range(0, len(audits), 100)]
+    chunk_views = [f"CREATE VIEW candidate_integrity_chunk_{number} AS " + " UNION ALL ".join(chunk) + ';' for number, chunk in enumerate(chunks)]
+    integrity = '\n'.join([*chunk_views, "CREATE VIEW candidate_integrity_problems AS " + " UNION ALL ".join(f'SELECT * FROM candidate_integrity_chunk_{number}' for number in range(len(chunks))) + ';'])
+    publication = "CREATE TRIGGER candidate_publication_closure BEFORE INSERT ON published_catalog_editions WHEN EXISTS(SELECT 1 FROM candidate_integrity_problems WHERE edition_id=NEW.edition_id) BEGIN SELECT RAISE(ABORT,'candidate publication requires complete closure'); END;"
+    return "\n\n".join([source, ownership, hash_positions,format_roots, integrity, *native_guards, *fk_guards, *collisions, *immutable, *immutable_dictionary_sql(), *root_guards, *hash_guards,*format_guards,*position_guards, publication])
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--emit", action="store_true", help="emit the complete concrete candidate SQL to stdout")
+    args = parser.parse_args()
+    sql = assemble()
+    if args.emit:
+        sys.stdout.write(sql + "\n")
+        return
+    with sqlite3.connect(":memory:") as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.executescript(sql)
+        views = connection.execute("SELECT name FROM sqlite_schema WHERE type='view'").fetchall()
+        for (view,) in views:
+            try:
+                connection.execute(f"SELECT * FROM {identifier(view)} LIMIT 0")
+            except sqlite3.Error as error:
+                raise RuntimeError(f'candidate view {view} does not prepare: {error}') from error
+        if connection.execute("PRAGMA foreign_key_check").fetchall():
+            raise RuntimeError("candidate foreign-key check failed")
+        print(f"Candidate DDL prepares: {len(owners())} closed native kinds, {len(views)} prepared views; empty-schema check only.")
+
+
+if __name__ == "__main__":
+    main()

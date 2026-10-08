@@ -1,0 +1,5 @@
+table	owner_column	code_column	field_code	source_hash_field	occurrence_column
+mame_rom_claims_attribute_positions	media_entry_id	field_kind	crc	crc	field_occurrence
+mame_rom_claims_attribute_positions	media_entry_id	field_kind	sha1	sha1	field_occurrence
+mame_rom_compatibility_attribute_positions	media_entry_id	field_kind	md5	md5	field_occurrence
+mame_disk_claims_attribute_positions	media_entry_id	field_kind	sha1	sha1	field_occurrence
