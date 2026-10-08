@@ -1,17 +1,18 @@
 # ROM catalog model — approval proposal
 
-Status: complete-model GPT-6.1 Sol medium review CLEAR; explicit user approval
-remains outstanding. This is the entry point for
+Status: approved by the user on 2026-10-08 for executable `71a7de8` and reviewed
+documentation `e7a54af` (DOC-29 seq38745); complete-model Sol review is CLEAR.
+Production implementation is in progress. This is the entry point for
 [MAMEC-62](https://lific.mjc.lol/MAMEC/issues/MAMEC-62), not a production
-cutover or permission to modify an existing database. Signed `71a7de8` is the
+implementation acceptance or permission to erase an existing database. Signed `71a7de8` is the
 current executable proposal; `f3a6e66` and `12d9135` are prior snapshots. Independent
 bounded review verifies the five original fixes. Complete current-target review
 has finished its base artifact and Lific coverage, but found two extensions:
 original-only same-view highlight mapping and late file-byte policy insertion.
 Their fixes in `71a7de8` passed complete-model re-review with documentation
 checkpoint `e7a54af`. The DOC-29 checkpoint records all 64 reviewed local artifacts
-and current-target Lific coverage. This design verdict is not user approval or
-production implementation acceptance.
+and current-target Lific coverage. The user subsequently approved that identified
+design; neither review nor approval establishes production implementation acceptance.
 
 Both XML repair and whole-file byte-policy facets seal at their first reference from
 either `catalog_editions` or `catalog_imports`, including running and failed
@@ -195,6 +196,6 @@ speed. Bounded CLEAR reviews do not add up to complete-model approval. The curre
 complete-model verdict is CLEAR for executable `71a7de8` with documentation
 checkpoint `e7a54af`; all original findings and both extensions are closed, with
 no unread critical current-target text. The full serial replay passes all 358
-unique constructed tests in 614.853s. Explicit approval of this identified design
-must precede production cutover. PLAN-3 remains active until the full
+unique constructed tests in 614.853s. Explicit approval was received; the
+greenfield production cutover is now in progress. PLAN-3 remains active until the full
 implementation and verification objective is met.

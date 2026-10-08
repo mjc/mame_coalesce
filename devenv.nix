@@ -39,6 +39,7 @@ in {
     jq
     gawk
     cargo-nextest
+    python3
     time
   ];
 
@@ -75,6 +76,10 @@ in {
       description = "Check all maintained shell scripts";
       exec = scriptCheck;
     };
+    "project:catalog-schema" = {
+      description = "Check bundled catalog SQL against the approved canonical model";
+      exec = "python3 scripts/generate_catalog_schema.py";
+    };
     "project:test" = {
       description = "Run unit, property, integration and doc tests";
       showOutput = true;
@@ -89,7 +94,7 @@ in {
     };
     "project:check" = {
       description = "Run the complete local verification gate";
-      after = ["project:clippy" "project:scripts" "project:sqlite"];
+      after = ["project:clippy" "project:scripts" "project:sqlite" "project:catalog-schema"];
       # Keep verification out of ordinary shell activation.
       before = lib.optionals config.devenv.isTesting ["devenv:enterTest"];
     };

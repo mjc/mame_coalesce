@@ -1,15 +1,19 @@
 # Executable catalog schema candidate
 
-This is an isolated design artifact for
-[PLAN-3's model gate](https://lific.mjc.lol/MAMEC/issues/MAMEC-62), not the
-application schema, a migration, a database conversion, or an approved cutover.
-Do not apply it to an existing catalog database. The checks create in-memory
+This is the canonical reviewed model for
+[PLAN-3's approved design](https://lific.mjc.lol/MAMEC/issues/MAMEC-62).
+The user approved executable `71a7de8` and documentation `e7a54af` on 2026-10-08.
+Production startup now embeds generated `src/storage/db/catalog.sql`; run
+`python3 scripts/generate_catalog_schema.py --write` after intentional model
+changes, and the same command without `--write` to check parity. Rust compilation
+does not run Python. This is greenfield DDL, not a migration or database conversion.
+Do not apply it to an existing catalog database. Design checks create in-memory
 databases only; no corpus, original, database or profiling output is removed.
 
 Start with the [approval proposal](proposal.md) for the domain model, diagrams,
 exact artifact index, deliberate API changes and design/implementation gates.
 Complete-model Sol review is CLEAR for executable `71a7de8` with documentation
-checkpoint `e7a54af`; explicit user approval remains pending. The proposal does
+checkpoint `e7a54af`; explicit user approval is recorded. The proposal does
 not replace the native field dictionaries. Earlier checkpoints below retain
 their historical scope; the latest complete-model checkpoint supersedes their
 review status, not their implementation-evidence limits.
@@ -821,5 +825,5 @@ Software file-length point queries remain 2,224 VM instructions before/after
 128 unrelated native chains. These checks also treat ResourceWarning as errors.
 This verdict and replay do not prove authentic parser/EOF/corpus
 capture, runtime bulk writers/readers, import performance or the full devenv gate.
-Explicit user approval of the identified design remains required before production
-cutover. PLAN-3 remains active.
+Explicit approval of the identified design was received. Production cutover is
+in progress; PLAN-3 remains active and production acceptance remains unproved.

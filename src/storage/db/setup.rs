@@ -132,6 +132,9 @@ pub fn initialize_database(conn: &mut SqliteConnection) -> crate::Result<()> {
     conn.immediate_transaction(|conn| match database_state(conn)? {
         DatabaseState::Empty => {
             conn.batch_execute(SCHEMA)?;
+            sql_query("INSERT INTO file_id_registries(registry_id, registry_uuid) VALUES (1, ?)")
+                .bind::<Binary, _>(uuid::Uuid::new_v4().as_bytes().as_slice())
+                .execute(conn)?;
             sql_query("INSERT INTO database_schema(singleton, schema_digest) VALUES (1, ?)")
                 .bind::<Binary, _>(Sha256::digest(SCHEMA.as_bytes()).as_slice())
                 .execute(conn)?;
