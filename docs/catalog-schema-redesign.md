@@ -21,8 +21,8 @@ The isolated [candidate bundle](schema-candidate/README.md), recorded in
 [MAMEC-DOC-26](https://lific.mjc.lol/MAMEC/pages/144), now composes concrete shared
 and native SQL, closed owner/hash-position manifests, generated guards and
 in-memory witnesses. It enumerates 93 native kinds and 32 canonical media-hash
-slots. Assembly prepares all 45 views and checks FK targets; 29 integrated
-tests pass in 5.748 seconds. All 22 relationship routes and 32 hash mappings
+slots. Assembly now prepares all 48 views and checks FK targets; 29 integrated
+tests pass in 6.115 seconds. All 22 relationship routes and 32 hash mappings
 have positive/adversarial typed routing checks, including INTEGER-coded fields
 that previously failed trigger-affinity comparisons. The single declaration
 projection now drives kind and canonical-position audits without copied values.
@@ -60,25 +60,29 @@ bounded CLEAR, including independent Logiqx/CMP publication rejection and repair
 The native child suites pass MAME 10, software 10, Logiqx/CMP 18 and No-Intro 13
 tests; five fail-closed wiring and eight independent export-seal tests also pass.
 
-The next isolated count-contract layer compiles six format-specific edition
+The count contract compiles six format-specific edition
 seal tables from 158 counters across four closed inventories and six families.
-It reuses shared guard generators and preserves the existing publication checks while
-adding a mandatory count gate in the emitted base-plus-count candidate. That
-layer prepares 48 views; the ordinary 45-view fixture path has not yet absorbed
-it. Expected values must come from independent checked parser events, not SQL
-censuses. All 23 focused tests pass, covering independently specified populated
+It reuses shared guard generators and preserves existing native publication checks.
+The ordinary assembler now emits the complete 48-view candidate; its main integrity
+audit includes count failures and one aggregate closure gate checks that audit.
+The count CLI delegates to this assembler rather than emitting another schema.
+Expected values must come from independent checked parser events, not SQL
+censuses. All 25 focused count tests pass, covering independently specified populated
 mapping routes for all 158 counters, publication controls and a SQL-only mapping
 mutation. Fresh independent GPT-6.1 Sol medium technical and claim reviews are
-bounded CLEAR after both findings were fixed. Ordinary-assembler/fixture/audit
-consolidation and checked parser/EOF integration remain open; this is not a
-second production schema or a cutover authorization.
+bounded CLEAR after the consolidation's two fixture findings were fixed and
+independently rechecked. Ordinary-assembler/fixture/audit consolidation is complete
+for this constructed checkpoint. Checked parser/EOF integration remains open;
+this is not production DDL or a cutover authorization.
 
-This is not production DDL or complete-schema approval. Complete mode/child
-capture, parser-fed counts and publication proof, qualified size evidence,
-software complete-first-run qualification, UUID eligibility, ordinary diagnostic
-containment and populated target performance proof remain unfinished. Dictionaries
-and collector diagrams must be reconciled with the complete artifact before
-full-design review and explicit approval. No production databases, external
+This is not production DDL or complete-schema approval. Remaining design work
+includes exact mode/child and count-event contracts, checked parser/EOF/failure
+transition specifications, qualification and UUID rules, diagnostic containment,
+query semantics and populated target plans. Dictionaries and collector diagrams
+must agree with the complete artifact before full-design review and explicit
+approval. Implementing and verifying parser capture, count producers, EOF and
+corpus/performance behavior then belongs to the implementation/format tickets,
+not a circular prerequisite for design approval. No production databases, external
 originals, corpora or profiling artifacts were changed or removed.
 
 ### Prior crosswalk milestones
