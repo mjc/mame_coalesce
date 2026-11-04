@@ -75,7 +75,7 @@ serde-xml-rs = "0.8"
 serde_json = { version = "1", features = ["raw_value"] }
 quick-xml = { version = "0.42", features = ["encoding"] }
 
-zip = { version = "8.5", features = ["deflate", "bzip2", "zstd"] }
+zip = { version = "9.0", features = ["deflate", "bzip2", "zstd"] }
 zstd = "0.13"
 crc32fast = "1.5"
 md-5 = "0.10"
