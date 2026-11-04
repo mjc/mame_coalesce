@@ -164,7 +164,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2380c0236432f7b22a70229df30f218f5293870c056beb76f5ca068e3273a366"
 dependencies = [
  "arrayvec",
- "constant_time_eq",
+ "constant_time_eq 0.4.2",
 ]
 
 [[package]]
@@ -444,6 +444,15 @@ name = "constant_time_eq"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
+
+[[package]]
+name = "constant_time_eq"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9eb6feb175df65d0a3ccd3e73484e940d0ac664e8034f0519fd49a93db3071d9"
+dependencies = [
+ "rustversion",
+]
 
 [[package]]
 name = "core-foundation-sys"
@@ -1136,6 +1145,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "lzma-rust2"
+version = "0.22.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7277c9742229dc25243236d578b6471a798c554512c6f6a04365ec2e87c2a3bb"
+dependencies = [
+ "sha2 0.11.0",
+]
+
+[[package]]
 name = "mame_coalesce"
 version = "0.1.0"
 dependencies = [
@@ -1179,7 +1197,7 @@ dependencies = [
  "walkdir",
  "xxhash-rust",
  "zip",
- "zstd",
+ "zstd 0.13.3",
 ]
 
 [[package]]
@@ -1629,7 +1647,7 @@ dependencies = [
  "deflate64",
  "flate2",
  "getrandom 0.3.4",
- "lzma-rust2",
+ "lzma-rust2 0.16.5",
  "memmap2",
  "nom",
  "num",
@@ -2235,9 +2253,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1340ea94a5856333492c9064b02c778b191dd2c853778d9609debdcdfea3a614"
 dependencies = [
  "indexmap",
- "toml_datetime 1.1.1+spec-1.1.0",
+ "toml_datetime",
  "toml_parser",
- "winnow 1.0.4",
+ "winnow",
 ]
 
 [[package]]
@@ -2246,7 +2264,7 @@ version = "1.1.3+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d38ac1cf9b95face32296c0a3ede1fdc270627c9d9c02a7274dd6d960dc4d56"
 dependencies = [
- "winnow 1.0.4",
+ "winnow",
 ]
 
 [[package]]
@@ -2733,21 +2751,22 @@ dependencies = [
 
 [[package]]
 name = "zip"
-version = "8.6.0"
+version = "9.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d04a6b5381502aa6087c94c669499eb1602eb9c5e8198e534de571f7154809b"
+checksum = "6e04976da629d3b04204ba8105b396a193af8ad2583b2c79bfb3ab8af580a11e"
 dependencies = [
  "aes 0.9.3",
  "bzip2",
- "constant_time_eq",
+ "constant_time_eq 0.6.1",
  "crc32fast",
  "deflate64",
  "flate2",
  "getrandom 0.4.3",
  "hmac",
  "indexmap",
- "lzma-rust2",
+ "lzma-rust2 0.22.0",
  "memchr",
+ "nix",
  "pbkdf2",
  "ppmd-rust",
  "sha1",
@@ -2755,7 +2774,7 @@ dependencies = [
  "typed-path",
  "zeroize",
  "zopfli",
- "zstd",
+ "zstd 0.14.3",
 ]
 
 [[package]]
@@ -2788,7 +2807,16 @@ version = "0.13.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e91ee311a569c327171651566e07972200e76fcfe2242a4fa446149a3881c08a"
 dependencies = [
- "zstd-safe",
+ "zstd-safe 7.3.0",
+]
+
+[[package]]
+name = "zstd"
+version = "0.14.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "db3ae9bf90af6e40197bef767eeefc46ad6397420fe873830bd85e5fbbfb3c70"
+dependencies = [
+ "zstd-safe 8.2.0",
 ]
 
 [[package]]
@@ -2801,10 +2829,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "zstd-sys"
-version = "2.1.0+zstd.1.5.7"
+name = "zstd-safe"
+version = "8.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ef0a8027ec3ee71300ab3bcbcd0393f434aa72b91ca6d635a39941deae8eea0"
+checksum = "ded520f16b29e1a9b771c722221b2b0a0398c2316d9bb3c42b458a5414d7434b"
+dependencies = [
+ "zstd-sys",
+]
+
+[[package]]
+name = "zstd-sys"
+version = "2.1.2+zstd.1.5.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "481ada9c543b2323cbb7bbdbb5249177fbf0188ed959ed2c15e4b22421c84ed3"
 dependencies = [
  "cc",
  "pkg-config",
